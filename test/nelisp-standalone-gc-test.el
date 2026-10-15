@@ -1459,3 +1459,277 @@ the heap and all mark decisions remain native production code."
               (should (= checked 1000))
               (should (< reads 26000)))))
       (delete-file path))))
+
+;;; One-pass sweep ---------------------------------------------------------
+
+(defconst nelisp-standalone-gc-test--sweep-heap #x33000000
+  "Scratch heap for the one-pass sweep probe (256 KiB mapped).")
+
+(defconst nelisp-standalone-gc-test--sweep-holes #x32003000
+  "Scratch page used as the boot hole bitmap in the sweep probe.")
+
+(defconst nelisp-standalone-gc-test--sweep-boot-bytes 4096
+  "Headers below heap + this many bytes are boot blocks unless a hole.")
+
+(defun nelisp-standalone-gc-test--sweep-blocks ()
+  "Return the sweep probe heap as a list of (BT MARK HOLE) in address order.
+The head covers every boot/hole/mark case and runs that cross the
+watermark; a 160000-byte run spans a whole 64 KiB page; a seeded tail
+mixes small and large sizes and ends on a run the walk must flush."
+  (let ((blocks
+         (list '(32 0 nil) '(48 1 nil) '(64 4 nil)   ; boot blocks live
+               '(40 2 nil) '(24 0 t) '(56 2 t)        ; boot free + holes: run of 120
+               '(32 1 t)                              ; a kept hole ends the run
+               '(88 0 t) '(16 0 nil)                  ; dead hole run, boot block ends it
+               '(120 2 nil)))                         ; boot free run, crosses below
+        (used 0) (seed 12345))
+    (dolist (b blocks) (setq used (+ used (car b))))
+    ;; Fill the boot region up to the watermark with live boot blocks,
+    ;; except the last block before it, which is free and opens a run
+    ;; that the first non-boot dead block continues.
+    (while (< (+ used 64) (- nelisp-standalone-gc-test--sweep-boot-bytes 64))
+      (setq blocks (append blocks (list '(64 0 nil))) used (+ used 64)))
+    (setq blocks (append blocks
+                         (list (list (- nelisp-standalone-gc-test--sweep-boot-bytes used) 2 nil))))
+    (setq blocks (append blocks
+                         (list '(120 0 nil) '(32 1 nil)          ; run across the watermark
+                               '(120 0 nil) '(32 4 nil)          ; same size again: LIFO order
+                               '(40000 0 nil) '(40000 2 nil) '(40000 0 nil) '(40000 0 nil)
+                               '(24 1 nil)
+                               '(512 0 nil) '(16 1 nil) '(520 2 nil) '(16 4 nil))))
+    (dotimes (_ 160)
+      (setq seed (logand (+ (* seed 1103515245) 12345) #x7fffffff))
+      (let* ((r (ash seed -8))
+             (bt (if (= (% r 9) 0) (+ 480 (* 8 (% (ash r -4) 400)))
+                   (+ 16 (* 8 (% (ash r -4) 58)))))
+             (m (nth (% (ash r -12) 6) '(0 0 1 1 2 4))))
+        (setq blocks (append blocks (list (list bt m nil))))))
+    (append blocks (list '(64 0 nil) '(72 2 nil)))))
+
+(defun nelisp-standalone-gc-test--sweep-large-bin (bt)
+  "Elisp copy of `nl_freelist_large_bin' for the oracle."
+  (cond ((< bt 2049) (if (< bt 481) 0 (/ (- bt 480) 32)))
+        ((< bt 4097) (+ 50 (/ (- bt 2049) 32)))
+        ((< bt 8193) (+ 114 (/ (- bt 4097) 64)))
+        ((< bt 32769) (+ 178 (/ (- bt 8193) 1024)))
+        ((< bt 262145) 202)
+        (t 203)))
+
+(defun nelisp-standalone-gc-test--sweep-oracle (blocks &optional markonly desync)
+  "Expected state after the one-pass sweep over BLOCKS.
+MARKONLY models the mark-only debug mode; DESYNC is the index of a block
+whose header is malformed.  Returns a plist of :headers ((ADDR . WORD)),
+:runs ((HEAD . TOTAL)) in address order, :kept, :freed and :live."
+  (let ((heap nelisp-standalone-gc-test--sweep-heap)
+        (addr nelisp-standalone-gc-test--sweep-heap)
+        (headers nil) (runs nil) (run nil) (runbt 0)
+        (kept 0) (freed 0) (live 0) (stop nil) (i 0))
+    (dolist (b blocks)
+      (let* ((bt (nth 0 b)) (m (nth 1 b)) (hole (nth 2 b))
+             (word (if (and desync (= i desync)) 8 (+ bt m))))
+        (when (and desync (= i desync)) (setq stop t))
+        (if stop
+            (push (cons addr word) headers)
+          (let ((boot (and (< addr (+ heap nelisp-standalone-gc-test--sweep-boot-bytes))
+                           (not hole)))
+                (free nil))
+            (cond
+             (boot (if (= m 2) (setq free t) (setq word bt live (+ live bt))))
+             ((memq m '(1 4)) (setq word bt kept (1+ kept) live (+ live bt)))
+             ((= m 0) (unless markonly (setq word (+ bt 2) freed (1+ freed) free t)))
+             ((= m 2) (setq free t)))
+            (push (cons addr word) headers)
+            (if free
+                (if run (setq runbt (+ runbt bt)) (setq run addr runbt bt))
+              (when run (push (cons run runbt) runs) (setq run nil)))))
+        (setq addr (+ addr bt) i (1+ i))))
+    (when run (push (cons run runbt) runs))
+    (setq runs (nreverse runs))
+    (dolist (r runs) (setf (alist-get (car r) headers) (+ (cdr r) 2)))
+    (list :headers (nreverse headers) :runs runs :kept kept :freed freed
+          :live live :end addr)))
+
+(defun nelisp-standalone-gc-test--sweep-source (blocks mode)
+  "Native probe running `nl_gc_sweep_merge_chunk' over BLOCKS.
+MODE is one of plain, diag, check, markonly or desync.  The production
+walk, run linker, free path, relink, discard, bin and mask bodies are
+linked unchanged; the OS discard, poison fill and redzone verify are
+counting stubs.  Exit 0 when every header, list, mask, counter and
+stub count matches the Elisp oracle."
+  (let* ((page nelisp-standalone-gc-test--freelist-page)
+         (large nelisp-standalone-gc-test--freelist-large-page)
+         (chunk nelisp-standalone-gc-test--freelist-chunk-page)
+         (heap nelisp-standalone-gc-test--sweep-heap)
+         (holes nelisp-standalone-gc-test--sweep-holes)
+         (diag (+ page 1040)) (check (+ page 1200)) (hmap (+ page 1304))
+         (stats (+ page 1400)) (counts (+ page 1600)) (lmask (+ large 2048))
+         (desync (and (eq mode 'desync) 120))
+         (oracle (nelisp-standalone-gc-test--sweep-oracle
+                  blocks (eq mode 'markonly) desync))
+         (plain (memq mode '(plain markonly desync)))
+         (end (plist-get oracle :end))
+         (forms nil) (setup nil) (checks nil) (code 0))
+    (dolist (name '(nl_gc_sweep_merge_chunk nl_gc_sweep_link_run
+                    nl_gc_sweep_free_dead nl_gc_relink_free_one
+                    nl_gc_discard_free_block nl_gc_bt_ok nl_hdr_bt nl_hdr_mark
+                    nl_freelist_small_mask_bit nl_freelist_small_mask_set
+                    nl_freelist_large_bin nl_freelist_large_mask_sync))
+      (let ((form (or (nelisp-standalone-gc-test--find-defun
+                       nelisp-standalone--arena-source name)
+                      (nelisp-standalone-gc-test--find-defun
+                       nelisp-standalone--gc-source name))))
+        (unless form (error "one-pass sweep probe defun absent: %S" name))
+        (dolist (sub `((,diag . nl_gc_diag) (,check . nl_alloc_check)
+                       (,hmap . nl_boot_hole_map) (,stats . nl_gc_stats)
+                       (,lmask . nl_freelist_large_mask)))
+          (setq form (cl-subst (car sub) `(data-addr ,(cdr sub)) form
+                               :test #'equal)))
+        (push form forms)))
+    ;; Heap headers and hole bits.
+    (let ((addr heap) (i 0) (bits nil))
+      (dolist (b blocks)
+        (push `(ptr-write-u64 ,addr 0 ,(if (and desync (= i desync)) 8
+                                         (+ (nth 0 b) (nth 1 b))))
+              setup)
+        (when (nth 2 b)
+          (let ((g (/ (- addr heap) 8)))
+            (setf (alist-get (/ g 64) bits)
+                  (logior (alist-get (/ g 64) bits 0) (ash 1 (% g 64))))))
+        (setq addr (+ addr (nth 0 b)) i (1+ i)))
+      (dolist (w bits)
+        (push `(ptr-write-u64 ,(+ holes (* 8 (car w))) 0 ,(cdr w)) setup)))
+    (cl-flet ((expect (form value)
+                (setq code (1+ code))
+                (push `(if (= ,form ,value) 0 (if (= bad 0) (setq bad ,(min code 250)) 0))
+                      checks)))
+      (dolist (h (plist-get oracle :headers))
+        (expect `(ptr-read-u64 ,(car h) 0) (cdr h)))
+      ;; Free lists: each run head pushed in address order.
+      (let ((lists nil) (small 0) (lmasks (make-vector 4 0)))
+        (dolist (r (plist-get oracle :runs))
+          (let* ((total (cdr r))
+                 (slot (if (< total 473) (+ 268435696 (- total 16))
+                         (let ((bin (nelisp-standalone-gc-test--sweep-large-bin total)))
+                           (aset lmasks (/ bin 51)
+                                 (logior (aref lmasks (/ bin 51)) (ash 1 (% bin 51))))
+                           (+ large (* 8 bin))))))
+            (when (< total 473)
+              (setq small (logior small (ash 1 (/ (- total 16) 8)))))
+            (push (car r) (alist-get slot lists))))
+        (dolist (l lists)
+          (let ((at (car l)))
+            (dolist (node (cdr l))
+              (expect `(ptr-read-u64 ,at 0) (+ node 8))
+              (setq at (+ node 8)))
+            (expect `(ptr-read-u64 ,at 0) 0)))
+        (expect `(ptr-read-u64 ,(+ page 1024) 0) small)
+        (dotimes (w 4)
+          (expect `(ptr-read-u64 ,(+ lmask (* 8 w)) 0) (aref lmasks w))))
+      (expect '(ptr-read-u64 268435640 0) (plist-get oracle :kept))
+      (expect '(ptr-read-u64 268435632 0) (plist-get oracle :freed))
+      (expect `(ptr-read-u64 ,(+ stats 16) 0) (plist-get oracle :live))
+      ;; Counting stubs: verify, poison, poison counter, discards.
+      (let ((freed (plist-get oracle :freed))
+            (discards nil))
+        (when plain
+          (dolist (r (plist-get oracle :runs))
+            (let* ((hdr (car r)) (stop (+ hdr (cdr r)))
+                   (start (if (= (logand (+ hdr 16) 65535) 0) (+ hdr 16)
+                            (+ hdr 16 (- 65536 (logand (+ hdr 16) 65535)))))
+                   (finish (- stop (logand stop 65535))))
+              (when (and (>= (cdr r) 65552) (< start finish)
+                         (>= (- finish start) 65536))
+                (push (cons start (- finish start)) discards)))))
+        (expect `(ptr-read-u64 ,counts 0) (if plain 0 freed))
+        (expect `(ptr-read-u64 ,(+ counts 8) 0) (if (eq mode 'diag) freed 0))
+        (expect `(ptr-read-u64 ,(+ diag 40) 0) (if (eq mode 'diag) freed 0))
+        (expect `(ptr-read-u64 ,(+ counts 16) 0) (length discards))
+        (when discards
+          (expect `(ptr-read-u64 ,(+ counts 24) 0) (car (car discards)))
+          (expect `(ptr-read-u64 ,(+ counts 32) 0) (cdr (car discards))))))
+    `(seq
+      (defun nl_seq2 (_a b) b)
+      (defun nl_freelist_small_mask_ptr () ,(+ page 1024))
+      (defun nl_freelist_large_head (bin) (+ ,large (* bin 8)))
+      (defun nl_gc_chunk_end (_chunk) ,end)
+      (defun nl_alloc_check_verify (_hdr)
+        (ptr-write-u64 ,counts 0 (+ (ptr-read-u64 ,counts 0) 1)))
+      (defun nl_gc_poison_fill (_hdr _off _bt)
+        (ptr-write-u64 ,(+ counts 8) 0 (+ (ptr-read-u64 ,(+ counts 8) 0) 1)))
+      (defun nl_os_discard_free_pages (start len)
+        (seq (ptr-write-u64 ,(+ counts 16) 0 (+ (ptr-read-u64 ,(+ counts 16) 0) 1))
+             (ptr-write-u64 ,(+ counts 24) 0 start)
+             (ptr-write-u64 ,(+ counts 32) 0 len)
+             0))
+      ,@(nreverse forms)
+      (defun nl_probe_sweep_setup ()
+        (seq
+         (syscall-direct 9 ,page 4096 3 50 -1 0)
+         (syscall-direct 9 ,large 4096 3 50 -1 0)
+         (syscall-direct 9 ,chunk 4096 3 50 -1 0)
+         (syscall-direct 9 ,holes 4096 3 50 -1 0)
+         (syscall-direct 9 ,heap 262144 3 50 -1 0)
+         (ptr-write-u64 268435664 0 ,(+ heap nelisp-standalone-gc-test--sweep-boot-bytes))
+         (ptr-write-u64 268435584 0 ,(if (eq mode 'markonly) 1 0))
+         (ptr-write-u64 268436160 0 ,chunk)
+         (ptr-write-u64 ,chunk 0 ,heap)
+         (ptr-write-u64 ,(+ chunk 24) 0 ,heap)
+         (ptr-write-u64 ,(+ chunk 48) 0 0)
+         (ptr-write-u64 ,(+ diag 32) 0 ,(if (eq mode 'diag) 1 0))
+         (ptr-write-u64 ,(+ check 8) 0 ,(if (eq mode 'check) 1 0))
+         (ptr-write-u64 ,hmap 0 ,holes)
+         (ptr-write-u64 ,(+ hmap 8) 0 ,heap)
+         (ptr-write-u64 ,(+ hmap 16) 0
+                        ,(+ heap nelisp-standalone-gc-test--sweep-boot-bytes))
+         ,@(nreverse setup)
+         0))
+      (defun nl_probe_sweep_check ()
+        (let ((bad 0))
+          (seq ,@(nreverse checks) bad)))
+      (defun nl_probe_sweep ()
+        (seq (nl_probe_sweep_setup)
+             (nl_gc_sweep_merge_chunk ,chunk)
+             (nl_probe_sweep_check)))
+      (exit (nl_probe_sweep)))))
+
+(defun nelisp-standalone-gc-test--run-sweep-probe (mode)
+  "Compile and run the one-pass sweep probe in MODE; return its exit code."
+  (let ((path (make-temp-file "nelisp-standalone-gc-sweep-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--sweep-source
+            (nelisp-standalone-gc-test--sweep-blocks) mode)
+           path)
+          (call-process path nil nil nil))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-standalone-gc-one-pass-sweep-native ()
+  "The one-pass sweep leaves the state the sweep/coalesce/relink walks left.
+Every header, free-list chain, mask word, counter and live byte total is
+compared with an independent oracle, with plain blocks, the poison and
+checked-allocator paths, the mark-only debug mode and a malformed header."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (dolist (mode '(plain diag check markonly desync))
+    (should (equal (list mode (nelisp-standalone-gc-test--run-sweep-probe mode))
+                   (list mode 0)))))
+
+(ert-deftest nelisp-standalone-gc-one-pass-sweep-oracle-is-red ()
+  "A walk that never merges runs fails the sweep probe."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-standalone-gc-sweep-red-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (cl-subst '(ptr-write-u64 run 0 (+ bt 2))
+                     '(ptr-write-u64 run 0 (+ runbt 2))
+                     (nelisp-standalone-gc-test--sweep-source
+                      (nelisp-standalone-gc-test--sweep-blocks) 'plain)
+                     :test #'equal)
+           path)
+          (should-not (equal (call-process path nil nil nil) 0)))
+      (when (file-exists-p path) (delete-file path)))))
