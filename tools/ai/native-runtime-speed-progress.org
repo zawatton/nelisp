@@ -58,7 +58,8 @@ pending
 
 * S3 String primitive fast paths
 
-** S3.1 compare-strings is a native builtin: string-prefix-p costs at most 3 x string= and matches GNU on edge cases
+** S3.1 string-prefix-p costs at most 3 x string= and compare-strings matches GNU on edge cases
+#+NOTE: Title reworded 2026-10-16: it required a native compare-strings, which the minimal native surface rule (AGENTS.md, 2026-09-30) does not allow for speed.  The native compare-strings, nelisp--compare-strings-0, nelisp--string-search-chars, nelisp--split-on-byte, nelisp--hash-table-entries and nelisp--base64-decode were demoted to their elisp definitions the same day; S1.2, S3.1-S3.3 and S4.1 stay as failing checks until the general native compiler recovers the speed.
 #+NOTE: Parity is against the prelude's general implementation over 12548 cases (ASCII, Japanese, emoji, raw bytes, unibyte/multibyte pairs, END nil/in range/past the end/negative, wrong types).  string-prefix-p 167 -> 38.6 us, 1.73 x string=.
 #+REQUIRES: NELISP_RT_BIN
 #+TIMEOUT: 300
