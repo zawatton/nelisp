@@ -2173,12 +2173,14 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; mmap already zero-fills untouched pages).
     ;; PERF (2026-07-03): iterative zero-fill (was 8-bytes-per-recursive-call,
     ;; so a large reused block cost thousands of native calls per alloc).
+    ;; PERF (2026-10-15): the loop body is plain forms, not an `nl_seq2'
+    ;; call per word; every reused block and the GC start index pass here.
     (defun nl_alloc_zero_fill (obj off nbytes)
       (let* ((o off))
         (seq
          (while (< o nbytes)
-           (nl_seq2 (ptr-write-u64 (+ obj o) 0 0)
-                    (setq o (+ o 8))))
+           (ptr-write-u64 (+ obj o) 0 0)
+           (setq o (+ o 8)))
          0)))
     (defun nl_chunk_cursor_addr (chunk)
       (if (= chunk (ptr-read-u64 268436160 0))
@@ -3554,32 +3556,35 @@ REPL-facing module it feeds."
       (ptr-write-u64 (data-addr nl_gc_start_index) 16 0))
     (defun nl_gc_index_bytes (start end)
       (nl_align_up (/ (+ (- end start) 63) 64) 8))
+    ;; The header word is decoded inline (`nl_hdr_bt' / `nl_gc_bt_ok', whose
+    ;; alignment test the 32-bit size mask already satisfies): this walk
+    ;; visits every block of the heap once per collection.
     (defun nl_gc_index_fill (entry)
       (let* ((start (ptr-read-u64 entry 0))
              (end (ptr-read-u64 entry 8))
              (bits (ptr-read-u64 entry 16))
              (prefix (+ bits (nl_gc_index_bytes start end)))
              (prefix-bytes (* (/ (+ (- end start) 4095) 4096) 8))
-             (page 0) (previous 0) (hdr start) (ok 1))
+             (page 0) (previous 0) (hdr start) (ok 1) (bt 0) (slot 0) (byte 0))
         (seq
          (while (and (= ok 1) (< hdr end))
-           (let ((bt (nl_hdr_bt hdr)))
-             (if (= (nl_gc_bt_ok hdr bt end) 0)
-                 (setq ok 0)
-               (let* ((slot (/ (- (+ hdr 8) start) 8))
-                      (byte (+ bits (/ slot 8))))
-                 (seq
-                  ;; The predecessor before each 4 KiB page is derived only
-                  ;; from the same validated header chain as the start bitmap.
-                  (while (and (< page prefix-bytes)
-                              (<= (+ start (* page 512)) (+ hdr 8)))
-                    (ptr-write-u64 prefix page previous)
-                    (setq page (+ page 8)))
-                  (setq previous (+ hdr 8))
-                  (ptr-write-u8 byte 0
-                                (logior (ptr-read-u8 byte 0)
-                                        (shl 1 (logand slot 7))))
-                  (setq hdr (+ hdr bt)))))))
+           (setq bt (logand (ptr-read-u64 hdr 0) 4294967288))
+           (if (if (< bt 16) 1 (if (< end (+ hdr bt)) 1 0))
+               (setq ok 0)
+             (seq
+              (setq slot (/ (- (+ hdr 8) start) 8))
+              (setq byte (+ bits (/ slot 8)))
+              ;; The predecessor before each 4 KiB page is derived only
+              ;; from the same validated header chain as the start bitmap.
+              (while (and (< page prefix-bytes)
+                          (<= (+ start (* page 512)) (+ hdr 8)))
+                (ptr-write-u64 prefix page previous)
+                (setq page (+ page 8)))
+              (setq previous (+ hdr 8))
+              (ptr-write-u8 byte 0
+                            (logior (ptr-read-u8 byte 0)
+                                    (shl 1 (logand slot 7))))
+              (setq hdr (+ hdr bt)))))
          (while (and (= ok 1) (< page prefix-bytes))
            (ptr-write-u64 prefix page previous)
            (setq page (+ page 8)))
