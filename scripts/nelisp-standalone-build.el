@@ -3872,11 +3872,18 @@ REPL-facing module it feeds."
       (let* ((state (data-addr nl_symbol_name_state))
              (epoch (+ (ptr-read-u64 state 24) 1)))
         (ptr-write-u64 state 24 (if (= epoch 0) 1 epoch))))
+    ;; A kind-1 entry is keyed on the name buffer of whichever occurrence
+    ;; created it.  Another live occurrence with the same name keeps the
+    ;; entry this epoch, so the entry must keep its own key buffer too:
+    ;; otherwise the buffer is freed, reused for other bytes, and every
+    ;; later probe of the row compares against garbage.
     (defun nl_gc_symname_mark_one (kind key len)
       (let* ((entry (nl_symbol_name_entry_for kind key len)))
         (if (= entry 0) 0
           (seq (ptr-write-u64 entry 72
                               (ptr-read-u64 (data-addr nl_symbol_name_state) 24))
+               (if (= (ptr-read-u64 entry 8) 1)
+                   (nl_gc_mark_buf (ptr-read-u64 entry 16)) 0)
                (nl_gc_mark_slot (+ entry 40)) 0))))
     (defun nl_gc_symname_mark_roots ()
       (let* ((state (data-addr nl_symbol_name_state))
@@ -3898,10 +3905,17 @@ REPL-facing module it feeds."
                   (nl_gc_mark_slot (data-addr nl_symbol_name_t)))))))
     ;; Sweep unmarked transient tag-16 and nonpermanent tag-4 entries.
     ;; Tombstones preserve probe chains and are reusable by insertion.
+    ;; Growth only counts live entries, so tombstones used to accumulate
+    ;; until the table had no empty slot left: every lookup of an absent
+    ;; name then probed the whole table.  Uninterned symbols (macro gensyms)
+    ;; churn thousands of rows per collection, so a GUI session spent most
+    ;; of its time in `nl_symname_probe' within minutes.  Once live rows
+    ;; plus tombstones fill three quarters of the table, rebuild it from the
+    ;; live rows (doubling only when they alone fill half of it).
     (defun nl_gc_symname_sweep_all ()
       (let* ((state (data-addr nl_symbol_name_state))
              (base (ptr-read-u64 state 0)) (cap (ptr-read-u64 state 8))
-             (epoch (ptr-read-u64 state 24)) (i 0))
+             (epoch (ptr-read-u64 state 24)) (i 0) (tombs 0))
         (if (= base 0) 0
           (seq
            (while (< i cap)
@@ -3916,7 +3930,12 @@ REPL-facing module it feeds."
                                (/= (ptr-read-u64 entry 72) epoch)) 0)) 0)
                    (seq (ptr-write-u64 entry 0 2)
                         (ptr-write-u64 state 16 (- (ptr-read-u64 state 16) 1))) 0)
+               (if (= (ptr-read-u64 entry 0) 2) (setq tombs (+ tombs 1)) 0)
                (setq i (+ i 1))))
+           (if (>= (* (+ (ptr-read-u64 state 16) tombs) 4) (* cap 3))
+               (nl_symname_rehash_to
+                (if (>= (* (ptr-read-u64 state 16) 2) cap) (* cap 2) cap))
+             0)
            0))))
     ;; NativeSubr weak sidecar rows are (record-box, module-id).  The table
     ;; never stores a Sexp edge: only a reachable tag-18 record keeps its

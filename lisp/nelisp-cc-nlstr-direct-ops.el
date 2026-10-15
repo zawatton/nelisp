@@ -313,13 +313,18 @@ lifetime of a Sexp value.  No `let' binding needed.")
             (setq i (+ i 1))))
         valid))
     (defun nl_symname_grow ()
+      (let* ((cap (ptr-read-u64 (data-addr nl_symbol_name_state) 8)))
+        (nl_symname_rehash_to (if (= cap 0) 256 (* cap 2)))))
+    ;; Rebuild the table at NEW-CAP (a power of two) from its live entries.
+    ;; Tombstones are not copied, so this is also how the collector drops
+    ;; them once sweeping has filled the table with them.
+    (defun nl_symname_rehash_to (new-cap)
       (let* ((state (data-addr nl_symbol_name_state))
              (old (ptr-read-u64 state 0))
-             (cap (ptr-read-u64 state 8))
-             (new-cap (if (= cap 0) 256 (* cap 2))))
+             (cap (ptr-read-u64 state 8)))
         ;; Power-of-two capacity and 80-byte entries must remain in signed
         ;; i64 range. Allocation failure leaves the old table untouched.
-        (if (or (< cap 0) (>= cap 72057594037927936)) 0
+        (if (or (< cap 0) (>= new-cap 72057594037927936)) 0
           (let* ((bytes (* new-cap 80)) (new (nl_os_alloc_chunk bytes)))
             (if (< new 4096) 0
               (if (= (nl_os_commit_range new 0 bytes) 0)
