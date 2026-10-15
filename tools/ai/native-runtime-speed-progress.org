@@ -100,6 +100,12 @@ pending
 # table (GUI daily S5.1 slowed until it timed out).  Baseline (integ
 # 9481f6010 dynamic reader, 2026-10-15): S5.4 fails at round 3, 3000
 # gensyms 0.172 s versus 0.031 s in the first round.
+# Collectable holes also exposed the non-local exit stash (TAG/VAL left by
+# throw/signal) as an unrooted reference that the evaluator keeps cloning:
+# a thrown cons died after its catcher dropped it, and refcount increments
+# through it rewrote neighbouring block headers (S5.2 package preload
+# corruption).  Baseline (integ 5e19f6906 dynamic reader, 2026-10-15):
+# S5.5 fails, 296 bytes held for a dropped thrown 20000-element list.
 
 ** S5.1 Three 100000-iteration counting loops leave under 1 MiB of live growth on a cold image
 cmd: GC_CHECK=loop $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
@@ -115,5 +121,10 @@ cmd: GC_CHECK=pause $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load t
 #+TIMEOUT: 120
 cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-symname-tombstone-check.el
 
-** S5.5 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
+** S5.5 With the conservative stack scan off, a dropped value left in the exit stash by throw is still live after two collections
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-exit-stash-root-check.el
+
+** S5.6 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
 pending
