@@ -177,6 +177,25 @@ is the first `nl_seq2' argument wrapping the historical body)."
     (should (nelisp-alloc-check-test--tree-member-p
              'nl_gc_poison_fill (caddr body)))))
 
+(ert-deftest nelisp-alloc-check-sweep-free-path-verifies-before-poison ()
+  "The one-pass sweep frees a dead block through `nl_gc_sweep_free_dead'
+whenever the checked allocator or the poison diagnostic is on: the
+redzone verify comes first, before the free mark and the poison fill."
+  (let* ((forms (cdr nelisp-standalone--gc-source))
+         (def (nelisp-alloc-check-test--defun 'nl_gc_sweep_free_dead forms))
+         (body (car (cl-cdddr def)))
+         (walk (nelisp-alloc-check-test--defun 'nl_gc_sweep_merge_chunk forms)))
+    (should def)
+    (should (eq (car body) 'seq))
+    (should (equal (cadr body) '(nl_alloc_check_verify hdr)))
+    (should (nelisp-alloc-check-test--tree-member-p
+             'nl_gc_poison_fill (cddr body)))
+    ;; The walk takes that path unless both diagnostics are off.
+    (should (nelisp-alloc-check-test--tree-member-p
+             '(nl_gc_sweep_free_dead hdr bt) walk))
+    (should (nelisp-alloc-check-test--tree-member-p
+             '(ptr-read-u64 (data-addr nl_alloc_check) 8) walk))))
+
 ;;; Builtin dispatch / surface -------------------------------------------
 
 (ert-deftest nelisp-alloc-check-report-dispatch-entry ()
