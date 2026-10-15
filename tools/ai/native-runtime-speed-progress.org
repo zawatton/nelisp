@@ -84,6 +84,12 @@ cmd: $NELISP_RT_BIN --load test/standalone-maphash-sparse-check.el
 #+TIMEOUT: 120
 cmd: SKK_BENCH_LIMIT=0.13 $NELISP_RT_BIN --load test/standalone-skk-shaped-bench.el
 
+** S3.5 Hash tables grow with their count and answer like an alist reference over 9000 random operations
+#+NOTE: The count that drives `nl_ht_maybe_grow' lives in marker slot 1 as an immediate Int word (Doc 147); it was read and written through a boxed copy, so it stayed 0 and no table ever grew past its fixed 2048 buckets.  The count now uses the word, tables start at 8 buckets and double past twice the bucket count, the rehash walks are loops, and bucket heads are read as words (an empty bucket is no longer boxed, which a full scan for an unstable-hash key did 2048 times per miss).  Red before the fix (growth=nil), green after; S3.3's table now grows to 4000 entries to keep its 2048 buckets.  Criterion added 2026-10-16 (denominator 22 -> 23).
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 600
+cmd: $NELISP_RT_BIN --load test/standalone-hash-table-growth-check.el
+
 * S4 Native cache load speed
 
 ** S4.1 Artifact text decodes without interpreted base64 (raw bytes or a native decoder)
