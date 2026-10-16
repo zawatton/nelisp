@@ -207,11 +207,12 @@ actually at point, rather than on every `goto-char' that got it there."
       t)))
 
 (defun nelisp-buffer-list ()
-  "Return a list of live NeLisp buffers."
+  "Return a list of live NeLisp buffers, oldest first, as GNU's buffer
+list holds them.  An Emacs hash table walks in insertion order."
   (let (result)
     (maphash (lambda (_ buf) (push buf result))
              nelisp-buffer--registry)
-    result))
+    (nreverse result)))
 
 ;;; Current buffer dispatch -------------------------------------------
 

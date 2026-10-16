@@ -11585,21 +11585,22 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (props nil))
 
 (defvar nelisp-buffer--registry
-  ;; This private compatibility registry must retain its legacy bucket layout.
-  ;; `nelisp-buffer-list' enumerates buckets, and the library's kill-buffer
-  ;; fallback selects its first surviving entry.  Public constructor capacity
-  ;; changes must not reorder that fallback.  Policy adoption preserves the
-  ;; raw leaf's reservation; public make-hash-table still starts at size zero.
-  ;; The legacy layout is 2048 buckets.  Raw native tables now start at 8
-  ;; and grow (6e41c5ee7), which reordered `buffer-list' and with it the
-  ;; buffer that killing the current one leaves current, so the registry
-  ;; installs its 2048 buckets itself.  The count-driven growth fires only
-  ;; past 4096 buffers.
+  ;; A raw native table: policy adoption preserves the raw leaf's
+  ;; reservation, while public make-hash-table still starts at size zero.
+  ;; Its bucket layout no longer matters: `nelisp-buffer-list' follows
+  ;; `nelisp-buffer--order', not the buckets.
   (let ((table (nelisp--hash-table-make-raw)))
     (aset (car table) 2 'equal)
-    (setcdr table (make-vector 2048 nil))
     table)
   "Name -> `nelisp-buffer' map.  Ported from src/nelisp-buffer.el.")
+
+(defvar nelisp-buffer--order nil
+  "Live NeLisp buffers, the most recently created first.
+`nelisp-buffer-list' returns them oldest first: GNU's buffer list holds
+buffers in creation order until `record-buffer' or `bury-buffer' moves
+one.  The list used to be the registry's bucket order, which changed
+with the table's size: 6e41c5ee7 (8 starting buckets) flipped *scratch*
+and *Messages*, and the 2048 buckets that kept them cost 59 ms a call.")
 
 (defvar nelisp-buffer--current nil
   "The ported file's OWN ambient current buffer.  Unused by the
@@ -11616,6 +11617,7 @@ explicitly instead, see the section header comment above); kept so
   (when (boundp 'nelisp-buffer--pending-point) (clrhash nelisp-buffer--pending-point))
   (when (boundp 'nelisp-buffer--blen-cache) (clrhash nelisp-buffer--blen-cache))
   (when (boundp 'nelisp-buffer--size-cache) (clrhash nelisp-buffer--size-cache))
+  (setq nelisp-buffer--order nil)
   (setq nelisp-buffer--current nil))
 
 (defun nelisp-generate-new-buffer (name)
@@ -11628,6 +11630,7 @@ explicitly instead, see the section header comment above); kept so
       (setq final (format "%s<%d>" base count)))
     (let ((buf (nelisp-buffer--make :name final)))
       (puthash final buf nelisp-buffer--registry)
+      (setq nelisp-buffer--order (cons buf nelisp-buffer--order))
       buf)))
 
 (defun nelisp-get-buffer-create (name)
@@ -11635,6 +11638,7 @@ explicitly instead, see the section header comment above); kept so
   (or (gethash name nelisp-buffer--registry)
       (let ((buf (nelisp-buffer--make :name name)))
         (puthash name buf nelisp-buffer--registry)
+        (setq nelisp-buffer--order (cons buf nelisp-buffer--order))
         buf)))
 
 (defun nelisp-get-buffer (name)
@@ -11695,6 +11699,7 @@ actually at point."
   (let ((name (nelisp-buffer-name buf)))
     (when (gethash name nelisp-buffer--registry)
       (remhash name nelisp-buffer--registry)
+      (setq nelisp-buffer--order (delq buf nelisp-buffer--order))
       (remhash buf nelisp-buffer--text-cache)
       (remhash buf nelisp-buffer--tick)
       (remhash buf nelisp-buffer--pending-point)
@@ -11705,10 +11710,23 @@ actually at point."
       t)))
 
 (defun nelisp-buffer-list ()
-  "Return a list of live NeLisp buffers."
-  (let (result)
-    (maphash (lambda (_ buf) (push buf result))
-             nelisp-buffer--registry)
+  "Return a list of live NeLisp buffers, oldest first (see
+`nelisp-buffer--order')."
+  (let ((result nil) (n 0) (tail nelisp-buffer--order))
+    ;; Pushing turns the newest-first order list around.  A buffer whose
+    ;; name no longer maps to it left the registry some other way.
+    (while tail
+      (let ((buf (car tail)))
+        (when (eq (gethash (nelisp-buffer-name buf) nelisp-buffer--registry) buf)
+          (setq result (cons buf result) n (1+ n))))
+      (setq tail (cdr tail)))
+    ;; A buffer registered other than through the constructors above still
+    ;; belongs in the list: after the ordered ones, in bucket order.
+    (unless (= n (hash-table-count nelisp-buffer--registry))
+      (let ((extra nil))
+        (maphash (lambda (_ buf) (unless (memq buf result) (push buf extra)))
+                 nelisp-buffer--registry)
+        (setq result (append result (nreverse extra)))))
     result))
 
 (defun nelisp-current-buffer ()
