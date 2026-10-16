@@ -7340,19 +7340,42 @@ argument (reachability + in-arena bounds checks).")
                                         (wf_write_nil nilbox)
                                         (if (> from to-raw)
                                             (bf_args_out_of_range3 s from-box to-box)
-                                          (let* ((cf-byte (nl_str_sub_byte_off s nb from))
-                                                 (ct-byte (nl_str_sub_byte_off s nb to-raw)))
+                                          ;; A string whose cached char count equals its byte
+                                          ;; count is all ASCII (`nl_str_charlen' counts every
+                                          ;; byte that is not a continuation byte), so its char
+                                          ;; indices are byte offsets and it is observably
+                                          ;; unibyte unless forced multibyte.  Both used to
+                                          ;; walk the string on every call, whatever the slice
+                                          ;; length: the cursor from wherever it was cached, and
+                                          ;; `m5_observably_unibyte_p' over every byte, twice --
+                                          ;; 17 ms for 512 bytes of a 246 KB source, which is
+                                          ;; how `load' slices a file for the reader.
+                                          (let* ((ascii (if (= (nl_str_charlen_c s) nb) 1 0))
+                                                 (cf-byte (if (= ascii 1)
+                                                              (if (> from nb) -1 from)
+                                                            (nl_str_sub_byte_off s nb from)))
+                                                 (ct-byte (if (= ascii 1)
+                                                              (if (> to-raw nb) -1 to-raw)
+                                                            (nl_str_sub_byte_off s nb to-raw)))
+                                                 (uni (if (= ascii 1)
+                                                          (- 1 (m5_forced_multibyte_p s))
+                                                        0)))
                                             (if (if (< cf-byte 0) 1 (if (< ct-byte 0) 1 0))
                                                 (bf_args_out_of_range3 s from-box to-box)
-                                              (seq (m5_make_builder ms 16
-                                                     (m5_observably_unibyte_p s))
+                                              (seq (m5_make_builder ms 16 uni)
                                                    (m5_push_str_bytes ms s cf-byte ct-byte)
-                                                   (m5_finish_string ms out
-                                                     (- 1 (m5_observably_unibyte_p s))) 0)))))
+                                                   (m5_finish_string ms out (- 1 uni)) 0)))))
                                      (let* ((clen (m5_length s))
                                             (to (if (= has-to 1) to-raw clen))
                                             (cf (if (< from 0) (+ clen from) from))
-                                            (ct (if (< to 0) (+ clen to) to)))
+                                            (ct (if (< to 0) (+ clen to) to))
+                                            ;; The fast path's shortcut, for a string of any
+                                            ;; tag: char count = byte count means char
+                                            ;; indices are byte offsets and no byte needs
+                                            ;; scanning.  Other arrays keep the walks below.
+                                            (direct (if (= (m5_string_tag_p (ptr-read-u64 s 0)) 1)
+                                                        (if (= clen nb) 1 0)
+                                                      0)))
                                        (seq
                                         (wf_write_nil nilbox)
                                         (if (if (< cf 0) 1
@@ -7360,18 +7383,23 @@ argument (reachability + in-arena bounds checks).")
                                                 (if (< ct 0) 1
                                                   (if (> ct clen) 1 (if (> cf ct) 1 0)))))
                                            (bf_args_out_of_range3 s from-box to-box)
-                                         (seq (m5_make_builder
-                                               ms 16 (m5_observably_unibyte_p s))
-                                              ;; CF/CT are CHAR indices -> byte offsets
-                                              (m5_push_str_bytes ms s
-                                                (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
-                                                    cf
-                                                  (nl_u8_cidx_byte s 0 nb 0 cf))
-                                                (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
-                                                    ct
-                                                  (nl_u8_cidx_byte s 0 nb 0 ct)))
-                                              (m5_finish_string ms out
-                                                (- 1 (m5_observably_unibyte_p s))) 0)))))))
+                                         (let* ((uni (if (= direct 1)
+                                                         (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
+                                                             1
+                                                           (- 1 (m5_forced_multibyte_p s)))
+                                                       (m5_observably_unibyte_p s))))
+                                           (seq (m5_make_builder ms 16 uni)
+                                                ;; CF/CT are CHAR indices -> byte offsets
+                                                (m5_push_str_bytes ms s
+                                                  (if (= direct 1) cf
+                                                    (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
+                                                        cf
+                                                      (nl_u8_cidx_byte s 0 nb 0 cf)))
+                                                  (if (= direct 1) ct
+                                                    (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
+                                                        ct
+                                                      (nl_u8_cidx_byte s 0 nb 0 ct))))
+                                                (m5_finish_string ms out (- 1 uni)) 0))))))))
                           (bf_wrong_type_integerp (wf_arg_ptr args 1)))))
     ((:lit "format")           . (let* ((ms (alloc-bytes 32 8))
                                         (fmt (wf_arg_ptr args 0))
