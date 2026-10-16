@@ -17548,16 +17548,23 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
             (let ((r (nelisp--rd-one s (+ i 2) n))) (cons (list (intern ",@") (car r)) (cdr r)))
           (let ((r (nelisp--rd-one s (1+ i) n))) (cons (list (intern ",") (car r)) (cdr r)))))
        ((= c 63) ; ? -- shared escape policy, without string modifier folding.
+        ;; GNU `read_char_literal': `? ' and `?<TAB>' are 32 and 9 with no
+        ;; check of what follows (rx writes `(? blank)'), and any other
+        ;; literal must be followed by a control character, a space or one of
+        ;; " ' ; ( ) [ ] # ? ` , . -- else (invalid-read-syntax "?").
         (when (>= (1+ i) n) (signal 'end-of-file nil))
-        (let* ((escaped (= (aref s (1+ i)) 92))
-               (r (if escaped
-                      (nelisp--rd-modified-string-escape s (+ i 2) n)
-                    (list (aref s (1+ i)) 0 nil (+ i 2))))
-               (next (nth 3 r)))
-          (when (and (< next n)
-                     (not (memq (aref s next) '(9 10 13 32 40 41 91 93 34 39 59 96 44))))
-            (signal 'invalid-read-syntax (list "Invalid character literal")))
-          (cons (logior (nth 0 r) (nth 1 r)) next)))
+        (if (memq (aref s (1+ i)) '(32 9))
+            (cons (aref s (1+ i)) (+ i 2))
+          (let* ((escaped (= (aref s (1+ i)) 92))
+                 (r (if escaped
+                        (nelisp--rd-modified-string-escape s (+ i 2) n)
+                      (list (aref s (1+ i)) 0 nil (+ i 2))))
+                 (next (nth 3 r)))
+            (when (and (< next n)
+                       (> (aref s next) 32)
+                       (not (memq (aref s next) '(34 39 59 40 41 91 93 35 63 96 44 46))))
+              (signal 'invalid-read-syntax (list "?")))
+            (cons (logior (nth 0 r) (nth 1 r)) next))))
        ((= c 35) ; #
          (cond
           ;; `#[...]' byte-code closure.  Validate the GNU reader's six-slot

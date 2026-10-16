@@ -613,21 +613,37 @@
                       (mut-str-push-byte scratch (+ 128 (logand code 63))))))
              (nelisp_reader_string_body src next n scratch))))))
 
+    ;; What may follow a character literal, as in GNU `read_char_literal':
+    ;; any byte up to 32 (controls and space), or one of
+    ;; " ' ; ( ) [ ] # ? ` , .  This is wider than `nelisp_reader_is_atom_term'
+    ;; (`?a?b', `?a.b' and `?a#' are valid).
+    (defun nelisp_reader_is_char_delim (b)
+      (if (<= b 32) 1
+        (if (or (= b 35) (= b 63) (= b 46)) 1
+          (nelisp_reader_is_atom_term b))))
+
     (defun nelisp_reader_char_body (str-ptr cursor n scratch)
       (if (>= cursor n) -1
+        ;; `? ' and `?<TAB>' are 32 and 9 whatever follows: GNU accepts the
+        ;; "single space" syntax of `(list ? x)', and rx writes `(? blank)'.
+        (if (or (= (str-byte-at str-ptr cursor) 32)
+                (= (str-byte-at str-ptr cursor) 9))
+            (nelisp_reader_prog2
+             (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+             (+ cursor 1))
         (let* ((escaped (if (= (str-byte-at str-ptr cursor) 92) 1 0))
                (packed (nelisp_reader_escape_scan
                         str-ptr (+ cursor escaped) n escaped 0 0 0)))
           (if (< packed 0) -1
             (let ((end (/ packed 4294967296)) (at cursor))
               (if (and (< end n)
-                       (= (nelisp_reader_is_atom_term (str-byte-at str-ptr end)) 0))
+                       (= (nelisp_reader_is_char_delim (str-byte-at str-ptr end)) 0))
                   -1
                 (seq
                  (while (< at end)
                    (seq (mut-str-push-byte scratch (str-byte-at str-ptr at))
                         (setq at (+ at 1))))
-                 end)))))))
+                 end))))))))
 
     (defun nelisp_reader_lex_char_finalize
         (end-or-err payload-slot cursor-out-slot scratch)
@@ -1263,17 +1279,18 @@
     ;; ===========================================================
 
     ;; ===========================================================
-    ;; `?'-dispatcher.  Emacs reader compat: bare `?' (= followed by
-    ;; whitespace OR EOF) is the symbol named `?'.  Otherwise the byte
-    ;; is the start of a char literal body (= kind 24).
+    ;; `?'-dispatcher.  The byte after `?' starts a char literal body
+    ;; (= kind 24); a bare `?' at EOF is an error, as in GNU.
     ;; ===========================================================
 
     (defun nelisp_reader_lex_question
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
       (if (>= (+ cursor 1) n)
-          ;; Bare `?' at EOF -> symbol `?'.
-          (nelisp_reader_lex_atom
-           str-ptr cursor n payload-slot cursor-out-slot scratch)
+          ;; Bare `?' at EOF is an incomplete literal: GNU signals
+          ;; end-of-file.  The error token declines the form, and the
+          ;; interpreted reader reports it.
+          (nelisp_reader_lex_char
+           str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch)
         ;; `?' followed by ANY character is that character, whitespace
         ;; included: Emacs reads `? ' as 32 and `?' + newline as 10.  This
         ;; used to send whitespace to the atom lexer instead, so `(setq x
