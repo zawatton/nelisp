@@ -11590,8 +11590,14 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   ;; fallback selects its first surviving entry.  Public constructor capacity
   ;; changes must not reorder that fallback.  Policy adoption preserves the
   ;; raw leaf's reservation; public make-hash-table still starts at size zero.
+  ;; The legacy layout is 2048 buckets.  Raw native tables now start at 8
+  ;; and grow (6e41c5ee7), which reordered `buffer-list' and with it the
+  ;; buffer that killing the current one leaves current, so the registry
+  ;; installs its 2048 buckets itself.  The count-driven growth fires only
+  ;; past 4096 buffers.
   (let ((table (nelisp--hash-table-make-raw)))
     (aset (car table) 2 'equal)
+    (setcdr table (make-vector 2048 nil))
     table)
   "Name -> `nelisp-buffer' map.  Ported from src/nelisp-buffer.el.")
 
