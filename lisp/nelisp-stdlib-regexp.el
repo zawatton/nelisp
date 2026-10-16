@@ -558,6 +558,200 @@ return that atom node; else nil."
               (memq (car (car nodes)) '(:lit :any :set :word :space :syntax))
               (car nodes)))))
 
+;; ---- prefilter: cheap rejections before the backtracker ----
+;;
+;; Every backtracker step costs tens of microseconds in the interpreter, so a
+;; pattern that cannot match must be rejected before it runs wherever that is
+;; cheap to prove, as GNU regex.c does with its anchoring and fastmap.  Tramp's
+;; `file-name-handler-alist' regexps start with `\(?:\`/\)' and are tried on
+;; every file name: they were run at every start position, 11-15 ms per call.
+;; The prefilter is (ANCHORED PREFIX REQUIRED):
+;; - ANCHORED: every match starts with \`, so only position 0 can match;
+;; - PREFIX: literal characters an anchored match must start with;
+;; - REQUIRED: characters every match must contain somewhere.
+;; Literals are kept only when case folding cannot change them.
+
+(defun nlre--node-anchored-p (node)
+  "Non-nil when every match of NODE must begin with \\=`."
+  (let ((tag (car node)))
+    (cond ((eq tag :bos) t)
+          ((eq tag :seq) (nlre--nodes-anchored-p (nth 1 node)))
+          ((eq tag :group) (nlre--node-anchored-p (nth 2 node)))
+          ((eq tag :alt)
+           (let ((branches (nth 1 node)) (ok (consp (nth 1 node))))
+             (while (and ok branches)
+               (unless (nlre--nodes-anchored-p (car branches)) (setq ok nil))
+               (setq branches (cdr branches)))
+             ok))
+          (t nil))))
+
+(defun nlre--nodes-anchored-p (nodes)
+  "Non-nil when every match of the node list NODES must begin with \\=`."
+  (and (consp nodes) (nlre--node-anchored-p (car nodes))))
+
+(defun nlre--fold-stable-p (c fold)
+  "Non-nil when character C matches only itself under FOLD.
+Folding, that is an ASCII non-letter.  Above ASCII the case tables
+decide, and a character can be the fold of another without folding to
+it: C's own upcase and downcase being C proves nothing about the
+characters that downcase to C."
+  (or (not fold)
+      (and (< c 128)
+           (not (and (>= c ?a) (<= c ?z)))
+           (not (and (>= c ?A) (<= c ?Z))))))
+
+(defun nlre--anchored-prefix (nodes fold)
+  "Split an anchored NODES into (PREFIX-CHARS . REST-NODES).
+PREFIX-CHARS are the literal characters every match starts with; leading
+groups whose body is a sequence are opened, and collection stops at the
+first node that is not \\=` or a fold-stable literal.  REST-NODES are the
+nodes that consume everything after the prefix."
+  (let ((out nil) (todo nodes) (done nil))
+    (while (and todo (not done))
+      (let* ((nd (car todo)) (tag (car nd)))
+        (cond ((eq tag :bos) (setq todo (cdr todo)))
+              ((and (eq tag :lit) (nlre--fold-stable-p (nth 1 nd) fold))
+               (setq out (cons (nth 1 nd) out) todo (cdr todo)))
+              ((eq tag :seq) (setq todo (append (nth 1 nd) (cdr todo))))
+              ((and (eq tag :group) (eq (car (nth 2 nd)) :seq))
+               (setq todo (append (nth 1 (nth 2 nd)) (cdr todo))))
+              (t (setq done t)))))
+    (cons (nreverse out) todo)))
+
+(defun nlre--node-ends-eos-p (node)
+  "Non-nil when every match of NODE ends with \\='."
+  (let ((tag (car node)))
+    (cond ((eq tag :eos) t)
+          ((eq tag :seq) (nlre--nodes-end-eos-p (nth 1 node)))
+          ((eq tag :group) (nlre--node-ends-eos-p (nth 2 node)))
+          ((eq tag :alt)
+           (let ((branches (nth 1 node)) (ok (consp (nth 1 node))))
+             (while (and ok branches)
+               (unless (nlre--nodes-end-eos-p (car branches)) (setq ok nil))
+               (setq branches (cdr branches)))
+             ok))
+          (t nil))))
+
+(defun nlre--nodes-end-eos-p (nodes)
+  (and (consp nodes) (nlre--node-ends-eos-p (car (last nodes)))))
+
+;; Prefilter probes cost one `string-search' each.  A loop over the
+;; subject's characters cost the byte-code VM about 170 us a character, ten
+;; times the backtracker's work it was meant to save on tramp's file names.
+(defconst nlre--probe-chars "/ .\n-_:\t"
+  "Characters tested as prefilter probes, the ones most common in file
+names and text first.")
+
+(defun nlre--atoms (node)
+  "The atoms of NODE that consume a character, or t when NODE holds a back
+reference, whose text no atom describes, or a node this does not know."
+  (let ((tag (car node)))
+    (cond
+     ((memq tag '(:bos :eos :bol :eol :wordb :wordedge :symedge)) nil)
+     ((memq tag '(:lit :any :set :word :space :syntax)) (list node))
+     ((memq tag '(:seq :alt :group :star :plus :opt :lazystar :lazyplus :lazyopt))
+      (let ((children (cond ((eq tag :seq) (nth 1 node))
+                            ((eq tag :alt) (apply #'append (nth 1 node)))
+                            ((eq tag :group) (list (nth 2 node)))
+                            (t (list (nth 1 node)))))
+            (out nil))
+        (while (and children (not (eq out t)))
+          (let ((sub (nlre--atoms (car children))))
+            (setq out (if (eq sub t) t (append sub out))))
+          (setq children (cdr children)))
+        out))
+     (t t))))
+
+(defun nlre--forbidden-probes (nodes fold)
+  "Up to three of `nlre--probe-chars' that no atom of NODES consumes, as
+one-character strings; nil when NODES' atoms are not all known.  Each
+atom is tested with the matcher's own `nlre--match-atom1', so case
+folding applies exactly."
+  (let ((atoms nil) (unknown nil))
+    (dolist (x nodes)
+      (let ((a (nlre--atoms x)))
+        (if (eq a t) (setq unknown t) (setq atoms (append a atoms)))))
+    (unless unknown
+      (let ((nlre--fold fold) (nlre--match-end-limit nil)
+            (probes nil) (i 0) (n (length nlre--probe-chars)))
+        (while (and (< i n) (< (length probes) 3))
+          (let ((s (char-to-string (aref nlre--probe-chars i))) (as atoms) (ok nil))
+            (while (and as (not ok))
+              (when (nlre--match-atom1 (car as) s 0 1) (setq ok t))
+              (setq as (cdr as)))
+            (unless ok (setq probes (cons s probes))))
+          (setq i (1+ i)))
+        (nreverse probes)))))
+
+(defun nlre--char-intersection (a b)
+  (let ((out nil))
+    (dolist (c a) (when (memq c b) (setq out (cons c out))))
+    out))
+
+(defun nlre--required-chars (node fold)
+  "Fold-stable characters every match of NODE contains, as a list."
+  (let ((tag (car node)))
+    (cond
+     ((eq tag :lit)
+      (and (nlre--fold-stable-p (nth 1 node) fold) (list (nth 1 node))))
+     ((eq tag :seq)
+      (let ((acc nil))
+        (dolist (x (nth 1 node))
+          (dolist (c (nlre--required-chars x fold))
+            (unless (memq c acc) (setq acc (cons c acc)))))
+        acc))
+     ((eq tag :alt)
+      (let ((branches (nth 1 node)) (acc nil) (first t))
+        (while branches
+          (let ((r (nlre--required-chars (list :seq (car branches)) fold)))
+            (setq acc (if first r (nlre--char-intersection acc r)) first nil))
+          (setq branches (if acc (cdr branches) nil)))
+        acc))
+     ((eq tag :group) (nlre--required-chars (nth 2 node) fold))
+     ((memq tag '(:plus :lazyplus)) (nlre--required-chars (nth 1 node) fold))
+     (t nil))))
+
+(defun nlre--prefilter (ast fold)
+  "Return (ANCHORED PREFIX REQUIRED PROBES) for AST, or nil when none applies.
+PROBES is set only for patterns anchored at both ends (\\=` ... \\='): a
+match then spans the whole string, so any character after PREFIX that no
+remaining atom consumes rules the string out.  PROBES lists up to three
+such characters (`nlre--forbidden-probes')."
+  (let* ((nodes (nlre--seq-nodes ast))
+         (anchored (nlre--nodes-anchored-p nodes))
+         (split (and anchored (nlre--anchored-prefix nodes fold)))
+         (prefix (car split))
+         (probes (and anchored (nlre--nodes-end-eos-p nodes)
+                      (nlre--forbidden-probes (cdr split) fold)))
+         (required (nlre--required-chars ast fold)))
+    (dolist (c prefix) (setq required (delq c required)))
+    (and (or anchored required)
+         (list anchored (and prefix (apply #'string prefix))
+               (mapcar #'char-to-string required)
+               probes))))
+
+(defun nlre--prefilter-reject-p (pre string i n)
+  "Non-nil when prefilter PRE proves no match of STRING starts at or after I."
+  (or (and (car pre)
+           (or (> i 0)
+               (let* ((prefix (nth 1 pre)) (k (length prefix)) (bad (> k n)))
+                 (while (and (not bad) (> k 0))
+                   (setq k (1- k))
+                   (unless (eq (aref prefix k) (aref string k)) (setq bad t)))
+                 bad)))
+      (let ((required (nth 2 pre)) (miss nil))
+        (while (and required (not miss))
+          (unless (string-search (car required) string i) (setq miss t))
+          (setq required (cdr required)))
+        miss)
+      ;; Only a pattern anchored at both ends has probes, and it reaches
+      ;; here with I = 0 and its prefix matched.
+      (let ((probes (nth 3 pre)) (k (length (nth 1 pre))) (hit nil))
+        (while (and probes (not hit))
+          (when (string-search (car probes) string k) (setq hit t))
+          (setq probes (cdr probes)))
+        hit)))
+
 (defun nlre--compile-pattern (pat fold)
   (let* ((ast (nlre--parse pat)) (ng (1+ nlre--gcount))
          (literal (nlre--literal-text ast))
@@ -566,7 +760,8 @@ return that atom node; else nil."
             (cond
              (literal (vector :literal (nlre--fold-text literal fold) fold))
              (atom (vector :atom atom))
-             (t (nlre--suffix-plan ast ng fold))))))
+             (t (nlre--suffix-plan ast ng fold)))
+            (and (not literal) (not atom) (nlre--prefilter ast fold)))))
 
 ;; ---- matcher (no closures; rest threaded explicitly) ----
 
@@ -963,12 +1158,21 @@ of STRING.  Sets `nlre--match-data' as usual."
       (when hit (aset caps 0 (cons hit (1+ hit)))))
      (t
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
+             (pre (and (> (length compiled) 3) (aref compiled 3)))
              (lead (nlre--leading-lit-char top))
              (lead (and lead (nlre--fold-char lead)))
              (req-atom (and (not lead) (nlre--leading-required-atom top))))
         (when (or lead req-atom)
           (setq nlre--leading-filter-calls (1+ nlre--leading-filter-calls)))
         (cond
+         ((and pre (nlre--prefilter-reject-p pre string i n)) nil)
+         ;; Anchored by \` (also inside leading groups): only position 0.
+         ((and pre (car pre))
+          (when (> ng 1) (nlre--caps-clear caps))
+          (let ((e (nlre--match-list top string 0 n)))
+            (when e
+              (aset caps 0 (cons 0 e))
+              (setq hit 0))))
          (lead
           (while (and (not hit) (< i limit))
             (if (not (eq (nlre--fold-char (aref string i)) lead))

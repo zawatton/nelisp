@@ -452,5 +452,90 @@ char), only the flipped case, or no match exists at all."
       (should (= (point) 2))
       (should (eq nlre--last-caps 'saved-match-data)))))
 
+(defun nelisp-regexp-diff-tramp-regexps ()
+  "Tramp's `file-name-handler-alist' regexps from the host Emacs, or nil.
+These are the prefilter's motivating case: tried on every file name."
+  (when (require 'tramp nil t)
+    (delq nil (mapcar (lambda (handler)
+                        (car (rassq handler file-name-handler-alist)))
+                      '(tramp-file-name-handler tramp-completion-file-name-handler
+                        tramp-archive-file-name-handler)))))
+
+(defun nelisp-regexp-diff--groups (n)
+  (let ((out nil) (k 0))
+    (while (<= k n)
+      (push (list (ignore-errors (match-beginning k)) (ignore-errors (match-end k))) out)
+      (setq k (1+ k)))
+    (nreverse out)))
+
+(defun nelisp-regexp-diff--mine-groups (n)
+  (let ((out nil) (k 0))
+    (while (<= k n)
+      (push (list (nlre-match-beginning k) (nlre-match-end k)) out)
+      (setq k (1+ k)))
+    (nreverse out)))
+
+(ert-deftest nelisp-regexp-prefilter-matches-host ()
+  "Anchoring found inside leading groups, the anchored literal prefix and the
+required-character prefilter must agree with host `string-match': on the
+start index, on every group span, with START, and under case folding."
+  (let ((cases
+         (list
+          ;; \` inside leading groups and alternations, and a mixed alternation
+          ;; that must not be treated as anchored.
+          '("\\(?:\\`/\\)x" "/x") '("\\(?:\\`/\\)x" "a/x") '("\\(\\`a\\)b" "ab")
+          '("\\(\\`a\\)b" "aab") '("\\(?:\\`a\\|\\`b\\)c" "bc") '("\\(?:\\`a\\|\\`b\\)c" "cbc")
+          '("\\(?:\\`a\\|b\\)c" "xbc") '("\\`\\(ab\\)" "ab") '("\\(?:\\(?:\\`\\)ab\\)" "xab")
+          '("\\(?:\\`/ssh:\\)" "/tmp/no-such-file-x.el") '("\\(?:\\`/ssh:\\)" "/ssh:host")
+          ;; Required characters, including through alternations and options.
+          '("a:b" "xa:by") '("a:b" "xab") '("x:\\|y:" "zy:") '("x:\\|y:" "zy;")
+          '("x:\\|y" "zy") '("a\\(:\\)?b" "ab") '("a\\(?::\\)+b" "a::b") '("a\\(?::\\)+b" "ab")
+          '("[:]x" "y:x") '("\\(:\\)\\{2\\}" "a::") '("\\(:\\)\\{0,2\\}x" "x")
+          ;; Anchored at both ends: a probe character (/, space, newline, ...)
+          ;; after the literal prefix that no remaining atom consumes rules the
+          ;; string out; a back reference disables the probes.
+          '("\\`/[a-z]+\\'" "/abc") '("\\`/[a-z]+\\'" "/ab/c") '("\\`/[a-z]+\\'" "/abC")
+          '("\\`a\\(b\\|c\\)*\\'" "abcbc") '("\\`a\\(b\\|c\\)*\\'" "abd")
+          '("\\`a[B-D]+\\'" "Abcd") '("\\`\\(/\\)a\\1\\'" "/a/") '("\\`\\(/\\)a\\1\\'" "/ab")
+          '("\\`[a-z]+\\'" "ab\u00e9") '("\\`[^/]+\\'" "\u00e9t\u00e9") '("\\`.*\\'" "a\nb")
+          '("\\`x\\w+\\'" "xab_c") '("\\`x\\s-*\\'" "x  ") '("\\(?:\\`/\\|\\`~\\)[a-z]*\\'" "~ab")
+          '("\\(?:\\`/\\|\\`~\\)[a-z]*\\'" "~a/b") '("\\`\\(?:ab\\)?\\'" "") '("\\`\\'" "")
+          '("\\`a[^ ]*\\'" "ab c") '("\\`a[^ ]*\\'" "ab/c") '("\\`ab\\'" "ab/")
+          '("\\`a\\(?:/\\|x\\)*\\'" "a/x/") '("\\`a[[:alpha:]-]*\\'" "a-b_c"))))
+    (dolist (cs cases)
+      (dolist (fold '(nil t))
+        (dolist (start (if (> (length (cadr cs)) 0) '(nil 1) '(nil)))
+          (let* ((case-fold-search fold) (p (car cs)) (s (cadr cs))
+                 (ref (string-match p s start))
+                 (ref-groups (and ref (nelisp-regexp-diff--groups 2)))
+                 (mine (nlre-string-match p s start))
+                 (mine-groups (and mine (nelisp-regexp-diff--mine-groups 2))))
+            (should (equal (list p s fold start ref ref-groups)
+                           (list p s fold start mine mine-groups))))))))
+  ;; Case folding: a letter prefix may not be used literally, nor a
+  ;; character above ASCII, which can be the fold of another (ẞ -> ß).
+  (let ((case-fold-search t))
+    (dolist (c '(("\\`\u00dfx" "\u1e9ex") ("\u00df:" "a\u1e9e:") ("\\`\u1e9e" "\u00df")
+                 ("\\`\u212a" "k") ("k:" "\u212a:")))
+      (should (equal (list c (string-match (car c) (cadr c)))
+                     (list c (nlre-string-match (car c) (cadr c)))))))
+  (let ((case-fold-search t))
+    (should (equal (string-match "\\(?:\\`Ab\\)c" "abc") (nlre-string-match "\\(?:\\`Ab\\)c" "abc")))
+    (should (equal (string-match "\\(?:\\`ab\\)c" "ABC") (nlre-string-match "\\(?:\\`ab\\)c" "ABC")))
+    (should (equal (string-match "Q:\\|q;" "xq:") (nlre-string-match "Q:\\|q;" "xq:"))))
+  ;; Tramp's handlers on the file names `find-file-name-handler' sees.
+  (dolist (re (nelisp-regexp-diff-tramp-regexps))
+    (dolist (s '("/tmp/no-such-file-x.el" "/ssh:host:/path" "/ssh:user@host:/path"
+                 "/sudo::/etc/hosts" "/ssh:a|sudo:b:/x" "/-:host:/x" "/" "/ssh" "/ssh:"
+                 "/method:" "/ssh:host" "relative/path" "" "/x:y" "/ssh:host#22:/p"
+                 "/ssh:[::1]:/p" "~/file" "/home/user/.emacs.d/elpa/x.el"))
+      (dolist (fold '(nil t))
+        (let* ((case-fold-search fold)
+               (ref (string-match re s))
+               (ref-groups (and ref (nelisp-regexp-diff--groups 5)))
+               (mine (nlre-string-match re s))
+               (mine-groups (and mine (nelisp-regexp-diff--mine-groups 5))))
+          (should (equal (list s fold ref ref-groups) (list s fold mine mine-groups))))))))
+
 (provide 'nelisp-regexp-diff-test)
 ;;; nelisp-regexp-diff-test.el ends here
