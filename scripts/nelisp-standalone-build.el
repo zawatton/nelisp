@@ -20648,18 +20648,59 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (and (>= byte 65) (<= byte 70))
             1
           (if (and (>= byte 97) (<= byte 102)) 1 0))))
-    ;; Return 0 for a string escape whose native lexer intentionally supports
-    ;; only a smaller bootstrap spelling than GNU read-from-string.  The
-    ;; interpreted fallback owns the complete GNU escape table.
+    (defun bf_read_one_hex_value (byte)
+      (if (and (>= byte 48) (<= byte 57)) (- byte 48)
+        (if (and (>= byte 65) (<= byte 70)) (- byte 55)
+          (- byte 87))))
+    ;; 1 when a hex run starts at AT with exactly EXACT digits (any nonempty
+    ;; run when EXACT is 0) and a value of at most MAXVAL.  The lexer's shared
+    ;; escape scanner (`nelisp_reader_escape_numeric') decodes the same
+    ;; spellings; this only keeps out what it would refuse.
+    (defun bf_read_one_hex_run_ok (src at end exact maxval)
+      (let* ((i at) (v 0) (ok 1) (more 1))
+        (seq
+         (while (= more 1)
+           (if (>= i end) (setq more 0)
+             (if (= (bf_read_one_hex_p (m5_byte_at src i)) 0) (setq more 0)
+               (if (and (> exact 0) (>= (- i at) exact)) (setq more 0)
+                 (seq (setq v (+ (* v 16) (bf_read_one_hex_value (m5_byte_at src i))))
+                      (if (> v maxval) (seq (setq ok 0) (setq more 0)) 0)
+                      (setq i (+ i 1)))))))
+         (if (= ok 0) 0
+           (if (= i at) 0
+             (if (and (> exact 0) (< (- i at) exact)) 0 1))))))
+    ;; Index just past a nonempty hex run at AT (AT itself when empty).
+    (defun bf_read_one_hex_run_end (src at end)
+      (let* ((i at))
+        (seq
+         (while (if (< i end) (= (bf_read_one_hex_p (m5_byte_at src i)) 1) 0)
+           (setq i (+ i 1)))
+         i)))
+    ;; Return 0 for a string escape whose native lexer does not implement
+    ;; GNU's spelling.  The interpreted fallback owns the complete GNU escape
+    ;; table.  The lexer decodes \\u, \\U, \\N{U+X} and hex runs of any length
+    ;; (R2 shared escape scanner); this predicate admitted only two-digit \\x
+    ;; until 2026-10-17, which sent every icon-font data file (nerd-icons,
+    ;; all-the-icons: one quoted alist of \\xF0A86-style strings per file) to
+    ;; the interpreted reader.
     (defun bf_read_one_string_escape_supported_p (src at end)
       (if (>= at end)
           0
         (let* ((esc (m5_byte_at src at)))
           (cond
-           ;; Unicode/name and Meta escapes are decoded by nelisp--rd-*.
-           ((= esc 117) 0)             ; \\u
-           ((= esc 85) 0)              ; \\U
-           ((= esc 78) 0)              ; \\N
+           ((= esc 117) (bf_read_one_hex_run_ok src (+ at 1) end 4 1114111))  ; \\u
+           ((= esc 85) (bf_read_one_hex_run_ok src (+ at 1) end 8 1114111))   ; \\U
+           ;; \\N{U+X}; a character name is decoded by the fallback only.
+           ((= esc 78)
+            (if (and (< (+ at 4) end)
+                     (and (= (m5_byte_at src (+ at 1)) 123)
+                          (and (= (m5_byte_at src (+ at 2)) 85)
+                               (= (m5_byte_at src (+ at 3)) 43))))
+                (let* ((stop (bf_read_one_hex_run_end src (+ at 4) end)))
+                  (if (and (< stop end) (= (m5_byte_at src stop) 125))
+                      (bf_read_one_hex_run_ok src (+ at 4) end 0 1114111)
+                    0))
+              0))
            ((= esc 77) 0)              ; \\M-
            ;; \S-/\H-/\A- (shift/hyper/alt) are not implemented by the
            ;; bootstrap decoder at all -- it silently drops the backslash
@@ -20669,20 +20710,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
            ((= esc 83) 0)              ; \\S-
            ((= esc 72) 0)              ; \\H-
            ((= esc 65) 0)              ; \\A-
-           ;; Native consumes exactly two hex digits; GNU consumes the whole
-           ;; nonempty hex run.
-           ((= esc 120)
-            (if (>= (+ at 2) end)
-                0
-              (if (= (bf_read_one_hex_p (m5_byte_at src (+ at 1))) 0)
-                  0
-                (if (= (bf_read_one_hex_p (m5_byte_at src (+ at 2))) 0)
-                    0
-                  (if (and (< (+ at 3) end)
-                           (= (bf_read_one_hex_p
-                               (m5_byte_at src (+ at 3))) 1))
-                      0
-                    1)))))
+           ;; GNU consumes the whole nonempty hex run, as the lexer does; it
+           ;; signals above #x3FFFFF and reads #x3FFF80..#x3FFFFF as raw bytes
+           ;; (a unibyte string), which the lexer would encode as characters.
+           ((= esc 120) (bf_read_one_hex_run_ok src (+ at 1) end 0 4194175))
            ;; The bootstrap decoder folds ANY control target with a blind
            ;; `& 31' -- correct for GNU's actual foldable ranges (`@'-`_'
            ;; and `a'-`z', which is exactly where `byte & 31' agrees with
