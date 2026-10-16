@@ -69,12 +69,13 @@ for unit in ('f1b-one', 'f1b-zero', 'f1b-six'):
 # Iteration 2: without F1_FORCE_GC the load failed deterministically in 21 s with
 # void-function (nil); with it, it passed.  Discriminate the mechanism.
 NOGC = dict(F1B_PHASE='load', F1_FORCE_GC=None)
+# Iteration 3: the nogc failure is deterministic but vanishes with any env
+# padding or the checked allocator (layout-dependent).  Toggle mechanisms.
+WRAP = 'test/diag-f1b-wrap.el'
 go('load-nogc', DRIVER, NOGC)
-go('load-nogc-2', DRIVER, NOGC)
-go('raw-nogc', 'test/diag-native-startup.el', dict(NOGC, DIAG_MODE='raw'))
-go('load-nogc-check', DRIVER, dict(NOGC, NELISP_ALLOC_CHECK='1'))
-go('raw-nogc-check', 'test/diag-native-startup.el', dict(NOGC, DIAG_MODE='raw', NELISP_ALLOC_CHECK='1'))
-for pad in (64, 512, 4096):
+go('wrap-none', WRAP, dict(NOGC, DIAG_WRAP=''))
+go('wrap-nomidform', WRAP, dict(NOGC, DIAG_WRAP='nomidform'))
+go('wrap-nomxcache', WRAP, dict(NOGC, DIAG_WRAP='nomxcache'))
+go('wrap-threshold', WRAP, dict(NOGC, DIAG_WRAP='threshold'))
+for pad in (8, 16, 24, 32, 40, 48, 56):
     go('load-nogc-pad%d' % pad, DRIVER, dict(NOGC, DIAG_PAD='x' * pad))
-go('load-nogc-threshold', 'test/diag-f1b-wrap.el', dict(NOGC, DIAG_WRAP='threshold'))
-go('load-gc1-check', DRIVER, dict(F1B_PHASE='load', NELISP_ALLOC_CHECK='1'))
