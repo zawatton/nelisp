@@ -1,0 +1,106 @@
+#+TITLE: NeLisp is fast enough for nelisp-autocad's SVG tokenizer
+#+NOTE: Objective: dev/nelisp-autocad can tokenize its single-line-diagram SVGs
+#+NOTE: (0.7-9 MB Inkscape output) in pure NeLisp.  Source of the targets:
+#+NOTE: Notes handoff/nelisp-autocad-perf_dev-nelisp_2026-10-17.md (Windows session).
+#+NOTE: Started 2026-10-17 on the ccore runtime line (b1d256295).  The handoff
+#+NOTE: measured older main binaries; re-measured here, the evaluator base cost,
+#+NOTE: macro re-expansion, string-search and string= complaints were already
+#+NOTE: fixed or nearly so on this line, and those criteria pass as measured.
+#+NOTE: Benches: test/perf/autocad-bench.sh NAME runs one case of
+#+NOTE: test/perf/autocad-bench.el on $AUTOCAD_PERF_BIN (a built nelisp), 120 s
+#+NOTE: bound, against target/perf/inkscape-fixture.svg from
+#+NOTE: test/perf/gen-inkscape-svg.py (2000 paths, 550 texts, 17138 numbers,
+#+NOTE: 709 KB, 16961 lines).  Per-op figures subtract an empty loop.
+#+NOTE: Run checks one at a time with load < 4 and no build running.
+
+* S1 String primitives
+** S1.1 string-to-number of a 15-digit float takes at most 10 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh stn-float
+** S1.2 string-to-number of an exponent float (-1.5e-3) takes at most 10 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh stn-exp
+** S1.3 format "%.4f" takes at most 10 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh format-4f
+** S1.4 string-search for a tab in a 70-char line takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh string-search-70
+** S1.5 string-search missing in 3000 chars takes at most 20 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh string-search-miss-3k
+** S1.6 string= on 8 chars takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh string-equal-8
+** S1.7 substring of 8 chars takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh substring-8
+** S1.8 End to end: every d="" coordinate of the fixture read with string-search and string-to-number in at most 1 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh numbers-fixture
+
+* S2 Buffer primitives
+** S2.1 point in a 1 MB buffer takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh point-1mb
+** S2.2 goto-char across a 1 MB buffer takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh goto-char-1mb
+** S2.3 char-after in a 1 MB buffer takes at most 5 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh char-after-1mb
+** S2.4 buffer-substring of 60 chars takes at most 10 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh buffer-substring-60
+** S2.5 insert of 70 chars into a 1 MB buffer takes at most 20 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh insert-70-1mb
+** S2.6 forward-line over the whole fixture takes at most 1 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh forward-line-fixture
+** S2.7 End to end: search-forward finds every " d=\"" of the fixture in at most 0.5 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh search-forward-fixture
+
+* S3 Regular expressions
+** S3.1 string-match "[0-9]+" in a 70-char line takes at most 20 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh string-match-digits
+** S3.2 split-string of a 70-char line on a tab takes at most 20 us
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh split-string-tab
+** S3.3 re-search-forward "[0-9]+" in a 1 MB buffer takes at most 50 us per match
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh re-search-forward-digits
+** S3.4 End to end: split-string of the whole fixture on newlines takes at most 1 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh split-lines-fixture
+
+* S4 Script environment
+** S4.1 command-line-args-left holds ("--" "a" "b") while a --load file runs, as in GNU 31.1
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: CHECK=args timeout 60 "$AUTOCAD_PERF_BIN" --load test/perf/script-env-check.el -- a b
+** S4.2 copy-file copies, refuses an existing target, and overwrites with OK-IF-ALREADY-EXISTS
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: CHECK=copy-file timeout 60 "$AUTOCAD_PERF_BIN" --load test/perf/script-env-check.el -- a b
+** S4.3 End to end: one script run with both
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: CHECK=all timeout 60 "$AUTOCAD_PERF_BIN" --load test/perf/script-env-check.el -- a b
+
+* S5 Whole tokenizer
+** S5.1 aref over every char of every fixture line takes at most 2 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh aref-lines-fixture
+** S5.2 The tokenizer handles a 2.8 MB fixture (8000 paths, the size of the larger drawings) in at most 20 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh tokenize-fixture-4x
+** S5.3 End to end: the tokenizer extracts all 2000 paths, 550 texts and 17138 numbers of the fixture in at most 5 s
+#+TIMEOUT: 150
+#+REQUIRES: AUTOCAD_PERF_BIN
+cmd: test/perf/autocad-bench.sh tokenize-fixture
