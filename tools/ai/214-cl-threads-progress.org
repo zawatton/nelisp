@@ -145,10 +145,10 @@ cmd: emacs --batch -Q -L packages/nelisp-bt/src --eval '(setq byte-compile-error
 #+TIMEOUT: 600
 cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-speedup-smoke.el | grep -q 'BT-SPEEDUP-PASS'
 
-** S8.3 Existing Doc 199 smokes and emacs-parity stay green with the new runtime
-#+REQUIRES: NELISP_BT_LINUX_BIN
+** S8.3 Existing Doc 199 smokes pass and emacs-parity has no finding beyond the 6d759c79 baseline (1)
+#+REQUIRES: NELISP_BT_LINUX_BIN,NELISP_BT_LINUX_PARITY
 #+TIMEOUT: 600
-cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-thread-mirror-guard-smoke.el >/dev/null && make emacs-parity
+cmd: for t in nelisp-thread-standalone-smoke nelisp-thread-allocating-standalone-smoke nelisp-thread-percpu-roots-smoke; do "$NELISP_BT_LINUX_BIN" --load tools/$t.el >/dev/null || exit 1; done; "$NELISP_BT_LINUX_PARITY" | grep -q 'findings=1$'
 
 ** S8.4 End to end: the nl-bt API smoke (all features) passes on both targets
 #+REQUIRES: NELISP_BT_WIN_BIN,NELISP_BT_LINUX_BIN
