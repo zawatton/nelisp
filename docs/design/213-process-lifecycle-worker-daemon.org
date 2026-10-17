@@ -319,3 +319,33 @@ Found but not fixed here: =setenv= does not reach children started with
 =command-line-args= is empty under =nelisp --load FILE=.  The package works
 around both with bootstrap files; products that spawn NeLisp children with
 settings will hit the same gap.
+
+* §9 Duplicate daemons from a busy one (2026-10-17)
+
+Seen on Windows: three anvil daemons running at once (started 12:44,
+13:19 and 18:56), each listening on its own port at 0.13-0.16 cores,
+while =anvil.state= named only the newest.  Cause, in
+=nelisp-service-client-connect=: a hello unanswered within 10 s returned
+nil, and since the lock's =:started= is never refreshed, any daemon older
+than =stale-after= then looked like crash leftovers.  The client deleted
+its state and lock files and spawned a second daemon.  The first one
+kept running, because no new client could find it any more, and nothing
+told it that it had been replaced.
+
+Fixes:
+1. The client probes the state file's port before clearing anything.  A
+   port that still accepts connections means a busy daemon, so the client
+   waits for it (=nelisp-service-port-in-use-p=, shared with the daemon).
+2. Every =nelisp-service-daemon-superseded-interval= seconds (default 30), the
+   daemon checks whether the state file still names it.  When it does not
+   and the daemon has no connections left, =nelisp-service-daemon-run=
+   returns =superseded=.
+3. =nelisp-service-daemon-close= deletes the state file only when it names
+   the closing daemon.  It deletes the lock only when the lock predates
+   that daemon's start, so an exiting daemon leaves a successor's files alone.
+
+Red/green: =nelisp-service-test-busy-daemon-is-not-replaced= fails on the
+previous sources (the client spawns), and
+=nelisp-service-test-superseded-daemon-exits-and-keeps-files= never returns
+on them.  Both pass with the fix.  The full host ERT (29 tests) and
+=tools/nelisp-service-smoke.sh= (SMOKE-PASS, IDLE-PASS 0.153 cores) pass.

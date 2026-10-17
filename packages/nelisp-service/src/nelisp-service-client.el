@@ -36,6 +36,9 @@
   "When this client library was loaded; sent in the handshake.
 A daemon only lets a client newer than itself replace it.")
 
+(defvar nelisp-service-client-hello-timeout 10
+  "Seconds a client waits for the daemon to answer its hello.")
+
 (defvar nelisp-service-client-spawn-function #'nelisp-service-client-spawn-detached
   "Function of (NAME COMMAND) that starts a daemon process.")
 
@@ -109,7 +112,7 @@ rejection, or nil when nothing answers."
            (lambda () (or (nelisp-service-get client :welcome)
                           (nelisp-service-get client :rejected)
                           (nelisp-service-get client :closed)))
-           10)
+           nelisp-service-client-hello-timeout)
           (cond
            ((nelisp-service-get client :welcome) client)
            (t (condition-case nil (delete-process proc) (error nil))
@@ -153,6 +156,11 @@ Signal an error when no daemon can be reached in time."
                                 (nelisp-service-state-file name "lock"))))
                15)
               (setq spawned-at nil))
+             ((nelisp-service-port-in-use-p (plist-get state :port))
+              ;; Busy, not dead: a daemon in a long handler or a GC pause
+              ;; misses the hello timeout but still accepts connections.
+              ;; Starting another here would orphan it.
+              (accept-process-output nil 0.25))
              ((or (null age) (> age stale-after))
               ;; Nothing answers and no live lock: leftovers of a crash.
               (nelisp-service-delete-file (nelisp-service-state-file name "state"))

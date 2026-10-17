@@ -453,6 +453,18 @@ file is written next to the state files."
 
 ;;; Event loop helper -----------------------------------------------------
 
+(defun nelisp-service-port-in-use-p (port)
+  "Return non-nil when something accepts connections on loopback PORT.
+A daemon busy in a long handler still accepts at the socket level, so
+this tells a busy daemon from a dead one."
+  (condition-case nil
+      (let ((probe (make-network-process
+                    :name "nelisp-service-port-probe" :host "127.0.0.1"
+                    :service port :family 'ipv4 :noquery t)))
+        (delete-process probe)
+        t)
+    (error nil)))
+
 (defun nelisp-service-wait (seconds)
   "Service process I/O for up to SECONDS.
 Return non-nil when some process produced output."

@@ -287,6 +287,50 @@
       (should daemon)
       (nelisp-service-daemon-close daemon))))
 
+;; A daemon that misses the hello timeout but still accepts connections
+;; is busy, not dead: the client must not clear its files and spawn a
+;; second one (Doc 213; three anvil daemons were seen running at once).
+(ert-deftest nelisp-service-test-busy-daemon-is-not-replaced ()
+  (nelisp-service-test--with-state-dir
+    (let* ((port 23000)
+           (mute (make-network-process
+                  :name "nelisp-service-test-mute" :server t :host "127.0.0.1"
+                  :service port :family 'ipv4 :noquery t
+                  :filter #'ignore))
+           (spawned 0)
+           (nelisp-service-client-hello-timeout 0.3)
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command) (setq spawned (1+ spawned)))))
+      (unwind-protect
+          (progn
+            (nelisp-service-write-plist
+             (nelisp-service-state-file "t10" "lock")
+             (list :started (- (float-time) 1000)) t)
+            (nelisp-service-write-plist
+             (nelisp-service-state-file "t10" "state")
+             (list :port port :token "tok" :version "v"))
+            (should-error (nelisp-service-client-connect
+                           "t10" :version "v" :start-command '("x")
+                           :stale-after 1 :timeout 2))
+            (should (= 0 spawned))
+            (should (file-exists-p (nelisp-service-state-file "t10" "state")))
+            (should (file-exists-p (nelisp-service-state-file "t10" "lock"))))
+        (delete-process mute)))))
+
+(ert-deftest nelisp-service-test-superseded-daemon-exits-and-keeps-files ()
+  (nelisp-service-test--with-state-dir
+    (let* ((nelisp-service-daemon-superseded-interval 0.1)
+           (daemon (nelisp-service-daemon-start "t11" :handler #'ignore))
+           (state (nelisp-service-state-file "t11" "state"))
+           (lock (nelisp-service-state-file "t11" "lock")))
+      ;; A newer daemon took over: its lock and state replace ours.
+      (nelisp-service-delete-file lock)
+      (nelisp-service-write-plist lock (list :started (+ (float-time) 5)) t)
+      (nelisp-service-write-plist state (list :port 1 :token "newer"))
+      (should (eq 'superseded (nelisp-service-daemon-run daemon 0.05)))
+      (should (equal "newer" (plist-get (nelisp-service-read-plist state) :token)))
+      (should (file-exists-p lock)))))
+
 (ert-deftest nelisp-service-test-client-autostarts-daemon ()
   (nelisp-service-test--with-state-dir
     (let* ((script (expand-file-name

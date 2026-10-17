@@ -36,7 +36,8 @@
 ;; Lifetime.  `nelisp-service-daemon-run' services connections until
 ;; `nelisp-service-daemon-stop', a `(shutdown)' request, a version
 ;; mismatch when :replace-on-mismatch is set, or :idle-timeout seconds with
-;; no connection.  It returns instead of calling `kill-emacs', because the
+;; no connection, or once its state file names another daemon and its last
+;; connection has closed.  It returns instead of calling `kill-emacs', because the
 ;; standalone reader's `kill-emacs' does not end the process.
 
 ;;; Code:
@@ -48,15 +49,14 @@
   :type '(cons integer integer)
   :group 'nelisp-service)
 
-(defun nelisp-service-daemon--port-in-use-p (port)
-  "Return non-nil when something accepts connections on loopback PORT."
-  (condition-case nil
-      (let ((probe (make-network-process
-                    :name "nelisp-service-port-probe" :host "127.0.0.1"
-                    :service port :family 'ipv4 :noquery t)))
-        (delete-process probe)
-        t)
-    (error nil)))
+(defcustom nelisp-service-daemon-superseded-interval 30
+  "Seconds between checks that the state file still names this daemon.
+A daemon whose state file names another daemon has been replaced; it
+exits once its last connection closes."
+  :type 'number
+  :group 'nelisp-service)
+
+(defalias 'nelisp-service-daemon--port-in-use-p #'nelisp-service-port-in-use-p)
 
 (defun nelisp-service-daemon--candidate-port (name attempt)
   "Return the ATTEMPT-th candidate port for daemon NAME."
@@ -284,31 +284,53 @@ Call `nelisp-service-daemon-run' to serve."
          (null (nelisp-service-get daemon :connections))
          (> (- (float-time) (nelisp-service-get daemon :last-activity)) limit))))
 
+(defun nelisp-service-daemon--owns-state-p (daemon)
+  "Return non-nil when the state file still names DAEMON."
+  (equal (plist-get (nelisp-service-read-plist
+                     (nelisp-service-state-file
+                      (nelisp-service-get daemon :name) "state"))
+                    :token)
+         (nelisp-service-get daemon :token)))
+
 (defun nelisp-service-daemon-run (daemon &optional poll)
   "Serve DAEMON until it stops, then release its port and files.
 POLL is the event-loop interval in seconds (default 0.5).  Return
-the reason: `stopped' or `idle'."
-  (let ((reason nil))
+the reason: `stopped', `idle' or `superseded'."
+  (let ((reason nil)
+        (next-check (+ (float-time) nelisp-service-daemon-superseded-interval)))
     (while (not reason)
       (accept-process-output nil (or poll 0.5))
       (cond
        ((nelisp-service-get daemon :stopped) (setq reason 'stopped))
-       ((nelisp-service-daemon--idle-p daemon) (setq reason 'idle))))
+       ((nelisp-service-daemon--idle-p daemon) (setq reason 'idle))
+       ((< (float-time) next-check))
+       ((progn (setq next-check
+                     (+ (float-time) nelisp-service-daemon-superseded-interval))
+               (or (nelisp-service-get daemon :connections)
+                   (nelisp-service-daemon--owns-state-p daemon))))
+       (t (setq reason 'superseded))))
     ;; Let replies queued by the last handler reach their clients.
     (accept-process-output nil 0.05)
     (nelisp-service-daemon-close daemon)
     reason))
 
 (defun nelisp-service-daemon-close (daemon)
-  "Close DAEMON's sockets and remove its state and lock files."
-  (let ((name (nelisp-service-get daemon :name)))
-    (nelisp-service-delete-file (nelisp-service-state-file name "state"))
+  "Close DAEMON's sockets and remove its state and lock files.
+Files a newer daemon has written are left alone: the state file only
+when it names DAEMON, the lock only when it predates DAEMON's start."
+  (let* ((name (nelisp-service-get daemon :name))
+         (lock (nelisp-service-read-plist (nelisp-service-state-file name "lock")))
+         (own-lock (<= (or (plist-get lock :started) 0)
+                       (nelisp-service-get daemon :started))))
+    (when (nelisp-service-daemon--owns-state-p daemon)
+      (nelisp-service-delete-file (nelisp-service-state-file name "state")))
     (dolist (c (nelisp-service-get daemon :connections))
       (condition-case nil (delete-process (car c)) (error nil)))
     (nelisp-service-put daemon :connections nil)
     (condition-case nil (delete-process (nelisp-service-get daemon :server))
       (error nil))
-    (nelisp-service-delete-file (nelisp-service-state-file name "lock"))
+    (when own-lock
+      (nelisp-service-delete-file (nelisp-service-state-file name "lock")))
     t))
 
 (provide 'nelisp-service-daemon)
