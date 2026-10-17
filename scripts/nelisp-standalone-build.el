@@ -25490,7 +25490,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; leaves that word free after the result at +128..159.  Main evaluation
     ;; uses a dedicated zero-filled BSS word, outside the GC arena.
     (defun nl_ct_head_slot (env)
-      (if (= (nl_thread_registry_find env) 0)
+      (if (= (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
           (data-addr nl_catch_head)
         (+ env 160)))
     ;; Each link is a registered root slot tagged as an integer: payload +8
@@ -39340,7 +39340,7 @@ correctly."
             ;; recover that signal at the worker's catch boundary so it stays
             ;; catchable instead of becoming a stale flag.
             (if (= (ptr-read-u64 268435472 0) 1)
-                (if (= (nl_thread_registry_find env) 0)
+                (if (= (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
                     (nl_cce_clear err_out)
                   (seq (nelisp_cons_construct 268435480 268435512 err_out)
                        1))

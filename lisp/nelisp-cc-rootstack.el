@@ -113,6 +113,10 @@
         (if (= (ptr-read-u64 (nl_thread_registry_entry i) 0) env)
             (nl_thread_registry_entry i)
           (nl_thread_registry_find_from env (+ i 1) count))))
+    ;; Callers test the registry count inline first: with no worker thread
+    ;; registered (the interpreter's normal state) every lookup answers 0, and
+    ;; root reservation alone made 21 of these calls per interpreted defun
+    ;; call.
     (defun nl_thread_registry_find (env)
       (nl_thread_registry_find_from
        env 0 (ptr-read-u64 (data-addr nl_thread_registry) 0)))
@@ -146,7 +150,7 @@
       (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
           0
         (nl_thread_mirror_mutation_guard_registered
-         (nl_thread_registry_find mirror-ptr) name-ptr)))
+         (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find mirror-ptr)) name-ptr)))
     ;; The AOT DSL has no separate atomic-store operation.  A successful
     ;; SeqCst compare-exchange is the required atomic publication store; the
     ;; fetch-add by zero supplies its SeqCst expected value / marker load.
@@ -230,13 +234,13 @@
              1)
           0)))
     (defun nl_thread_park_safepoint (env)
-      (nl_thread_park_safepoint_at (nl_thread_registry_find env)))
+      (nl_thread_park_safepoint_at (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     (defun nl_root_mark_at (env entry)
       (if (= entry 0)
           (ptr-read-u64 (data-addr nl_rootstack_top) 0)
         (ptr-read-u64 env 120)))
     (defun nl_root_mark (env)
-      (nl_root_mark_at env (nl_thread_registry_find env)))
+      (nl_root_mark_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     (defun nl_root_depth ()
       (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
         (sar (- (ptr-read-u64 (data-addr nl_rootstack_top) 0)
@@ -324,13 +328,13 @@
         (nl_root_reserve_or_scratch
          (nl_root_reserve_private env entry (ptr-read-u64 env 120)))))
     (defun nl_root_reserve (env)
-      (nl_root_reserve_at env (nl_thread_registry_find env)))
+      (nl_root_reserve_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     ;; The native loader cannot use `nl_root_reserve': its capacity fallback
     ;; is deliberately unrooted scratch for legacy callers.  Object arguments
     ;; must remain visible to a moving collection, so this variant reserves
     ;; only from a validated registered region and answers 0 on exhaustion.
     (defun nl_root_reserve_checked (env)
-      (let* ((entry (nl_thread_registry_find env)))
+      (let* ((entry (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
         (if (= entry 0)
             (seq
              (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0)
@@ -358,7 +362,7 @@
          (nl_thread_registry_store_top entry marker)
          0)))
     (defun nl_root_release (env marker)
-      (nl_root_release_at env (nl_thread_registry_find env) marker))
+      (nl_root_release_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
     ;; Native loader roots live in a separate driver-owned BSS region.  The
     ;; evaluator restores its ordinary root top after every interpreted call,
     ;; so a loader frame must never borrow that stack.  Pinning is single-owner:
