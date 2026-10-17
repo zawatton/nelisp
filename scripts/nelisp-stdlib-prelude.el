@@ -4428,10 +4428,153 @@ the buffer string)."
       (nelisp--syntax-lookup prop (aref text (1- pos))))
      (t (nelisp--syntax-lookup table (aref text (1- pos)))))))
 
+;; Comments in `scan-lists' and `scan-sexps'.  With
+;; `parse-sexp-ignore-comments' non-nil (GNU's default is nil; the Lisp
+;; and C modes set it) the cc03 scanners below step over comments: single
+;; character `<'..`>' ones, two-character ones from the flags
+;; (`nelisp--syntax-flags'), and `!' comment fences.  A comment's style is
+;; GNU's: bit 0 the `b' flag and bit 1 a `c' flag of its main character
+;; (the second of a two-character starter, the first of an ender), 256
+;; for a fence.
+(defvar parse-sexp-ignore-comments nil)
+
+(defun nelisp--syntax-class (table text pos)
+  "Class char at buffer position POS (TEXT is the buffer string)."
+  (if parse-sexp-lookup-properties
+      (nelisp--syntax-class-at table text pos)
+    (nelisp--syntax-lookup table (aref text (1- pos)))))
+
+(defun nelisp--syntax-flags-at (table text pos)
+  "Flag bits at buffer position POS, honouring a `syntax-table' property
+like `nelisp--syntax-class-at'."
+  (let ((prop (and parse-sexp-lookup-properties
+                   (cond ((fboundp 'get-char-property)
+                          (get-char-property pos 'syntax-table))
+                         ((fboundp 'get-text-property)
+                          (get-text-property pos 'syntax-table))))))
+    (cond
+     ((and (consp prop) (integerp (car prop))) (logand (ash (car prop) -16) 255))
+     ((and prop (not (consp prop)) (fboundp 'nelisp--syntax-table-p)
+           (nelisp--syntax-table-p prop))
+      (nelisp--syntax-flags prop (aref text (1- pos))))
+     (t (nelisp--syntax-flags table (aref text (1- pos)))))))
+
+(defun nelisp--syntax-flagged (table)
+  "Non-nil if a position may carry comment flags: TABLE or a parent has
+some, or `syntax-table' properties are consulted.  Scanners ask once per
+call; when nil, only a `<' or `!' class can start a comment and only a
+`>' or `!' can end one, which spares a flag lookup per character."
+  (or parse-sexp-lookup-properties
+      (let ((tbl table) (found nil))
+        (while (and tbl (not found))
+          (let ((h (if (recordp tbl) (aref tbl 3) (nelisp--syntax-table-flags tbl))))
+            (setq found (and h (> (hash-table-count h) 0))
+                  tbl (if (recordp tbl) (aref tbl 2) (nelisp--syntax-table-parent tbl)))))
+        found)))
+
+(defun nelisp--syntax-comment-style (main other)
+  "GNU comment style of a delimiter whose main char has flags MAIN."
+  (logior (if (= 0 (logand main 32)) 0 1)
+          (if (= 0 (logand (logior main other) 128)) 0 2)))
+
+(defun nelisp--syntax-comment-start (table text pos hi)
+  "If a comment starts at POS, return (LENGTH STYLE . NESTED), else nil."
+  (let ((f (nelisp--syntax-flags-at table text pos)))
+    (if (and (/= 0 (logand f 1)) (< (1+ pos) hi)
+             (/= 0 (logand (nelisp--syntax-flags-at table text (1+ pos)) 2)))
+        (let ((f2 (nelisp--syntax-flags-at table text (1+ pos))))
+          (cons 2 (cons (nelisp--syntax-comment-style f2 f)
+                        (/= 0 (logand (logior f f2) 64)))))
+      (let ((class (nelisp--syntax-class table text pos)))
+        (cond ((eq class ?<)
+               (cons 1 (cons (nelisp--syntax-comment-style f 0) (/= 0 (logand f 64)))))
+              ((eq class ?!) (list 1 256)))))))
+
+(defun nelisp--syntax-comment-end (table text pos hi style nested)
+  "Position just after the comment of STYLE whose body starts at POS, or
+nil if it does not end before HI.  NESTED counts inner starters."
+  (let ((depth 1) (p pos) (end nil))
+    (while (and (null end) (< p hi))
+      (let ((f (nelisp--syntax-flags-at table text p)) (len nil) (start nil))
+        (cond
+         ((= style 256)
+          (when (eq (nelisp--syntax-class table text p) ?!) (setq len 1)))
+         ((and (/= 0 (logand f 4)) (< (1+ p) hi)
+               (let ((f2 (nelisp--syntax-flags-at table text (1+ p))))
+                 (and (/= 0 (logand f2 8))
+                      (= (nelisp--syntax-comment-style f f2) style))))
+          (setq len 2))
+         ((and (eq (nelisp--syntax-class table text p) ?>)
+               (= (nelisp--syntax-comment-style f 0) style))
+          (setq len 1))
+         (nested
+          (setq start (nelisp--syntax-comment-start table text p hi))
+          (unless (and start (= (cadr start) style)) (setq start nil))))
+        (cond
+         (len (setq depth (1- depth) p (+ p len))
+              (when (= depth 0) (setq end p)))
+         (start (setq depth (1+ depth) p (+ p (car start))))
+         (t (setq p (1+ p))))))
+    end))
+
+(defun nelisp--syntax-skip-comment (table text pos hi)
+  "If a comment starts at POS, the position after it (HI if it is
+unterminated), else nil."
+  (let ((start (nelisp--syntax-comment-start table text pos hi)))
+    (when start
+      (or (nelisp--syntax-comment-end table text (+ pos (car start)) hi
+                                      (cadr start) (cddr start))
+          hi))))
+
+(defvar nelisp--syntax-comment-spans nil
+  "[TEXT TABLE LO HI NEXT ENDS LOOKUP] for `nelisp--syntax-comment-before':
+ENDS maps the position just after each comment found scanning TEXT
+forward from LO to that comment's start; NEXT is where scanning stopped.")
+
+(defun nelisp--syntax-comment-before (table text lo hi pos)
+  "Start of the comment that ends just before POS, or nil.
+GNU's `back_comment' guesses backward from the ender; this parses
+forward from LO instead and remembers the comments it passes, so a
+backward scan pays for one forward pass per buffer text.  The memo is
+dropped on every top-level backward scan while
+`parse-sexp-lookup-properties' is set, since properties can change
+without the text changing."
+  (let ((c nelisp--syntax-comment-spans))
+    (unless (and c (eq (aref c 0) text) (eq (aref c 1) table)
+                 (eql (aref c 2) lo) (eql (aref c 3) hi)
+                 (eq (aref c 6) parse-sexp-lookup-properties))
+      (setq c (vector text table lo hi lo (make-hash-table :test 'eql)
+                      parse-sexp-lookup-properties)
+            nelisp--syntax-comment-spans c))
+    (let ((p (aref c 4)) (ends (aref c 5)) (flagged (nelisp--syntax-flagged table)))
+      (while (< p pos)
+        (let* ((class (nelisp--syntax-class table text p))
+               (e (and (or flagged (memq class '(?< ?!)))
+                       (nelisp--syntax-skip-comment table text p hi))))
+          (if e
+              (progn (puthash e p ends) (setq p e))
+            (progn
+              (cond
+               ((memq class '(?\" ?|))
+                (let ((term (aref text (1- p))) (closed nil))
+                  (setq p (1+ p))
+                  (while (and (not closed) (< p hi))
+                    (let ((k (nelisp--syntax-class table text p)))
+                      (cond ((memq k '(?\\ ?/)) (setq p (+ p 2)))
+                            ((if (eq class ?|) (eq k ?|) (eq (aref text (1- p)) term))
+                             (setq closed t p (1+ p)))
+                            (t (setq p (1+ p))))))
+                  (unless closed (setq p hi))))
+               ((memq class '(?\\ ?/)) (setq p (+ p 2)))
+               (t (setq p (1+ p))))))))
+      (aset c 4 p)
+      (gethash pos ends))))
+
 (defun nelisp--cc03-scan-args (from count &optional depth)
   "Validate scan arguments and clamp FROM to the accessible buffer."
   (dolist (value (list from count (or depth 0)))
     (unless (integerp value) (signal 'wrong-type-argument (list 'fixnump value))))
+  (when parse-sexp-lookup-properties (setq nelisp--syntax-comment-spans nil))
   (max (point-min) (min (point-max) from)))
 
 (defun nelisp--cc03-scan-lists-forward (from count depth)
@@ -4439,22 +4582,28 @@ the buffer string)."
   (let* ((v (nelisp--pps-decode nil)) (pos from) (start from)
          (hi (point-max)) (text (nelisp-buffer-string nelisp--current-buffer))
          (table (nelisp--syntax-current-table)) (minimum (min 0 depth))
+         (flagged (and parse-sexp-ignore-comments (nelisp--syntax-flagged table)))
          (stopped nil))
     (aset v 0 depth)
     (while (and (> count 0) (not stopped))
       (let ((found nil))
         (while (and (< pos hi) (not found))
           (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
-                 (class (unless blocked (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos)))))))
-            (when (and (= (aref v 0) 0) (not blocked)
-                       (memq class '(?\( ?\")))
-              (setq start pos))
-            (nelisp--pps-advance v pos text table)
-            (setq pos (1+ pos))
-            (cond
-             ((and (eq class ?\)) (< (aref v 0) minimum))
-              (signal 'scan-error (list "Containing expression ends prematurely" (1- pos) pos)))
-             ((and (memq class '(?\( ?\))) (= (aref v 0) 0)) (setq found t)))))
+                 (class (unless blocked (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
+                 (skip (and parse-sexp-ignore-comments (not blocked)
+                            (or flagged (memq class '(?< ?!)))
+                            (nelisp--syntax-skip-comment table text pos hi))))
+            (if skip
+                (setq pos skip)
+              (when (and (= (aref v 0) 0) (not blocked)
+                         (memq class '(?\( ?\")))
+                (setq start pos))
+              (nelisp--pps-advance v pos text table)
+              (setq pos (1+ pos))
+              (cond
+               ((and (eq class ?\)) (< (aref v 0) minimum))
+                (signal 'scan-error (list "Containing expression ends prematurely" (1- pos) pos)))
+               ((and (memq class '(?\( ?\))) (= (aref v 0) 0)) (setq found t))))))
         (if found (setq count (1- count) start pos)
           (if (or (/= (aref v 0) 0) (aref v 3))
               (signal 'scan-error (list "Unbalanced parentheses" start pos))
@@ -4472,30 +4621,36 @@ the buffer string)."
 (defun nelisp--cc03-scan-lists-backward (from count depth)
   "Scan COUNT lists backward with initial DEPTH."
   (let* ((pos from) (start from) (level depth) (minimum (min 0 depth))
-         (lo (point-min)) (text (nelisp-buffer-string nelisp--current-buffer))
-         (table (nelisp--syntax-current-table)) (stopped nil))
+         (lo (point-min)) (hi (point-max))
+         (text (nelisp-buffer-string nelisp--current-buffer))
+         (table (nelisp--syntax-current-table)) (stopped nil)
+         (flagged (and parse-sexp-ignore-comments (nelisp--syntax-flagged table))))
     (while (and (> count 0) (not stopped))
       (let ((found nil))
         (while (and (> pos lo) (not found))
-          (setq pos (1- pos))
-          (unless (nelisp--cc03-escaped-p text pos lo table)
-            (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
-              (when (and (= level 0) (memq class '(?\) ?\"))) (setq start pos))
-              (cond
-               ((eq class ?\")
-                (let ((quote (aref text (1- pos))) (closed nil))
-                  (while (and (> pos lo) (not closed))
-                    (setq pos (1- pos))
-                    (when (and (= (aref text (1- pos)) quote)
-                               (not (nelisp--cc03-escaped-p text pos lo table)))
-                      (setq closed t)))
-                  (unless closed (signal 'scan-error (list "Unbalanced parentheses" start pos)))))
-               ((eq class ?\)) (setq level (1+ level)))
-               ((eq class ?\()
-                (setq level (1- level))
-                (when (< level minimum)
-                  (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))))
-              (when (and (memq class '(?\( ?\))) (= level 0)) (setq found t)))))
+          (let ((comment (and parse-sexp-ignore-comments
+                              (or flagged
+                                  (memq (nelisp--syntax-class table text (1- pos)) '(?> ?!)))
+                              (nelisp--syntax-comment-before table text lo hi pos))))
+            (setq pos (or comment (1- pos)))
+            (unless (or comment (nelisp--cc03-escaped-p text pos lo table))
+              (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
+                (when (and (= level 0) (memq class '(?\) ?\"))) (setq start pos))
+                (cond
+                 ((eq class ?\")
+                  (let ((quote (aref text (1- pos))) (closed nil))
+                    (while (and (> pos lo) (not closed))
+                      (setq pos (1- pos))
+                      (when (and (= (aref text (1- pos)) quote)
+                                 (not (nelisp--cc03-escaped-p text pos lo table)))
+                        (setq closed t)))
+                    (unless closed (signal 'scan-error (list "Unbalanced parentheses" start pos)))))
+                 ((eq class ?\)) (setq level (1+ level)))
+                 ((eq class ?\()
+                  (setq level (1- level))
+                  (when (< level minimum)
+                    (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))))
+                (when (and (memq class '(?\( ?\))) (= level 0)) (setq found t))))))
         (if found (setq count (1- count) start pos)
           (if (/= level 0) (signal 'scan-error (list "Unbalanced parentheses" start pos))
             (setq stopped t)))))
@@ -4503,14 +4658,21 @@ the buffer string)."
 
 (defun nelisp--cc03-scan-sexp (pos direction text table lo hi)
   "Scan one expression at POS in DIRECTION using TEXT and TABLE."
-  (let ((step direction) (done nil) result)
+  (let ((step direction) (done nil) result
+        (flagged (and parse-sexp-ignore-comments (nelisp--syntax-flagged table))))
     (while (and (not done) (if (> step 0) (< pos hi) (> pos lo)))
       (let* ((at (if (> step 0) pos (1- pos)))
-             (class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text at) (nelisp--syntax-lookup table (aref text (1- at))))))
-        (when (and (< step 0) (nelisp--cc03-escaped-p text at lo table))
+             (class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text at) (nelisp--syntax-lookup table (aref text (1- at)))))
+             (comment (and parse-sexp-ignore-comments
+                           (or flagged (memq class (if (> step 0) '(?< ?!) '(?> ?!))))
+                           (if (> step 0)
+                               (nelisp--syntax-skip-comment table text pos hi)
+                             (nelisp--syntax-comment-before table text lo hi pos)))))
+        (when (and (< step 0) (not comment) (nelisp--cc03-escaped-p text at lo table))
           (setq class ?w))
         (cond
-         ((memq class '(?\s ?\' ?.)) (setq pos (+ pos step)))
+         (comment (setq pos comment))
+         ((memq class '(?\s ?\' ?. ?< ?> ?!)) (setq pos (+ pos step)))
          ((eq class (if (> step 0) ?\( ?\)))
           (setq result (scan-lists pos step 0) done t))
          ((eq class (if (> step 0) ?\) ?\())
@@ -13566,9 +13728,13 @@ and a set-initial `]'."
 block comment above).  ENTRIES is a character-code -> class-char
 hash-table private to this instance; PARENT is another
 `nelisp--syntax-table' consulted when ENTRIES has no entry for a given
-character, or nil at the top of the chain."
+character, or nil at the top of the chain.  FLAGS is nil until an
+entry with comment flags is set, then a character-code -> flag-bits
+hash (see `nelisp--syntax-parse-flags'); a character missing from it
+inherits PARENT's flags."
   entries
-  parent)
+  parent
+  flags)
 
 (defun nelisp--syntax-make-table (&optional parent)
   "Fresh, empty `nelisp--syntax-table' with its own ENTRIES hash --
@@ -13622,6 +13788,44 @@ class-char, e.g. `?w'/`?_'/`?\\('/`?\\)'/`?\\\"'/`?\\\\'/`?<'/`?>'/`?\\''/
 `?\\s' -- not a raw `modify-syntax-entry' descriptor string; see
 `nelisp--syntax-parse-class' for that)."
   (puthash ch class (nelisp--syntax-table-entries table)))
+
+;; Comment flags.  GNU keeps the `1234pbnc' flags of a syntax descriptor
+;; with its class; `scan-lists' and `scan-sexps' need flags 1-4, `b', `c'
+;; and `n' to see two-character comment delimiters such as C's `/*' and
+;; `*/' (CC Mode's `c-emacs-features' tests this at load).  The bits are
+;; GNU's own flag bits shifted down by 16, so a raw `syntax-table' text
+;; property code yields the same value with (ash CODE -16).
+(defconst nelisp--syntax-flag-bits
+  '((?1 . 1) (?2 . 2) (?3 . 4) (?4 . 8) (?p . 16) (?b . 32) (?n . 64) (?c . 128)))
+
+(defun nelisp--syntax-parse-flags (descriptor)
+  "Flag bits of DESCRIPTOR: its characters after the matching char."
+  (let ((i 2) (n (length descriptor)) (f 0))
+    (while (< i n)
+      (setq f (logior f (or (cdr (assq (aref descriptor i) nelisp--syntax-flag-bits)) 0))
+            i (1+ i)))
+    f))
+
+(defun nelisp--syntax-flags (table ch)
+  "Flag bits of character CH in TABLE, walking its PARENT chain; 0 if none."
+  (let ((tbl table) (hit nil))
+    (while (and tbl (null hit))
+      (let ((h (if (recordp tbl) (aref tbl 3) (nelisp--syntax-table-flags tbl))))
+        (when h (setq hit (gethash ch h))))
+      (setq tbl (if (recordp tbl) (aref tbl 2) (nelisp--syntax-table-parent tbl))))
+    (or hit 0)))
+
+(defun nelisp--syntax-set-flags (table ch flags)
+  "Give CH the flag bits FLAGS in TABLE, shadowing any PARENT flags."
+  (let ((h (nelisp--syntax-table-flags table)))
+    (if (or (/= flags 0)
+            (/= (nelisp--syntax-flags (nelisp--syntax-table-parent table) ch) 0))
+        (progn
+          (unless h
+            (setq h (make-hash-table :test 'eq))
+            (setf (nelisp--syntax-table-flags table) h))
+          (puthash ch flags h))
+      (when h (remhash ch h)))))
 
 (defun nelisp--syntax-parse-class (descriptor)
   "Leading class char of DESCRIPTOR, normalised the way `char-syntax'
@@ -13745,6 +13949,7 @@ It is a copy of the TABLE, which defaults to the standard syntax table.
     (setq table (or table (standard-syntax-table)))
     (make-nelisp--syntax-table
      :entries (copy-hash-table (nelisp--syntax-table-entries table))
+     :flags (let ((h (nelisp--syntax-table-flags table))) (and h (copy-hash-table h)))
      :parent (or (nelisp--syntax-table-parent table) (standard-syntax-table)))))
 
 (unless (fboundp 'set-syntax-table)
@@ -13759,17 +13964,19 @@ TABLE, matching Emacs."
     "Set CHAR-OR-RANGE's class in TABLE (default: the current buffer's
 active table) from DESCRIPTOR's leading class character.  CHAR-OR-RANGE
 is a single character or a (FROM . TO) inclusive range, matching
-Emacs.  Matching-char and flag characters after DESCRIPTOR's first are
-accepted (not rejected) but not stored -- see the block comment above
-this section.  Returns nil, matching Emacs (probed)."
+Emacs.  The matching char is accepted but not stored; the flags are
+(`nelisp--syntax-set-flags').  Returns nil, matching Emacs (probed)."
     (let ((tbl (or table (nelisp--syntax-current-table)))
-          (class (nelisp--syntax-parse-class descriptor)))
+          (class (nelisp--syntax-parse-class descriptor))
+          (flags (nelisp--syntax-parse-flags descriptor)))
       (if (consp char-or-range)
           (let ((c (car char-or-range)) (hi (cdr char-or-range)))
             (while (<= c hi)
               (nelisp--syntax-put tbl c class)
+              (nelisp--syntax-set-flags tbl c flags)
               (setq c (1+ c))))
-        (nelisp--syntax-put tbl char-or-range class))
+        (nelisp--syntax-put tbl char-or-range class)
+        (nelisp--syntax-set-flags tbl char-or-range flags))
       nil)))
 
 (unless (fboundp 'char-syntax)
