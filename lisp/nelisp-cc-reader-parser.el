@@ -172,10 +172,53 @@
     ;; ok_p depth))' segfaulted even with `depth_ok_p''s body hardcoded to
     ;; return 1 unconditionally, which is why the call site below compares
     ;; the result to 0 explicitly instead.
+    ;; Also records the deepest level this read reached in slot 3 (+16),
+    ;; next to the label count, so `nelisp_reader_p_clear_used' knows which
+    ;; slots to clear when the read ends.
     (defun nelisp_reader_p_depth_ok_p (pool d)
-      (< (nelisp_reader_p_spare_idx d)
-         (- (nelisp_reader_p_pool_cap)
-            (* 2 (nelisp_reader_p_label_count pool)))))
+      (seq
+       (if (> d (ptr-read-u64 (nelisp_reader_p_slot pool 3) 16))
+           (ptr-write-u64 (nelisp_reader_p_slot pool 3) 16 d)
+         0)
+       (< (nelisp_reader_p_spare_idx d)
+          (- (nelisp_reader_p_pool_cap)
+             (* 2 (nelisp_reader_p_label_count pool))))))
+
+    ;; Zero slots FROM..TO-1 of POOL.
+    (defun nelisp_reader_p_zero_slots (pool from to)
+      (let* ((a (nelisp_reader_p_slot pool from))
+             (e (nelisp_reader_p_slot pool to)))
+        (seq
+         (while (< a e)
+           (seq (ptr-write-u64 a 0 0) (setq a (+ a 8))))
+         0)))
+
+    ;; Clear every slot one read used once it ends, so no stale Sexp is left
+    ;; in a pool that outlives the read.  A form-boundary collection does not
+    ;; walk pool slots (`nl_gc_collect_form_boundary'), so whatever only a
+    ;; stale slot referenced is freed there and its memory reused.  A later
+    ;; mid-form collection (`nl_gc_midform_collect') walks every slot of a
+    ;; recorded frame's pool, and a stale slot's tag then describes an object
+    ;; that is no longer there.  Measured on Windows (F1B, 2026-10-17): a
+    ;; tag-6 MutStr left in the token payload slot named memory that held a
+    ;; live cons box.  The MutStr arm of `nl_gc_mark_slot' set that box's
+    ;; mark bit without tracing its car, the real cons trace then stopped at
+    ;; "already marked", and the car block was swept and reused.  The read's
+    ;; value is in RESULT-SLOT, outside the pool; label entries are resolved
+    ;; by now.  Cleared: scratch, payload and label header (slots 0-3), the
+    ;; per-depth slots down to the deepest level reached, the label entries
+    ;; and the context slot at PARSE-CAP.
+    (defun nelisp_reader_p_clear_used (pool parse-cap)
+      (let* ((deepest (ptr-read-u64 (nelisp_reader_p_slot pool 3) 16))
+             (lcount (nelisp_reader_p_label_count pool))
+             (low-end (+ (nelisp_reader_p_spare_idx deepest) 1))
+             (high-start (- parse-cap (* 2 lcount))))
+        (seq
+         (nelisp_reader_p_zero_slots
+          pool 0 (if (< low-end parse-cap) low-end parse-cap))
+         (if (< high-start 0) 0
+           (nelisp_reader_p_zero_slots pool high-start (+ parse-cap 1)))
+         0)))
     (defun nelisp_reader_p_stash_excessive_nesting (max-depth _pad)
       (let* ((tag-buf (alloc-bytes 24 1)))
         (seq
@@ -1807,6 +1850,7 @@
                    (setq rc -1)
                  (nelisp_reader_p_label_resolve result-slot slot-pool))
              0)
+           (nelisp_reader_p_clear_used slot-pool parse-cap)
            (ptr-write-u64 268436448 0 pool-cap)
            rc)))))
 
