@@ -369,9 +369,24 @@ jobs:
           Clone-Related "anvil.el" "anvil.el" $env:ANVIL_REF
 
       - name: Set up Emacs
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        shell: pwsh
+        env:
+          EMACS_WIN_VERSION: '31.1'
+        # jcs090218/setup-emacs-windows asks for emacs-31.1-x86_64.zip, which
+        # GNU does not publish (the release zip is emacs-31.1.zip): fetch it here.
+        run: |
+          $v = $env:EMACS_WIN_VERSION
+          $major = $v.Split('.')[0]
+          $dir = Join-Path $env:RUNNER_TEMP "emacs-$v"
+          if (-not (Test-Path $dir)) {
+            $zip = "$dir.zip"
+            Invoke-WebRequest "https://ftp.gnu.org/gnu/emacs/windows/emacs-$major/emacs-$v.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath $dir
+          }
+          $exe = Get-ChildItem $dir -Recurse -Filter emacs.exe | Select-Object -First 1
+          if (-not $exe) { throw "emacs.exe not found in emacs-$v.zip" }
+          $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & $exe.FullName --version | Select-Object -First 1
 
       - name: Verify Windows standalone parity
         shell: pwsh

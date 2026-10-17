@@ -2270,6 +2270,14 @@ MCP Parameters:
       (load out-path nil t))
     t))
 
+;; GNU's bytecomp.el is not preloaded, so loading it later -- Emacs 31.1
+;; does that during the host ERT suite -- redefines `byte-compile-file'
+;; over the definition above.  Put ours back whenever bytecomp loads.
+(defalias 'nelisp-bc--byte-compile-file (symbol-function 'byte-compile-file))
+(when (fboundp 'eval-after-load)
+  (eval-after-load 'bytecomp
+    '(defalias 'byte-compile-file #'nelisp-bc--byte-compile-file)))
+
 ;; `.elc' reader entry — used by `load' to detect a NeLisp-compiled
 ;; output file (vs. an Emacs `.elc' binary which we cannot read).
 (defun nelisp-bc--elc-file-p (path)
