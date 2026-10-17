@@ -1,0 +1,111 @@
+#+TITLE: Doc 214 — Common-Lisp-equivalent threads (bordeaux-threads semantics) on linux-x86_64 and windows-x86_64
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-10-17
+#+STATUS: IN PROGRESS (2026-10-17) — design and stage plan; S1 started.
+#+NOTE: Progress is measured only by tools/ai/214-cl-threads-progress.org.
+
+* §0 TL;DR
+
+Doc 199 shipped real OS threads, but only as a linux-x86_64 primitive that
+evaluates a pre-built form on a private context and hands back an integer.
+The owner wants what an SBCL user gets: arbitrary closures on threads that
+return arbitrary values, locks, condition variables, semaphores, per-thread
+special bindings, global writes from any thread, and interrupt/destroy, on
+both linux-x86_64 and windows-x86_64.
+
+The API is a separate, bordeaux-threads-shaped namespace (=nl-bt-*=), not
+Emacs's =make-thread= family.  Emacs's cooperative thread API keeps its
+Emacs semantics, so Elisp written for Emacs is unaffected; code that wants
+real parallelism opts in by calling =nl-bt-*=.
+
+The core obstacle is not spawning a thread.  It is that the interpreter
+keeps per-evaluation state in process-global slots: the signal/throw
+stash, the GC frame ring, the Win64 extern-call rsp spill slot, the
+backtrace snapshot.  §2 lists every item with its fix.
+
+* §1 Ground truth (audit 2026-10-17, main 6d759c79)
+
+| Item | Where | Today | Fix (stage) |
+|------+-------+-------+-------------|
+| signal/throw flag, TAG, VAL (arena base+16..+88) | ~210 literal sites in 7 files | one per process | thread block (S1) |
+| GC frame ring =nl_gc_loop_ctx= | pushed by every =nelisp_eval_call= | one per process | per-thread ring, marker walks all (S1) |
+| Win64 =nl_dynalign_rsp_save= | every aligned extern call, incl. VirtualAlloc | one bss slot | thread block (S1) |
+| backtrace snapshot =nl_bt_snapshot= | error paths | one per process | thread block (S1) |
+| spawn/join primitive | linux clone(2) only | Windows signals unsupported | CreateThread/VirtualAlloc/WaitForSingleObject (S2) |
+| worker result | integer only, unrooted slot | -1002 for non-integers | rooted result slot, funcall of closure (S3) |
+| mutex / condvar / semaphore | none | — | CAS + futex / WaitOnAddress (S4) |
+| global writes from workers | refused (=nelisp-worker-mirror-mutation=) | — | mirror lock (S5) |
+| intern-table insert | plain read-modify-write | — | intern lock (S5) |
+| chunk growth, free-list push/take | plain writes; section needs 8 MiB headroom | — | allocator lock (S6) |
+| GC started by a worker | always times out (counts itself, never parks) | — | collector excludes itself (S6) |
+| thread objects, interrupt, destroy | none | — | safepoint interrupt queue (S7) |
+
+Dynamic =let= is deep binding on the context's private frame stack, so a
+new thread already sees global values, not its parent's bindings —
+exactly bordeaux-threads semantics.  No change is needed there.
+
+* §2 Mechanism: the thread block
+
+Every thread owns a /thread block/.  The main thread's block *is* the arena
+base, so in a single-threaded run every stash address is unchanged and
+behaviour is byte-identical.
+
+- A new compiler IR op, =(thread-block)=, returns the current thread's block
+  address:
+  - windows-x86_64: =TlsAlloc= once at start-up; the index is kept in bss,
+    and the op reads =gs:[0x1480 + idx*8]= (TEB TlsSlots; idx < 64 is
+    asserted at start-up).
+  - linux-x86_64: each thread calls =arch_prctl(ARCH_SET_FS, block)= once,
+    with =block[0] = block=; the op reads =fs:[0]=.  The standalone runtime
+    has no libc, so FS is otherwise unused.
+- =nelisp-standalone--chunk-arena-rewrite= already turns every integer atom
+  in the arena range into =(+ arena-base OFF)=.  For OFF in the per-thread
+  range [16, 88) it now emits =(+ (thread-block) OFF)=.
+- Data symbols that must be per-thread (the GC frame ring, the rsp spill
+  slot, the backtrace snapshot) move to fixed offsets inside the block
+  beyond 4096.  The main thread's block keeps its old bss storage through a
+  block-relative indirection word at block+4096 + k*8.  The GC marks every
+  registered thread's stash TAG/VAL, not only the collector's.
+
+* §3 API (=packages/nelisp-bt=)
+
+bordeaux-threads names, prefixed =nl-bt-=:
+- =nl-bt-make-thread FN &key name initial-bindings=, =nl-bt-join-thread=
+  (returns FN's value; re-signals its error), =nl-bt-current-thread=,
+  =nl-bt-all-threads=, =nl-bt-thread-alive-p=, =nl-bt-thread-name=,
+  =nl-bt-thread-yield=, =nl-bt-interrupt-thread=, =nl-bt-destroy-thread=.
+- =nl-bt-make-lock=, =nl-bt-make-recursive-lock=, =nl-bt-acquire-lock= (with
+  =:wait-p= / =:timeout=), =nl-bt-release-lock=, =nl-bt-with-lock-held=,
+  =nl-bt-with-recursive-lock-held=.
+- =nl-bt-make-condition-variable=, =nl-bt-condition-wait= (=:timeout=),
+  =nl-bt-condition-notify=, =nl-bt-condition-broadcast=.
+- =nl-bt-make-semaphore=, =nl-bt-signal-semaphore=, =nl-bt-wait-on-semaphore=.
+- =nl-bt-atomic-integer=, compare-and-swap, and incf on it.
+
+On host Emacs, the package maps onto Emacs threads (cooperative, correct,
+no speedup), so the same code and ERT run on both.
+
+* §4 Stages
+
+- S1 Per-thread interpreter state (thread block, stash, frame ring, rsp
+  spill slot).  Done when every existing standalone smoke stays green on
+  windows and linux, and two linux workers signalling different errors
+  concurrently each see their own error.
+- S2 Windows spawn/join with private context.  Done when
+  =nelisp-thread-standalone-smoke= and the allocating and percpu-roots
+  smokes pass on windows-x86_64.
+- S3 Closures and arbitrary values: =nelisp-thread-spawn= takes a function
+  and returns its value or re-signals its error in the joiner.
+- S4 Locks, condition variables, semaphores (linux futex, Windows
+  WaitOnAddress/WakeByAddress).
+- S5 Global writes and interning from any thread (mirror lock, intern lock).
+- S6 Unbounded allocation and GC from any thread, without a bounded section.
+- S7 Thread objects, interrupt and destroy at safepoints.
+- S8 =packages/nelisp-bt= API, host ERT, standalone smokes on both targets, and a
+  real parallel speed-up measured on Windows.
+
+* §5 Results
+
+- S0.2 baseline nelisp-unsupported-primitive: on main 6d759c79 the
+  windows-x86_64 build (76 s) answers =(nelisp-thread-spawn 2 0 1 2 3)= with
+  =nelisp-unsupported-primitive=.

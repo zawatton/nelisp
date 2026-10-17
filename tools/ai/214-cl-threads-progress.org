@@ -1,0 +1,150 @@
+#+TITLE: Doc 214 Common-Lisp-equivalent threads
+
+* S0 Design
+
+** S0.1 Doc 214 exists with the global-state table, mechanism and stages
+cmd: f=docs/design/214-cl-equivalent-threads.org; grep -q '^\* §1 Ground truth' $f && grep -q '^\* §2 Mechanism: the thread block' $f && grep -q '^\* §4 Stages' $f
+
+** S0.2 Baseline: windows binary refuses nelisp-thread-spawn (pre-change control recorded)
+cmd: grep -q 'S0.2 baseline nelisp-unsupported-primitive' docs/design/214-cl-equivalent-threads.org
+
+** S0.3 Ledger names a criterion for every stage S1-S8
+cmd: for s in 1 2 3 4 5 6 7 8; do grep -q "^\* S$s " tools/ai/214-cl-threads-progress.org || exit 1; done
+
+* S1 Per-thread interpreter state
+
+** S1.1 Compiler has a thread-block IR op for x86_64 (gs TLS slot on Windows, fs on Linux)
+cmd: grep -q "(thread-block \. " lisp/nelisp-aot-compiler.el
+
+** S1.2 Stash literals in the per-thread range are rewritten to thread-block offsets
+cmd: grep -q 'nelisp-standalone--thread-block-offset-p' scripts/nelisp-standalone-build.el
+
+** S1.3 Windows binary still passes the prelude/reader smokes after the rewrite
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --eval '(condition-case e (signal (quote wrong-type-argument) (list 1)) (wrong-type-argument (cadr e)))' | grep -q '^1$'
+
+** S1.4 Two linux workers signalling different errors concurrently each report their own error
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-stash-smoke.el | grep -q 'BT-STASH-PASS'
+
+* S2 Windows spawn and join
+
+** S2.1 Windows thread arms are linked (no unsupported-primitive signal)
+#+REQUIRES: NELISP_BT_WIN_BIN
+cmd: ! "$NELISP_BT_WIN_BIN" --eval '(condition-case e (progn (nelisp-thread-atomic-read (nelisp-thread-shared-alloc 4096)) t) (error (car e)))' | grep -q unsupported
+
+** S2.2 Tier 2 smoke really runs threads on windows (reduces to 42)
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-standalone-smoke.el | grep -q 'checked=6'
+
+** S2.3 Allocating and percpu-roots smokes pass on windows
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-allocating-standalone-smoke.el | grep -q 'checked=8' && "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-percpu-roots-smoke.el | grep -q 'parked=3'
+
+* S3 Closures and arbitrary values
+
+** S3.1 A thread runs a closure and the joiner gets a non-integer value (list/string)
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-value-smoke.el | grep -q 'BT-VALUE-PASS'
+
+** S3.2 An error in a thread is re-signalled in the joiner with its data
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-value-smoke.el | grep -q 'BT-ERROR-PASS'
+
+** S3.3 Same value smoke passes on linux
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-value-smoke.el | grep -q 'BT-VALUE-PASS'
+
+* S4 Locks, condition variables, semaphores
+
+** S4.1 Lock contention: 8 threads x 10000 locked increments give 80000 (windows)
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-sync-smoke.el | grep -q 'BT-LOCK-PASS 80000'
+
+** S4.2 Condition variable producer/consumer and semaphore smoke pass (windows)
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-sync-smoke.el | grep -q 'BT-CONDVAR-PASS' && "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-sync-smoke.el | grep -q 'BT-SEM-PASS'
+
+** S4.3 Sync smoke passes on linux
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-sync-smoke.el | grep -q 'BT-SEM-PASS'
+
+* S5 Global writes and interning from any thread
+
+** S5.1 setq/defvar/defun of globals from threads succeed and are visible to all threads
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-global-smoke.el | grep -q 'BT-GLOBAL-PASS'
+
+** S5.2 Concurrent intern of 8x5000 fresh names yields 40000 distinct symbols
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-global-smoke.el | grep -q 'BT-INTERN-PASS 40000'
+
+** S5.3 Global smoke passes on linux
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-global-smoke.el | grep -q 'BT-INTERN-PASS 40000'
+
+* S6 Unbounded allocation and GC from any thread
+
+** S6.1 Threads allocating 2 GB total in aggregate with GC triggered from workers complete (windows)
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-gc-smoke.el | grep -q 'BT-GC-PASS'
+
+** S6.2 No bounded-section headroom precondition remains in the spawn path
+cmd: ! grep -q 'require 8 MiB free in the current chunk' scripts/nelisp-standalone-build.el
+
+** S6.3 GC smoke passes on linux
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-gc-smoke.el | grep -q 'BT-GC-PASS'
+
+* S7 Thread lifecycle, interrupt, destroy
+
+** S7.1 current-thread / all-threads / thread-alive-p / names behave per bordeaux-threads
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-lifecycle-smoke.el | grep -q 'BT-LIFE-PASS'
+
+** S7.2 interrupt-thread runs a function in a looping thread; destroy-thread ends it
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-lifecycle-smoke.el | grep -q 'BT-INTERRUPT-PASS'
+
+** S7.3 Lifecycle smoke passes on linux
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-lifecycle-smoke.el | grep -q 'BT-INTERRUPT-PASS'
+
+* S8 nl-bt API package, end to end
+
+** S8.1 packages/nelisp-bt byte-compiles cleanly and host ERT passes (Emacs-thread fallback)
+#+TIMEOUT: 300
+cmd: emacs --batch -Q -L packages/nelisp-bt/src --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile packages/nelisp-bt/src/*.el && emacs --batch -Q -L packages/nelisp-bt/src -l packages/nelisp-bt/test/nelisp-bt-test.el -f ert-run-tests-batch-and-exit
+
+** S8.2 Parallel speed-up: 8-thread CPU-bound job runs >= 3x faster than 1 thread on windows
+#+REQUIRES: NELISP_BT_WIN_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-speedup-smoke.el | grep -q 'BT-SPEEDUP-PASS'
+
+** S8.3 Existing Doc 199 smokes and emacs-parity stay green with the new runtime
+#+REQUIRES: NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-thread-mirror-guard-smoke.el >/dev/null && make emacs-parity
+
+** S8.4 End to end: the nl-bt API smoke (all features) passes on both targets
+#+REQUIRES: NELISP_BT_WIN_BIN,NELISP_BT_LINUX_BIN
+#+TIMEOUT: 600
+cmd: "$NELISP_BT_WIN_BIN" --load packages/nelisp-bt/test/nelisp-bt-standalone-smoke.el | grep -q 'NL-BT-PASS' && "$NELISP_BT_LINUX_BIN" --load packages/nelisp-bt/test/nelisp-bt-standalone-smoke.el | grep -q 'NL-BT-PASS'
