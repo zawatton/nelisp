@@ -52,6 +52,7 @@
 (declare-function nelisp-thread-cond-wait "ext:nelisp" (seq lock ms id))
 (declare-function nelisp-thread-cond-notify "ext:nelisp" (seq count))
 (declare-function nelisp-thread-sem-wait "ext:nelisp" (addr ms))
+(declare-function nelisp-thread-interrupt-word "ext:nelisp" ())
 
 (define-error 'nl-bt-error "nl-bt error")
 (define-error 'nl-bt-timeout "nl-bt timeout" 'nl-bt-error)
@@ -142,15 +143,21 @@ global variables any thread may update.")
 
 ;;; Threads
 
-;; Thread object: [nl-bt-thread NAME STATE RESULT-SLOT DONE-WORD VALUE ERROR NATIVE]
+;; Thread object: [nl-bt-thread NAME STATE RESULT-SLOT DONE-WORD VALUE ERROR
+;;                 NATIVE INTERRUPT-WORD INTERRUPTS DESTROYED]
 ;; STATE is `running', `finished' or `failed'.  On the emacs backend NATIVE
 ;; holds the Emacs thread and RESULT-SLOT a cons (STATUS . VALUE).
+;; INTERRUPT-WORD is the thread's native interrupt flag (set by the thread
+;; itself once it runs), INTERRUPTS the queued functions, oldest first.
 
 (defun nl-bt--thread-p (x)
-  (and (vectorp x) (= (length x) 8) (eq (aref x 0) 'nl-bt-thread)))
+  (and (vectorp x) (= (length x) 11) (eq (aref x 0) 'nl-bt-thread)))
 
 (defvar nl-bt--main-thread (vector 'nl-bt-thread "main thread" 'running
-                                   nil nil nil nil nil)
+                                   nil nil nil nil nil
+                                   (and (nl-bt--native-p)
+                                        (nelisp-thread-interrupt-word))
+                                   nil nil)
   "The thread object of the thread that loaded nl-bt.")
 
 (defvar nl-bt--threads nil "Started threads not yet joined.")
@@ -204,7 +211,9 @@ used; FORM is evaluated in the new thread.")
 (defun nl-bt--thread-form (fn thread bindings)
   "Return the form that runs FN as THREAD with BINDINGS, in that thread.
 Besides BINDINGS the thread gets `nl-bt-thread-local-variables' fresh and
-starts in its creator's current buffer, as in Emacs."
+starts in its creator's current buffer, as in Emacs.  It publishes its
+interrupt word, runs interrupts queued before it started, and
+`nl-bt-destroy-thread' unwinds it to the outer `catch'."
   `(let ((nelisp--last-signal-data nil)
          (nl-bt--self ',thread)
          ,@(let (out)
@@ -213,7 +222,11 @@ starts in its creator's current buffer, as in Emacs."
          ,@(and (boundp 'nelisp--current-buffer)
                 `((nelisp--current-buffer ',nelisp--current-buffer)))
          ,@(mapcar (lambda (b) (list (car b) (cdr b))) bindings))
-     (funcall ',fn)))
+     (catch 'nl-bt--destroy
+       (when (nl-bt--native-p)
+         (aset nl-bt--self 8 (nelisp-thread-interrupt-word)))
+       (nl-bt--run-interrupts)
+       (funcall ',fn))))
 
 (defun nl-bt--section-begin ()
   (unless nl-bt--section-open
@@ -234,7 +247,8 @@ NAME is a string.  INITIAL-BINDINGS is an alist (SYMBOL . FORM), added to
 thread."
   (let* ((name (or name "Anonymous thread"))
          (bindings (append nl-bt-default-special-bindings initial-bindings))
-         (thread (vector 'nl-bt-thread name 'running nil nil nil nil nil)))
+         (thread (vector 'nl-bt-thread name 'running nil nil nil nil nil
+                         nil nil nil)))
     (if (nl-bt--native-p)
         (let* ((slot (nl-bt--word))
                (_hi (nl-bt--word))
@@ -335,7 +349,55 @@ thread."
 
 (defun nl-bt-thread-yield ()
   "Let other threads run."
-  (if (nl-bt--native-p) (nelisp-thread-yield) (thread-yield)))
+  (if (nl-bt--native-p)
+      (nelisp-thread-yield)
+    (thread-yield)
+    ;; The emacs backend has no back-edge hook: interrupts run here and in
+    ;; the other blocking nl-bt operations, which all yield.
+    (nl-bt--run-interrupts)))
+
+;;; Interrupts
+
+(defun nl-bt--run-interrupts ()
+  "Run the functions queued for the current thread, oldest first.
+On the native backend the runtime calls this at a loop back-edge when
+the thread's interrupt word is set."
+  (let* ((self (nl-bt-current-thread))
+         (fns (nl-bt--with-state-lock
+                (prog1 (aref self 9) (aset self 9 nil)))))
+    (dolist (f fns) (funcall f))))
+
+(defun nl-bt-interrupt-thread (thread function &rest args)
+  "Make THREAD run FUNCTION with ARGS, then resume what it was doing.
+Return THREAD, or nil when it has already finished.  On the native
+backend THREAD runs it at its next loop back-edge; a thread blocked in a
+native wait (a lock, `nl-bt-condition-wait', a semaphore) runs it once
+the wait returns.  On the emacs backend it runs at THREAD's next nl-bt
+yield or blocking operation."
+  (when (nl-bt-thread-alive-p thread)
+    (let ((f (lambda () (apply function args))))
+      (nl-bt--with-state-lock
+        (aset thread 9 (append (aref thread 9) (list f))))
+      (when (and (nl-bt--native-p) (aref thread 8))
+        (nelisp-thread-atomic-store (aref thread 8) 1))
+      thread)))
+
+(defun nl-bt-destroy-thread (thread)
+  "Terminate THREAD: it unwinds (running `unwind-protect' forms) and ends.
+Joining it afterwards returns nil.  The main thread cannot be destroyed."
+  (when (eq thread nl-bt--main-thread)
+    (signal 'nl-bt-error (list "cannot destroy the main thread")))
+  (when (eq thread (nl-bt-current-thread))
+    (aset thread 10 t)
+    (throw 'nl-bt--destroy nil))
+  (nl-bt-interrupt-thread
+   thread (lambda ()
+            (aset (nl-bt-current-thread) 10 t)
+            (throw 'nl-bt--destroy nil))))
+
+(defun nl-bt-thread-destroyed-p (thread)
+  "Return non-nil when THREAD ended through `nl-bt-destroy-thread'."
+  (aref thread 10))
 
 ;;; Locks
 

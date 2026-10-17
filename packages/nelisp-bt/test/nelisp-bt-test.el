@@ -155,4 +155,39 @@
     (should-not (nl-bt-atomic-integer-cas a 10 2))
     (should (= (nl-bt-atomic-integer-value a) 1))))
 
+;; On the emacs backend interrupts run at the target's nl-bt yields.
+(ert-deftest nelisp-bt-test-interrupt-runs-in-target ()
+  (let* ((stop (list nil))
+         (seen (list nil))
+         (th (nl-bt-make-thread
+              (lambda ()
+                (while (not (car stop)) (nl-bt-thread-yield))
+                'done))))
+    (nl-bt-thread-yield)
+    (should (eq (nl-bt-interrupt-thread
+                 th (lambda (x) (setcar seen (list x (nl-bt-current-thread)))) 7)
+                th))
+    (while (not (car seen)) (thread-yield))
+    (should (equal (car seen) (list 7 th)))
+    (setcar stop t)
+    (should (eq (nl-bt-join-thread th) 'done))
+    (should-not (nl-bt-interrupt-thread th #'ignore))))
+
+(ert-deftest nelisp-bt-test-destroy-thread ()
+  (let* ((cleaned (list nil))
+         (started (list nil))
+         (th (nl-bt-make-thread
+              (lambda ()
+                (unwind-protect
+                    (progn (setcar started t)
+                           (while t (nl-bt-thread-yield)))
+                  (setcar cleaned t))))))
+    ;; Destroy only once the cleanup is armed.
+    (while (not (car started)) (thread-yield))
+    (nl-bt-destroy-thread th)
+    (should (null (nl-bt-join-thread th)))
+    (should (car cleaned))
+    (should (nl-bt-thread-destroyed-p th))
+    (should-error (nl-bt-destroy-thread (nl-bt-current-thread)) :type 'nl-bt-error)))
+
 ;;; nelisp-bt-test.el ends here

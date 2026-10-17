@@ -211,8 +211,10 @@
              ;; the sole across-call local -- no new local is introduced (§11.14).
              (seq
               (setq status (nl_sf_while_step args env out 0))
+              ;; Doc 214 S7: the hook returns 1 when an interrupt function
+              ;; signalled; the loop then ends with that error.
               (if (= status 0)
-                  (nl_sf_while_midform_collect env 0 0 0)
+                  (setq status (nl_sf_while_midform_collect env 0 0 0))
                 0)))
            (if (= status 1)
                1

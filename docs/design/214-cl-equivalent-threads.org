@@ -223,3 +223,19 @@ no speedup), so the same code and ERT run on both.
   =garbage-collect= every 200): every live sample is intact, with 108
   parked collections on windows (340 s); it passes on linux as well.
   Every earlier smoke passes on both targets.
+- S7 (2026-10-18): =nl-bt-interrupt-thread=, =nl-bt-destroy-thread= and
+  =nl-bt-thread-destroyed-p=.  Each thread has an interrupt word (main:
+  bss; worker: env+1920), and the =while= back-edge checks it first.
+  When it is set, the thread evaluates =(nl-bt--run-interrupts)= in
+  place, and the hook's status now flows back into the loop, so an
+  interrupt function that signals or throws ends the loop with that
+  error.  Destroy queues a function that throws to the =catch= around
+  every thread body, so =unwind-protect= cleanups run; joining a
+  destroyed thread returns nil.  A thread blocked in a native wait (lock,
+  condition, semaphore) runs its interrupts once the wait returns, and
+  the main thread runs them while joining (20 ms slices).  On the emacs
+  backend interrupts run at the target's next nl-bt yield.
+  =tools/nelisp-bt-lifecycle-smoke.el=: BT-LIFE-PASS and
+  BT-INTERRUPT-PASS 3/3 on windows and on linux (an interrupted busy
+  worker carries on afterwards; a worker interrupts the joining main
+  thread; destroy runs the cleanup).  Host ERT: 18/18.

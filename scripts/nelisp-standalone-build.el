@@ -726,8 +726,8 @@ storage — not an arena reservation."
                        ;; nl_alloc_lock (24) + nl_thread_saved_eager (8) +
                        ;; nl_main_parked_rsp (8) + nl_gc_wanted (8) + pad +
                        ;; nl_main_parked_regs (64) + nl_gc_collector_regs (64) +
-                       ;; nl_main_wait_scratch (16).
-                       304)))
+                       ;; nl_main_wait_scratch (16) + nl_main_interrupt (8) + pad.
+                       320)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -820,6 +820,8 @@ storage — not an arena reservation."
             (nelisp-link-symbol "nl_gc_collector_regs" (+ off 224)
                                 :section 'bss :bind 'global :type 'object)
             (nelisp-link-symbol "nl_main_wait_scratch" (+ off 288)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_main_interrupt" (+ off 304)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -5579,18 +5581,33 @@ REPL-facing module it feeds."
     ;; OVERFLOW with 8 allocating threads).  A worker that finds one due
     ;; sets `nl_gc_wanted' and goes on; the main thread collects at its next
     ;; back-edge, with every worker parked.
+    ;;
+    ;; Doc 214 S7: it is also where a thread runs functions other threads
+    ;; queued for it (`nl-bt-interrupt-thread').  Returns the `while'
+    ;; status: 0 to go on, 1 when an interrupt function signalled (its
+    ;; signal is already stashed, so the loop propagates it).
     (defun nl_gc_backedge (env)
-      ;; Check the request word before anything else.
-      (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
-          (nl_thread_park_safepoint env)
-        (if (= (nl-main-thread-p) 1)
-            (if (= (ptr-read-u64 (data-addr nl_gc_wanted) 0) 1)
-                (seq (ptr-write-u64 (data-addr nl_gc_wanted) 0 0)
-                     (nl_gc_midform_run))
-              (nl_gc_midform_collect))
-          (if (= (nl_gc_midform_due) 1)
-              (ptr-write-u64 (data-addr nl_gc_wanted) 0 1)
-            0))))
+      (if (= (ptr-read-u64 (extern-call nl_thread_interrupt_word) 0) 0)
+          (nl_gc_backedge_gc env)
+        (seq
+         (ptr-write-u64 (extern-call nl_thread_interrupt_word) 0 0)
+         (if (= (extern-call nl_thread_run_interrupts env) 0)
+             (nl_gc_backedge_gc env)
+           1))))
+    (defun nl_gc_backedge_gc (env)
+      (seq
+       ;; Check the request word before anything else.
+       (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
+           (nl_thread_park_safepoint env)
+         (if (= (nl-main-thread-p) 1)
+             (if (= (ptr-read-u64 (data-addr nl_gc_wanted) 0) 1)
+                 (seq (ptr-write-u64 (data-addr nl_gc_wanted) 0 0)
+                      (nl_gc_midform_run))
+               (nl_gc_midform_collect))
+           (if (= (nl_gc_midform_due) 1)
+               (ptr-write-u64 (data-addr nl_gc_wanted) 0 1)
+             0)))
+       0))
     ;; Doc 214 S2: only the main thread starts a mid-form collection.  A
     ;; worker would request a park it can never satisfy (it does not park
     ;; itself), miss after the bounded wait, leave the watermark unchanged
@@ -21374,7 +21391,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp-thread-wait" "nelisp-thread-wake" "nelisp-thread-yield"
     "nelisp-thread-mutex-lock" "nelisp-thread-mutex-unlock"
     "nelisp-thread-cond-wait" "nelisp-thread-cond-notify"
-    "nelisp-thread-sem-wait"
+    "nelisp-thread-sem-wait" "nelisp-thread-interrupt-word"
     ;; Runtime symbol addresses and the environment pointer for the
     ;; in-process native loader (Doc 142 s6.4).
     "nelisp--native-symbol-addr" "nelisp--native-env")
@@ -26735,6 +26752,8 @@ matching the socket precedent."
     ;; No threads: the Doc 214 S5 write locks are no-ops.
     (_ (list '(defun nl_alloc_exhausted (want) (nl_alloc_grow_unlocked want))
              '(defun nl_gc_explicit (_env) (nl_gc_collect_from_recorded_roots 0))
+             '(defun nl_thread_interrupt_word () (data-addr nl_main_interrupt))
+             '(defun nl_thread_run_interrupts (_env) 0)
              '(defun nl_mirror_write_enter () 0)
              '(defun nl_mirror_write_exit (v) v)
              '(defun nl_intern_write_enter () 0)
@@ -27001,6 +27020,35 @@ with TlsSetValue; and the thread ends by returning from its entry."
                   (if (> r 0)
                       (seq (nl_alloc_zero_fill r 0 (- want 8)) r)
                     (nl_alloc_grow_unlocked want)))))))))
+     ;; Doc 214 S7: the calling thread's interrupt word (main: bss; a
+     ;; worker: env+1920).  Nonzero asks the thread to run its queued
+     ;; interrupt functions at its next loop back-edge.
+     '(defun nl_thread_interrupt_word ()
+        (if (= (nl-main-thread-p) 1)
+            (data-addr nl_main_interrupt)
+          (- (thread-block) 128)))
+     '(defun nl_thread_interrupt_word_impl (args out)
+        (seq (wf_write_int out (nl_thread_interrupt_word)) 0))
+     ;; Evaluate `(nl-bt--run-interrupts)' on this thread.  0 on success,
+     ;; 1 when it signalled or threw (the stash then holds that).
+     '(defun nl_thread_run_interrupts (env)
+        (let* ((name (alloc-bytes 32 1))
+               (sym (alloc-bytes 32 8))
+               (nil-slot (alloc-bytes 32 8))
+               (form (alloc-bytes 32 8))
+               (out (alloc-bytes 32 8)))
+          (seq
+           (ptr-write-u64 name 0 8227282072162364526)
+           (ptr-write-u64 name 8 8243122710531370613)
+           (ptr-write-u64 name 16 495874766194)
+           (nl_alloc_symbol name 21 sym)
+           (wf_write_nil nil-slot)
+           (cons-make sym nil-slot form)
+           (if (if (= (nelisp_eval_call form env out) 0)
+                   (= (ptr-read-u64 268435472 0) 0)
+                 0)
+               0
+             1))))
      ;; Doc 214 S6: `garbage-collect'.  The main thread collects at once; a
      ;; worker asks the main thread (`nl_gc_wanted') and waits, parkable, up
      ;; to 2 s for a parked collection to complete.
@@ -27498,7 +27546,8 @@ target the same installed names signal catchable
                  "nelisp-thread-yield"
                  "nelisp-thread-mutex-lock" "nelisp-thread-mutex-unlock"
                  "nelisp-thread-cond-wait" "nelisp-thread-cond-notify"
-                 "nelisp-thread-sem-wait")))
+                 "nelisp-thread-sem-wait"
+                 "nelisp-thread-interrupt-word")))
     (if (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64))
         (list
          `((:lit "nelisp-thread-shared-alloc") .
@@ -27534,7 +27583,9 @@ target the same installed names signal catchable
          `((:lit "nelisp-thread-cond-notify") .
            (nl_thread_cond_notify_impl args out))
          `((:lit "nelisp-thread-sem-wait") .
-           (nl_thread_sem_wait_impl args env out)))
+           (nl_thread_sem_wait_impl args env out))
+         `((:lit "nelisp-thread-interrupt-word") .
+           (nl_thread_interrupt_word_impl args out)))
       (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
         (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
 
