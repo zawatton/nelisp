@@ -16204,15 +16204,32 @@ UTF-8 -- that rule is unconditional and independent of
 `print-escape-nonascii' (which this runtime binds for `boundp' parity but
 does not yet gate any behavior on, since the Doc 200 rule already forces
 the stricter octal form GNU's flag would only opt into)."
-  (if (and (>= (length s) 64) (fboundp 'nelisp--repr)
+  (if (and (fboundp 'nelisp--repr)
            (not print-escape-control-characters)
-           (or (unibyte-string-p s) (= (length s) (string-bytes s)))
-           (not (string-search "\r" s)) (not (string-search "\t" s))
-           (not (string-search "\f" s))
-           (or print-escape-newlines (not (string-search "\n" s))))
-      ;; The existing tagged-string printer copies long runs without allocating
-      ;; one Lisp string/cons per byte. Its restricted domain is byte-identical.
-      (substring (nelisp--repr s) 1 -1)
+           (or (not print-escape-multibyte) (unibyte-string-p s)
+               (= (length s) (string-bytes s)))
+           ;; Presence tests: the native scanner returns a byte index, which
+           ;; is enough for an ASCII needle in any string.  `string-search'
+           ;; itself costs about 100 us per call interpreted.
+           (not (nelisp--string-search "\r" s 0))
+           (not (nelisp--string-search "\t" s 0))
+           (not (nelisp--string-search "\f" s 0)))
+      ;; The existing tagged-string printer copies runs without allocating one
+      ;; Lisp string/cons per character; the loop below costs about 75 us per
+      ;; character interpreted.  In this domain its output is byte-identical
+      ;; (non-ASCII verbatim, unibyte and raw bytes in octal), except that it
+      ;; always writes a newline as `\n': without `print-escape-newlines',
+      ;; print each line through it and rejoin with literal newlines.
+      (if (or print-escape-newlines (not (nelisp--string-search "\n" s 0)))
+          (substring (nelisp--repr s) 1 -1)
+        (let ((bytewise (or (unibyte-string-p s) (= (length s) (string-bytes s))))
+              (start 0) (parts nil) (nl nil))
+          (while (setq nl (if bytewise (nelisp--string-search "\n" s start)
+                            (string-search "\n" s start)))
+            (push (substring (nelisp--repr (substring s start nl)) 1 -1) parts)
+            (setq start (1+ nl)))
+          (push (substring (nelisp--repr (substring s start)) 1 -1) parts)
+          (mapconcat #'identity (nreverse parts) "\n")))
     (let ((chunks (cons nil nil))
         (i 0)
         (n (length s))
