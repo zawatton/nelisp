@@ -17202,9 +17202,43 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq (nelisp_cons_construct car lst cell)
                       (setq lst cell)
                       (setq k (- k 1)))))
-             (let* ((arc (nl_apply_function fslot lst env out)))
-               (if (/= arc 0) arc
-                 (seq (ptr-write-u64 resw 0 (nl_val_store_word out)) 0))))))))
+             (let* ((arc (m5_fx_call_direct fslot lst argc env out)))
+               (seq
+                (if (= arc -3) (setq arc (nl_apply_function fslot lst env out)) 0)
+                (if (/= arc 0) arc
+                  (seq (ptr-write-u64 resw 0 (nl_val_store_word out)) 0)))))))))
+    ;; VM code calling a function whose closure the VM covers runs it here,
+    ;; skipping `nl_apply_function's dispatch; the backtrace frame is the
+    ;; one that path pushes.  -3: not covered (or declined at entry), the
+    ;; caller applies FN as usual.  Same conditions as
+    ;; `nl_apply_lambda_inner': a closure capturing nothing, not in the
+    ;; dynamic-binding mode.
+    (defun m5_fx_call_direct (fn lst argc env out)
+      (if (/= (ptr-read-u64 fn 0) 7) -3
+        (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0) -3
+          (let* ((head (nl_cons_car_ptr fn)))
+            (if (/= (ptr-read-u64 head 0) 4) -3
+              (if (/= (nl_apply_name_eq_closure head) 1) -3
+                (let* ((c1 (nl_cons_cdr_ptr fn)))
+                  (if (/= (ptr-read-u64 c1 0) 7) -3
+                    (let* ((captured (nl_cons_car_ptr c1)) (c2 (nl_cons_cdr_ptr c1)))
+                      (if (/= (ptr-read-u64 c2 0) 7) -3
+                        (if (/= (ptr-read-u64 captured 0) 7) -3
+                          (if (/= (nl_cons_car_word captured) 7) -3
+                            (if (/= (nl_cons_cdr_word captured) 3) -3
+                              (let* ((rec (nl_fx_lookup (nl_cons_cdr_ptr c2) env)))
+                                (if (= rec 0) -3
+                                  (if (/= (sar (nl_vector_slot_word rec 2) 2) argc) -3
+                                    (m5_fx_call_rec rec fn lst argc env out)))))))))))))))))
+    (defun m5_fx_call_rec (rec fn lst argc env out)
+      (let* ((frame (nl_n4_push env fn lst 1)))
+        (m5_fx_call_rec_done
+         (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+                    env out lst argc)
+         env out frame)))
+    (defun m5_fx_call_rec_done (st env out frame)
+      (if (= st -1) (nl_n4_finish 0 env out frame)
+        (nl_seq2 (nl_n4_finish 1 env out frame) st)))
     ;; The frame (locals, operand stack, result word) is the data of a fresh
     ;; Lisp vector held in a rootstack slot for the run, so the collector
     ;; traces every word precisely -- an alloc-bytes block was protected
@@ -17342,29 +17376,33 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.
     (defun nl_fx_lookup (body env)
-      (let* ((buf (alloc-bytes 16 1)) (sym (alloc-bytes 32 8)) (tbl (alloc-bytes 32 8)))
+      (let* ((tbl (alloc-bytes 32 8)) (entry (nl_fx_tbl_entry)))
         (seq
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
-         (let* ((entry (nl_fx_tbl_entry)))
-           (if (/= entry 0) (record-slot-ref entry 0 tbl)
-             (seq (nl_alloc_symbol buf 16 sym)
-                  (if (/= (nl_env_lookup_val sym env tbl) 0) (ptr-write-u64 tbl 0 0)
-                    (if (= (bf_hash_table_p_raw tbl) 1)
-                        (nl_fx_tbl_entry_put (nelisp_mirror_lookup_entry (+ env 0) sym))
-                      0)))))
-         (if (= (ptr-read-u64 tbl 0) 0) 0
-           (if (/= (bf_hash_table_p_raw tbl) 1) 0
+         ;; A cached entry was a hash table when found; the prelude never
+         ;; rebinds it, so only the cons tag is rechecked.
+         (if (/= entry 0)
+             (seq (record-slot-ref entry 0 tbl)
+                  (if (/= (ptr-read-u64 tbl 0) 7) (ptr-write-u64 tbl 0 0) 0))
+           (let* ((buf (alloc-bytes 16 1)) (sym (alloc-bytes 32 8)))
              (seq
-              (nl_ht_identity_sync tbl)
-              (let* ((data (nl_ht_data_slot tbl))
-                     (mode (nl_ht_test_mode tbl))
-                     (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
-                (if (= entry 0) 0
-                  (let* ((w (nl_cons_cdr_word entry)))
-                    (if (= (logand w 1) 0)
-                        (if (= (ptr-read-u64 w 0) 8) w 0)
-                      0))))))))))
+              (ptr-write-u64 buf 0 3255381746650998126)
+              (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
+              (nl_alloc_symbol buf 16 sym)
+              (if (/= (nl_env_lookup_val sym env tbl) 0) (ptr-write-u64 tbl 0 0)
+                (if (= (bf_hash_table_p_raw tbl) 1)
+                    (nl_fx_tbl_entry_put (nelisp_mirror_lookup_entry (+ env 0) sym))
+                  (ptr-write-u64 tbl 0 0))))))
+         (if (= (ptr-read-u64 tbl 0) 0) 0
+           (seq
+            (nl_ht_identity_sync tbl)
+            (let* ((data (nl_ht_data_slot tbl))
+                   (mode (nl_ht_test_mode tbl))
+                   (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
+              (if (= entry 0) 0
+                (let* ((w (nl_cons_cdr_word entry)))
+                  (if (= (logand w 1) 0)
+                      (if (= (ptr-read-u64 w 0) 8) w 0)
+                    0)))))))))
     ;; Run REC = [CODE NLOCALS NPARAMS] on ARGS (a list).  -3: wrong arity,
     ;; left to the interpreter so it signals as usual.
     (defun m5_fx_apply (rec args env out)
