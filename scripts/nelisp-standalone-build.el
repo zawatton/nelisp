@@ -559,7 +559,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 16 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -886,6 +886,10 @@ storage — not an arena reservation."
     ;; image were free blocks at load (see `nl_boot_hole_map_build').
     (list (nelisp-link-symbol "nl_boot_hole_map"
                               (+ (nelisp-standalone--catch-head-offset) 8 128)
+                              :section 'bss :bind 'global :type 'object))
+    ;; `nelisp--fx-table' value cache, see `nl_fx_tbl_cached'.
+    (list (nelisp-link-symbol "nl_fx_tbl_cache"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32)
                               :section 'bss :bind 'global :type 'object))
     ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
     (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
@@ -5616,6 +5620,24 @@ REPL-facing module it feeds."
            (let* ((slot (+ base (* (nl_fvcache_hash args_ptr) 24))))
              (nl_fvcache_store_claim
               (ptr-read-u64 slot 0) slot args_ptr filter_ptr)))))))
+    ;; eval-core: the global-mirror entry of `nelisp--fx-table', read by
+    ;; `nl_fx_lookup' on every call into the word VM.  Looking the variable
+    ;; up by name costs ~14k instructions; the entry record holds the live
+    ;; value box (a copy of the box goes stale once the table rehashes).
+    ;; Compaction moves the entry and bumps `nl_mxcache_epoch', so an entry
+    ;; from an older epoch is looked up afresh.  Layout {entry@0, epoch@8};
+    ;; entry 0 = empty.
+    (defun nl_fx_tbl_entry ()
+      (if (= (ptr-read-u64 (data-addr nl_fx_tbl_cache) 8)
+             (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
+          (ptr-read-u64 (data-addr nl_fx_tbl_cache) 0)
+        0))
+    (defun nl_fx_tbl_entry_put (entry)
+      (seq
+       (ptr-write-u64 (data-addr nl_fx_tbl_cache) 0 0)
+       (ptr-write-u64 (data-addr nl_fx_tbl_cache) 8 (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
+       (ptr-write-u64 (data-addr nl_fx_tbl_cache) 0 entry)
+       0))
     (defun nl_fvcache_mark_one (base i epoch)
       (let* ((slot (+ base (* i 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) epoch)
@@ -17293,8 +17315,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq
          (ptr-write-u64 buf 0 3255381746650998126)
          (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
-         (nl_alloc_symbol buf 16 sym)
-         (if (/= (nl_env_lookup_val sym env tbl) 0) 0
+         (let* ((entry (nl_fx_tbl_entry)))
+           (if (/= entry 0) (record-slot-ref entry 0 tbl)
+             (seq (nl_alloc_symbol buf 16 sym)
+                  (if (/= (nl_env_lookup_val sym env tbl) 0) (ptr-write-u64 tbl 0 0)
+                    (if (= (bf_hash_table_p_raw tbl) 1)
+                        (nl_fx_tbl_entry_put (nelisp_mirror_lookup_entry (+ env 0) sym))
+                      0)))))
+         (if (= (ptr-read-u64 tbl 0) 0) 0
            (if (/= (bf_hash_table_p_raw tbl) 1) 0
              (seq
               (nl_ht_identity_sync tbl)
