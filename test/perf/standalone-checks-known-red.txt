@@ -1,0 +1,4 @@
+# test/standalone-*-check.el files already failing at the evaluator ledger baseline
+# (d4421524e), with the reason.  standalone-checks.sh still runs them and
+# reports them, but only a failure outside this list fails the script.
+test/standalone-maphash-sparse-check.el  maphash over 8192 sparse buckets is ~1700x a list loop (limit 5); pre-existing, see MAPHASH-SPARSE

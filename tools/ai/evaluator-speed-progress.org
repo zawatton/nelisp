@@ -1,0 +1,68 @@
+#+TITLE: NeLisp evaluator per-form cost
+#+NOTE: Objective (user, 2026-10-17): make the interpreter's per-form cost
+#+NOTE: several times smaller.  Baseline on the ccore line at d4421524e:
+#+NOTE: 69,090 instructions per iteration of (while (< i n) (setq i (1+ i)))
+#+NOTE: (GNU Emacs needs a few hundred); per iteration 21 nl_alloc_bytes, 68
+#+NOTE: special-form name compares (nl_sp_eq_lit), 38 thread-registry walks,
+#+NOTE: 11 fnv1a name hashes.  Wall clock: empty loop iteration 5.1 us, a
+#+NOTE: 3-argument defun call 16.4 us, funcall of a lambda 14.3 us.
+#+NOTE: Stage S1 adds caches that do not change what the GC sees; S2 removes
+#+NOTE: per-read boxing and per-call scratch allocation (GC rooting work);
+#+NOTE: S3 is automatic native tier-up of hot user functions.
+#+NOTE: Checks: test/perf/eval-bench.el (wall clock, best of three, run one
+#+NOTE: at a time with load < 4) and test/perf/eval-callgrind.py check, which
+#+NOTE: reads target/perf/eval-callgrind.json written by
+#+NOTE: `eval-callgrind.py record $EVAL_BIN target/perf/eval-callgrind.json'
+#+NOTE: (several minutes) and refuses a record from another binary.
+
+* S1 Dispatch caches (no GC change)
+** S1.1 A special-form head is recognized without comparing its name to each special form: at most 5 nl_sp_eq_lit calls per loop iteration (was 68)
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/eval-callgrind.json --max nl_sp_eq_lit=5
+** S1.2 Single-threaded root reservation and safepoints skip the thread-registry walk: at most 8 per iteration (was 38)
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/eval-callgrind.json --max nl_thread_registry_find=8
+** S1.3 An empty loop iteration takes at most 3.5 us (was 5.1)
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=empty-loop LIMIT=3.5 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
+** S1.4 A 3-argument defun call adds at most 11 us (was 16.4)
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=defun-call-3 LIMIT=11 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
+** S1.5 Every test/standalone-*-check.el still passes
+#+TIMEOUT: 600
+#+REQUIRES: EVAL_BIN
+cmd: test/perf/standalone-checks.sh
+** S1.6 End to end: at most 46,000 instructions per loop iteration (1.5x)
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/eval-callgrind.json --max instr=46000
+
+* S2 Allocation (GC rooting work)
+** S2.1 Reading a car or cdr does not allocate: at most 3 nl_alloc_bytes per loop iteration (was 21)
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/eval-callgrind.json --max nl_alloc_bytes=3
+** S2.2 An empty loop iteration takes at most 2 us
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=empty-loop LIMIT=2 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
+** S2.3 A 3-argument defun call adds at most 6 us
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=defun-call-3 LIMIT=6 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
+** S2.4 (aref s i) adds at most 1 us
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=aref-loop LIMIT=1 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
+** S2.5 Every test/standalone-*-check.el still passes
+#+TIMEOUT: 600
+#+REQUIRES: EVAL_BIN
+cmd: test/perf/standalone-checks.sh
+** S2.6 End to end: at most 23,000 instructions per loop iteration (3x), and the autocad per-line aref scan of its fixture takes at most 2 s
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/eval-callgrind.json --max instr=23000
+#+TIMEOUT: 150
+cmd: AUTOCAD_PERF_BIN="$EVAL_BIN" test/perf/autocad-bench.sh aref-lines-fixture
+
+* S3 Native tier-up of hot user functions
+** S3.1 A user defun called past a threshold is native-compiled without an explicit install call
+pending
+** S3.2 A tiered-up string-scanning loop runs at least 5x faster than interpreted, results identical
+pending
+** S3.3 End to end: the autocad tokenizer (test/perf/autocad-bench.sh tokenize-fixture) finishes in at most 5 s
+pending
