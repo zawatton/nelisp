@@ -848,25 +848,22 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
 	    (cons result-form nil))))))
 
 (defmacro dotimes (spec &rest body)
-  "(dotimes (VAR COUNT [RESULT]) BODY...) - iterate VAR from 0 below COUNT."
+  "(dotimes (VAR COUNT [RESULT]) BODY...) - iterate VAR from 0 below COUNT.
+GNU 31's expansion: a hidden counter, and VAR freshly bound per
+iteration, so a closure in BODY captures that iteration's value and
+BODY assigning VAR does not change the iteration count."
   (let* ((var (car spec))
-         (count-form (car (cdr spec)))
-         (result-form (car (cdr (cdr spec)))))
-    (cons 'let*
-          (cons
-           (cons (cons '--nl-dotimes-limit (cons count-form nil))
-                 (cons (cons var (cons 0 nil)) nil))
-           (cons
-            (cons 'while
-                  (cons (cons '< (cons var (cons '--nl-dotimes-limit nil)))
-                        (append body
-                                (cons
-                                 (cons 'setq
-                                       (cons var
-                                             (cons (cons '1+ (cons var nil))
-                                                   nil)))
-                                 nil))))
-            (cons result-form nil))))))
+         (upper-bound (make-symbol "upper-bound"))
+         (counter (make-symbol "counter")))
+    (cons 'let
+          (cons (list (list upper-bound (car (cdr spec)))
+                      (list counter 0))
+                (cons (list 'while (list '< counter upper-bound)
+                            (cons 'let (cons (list (list var counter)) body))
+                            (list 'setq counter (list '1+ counter)))
+                      (if (cdr (cdr spec))
+                          (list (cons 'let (cons (list (list var counter))
+                                                 (cdr (cdr spec)))))))))))
 
 (defmacro defun (name args &rest body)
   "(defun NAME ARGS BODY...) installs a closure and returns NAME.\nThe standalone reader routes this expansion through `defalias' so\nexplicit autoload loads can preserve prior function definitions."
