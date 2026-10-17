@@ -108,6 +108,22 @@ land in §93.b; here LOCAL is permitted to shadow LOCAL silently
     (puthash name sym symtab)
     symtab))
 
+(defun nelisp-link--maybe-write-map (symtab)
+  "Write SYMTAB as \"0xVALUE NAME\" lines to $NELISP_LINK_MAP when set.
+A debugging aid for mapping crash addresses to functions; no-op otherwise."
+  (let ((path (getenv "NELISP_LINK_MAP")))
+    (when (and path (not (string-empty-p path)))
+      (let (rows)
+        (maphash (lambda (name entry)
+                   (when (integerp (plist-get entry :value))
+                     (push (cons (plist-get entry :value) name) rows)))
+                 symtab)
+        (with-temp-file path
+          (dolist (r (sort rows (lambda (a b) (< (car a) (car b)))))
+            (insert (format "0x%x %s
+" (car r) (cdr r)))))
+        (message "[link-map] %d symbols -> %s" (length rows) path)))))
+
 (defun nelisp-link-symtab-lookup (symtab name)
   "Return the symbol-table entry for NAME, or nil if absent."
   (gethash name symtab))
@@ -904,6 +920,7 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
          (link-result (nelisp-link-units-2pass all-units layout))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
+         (_map (nelisp-link--maybe-write-map symtab))
          (text (nelisp-link--bytes-or-empty bytes 'text))
          (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
          (data (concat (nelisp-link--bytes-or-empty bytes 'data)
@@ -969,6 +986,7 @@ sections of a writable __DATA segment."
          (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
+         (_map (nelisp-link--maybe-write-map symtab))
          (text (nelisp-link--bytes-or-empty bytes 'text))
          (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
          (data (nelisp-link--bytes-or-empty bytes 'data))

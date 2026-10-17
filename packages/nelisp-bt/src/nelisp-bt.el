@@ -308,8 +308,10 @@ thread."
   (if (nl-bt--native-p)
       (let ((done (aref thread 4)))
         (when done
+          ;; 20 ms slices: each pass through this loop is a back-edge where
+          ;; the main thread runs collections workers asked for.
           (while (= 0 (nelisp-thread-atomic-read done))
-            (nelisp-thread-wait done 0 -1))))
+            (nelisp-thread-wait done 0 20))))
     (when (aref thread 7) (thread-join (aref thread 7))))
   (nl-bt--reap thread)
   (if (eq (aref thread 2) 'failed)

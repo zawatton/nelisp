@@ -979,7 +979,7 @@ nodes while their constructors are migrated."
          ;; as a tagged integer.  `alloc-bytes' is also used for Sexp storage,
          ;; but that storage is passed directly to native helpers, never as a
          ;; dispatcher value, so the pointer representation is still correct.
-         ((memq kind '(alloc-bytes addr-of data-addr thread-block)) 'raw-ptr)
+         ((memq kind '(alloc-bytes addr-of data-addr thread-block save-callee-regs)) 'raw-ptr)
          ((memq kind '(sexp-int-make)) 'sexp-ptr)
          ((memq kind '(let-rt let-rt-n let))
           (nelisp-aot-compiler--ir-repr
@@ -1009,6 +1009,7 @@ faithfully retain either representation in its frame slot."
     (addr-of . 97)
     (data-addr . 99)
     (thread-block . 109)
+    (save-callee-regs . 110)
     (data-blob . 102)
     (arith . 1)
     (aot-root-scope . 92)
@@ -11494,6 +11495,16 @@ functions `((NAME . ARITY) ...)'."
       (signal 'nelisp-aot-compiler-error
               (list :thread-block-takes-no-arguments sexp)))
     (nelisp-aot-compiler--make-ir 'thread-block))
+   ;; (save-callee-regs PTR) -- store the callee-saved GPRs into the 64 bytes
+   ;; at PTR and return PTR (Doc 214 S6).  A collector's conservative scan
+   ;; reads them, since outer frames may keep live pointers in registers
+   ;; no inner frame has spilled (on win64 RSI/RDI as well).
+   ((and (consp sexp) (eq (car sexp) 'save-callee-regs))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :save-callee-regs-arity sexp)))
+    (nelisp-aot-compiler--make-ir 'save-callee-regs
+          :ptr (nelisp-aot-compiler--parse-value (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
@@ -13650,6 +13661,8 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-data-addr node buf))
       ((= tag 109)              ; thread-block — per-thread state base
        (nelisp-aot-compiler--emit-thread-block node buf))
+      ((= tag 110)              ; save-callee-regs
+       (nelisp-aot-compiler--emit-save-callee-regs node buf))
       ((= tag 5)                ; call
        (nelisp-aot-compiler--emit-call node buf))
       ((= tag 23)               ; extern-call
@@ -14180,6 +14193,23 @@ is `fs:[0]'.  aarch64 has no thread blocks yet."
     ;; MOV rax, fs:[0]
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string #x64 #x48 #x8B #x04 #x25 #x00 #x00 #x00 #x00)))))
+
+(defun nelisp-aot-compiler--emit-save-callee-regs (node buf)
+  "Emit `save-callee-regs': PTR into rax, then RBX RBP RSI RDI R12-R15 to
+[rax+0..56].  RSI/RDI are callee-saved only on win64, but storing them
+everywhere is harmless and keeps one layout.  Doc 214 S6."
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
+  ;; aarch64 targets have no thread blocks or workers yet: PTR only.
+  (unless (eq nelisp-aot-compiler--arch 'aarch64)
+   (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x89 #x58 #x00    ; mov [rax+0],  rbx
+                       #x48 #x89 #x68 #x08    ; mov [rax+8],  rbp
+                       #x48 #x89 #x70 #x10    ; mov [rax+16], rsi
+                       #x48 #x89 #x78 #x18    ; mov [rax+24], rdi
+                       #x4C #x89 #x60 #x20    ; mov [rax+32], r12
+                       #x4C #x89 #x68 #x28    ; mov [rax+40], r13
+                       #x4C #x89 #x70 #x30    ; mov [rax+48], r14
+                       #x4C #x89 #x78 #x38)))) ; mov [rax+56], r15
 
 (defun nelisp-aot-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.

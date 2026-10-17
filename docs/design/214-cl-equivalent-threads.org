@@ -194,3 +194,32 @@ no speedup), so the same code and ERT run on both.
   Not yet serialised: =put=/=setplist= (one global plist hash table),
   =provide= and ordinary Lisp hash tables, all unsynchronised like
   SBCL's non-:synchronized tables.
+- S6 (2026-10-18): collections inside a section are sound, and the arena
+  grows there.  Each defect was found by a crash, and each fix was
+  confirmed against it:
+  - Parked workers' native stacks were never scanned.  A worker now
+    records its stack top (env+2032) at start, and its rsp (env+2040) and
+    callee-saved registers (env+1952, the new =save-callee-regs= IR op)
+    when it parks.  The collector scans them, plus its own registers.
+    The 4-thread lock run that crashed 1 in 3 crashed 0 in 10.
+  - Waits allocated their OS argument (timespec / WaitOnAddress compare
+    buffer).  A thread waiting for =nl_alloc_lock= re-entered the
+    allocator and recursed until STATUS_STACK_OVERFLOW (located with cdb
+    and the new opt-in link map, =NELISP_LINK_MAP=).  Wait scratch is now
+    per-thread memory (env+1928 / bss).
+  - Collections run on the main thread, whose 1 GiB stack the recursive
+    marker needs.  A worker that finds one due sets =nl_gc_wanted=;
+    =garbage-collect= in a worker asks and waits, parkable, up to 2 s.
+    The main thread parks for, and collects at, its loop back-edges;
+    =nl-bt-join-thread= waits in 20 ms slices so that it gets back-edges.
+    The main thread's frame ring is always marked.  A missed park clears
+    the allocation debt, so it backs off instead of retrying every
+    iteration.
+  - Chunk exhaustion takes =nl_alloc_lock=: retry the bump, then reuse
+    from the free list, then grow.  The section no longer needs its
+    8 MiB headroom precondition, and END returns 1.  Eager free-list
+    pushes are switched off while a section is open.
+  =tools/nelisp-bt-gc-smoke.el= (8 threads x 600 iterations, a worker
+  =garbage-collect= every 200): every live sample is intact, with 108
+  parked collections on windows (340 s); it passes on linux as well.
+  Every earlier smoke passes on both targets.

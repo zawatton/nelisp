@@ -104,7 +104,7 @@ cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-global-smoke.el | grep -q 'BT
 
 * S6 Unbounded allocation and GC from any thread
 
-** S6.1 Threads allocating 2 GB total in aggregate with GC triggered from workers complete (windows)
+** S6.1 8 allocating threads with collections due mid-run and worker-requested GCs keep every live sample intact (windows)
 #+REQUIRES: NELISP_BT_WIN_BIN
 #+TIMEOUT: 600
 cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-bt-gc-smoke.el | grep -q 'BT-GC-PASS'

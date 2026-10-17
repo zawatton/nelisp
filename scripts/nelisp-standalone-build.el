@@ -722,8 +722,12 @@ storage — not an arena reservation."
                        (if (nelisp-standalone--callsite-enabled-p) 32 0)
                        ;; Doc 214: nl_tls_index (8) + nl_main_tcb (16) +
                        ;; nl_tls_rsp_index (8) + nl_thread_retired (8) +
-                       ;; nl_mirror_lock (24) + nl_intern_lock (24) + pad.
-                       112)))
+                       ;; nl_mirror_lock (24) + nl_intern_lock (24) +
+                       ;; nl_alloc_lock (24) + nl_thread_saved_eager (8) +
+                       ;; nl_main_parked_rsp (8) + nl_gc_wanted (8) + pad +
+                       ;; nl_main_parked_regs (64) + nl_gc_collector_regs (64) +
+                       ;; nl_main_wait_scratch (16).
+                       304)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -796,6 +800,26 @@ storage — not an arena reservation."
             (nelisp-link-symbol "nl_mirror_lock" (+ off 40)
                                 :section 'bss :bind 'global :type 'object)
             (nelisp-link-symbol "nl_intern_lock" (+ off 64)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_alloc_lock" (+ off 88)
+                                :section 'bss :bind 'global :type 'object)
+            ;; The eager free-list push flag (+224) saved across a section.
+            (nelisp-link-symbol "nl_thread_saved_eager" (+ off 112)
+                                :section 'bss :bind 'global :type 'object)
+            ;; The main thread's rsp while it is parked for a worker's
+            ;; collection (0 otherwise).
+            (nelisp-link-symbol "nl_main_parked_rsp" (+ off 120)
+                                :section 'bss :bind 'global :type 'object)
+            ;; 1 when a worker found a collection due (the main thread runs it).
+            (nelisp-link-symbol "nl_gc_wanted" (+ off 128)
+                                :section 'bss :bind 'global :type 'object)
+            ;; Callee-saved registers of the parked main thread and of the
+            ;; collecting thread, for the conservative scan.
+            (nelisp-link-symbol "nl_main_parked_regs" (+ off 160)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_gc_collector_regs" (+ off 224)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_main_wait_scratch" (+ off 288)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -2117,13 +2141,18 @@ directory tracks the tree rather than accumulating every key ever built."
               (let* ((cur_chunk (ptr-read-u64 268436168 0))
                      (obj (nl_chunk_try_alloc cur_chunk want)))
                 (if (= obj 0)
-                    (let* ((new_chunk (nl_chunk_alloc_new want)))
-                      (if (= new_chunk 0)
+                    (let* ((grown (extern-call nl_alloc_exhausted want)))
+                      (if (= grown 0)
                           (nl_seq2 (nl_os_alloc_fail) 0)
-                        (nl_alloc_diag_bump
-                         (nl_chunk_try_alloc new_chunk want))))
+                        (nl_alloc_diag_bump grown)))
                   (nl_alloc_diag_bump obj)))
             reused)))))
+    ;; The single-threaded chunk-exhausted path: append a chunk and bump in
+    ;; it.  With workers registered, `nl_alloc_exhausted' (Doc 214 S6)
+    ;; serialises this and tries the free lists first.
+    (defun nl_alloc_grow_unlocked (want)
+      (let* ((new_chunk (nl_chunk_alloc_new want)))
+        (if (= new_chunk 0) 0 (nl_chunk_try_alloc new_chunk want))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     ;; Doc 146 §3.0: immediates-only tagged-word value helpers (foundation,
     ;; stage 1 -- additive; no caller yet, so the runtime is unchanged).  A
@@ -4398,6 +4427,26 @@ REPL-facing module it feeds."
         (ptr-write-u64 state 24 0)
         (ptr-write-u64 state 32 (logand flags 6))
         1))
+    ;; Doc 214 S6: a parked worker's native stack holds in-flight boxes the
+    ;; precise roots do not cover, exactly like the main stack; scan
+    ;; [parked rsp (env+2040), its stack top (env+2032)).  Workers that are
+    ;; not parked (retired, or not yet started) have rsp 0.
+    (defun nl_gc_conserv_scan_workers (i n)
+      (if (>= i n) 0
+        (let* ((env (ptr-read-u64 (extern-call nl_thread_registry_entry i) 0)))
+          (seq
+           (if (> env 4095)
+               (if (> (ptr-read-u64 env 2040) 0)
+                   (if (> (ptr-read-u64 env 2032) (ptr-read-u64 env 2040))
+                       (seq
+                        (nl_gc_conserv_scan (ptr-read-u64 env 2040)
+                                            (ptr-read-u64 env 2032))
+                        ;; ... and its callee-saved registers (env+1952..2016).
+                        (nl_gc_conserv_scan (+ env 1952) (+ env 2016)))
+                     0)
+                 0)
+             0)
+           (nl_gc_conserv_scan_workers (+ i 1) n)))))
     (defun nl_gc_conserv_maybe ()
       ;; This phase runs before any precise mark.  If queue allocation or
       ;; validation fails, finish rolls back every mark4 and the caller skips
@@ -4405,7 +4454,30 @@ REPL-facing module it feeds."
       (if (= (ptr-read-u64 268436464 0) 1)
           (if (= (nl_gc_conserv_begin) 0) 0
             (let ((top (ptr-read-u64 268436456 0)))
-              (if (> top 0) (nl_gc_conserv_scan (aot-current-sp) top) 0)
+              ;; Doc 214 S6: live pointers outer frames still hold in
+              ;; callee-saved registers are on no stack yet.
+              (nl_gc_conserv_scan
+               (save-callee-regs (data-addr nl_gc_collector_regs))
+               (+ (data-addr nl_gc_collector_regs) 64))
+              (if (= (nl-main-thread-p) 1)
+                  (if (> top 0) (nl_gc_conserv_scan (aot-current-sp) top) 0)
+                ;; Doc 214 S6: a worker collects.  Its own stack runs from
+                ;; here to the top it recorded at start (env+2032 = its
+                ;; block - 16); the parked main thread's from its published
+                ;; rsp to the driver-entry top.
+                (seq
+                 (nl_gc_conserv_scan (aot-current-sp)
+                                     (ptr-read-u64 (- (thread-block) 16) 0))
+                 (if (if (> top 0)
+                         (> (ptr-read-u64 (data-addr nl_main_parked_rsp) 0) 0)
+                       0)
+                     (seq
+                      (nl_gc_conserv_scan
+                       (ptr-read-u64 (data-addr nl_main_parked_rsp) 0) top)
+                      (nl_gc_conserv_scan (data-addr nl_main_parked_regs)
+                                          (+ (data-addr nl_main_parked_regs) 64)))
+                   0)))
+              (nl_gc_conserv_scan_workers 0 (extern-call nl_thread_registry_used))
               (nl_gc_conserv_drain)
               (if (= (nl_gc_conserv_failed_p) 1)
                   (seq (nl_gc_conserv_finish) 0)
@@ -5406,8 +5478,11 @@ REPL-facing module it feeds."
     ;; through the thread registry walk).
     (defun nl_gc_mark_ring (ring)
       (nl_gc_mark_ring_from ring 0 (ptr-read-u64 ring 0)))
+    ;; Doc 214 S6: the main thread's ring, whichever thread collects; every
+    ;; worker's ring (the collecting worker's included) is marked by the
+    ;; registry walk.
     (defun nl_gc_mark_recorded_contexts ()
-      (nl_gc_mark_ring (nl-gc-ring)))
+      (nl_gc_mark_ring (data-addr nl_gc_loop_ctx)))
     ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
     ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
     (defun nl_gc_mark_symentry ()
@@ -5447,6 +5522,10 @@ REPL-facing module it feeds."
       ;; untouched: sweeping a partially indexed/marked heap is unsafe.
       (if (= (nl_gc_index_prepare) 0) 0
         (nl_gc_collect_recorded_mark_sweep_body mode)))
+    ;; Doc 214 S6: a missed park (some thread did not reach a safepoint in
+    ;; time, e.g. the main thread inside a long OS call) clears the allocation
+    ;; debt, so the next attempt waits for another debt's worth of allocation
+    ;; instead of repeating the bounded wait on every loop back-edge.
     (defun nl_gc_collect_recorded_parked (mode)
       (if (= (nl_thread_park_request_begin) 1)
           (nl_seq2
@@ -5454,7 +5533,7 @@ REPL-facing module it feeds."
            (nl_seq2
             (nl_thread_park_request_end)
             (nl_thread_park_collect_succeeded)))
-        0))
+        (nl_seq2 (ptr-write-u64 (data-addr nl_gc_stats) 0 0) 0)))
     (defun nl_gc_collect_from_recorded_roots (mode)
       ;; Tier 3b replaces the bounded-section refusal with a real park
       ;; barrier.  `active' is checked independently of ctx+24 so a missing
@@ -5494,24 +5573,32 @@ REPL-facing module it feeds."
     ;; those collections almost never ran (every request missed), so this
     ;; keeps that behaviour until Doc 214 S6 makes them sound.  The section's
     ;; chunk headroom (`nl_thread_section_chunk') bounds the garbage.
+    ;;
+    ;; Doc 214 S6: collections run on the main thread, whose 1 GiB stack the
+    ;; recursive marker needs (a worker's 64 MiB overflowed: STATUS_STACK_
+    ;; OVERFLOW with 8 allocating threads).  A worker that finds one due
+    ;; sets `nl_gc_wanted' and goes on; the main thread collects at its next
+    ;; back-edge, with every worker parked.
     (defun nl_gc_backedge (env)
-      (if (= (nl-main-thread-p) 1)
-          (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
-              0
-            (nl_gc_midform_collect))
-        ;; Check the request word before the registry scan.
-        (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
-            (nl_thread_park_safepoint env)
-          0)))
+      ;; Check the request word before anything else.
+      (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
+          (nl_thread_park_safepoint env)
+        (if (= (nl-main-thread-p) 1)
+            (if (= (ptr-read-u64 (data-addr nl_gc_wanted) 0) 1)
+                (seq (ptr-write-u64 (data-addr nl_gc_wanted) 0 0)
+                     (nl_gc_midform_run))
+              (nl_gc_midform_collect))
+          (if (= (nl_gc_midform_due) 1)
+              (ptr-write-u64 (data-addr nl_gc_wanted) 0 1)
+            0))))
     ;; Doc 214 S2: only the main thread starts a mid-form collection.  A
     ;; worker would request a park it can never satisfy (it does not park
     ;; itself), miss after the bounded wait, leave the watermark unchanged
     ;; and pay that wait again on every `while' back-edge.  Worker-started
     ;; collection is Doc 214 S6.
-    (defun nl_gc_midform_collect ()
-      (if (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-              (= (nl-main-thread-p) 1)
-            0)
+    ;; 1 when a mid-form collection is armed and due.
+    (defun nl_gc_midform_due ()
+      (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
           ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
           ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
           (if (if (< (ptr-read-u64 268436184 0)
@@ -5519,6 +5606,11 @@ REPL-facing module it feeds."
                   (if (= (nl_gc_debt_due) 0) 1 0)
                 0)
               0
+            1)
+        0))
+    (defun nl_gc_midform_collect ()
+      (if (= (nl_gc_midform_due) 1) (nl_gc_midform_run) 0))
+    (defun nl_gc_midform_run ()
              (nl_seq2 (nl_gc_collect_from_recorded_roots 0)
              ;; Recorded collection holds ctx+24 while it marks/sweeps, so its
              ;; embedded reclaim traversal must refuse.  Once the collector
@@ -5534,7 +5626,6 @@ REPL-facing module it feeds."
                                       (+ (ptr-read-u64 268436184 0) 16777216))
                        (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                                       (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
-        0))
     (defun nl_gc_index_mark_roots (ctx result out pool src cursor bsym)
       (if (= (nl_gc_index_prepare) 0) 0
         (seq
@@ -6519,7 +6610,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "nelisp--arena-value-survival") . (bf_arena_value_survival args out))
-    ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
+    ((:lit "garbage-collect") . (seq (extern-call nl_gc_explicit env)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--debug-switch") . (bf_debug_switch args out))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
@@ -16138,7 +16229,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; `ptr-read-u8' / `ptr-write-u8' walk.
     ((:lit "ptr-read-bytes") . (nl_bi_ptr_read_bytes args out))
     ((:lit "ptr-write-bytes") . (nl_bi_ptr_write_bytes args out))
-    ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
+    ((:lit "garbage-collect") . (seq (extern-call nl_gc_explicit env)
                                      (bf_arena_stats out)))
     )
    nelisp-standalone--process-posix-dispatch-arms
@@ -26642,7 +26733,9 @@ matching the socket precedent."
                       (nelisp-standalone--thread-forms-linux))
         (nelisp-standalone--thread-forms-windows))))
     ;; No threads: the Doc 214 S5 write locks are no-ops.
-    (_ (list '(defun nl_mirror_write_enter () 0)
+    (_ (list '(defun nl_alloc_exhausted (want) (nl_alloc_grow_unlocked want))
+             '(defun nl_gc_explicit (_env) (nl_gc_collect_from_recorded_roots 0))
+             '(defun nl_mirror_write_enter () 0)
              '(defun nl_mirror_write_exit (v) v)
              '(defun nl_intern_write_enter () 0)
              '(defun nl_intern_write_exit (v) v)))))
@@ -26660,7 +26753,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
   (list
    ;; Doc 214 S4: WaitOnAddress compares the low 32 bits, like futex(2).
    '(defun nl_thread_os_wait (addr expected ms)
-      (let* ((cmp (alloc-bytes 8 8)))
+      (let* ((cmp (nl_thread_wait_scratch)))
         (seq
          (ptr-write-u32 cmp 0 expected)
          (extern-call WaitOnAddress addr cmp 4 ms)
@@ -26702,8 +26795,11 @@ with TlsSetValue; and the thread ends by returning from its entry."
    '(defun nl_thread_win_entry (launch)
       (seq
        (if (> (ptr-read-u64 launch 40) 0)
-           (extern-call TlsSetValue (ptr-read-u64 (data-addr nl_tls_index) 0)
-                        (+ (ptr-read-u64 launch 40) 2048))
+           (seq
+            (extern-call TlsSetValue (ptr-read-u64 (data-addr nl_tls_index) 0)
+                         (+ (ptr-read-u64 launch 40) 2048))
+            ;; Doc 214 S6: the stack top the collector scans down to.
+            (ptr-write-u64 (ptr-read-u64 launch 40) 2032 (aot-current-sp)))
          0)
        (ptr-write-u64 launch 32 1)
        (nl_thread_worker_registry_call
@@ -26884,13 +26980,59 @@ with TlsSetValue; and the thread ends by returning from its entry."
                    (nl_thread_mutex_release w)
                    v))
           v))
+     ;; Doc 214 S6: the allocator's chunk-exhausted path.  With no worker it
+     ;; is the old append-and-bump.  With workers, under nl_alloc_lock:
+     ;; bump again (another thread may have appended a chunk), then reuse a
+     ;; free-list block (sections turn ordinary reuse off, so without this a
+     ;; collection's freed blocks were never reused while threads ran and
+     ;; the heap only grew), then append a chunk.  Only exhausted
+     ;; allocations pay for the lock; the bump fast path stays lock-free.
+     '(defun nl_alloc_exhausted (want)
+        (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+            (nl_alloc_grow_unlocked want)
+          (nl_glock_exit
+           (data-addr nl_alloc_lock)
+           (seq
+            (nl_glock_enter (data-addr nl_alloc_lock))
+            (let* ((again (nl_chunk_try_alloc (ptr-read-u64 268436168 0) want)))
+              (if (> again 0)
+                  again
+                (let* ((r (nl_freelist_take want)))
+                  (if (> r 0)
+                      (seq (nl_alloc_zero_fill r 0 (- want 8)) r)
+                    (nl_alloc_grow_unlocked want)))))))))
+     ;; Doc 214 S6: `garbage-collect'.  The main thread collects at once; a
+     ;; worker asks the main thread (`nl_gc_wanted') and waits, parkable, up
+     ;; to 2 s for a parked collection to complete.
+     '(defun nl_gc_explicit (env)
+        (if (= (nl-main-thread-p) 1)
+            (nl_gc_collect_from_recorded_roots 0)
+          (let* ((done (+ (data-addr nl_thread_parallel_ctx) 56))
+                 (seen (ptr-read-u64 done 0))
+                 (left 2000))
+            (seq
+             (ptr-write-u64 (data-addr nl_gc_wanted) 0 1)
+             (while (if (= (ptr-read-u64 done 0) seen) (> left 0) 0)
+               (setq left (nl_thread_wait_slice done seen left env)))
+             0))))
      '(defun nl_mirror_write_enter () (nl_glock_enter (data-addr nl_mirror_lock)))
      '(defun nl_mirror_write_exit (v) (nl_glock_exit (data-addr nl_mirror_lock) v))
      '(defun nl_intern_write_enter () (nl_glock_enter (data-addr nl_intern_lock)))
      '(defun nl_intern_write_exit (v) (nl_glock_exit (data-addr nl_intern_lock) v))
+     ;; Doc 214 S6: 16 bytes of per-thread scratch for an OS wait's
+     ;; argument (timespec / WaitOnAddress compare value).  Waits must not
+     ;; allocate: a thread waiting for nl_alloc_lock re-entered the
+     ;; allocator from inside its own wait, waited for the lock again, and
+     ;; recursed until its stack overflowed (STATUS_STACK_OVERFLOW, 8
+     ;; allocating threads on windows-x86_64).  Main: a bss slot; a worker:
+     ;; env+1928, below its saved registers.
+     '(defun nl_thread_wait_scratch ()
+        (if (= (nl-main-thread-p) 1)
+            (data-addr nl_main_wait_scratch)
+          (- (thread-block) 120)))
      ;; Doc 214 S4 OS waits: futex(2) on the low 32 bits, private.
      '(defun nl_thread_os_wait (addr expected ms)
-        (let* ((ts (alloc-bytes 16 8)))
+        (let* ((ts (nl_thread_wait_scratch)))
           (seq
            (ptr-write-u64 ts 0 0)
            (ptr-write-u64 ts 8 (* ms 1000000))
@@ -27141,7 +27283,10 @@ with TlsSetValue; and the thread ends by returning from its entry."
          ;; Lisp runs; arch_prctl(ARCH_SET_FS, env+3072).  GC-free workers
          ;; never touch the stash and keep the inherited FS.
          (if (> (ptr-read-u64 launch 40) 0)
-             (syscall-direct 158 4098 (+ (ptr-read-u64 launch 40) 3072) 0 0 0 0)
+             (seq
+              (syscall-direct 158 4098 (+ (ptr-read-u64 launch 40) 3072) 0 0 0 0)
+              ;; Doc 214 S6: the stack top the collector scans down to.
+              (ptr-write-u64 (ptr-read-u64 launch 40) 2032 (aot-current-sp)))
            0)
          (ptr-write-u64 launch 32 1)
          (nl_thread_worker_registry_call
@@ -27261,17 +27406,18 @@ with TlsSetValue; and the thread ends by returning from its entry."
          (nl_thread_join_wait
           (wf_argval args 0) (wf_argval args 1) env 0)
          out 0 0))
-     ;; Begin/end the bounded parallel section (the public primitive retains
-     ;; its historical `gc-inhibit' name).  BEGIN (nonzero arg):
-     ;; require 8 MiB free in the current chunk, snapshot that descriptor,
-     ;; disable the sweep free-list so every allocator uses the CAS bump path,
-     ;; then set nl_gc_loop_ctx.in_progress@+24.  END (zero arg): clear the GC
-     ;; gate, restore the prior free-list flag, and return 1 only if the current
-     ;; chunk is still the snapshotted chunk (no racy growth path was reached).
+     ;; Begin/end the parallel section (the public primitive keeps its
+     ;; historical `gc-inhibit' name).  BEGIN (nonzero arg): snapshot the
+     ;; current chunk, turn off ordinary free-list reuse and eager frees so
+     ;; the fast path is the lock-free CAS bump, and set
+     ;; nl_gc_loop_ctx.in_progress@+24 so only the parked collector runs.
+     ;; Doc 214 S6: the arena may grow inside a section; chunk exhaustion
+     ;; takes `nl_alloc_exhausted' (locked reuse, then growth).  END (zero
+     ;; arg): undo all of that and return 1.
      '(defun nl_thread_gc_inhibit_begin () (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1))
      ;; Doc 214 S2: the current chunk, grown first when it has less than
-     ;; 64 MiB free.  A section cannot grow the arena (S6 lifts that), so
-     ;; its whole allocation must fit the chunk it starts in.  Windows
+     ;; 64 MiB free.  Since S6 a section may grow the arena, but starting
+     ;; with headroom keeps workers on the lock-free bump path.  Windows
      ;; chunks are 64 MiB and the loaded prelude nearly fills the first one;
      ;; a 512 MiB chunk is only reserved there (pages commit on demand), so
      ;; the headroom is cheap.  Runs before any worker exists, so the
@@ -27287,16 +27433,15 @@ with TlsSetValue; and the thread ends by returning from its entry."
         (let* ((requested (wf_argval args 0)))
           (if (= requested 0)
               (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
-                  (let* ((same
-                          (if (= (ptr-read-u64
-                                  (data-addr nl_thread_parallel_ctx) 8)
-                                 (ptr-read-u64 268436168 0))
-                              1 0)))
+                  (progn
                     (seq
                      (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
                      (ptr-write-u64
                       268435624 0
                       (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 0))
+                     ;; Doc 214 S6: workers are gone; eager frees may resume.
+                     (ptr-write-u64 268435680 0
+                                    (ptr-read-u64 (data-addr nl_thread_saved_eager) 0))
                      ;; All workers joined.  Clear before reopening lookups.
                      (nl_aref_cache_clear)
                      (ptr-write-u64
@@ -27306,19 +27451,22 @@ with TlsSetValue; and the thread ends by returning from its entry."
                      ;; registry reset; entries need not be individually
                      ;; scrubbed because the count is the publication bound.
                      (nl_thread_registry_clear)
-                     (wf_write_int out same)
+                     (wf_write_int out 1)
                      0))
                 (seq (wf_write_int out 0) 0))
             (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
                 (seq (wf_write_int out (- 0 16)) 0)
               (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 1)
                   (seq (wf_write_int out (- 0 16)) 0)
-                (let* ((chunk (nl_thread_section_chunk))
-                       (cursor (ptr-read-u64 (nl_chunk_cursor_addr chunk) 0))
-                       (size (ptr-read-u64 (+ chunk 8) 0)))
-                  (if (> (+ cursor 8388608) size)
-                      (seq (wf_write_int out (- 0 12)) 0)
+                (let* ((chunk (nl_thread_section_chunk)))
+                  (progn
                     (seq
+                     ;; Doc 214 S6: eager free-list pushes (from special-form
+                     ;; name predicates) are plain stores; no worker may make
+                     ;; them concurrently.  Saved here, restored at END.
+                     (ptr-write-u64 (data-addr nl_thread_saved_eager) 0
+                                    (ptr-read-u64 268435680 0))
+                     (ptr-write-u64 268435680 0 0)
                      ;; No worker exists yet.  Start the bypass epoch empty.
                      (nl_aref_cache_clear)
                      (ptr-write-u64

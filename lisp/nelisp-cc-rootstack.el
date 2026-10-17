@@ -250,17 +250,44 @@
                 (+ (data-addr nl_thread_parallel_ctx) 24) 0)
                1)
             (seq
+             ;; Doc 214 S6: publish this stack's live extent, and the
+             ;; callee-saved registers outer frames may hold pointers in,
+             ;; for the collector's conservative scan before counting as
+             ;; parked.
+             (save-callee-regs (+ (ptr-read-u64 entry 0) 1952))
+             (ptr-write-u64 (ptr-read-u64 entry 0) 2040 (aot-current-sp))
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32) 1)
              (while (= (atomic-fetch-add
                         (+ (data-addr nl_thread_parallel_ctx) 24) 0)
                        1)
                0)
+             (ptr-write-u64 (ptr-read-u64 entry 0) 2040 0)
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32)
                                (- 0 1))
              1)
           0)))
+    ;; Doc 214 S6: the main thread is not in the registry but parks for a
+    ;; worker's collection, publishing its rsp for the conservative scan.
+    ;; It never meets its own request here: the main thread requests only
+    ;; from inside a collection, which reaches no safepoint.
+    (defun nl_thread_park_main ()
+      (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
+          (seq
+           (save-callee-regs (data-addr nl_main_parked_regs))
+           (ptr-write-u64 (data-addr nl_main_parked_rsp) 0 (aot-current-sp))
+           (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32) 1)
+           (while (= (atomic-fetch-add
+                      (+ (data-addr nl_thread_parallel_ctx) 24) 0)
+                     1)
+             0)
+           (ptr-write-u64 (data-addr nl_main_parked_rsp) 0 0)
+           (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32) (- 0 1))
+           1)
+        0))
     (defun nl_thread_park_safepoint (env)
-      (nl_thread_park_safepoint_at (nl_thread_registry_find env)))
+      (if (= (nl-main-thread-p) 1)
+          (nl_thread_park_main)
+        (nl_thread_park_safepoint_at (nl_thread_registry_find env))))
     (defun nl_root_mark_at (env entry)
       (if (= entry 0)
           (ptr-read-u64 (data-addr nl_rootstack_top) 0)
