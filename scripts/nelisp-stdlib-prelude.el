@@ -4536,11 +4536,13 @@ some, or `syntax-table' properties are consulted.  Scanners ask once per
 call; when nil, only a `<' or `!' class can start a comment and only a
 `>' or `!' can end one, which spares a flag lookup per character."
   (or parse-sexp-lookup-properties
+      ;; Another layer's table: assume flags, ask its `nelisp--syntax-flags'.
+      (not (nelisp--syntax-native-table-p table))
       (let ((tbl table) (found nil))
-        (while (and tbl (not found))
-          (let ((h (if (recordp tbl) (aref tbl 3) (nelisp--syntax-table-flags tbl))))
+        (while (and (not found) (nelisp--syntax-native-table-p tbl))
+          (let ((h (gethash tbl nelisp--syntax-flag-store)))
             (setq found (and h (> (hash-table-count h) 0))
-                  tbl (if (recordp tbl) (aref tbl 2) (nelisp--syntax-table-parent tbl)))))
+                  tbl (aref tbl 2))))
         found)))
 
 (defun nelisp--syntax-comment-style (main other)
@@ -13799,13 +13801,11 @@ and a set-initial `]'."
 block comment above).  ENTRIES is a character-code -> class-char
 hash-table private to this instance; PARENT is another
 `nelisp--syntax-table' consulted when ENTRIES has no entry for a given
-character, or nil at the top of the chain.  FLAGS is nil until an
-entry with comment flags is set, then a character-code -> flag-bits
-hash (see `nelisp--syntax-parse-flags'); a character missing from it
-inherits PARENT's flags."
+character, or nil at the top of the chain.  Comment flags live in
+`nelisp--syntax-flag-store', not in a slot: the emacs-lib layer recognizes
+this record by its length of 3."
   entries
-  parent
-  flags)
+  parent)
 
 (defun nelisp--syntax-make-table (&optional parent)
   "Fresh, empty `nelisp--syntax-table' with its own ENTRIES hash --
@@ -13877,26 +13877,37 @@ class-char, e.g. `?w'/`?_'/`?\\('/`?\\)'/`?\\\"'/`?\\\\'/`?<'/`?>'/`?\\''/
             i (1+ i)))
     f))
 
+(defvar nelisp--syntax-flag-store (make-hash-table :test 'eq :weakness 'key)
+  "Syntax table -> (character -> flag bits) for this file's own tables.")
+
+(defun nelisp--syntax-native-table-p (table)
+  "Non-nil if TABLE is this file's own `nelisp--syntax-table' record."
+  (and (recordp table) (eq (aref table 0) 'nelisp--syntax-table)))
+
 (defun nelisp--syntax-flags (table ch)
-  "Flag bits of character CH in TABLE, walking its PARENT chain; 0 if none."
+  "Flag bits of character CH in TABLE, walking its PARENT chain; 0 if none.
+Only this file's own tables carry flags here; a layer with its own
+syntax tables (emacs-lib's char-tables) replaces this function, as it
+replaces `nelisp--syntax-lookup'."
   (let ((tbl table) (hit nil))
-    (while (and tbl (null hit))
-      (let ((h (if (recordp tbl) (aref tbl 3) (nelisp--syntax-table-flags tbl))))
+    (while (and (null hit) (nelisp--syntax-native-table-p tbl))
+      (let ((h (gethash tbl nelisp--syntax-flag-store)))
         (when h (setq hit (gethash ch h))))
-      (setq tbl (if (recordp tbl) (aref tbl 2) (nelisp--syntax-table-parent tbl))))
+      (setq tbl (aref tbl 2)))
     (or hit 0)))
 
 (defun nelisp--syntax-set-flags (table ch flags)
   "Give CH the flag bits FLAGS in TABLE, shadowing any PARENT flags."
-  (let ((h (nelisp--syntax-table-flags table)))
-    (if (or (/= flags 0)
-            (/= (nelisp--syntax-flags (nelisp--syntax-table-parent table) ch) 0))
-        (progn
-          (unless h
-            (setq h (make-hash-table :test 'eq))
-            (setf (nelisp--syntax-table-flags table) h))
-          (puthash ch flags h))
-      (when h (remhash ch h)))))
+  (when (nelisp--syntax-native-table-p table)
+    (let ((h (gethash table nelisp--syntax-flag-store)))
+      (if (or (/= flags 0)
+              (/= (nelisp--syntax-flags (aref table 2) ch) 0))
+          (progn
+            (unless h
+              (setq h (make-hash-table :test 'eq))
+              (puthash table h nelisp--syntax-flag-store))
+            (puthash ch flags h))
+        (when h (remhash ch h))))))
 
 (defun nelisp--syntax-parse-class (descriptor)
   "Leading class char of DESCRIPTOR, normalised the way `char-syntax'
@@ -14018,10 +14029,12 @@ It is a copy of the TABLE, which defaults to the standard syntax table.
 
 (fn &optional TABLE)"
     (setq table (or table (standard-syntax-table)))
-    (make-nelisp--syntax-table
-     :entries (copy-hash-table (nelisp--syntax-table-entries table))
-     :flags (let ((h (nelisp--syntax-table-flags table))) (and h (copy-hash-table h)))
-     :parent (or (nelisp--syntax-table-parent table) (standard-syntax-table)))))
+    (let ((copy (make-nelisp--syntax-table
+                 :entries (copy-hash-table (nelisp--syntax-table-entries table))
+                 :parent (or (nelisp--syntax-table-parent table) (standard-syntax-table))))
+          (flags (gethash table nelisp--syntax-flag-store)))
+      (when flags (puthash copy (copy-hash-table flags) nelisp--syntax-flag-store))
+      copy)))
 
 (unless (fboundp 'set-syntax-table)
   (defun set-syntax-table (table)
