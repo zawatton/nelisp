@@ -21213,6 +21213,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp-thread-shared-alloc" "nelisp-thread-atomic-add"
     "nelisp-thread-atomic-read" "nelisp-thread-spawn"
     "nelisp-thread-join" "nelisp-thread-gc-inhibit"
+    "nelisp-thread-worker-sexp"
     ;; Runtime symbol addresses and the environment pointer for the
     ;; in-process native loader (Doc 142 s6.4).
     "nelisp--native-symbol-addr" "nelisp--native-env")
@@ -26629,13 +26630,13 @@ with TlsSetValue; and the thread ends by returning from its entry."
    '(defun nl_thread_spawn_impl (args env out)
       (let* ((worker_id (wf_argval args 0))
              (requested_top (wf_argval args 1))
-             (a0 (if (= worker_id 2) (wf_arg_ptr args 2) (wf_argval args 2)))
+             (a0 (if (= (nl_thread_eval_worker_p worker_id) 1) (wf_arg_ptr args 2) (wf_argval args 2)))
              (a1 (wf_argval args 3))
              (a2 (wf_argval args 4))
-             (worker_env (if (= worker_id 2) (nl_thread_private_env_make env) 0))
+             (worker_env (if (= (nl_thread_eval_worker_p worker_id) 1) (nl_thread_private_env_make env) 0))
              (launch (if (if (= requested_top 0)
                              (if (= worker_id 1) 1
-                               (if (= worker_id 2) (> worker_env 4095) 0))
+                               (if (= (nl_thread_eval_worker_p worker_id) 1) (> worker_env 4095) 0))
                            0)
                          (nl_thread_os_map 4096)
                        0)))
@@ -26661,7 +26662,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
           (seq
            (wf_write_int out
                          (if (= requested_top 0)
-                             (if (= worker_id 2)
+                             (if (= (nl_thread_eval_worker_p worker_id) 1)
                                  (if (< worker_env 0) worker_env (- 0 12))
                                (- 0 22))
                            (- 0 22)))
@@ -26766,12 +26767,42 @@ with TlsSetValue; and the thread ends by returning from its entry."
               (- 0 1001)))
            (atomic-fetch-add done 1)
            0)))
+     ;; Doc 214 S3: ID 3 evaluates like ID 2 but keeps the full result.
+     ;; RESULT is two words: +0 status (1 value, 2 error), +8 the worker
+     ;; env, which `nelisp-thread-worker-sexp' reads the value (env+128) or
+     ;; the error TAG/VAL (the worker's thread block) from.  The status and
+     ;; handle stores precede the SeqCst done increment.
+     '(defun nl_thread_worker_eval_handle (form result done env)
+        (let* ((out (+ env 128))
+               (rc (nelisp_eval_call form env out)))
+          (seq
+           (ptr-write-u64 result 8 env)
+           (ptr-write-u64
+            result 0
+            (if (if (= rc 0) (= (ptr-read-u64 268435472 0) 0) 0) 1 2))
+           (atomic-fetch-add done 1)
+           0)))
+     '(defun nl_thread_eval_worker_p (worker_id)
+        (if (= worker_id 2) 1 (if (= worker_id 3) 1 0)))
      '(defun nl_thread_worker_registry_call (worker_id a0 a1 a2 env)
         (if (= worker_id 1)
             (nl_thread_worker_sum a0 a1 a2)
           (if (= worker_id 2)
               (nl_thread_worker_eval a0 a1 a2 env)
-            0)))
+            (if (= worker_id 3)
+                (nl_thread_worker_eval_handle a0 a1 a2 env)
+              0))))
+     ;; HANDLE OFFSET -> a copy of the Sexp a finished ID 3 worker left at
+     ;; HANDLE+OFFSET: 128 its value, 2072 its error TAG, 2104 its error VAL.
+     ;; Read it before the section ends: until then no collection can free it.
+     '(defun nl_thread_worker_sexp_impl (args out)
+        (let* ((handle (wf_argval args 0))
+               (off (wf_argval args 1)))
+          (if (if (> handle 4095)
+                  (if (= off 128) 1 (if (= off 2072) 1 (= off 2104)))
+                0)
+              (seq (nl_sexp_clone_into (+ handle off) out) 0)
+            (seq (wf_write_int out (- 0 22)) 0))))
      ;; `nl_thread_clone_dispatch' has already established a clean native
      ;; frame on the clone stack before calling this entry.  ACK releases the
      ;; parent's short spawn handshake only after no child code can reference
@@ -26840,15 +26871,15 @@ with TlsSetValue; and the thread ends by returning from its entry."
      '(defun nl_thread_spawn_impl (args env out)
         (let* ((worker_id (wf_argval args 0))
                (requested_top (wf_argval args 1))
-               (a0 (if (= worker_id 2)
+               (a0 (if (= (nl_thread_eval_worker_p worker_id) 1)
                        (wf_arg_ptr args 2)
                      (wf_argval args 2)))
                (a1 (wf_argval args 3))
                (a2 (wf_argval args 4))
-               (worker_env (if (= worker_id 2)
+               (worker_env (if (= (nl_thread_eval_worker_p worker_id) 1)
                                (nl_thread_private_env_make env)
                              0))
-               (stack_size (if (= worker_id 2) 67108864 65536))
+               (stack_size (if (= (nl_thread_eval_worker_p worker_id) 1) 67108864 65536))
                (stack_base
                 (if (= requested_top 0)
                     (syscall-direct 9 0 stack_size 3 34 (- 0 1) 0)
@@ -26859,7 +26890,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
                   requested_top)))
           (if (if (= worker_id 1)
                   (> stack_top 64)
-                (if (= worker_id 2)
+                (if (= (nl_thread_eval_worker_p worker_id) 1)
                     (if (> worker_env 4095) (> stack_top 64) 0)
                   0))
               (let* ((launch (- stack_top 64)))
@@ -26875,7 +26906,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
                   launch out)))
             (seq
              (wf_write_int out
-                           (if (= worker_id 2)
+                           (if (= (nl_thread_eval_worker_p worker_id) 1)
                                (if (< worker_env 4096)
                                    (if (< worker_env 0) worker_env (- 0 12))
                                  (if (< stack_base 0) stack_base (- 0 22)))
@@ -26984,7 +27015,8 @@ target the same installed names signal catchable
                  "nelisp-thread-atomic-read"
                  "nelisp-thread-spawn"
                  "nelisp-thread-join"
-                 "nelisp-thread-gc-inhibit")))
+                 "nelisp-thread-gc-inhibit"
+                 "nelisp-thread-worker-sexp")))
     (if (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64))
         (list
          `((:lit "nelisp-thread-shared-alloc") .
@@ -26998,7 +27030,9 @@ target the same installed names signal catchable
          `((:lit "nelisp-thread-join") .
            (nl_thread_join_impl args env out))
          `((:lit "nelisp-thread-gc-inhibit") .
-           (nl_thread_gc_inhibit_impl args out)))
+           (nl_thread_gc_inhibit_impl args out))
+         `((:lit "nelisp-thread-worker-sexp") .
+           (nl_thread_worker_sexp_impl args out)))
       (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
         (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
 
