@@ -19,11 +19,15 @@ name: CI
 #   - verify:     downloads every job's `gate-reports-*' artifact and
 #                 checks the union against tools/ai/gates.expected.
 
+# Push-triggered runs are limited to main (user decision 2026-10-17): work
+# branches pushed many times a day queued full matrices that were mostly
+# cancelled.  Other branches run through a pull request or manual dispatch.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: ['**']
+  workflow_dispatch:
 
 jobs:
   # Fast ratchet/inventory pass, Linux only, run BEFORE the full matrix.
