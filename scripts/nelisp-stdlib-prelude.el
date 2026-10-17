@@ -13603,13 +13603,18 @@ parity here will have to extend this."
   "Class char for character CH in TABLE, walking TABLE's PARENT chain
 on a miss and falling back to `nelisp--syntax-default-class' past the
 top of it."
-  (let ((tbl table))
-    (catch 'nelisp--syntax-found
-      (while tbl
-        (let ((hit (gethash ch (nelisp--syntax-table-entries tbl) nelisp--syntax-miss)))
-          (unless (eq hit nelisp--syntax-miss) (throw 'nelisp--syntax-found hit)))
-        (setq tbl (nelisp--syntax-table-parent tbl)))
-      (nelisp--syntax-default-class ch))))
+  ;; Every scanner calls this once per character.  The struct accessors
+  ;; cost about 25 us each interpreted and the catch/throw more: 230 us per
+  ;; lookup, 0.6 ms per character of `forward-sexp'.  A table is a record
+  ;; [tag ENTRIES PARENT]; read its slots directly.
+  (let ((tbl table) (hit nelisp--syntax-miss))
+    (while (and tbl (eq hit nelisp--syntax-miss))
+      (if (recordp tbl)
+          (setq hit (gethash ch (aref tbl 1) nelisp--syntax-miss)
+                tbl (aref tbl 2))
+        (setq hit (gethash ch (nelisp--syntax-table-entries tbl) nelisp--syntax-miss)
+              tbl (nelisp--syntax-table-parent tbl))))
+    (if (eq hit nelisp--syntax-miss) (nelisp--syntax-default-class ch) hit)))
 
 (defun nelisp--syntax-put (table ch class)
   "Set character CH's class in TABLE directly to CLASS (already a
