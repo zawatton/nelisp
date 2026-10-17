@@ -24989,6 +24989,27 @@ Never signals: a failure leaves NAME to the interpreter."
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
 
+(defvar nelisp--fx-errored nil
+  "(NAME . TRIES) whose compilation signalled.
+Loading macroexp.el replaces `macroexpand-all' before the helpers it calls
+exist, so every function defined meanwhile fails to expand; they are
+compiled again after the next compilation that succeeds.")
+(defvar nelisp--fx-tries 0)
+(defvar nelisp--fx-compiled-ok nil)
+
+(defun nelisp--fx-retry-errored ()
+  (when (and nelisp--fx-compiled-ok nelisp--fx-errored)
+    (let ((queue nelisp--fx-errored))
+      (setq nelisp--fx-errored nil)
+      (dolist (e queue)
+        (let ((fn (and (fboundp (car e)) (symbol-function (car e)))))
+          (when (and (consp fn) (eq (car fn) 'closure)
+                     (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
+            (remhash (nthcdr 3 fn) nelisp--fx-table)
+            (let ((nelisp--fx-tries (cdr e)))
+              (nelisp--fx-register (car e))))))))
+  (setq nelisp--fx-compiled-ok nil))
+
 (defvar nelisp--fx-missing nil
   "Set by `nelisp--fx-compile' to the undefined function that stopped it.")
 
@@ -25021,9 +25042,16 @@ Defining it as a function compiles them again.")
                      (not (memq '&optional args)) (not (memq '&rest args))
                      (not (cl-some #'nelisp--fx-special-p args))
                      (not (gethash body nelisp--fx-table)))
-            (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil)
+            (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
+                   ;; Expanding here is an optimisation the user never asked
+                   ;; for: macroexp's warnings (a compiler macro failing
+                   ;; early in startup) must not reach the output.
+                   (inhibit-message t)
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
-                        (error nil))))
+                        (error (setq failed t) nil))))
+              (if c (setq nelisp--fx-compiled-ok t)
+                (when (and failed (< nelisp--fx-tries 3))
+                  (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
                 (dolist (op nelisp--fx-called)
                   (unless (memq name (gethash op nelisp--fx-callees))
@@ -25044,10 +25072,11 @@ Defining it as a function compiles them again.")
             (when (symbolp name)
               (nelisp--fx-check-macro name)
               (nelisp--fx-register name)
-              (nelisp--fx-retry-waiters name))))))
+              (nelisp--fx-retry-waiters name)
+              (condition-case nil (nelisp--fx-retry-errored) (error nil)))))))
 
-;; A function that compiled code calls is now a macro: drop every compiled
-;; body, leaving them to the interpreter.  `defmacro' installs through
+;; A function that compiled code calls is now a macro: compile its callers
+;; again, expanding the macro.  `defmacro' installs through
 ;; `fset', not `nl-afset', so both are watched.
 (defun nelisp--fx-check-macro (name)
   (let ((callers (gethash name nelisp--fx-callees)))
