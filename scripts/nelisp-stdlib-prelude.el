@@ -24986,6 +24986,9 @@ Never signals: a failure leaves NAME to the interpreter."
   (condition-case nil (nelisp--fx-register-1 name) (error nil))
   name)
 
+(defvar nelisp--fx-next-index 0
+  "Registration index of the next compiled record (see NELISP_FX_RANGE).")
+
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
 
@@ -25058,8 +25061,27 @@ Defining it as a function compiles them again.")
                     (push name (gethash op nelisp--fx-callees)))))
               (when (and (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
                 (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
-              (puthash body (if c (vector (car c) (cdr c) (length args)) 'none)
+              (puthash body (if c
+                                (prog1 (vector (car c) (cdr c) (length args)
+                                               nelisp--fx-next-index name)
+                                  (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
+                              'none)
                        nelisp--fx-table))))))))
+
+(defun nelisp--fx-count ()
+  "Number of compiled records registered so far (indices 0 .. count-1)."
+  nelisp--fx-next-index)
+
+(defun nelisp--fx-index-name (index)
+  "Name of the function whose compiled record has INDEX, or nil.
+With NELISP_FX_RANGE=LO:HI in the environment at startup, only records
+with LO <= index < HI run on the VM: bisect a divergence over them."
+  (catch 'found
+    (maphash (lambda (_body rec)
+               (when (and (vectorp rec) (> (length rec) 4) (eq (aref rec 3) index))
+                 (throw 'found (aref rec 4))))
+             nelisp--fx-table)
+    nil))
 
 ;; Every `defun' (the prelude's and GNU byte-run's alike) and `defalias'
 ;; reaches `nl-afset' through the native `defalias' special form, so the

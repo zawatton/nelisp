@@ -559,7 +559,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 24 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 40 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -1317,6 +1317,27 @@ walker reads whatever happens to be on the stack."
                   0)
               0)
           0))
+      ;; NELISP_FX_RANGE=LO:HI (decimal): only compiled records whose
+      ;; registration index is in [LO, HI) run on the word VM -- a bisect
+      ;; over compiled functions against one heap image.
+      (defun nl_fx_range_probe_bytes (ptr eqpos end)
+        (if (= eqpos 15)
+            (if (= (ptr-read-u64 ptr 0) 5070860024084710734)
+                (if (= (logand (ptr-read-u64 ptr 8) 72057594037927935) 19500174821973848)
+                    (nl_fx_range_parse ptr (+ eqpos 1) end 0 0 0)
+                  0)
+              0)
+          0))
+      ;; Digits accumulate into ACC; a ':' moves ACC to LO.  Malformed input
+      ;; leaves the range off.
+      (defun nl_fx_range_parse (ptr i end acc lo seen)
+        (if (>= i end)
+            (if (= seen 1) (if (> acc lo) (nl_fx_range_set lo acc) 0) 0)
+          (let* ((b (ptr-read-u8 ptr i)))
+            (if (= b 58)
+                (if (= seen 0) (nl_fx_range_parse ptr (+ i 1) end 0 acc 1) 0)
+              (if (if (< b 48) 1 (if (> b 57) 1 0)) 0
+                (nl_fx_range_parse ptr (+ i 1) end (+ (* acc 10) (- b 48)) lo seen))))))
       (defun nl_alloc_check_env_probe_bytes (ptr eqpos end)
         (if (= eqpos 18)
             (if (= (ptr-read-u32 ptr 0) ,w0)
@@ -1352,6 +1373,7 @@ walker reads whatever happens to be on the stack."
                   (seq
                    (nl_alloc_check_env_probe_bytes ptr eqpos end)
                    (nl_fx_env_probe_bytes ptr eqpos end)
+                   (nl_fx_range_probe_bytes ptr eqpos end)
                    (nl_posix_environ_walk sp (+ i 1) rest)
                    (nelisp_cons_construct pair rest out))))))))
       (defun nl_os_environ_init (sp out)
@@ -5641,7 +5663,8 @@ REPL-facing module it feeds."
     ;; value box (a copy of the box goes stale once the table rehashes).
     ;; Compaction moves the entry and bumps `nl_mxcache_epoch', so an entry
     ;; from an older epoch is looked up afresh.  Layout {entry@0, epoch@8};
-    ;; entry 0 = empty.  Word 16 is 1 when NELISP_FX_DISABLE=1 at boot.
+    ;; entry 0 = empty.  Word 16 is 1 when NELISP_FX_DISABLE=1 at boot;
+    ;; words 24/32 are LO/HI of NELISP_FX_RANGE=LO:HI (HI 0 = no range).
     (defun nl_fx_tbl_entry ()
       (if (= (ptr-read-u64 (data-addr nl_fx_tbl_cache) 8)
              (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
@@ -5651,6 +5674,16 @@ REPL-facing module it feeds."
       (seq (ptr-write-u64 (data-addr nl_fx_tbl_cache) 16 1) 0))
     (defun nl_fx_disabled ()
       (ptr-read-u64 (data-addr nl_fx_tbl_cache) 16))
+    (defun nl_fx_range_set (lo hi)
+      (seq (ptr-write-u64 (data-addr nl_fx_tbl_cache) 24 lo)
+           (ptr-write-u64 (data-addr nl_fx_tbl_cache) 32 hi) 0))
+    ;; REC (a compiled record) is outside NELISP_FX_RANGE: answer 1.
+    (defun nl_fx_out_of_range (rec)
+      (if (= (ptr-read-u64 (data-addr nl_fx_tbl_cache) 32) 0) 0
+        (if (< (ptr-read-u64 (ptr-read-u64 rec 8) 16) 4) 1
+          (let* ((i (sar (nl_vector_slot_word rec 3) 2)))
+            (if (< i (ptr-read-u64 (data-addr nl_fx_tbl_cache) 24)) 1
+              (if (< i (ptr-read-u64 (data-addr nl_fx_tbl_cache) 32)) 0 1))))))
     (defun nl_fx_tbl_entry_put (entry)
       (seq
        (ptr-write-u64 (data-addr nl_fx_tbl_cache) 0 0)
@@ -17421,7 +17454,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= entry 0) 0
                 (let* ((w (nl_cons_cdr_word entry)))
                   (if (= (logand w 1) 0)
-                      (if (= (ptr-read-u64 w 0) 8) w 0)
+                      (if (= (ptr-read-u64 w 0) 8)
+                          (if (= (nl_fx_out_of_range w) 1) 0 w)
+                        0)
                     0))))))))))
     ;; Run REC = [CODE NLOCALS NPARAMS] on ARGS (a list).  -3: wrong arity,
     ;; left to the interpreter so it signals as usual.
