@@ -1405,6 +1405,125 @@ standalone units can call each other."
           (append (nelisp-asm-arm64-buffer-relocs buf)
                   (nreverse generated-relocs)))))
 
+;; Source-level inlining of small leaf helpers.  On by default, two levels
+;; deep (NELISP_INLINE=2); NELISP_INLINE=1 inlines one level, 0 turns it off.
+;;
+;; The AOT compiler emits every call as a call: `nl_cons_car_ptr',
+;; `nl_seq2', `nl_alloc_check_enabled' and the other two- and three-form
+;; helpers each pay a frame and argument moves, and an interpreted
+;; (while (< i n) (setq i (1+ i))) iteration made thousands of them.
+;; Within one unit, a call to a small non-recursive defun whose body uses
+;; only the plain operators below and calls to other functions is replaced
+;; by its body under a `let*' binding fresh names to the arguments, in
+;; order -- the call's own evaluation order.  One level only: candidates'
+;; bodies are spliced as written.  Bodies using `alloc-bytes' are left
+;; alone (the expansion would allocate in the caller's frame, and inside
+;; a loop on every iteration), as are calls whose arity differs.
+(defconst nelisp-standalone--inline-pure-ops
+  '(if seq let* setq while and or not
+    + - * / mod = < > <= >= /= eq 1+ 1-
+    logand logior logxor shl shr sar
+    ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
+    ptr-write-u8 ptr-write-u16 ptr-write-u32 ptr-write-u64
+    sexp-tag data-addr record-slot-ref-ptr record-slot-count
+    sexp-int-unwrap)
+  "Operators an inlined body may use besides calls to `_'-named functions.")
+
+(defvar nelisp-standalone--inline-max-nodes
+  (string-to-number (or (getenv "NELISP_INLINE_MAX_NODES") "80"))
+  "Largest body, in cons cells, that is inlined.")
+
+(defun nelisp-standalone--inline-body-ok-p (body name)
+  "Non-nil when BODY (of defun NAME) may be inlined."
+  (let ((nodes 0) (ok t))
+    (cl-labels ((walk (x)
+                  (when (and ok (consp x))
+                    (setq nodes (1+ nodes))
+                    (when (> nodes nelisp-standalone--inline-max-nodes) (setq ok nil))
+                    (let ((head (car x)))
+                      (cond
+                       ((eq head 'quote) (setq ok nil))
+                       ((eq head name) (setq ok nil)) ; recursive
+                       ((eq head 'let*)
+                        (if (and (consp (cdr x)) (listp (cadr x)))
+                            (progn (dolist (b (cadr x))
+                                     (if (and (consp b) (symbolp (car b)))
+                                         (walk (cadr b))
+                                       (setq ok nil)))
+                                   (mapc #'walk (cddr x)))
+                          (setq ok nil)))
+                       ((memq head nelisp-standalone--inline-pure-ops)
+                        (if (eq head 'data-addr) nil (mapc #'walk (cdr x))))
+                       ((and (symbolp head) (string-match-p "_" (symbol-name head)))
+                        (mapc #'walk (cdr x)))
+                       (t (setq ok nil)))))))
+      (walk body))
+    ok))
+
+(defun nelisp-standalone--inline-rename (body alist)
+  "BODY with each parameter symbol in ALIST replaced, except in head
+position and under `data-addr'."
+  (cond
+   ((symbolp body) (let ((c (assq body alist))) (if c (cdr c) body)))
+   ((not (consp body)) body)
+   ((eq (car body) 'data-addr) body)
+   ((eq (car body) 'let*)
+    (cons 'let* (cons (mapcar (lambda (b) (list (nelisp-standalone--inline-rename (car b) alist)
+                                                (nelisp-standalone--inline-rename (cadr b) alist)))
+                              (cadr body))
+                      (mapcar (lambda (f) (nelisp-standalone--inline-rename f alist)) (cddr body)))))
+   (t (cons (car body) (mapcar (lambda (f) (nelisp-standalone--inline-rename f alist)) (cdr body))))))
+
+(defun nelisp-standalone--inline-level ()
+  (or (getenv "NELISP_INLINE") "2"))
+
+(defvar nelisp-standalone--inline-counter 0)
+(defvar nelisp-standalone--inline-stats nil)
+
+(defun nelisp-standalone--inline-small-defuns (source)
+  "SOURCE (a (seq FORM...) unit) with calls to small leaf defuns inlined."
+  (if (not (and (member (nelisp-standalone--inline-level) '("1" "2")) (eq (car-safe source) 'seq)))
+      source
+    (let ((cands (make-hash-table :test 'eq)) (count 0))
+      (dolist (form (cdr source))
+        (pcase form
+          (`(defun ,name ,params ,body)
+           (when (and (symbolp name) (listp params) (cl-every #'symbolp params)
+                      (not (memq '&optional params)) (not (memq '&rest params))
+                      (nelisp-standalone--inline-body-ok-p body name))
+             (puthash name (cons params body) cands)))))
+      (cl-labels
+          ((expand (x)
+             (cond
+              ((not (consp x)) x)
+              ((eq (car x) 'quote) x)
+              ((eq (car x) 'data-addr) x)
+              (t
+               (let* ((args (mapcar #'expand (cdr x)))
+                      (cand (and (symbolp (car x)) (gethash (car x) cands))))
+                 (if (and cand (= (length args) (length (car cand))))
+                     (let ((alist (mapcar (lambda (p)
+                                            (cons p (intern (format "%s__i%d"
+                                                                    p (cl-incf nelisp-standalone--inline-counter)))))
+                                          (car cand))))
+                       (setq count (1+ count))
+                       (if alist
+                           `(let* ,(cl-mapcar (lambda (c a) (list (cdr c) a)) alist args)
+                              ,(nelisp-standalone--inline-rename (cdr cand) alist))
+                         (cdr cand)))
+                   (cons (car x) args)))))))
+        (let ((out (cons 'seq
+                         (mapcar (lambda (form)
+                                   (pcase form
+                                     (`(defun ,name ,params . ,body)
+                                      `(defun ,name ,params ,@(mapcar #'expand body)))
+                                     (_ form)))
+                                 (cdr source)))))
+          (push (list (hash-table-count cands) count) nelisp-standalone--inline-stats)
+          (message "nelisp-inline: %d candidates, %d call sites inlined"
+                   (hash-table-count cands) count)
+          out)))))
+
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
   (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
@@ -1416,6 +1535,10 @@ standalone units can call each other."
          (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone-arena-rewrite-source source))
+         (source (nelisp-standalone--inline-small-defuns source))
+         (source (if (equal (nelisp-standalone--inline-level) "2")
+                     (nelisp-standalone--inline-small-defuns source)
+                   source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-aot-compiler--label-counter 0)
