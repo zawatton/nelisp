@@ -24817,6 +24817,9 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   '((+ 4 . 2) (- 5 . 2) (< 6 . 2) (= 13 . 2) (> 14 . 2) (1+ 7 . 1) (1- 15 . 1))
   "Function -> (OPCODE . ARITY) of the VM's fixnum fast paths.")
 
+(defvar nelisp--fx-callees (make-hash-table :test 'eq)
+  "Symbols that compiled VM code calls as functions.")
+
 (defun nelisp--fx-special-p (sym)
   (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
 
@@ -24922,8 +24925,12 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                       (= (length (cdr x)) (cddr (assq op nelisp--fx-inline-ops))))
                  (dolist (a (cdr x)) (comp a))
                  (emit (cadr (assq op nelisp--fx-inline-ops)) op))
-                ((and (symbolp op) (not (macrop op)))
+                ;; Only a function already defined: a name defined later
+                ;; may turn out to be a macro (the interpreter expands at
+                ;; each evaluation; compiled code would call the macro).
+                ((and (symbolp op) (fboundp op) (not (macrop op)))
                  (dolist (a (cdr x)) (comp a))
+                 (puthash op t nelisp--fx-callees)
                  (emit 16 op (length (cdr x))))
                 (t (unsupported x))))))))
       (when (eq (catch 'nelisp--fx-unsupported
@@ -24980,4 +24987,21 @@ Never signals: a failure leaves NAME to the interpreter."
   (fset 'nl-afset
         (lambda (name def &rest rest)
           (prog1 (apply 'nelisp--fx-plain-afset name def rest)
-            (when (symbolp name) (nelisp--fx-register name))))))
+            (when (symbolp name)
+              (nelisp--fx-check-macro name)
+              (nelisp--fx-register name))))))
+
+;; A function that compiled code calls is now a macro: drop every compiled
+;; body, leaving them to the interpreter.  `defmacro' installs through
+;; `fset', not `nl-afset', so both are watched.
+(defun nelisp--fx-check-macro (name)
+  (when (and (gethash name nelisp--fx-callees) (macrop name))
+    (clrhash nelisp--fx-table)
+    (clrhash nelisp--fx-callees)))
+(when (fboundp 'nl-afset)
+  (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
+  (fset 'fset
+        (lambda (symbol definition)
+          (prog1 (nelisp--fx-plain-fset symbol definition)
+            (when (eq (car-safe definition) 'macro)
+              (nelisp--fx-check-macro symbol))))))
