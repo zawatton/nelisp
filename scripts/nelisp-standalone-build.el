@@ -479,6 +479,33 @@ block is the arena base, so single-threaded behaviour is unchanged.")
        (<= (car nelisp-standalone--thread-block-range) off)
        (< off (cdr nelisp-standalone--thread-block-range))))
 
+(defconst nelisp-standalone--worker-ring-offset 1050624
+  "Offset of an eval worker's GC frame ring from its thread block (Doc 214).
+The worker mmap is EvalCtx +0, thread block +2048, root reserve +4096
+\(1 MiB), then the ring at +1052672: depth word at +0, 1024 x 56-byte
+frames from +64, exactly the layout of `nl_gc_loop_ctx'.")
+
+(defun nelisp-standalone--gc-ring-rewrite (source)
+  "Expand every `(nl-gc-ring)' in SOURCE to the calling thread's frame ring.
+Doc 214 §2: the GC frame ring's depth word and frames are per-thread;
+`nl_gc_loop_ctx's other header words (+8..+48) stay process-global and
+are never written through this form.  On thread-block targets the main
+thread, whose block is the arena base, keeps `nl_gc_loop_ctx' and a worker
+uses the ring inside its own mmap.  Elsewhere it is `nl_gc_loop_ctx'."
+  (let ((expansion
+         (if (nelisp-standalone--thread-block-target-p)
+             `(if (= (thread-block) (ptr-read-u64 (data-addr nl_arena_base) 0))
+                  (data-addr nl_gc_loop_ctx)
+                (+ (thread-block) ,nelisp-standalone--worker-ring-offset))
+           '(data-addr nl_gc_loop_ctx))))
+    (cl-labels ((walk (form)
+                  (cond
+                   ((equal form '(nl-gc-ring)) expansion)
+                   ((consp form) (cons (walk (car form)) (walk (cdr form))))
+                   (t form))))
+      (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
+        (walk source)))))
+
 (defun nelisp-standalone--chunk-arena-rewrite (source)
   "Doc 140 Stage 8: rewrite fixed-arena-base metadata immediates in SOURCE to
 load the runtime chunk-0 base from the driver-owned `nl_arena_base' bss slot,
@@ -749,6 +776,9 @@ storage — not an arena reservation."
       (list (nelisp-link-symbol "nl_tls_index" off
                                 :section 'bss :bind 'global :type 'object)
             (nelisp-link-symbol "nl_main_tcb" (+ off 8)
+                                :section 'bss :bind 'global :type 'object)
+            ;; Win64 TLS index of the extern-call rsp spill slot.
+            (nelisp-link-symbol "nl_tls_rsp_index" (+ off 24)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -1278,6 +1308,7 @@ standalone units can call each other."
          (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone--chunk-arena-rewrite source))
+         (source (nelisp-standalone--gc-ring-rewrite source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-aot-compiler--label-counter 0)
@@ -1285,6 +1316,8 @@ standalone units can call each other."
          (nelisp-aot-compiler--os (nelisp-standalone--target-os))
          (nelisp-aot-compiler--allow-external-user-calls t)
          (nelisp-aot-compiler--abi resolved-abi)
+         (nelisp-aot-compiler--win64-rsp-save-tls
+          (eq nelisp-standalone--target 'windows-x86_64))
          ;; Doc 171: self-tail-call optimization, off unless the build
          ;; opts in via NELISP_TCO=1 (byte-identity gate, Doc 171 G2).
          ;; `make TARGET NELISP_TCO=1' works: command-line make
@@ -2370,7 +2403,10 @@ arm64 Linux has no legacy x86 numbering)."
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((base (nl_os_alloc_chunk ,nelisp-standalone--windows-arena-size)))
+     (let ((base (seq
+                  ,@(and (nelisp-standalone--thread-block-target-p)
+                         '((nl_thread_tls_alloc)))
+                  (nl_os_alloc_chunk ,nelisp-standalone--windows-arena-size))))
        (if (= base 0)
            ;; Exit code 88 = standalone arena allocation failure.
            (extern-call ExitProcess 88)
@@ -2384,19 +2420,27 @@ arm64 Linux has no legacy x86 numbering)."
           base)))))
 
 (defun nelisp-standalone--windows-tls-init-form ()
-  "Return Windows `nl_thread_tls_init' (Doc 214 §2).
-Allocate the TLS index the `thread-block' op reads from the TEB and store
-BLOCK in it for the calling thread.  An index of 64 or more lives in the
+  "Return the Windows thread-block TLS forms (Doc 214 §2).
+`nl_thread_tls_alloc' allocates the TLS index the `thread-block' op reads
+from the TEB and the index of the per-thread extern-call rsp spill slot;
+`nl_thread_tls_init' stores BLOCK for the calling thread.  An index of 64 or more lives in the
 expansion slots, which the inline TEB read cannot reach, so it is fatal
 \(exit 87) rather than silently wrong."
-  '(defun nl_thread_tls_init (block)
-     (let ((idx (extern-call TlsAlloc)))
-       (if (< idx 64)
-           (seq
-            (ptr-write-u64 (data-addr nl_tls_index) 0 idx)
-            (extern-call TlsSetValue idx block)
-            0)
-         (extern-call ExitProcess 87)))))
+  '((defun nl_thread_tls_alloc ()
+      ;; Runs first in `nl_arena_init', before any dynamic-align extern call
+      ;; (VirtualAlloc included) spills rsp to TlsSlots[nl_tls_rsp_index].
+      (let ((idx (extern-call TlsAlloc))
+            (rsp_idx (extern-call TlsAlloc)))
+        (if (if (< idx 64) (< rsp_idx 64) 0)
+            (seq
+             (ptr-write-u64 (data-addr nl_tls_index) 0 idx)
+             (ptr-write-u64 (data-addr nl_tls_rsp_index) 0 rsp_idx)
+             0)
+          (extern-call ExitProcess 87))))
+    (defun nl_thread_tls_init (block)
+      (seq
+       (extern-call TlsSetValue (ptr-read-u64 (data-addr nl_tls_index) 0) block)
+       0))))
 
 (defun nelisp-standalone--windows-intern-region-init-form ()
   "Return Windows `nl_intern_region_init' using VirtualAlloc(NULL, ...)."
@@ -2642,13 +2686,13 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                                       (eq (cadr chunk-form) 'nl_os_commit_range))
                                     chunk-forms))
            ;; Doc 214 §2: `nl_arena_init' calls this on thread-block targets.
-           (tls-form (pcase nelisp-standalone--target
-                       ('windows-x86_64 (nelisp-standalone--windows-tls-init-form))
-                       ('linux-x86_64
-                        (cl-find-if (lambda (chunk-form)
-                                      (eq (cadr chunk-form) 'nl_thread_tls_init))
-                                    chunk-forms))
-                       (_ nil)))
+           (tls-forms (pcase nelisp-standalone--target
+                        ('windows-x86_64 (nelisp-standalone--windows-tls-init-form))
+                        ('linux-x86_64
+                         (list (cl-find-if (lambda (chunk-form)
+                                             (eq (cadr chunk-form) 'nl_thread_tls_init))
+                                           chunk-forms)))
+                        (_ nil)))
            (body (mapcar (lambda (form)
                            (if (and (consp form)
                                     (eq (car form) 'defun)
@@ -2690,7 +2734,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          body)
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
-                          (and tls-form (list tls-form))
+                          tls-forms
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
                             nil)))))
@@ -5304,16 +5348,19 @@ REPL-facing module it feeds."
     ;; folded local is now a loud compile error.  The ARGS-threading style is
     ;; kept, but it is no longer a correctness requirement.)
     ;; depth<=64 so the recursion is bounded (mirrors nl_gc_sweep_chunks).
-    (defun nl_gc_mark_recorded_contexts_from (i depth)
+    (defun nl_gc_mark_ring_from (ring i depth)
       (if (< i depth)
           (nl_seq2
-           (nl_gc_mark_recorded_frame_at
-            (+ (data-addr nl_gc_loop_ctx) (+ 64 (* i 56))))
-           (nl_gc_mark_recorded_contexts_from (+ i 1) depth))
+           (nl_gc_mark_recorded_frame_at (+ ring (+ 64 (* i 56))))
+           (nl_gc_mark_ring_from ring (+ i 1) depth))
         0))
+    ;; Doc 214: mark the recorded frames of the frame ring at RING (the
+    ;; collector's own via `nl_gc_mark_recorded_contexts', a parked worker's
+    ;; through the thread registry walk).
+    (defun nl_gc_mark_ring (ring)
+      (nl_gc_mark_ring_from ring 0 (ptr-read-u64 ring 0)))
     (defun nl_gc_mark_recorded_contexts ()
-      (nl_gc_mark_recorded_contexts_from
-       0 (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0)))
+      (nl_gc_mark_ring (nl-gc-ring)))
     ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
     ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
     (defun nl_gc_mark_symentry ()
@@ -5554,21 +5601,21 @@ argument (reachability + in-arena bounds checks).")
            (ptr-write-u64 base 32 src) (ptr-write-u64 base 40 cursor)
            (ptr-write-u64 base 48 bsym) 0))
     (defun nl_gc_ctx_push (env result out pool src cursor bsym)
-      (if (< (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) (nl_gc_ctx_max_depth))
+      (if (< (ptr-read-u64 (nl-gc-ring) 0) (nl_gc_ctx_max_depth))
           (nl_seq2
            (nl_gc_ctx_store
-            (+ (data-addr nl_gc_loop_ctx)
-               (+ 64 (* (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 56)))
+            (+ (nl-gc-ring)
+               (+ 64 (* (ptr-read-u64 (nl-gc-ring) 0) 56)))
             env result out pool src cursor bsym)
            (nl_seq2
-            (ptr-write-u64 (data-addr nl_gc_loop_ctx) 0
-                           (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1))
+            (ptr-write-u64 (nl-gc-ring) 0
+                           (+ (ptr-read-u64 (nl-gc-ring) 0) 1))
             1))
         0))
     (defun nl_gc_eval_ctx_push (env result out _pad)
-      (if (< (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) (nl_gc_ctx_max_depth))
-          (let* ((base (+ (data-addr nl_gc_loop_ctx)
-                          (+ 64 (* (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 56)))))
+      (if (< (ptr-read-u64 (nl-gc-ring) 0) (nl_gc_ctx_max_depth))
+          (let* ((base (+ (nl-gc-ring)
+                          (+ 64 (* (ptr-read-u64 (nl-gc-ring) 0) 56)))))
             (seq
              (ptr-write-u64 base 0 env)
              (ptr-write-u64 base 8 result)
@@ -5577,19 +5624,19 @@ argument (reachability + in-arena bounds checks).")
              (ptr-write-u64 base 32 0)
              (ptr-write-u64 base 40 0)
              (ptr-write-u64 base 48 0)
-             (ptr-write-u64 (data-addr nl_gc_loop_ctx) 0
-                            (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1))
+             (ptr-write-u64 (nl-gc-ring) 0
+                            (+ (ptr-read-u64 (nl-gc-ring) 0) 1))
              1))
         0))
     (defun nl_gc_ctx_pop ()
-      (if (> (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 0)
-          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 0
-                         (- (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1))
+      (if (> (ptr-read-u64 (nl-gc-ring) 0) 0)
+          (ptr-write-u64 (nl-gc-ring) 0
+                         (- (ptr-read-u64 (nl-gc-ring) 0) 1))
         0))
     (defun nl_gc_ctx_pop_frame (env result out)
-      (if (> (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 0)
-          (let* ((base (+ (data-addr nl_gc_loop_ctx)
-                          (+ 64 (* (- (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1) 56)))))
+      (if (> (ptr-read-u64 (nl-gc-ring) 0) 0)
+          (let* ((base (+ (nl-gc-ring)
+                          (+ 64 (* (- (ptr-read-u64 (nl-gc-ring) 0) 1) 56)))))
             (if (= (ptr-read-u64 base 0) env)
                 (if (= (ptr-read-u64 base 8) result)
                     (if (= (ptr-read-u64 base 16) out)
@@ -5599,9 +5646,9 @@ argument (reachability + in-arena bounds checks).")
               0))
         0))
     (defun nl_gc_eval_ctx_pop (env result out _pad)
-      (if (> (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 0)
-          (let* ((base (+ (data-addr nl_gc_loop_ctx)
-                          (+ 64 (* (- (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1) 56)))))
+      (if (> (ptr-read-u64 (nl-gc-ring) 0) 0)
+          (let* ((base (+ (nl-gc-ring)
+                          (+ 64 (* (- (ptr-read-u64 (nl-gc-ring) 0) 1) 56)))))
             (if (= (ptr-read-u64 base 0) env)
                 (if (= (ptr-read-u64 base 8) result)
                     (if (= (ptr-read-u64 base 16) out)
@@ -5643,12 +5690,12 @@ argument (reachability + in-arena bounds checks).")
         (nl_seq2
          (ptr-write-u64 (+ (data-addr nl_bt_snapshot) (+ 16 (* i 8))) 0
                         (ptr-read-u64
-                         (+ (data-addr nl_gc_loop_ctx)
+                         (+ (nl-gc-ring)
                             (+ 64 (* (+ ring_start i) 56)))
                          8))
          (nl_bt_capture_frames_from ring_start count (+ i 1)))))
     (defun nl_bt_capture_now ()
-      (let* ((depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+      (let* ((depth (ptr-read-u64 (nl-gc-ring) 0))
              (n (if (< depth 20) depth 20))
              (ring_start (- depth n)))
         (seq
@@ -6963,7 +7010,7 @@ leave symbols unresolved at link time."
     ;; scalar @env+112.  Records/Symbol roots are returned as their Sexp value (slot
     ;; copy); the two scalars as Int Sexps.  Returns nil if no frame is recorded.
     (defun bf_env_capture_roots (out)
-      (let* ((env (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0))
+      (let* ((env (ptr-read-u64 (+ (nl-gc-ring) 64) 0))
              (g (alloc-bytes 32 8)) (f (alloc-bytes 32 8)) (u (alloc-bytes 32 8))
              (nilp (alloc-bytes 32 8))
              (c4 (alloc-bytes 32 8)) (c3 (alloc-bytes 32 8))
@@ -7256,7 +7303,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (nl_root_depth) s10 s9)
             (wf_cons_int (ptr-read-u64 (data-addr nl_bind_clone_force) 0) s9 s8)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) s8 s7)
-            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) s7 s6)
+            (wf_cons_int (ptr-read-u64 (nl-gc-ring) 0) s7 s6)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) s6 s5)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 40) s5 s4)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
@@ -7588,9 +7635,9 @@ leave symbols unresolved at link time."
              (base (- sstart 1024))
              (ib (ptr-read-u64 (+ base 832) 0))
              (ie (ptr-read-u64 (+ base 840) 0))
-             (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+             (depth (ptr-read-u64 (nl-gc-ring) 0))
              (env (if (= depth 0) 0
-                    (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+                    (ptr-read-u64 (+ (nl-gc-ring) 64) 0)))
              (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
              (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
              (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
@@ -8539,9 +8586,9 @@ leave symbols unresolved at link time."
              (ib (ptr-read-u64 (+ abase 832) 0))
              (ie (ptr-read-u64 (+ abase 840) 0))
              (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
-             (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+             (depth (ptr-read-u64 (nl-gc-ring) 0))
              (env (if (= depth 0) 0
-                    (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+                    (ptr-read-u64 (+ (nl-gc-ring) 64) 0)))
              (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
              (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
              (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
@@ -8649,9 +8696,9 @@ leave symbols unresolved at link time."
              (tblcap (+ total 1048576))
              (tblbase (nl_os_alloc_chunk tblcap))
              (cin tblbase) (cout (+ tblbase 8)) (tbl (+ tblbase 16))
-             (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+             (depth (ptr-read-u64 (nl-gc-ring) 0))
              (env (if (= depth 0) 0
-                    (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+                    (ptr-read-u64 (+ (nl-gc-ring) 64) 0)))
              (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
              (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
              (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
@@ -9051,7 +9098,7 @@ leave symbols unresolved at link time."
     (defun nl_fa_frames_from (i depth ds span dest cin cout dir)
       (if (< i depth)
           (nl_seq2
-           (nl_fa_frame_at (+ (data-addr nl_gc_loop_ctx) (+ 64 (* i 56)))
+           (nl_fa_frame_at (+ (nl-gc-ring) (+ 64 (* i 56)))
                            ds span dest cin cout dir)
            (nl_fa_frames_from (+ i 1) depth ds span dest cin cout dir))
         0))
@@ -9071,7 +9118,7 @@ leave symbols unresolved at link time."
           (nl_fa_slot (ptr-read-u64 268436328 0) ds span dest cin cout dir))))
     (defun nl_fa_roots (ds span dest cin cout dir)
       (nl_seq2
-       (nl_fa_frames_from 0 (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0)
+       (nl_fa_frames_from 0 (ptr-read-u64 (nl-gc-ring) 0)
                           ds span dest cin cout dir)
        (nl_seq2 (nl_fa_rootstack ds span dest cin cout dir)
                 (nl_fa_symentry ds span dest cin cout dir))))
@@ -9087,9 +9134,9 @@ leave symbols unresolved at link time."
              (dest (alloc-bytes (+ slen 256) 8))
              (cin (+ dest slen)) (cout (+ dest slen 8)) (cmis (+ dest slen 16))
              (ctr (+ dest slen 24))
-             (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+             (depth (ptr-read-u64 (nl-gc-ring) 0))
              (env (if (= depth 0) 0
-                    (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+                    (ptr-read-u64 (+ (nl-gc-ring) 64) 0)))
              (i 0)
              (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
         (seq
@@ -9151,9 +9198,9 @@ leave symbols unresolved at link time."
              (dest (alloc-bytes (+ (+ slen isz) 256) 8))
              (crel (+ dest slen isz)) (cwf (+ dest slen isz 8))
              (cnblk (+ dest slen isz 16)) (ctr (+ dest slen isz 24))
-             (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+             (depth (ptr-read-u64 (nl-gc-ring) 0))
              (env (if (= depth 0) 0
-                    (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+                    (ptr-read-u64 (+ (nl-gc-ring) 64) 0)))
              (i 0) (j 0) (hdr 0)
              (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
         (seq
@@ -26544,12 +26591,13 @@ gets no native definitions and is gated by
      ;;   +2048..   thread block (Doc 214 §2): signal flag +16, TAG +24, VAL +56
      ;;   +3072     FS control block; word 0 = the thread block
      ;;   +4096..   private 1 MiB root-stack reserve
+     ;;   +1052672  GC frame ring (Doc 214; layout of nl_gc_loop_ctx +0/+64..)
      ;; Doc 152 Stage 3 uses the process-global root stack in the single-thread
      ;; evaluator.  Tier 3b registers this private EvalCtx after construction;
      ;; root reserve/release then select env+120 without touching the global
      ;; top, and atomically publish that top for the marker's registry walk.
      '(defun nl_thread_private_env_make (penv)
-        (let* ((region (syscall-direct 9 0 1052672 3 34 (- 0 1) 0)))
+        (let* ((region (syscall-direct 9 0 1118208 3 34 (- 0 1) 0)))
           (if (< region 4096)
               region
             (let* ((type_slot (alloc-bytes 32 8))

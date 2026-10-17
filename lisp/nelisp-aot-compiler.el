@@ -14375,6 +14375,47 @@ count."
 	    (when needs-align
 	      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))))
 
+(defvar nelisp-aot-compiler--win64-rsp-save-tls nil
+  "Non-nil: spill the pre-align rsp to a per-thread TLS slot (Doc 214 §2).
+The slot is TEB TlsSlots[`nl_tls_rsp_index'], written directly through
+gs, so concurrent threads never share it.  The standalone build binds
+this; other users of the compiler keep the bss slot, whose link unit
+they may not have.")
+
+(defconst nelisp-aot-compiler--tls-rsp-index-symbol "nl_tls_rsp_index"
+  "Driver-owned bss slot holding the Win64 TLS index of the rsp spill slot.")
+
+(defun nelisp-aot-compiler--emit-win64-rsp-slot-op (buf op)
+  "Emit OP on the pre-align rsp spill slot of the dynamic-align arm.
+OP is `save' (slot <- rsp), `load-r11' (r11 <- slot) or `restore'
+\(rsp <- slot).  None of them moves rsp before the store or touches rax
+or xmm0.  With `nelisp-aot-compiler--win64-rsp-save-tls' the slot is
+gs:[0x1480 + idx*8] with idx loaded into r11 (volatile, free at every
+use site: the dynamic-align arm never calls through r11); otherwise it is
+the bss symbol `nelisp-aot-compiler--win64-rsp-save-symbol'."
+  (if nelisp-aot-compiler--win64-rsp-save-tls
+      (progn
+        ;; MOV r11d, [rip + nl_tls_rsp_index]
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x44 #x8B #x1D))
+        (nelisp-asm-x86_64-reloc-pc32-here
+         buf nelisp-aot-compiler--tls-rsp-index-symbol -4)
+        (nelisp-asm-x86_64-emit-bytes
+         buf
+         (pcase op
+           ;; MOV gs:[r11*8 + 0x1480], rsp
+           ('save (unibyte-string #x65 #x4A #x89 #x24 #xDD #x80 #x14 #x00 #x00))
+           ;; MOV r11, gs:[r11*8 + 0x1480]
+           ('load-r11 (unibyte-string #x65 #x4E #x8B #x1C #xDD #x80 #x14 #x00 #x00))
+           ;; MOV rsp, gs:[r11*8 + 0x1480]
+           ('restore (unibyte-string #x65 #x4A #x8B #x24 #xDD #x80 #x14 #x00 #x00)))))
+    (nelisp-asm-x86_64-emit-bytes
+     buf (pcase op
+           ('save (unibyte-string #x48 #x89 #x25))
+           ('load-r11 (unibyte-string #x4C #x8B #x1D))
+           ('restore (unibyte-string #x48 #x8B #x25))))
+    (nelisp-asm-x86_64-reloc-pc32-here
+     buf nelisp-aot-compiler--win64-rsp-save-symbol -4)))
+
 (defconst nelisp-aot-compiler--win64-rsp-save-symbol "nl_dynalign_rsp_save"
   "Name of the driver-owned bss slot used by the `win64-dynamic-align-p'
 extern-call arm to spill the pre-align rsp (fix/dynalign-memory-slot).
@@ -14415,7 +14456,6 @@ their own restore, so the slot is never live across another save.")
 
 (defconst nelisp-aot-compiler--win64-dynamic-align-names
   '(CreateFileW ReadFile WriteFile CloseHandle
-    TlsAlloc TlsSetValue
     CreateProcessW WaitForSingleObject GetExitCodeProcess
     VirtualAlloc VirtualFree CreatePipe SetHandleInformation PeekNamedPipe
     GetLastError GetEnvironmentStringsW FreeEnvironmentStringsW
@@ -14797,9 +14837,7 @@ same branch and emit the same byte count."
       ;; below is completely unaffected -- this MUST stay true of any future
       ;; change here (do not reintroduce a push/pop or any other rsp-moving
       ;; instruction between this save and that copy loop).
-      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #x25))
-      (nelisp-asm-x86_64-reloc-pc32-here
-       buf nelisp-aot-compiler--win64-rsp-save-symbol -4)
+      (nelisp-aot-compiler--emit-win64-rsp-slot-op buf 'save)
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0)))
     (let* ((shadow (if win64-p 32 0))
            (win64-stack-bytes (if win64-p (* 8 (length stack-args)) 0))
@@ -14831,9 +14869,7 @@ same branch and emit the same byte count."
               ;; through the CURRENT rsp, which is correct (they populate
               ;; the outgoing area just reserved below the aligned rsp).
               (when win64-dynamic-align-p
-                (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x8B #x1D))
-                (nelisp-asm-x86_64-reloc-pc32-here
-                 buf nelisp-aot-compiler--win64-rsp-save-symbol -4))
+                (nelisp-aot-compiler--emit-win64-rsp-slot-op buf 'load-r11))
               (dolist (entry stack-indexed)
                 (let* ((idx (nth 0 entry))
                        (target (nth 2 entry))
@@ -14880,9 +14916,7 @@ same branch and emit the same byte count."
       ;; saved above (see the comment there).  `mov rsp, [rip+disp32]' =
       ;; 48 8B 25 <disp32> + pc32 reloc.  Touches neither rax nor xmm0, so
       ;; the call's return value survives untouched.
-      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8B #x25))
-      (nelisp-asm-x86_64-reloc-pc32-here
-       buf nelisp-aot-compiler--win64-rsp-save-symbol -4))
+      (nelisp-aot-compiler--emit-win64-rsp-slot-op buf 'restore))
     ;; Reclaim outgoing SysV stack arguments, preserving rax/xmm0.
     (when (and sysv-p stack-args)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (length stack-args)))

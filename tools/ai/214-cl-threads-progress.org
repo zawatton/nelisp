@@ -29,6 +29,12 @@ cmd: "$NELISP_BT_WIN_BIN" --eval '(condition-case e (signal (quote wrong-type-ar
 #+TIMEOUT: 600
 cmd: "$NELISP_BT_LINUX_BIN" --load tools/nelisp-bt-stash-smoke.el | grep -q 'BT-STASH-PASS'
 
+** S1.5 Win64 extern-call rsp spill slot is per-thread (TEB TLS slot), not one bss word
+cmd: grep -q 'defun nelisp-aot-compiler--emit-win64-rsp-slot-op' lisp/nelisp-aot-compiler.el && grep -q 'nelisp-aot-compiler--win64-rsp-save-tls$' scripts/nelisp-standalone-build.el
+
+** S1.6 GC frame ring depth/frames are per-thread and the collector marks every worker's ring
+cmd: grep -q 'defun nelisp-standalone--gc-ring-rewrite' scripts/nelisp-standalone-build.el && grep -q 'extern-call nl_gc_mark_ring (+ env 1052672)' lisp/nelisp-cc-rootstack.el && ! grep -q '(ptr-read-u64 (data-addr nl_gc_loop_ctx) 0)' scripts/nelisp-standalone-build.el
+
 * S2 Windows spawn and join
 
 ** S2.1 Windows thread arms are linked (no unsupported-primitive signal)
