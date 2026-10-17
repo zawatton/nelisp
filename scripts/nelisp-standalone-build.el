@@ -17184,15 +17184,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (let* ((arc (nl_apply_function fslot lst env out)))
                (if (/= arc 0) arc
                  (seq (ptr-write-u64 resw 0 (nl_val_store_word out)) 0))))))))
+    ;; The frame (locals, operand stack, result word) is the data of a fresh
+    ;; Lisp vector held in a rootstack slot for the run, so the collector
+    ;; traces every word precisely -- an alloc-bytes block was protected
+    ;; only by the conservative stack scan, and a float in a local was
+    ;; collected with that scan switched off.
     (defun m5_fx_run (code nlocals env out args nparams)
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
-             (mem (alloc-bytes (* (+ nlocals 264) 8) 8))
+             (mark (nl_root_mark env))
+             (nwords (+ nlocals 264))
+             (vbox (nl_alloc_vector nwords))
+             (mem (ptr-read-u64 vbox 8))
+             (vslot (nl_root_reserve env))
              (stk (+ mem (* nlocals 8)))
              (resw (+ stk (* 256 8)))
              (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
         (seq
-         (while (< i nlocals)
+         (while (< i nwords)
            (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
+         (ptr-write-u64 vslot 0 8)
+         (ptr-write-u64 (+ vslot 8) 0 vbox)
+         (ptr-write-u64 (+ vslot 16) 0 0)
+         (ptr-write-u64 (+ vslot 24) 0 0)
          ;; Parameters: the first NPARAMS locals take ARGS' elements, read as
          ;; the cons cells' own car WORDs.
          (setq i 0)
@@ -17267,6 +17280,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (m5_fx_word_out (ptr-read-u64 (+ stk (* sp 8)) 0) out)
                      (setq status -1))
               (setq status -2))))))))))))))
+         (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
          status)))
