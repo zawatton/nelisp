@@ -7642,7 +7642,7 @@ argument (reachability + in-arena bounds checks).")
            (seq (wf_write_nil out) 0))))
 ;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
     ((:lit "nelisp--fx-run")
-     . (let* ((st (m5_fx_run (wf_arg_ptr args 0) (wf_argval args 1) env out)))
+     . (let* ((st (m5_fx_run (wf_arg_ptr args 0) (wf_argval args 1) env out 0 0)))
          (if (= st -1) 0
            (if (= st -2) (bf_wrong_type_arrayp (wf_arg_ptr args 0)) st))))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
@@ -17184,7 +17184,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (let* ((arc (nl_apply_function fslot lst env out)))
                (if (/= arc 0) arc
                  (seq (ptr-write-u64 resw 0 (nl_val_store_word out)) 0))))))))
-    (defun m5_fx_run (code nlocals env out)
+    (defun m5_fx_run (code nlocals env out args nparams)
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
              (mem (alloc-bytes (* (+ nlocals 264) 8) 8))
              (stk (+ mem (* nlocals 8)))
@@ -17193,6 +17193,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq
          (while (< i nlocals)
            (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
+         ;; Parameters: the first NPARAMS locals take ARGS' elements, read as
+         ;; the cons cells' own car WORDs.
+         (setq i 0)
+         (setq a args)
+         (while (< i nparams)
+           (seq (ptr-write-u64 (+ mem (* i 8)) 0 (ptr-read-u64 (ptr-read-u64 a 8) 0))
+                (setq a (ptr-read-u64 (ptr-read-u64 a 8) 8))
+                (setq i (+ i 1))))
          (while (= status 0)
            (seq
             (setq op (sar (ptr-read-u64 (+ base (* pc 8)) 0) 2))
@@ -17262,6 +17270,39 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
          status)))
+;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
+    ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
+    ;; the VM does not cover it.  Answers the vector's box, or 0.
+    (defun nl_fx_lookup (body env)
+      (let* ((buf (alloc-bytes 16 1)) (sym (alloc-bytes 32 8)) (tbl (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
+         (nl_alloc_symbol buf 16 sym)
+         (if (/= (nl_env_lookup_val sym env tbl) 0) 0
+           (if (/= (bf_hash_table_p_raw tbl) 1) 0
+             (seq
+              (nl_ht_identity_sync tbl)
+              (let* ((data (nl_ht_data_slot tbl))
+                     (mode (nl_ht_test_mode tbl))
+                     (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
+                (if (= entry 0) 0
+                  (let* ((w (nl_cons_cdr_word entry)))
+                    (if (= (logand w 1) 0)
+                        (if (= (ptr-read-u64 w 0) 8) w 0)
+                      0))))))))))
+    ;; Run REC = [CODE NLOCALS NPARAMS] on ARGS (a list).  -3: wrong arity,
+    ;; left to the interpreter so it signals as usual.
+    (defun m5_fx_apply (rec args env out)
+      (let* ((nparams (sar (nl_vector_slot_word rec 2) 2))
+             (n 0) (a args))
+        (seq
+         ;; ARGS may be a raw 0 (no argument list) as well as nil.
+         (while (if (= a 0) 0 (if (= (logand a 1) 1) 0 (= (ptr-read-u64 a 0) 7)))
+           (seq (setq n (+ n 1)) (setq a (ptr-read-u64 (ptr-read-u64 a 8) 8))))
+         (if (/= n nparams) -3
+           (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+                      env out args nparams)))))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
         (if (= (m5_byte_at a i) (m5_byte_at b i))
@@ -40105,11 +40146,24 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  '(= (sexp-tag captured) 0)
                  (cons 'defun (cons 'nl_n3_apply_lambda_raw (cddr form)))
                  :test #'equal) out)
-          (push `(defun nl_apply_lambda_inner (captured formals body-list args-list env out)
+          (push `(defun nl_apply_lambda_inner_n3 (captured formals body-list args-list env out)
                    (if (or (= (sexp-tag captured) 0)
                            (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0))
                        (nl_n3_apply_mode captured formals body-list args-list env out)
-                     (seq ,@(cdddr (car out))))) out))
+                     (seq ,@(cdddr (car out))))) out)
+          ;; eval-core: a closure capturing nothing -- CAPTURED is exactly (t)
+          ;; -- whose body `nelisp--fx-table' has compiled runs on the word VM.
+          (push '(defun nl_apply_lambda_inner (captured formals body-list args-list env out)
+                   (let* ((rec (if (= (sexp-tag captured) 7)
+                                   (if (= (nl_cons_car_word captured) 7)
+                                       (if (= (nl_cons_cdr_word captured) 3)
+                                           (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
+                                               (nl_fx_lookup body-list env) 0) 0) 0) 0))
+                          (st (if (= rec 0) -3 (m5_fx_apply rec args-list env out))))
+                     (if (= st -3)
+                         (nl_apply_lambda_inner_n3 captured formals body-list args-list env out)
+                       (if (= st -1) 0 st))))
+                out))
          ((eq name 'nl_sf_lambda)
           (push (cons 'defun (cons 'nl_n3_lambda_raw (cddr form))) out)
           (push `(defun nl_sf_lambda (args env out s1)

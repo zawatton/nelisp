@@ -24823,9 +24823,11 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defun nelisp--fx-special-p (sym)
   (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
 
-(defun nelisp--fx-compile (form)
-  "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it."
-  (let ((out nil) (pc 0) (nloc 0) (vars nil) (patches nil) (labels nil) (nlab 0))
+(defun nelisp--fx-compile (form &optional params)
+  "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
+PARAMS, a list of symbols, are the first locals, set by the caller."
+  (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
+        (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
         ((emit (&rest items) (dolist (x items) (push x out) (setq pc (1+ pc))))
          (label () (setq nlab (1+ nlab)) nlab)
@@ -24928,3 +24930,42 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   "Evaluate FORM on the word VM when it covers FORM, else with `eval'."
   (let ((c (and (fboundp 'nelisp--fx-run) (nelisp--fx-compile form))))
     (if c (nelisp--fx-run (car c) (cdr c)) (eval form t))))
+
+;; Lexical defuns on the VM.  `nelisp--fx-table' maps a closure's body list
+;; to [CODE NLOCALS NPARAMS] (or `none'); the runtime's closure application
+;; looks the body up and runs the VM when the closure captures nothing.  The
+;; closure object itself is unchanged, so `symbol-function', `aref' and
+;; printing see exactly what they did.  Registered when `defalias' (and so
+;; `defun') defines the function; `nelisp-fx-enabled' nil turns that off.
+(defvar nelisp--fx-table (make-hash-table :test 'eq :weakness 'key))
+(defvar nelisp-fx-enabled t)
+
+(defun nelisp--fx-register (name)
+  "Compile NAME's closure for the VM if the VM covers it; return NAME.
+Never signals: a failure leaves NAME to the interpreter."
+  (condition-case nil (nelisp--fx-register-1 name) (error nil))
+  name)
+
+(defun nelisp--fx-register-1 (name)
+  (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
+    (let ((fn (symbol-function name)))
+      (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+        (let ((args (nth 2 fn)) (body (nthcdr 3 fn)))
+          (when (and (listp args) (cl-every #'symbolp args)
+                     (not (memq '&optional args)) (not (memq '&rest args))
+                     (not (cl-some #'nelisp--fx-special-p args))
+                     (not (gethash body nelisp--fx-table)))
+            (let ((c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
+                       (error nil))))
+              (puthash body (if c (vector (car c) (cdr c) (length args)) 'none)
+                       nelisp--fx-table))))))))
+
+;; Every `defun' (the prelude's and GNU byte-run's alike) and `defalias'
+;; reaches `nl-afset' through the native `defalias' special form, so the
+;; registration hooks there.
+(when (fboundp 'nl-afset)
+  (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
+  (fset 'nl-afset
+        (lambda (name def &rest rest)
+          (prog1 (apply 'nelisp--fx-plain-afset name def rest)
+            (when (symbolp name) (nelisp--fx-register name))))))
