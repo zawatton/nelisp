@@ -24806,12 +24806,23 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (dolist (entry nelisp--bytecode-lisp-providers)
   (fset (intern (concat "nelisp--bytecode-" (symbol-name (car entry)))) (cdr entry)))
 
-;; ---- Word VM compiler (tools/ai/eval-core-progress.org S1 spike) ----
-;; Compiles a form over a small subset -- integer and nil/t constants,
-;; lexical variables, let/let*, setq, progn, if, while, <, >, =, +, -, 1+,
-;; 1- -- into the instruction vector `nelisp--fx-run' executes on runtime
-;; WORDs.  Variables are resolved to slots at compile time.  Anything else
-;; throws `nelisp--fx-unsupported'; `nelisp--fx-eval' then uses `eval'.
+;; ---- Word VM compiler (tools/ai/eval-core-progress.org) ----
+;; Compiles a form, after `macroexpand-all', into the instruction vector
+;; `nelisp--fx-run' executes on runtime WORDs.  Covered: constants of any
+;; kind, `quote', lexical variables (resolved to slots), global variables
+;; (through `symbol-value' / `set'), let/let* of non-special variables,
+;; setq, progn, if, while, and calls of named functions -- < > = + - 1+ 1-
+;; inline on fixnums, everything else through the VM's call-out.  Anything
+;; else (special-variable bindings, lambda/function, catch, condition-case,
+;; unwind-protect, other special forms) throws `nelisp--fx-unsupported'
+;; and the form stays with `eval'.
+(defconst nelisp--fx-inline-ops
+  '((+ 4 . 2) (- 5 . 2) (< 6 . 2) (= 13 . 2) (> 14 . 2) (1+ 7 . 1) (1- 15 . 1))
+  "Function -> (OPCODE . ARITY) of the VM's fixnum fast paths.")
+
+(defun nelisp--fx-special-p (sym)
+  (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
+
 (defun nelisp--fx-compile (form)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it."
   (let ((out nil) (pc 0) (nloc 0) (vars nil) (patches nil) (labels nil) (nlab 0))
@@ -24820,6 +24831,7 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
          (label () (setq nlab (1+ nlab)) nlab)
          (place (l) (push (cons l pc) labels))
          (jump (op l) (emit op) (push (cons pc l) patches) (emit 0))
+         (unsupported (x) (throw 'nelisp--fx-unsupported x))
          (body (forms)
            (if (null forms) (emit 1 nil)
              (while forms
@@ -24828,30 +24840,33 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                (setq forms (cdr forms)))))
          (comp (x)
            (cond
-            ((or (integerp x) (null x) (eq x t)) (emit 1 x))
-            ((symbolp x)
+            ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
              (let ((c (assq x vars)))
-               (unless c (throw 'nelisp--fx-unsupported x))
-               (emit 2 (cdr c))))
-            ((not (consp x)) (throw 'nelisp--fx-unsupported x))
+               (if c (emit 2 (cdr c))
+                 (emit 1 x) (emit 16 'symbol-value 1))))
+            ((not (consp x)) (emit 1 x))
             (t
              (let ((op (car x)))
                (cond
+                ((eq op 'quote) (emit 1 (cadr x)))
                 ((memq op '(let let*))
-                 (let ((saved vars))
+                 (let ((saved vars) (pending nil))
                    (dolist (b (cadr x))
                      (let ((name (if (consp b) (car b) b)))
+                       (when (nelisp--fx-special-p name) (unsupported x))
                        (comp (if (consp b) (cadr b) nil))
                        (emit 3 nloc)
-                       (push (cons name nloc) vars)
+                       (if (eq op 'let*) (push (cons name nloc) vars)
+                         (push (cons name nloc) pending))
                        (setq nloc (1+ nloc))))
+                   (setq vars (append pending vars))
                    (body (cddr x))
                    (setq vars saved)))
                 ((eq op 'setq)
-                 (unless (= (length x) 3) (throw 'nelisp--fx-unsupported x))
+                 (unless (= (length x) 3) (unsupported x))
                  (let ((c (assq (nth 1 x) vars)))
-                   (unless c (throw 'nelisp--fx-unsupported x))
-                   (comp (nth 2 x)) (emit 12) (emit 3 (cdr c))))
+                   (if c (progn (comp (nth 2 x)) (emit 12) (emit 3 (cdr c)))
+                     (emit 1 (nth 1 x)) (comp (nth 2 x)) (emit 16 'set 2))))
                 ((eq op 'progn) (body (cdr x)))
                 ((eq op 'if)
                  (let ((else (label)) (end (label)))
@@ -24864,15 +24879,46 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                    (place top) (comp (nth 1 x)) (jump 9 end)
                    (body (cddr x)) (emit 11) (jump 8 top)
                    (place end) (emit 1 nil)))
-                ((assq op '((< . 6) (> . 14) (= . 13) (+ . 4) (- . 5)))
-                 (unless (= (length x) 3) (throw 'nelisp--fx-unsupported x))
-                 (comp (nth 1 x)) (comp (nth 2 x))
-                 (emit (cdr (assq op '((< . 6) (> . 14) (= . 13) (+ . 4) (- . 5))))))
-                ((memq op '(1+ 1-))
-                 (unless (= (length x) 2) (throw 'nelisp--fx-unsupported x))
-                 (comp (nth 1 x)) (emit (if (eq op '1+) 7 15)))
-                (t (throw 'nelisp--fx-unsupported x))))))))
-      (when (eq (catch 'nelisp--fx-unsupported (comp form) (emit 0) 'ok) 'ok)
+                ((eq op 'cond)
+                 (let ((end (label)))
+                   (dolist (cl (cdr x))
+                     (let ((next (label)))
+                       (if (cdr cl)
+                           (progn (comp (car cl)) (jump 9 next)
+                                  (body (cdr cl)) (jump 8 end))
+                         ;; (TEST): the value is TEST's own.
+                         (let ((drop (label)))
+                           (comp (car cl)) (emit 12) (jump 9 drop)
+                           (jump 8 end) (place drop) (emit 11) (jump 8 next)))
+                       (place next)))
+                   (emit 1 nil) (place end)))
+                ((eq op 'and)
+                 (if (null (cdr x)) (emit 1 t)
+                   (let ((end (label)) (false (label)) (args (cdr x)))
+                     (while (cdr args)
+                       (comp (car args)) (jump 9 false) (setq args (cdr args)))
+                     (comp (car args)) (jump 8 end)
+                     (place false) (emit 1 nil) (place end))))
+                ((eq op 'or)
+                 (let ((end (label)))
+                   (dolist (a (cdr x))
+                     (let ((next (label)))
+                       (comp a) (emit 12) (jump 9 next) (jump 8 end)
+                       (place next) (emit 11)))
+                   (emit 1 nil) (place end)))
+                ((and (symbolp op) (special-form-p op)) (unsupported x))
+                ((and (symbolp op) (assq op nelisp--fx-inline-ops)
+                      (= (length (cdr x)) (cddr (assq op nelisp--fx-inline-ops))))
+                 (dolist (a (cdr x)) (comp a))
+                 (emit (cadr (assq op nelisp--fx-inline-ops)) op))
+                ((and (symbolp op) (not (macrop op)))
+                 (dolist (a (cdr x)) (comp a))
+                 (emit 16 op (length (cdr x))))
+                (t (unsupported x))))))))
+      (when (eq (catch 'nelisp--fx-unsupported
+                  (comp (if (fboundp 'macroexpand-all) (macroexpand-all form) form))
+                  (emit 0) 'ok)
+                'ok)
         (let ((code (vconcat (nreverse out))))
           (dolist (p patches)
             (aset code (car p) (cdr (assq (cdr p) labels))))
@@ -24881,6 +24927,4 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defun nelisp--fx-eval (form)
   "Evaluate FORM on the word VM when it covers FORM, else with `eval'."
   (let ((c (and (fboundp 'nelisp--fx-run) (nelisp--fx-compile form))))
-    (if (null c) (eval form t)
-      (let ((r (nelisp--fx-run (car c) (cdr c))))
-        (if (eq r (car c)) (eval form t) r)))))
+    (if c (nelisp--fx-run (car c) (cdr c)) (eval form t))))

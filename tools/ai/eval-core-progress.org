@@ -23,11 +23,26 @@ cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/fx-callgr
 cmd: BENCH=fx-loop LIMIT=0.18 timeout 200 nice "$EVAL_BIN" --load test/perf/fx-bench.el
 
 * S2 Ordinary functions run on the VM
-** S2.1 A lexical defun whose body the VM covers runs on it automatically, with results identical to the current evaluator on a corpus of 200 generated forms
+** S2.1 Covered forms give eval's answers: calls of any function through the VM call-out (signals propagated), cond/and/or, an effect followed by a fixnum overflow happens once (no retry), and 10,000 conses held only in VM locals survive collections run from the VM
+#+REQUIRES: EVAL_BIN
+cmd: timeout 300 "$EVAL_BIN" --load test/perf/fx-spike-check.el
+** S2.2 A lexical defun whose body the VM covers runs on it automatically (compiled on first call, kept out of band so the GNU-visible closure shape is unchanged), with results identical to the current evaluator on a corpus of generated forms
 pending
-** S2.2 Every test/standalone-*-check.el still passes
+** S2.3 A VM-to-VM call of a 3-argument function takes at most 1 us
 pending
-** S2.3 A 3-argument defun call takes at most 1 us
+** S2.4 An interpreter-to-VM call of a 3-argument function takes at most 3 us (boundary cost)
 pending
-** S2.4 End to end: the autocad tokenizer (test/perf/autocad-bench.sh tokenize-fixture) finishes in at most 5 s
+** S2.5 Every test/standalone-*-check.el still passes
+#+TIMEOUT: 600
+#+REQUIRES: EVAL_BIN
+cmd: test/perf/standalone-checks.sh
+** S2.6 End to end: eval-bench's defun-call-3 case (an interpreted loop calling a VM-run defun) takes at most 3 us, from 12.4
+pending
+
+* S3 The prelude runs on the VM
+** S3.1 Prelude functions the VM covers are compiled at build time into the image, not on first call
+pending
+** S3.2 string-match "[0-9]+" on a 70-char line takes at most 20 us with the regexp engine on the VM
+pending
+** S3.3 End to end: the autocad tokenizer (test/perf/autocad-bench.sh tokenize-fixture) finishes in at most 5 s
 pending

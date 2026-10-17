@@ -7626,11 +7626,10 @@ argument (reachability + in-arena bounds checks).")
                     (mut-str-finalize ms out) 0))
            (seq (wf_write_nil out) 0))))
 ;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
-    ;; A bail answers ARG0 itself, so the caller can tell it from any result.
     ((:lit "nelisp--fx-run")
-     . (let* ((code (wf_arg_ptr args 0)))
-         (if (= (m5_fx_run code (wf_argval args 1) out) 1) 0
-           (seq (nl_sexp_clone_into code out) 0))))
+     . (let* ((st (m5_fx_run (wf_arg_ptr args 0) (wf_argval args 1) env out)))
+         (if (= st -1) 0
+           (if (= st -2) (bf_wrong_type_arrayp (wf_arg_ptr args 0)) st))))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
     ((:lit "nelisp--string-search-chars")
      . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
@@ -17126,32 +17125,56 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (< ib 0) -1
                                 (if (= huni 1) ib
                                   (+ s (m5_count_chars hay sb ib)))))))))))))))))
-;; ---- Word VM (tools/ai/eval-core-progress.org S1 spike) ----
+;; ---- Word VM (tools/ai/eval-core-progress.org) ----
     ;; Runs an instruction vector from `nelisp--fx-compile' with every value
-    ;; a runtime WORD (int (n<<2)|1, nil 3, t 7, else a box pointer): locals
-    ;; and the operand stack are word arrays, so no value is boxed, no
-    ;; variable is looked up by name and no argument list is consed.
-    ;; Opcodes (vector elements are int words; operands follow the opcode):
-    ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   4 ADD   5 SUB   6 LT
-    ;;  7 ADD1   8 JMP pc   9 JMPNIL pc   11 POP   12 DUP   13 NUMEQ
-    ;;  14 GT   15 SUB1   0 HALT.
-    ;; Arithmetic and comparisons accept fixnum words only; anything else,
-    ;; or a result outside the fixnum range, answers 2 ("bail") so the caller
-    ;; re-evaluates the form with the ordinary evaluator.
+    ;; a runtime WORD (int (n<<2)|1, nil 3, t 7, else a pointer to a 32-byte
+    ;; box): locals and the operand stack are word arrays, so no value is
+    ;; boxed, no variable is looked up by name and no argument list is
+    ;; consed on the fast paths.  Opcodes (vector elements; operands follow):
+    ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   8 JMP pc   9 JMPNIL pc
+    ;;  11 POP   12 DUP   0 HALT
+    ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
+    ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
+    ;;  16 CALL sym argc
+    ;; An arithmetic or comparison op whose operands are not fixnums, or whose
+    ;; result leaves the fixnum range, calls its function SYM on the same
+    ;; arguments instead -- the generic answer, signals included -- and the
+    ;; run continues.  Nothing is ever retried, so effects happen once.
     (defun m5_fx_int_p (w) (if (= (logand w 3) 1) 1 0))
-    (defun m5_fx_fix (n out_ok)
+    (defun m5_fx_fix (n)
       (if (> n 2305843009213693951) -1
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
     (defun m5_fx_word_out (w out)
       (if (= w 3) (seq (wf_write_nil out) 0)
         (if (= w 7) (seq (wf_write_t out) 0)
           (if (= (m5_fx_int_p w) 1) (seq (wf_write_int out (sar w 2)) 0)
-            2))))
-    (defun m5_fx_run (code nlocals out)
+            (seq (nl_sexp_clone_into w out) 0)))))
+    ;; Apply the function named by symbol word SYM to the ARGC words ending at
+    ;; STK[SP-1].  Answers the result as a word in *RESW, or a non-zero rc
+    ;; with the signal stashed.
+    (defun m5_fx_callout (env sym stk sp argc resw)
+      (let* ((fslot (alloc-bytes 32 8))
+             (rc (nelisp_env_lookup_function (+ env 0) (+ env 64) sym fslot)))
+        (if (/= rc 0) (nl_cons_stash_void_function env sym)
+          (let* ((lst (alloc-bytes 32 8)) (k (- argc 1)) (out (alloc-bytes 32 8)))
+            (seq
+             (wf_write_nil lst)
+             (while (>= k 0)
+               (let* ((w (ptr-read-u64 (+ stk (* (+ (- sp argc) k) 8)) 0))
+                      (car (if (= (logand w 1) 0) w (nl_sci_store_imm w (alloc-bytes 32 8))))
+                      (cell (alloc-bytes 32 8)))
+                 (seq (nelisp_cons_construct car lst cell)
+                      (setq lst cell)
+                      (setq k (- k 1)))))
+             (let* ((arc (nl_apply_function fslot lst env out)))
+               (if (/= arc 0) arc
+                 (seq (ptr-write-u64 resw 0 (nl_val_store_word out)) 0))))))))
+    (defun m5_fx_run (code nlocals env out)
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
-             (mem (alloc-bytes (* (+ nlocals 256) 8) 8))
+             (mem (alloc-bytes (* (+ nlocals 264) 8) 8))
              (stk (+ mem (* nlocals 8)))
-             (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0))
+             (resw (+ stk (* 256 8)))
+             (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
         (seq
          (while (< i nlocals)
            (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
@@ -17180,34 +17203,49 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (if (= op 6) 1 (if (= op 13) 1 (if (= op 14) 1 (if (= op 4) 1 (if (= op 5) 1 0)))))
                 (seq (setq b (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq a (ptr-read-u64 (+ stk (* (- sp 2) 8)) 0))
-                     (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
-                         (seq
-                          (setq r (if (= op 6) (if (< a b) 7 3)
-                                    (if (= op 13) (if (= a b) 7 3)
-                                      (if (= op 14) (if (> a b) 7 3)
-                                        (m5_fx_fix (if (= op 4) (+ (sar a 2) (sar b 2))
-                                                     (- (sar a 2) (sar b 2))) 0)))))
-                          (if (= r -1) (setq status 2)
-                            (seq (setq sp (- sp 1))
-                                 (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
-                                 (setq pc (+ pc 1)))))
-                       (setq status 2)))
+                     (setq r (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
+                                 (if (= op 6) (if (< a b) 7 3)
+                                   (if (= op 13) (if (= a b) 7 3)
+                                     (if (= op 14) (if (> a b) 7 3)
+                                       (m5_fx_fix (if (= op 4) (+ (sar a 2) (sar b 2))
+                                                    (- (sar a 2) (sar b 2)))))))
+                               -1))
+                     (if (= r -1)
+                         (setq r (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw))
+                       (seq (ptr-write-u64 resw 0 r) (setq r 0)))
+                     (if (/= r 0) (setq status r)
+                       (seq (setq sp (- sp 1))
+                            (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (ptr-read-u64 resw 0))
+                            (setq pc (+ pc 2)))))
             (if (if (= op 7) 1 (if (= op 15) 1 0))
                 (seq (setq a (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
-                     (if (= (m5_fx_int_p a) 1)
-                         (seq (setq r (m5_fx_fix (if (= op 7) (+ (sar a 2) 1) (- (sar a 2) 1)) 0))
-                              (if (= r -1) (setq status 2)
-                                (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
-                                     (setq pc (+ pc 1)))))
-                       (setq status 2)))
+                     (setq r (if (= (m5_fx_int_p a) 1)
+                                 (m5_fx_fix (if (= op 7) (+ (sar a 2) 1) (- (sar a 2) 1)))
+                               -1))
+                     (if (= r -1)
+                         (setq r (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw))
+                       (seq (ptr-write-u64 resw 0 r) (setq r 0)))
+                     (if (/= r 0) (setq status r)
+                       (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (ptr-read-u64 resw 0))
+                            (setq pc (+ pc 2)))))
+            (if (= op 16)
+                (seq (setq n (sar (ptr-read-u64 (+ base (* (+ pc 2) 8)) 0) 2))
+                     (setq r (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw))
+                     (if (/= r 0) (setq status r)
+                       (seq (setq sp (+ (- sp n) 1))
+                            (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (ptr-read-u64 resw 0))
+                            (setq pc (+ pc 3)))))
             (if (= op 11) (seq (setq sp (- sp 1)) (setq pc (+ pc 1)))
             (if (= op 12)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 1)))
             (if (= op 0)
                 (seq (setq sp (- sp 1))
-                     (setq status (if (= (m5_fx_word_out (ptr-read-u64 (+ stk (* sp 8)) 0) out) 0) 1 2)))
-              (setq status 2)))))))))))))
+                     (m5_fx_word_out (ptr-read-u64 (+ stk (* sp 8)) 0) out)
+                     (setq status -1))
+              (setq status -2))))))))))))))
+         ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
+         ;; of a call-out, its signal already stashed.
          status)))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
