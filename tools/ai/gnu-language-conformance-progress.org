@@ -1,0 +1,97 @@
+#+TITLE: NeLisp passes GNU Emacs's own language tests
+#+NOTE: Objective: NeLisp as a complete Emacs Lisp implementation, measured by
+#+NOTE: GNU Emacs 31.1's own test suite (35 files, 989 top-level ert-deftests).
+#+NOTE: 31.1, not 30.2: it is the host Emacs here and the release vendor/emacs-lisp
+#+NOTE: is taken from, so tests and the libraries they test agree.
+#+NOTE: Started 2026-10-17, after tools/ai/libgccjit-backend-progress.org
+#+NOTE: reached 100% of 36 at f40dd4415.
+#+NOTE: Source and signature: vendor/emacs-test/ORIGIN.
+#+NOTE: Environment: the standalone binary built from this tree plus the
+#+NOTE: nelisp-emacs-lib bundle heap image, running GNU 31.1's own ert.el and
+#+NOTE: ert-x.el from vendor/emacs-test (pinned by its SHA256SUMS).
+#+NOTE: A criterion passes iff each named file reports 0 unexpected results.
+#+NOTE: tools/ai/gnu-tests.sh records one result per (binary, image, test file)
+#+NOTE: digest and answers from that record when nothing changed, so a meter
+#+NOTE: run re-runs only files whose inputs changed.  Exclusions live in
+#+NOTE: tools/ai/gnu-tests-exclusions.txt, one test per line with a category
+#+NOTE: (display, tty, subprocess, network, native-comp, gnu-internal) and a
+#+NOTE: reason; S4.1 rejects any other category or a missing reason.
+
+* S1 GNU's test framework runs on NeLisp
+** S1.1 vendor/emacs-test holds GNU 31.1's 35 test files, their three resource directories, ert.el and ert-x.el, all matching SHA256SUMS
+cmd: cd vendor/emacs-test && sha256sum --quiet -c SHA256SUMS && test "$(grep -c -- '-tests\.el$' SHA256SUMS)" = 35
+** S1.2 GNU ert.el and ert-x.el load; a fixed self-test file reports exactly 1 pass, 1 expected failure, 1 skip and 1 should-error pass, and a failing should prints its form
+cmd: tools/ai/gnu-tests.sh --self-test
+** S1.3 End to end: the runner refuses a binary or image older than this tree's sources, and its JSON summary names every unexpected test
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh --freshness-check --self-test
+
+* S2 Core primitives (GNU test/src)
+** S2.1 data-tests (62)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/data-tests
+** S2.2 eval-tests (21)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/eval-tests
+** S2.3 fns-tests (95)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/fns-tests
+** S2.4 alloc-tests (4)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/alloc-tests
+** S2.5 lread-tests (55)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/lread-tests
+** S2.6 print-tests (10)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/print-tests
+** S2.7 floatfns-tests (29)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/floatfns-tests
+** S2.8 casefiddle, character and chartab tests (17)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/casefiddle-tests src/character-tests src/chartab-tests
+** S2.9 search-tests and regex-emacs-tests (18)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/search-tests src/regex-emacs-tests
+** S2.10 editfns-tests and timefns-tests (48)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/editfns-tests src/timefns-tests
+** S2.11 json-tests (25)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh src/json-tests
+** S2.12 End to end: every S2 file in one run on a fresh build of this tree
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh --fresh --stage S2
+
+* S3 Lisp-level language libraries (GNU test/lisp)
+** S3.1 subr-tests (86)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/subr-tests
+** S3.2 backquote, macroexp, gv and pcase tests (32)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/emacs-lisp/backquote-tests lisp/emacs-lisp/macroexp-tests lisp/emacs-lisp/gv-tests lisp/emacs-lisp/pcase-tests
+** S3.3 cl-lib, cl-macs, cl-seq and cl-extra tests (203)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/emacs-lisp/cl-lib-tests lisp/emacs-lisp/cl-macs-tests lisp/emacs-lisp/cl-seq-tests lisp/emacs-lisp/cl-extra-tests
+** S3.4 cl-generic and cl-print tests (25)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/emacs-lisp/cl-generic-tests lisp/emacs-lisp/cl-print-tests
+** S3.5 seq, map, subr-x and let-alist tests (165)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/emacs-lisp/seq-tests lisp/emacs-lisp/map-tests lisp/emacs-lisp/subr-x-tests lisp/emacs-lisp/let-alist-tests
+** S3.6 nadvice, rx, generator, ring and thunk tests (94)
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh lisp/emacs-lisp/nadvice-tests lisp/emacs-lisp/rx-tests lisp/emacs-lisp/generator-tests lisp/emacs-lisp/ring-tests lisp/emacs-lisp/thunk-tests
+** S3.7 End to end: every S3 file in one run on a fresh build of this tree
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh --fresh --stage S3
+
+* S4 Whole suite
+** S4.1 Every exclusion has an allowed category and a reason, and the list is at most 5 % of the suite's tests
+cmd: tools/ai/gnu-tests.sh --check-exclusions
+** S4.2 CI runs the whole suite on pushes to main and on pull requests
+cmd: grep -q 'tools/ai/gnu-tests.sh --fresh --all' .github/workflows/ci.yml
+** S4.3 End to end: all 35 files, fresh build, 0 unexpected, on Linux
+#+TIMEOUT: 600
+cmd: tools/ai/gnu-tests.sh --fresh --all
