@@ -14259,6 +14259,26 @@ barriers.  Checked arithmetic can exit, so it is also a barrier."
 Keep the historical B-first bytes when either operand is an immediate or
 both are effect-free.  Otherwise save A, evaluate B, and restore the operand
 register convention without changing the operation's meaning."
+  (cond
+   ;; x86-64, an integer immediate operand: the other operand goes to rax
+   ;; and the constant straight into its register.  The general path below
+   ;; pushes and pops the constant through the stack (mov / push / pop),
+   ;; once per arithmetic or comparison with a literal in the runtime.
+   ((and (not (eq nelisp-aot-compiler--arch 'aarch64))
+         (nelisp-aot-compiler--imm-int-p b))
+    (nelisp-aot-compiler--emit-value a buf)
+    (nelisp-aot-compiler--emit-imm-to-reg
+     (nelisp-aot-compiler--ir-get b :value) 'r10 buf))
+   ((and (not (eq nelisp-aot-compiler--arch 'aarch64))
+         (nelisp-aot-compiler--imm-int-p a))
+    (nelisp-aot-compiler--emit-value b buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    (nelisp-aot-compiler--emit-imm-to-reg
+     (nelisp-aot-compiler--ir-get a :value) 'rax buf))
+   (t (nelisp-aot-compiler--emit-binary-operands-general a b buf))))
+
+(defun nelisp-aot-compiler--emit-binary-operands-general (a b buf)
+  "The operand sequencing of `nelisp-aot-compiler--emit-binary-operands'."
   (let ((reverse-safe
          (or (eq (nelisp-aot-compiler--ir-kind a) 'imm)
              (eq (nelisp-aot-compiler--ir-kind b) 'imm)
@@ -14277,6 +14297,17 @@ register convention without changing the operation's meaning."
       (unless reverse-safe
         (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax))
       (nelisp-aot-compiler--emit-temp-pop buf (if reverse-safe 'r10 'rax)))))
+
+(defun nelisp-aot-compiler--imm-int-p (node)
+  "Non-nil if NODE is an integer immediate."
+  (and (eq (nelisp-aot-compiler--ir-kind node) 'imm)
+       (integerp (nelisp-aot-compiler--ir-get node :value))))
+
+(defun nelisp-aot-compiler--emit-imm-to-reg (v reg buf)
+  "x86-64: load integer V into REG, as the `imm' arm loads rax."
+  (if (and (>= v (- (ash 1 31))) (< v (ash 1 31)))
+      (nelisp-asm-x86_64-mov-imm32 buf reg v)
+    (nelisp-asm-x86_64-mov-imm64 buf reg v)))
 
 (defun nelisp-aot-compiler--emit-arith (node buf)
   "Emit runtime arithmetic, with A in rax/x0 and B in r10/x9.
