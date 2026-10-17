@@ -1107,9 +1107,50 @@ cross-unit call) before the freed payload is poisoned."
              (ptr-write-u64 (+ (- obj 8) (- bt 8)) 0
                             (ptr-read-u64 (data-addr nl_alloc_check) 24))
              obj)))))
+    ;; Fast path for the common small request, measured at 93 allocations
+    ;; and about 40% of an interpreted defun call: checking and diagnostics
+    ;; off, reuse enabled, the size's bucket empty with its occupancy bit
+    ;; already clear, and the current run long enough to split.  That is
+    ;; exactly the case where the full path (`nl_alloc_bytes_uncheck' ->
+    ;; `nl_freelist_take' -> `nl_freelist_bucket_pop' -> `nl_alloc_run_take')
+    ;; bills the debt, carves WANT off the run's head and zeroes the payload;
+    ;; this does the same writes in the same order without the call chain.
+    ;; Every other case, the exact-fit run included, takes the full path.
     (defun nl_alloc_bytes (size align)
-      (nl_alloc_check_stamp
-       (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))
+      (let* ((p8 (logand (+ size 7) -8))
+             (want (+ 8 (if (< p8 8) 8 p8)))
+             (r (ptr-read-u64 (data-addr nl_gc_diag) 48)))
+        (if (if (> want 472) 0
+              (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+                  (if (= (ptr-read-u64 (data-addr nl_alloc_diag) 0) 0)
+                      (if (= (ptr-read-u64 268435624 0) 1) 0
+                        (if (< want (ptr-read-u64 268435656 0)) 0
+                          (if (= (ptr-read-u64 (+ 268435696 (- want 16)) 0) 0)
+                              (if (= (logand (ptr-read-u64 (data-addr nl_freelist_small_mask) 0)
+                                             (shl 1 (/ (- want 16) 8)))
+                                     0)
+                                  (if (= (ptr-read-u64 268435632 0) 0) 0
+                                    (if (= r 0) 0
+                                      (if (< (logand (ptr-read-u64 r 0) 4294967288) (+ want 16)) 0 1)))
+                                0)
+                            0)))
+                    0)
+                0))
+            (let* ((bt (logand (ptr-read-u64 r 0) 4294967288))
+                   (obj (+ r 8))
+                   (o 0))
+              (seq
+               (ptr-write-u64 (data-addr nl_gc_stats) 0
+                              (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
+               (ptr-write-u64 r 0 want)
+               (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
+               (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
+               (while (< o (- want 8))
+                 (ptr-write-u64 (+ obj o) 0 0)
+                 (setq o (+ o 8)))
+               obj))
+          (nl_alloc_check_stamp
+           (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
     ;; BEFORE poison-on-free overwrites the suffix).  Armed only via
     ;; the boot env probe, so every freed block carries a guard; the
@@ -1715,7 +1756,11 @@ rather than dropping it, so two different sources still print differently.  It
 can only make the key MORE discriminating -- a cache miss, never a wrong hit."
   (let ((print-length nil) (print-level nil) (print-circle t)
         (print-quoted t) (print-escape-nonascii t))
+    ;; The inliner runs inside `nelisp-standalone--compile-to-unit', so its
+    ;; settings are part of what compiles SOURCE.
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
+                               (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
+                                       nelisp-standalone--inline-max-nodes)
                                (prin1-to-string source)))))
 
 (defun nelisp-standalone--cached-unit (name source &rest _ignored)
