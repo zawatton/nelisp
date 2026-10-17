@@ -270,4 +270,17 @@ no speedup), so the same code and ERT run on both.
   repeated runs give 8 threads 5.7-6.3 s and 3.3x, 3.3x, 3.5x, 2.7x,
   2.8x.  The 20-logical-CPU host varies by up to 2x between runs (one run
   took 37.9 s on 1 thread), so S8.2 (>= 3x) passes or fails with machine
-  load; it has not been re-measured on linux yet.
+  load.
+  Linux re-measurement (2026-10-18, Debian x86_64, 32 CPUs, load average
+  about 7 from a concurrent build in another worktree; 7 runs each of
+  =tools/nelisp-bt-speedup-smoke.el=, built from e36fb0257 and from the
+  parent 209e639f5, min / median / max):
+  | binary             | 1 thread (s)       | 8 threads (s)      | speed-up           |
+  | before (209e639f5) | 5.81 / 5.85 / 5.88 | 1.36 / 1.40 / 1.42 | 4.11 / 4.17 / 4.31 |
+  | after (e36fb0257)  | 5.84 / 5.85 / 5.96 | 1.39 / 1.41 / 1.43 | 4.09 / 4.15 / 4.24 |
+  The fused sweep makes no measurable difference on linux with this job.
+  An allocating variant (make-list 8 per iteration, 80000 iterations; 5 runs
+  each) gives the same on both binaries: 10.6-11.0 s on 1 thread, 2.55-2.65 s
+  on 8 threads, 4.05-4.25x, with one 5.49x outlier on the new binary.  The
+  runs did not count collections, so it is not shown that the fused sweep ran
+  on linux in them.  S8.2 passes on linux (>= 3x) with both binaries.
