@@ -497,10 +497,16 @@ uses the ring inside its own mmap.  Elsewhere it is `nl_gc_loop_ctx'."
              `(if (= (thread-block) (ptr-read-u64 (data-addr nl_arena_base) 0))
                   (data-addr nl_gc_loop_ctx)
                 (+ (thread-block) ,nelisp-standalone--worker-ring-offset))
-           '(data-addr nl_gc_loop_ctx))))
+           '(data-addr nl_gc_loop_ctx)))
+        ;; `(nl-main-thread-p)': 1 on the main thread, 0 on a worker.
+        (main-p
+         (if (nelisp-standalone--thread-block-target-p)
+             '(if (= (thread-block) (ptr-read-u64 (data-addr nl_arena_base) 0)) 1 0)
+           1)))
     (cl-labels ((walk (form)
                   (cond
                    ((equal form '(nl-gc-ring)) expansion)
+                   ((equal form '(nl-main-thread-p)) main-p)
                    ((consp form) (cons (walk (car form)) (walk (cdr form))))
                    (t form))))
       (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
@@ -5433,8 +5439,15 @@ REPL-facing module it feeds."
     ;; the former current chunk can become releasable.  Bump ctx+32 for each
     ;; fire.  MIDFORM uses recorded frames plus the conservative scan (mode 0),
     ;; never compaction.
+    ;; Doc 214 S2: only the main thread starts a mid-form collection.  A
+    ;; worker would request a park it can never satisfy (it does not park
+    ;; itself), miss after the bounded wait, leave the watermark unchanged
+    ;; and pay that wait again on every `while' back-edge.  Worker-started
+    ;; collection is Doc 214 S6.
     (defun nl_gc_midform_collect ()
-      (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+      (if (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+              (= (nl-main-thread-p) 1)
+            0)
           ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
           ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
           (if (if (< (ptr-read-u64 268436184 0)
@@ -21219,8 +21232,8 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
               (list "ExitProcess" "VirtualAlloc" "VirtualFree" "GetCommandLineW"
-                    ;; Doc 214 §2: thread blocks.
-                    "TlsAlloc" "TlsSetValue"
+                    ;; Doc 214 §2/S2: thread blocks and worker threads.
+                    "TlsAlloc" "TlsSetValue" "CreateThread"
                     "GetStdHandle" "CreateFileW" "ReadFile" "WriteFile"
                     "CloseHandle" "WideCharToMultiByte"
                     "MultiByteToWideChar"
@@ -26537,12 +26550,126 @@ belongs to the caller, just as `nelisp-tls-connect' does not open it."
 ;; ===================================================================
 
 (defun nelisp-standalone--thread-forms ()
-  "Return Doc 199 Tier-2/Tier-3a native worker units for the current target.
-Only `linux-x86_64' receives raw mmap/clone/exit syscalls.  Every other target
-gets no native definitions and is gated by
-`nelisp-standalone--thread-dispatch-arms', matching the socket precedent."
-  (if (not (eq nelisp-standalone--target 'linux-x86_64))
-      nil
+  "Return Doc 199 / Doc 214 native worker units for the current target.
+`linux-x86_64' uses raw mmap/clone/exit syscalls; `windows-x86_64' uses
+the same units with VirtualAlloc/CreateThread in place of the four
+OS-specific ones (Doc 214 S2).  Every other target gets no native
+definitions and is gated by `nelisp-standalone--thread-dispatch-arms',
+matching the socket precedent."
+  (pcase nelisp-standalone--target
+    ('linux-x86_64 (nelisp-standalone--thread-forms-linux))
+    ('windows-x86_64
+     (let ((replaced '(nl_thread_private_env_make nl_thread_worker_start
+                       nl_thread_spawn_wait_ack nl_thread_clone_dispatch
+                       nl_thread_shared_alloc_impl nl_thread_spawn_impl)))
+       (append
+        (cl-remove-if (lambda (form) (memq (cadr form) replaced))
+                      (nelisp-standalone--thread-forms-linux))
+        (nelisp-standalone--thread-forms-windows))))
+    (_ nil)))
+
+(defun nelisp-standalone--thread-forms-windows ()
+  "Return the Windows replacements for the OS-specific worker units (Doc 214 S2).
+Same contracts as the Linux units: the private EvalCtx mmap layout, the
+launch record fields (+0 worker id, +8..+24 args, +40 worker env), the
+spawn result (positive on success, negative errno-style on failure) and
+the SeqCst done-counter publication.  Differences: Windows allocates the
+thread's stack itself (64 MiB reserved, committed on demand), so there is
+no caller stack and no clone frame-sharing handshake; the launch record
+is a separate VirtualAlloc page; a worker's thread block is installed
+with TlsSetValue; and the thread ends by returning from its entry."
+  (list
+   '(defun nl_thread_os_map (size)
+      (let ((p (extern-call VirtualAlloc 0 size 12288 4)))
+        (if (= p 0) (- 0 12) p)))
+   '(defun nl_thread_private_env_make (penv)
+      (let* ((region (nl_thread_os_map 1118208)))
+        (if (< region 4096)
+            region
+          (let* ((type_slot (alloc-bytes 32 8))
+                 (backing_slot (alloc-bytes 32 8))
+                 (depth_slot (alloc-bytes 32 8)))
+            (seq
+             (nl_thread_copy_words region penv 0 4)
+             (nl_thread_copy_words (+ region 64) (+ penv 64) 0 4)
+             (nl_thread_private_frames_init
+              penv region type_slot backing_slot depth_slot 0)
+             (ptr-write-u64 region 96 0)
+             (ptr-write-u64 region 104 (ptr-read-u64 (+ penv 104) 0))
+             (ptr-write-u64 region 112 (ptr-read-u64 (+ penv 112) 0))
+             (ptr-write-u64 region 120 (+ region 4096))
+             (ptr-write-u64 region 128 0)
+             (ptr-write-u64 region 136 0)
+             (ptr-write-u64 region 144 0)
+             (ptr-write-u64 region 152 0)
+             (ptr-write-u64 region 3072 (+ region 2048))
+             (if (< (nl_thread_registry_add region) 0)
+                 (- 0 12)
+               region))))))
+   ;; CreateThread start routine: rcx = the launch record.  An eval worker
+   ;; installs its thread block (env+2048) before any Lisp runs.
+   '(defun nl_thread_win_entry (launch)
+      (seq
+       (if (> (ptr-read-u64 launch 40) 0)
+           (extern-call TlsSetValue (ptr-read-u64 (data-addr nl_tls_index) 0)
+                        (+ (ptr-read-u64 launch 40) 2048))
+         0)
+       (ptr-write-u64 launch 32 1)
+       (nl_thread_worker_registry_call
+        (ptr-read-u64 launch 0)
+        (ptr-read-u64 launch 8)
+        (ptr-read-u64 launch 16)
+        (ptr-read-u64 launch 24)
+        (ptr-read-u64 launch 40))
+       0))
+   '(defun nl_thread_shared_alloc_impl (args out)
+      (seq (wf_write_int out (nl_thread_os_map (wf_argval args 0))) 0))
+   ;; WORKER-ID STACK-TOP A0 A1 A2.  STACK-TOP must be 0: Windows owns the
+   ;; thread stack.  Returns the thread id.
+   '(defun nl_thread_spawn_impl (args env out)
+      (let* ((worker_id (wf_argval args 0))
+             (requested_top (wf_argval args 1))
+             (a0 (if (= worker_id 2) (wf_arg_ptr args 2) (wf_argval args 2)))
+             (a1 (wf_argval args 3))
+             (a2 (wf_argval args 4))
+             (worker_env (if (= worker_id 2) (nl_thread_private_env_make env) 0))
+             (launch (if (if (= requested_top 0)
+                             (if (= worker_id 1) 1
+                               (if (= worker_id 2) (> worker_env 4095) 0))
+                           0)
+                         (nl_thread_os_map 4096)
+                       0)))
+        (if (> launch 4095)
+            (let* ((tid_slot (+ launch 48)))
+              (seq
+               (ptr-write-u64 launch 0 worker_id)
+               (ptr-write-u64 launch 8 a0)
+               (ptr-write-u64 launch 16 a1)
+               (ptr-write-u64 launch 24 a2)
+               (ptr-write-u64 launch 32 0)
+               (ptr-write-u64 launch 40 worker_env)
+               ;; 64 MiB reserved (STACK_SIZE_PARAM_IS_A_RESERVATION).
+               (let* ((h (extern-call CreateThread 0 67108864
+                                      (addr-of nl_thread_win_entry)
+                                      launch 65536 tid_slot)))
+                 (if (= h 0)
+                     (seq (wf_write_int out (- 0 11)) 0)
+                   (seq
+                    (extern-call CloseHandle h)
+                    (wf_write_int out (ptr-read-u32 tid_slot 0))
+                    0)))))
+          (seq
+           (wf_write_int out
+                         (if (= requested_top 0)
+                             (if (= worker_id 2)
+                                 (if (< worker_env 0) worker_env (- 0 12))
+                               (- 0 22))
+                           (- 0 22)))
+           0))))))
+
+(defun nelisp-standalone--thread-forms-linux ()
+  "Return the linux-x86_64 Doc 199 worker units (raw mmap/clone/exit)."
+  (progn
     (list
      ;; GC-free registry worker ID 1.  Recursion consumes only the private
      ;; clone stack; it never allocates or reads a tagged Lisp value.
@@ -26783,6 +26910,20 @@ gets no native definitions and is gated by
      ;; gate, restore the prior free-list flag, and return 1 only if the current
      ;; chunk is still the snapshotted chunk (no racy growth path was reached).
      '(defun nl_thread_gc_inhibit_begin () (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1))
+     ;; Doc 214 S2: the current chunk, grown first when it has less than
+     ;; 64 MiB free.  A section cannot grow the arena (S6 lifts that), so
+     ;; its whole allocation must fit the chunk it starts in.  Windows
+     ;; chunks are 64 MiB and the loaded prelude nearly fills the first one;
+     ;; a 512 MiB chunk is only reserved there (pages commit on demand), so
+     ;; the headroom is cheap.  Runs before any worker exists, so the
+     ;; ordinary single-threaded growth path is safe.
+     '(defun nl_thread_section_chunk ()
+        (let* ((chunk (ptr-read-u64 268436168 0)))
+          (if (> (+ (ptr-read-u64 (nl_chunk_cursor_addr chunk) 0) 67108864)
+                 (ptr-read-u64 (+ chunk 8) 0))
+              (let* ((grown (nl_chunk_alloc_new 536870912)))
+                (if (= grown 0) chunk grown))
+            chunk)))
      '(defun nl_thread_gc_inhibit_impl (args out)
         (let* ((requested (wf_argval args 0)))
           (if (= requested 0)
@@ -26813,7 +26954,7 @@ gets no native definitions and is gated by
                 (seq (wf_write_int out (- 0 16)) 0)
               (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 1)
                   (seq (wf_write_int out (- 0 16)) 0)
-                (let* ((chunk (ptr-read-u64 268436168 0))
+                (let* ((chunk (nl_thread_section_chunk))
                        (cursor (ptr-read-u64 (nl_chunk_cursor_addr chunk) 0))
                        (size (ptr-read-u64 (+ chunk 8) 0)))
                   (if (> (+ cursor 8388608) size)
@@ -26844,7 +26985,7 @@ target the same installed names signal catchable
                  "nelisp-thread-spawn"
                  "nelisp-thread-join"
                  "nelisp-thread-gc-inhibit")))
-    (if (eq nelisp-standalone--target 'linux-x86_64)
+    (if (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64))
         (list
          `((:lit "nelisp-thread-shared-alloc") .
            (nl_thread_shared_alloc_impl args out))

@@ -44,8 +44,8 @@
     (unless (fboundp name)
       (error "allocating thread primitive is not fboundp: %S" name))
     (setq checked (+ checked 1)))
-  (if (and (eq system-type 'gnu/linux)
-           (string= system-configuration "x86_64-pc-linux-gnu"))
+  (if (member system-configuration
+              '("x86_64-pc-linux-gnu" "x86_64-pc-windows-msvc"))
       (let* ((shared (nelisp-thread-shared-alloc 128))
              (single-result shared)
              (single-done (+ shared 8))

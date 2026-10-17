@@ -78,8 +78,8 @@
   (unless (fboundp 'nelisp--debug-switch)
     (error "per-CPU root diagnostic is not fboundp: nelisp--debug-switch"))
   (setq checked (+ checked 1))
-  (if (and (eq system-type 'gnu/linux)
-           (string= system-configuration "x86_64-pc-linux-gnu"))
+  (if (member system-configuration
+              '("x86_64-pc-linux-gnu" "x86_64-pc-windows-msvc"))
       (let* ((shared (nelisp-thread-shared-alloc 128))
              (result0 shared)
              (result1 (+ shared 8))

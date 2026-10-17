@@ -49,7 +49,7 @@ cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-standalone-smoke.el | grep 
 ** S2.3 Allocating and percpu-roots smokes pass on windows
 #+REQUIRES: NELISP_BT_WIN_BIN
 #+TIMEOUT: 600
-cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-allocating-standalone-smoke.el | grep -q 'checked=8' && "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-percpu-roots-smoke.el | grep -q 'parked=3'
+cmd: "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-allocating-standalone-smoke.el | grep -q 'checked=9' && "$NELISP_BT_WIN_BIN" --load tools/nelisp-thread-percpu-roots-smoke.el | grep -q 'parked=3'
 
 * S3 Closures and arbitrary values
 

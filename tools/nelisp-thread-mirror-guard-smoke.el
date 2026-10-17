@@ -69,8 +69,8 @@
     (unless (fboundp name)
       (error "worker mirror-guard primitive is not fboundp: %S" name))
     (setq checked (+ checked 1)))
-  (if (and (eq system-type 'gnu/linux)
-           (string= system-configuration "x86_64-pc-linux-gnu"))
+  (if (member system-configuration
+              '("x86_64-pc-linux-gnu" "x86_64-pc-windows-msvc"))
       (progn
         ;; Read direction: ordinary global function and value lookup still work.
         (unless (= (nl-thread-mirror-guard--run

@@ -34,9 +34,9 @@
        (setq i (1+ i)))
      ok))
 
-(if (not (and (eq system-type 'gnu/linux)
-              (string= system-configuration "x86_64-pc-linux-gnu")))
-    (princ "BT-STASH-SKIP not linux-x86_64\n")
+(if (not (member system-configuration
+              '("x86_64-pc-linux-gnu" "x86_64-pc-windows-msvc")))
+    (princ "BT-STASH-SKIP no native threads on this target\n")
   (let* ((shared (nelisp-thread-shared-alloc 64))
          (r0 shared) (r1 (+ shared 8)) (done (+ shared 16))
          (section nil))
