@@ -979,7 +979,7 @@ nodes while their constructors are migrated."
          ;; as a tagged integer.  `alloc-bytes' is also used for Sexp storage,
          ;; but that storage is passed directly to native helpers, never as a
          ;; dispatcher value, so the pointer representation is still correct.
-         ((memq kind '(alloc-bytes addr-of data-addr)) 'raw-ptr)
+         ((memq kind '(alloc-bytes addr-of data-addr thread-block)) 'raw-ptr)
          ((memq kind '(sexp-int-make)) 'sexp-ptr)
          ((memq kind '(let-rt let-rt-n let))
           (nelisp-aot-compiler--ir-repr
@@ -1008,6 +1008,7 @@ faithfully retain either representation in its frame slot."
   '((alloc-bytes . 0)
     (addr-of . 97)
     (data-addr . 99)
+    (thread-block . 109)
     (data-blob . 102)
     (arith . 1)
     (aot-root-scope . 92)
@@ -11485,6 +11486,14 @@ functions `((NAME . ARITY) ...)'."
       (signal 'nelisp-aot-compiler-error
               (list :data-addr-needs-symbol sexp)))
     (nelisp-aot-compiler--make-ir 'data-addr :name (nth 1 sexp)))
+   ;; (thread-block) -- the calling OS thread's thread-block address (Doc 214
+   ;; §2).  Per-thread interpreter state (the signal/throw stash) lives at
+   ;; fixed offsets from it; the main thread's block is the arena base.
+   ((and (consp sexp) (eq (car sexp) 'thread-block))
+    (unless (= (length sexp) 1)
+      (signal 'nelisp-aot-compiler-error
+              (list :thread-block-takes-no-arguments sexp)))
+    (nelisp-aot-compiler--make-ir 'thread-block))
    ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
@@ -13639,6 +13648,8 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-addr-of node buf))
       ((= tag 99)               ; data-addr — external data/bss symbol addr
        (nelisp-aot-compiler--emit-data-addr node buf))
+      ((= tag 109)              ; thread-block — per-thread state base
+       (nelisp-aot-compiler--emit-thread-block node buf))
       ((= tag 5)                ; call
        (nelisp-aot-compiler--emit-call node buf))
       ((= tag 23)               ; extern-call
@@ -14143,6 +14154,33 @@ external data symbol."
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
       (nelisp-asm-x86_64-reloc-pc32-here buf name -4))))
 
+(defconst nelisp-aot-compiler--tls-index-symbol "nl_tls_index"
+  "Driver-owned bss slot holding the Win64 `TlsAlloc' index (Doc 214 §2).")
+
+(defun nelisp-aot-compiler--emit-thread-block (_node buf)
+  "Emit a load of the calling thread's thread-block address into rax.
+Doc 214 §2.  win64: the block is the value of TLS slot `nl_tls_index',
+read straight from the TEB (`gs:[0x1480 + idx*8]'; start-up asserts idx <
+64, so the slot is never an expansion slot).  System V x86_64: FS points
+at a per-thread control block whose first word is the block, so the load
+is `fs:[0]'.  aarch64 has no thread blocks yet."
+  (cond
+   ((eq nelisp-aot-compiler--arch 'aarch64)
+    (signal 'nelisp-aot-compiler-error (list :thread-block-unsupported-arch)))
+   ((eq nelisp-aot-compiler--abi 'win64)
+    ;; LEA rax, [rip + nl_tls_index]
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
+    (nelisp-asm-x86_64-reloc-pc32-here buf nelisp-aot-compiler--tls-index-symbol -4)
+    ;; MOV eax, [rax]
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x8B #x00))
+    ;; MOV rax, gs:[rax*8 + 0x1480]
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x65 #x48 #x8B #x04 #xC5 #x80 #x14 #x00 #x00)))
+   (t
+    ;; MOV rax, fs:[0]
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x64 #x48 #x8B #x04 #x25 #x00 #x00 #x00 #x00)))))
+
 (defun nelisp-aot-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
 
@@ -14377,6 +14415,7 @@ their own restore, so the slot is never live across another save.")
 
 (defconst nelisp-aot-compiler--win64-dynamic-align-names
   '(CreateFileW ReadFile WriteFile CloseHandle
+    TlsAlloc TlsSetValue
     CreateProcessW WaitForSingleObject GetExitCodeProcess
     VirtualAlloc VirtualFree CreatePipe SetHandleInformation PeekNamedPipe
     GetLastError GetEnvironmentStringsW FreeEnvironmentStringsW

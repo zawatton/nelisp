@@ -462,6 +462,23 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
         (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
           (walk source))))))
 
+(defconst nelisp-standalone--thread-block-range '(16 . 88)
+  "Arena-base offsets [LO, HI) that are per-thread state (Doc 214 §2).
+The signal/throw flag (+16), its TAG (+24, 32 bytes) and VAL (+56, 32
+bytes).  On thread-block targets these addresses are relative to the
+calling thread's block instead of the arena base; the main thread's
+block is the arena base, so single-threaded behaviour is unchanged.")
+
+(defun nelisp-standalone--thread-block-target-p ()
+  "Return non-nil when the current target has per-thread blocks (Doc 214)."
+  (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64)))
+
+(defun nelisp-standalone--thread-block-offset-p (off)
+  "Return non-nil when arena-base offset OFF is per-thread state."
+  (and (nelisp-standalone--thread-block-target-p)
+       (<= (car nelisp-standalone--thread-block-range) off)
+       (< off (cdr nelisp-standalone--thread-block-range))))
+
 (defun nelisp-standalone--chunk-arena-rewrite (source)
   "Doc 140 Stage 8: rewrite fixed-arena-base metadata immediates in SOURCE to
 load the runtime chunk-0 base from the driver-owned `nl_arena_base' bss slot,
@@ -488,9 +505,11 @@ confused with a fixed base immediate."
       (cl-labels
           ((rewrite-int
             (n)
-            (if (and (integerp n) (<= base n) (< n (+ base span)))
-                `(+ (ptr-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
-              n))
+            (cond
+             ((not (and (integerp n) (<= base n) (< n (+ base span)))) n)
+             ((nelisp-standalone--thread-block-offset-p (- n base))
+              `(+ (thread-block) ,(- n base)))
+             (t `(+ (ptr-read-u64 (data-addr nl_arena_base) 0) ,(- n base)))))
            (walk
             (form)
             (cond
@@ -667,7 +686,9 @@ storage — not an arena reservation."
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
                        64 192 64 40 8 64
                        (if (nelisp-standalone--runtime-reload-enabled-p) 96 0)
-                       (if (nelisp-standalone--callsite-enabled-p) 32 0))))
+                       (if (nelisp-standalone--callsite-enabled-p) 32 0)
+                       ;; Doc 214: nl_tls_index (8) + nl_main_tcb (16) + pad.
+                       32)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -716,6 +737,19 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_thread_registry"
                              (+ 57616 4194304 96 176 64 56 40)
                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 214 §2: the thread-block anchors, after every conditional block
+    ;; so no existing global moves.  `nl_tls_index' is the Win64 TlsAlloc
+    ;; index; `nl_main_tcb' is the main thread's FS control block on
+    ;; System V x86_64 (word 0 = the main thread's block = arena base).
+    (let ((off (+ 57616 4194304 96 176 64 56 40 1040
+                  (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
+                  64 192 64 40 8 64
+                  (if (nelisp-standalone--runtime-reload-enabled-p) 96 0)
+                  (if (nelisp-standalone--callsite-enabled-p) 32 0))))
+      (list (nelisp-link-symbol "nl_tls_index" off
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_main_tcb" (+ off 8)
+                                :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
                                 (+ 57616 4194304 96 176 64 56 40 1040
@@ -2260,13 +2294,24 @@ addressing by a runtime base, never by a fixed reservation."
              (nl_os_alloc_fail)
            (seq
             (ptr-write-u64 (data-addr nl_arena_base) 0 base)
+            ,@(and (nelisp-standalone--thread-block-target-p)
+                   '((nl_thread_tls_init base)))
             ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'base size)
             (nl_intern_region_init)
             base))))))
 
 (defun nelisp-standalone--linux-alloc-chunk-form ()
   "Return Linux chunk allocation forms using mmap(NULL, ...)."
-  '((defun nl_os_alloc_chunk (size)
+  '(;; Doc 214 §2: make BLOCK the calling thread's thread block.  FS points
+    ;; at a control block whose word 0 is BLOCK, so `(thread-block)' is
+    ;; `fs:[0]'.  The main thread uses the bss `nl_main_tcb'.
+    (defun nl_thread_tls_init (block)
+      (seq
+       (ptr-write-u64 (data-addr nl_main_tcb) 0 block)
+       ;; arch_prctl(ARCH_SET_FS, tcb)
+       (syscall-direct 158 4098 (data-addr nl_main_tcb) 0 0 0 0)
+       0))
+    (defun nl_os_alloc_chunk (size)
       (let ((p (syscall-direct 9 0 size 3 34 -1 0)))
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
@@ -2331,10 +2376,27 @@ arm64 Linux has no legacy x86 numbering)."
            (extern-call ExitProcess 88)
          (seq
           (ptr-write-u64 (data-addr nl_arena_base) 0 base)
+          ,@(and (nelisp-standalone--thread-block-target-p)
+                 '((nl_thread_tls_init base)))
           ,@(nelisp-standalone--arena-init-metadata-forms-dynamic
              'base nelisp-standalone--windows-arena-size)
           (nl_intern_region_init)
           base)))))
+
+(defun nelisp-standalone--windows-tls-init-form ()
+  "Return Windows `nl_thread_tls_init' (Doc 214 §2).
+Allocate the TLS index the `thread-block' op reads from the TEB and store
+BLOCK in it for the calling thread.  An index of 64 or more lives in the
+expansion slots, which the inline TEB read cannot reach, so it is fatal
+\(exit 87) rather than silently wrong."
+  '(defun nl_thread_tls_init (block)
+     (let ((idx (extern-call TlsAlloc)))
+       (if (< idx 64)
+           (seq
+            (ptr-write-u64 (data-addr nl_tls_index) 0 idx)
+            (extern-call TlsSetValue idx block)
+            0)
+         (extern-call ExitProcess 87)))))
 
 (defun nelisp-standalone--windows-intern-region-init-form ()
   "Return Windows `nl_intern_region_init' using VirtualAlloc(NULL, ...)."
@@ -2579,6 +2641,14 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
            (commit-form (cl-find-if (lambda (chunk-form)
                                       (eq (cadr chunk-form) 'nl_os_commit_range))
                                     chunk-forms))
+           ;; Doc 214 §2: `nl_arena_init' calls this on thread-block targets.
+           (tls-form (pcase nelisp-standalone--target
+                       ('windows-x86_64 (nelisp-standalone--windows-tls-init-form))
+                       ('linux-x86_64
+                        (cl-find-if (lambda (chunk-form)
+                                      (eq (cadr chunk-form) 'nl_thread_tls_init))
+                                    chunk-forms))
+                       (_ nil)))
            (body (mapcar (lambda (form)
                            (if (and (consp form)
                                     (eq (car form) 'defun)
@@ -2620,6 +2690,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          body)
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
+                          (and tls-form (list tls-form))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
                             nil)))))
@@ -21101,6 +21172,8 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
               (list "ExitProcess" "VirtualAlloc" "VirtualFree" "GetCommandLineW"
+                    ;; Doc 214 §2: thread blocks.
+                    "TlsAlloc" "TlsSetValue"
                     "GetStdHandle" "CreateFileW" "ReadFile" "WriteFile"
                     "CloseHandle" "WideCharToMultiByte"
                     "MultiByteToWideChar"
@@ -26468,6 +26541,8 @@ gets no native definitions and is gated by
      ;;   +0..119   private EvalCtx
      ;;   +120      private root-stack top metadata
      ;;   +128..159 result Sexp slot
+     ;;   +2048..   thread block (Doc 214 §2): signal flag +16, TAG +24, VAL +56
+     ;;   +3072     FS control block; word 0 = the thread block
      ;;   +4096..   private 1 MiB root-stack reserve
      ;; Doc 152 Stage 3 uses the process-global root stack in the single-thread
      ;; evaluator.  Tier 3b registers this private EvalCtx after construction;
@@ -26493,6 +26568,7 @@ gets no native definitions and is gated by
                (ptr-write-u64 region 136 0)
                (ptr-write-u64 region 144 0)
                (ptr-write-u64 region 152 0)
+               (ptr-write-u64 region 3072 (+ region 2048))
                (if (< (nl_thread_registry_add region) 0)
                    (- 0 12)
                  region))))))
@@ -26527,6 +26603,12 @@ gets no native definitions and is gated by
      ;; the parent's native frame.  All remaining loads are from LAUNCH/A0-A2.
      '(defun nl_thread_worker_start (launch)
         (seq
+         ;; Doc 214 §2: an eval worker gets its own thread block before any
+         ;; Lisp runs; arch_prctl(ARCH_SET_FS, env+3072).  GC-free workers
+         ;; never touch the stash and keep the inherited FS.
+         (if (> (ptr-read-u64 launch 40) 0)
+             (syscall-direct 158 4098 (+ (ptr-read-u64 launch 40) 3072) 0 0 0 0)
+           0)
          (ptr-write-u64 launch 32 1)
          (nl_thread_worker_registry_call
           (ptr-read-u64 launch 0)

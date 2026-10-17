@@ -321,7 +321,12 @@
          ;; evaluator frame before walking transient handles; otherwise a
          ;; parked `let' can resume through a swept frame backing vector.
          (extern-call nl_gc_mark_recorded_env env)
-         (nl_gc_mark_rootstack_walk (+ env 4096) top))))
+         (nl_seq2
+          ;; Doc 214 §2: a parked worker's pending signal TAG/VAL live in
+          ;; its own thread block (env+2048), not the main thread's stash.
+          (nl_seq2 (extern-call nl_gc_mark_slot (+ env 2072))
+                   (extern-call nl_gc_mark_slot (+ env 2104)))
+          (nl_gc_mark_rootstack_walk (+ env 4096) top)))))
     (defun nl_gc_mark_thread_roots_from (i count)
       (if (>= i count) 0
         (seq
