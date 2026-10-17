@@ -1797,6 +1797,19 @@ left ZF=1."
      buf (unibyte-string #x0F #x84 0 0 0 0))
     (nelisp-asm-x86_64-emit-fixup buf slot label)))
 
+(defconst nelisp-asm-x86_64--jcc-opcodes
+  '((je . #x84) (jne . #x85) (jl . #x8C) (jge . #x8D) (jle . #x8E) (jg . #x8F))
+  "Second opcode byte of the signed `Jcc rel32' forms (after 0x0F).")
+
+(defun nelisp-asm-x86_64-jcc-rel32 (buf cc label)
+  "Emit `Jcc rel32' for CC (je jne jl jge jle jg) with a fixup against LABEL.
+Same 6-byte shape as `nelisp-asm-x86_64-jz-rel32'."
+  (let ((op (or (cdr (assq cc nelisp-asm-x86_64--jcc-opcodes))
+                (error "nelisp-asm-x86_64-jcc-rel32: unknown condition %S" cc)))
+        (slot (+ 2 (nelisp-asm-x86_64-buffer-pos buf))))
+    (nelisp-asm-x86_64--append-bytes buf (unibyte-string #x0F op 0 0 0 0))
+    (nelisp-asm-x86_64-emit-fixup buf slot label)))
+
 (defun nelisp-asm-x86_64-jnz-rel32 (buf label)
   "Emit `JNZ rel32' (opcode 0x0F 0x85) with a fixup against LABEL.
 Writes 0x0F 0x85 + 4 zero placeholder bytes (6 bytes total),

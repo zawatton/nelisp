@@ -18565,6 +18565,29 @@ compare A against B and materialize the boolean result."
       ;; movzx eax, al                         (= zero-extends to rax)
       (nelisp-asm-x86_64-movzx-eax-al buf))))
 
+(defconst nelisp-aot-compiler--cmp-false-jcc
+  '((< . jge) (> . jle) (<= . jg) (>= . jl) (= . jne) (/= . je))
+  "Map a comparison op to the x86-64 jump taken when it is FALSE.")
+
+(defun nelisp-aot-compiler--emit-test-jump-false (test buf false-lbl)
+  "x86-64: evaluate TEST and jump to FALSE-LBL when it is 0.
+A comparison test branches on the flags of its own `cmp' instead of
+materializing 0/1 with setCC/movzx and comparing that against 0 again --
+every `if' and `while' on a comparison did that three-instruction detour."
+  (let ((op (and (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+                 (nelisp-aot-compiler--ir-get test :op))))
+    (if (and op (assq op nelisp-aot-compiler--cmp-false-jcc))
+        (progn
+          (nelisp-aot-compiler--emit-binary-operands
+           (nelisp-aot-compiler--ir-get test :a)
+           (nelisp-aot-compiler--ir-get test :b) buf)
+          (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
+          (nelisp-asm-x86_64-jcc-rel32
+           buf (cdr (assq op nelisp-aot-compiler--cmp-false-jcc)) false-lbl))
+      (nelisp-aot-compiler--emit-value test buf)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+      (nelisp-asm-x86_64-jz-rel32 buf false-lbl))))
+
 (defun nelisp-aot-compiler--emit-if (node buf)
   "Emit `if' branching code; result in rax.
 Layout (= each emitter call is byte-fixed so pass invariance
@@ -18590,9 +18613,8 @@ holds across the two-pass orchestration):
           (nelisp-asm-arm64-define-label buf else-lbl)
           (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :else) buf)
           (nelisp-asm-arm64-define-label buf end-lbl))
-      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
-      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-      (nelisp-asm-x86_64-jz-rel32 buf else-lbl)
+      (nelisp-aot-compiler--emit-test-jump-false
+       (nelisp-aot-compiler--ir-get node :test) buf else-lbl)
       (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :then) buf)
       (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
       (nelisp-asm-x86_64-define-label buf else-lbl)
@@ -18626,9 +18648,8 @@ Layout:
           (nelisp-asm-arm64-define-label buf end-lbl)
           (nelisp-asm-arm64-mov-imm64 buf 'x0 0))
       (nelisp-asm-x86_64-define-label buf start-lbl)
-      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
-      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-      (nelisp-asm-x86_64-jz-rel32 buf end-lbl)
+      (nelisp-aot-compiler--emit-test-jump-false
+       (nelisp-aot-compiler--ir-get node :test) buf end-lbl)
       (dolist (form (nelisp-aot-compiler--ir-get node :body))
         (nelisp-aot-compiler--emit-value form buf))
       (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
