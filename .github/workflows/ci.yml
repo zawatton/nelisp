@@ -7,7 +7,8 @@ name: CI
 #                 before the matrix so a moved inventory count fails in
 #                 minutes instead of at the end of the longest lane.
 #   - smoke:      byte-compile + the Linux-only gate battery, 3 OSes x
-#                 Emacs 30.2.
+#                 Emacs 31.1 (30.2 until 2026-10-17; moved to match the
+#                 host Emacs and vendor/emacs-lisp).
 #   - ert:        the ERT suite's three variants (plain, JIT-enabled,
 #                 JIT-disabled) as a parallel 3 OSes x 3 variants
 #                 matrix.  These used to be three sequential steps
@@ -48,7 +49,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
-          version: '30.2'
+          version: '31.1'
       # Fast red.  The ERT suite used to run only inside the `smoke'
       # matrix, so an assertion failure surfaced when the longest lane
       # finished (measured 2026-09-19 on run 35414197855: ubuntu/29.4 took
@@ -69,7 +70,7 @@ jobs:
 
   smoke:
     # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and the Linux-only
-    # gate battery on 3 OSes x Emacs 30.2 (29.4 dropped from the
+    # gate battery on 3 OSes x Emacs 31.1 (29.4 dropped from the
     # per-push matrix 2026-09-19; see the top-of-file comment).  The
     # ERT smoke suite itself now runs in the `ert' job below, as three
     # parallel variants per OS, rather than as three sequential steps
@@ -78,7 +79,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        emacs-version: ['30.2']
+        emacs-version: ['31.1']
       fail-fast: false
 
     steps:
@@ -265,7 +266,7 @@ jobs:
         # Anything that actually differs BY Emacs version -- compile,
         # emacs-parity, the ERT suites, test-jit/test-nojit -- still
         # runs on both lanes.
-        if: runner.os == 'Linux' && matrix.emacs-version == '30.2'
+        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
         shell: bash
         run: |
           # gate-mutation is not here: it is 1257 of this lane's 2784
@@ -291,12 +292,12 @@ jobs:
       # here by its own Makefile prerequisite (conditional on the binary's
       # absence, so it costs nothing extra if an earlier step in this lane
       # already built one).
-      - name: "Compat-table shadowing ratchet (tools/ai/nelisp-ai.sh gate emacs-compat); Emacs 30.2"
-        if: runner.os == 'Linux' && matrix.emacs-version == '30.2'
+      - name: "Compat-table shadowing ratchet (tools/ai/nelisp-ai.sh gate emacs-compat); Emacs 31.1"
+        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate emacs-compat -- make emacs-compat
-      - name: "Differential fuzz vs host Emacs (tools/ai/nelisp-ai.sh gate parity-fuzz); Linux x86_64, Emacs 30.2"
-        if: runner.os == 'Linux' && matrix.emacs-version == '30.2'
+      - name: "Differential fuzz vs host Emacs (tools/ai/nelisp-ai.sh gate parity-fuzz); Linux x86_64, Emacs 31.1"
+        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate parity-fuzz -- make parity-fuzz
 
@@ -582,8 +583,8 @@ jobs:
       # collects these together with the ert, mutation, and subsystem
       # jobs' and checks the union against gates.expected; on its own,
       # no single job can any longer answer "did every required gate run".
-      - name: Upload gate reports (Linux 30.2 lane)
-        if: always() && runner.os == 'Linux' && matrix.emacs-version == '30.2'
+      - name: Upload gate reports (Linux 31.1 lane)
+        if: always() && runner.os == 'Linux' && matrix.emacs-version == '31.1'
         uses: actions/upload-artifact@v4
         with:
           name: gate-reports-smoke
@@ -593,7 +594,7 @@ jobs:
       # macho-acceptance-test's report (gate-wiring audit, 2026-09-17): the
       # only report this job's macOS lane produces -- every other step
       # here is `if: runner.os == 'Linux''.  The artifact name still
-      # carries the Emacs version (now always 30.2) so a second version
+      # carries the Emacs version (now always 31.1) so a second version
       # added back later cannot collide with this one; `verify''s
       # download step already matches on the `gate-reports-*' prefix, so
       # this needs no change there.
@@ -618,7 +619,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        emacs-version: ['30.2']
+        emacs-version: ['31.1']
         variant: [plain, jit, nojit]
       fail-fast: false
     steps:
@@ -741,7 +742,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
-          version: '30.2'
+          version: '31.1'
       - name: "gate-mutation, shard ${{ matrix.shard }} of 4"
         shell: bash
         run: |
@@ -795,7 +796,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
-          version: '30.2'
+          version: '31.1'
       - name: "AI toolchain tier: ${{ matrix.tier }}"
         shell: bash
         run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }}
@@ -820,7 +821,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
-          version: '30.2'
+          version: '31.1'
       - name: Collect every job's gate reports
         uses: actions/download-artifact@v4
         with:
