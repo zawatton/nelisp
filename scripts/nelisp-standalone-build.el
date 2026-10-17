@@ -39968,6 +39968,53 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                     (bf_special_form_p_walk (record-slot-ref-ptr entry 1) env (+ depth 1))))
               0)))))))
 
+;; Every evaluated cons with a symbol head ran `nl_apply_special''s whole
+;; chain of name compares -- about 15 `nl_sp_eq_lit' calls for `<' or `1+'
+;; before the function cell was even looked up, 68 per iteration of
+;; (while (< i n) (setq i (1+ i))).  The chain answers 2 ("not special")
+;; unless one of its `nl_sp_eq_*' predicates matches, so a head whose
+;; (name length, first byte) belongs to none of them can answer 2 at once.
+;; The pairs are read off the predicates in the final chain at build time.
+(defun nelisp-standalone--special-prefilter-names (form)
+  "Names tested by the `nl_sp_eq_*' predicates in FORM."
+  (let (names)
+    (cl-labels ((walk (tree)
+                  (cond ((consp tree) (walk (car tree)) (walk (cdr tree)))
+                        ((and (symbolp tree)
+                              (string-prefix-p "nl_sp_eq_" (symbol-name tree))
+                              (not (eq tree 'nl_sp_eq_lit)))
+                         (let ((name (replace-regexp-in-string
+                                      "_" "-" (substring (symbol-name tree) 9))))
+                           (when (equal name "let-star") (setq name "let*"))
+                           (cl-pushnew name names :test #'equal))))))
+      (walk form))
+    (unless (and (member "progn" names) (member "if" names) (member "setq" names))
+      (error "special prefilter: unexpected nl_apply_special chain %S" names))
+    names))
+
+(defun nelisp-standalone--special-prefilter (form)
+  "FORM, the `nl_apply_special' defun, behind `nl_sp_maybe_special'."
+  (pcase form
+    (`(defun nl_apply_special ,args . ,body)
+     `(defun nl_apply_special ,args
+        (if (= (nl_sp_maybe_special ,(car args)) 1) (progn ,@body) 2)))
+    (_ (error "special prefilter: unexpected form %S" (car-safe form)))))
+
+(defun nelisp-standalone--special-prefilter-helper (form)
+  "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
+match a special-form name tested in FORM."
+  (let ((test 0))
+    (dolist (name (nelisp-standalone--special-prefilter-names form))
+      (setq test `(if (= (if (= len ,(length name)) (if (= b0 ,(aref name 0)) 1 0) 0) 1)
+                      1 ,test)))
+    `(defun nl_sp_maybe_special (name_ptr)
+       (if (= (sexp-tag name_ptr) 4)
+           (let* ((len (ptr-read-u64 name_ptr 24)))
+             (if (< len 1) 0
+               (let* ((b0 (ptr-read-u8 (ptr-read-u64 name_ptr 16) 0)))
+                 ,test)))
+         0))))
+
 (defun nelisp-standalone--patch-n3-specials (source)
   "Honor GNU special-form function cells and reject evaluated invocation."
   (let (out)
@@ -40006,7 +40053,9 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                   (nl_n3_special_cell name_ptr args_ptr env_ptr out)))
                              (walk (nth 3 tree)))
                      (cons (walk (car tree)) (walk (cdr tree)))))))
-            (push (walk form) out))
+            (let ((walked (walk form)))
+              (push (nelisp-standalone--special-prefilter walked) out)
+              (push (nelisp-standalone--special-prefilter-helper walked) out)))
           (dolist (helper (nelisp-standalone--n3-special-name-helper)) (push helper out)))
          ((eq name 'nl_eval_inner_cons_after_lookup)
           (push `(defun ,name ,(caddr form)
