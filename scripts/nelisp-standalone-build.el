@@ -726,8 +726,9 @@ storage — not an arena reservation."
                        ;; nl_alloc_lock (24) + nl_thread_saved_eager (8) +
                        ;; nl_main_parked_rsp (8) + nl_gc_wanted (8) + pad +
                        ;; nl_main_parked_regs (64) + nl_gc_collector_regs (64) +
-                       ;; nl_main_wait_scratch (16) + nl_main_interrupt (8) + pad.
-                       320)))
+                       ;; nl_main_wait_scratch (16) + nl_main_interrupt (8) + pad +
+                       ;; nl_main_tlab (16).
+                       336)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -822,6 +823,8 @@ storage — not an arena reservation."
             (nelisp-link-symbol "nl_main_wait_scratch" (+ off 288)
                                 :section 'bss :bind 'global :type 'object)
             (nelisp-link-symbol "nl_main_interrupt" (+ off 304)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_main_tlab" (+ off 320)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -2115,6 +2118,15 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; of this unit (`nelisp-standalone--alloc-check-arena-forms').
     ;; Body is byte-for-byte the historical allocator.
     (defun nl_alloc_bytes_uncheck (size align)
+      (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+          ;; Doc 214 S8: inside a parallel section allocate from the calling
+          ;; thread's allocation buffer; 0 falls back to the shared path.
+          (let ((t_obj (extern-call nl_tlab_alloc (nl_block_total size))))
+            (if (= t_obj 0)
+                (nl_alloc_bytes_shared size align)
+              t_obj))
+        (nl_alloc_bytes_shared size align)))
+    (defun nl_alloc_bytes_shared (size align)
       (let ((want (nl_block_total size)))
         ;; Doc 201 §6.14 follow-up: ALLOCATION DEBT.  Every block handed out,
         ;; reused or bumped, adds its BLOCK_TOTAL to nl_gc_stats+0; the
@@ -4137,11 +4149,21 @@ REPL-facing module it feeds."
                       (+ (ptr-read-u64 (data-addr nl_gc_stats) 24) 1))
        (nl_gc_debt_rearm_for (ptr-read-u64 (data-addr nl_gc_stats) 16))))
     ;; 1 when the debt trigger is armed and the debt has reached it.
+    ;; Doc 214 S8: while threads run the limit scales with their number.
+    ;; Every collection stops all of them and marks the whole heap on one
+    ;; thread, while N threads allocate N times faster, so an unscaled
+    ;; limit makes collections the serial bottleneck.
+    (defun nl_gc_debt_limit ()
+      (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+          (* (ptr-read-u64 (data-addr nl_gc_stats) 8)
+             (+ 1 (- (ptr-read-u64 (data-addr nl_thread_registry) 0)
+                     (ptr-read-u64 (data-addr nl_thread_retired) 0))))
+        (ptr-read-u64 (data-addr nl_gc_stats) 8)))
     (defun nl_gc_debt_due ()
       (if (if (< (ptr-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
         (if (= (ptr-read-u64 (data-addr nl_gc_stats) 8) 0) 0
         (if (< (ptr-read-u64 (data-addr nl_gc_stats) 0)
-               (ptr-read-u64 (data-addr nl_gc_stats) 8))
+               (nl_gc_debt_limit))
             0 1))))
     ;; The form-boundary test: growth watermark (unchanged) OR debt.
     (defun nl_gc_boundary_due ()
@@ -5531,7 +5553,10 @@ REPL-facing module it feeds."
     (defun nl_gc_collect_recorded_parked (mode)
       (if (= (nl_thread_park_request_begin) 1)
           (nl_seq2
-           (nl_gc_collect_recorded_mark_sweep mode)
+           ;; Doc 214 S8: every thread is stopped; format their buffers'
+           ;; tails before the heap walk.
+           (nl_seq2 (extern-call nl_tlab_retire_all)
+                    (nl_gc_collect_recorded_mark_sweep mode))
            (nl_seq2
             (nl_thread_park_request_end)
             (nl_thread_park_collect_succeeded)))
@@ -5614,16 +5639,22 @@ REPL-facing module it feeds."
     ;; and pay that wait again on every `while' back-edge.  Worker-started
     ;; collection is Doc 214 S6.
     ;; 1 when a mid-form collection is armed and due.
+    ;; Doc 214 S8: inside a section only the (thread-scaled) debt counts.
+    ;; The growth watermark fired on every chunk the section added -- the
+    ;; 512 MiB headroom chunk at its start included -- so collections ran
+    ;; regardless of how much garbage there was.
     (defun nl_gc_midform_due ()
       (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
-          ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
-          (if (if (< (ptr-read-u64 268436184 0)
-                     (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                  (if (= (nl_gc_debt_due) 0) 1 0)
-                0)
-              0
-            1)
+          (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+              (nl_gc_debt_due)
+            ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on
+            ;; the allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
+            (if (if (< (ptr-read-u64 268436184 0)
+                       (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                    (if (= (nl_gc_debt_due) 0) 1 0)
+                  0)
+                0
+              1))
         0))
     (defun nl_gc_midform_collect ()
       (if (= (nl_gc_midform_due) 1) (nl_gc_midform_run) 0))
@@ -18842,14 +18873,14 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 448345170275)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-throw
   '(defun nl_sp_eq_throw (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 512970877044)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 ;; `defun' special form for the reader's native evaluator.  The baked
 ;; special-form set (sf-if/let/setq/...) had no `defun', so a runtime
@@ -18871,7 +18902,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 474416047460)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sf-strip-body-declarations
   '((defun nl_sf_decl_is_declare_form (form_ptr)
@@ -18885,7 +18916,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                      (seq
                       (if (= (ptr-read-u64 268435680 0) 1)
                           (nl_gc_free_block (- buf 8))
-                        0)
+                        (extern-call nl_tlab_pop (- buf 8)))
                       eqr))))
               0))
         0))
@@ -18996,14 +19027,14 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 125762923816292)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-defconst
   '(defun nl_sp_eq_defconst (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 8391171955409446244)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sf-defconst
   '(defun nl_sf_defconst (args env out _pad)
@@ -19085,21 +19116,21 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 8314042301314131300)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-defmacro
   '(defun nl_sp_eq_defmacro (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 8030590355653420388)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-cl-defun
   '(defun nl_sp_eq_cl_defun (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 7959380502105648227)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 ;; cl-defun: defer to the cl-lib `cl-defun' MACRO supplied by the prelude.
 ;; The earlier native shortcut treated `cl-defun' as `defun' and built a plain
@@ -19372,35 +19403,35 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 1852139639)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-unless
   '(defun nl_sp_eq_unless (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 126939460038261)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-cond
   '(defun nl_sp_eq_cond (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 1684959075)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-and
   '(defun nl_sp_eq_and (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 6581857)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 3)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-or
   '(defun nl_sp_eq_or (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 29295)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 2)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sf-when
   '(defun nl_sf_when (args env out _pad)
@@ -19501,28 +19532,28 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 212188754544)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-prog2
   '(defun nl_sp_eq_prog2 (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 216483721840)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-dolist
   '(defun nl_sp_eq_dolist (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 128039038775140)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-dotimes
   '(defun nl_sp_eq_dotimes (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 32481142916804452)
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 7)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) (extern-call nl_tlab_pop (- buf 8))) eqr))))))
 
 (defconst nelisp-standalone--sf-prog1
   '(defun nl_sf_prog1 (args env out _pad)
@@ -26754,6 +26785,9 @@ matching the socket precedent."
              '(defun nl_gc_explicit (_env) (nl_gc_collect_from_recorded_roots 0))
              '(defun nl_thread_interrupt_word () (data-addr nl_main_interrupt))
              '(defun nl_thread_run_interrupts (_env) 0)
+             '(defun nl_tlab_alloc (_want) 0)
+             '(defun nl_tlab_pop (_hdr) 0)
+             '(defun nl_tlab_retire_all () 0)
              '(defun nl_mirror_write_enter () 0)
              '(defun nl_mirror_write_exit (v) v)
              '(defun nl_intern_write_enter () 0)
@@ -26971,6 +27005,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
                   (- 0 1002))
               (- 0 1001)))
            ;; Doc 214: no more safepoints from here; see nl_thread_park_expected.
+           (nl_tlab_retire (+ env 1904))
            (atomic-fetch-add (data-addr nl_thread_retired) 1)
            (atomic-fetch-add done 1)
            0)))
@@ -27020,6 +27055,103 @@ with TlsSetValue; and the thread ends by returning from its entry."
                   (if (> r 0)
                       (seq (nl_alloc_zero_fill r 0 (- want 8)) r)
                     (nl_alloc_grow_unlocked want)))))))))
+     ;; Doc 214 S8: thread-local allocation buffers.  An interpreted loop
+     ;; allocates ~2.5 KB per iteration; with every object taken by CAS from
+     ;; one shared cursor (and counted in one shared debt word) eight threads
+     ;; ran no faster than two.  Inside a section each thread now carves
+     ;; 256 KiB at a time and bumps privately.  SLOT is two words, cur and
+     ;; end (main: bss; a worker: env+1904).  The unused tail of a buffer is
+     ;; always made a well-formed block before anything walks the heap: the
+     ;; owner does it when it refills or exits, the collector does it for
+     ;; every parked thread before marking, and END does it for the main
+     ;; thread.
+     '(defun nl_tlab_slot ()
+        (if (= (nl-main-thread-p) 1)
+            (data-addr nl_main_tlab)
+          (- (thread-block) 144)))
+     ;; Turn [cur, end) into one block (its header is the block total) and
+     ;; empty SLOT.  Tails are 0 or >= 32 bytes by construction.
+     '(defun nl_tlab_retire (slot)
+        (let* ((cur (ptr-read-u64 slot 0))
+               (end (ptr-read-u64 slot 8)))
+          (seq
+           (if (if (> cur 0) (> end cur) 0)
+               (ptr-write-u64 cur 0 (- end cur))
+             0)
+           (ptr-write-u64 slot 0 0)
+           (ptr-write-u64 slot 8 0)
+           0)))
+     '(defun nl_tlab_refill (slot want)
+        (let* ((size (if (> (+ want 32) 262144) (+ want 32) 262144))
+               (obj (nl_chunk_try_alloc (ptr-read-u64 268436168 0) size)))
+          (seq
+           (nl_tlab_retire slot)
+           (if (= obj 0)
+               (seq
+                (setq obj (nl_alloc_exhausted size))
+                ;; Free-list blocks are not zeroed; bump memory is.
+                (if (> obj 0) (nl_alloc_zero_fill obj 0 (- size 8)) 0))
+             0)
+           (if (= obj 0)
+               0
+             (seq
+              ;; One debt charge per buffer instead of one per object.
+              (ptr-write-u64 (data-addr nl_gc_stats) 0
+                             (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) size))
+              (ptr-write-u64 slot 0 (- obj 8))
+              (ptr-write-u64 slot 8 (+ (- obj 8) size))
+              1)))))
+     '(defun nl_tlab_take (slot want)
+        (let* ((cur (ptr-read-u64 slot 0))
+               (end (ptr-read-u64 slot 8)))
+          (if (if (> cur 0) (<= (+ cur want) end) 0)
+              ;; A tail under 32 bytes is folded into this block.
+              (let* ((w (if (if (> (- end (+ cur want)) 0)
+                                (< (- end (+ cur want)) 32)
+                              0)
+                            (- end cur)
+                          want)))
+                (seq
+                 (ptr-write-u64 cur 0 w)
+                 (ptr-write-u64 slot 0 (+ cur w))
+                 (+ cur 8)))
+            0)))
+     '(defun nl_tlab_alloc (want)
+        (let* ((slot (nl_tlab_slot))
+               (obj (nl_tlab_take slot want)))
+          (if (> obj 0)
+              obj
+            (if (= (nl_tlab_refill slot want) 1)
+                (nl_tlab_take slot want)
+              0))))
+     ;; Doc 214 S8: the section's stand-in for eager frees.  Those free a
+     ;; scratch buffer allocated just before, so when HDR is the last block
+     ;; carved from this thread's buffer, pop it by rewinding.  Otherwise
+     ;; leave it to the collector.  Without this every such buffer became
+     ;; garbage while threads ran, and one collection could spend seconds
+     ;; sweeping millions of them.
+     '(defun nl_tlab_pop (hdr)
+        (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+            (let* ((slot (nl_tlab_slot))
+                   (w (logand (ptr-read-u64 hdr 0) 4294967295)))
+              (if (= (ptr-read-u64 slot 0) (+ hdr w))
+                  ;; Buffer memory is handed out as zeroed; restore that.
+                  (seq (nl_alloc_zero_fill hdr 0 w)
+                       (ptr-write-u64 slot 0 hdr)
+                       0)
+                0))
+          0))
+     ;; Collector side: retire the buffer of every thread that can hold one.
+     '(defun nl_tlab_retire_workers (i n)
+        (if (>= i n) 0
+          (let* ((env (ptr-read-u64 (nl_thread_registry_entry i) 0)))
+            (seq
+             (if (> env 4095) (nl_tlab_retire (+ env 1904)) 0)
+             (nl_tlab_retire_workers (+ i 1) n)))))
+     '(defun nl_tlab_retire_all ()
+        (seq
+         (nl_tlab_retire (data-addr nl_main_tlab))
+         (nl_tlab_retire_workers 0 (nl_thread_registry_used))))
      ;; Doc 214 S7: the calling thread's interrupt word (main: bss; a
      ;; worker: env+1920).  Nonzero asks the thread to run its queued
      ;; interrupt functions at its next loop back-edge.
@@ -27295,6 +27427,7 @@ with TlsSetValue; and the thread ends by returning from its entry."
            (ptr-write-u64
             result 0
             (if (if (= rc 0) (= (ptr-read-u64 268435472 0) 0) 0) 1 2))
+           (nl_tlab_retire (+ env 1904))
            (atomic-fetch-add (data-addr nl_thread_retired) 1)
            (atomic-fetch-add done 1)
            ;; Wake joiners blocked in `nelisp-thread-wait' on DONE.
@@ -27487,6 +27620,9 @@ with TlsSetValue; and the thread ends by returning from its entry."
                      (ptr-write-u64
                       268435624 0
                       (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 0))
+                     ;; Doc 214 S8: the main thread's buffer (workers retired
+                     ;; theirs on exit).
+                     (nl_tlab_retire_all)
                      ;; Doc 214 S6: workers are gone; eager frees may resume.
                      (ptr-write-u64 268435680 0
                                     (ptr-read-u64 (data-addr nl_thread_saved_eager) 0))

@@ -239,3 +239,25 @@ no speedup), so the same code and ERT run on both.
   BT-INTERRUPT-PASS 3/3 on windows and on linux (an interrupted busy
   worker carries on afterwards; a worker interrupts the joining main
   thread; destroy runs the cleanup).  Host ERT: 18/18.
+- S8 (2026-10-18): =packages/nelisp-bt/test/nelisp-bt-standalone-smoke.el=
+  exercises the whole API (14 checks) and passes on windows, on linux and
+  on host Emacs.  Scaling work, measured with
+  =tools/nelisp-bt-speedup-smoke.el='s fixnum loop on windows (one
+  interpreted iteration allocates ~2.5 KB):
+  - Thread-local allocation buffers (256 KiB, carved by one CAS).  The
+    tails are formatted before every heap walk, and the debt is charged
+    per buffer.  Eager frees in a section rewind the buffer when they
+    free its last block, and the rewound memory is zeroed again.
+  - The registry entry is cached at env+1896, so the per-call lookup is
+    O(1) and the main thread exits it immediately.  Root tops are
+    published only in env+120; the CAS into the shared 16-byte registry
+    entries made workers sharing a cache line fight over it.
+  - Collection triggers inside a section use only the allocation debt,
+    and the limit scales with the number of live threads.
+  Without collections, 1 -> 8 threads go 6.14 s -> 1.86 s (3.3x).  With
+  the collector on, they go 11.0 s -> 5.8 s (1.9x).  Collections are
+  mark-and-sweep on the main thread, and the passes over every block
+  (sweep, coalesce, free-list rebuild; the conservative index is
+  negligible) cost about as much as the mutator, so they cap the
+  speed-up.  S8.2 (>= 3x with the collector on) stays red until those
+  passes run in parallel on the parked threads.

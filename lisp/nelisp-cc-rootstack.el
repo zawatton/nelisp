@@ -87,6 +87,8 @@
         (seq
          (ptr-write-u64 (nl_thread_registry_entry i) 8
                         (ptr-read-u64 env 120))
+         ;; Doc 214 S8: the worker finds its own entry here in O(1).
+         (ptr-write-u64 env 1896 (nl_thread_registry_entry i))
          (ptr-write-u64 (nl_thread_registry_entry i) 0 env)
          i)))
     ;; Intern the refusal condition on the parent before publishing any worker.
@@ -134,10 +136,22 @@
           64
         (ptr-read-u64 (data-addr nl_thread_registry) 0)))
     ;; ENV 0 (a caller with no worker context) never matches a zeroed entry.
+    ;; Doc 214 S8: this runs on every evaluator call and root reserve.  The
+    ;; main thread is never registered; a worker's entry is cached at
+    ;; env+1896 when it registers.  The linear scan remains only as a
+    ;; fallback.
     (defun nl_thread_registry_find (env)
       (if (= env 0)
           0
-        (nl_thread_registry_find_from env 0 (nl_thread_registry_used))))
+        (if (= (nl-main-thread-p) 1)
+            0
+          (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+              0
+            (if (if (> (ptr-read-u64 env 1896) 0)
+                    (= (ptr-read-u64 (ptr-read-u64 env 1896) 0) env)
+                  0)
+                (ptr-read-u64 env 1896)
+              (nl_thread_registry_find_from env 0 (nl_thread_registry_used)))))))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
@@ -328,8 +342,10 @@
          (ptr-write-u64 (+ slot 8) 0 0)
          (ptr-write-u64 (+ slot 16) 0 0)
          (ptr-write-u64 (+ slot 24) 0 0)
+         ;; Doc 214 S8: env+120 is the published top; the collector reads
+         ;; it after the park barrier.  The former CAS into the 16-byte
+         ;; registry entry made workers sharing a cache line fight over it.
          (ptr-write-u64 env 120 (+ slot 32))
-         (nl_thread_registry_store_top entry (+ slot 32))
          slot)))
     ;; A full region answers an ordinary scratch slot instead of 0: every
     ;; caller writes through the returned pointer immediately, so 0 would be a
@@ -355,7 +371,6 @@
           (ptr-write-u64 (data-addr nl_rootstack_top) 0 marker)
         (seq
          (ptr-write-u64 env 120 marker)
-         (nl_thread_registry_store_top entry marker)
          0)))
     (defun nl_root_release (env marker)
       (nl_root_release_at env (nl_thread_registry_find env) marker))
@@ -394,7 +409,8 @@
         (seq
          (nl_gc_mark_thread_roots_one
           (ptr-read-u64 (nl_thread_registry_entry i) 0)
-          (atomic-fetch-add (+ (nl_thread_registry_entry i) 8) 0))
+          (let* ((env (ptr-read-u64 (nl_thread_registry_entry i) 0)))
+            (if (> env 4095) (ptr-read-u64 env 120) 0)))
          (nl_gc_mark_thread_roots_from (+ i 1) count))))
     (defun nl_gc_mark_thread_roots ()
       (nl_gc_mark_thread_roots_from 0 (nl_thread_registry_used))))
