@@ -19,6 +19,14 @@
 (defvar fx-fwd-check-before (fx-fwd-check-b-before))
 (defmacro fx-fwd-check-g (x) `(list 'macro ',x))
 
+;; A call to a function defined later: compiled once the callee exists.
+(defun fx-fwd-check-c (x) (fx-fwd-check-d x))
+(defun fx-fwd-check-d (x) (* x 3))
+(defun fx-fwd-check-vm-p (name)
+  (if (boundp 'nelisp--fx-table)
+      (vectorp (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table))
+    t))
+
 (let* ((fails 0)
        (check (lambda (got want)
                 (unless (equal got want)
@@ -27,5 +35,9 @@
   (funcall check (condition-case e (fx-fwd-check-a 5) (error e)) '(x 1))
   (funcall check fx-fwd-check-before 2)
   (funcall check (condition-case e (fx-fwd-check-b 5) (error e)) '(macro x))
+  (funcall check (fx-fwd-check-c 4) 12)
+  (funcall check (fx-fwd-check-vm-p 'fx-fwd-check-c) t)
+  (funcall check (fx-fwd-check-vm-p 'fx-fwd-check-a) t)
+  (funcall check (fx-fwd-check-vm-p 'fx-fwd-check-b) t)
   (princ (format "FX-FORWARD-MACRO failures=%d %s\n" fails (if (= fails 0) "PASS" "FAIL")))
   (kill-emacs (if (= fails 0) 0 1)))

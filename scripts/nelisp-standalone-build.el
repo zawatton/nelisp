@@ -559,7 +559,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 16 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 24 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -1303,6 +1303,20 @@ walker reads whatever happens to be on the stack."
       ;; value to be exactly "1", then enable + arm.  Runs before the
       ;; BOOT WATERMARK freeze, so every block the armed verifier can
       ;; later meet on a free carries a guard.
+      ;; NELISP_FX_DISABLE=1: closures never run on the word VM (A/B
+      ;; against the interpreter through an unchanged image).
+      (defun nl_fx_env_probe_bytes (ptr eqpos end)
+        (if (= eqpos 17)
+            (if (= (ptr-read-u64 ptr 0) 5070860024084710734)
+                (if (= (ptr-read-u64 ptr 8) 5495026321312735064)
+                    (if (= (ptr-read-u8 ptr 16) 69)
+                        (if (= (- end eqpos) 2)
+                            (if (= (ptr-read-u8 ptr 18) 49) (nl_fx_disable_set) 0)
+                          0)
+                      0)
+                  0)
+              0)
+          0))
       (defun nl_alloc_check_env_probe_bytes (ptr eqpos end)
         (if (= eqpos 18)
             (if (= (ptr-read-u32 ptr 0) ,w0)
@@ -1337,6 +1351,7 @@ walker reads whatever happens to be on the stack."
                        (rest (alloc-bytes 32 8)))
                   (seq
                    (nl_alloc_check_env_probe_bytes ptr eqpos end)
+                   (nl_fx_env_probe_bytes ptr eqpos end)
                    (nl_posix_environ_walk sp (+ i 1) rest)
                    (nelisp_cons_construct pair rest out))))))))
       (defun nl_os_environ_init (sp out)
@@ -5626,12 +5641,16 @@ REPL-facing module it feeds."
     ;; value box (a copy of the box goes stale once the table rehashes).
     ;; Compaction moves the entry and bumps `nl_mxcache_epoch', so an entry
     ;; from an older epoch is looked up afresh.  Layout {entry@0, epoch@8};
-    ;; entry 0 = empty.
+    ;; entry 0 = empty.  Word 16 is 1 when NELISP_FX_DISABLE=1 at boot.
     (defun nl_fx_tbl_entry ()
       (if (= (ptr-read-u64 (data-addr nl_fx_tbl_cache) 8)
              (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
           (ptr-read-u64 (data-addr nl_fx_tbl_cache) 0)
         0))
+    (defun nl_fx_disable_set ()
+      (seq (ptr-write-u64 (data-addr nl_fx_tbl_cache) 16 1) 0))
+    (defun nl_fx_disabled ()
+      (ptr-read-u64 (data-addr nl_fx_tbl_cache) 16))
     (defun nl_fx_tbl_entry_put (entry)
       (seq
        (ptr-write-u64 (data-addr nl_fx_tbl_cache) 0 0)
@@ -17376,6 +17395,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.
     (defun nl_fx_lookup (body env)
+      (if (= (nl_fx_disabled) 1) 0
       (let* ((tbl (alloc-bytes 32 8)) (entry (nl_fx_tbl_entry)))
         (seq
          ;; A cached entry was a hash table when found; the prelude never
@@ -17402,7 +17422,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (let* ((w (nl_cons_cdr_word entry)))
                   (if (= (logand w 1) 0)
                       (if (= (ptr-read-u64 w 0) 8) w 0)
-                    0)))))))))
+                    0))))))))))
     ;; Run REC = [CODE NLOCALS NPARAMS] on ARGS (a list).  -3: wrong arity,
     ;; left to the interpreter so it signals as usual.
     (defun m5_fx_apply (rec args env out)

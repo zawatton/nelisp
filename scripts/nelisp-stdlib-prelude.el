@@ -24818,7 +24818,7 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   "Function -> (OPCODE . ARITY) of the VM's fixnum fast paths.")
 
 (defvar nelisp--fx-callees (make-hash-table :test 'eq)
-  "Symbols that compiled VM code calls as functions.")
+  "Function -> names whose compiled code calls it.")
 
 (defun nelisp--fx-special-p (sym)
   (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
@@ -24872,6 +24872,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
              (let ((op (car x)))
                (cond
                 ((eq op 'quote) (emit 1 (cadr x)))
+                ;; #'SYMBOL is the symbol itself.
+                ((and (eq op 'function) (symbolp (cadr x)) (null (cddr x)))
+                 (emit 1 (cadr x)))
                 ((memq op '(let let*))
                  (let ((saved vars) (pending nil))
                    (dolist (b (cadr x))
@@ -24940,8 +24943,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                 ;; each evaluation; compiled code would call the macro).
                 ((and (symbolp op) (fboundp op) (not (macrop op)))
                  (dolist (a (cdr x)) (comp a))
-                 (puthash op t nelisp--fx-callees)
+                 (push op nelisp--fx-called)
                  (emit 16 op (length (cdr x))))
+                ((and (symbolp op) (not (fboundp op)))
+                 (setq nelisp--fx-missing op)
+                 (unsupported x))
                 (t (unsupported x))))))))
       (when (eq (catch 'nelisp--fx-unsupported
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
@@ -24961,7 +24967,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
 
 (defun nelisp--fx-eval (form)
   "Evaluate FORM on the word VM when it covers FORM, else with `eval'."
-  (let ((c (and (fboundp 'nelisp--fx-run) (nelisp--fx-compile form))))
+  (let* ((nelisp--fx-called nil) (nelisp--fx-missing nil)
+         (c (and (fboundp 'nelisp--fx-run) (nelisp--fx-compile form))))
     (if c (nelisp--fx-run (car c) (cdr c)) (eval form t))))
 
 ;; Lexical defuns on the VM.  `nelisp--fx-table' maps a closure's body list
@@ -24979,6 +24986,32 @@ Never signals: a failure leaves NAME to the interpreter."
   (condition-case nil (nelisp--fx-register-1 name) (error nil))
   name)
 
+(defvar nelisp--fx-called nil
+  "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
+
+(defvar nelisp--fx-missing nil
+  "Set by `nelisp--fx-compile' to the undefined function that stopped it.")
+
+(defvar nelisp--fx-waiting (make-hash-table :test 'eq)
+  "Undefined function -> names whose compilation stopped at a call to it.
+Defining it as a function compiles them again.")
+
+(defun nelisp--fx-retry-waiters (name)
+  (condition-case nil (nelisp--fx-retry-waiters-1 name) (error nil)))
+
+(defun nelisp--fx-retry-waiters-1 (name)
+  (let ((waiters (gethash name nelisp--fx-waiting)))
+    (when waiters
+      (remhash name nelisp--fx-waiting)
+      ;; A macro too: compiling now expands it, as GNU's `load' expands
+      ;; macros eagerly when it reads a definition.
+      (dolist (w waiters)
+        (let ((fn (and (fboundp w) (symbol-function w))))
+          (when (and (consp fn) (eq (car fn) 'closure)
+                     (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
+            (remhash (nthcdr 3 fn) nelisp--fx-table)
+            (nelisp--fx-register w)))))))
+
 (defun nelisp--fx-register-1 (name)
   (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
@@ -24988,8 +25021,15 @@ Never signals: a failure leaves NAME to the interpreter."
                      (not (memq '&optional args)) (not (memq '&rest args))
                      (not (cl-some #'nelisp--fx-special-p args))
                      (not (gethash body nelisp--fx-table)))
-            (let ((c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
-                       (error nil))))
+            (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil)
+                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
+                        (error nil))))
+              (when c
+                (dolist (op nelisp--fx-called)
+                  (unless (memq name (gethash op nelisp--fx-callees))
+                    (push name (gethash op nelisp--fx-callees)))))
+              (when (and (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
+                (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
               (puthash body (if c (vector (car c) (cdr c) (length args)) 'none)
                        nelisp--fx-table))))))))
 
@@ -25003,19 +25043,28 @@ Never signals: a failure leaves NAME to the interpreter."
           (prog1 (apply 'nelisp--fx-plain-afset name def rest)
             (when (symbolp name)
               (nelisp--fx-check-macro name)
-              (nelisp--fx-register name))))))
+              (nelisp--fx-register name)
+              (nelisp--fx-retry-waiters name))))))
 
 ;; A function that compiled code calls is now a macro: drop every compiled
 ;; body, leaving them to the interpreter.  `defmacro' installs through
 ;; `fset', not `nl-afset', so both are watched.
 (defun nelisp--fx-check-macro (name)
-  (when (and (gethash name nelisp--fx-callees) (macrop name))
-    (clrhash nelisp--fx-table)
-    (clrhash nelisp--fx-callees)))
+  (let ((callers (gethash name nelisp--fx-callees)))
+    (when (and callers (macrop name))
+      (remhash name nelisp--fx-callees)
+      ;; Compiled again, the macro expands, as `load' would have done.
+      (dolist (w callers)
+        (let ((fn (and (fboundp w) (symbol-function w))))
+          (when (and (consp fn) (eq (car fn) 'closure)
+                     (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
+            (remhash (nthcdr 3 fn) nelisp--fx-table)
+            (nelisp--fx-register w)))))))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
   (fset 'fset
         (lambda (symbol definition)
           (prog1 (nelisp--fx-plain-fset symbol definition)
             (when (eq (car-safe definition) 'macro)
-              (nelisp--fx-check-macro symbol))))))
+              (nelisp--fx-check-macro symbol)
+              (nelisp--fx-retry-waiters symbol))))))
