@@ -24827,12 +24827,24 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
   (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
+        (depth 0) (maxdepth 0)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
-        ((emit (&rest items) (dolist (x items) (push x out) (setq pc (1+ pc))))
+        ((emit (&rest items)
+           ;; Track the operand-stack depth along the code as laid out; at a
+           ;; label the real depth is never larger, so MAXDEPTH bounds it.
+           (let ((op (car items)))
+             (setq depth (+ depth (cond ((memq op '(1 2 12)) 1)
+                                        ((memq op '(3 9 11 4 5 6 13 14 0)) -1)
+                                        ((eq op 16) (- 1 (nth 2 items)))
+                                        (t 0))))
+             (when (> depth maxdepth) (setq maxdepth depth)))
+           (dolist (x items) (push x out) (setq pc (1+ pc))))
          (label () (setq nlab (1+ nlab)) nlab)
          (place (l) (push (cons l pc) labels))
-         (jump (op l) (emit op) (push (cons pc l) patches) (emit 0))
+         ;; One `emit' for the opcode and its placeholder target, so the
+         ;; depth accounting sees the jump, not a HALT.
+         (jump (op l) (emit op 0) (push (cons (1- pc) l) patches))
          (unsupported (x) (throw 'nelisp--fx-unsupported x))
          (body (forms)
            (if (null forms) (emit 1 nil)
@@ -24921,6 +24933,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                   (comp (if (fboundp 'macroexpand-all) (macroexpand-all form) form))
                   (emit 0) 'ok)
                 'ok)
+        ;; The last element, after HALT, is the operand stack size the VM
+        ;; allocates; it is never executed.
+        (push (+ maxdepth 2) out)
         (let ((code (vconcat (nreverse out))))
           (dolist (p patches)
             (aset code (car p) (cdr (assq (cdr p) labels))))
