@@ -1,0 +1,11 @@
+GNU Emacs 31.1 language tests and the ERT framework they run on.
+Release: GNU Emacs 31.1
+Tarball: emacs-31.1.tar.gz from https://ftp.gnu.org/gnu/emacs/
+Tarball sha256: 3cad7fd1466c0e24867df8d2609da3ac75abc90d7c4c0175e410e9be46d4092a
+Signature: emacs-31.1.tar.gz.sig, good signature from Sean Whitton
+  (RSA key 9B917007AE030E36E4FC248B695B7AE4BF066240), checked 2026-10-17.
+Files are copied verbatim from the tarball at the same relative paths; each
+one's sha256 is in SHA256SUMS.  The 35 test files are the ones
+tools/ai/gnu-language-conformance-progress.org measures; the *-resources
+directories are the data files three of them read.
+License: GPL-3.0-or-later, as in the tarball.
