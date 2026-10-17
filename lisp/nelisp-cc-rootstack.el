@@ -271,10 +271,11 @@
              (save-callee-regs (+ (ptr-read-u64 entry 0) 1952))
              (ptr-write-u64 (ptr-read-u64 entry 0) 2040 (aot-current-sp))
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32) 1)
+             ;; Doc 214 S8: help the collector sweep while waiting.
              (while (= (atomic-fetch-add
                         (+ (data-addr nl_thread_parallel_ctx) 24) 0)
                        1)
-               0)
+               (extern-call nl_gc_help))
              (ptr-write-u64 (ptr-read-u64 entry 0) 2040 0)
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32)
                                (- 0 1))
@@ -293,7 +294,7 @@
            (while (= (atomic-fetch-add
                       (+ (data-addr nl_thread_parallel_ctx) 24) 0)
                      1)
-             0)
+             (extern-call nl_gc_help))
            (ptr-write-u64 (data-addr nl_main_parked_rsp) 0 0)
            (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 32) (- 0 1))
            1)

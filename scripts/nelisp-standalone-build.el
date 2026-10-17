@@ -727,8 +727,9 @@ storage — not an arena reservation."
                        ;; nl_main_parked_rsp (8) + nl_gc_wanted (8) + pad +
                        ;; nl_main_parked_regs (64) + nl_gc_collector_regs (64) +
                        ;; nl_main_wait_scratch (16) + nl_main_interrupt (8) + pad +
-                       ;; nl_main_tlab (16).
-                       336)))
+                       ;; nl_main_tlab (16) + nl_gc_par (64 + 16 * 1152 +
+                       ;; 4096 * 48, see `nl_gc_fused_sweep').
+                       215440)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -825,6 +826,8 @@ storage — not an arena reservation."
             (nelisp-link-symbol "nl_main_interrupt" (+ off 304)
                                 :section 'bss :bind 'global :type 'object)
             (nelisp-link-symbol "nl_main_tlab" (+ off 320)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_gc_par" (+ off 336)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -3344,6 +3347,7 @@ REPL-facing module it feeds."
              (count 0) (need 0) (ok 1))
         (seq
          (nl_gc_index_end)
+         (ptr-write-u64 (data-addr nl_gc_par) 56 0)
          (ptr-write-u64 ctx 32 0)
          (while (> chunk 0)
            (seq
@@ -3386,6 +3390,7 @@ REPL-facing module it feeds."
                  (setq entry (+ entry 24))
                  (setq chunk (ptr-read-u64 chunk 48))))
               (ptr-write-u64 ctx 16 ok)
+              (ptr-write-u64 (data-addr nl_gc_par) 56 ok)
               ok))))))
     (defun nl_gc_index_contains (entry obj)
       (if (= entry 0) 0
@@ -3915,6 +3920,260 @@ REPL-facing module it feeds."
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_relink_free_chunks (ptr-read-u64 268436160 0))
        0))
+    ;; Doc 214 S8: fused, parallel sweep.  The three serial passes above
+    ;; (sweep, coalesce, relink) each walk every block header of the heap;
+    ;; on the garbage an interpreted loop leaves behind they cost as much as
+    ;; the work being collected.  The fused pass does all three in ONE walk:
+    ;; a dead (mark 0) or already-free (mark 2) block extends the current
+    ;; run, and a run is written as one free block and pushed on a free list
+    ;; when a live block (or the segment end) closes it.  The heap is cut into
+    ;; 2 MiB segments; parked worker threads claim segments next to the
+    ;; collector (`nl_gc_help', called from their park spin loop).  A segment
+    ;; owns the blocks whose HEADER lies in [s, stop); its first header comes
+    ;; from the exact-start index bitmap built for this collection, so runs
+    ;; never span a segment boundary (bounded fragmentation: one split per
+    ;; 2 MiB).  Each participant pushes onto private lists (head + tail per
+    ;; bucket) that the collector splices onto the global heads afterwards.
+    ;; Diagnostic modes (checked allocator, poison-on-free, mark-only) keep
+    ;; the serial passes so their per-block hooks still run.
+    ;;
+    ;; nl_gc_par: +0 job active, +8 next segment, +16 segments, +24 segments
+    ;; done, +32 helpers inside, +40 participants claimed, +56 index valid
+    ;; for this collection; +64 16 participant slots of 1152 bytes (66 heads,
+    ;; 66 tails, freed, survived, live); +18496 4096 segments of 48 bytes
+    ;; (s, stop, chunk end, data start, bitmap, indexed end).
+    (defun nl_gc_par_slot (p) (+ (data-addr nl_gc_par) (+ 64 (* p 1152))))
+    (defun nl_gc_par_seg (k) (+ (data-addr nl_gc_par) (+ 18496 (* k 48))))
+    (defun nl_gc_fused_ok ()
+      (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+          (if (= (ptr-read-u64 (data-addr nl_alloc_check) 8) 0)
+              (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 0)
+                  (if (= (ptr-read-u64 268435584 0) 1) 0 1)
+                0)
+            0)
+        0))
+    (defun nl_gc_fused_put (k s stop end start bits iend)
+      (let ((e (nl_gc_par_seg k)))
+        (seq
+         (ptr-write-u64 e 0 s)
+         (ptr-write-u64 e 8 stop)
+         (ptr-write-u64 e 16 end)
+         (ptr-write-u64 e 24 start)
+         (ptr-write-u64 e 32 bits)
+         (ptr-write-u64 e 40 iend)
+         0)))
+    ;; Fill the segment table; answer the count, or 0 when it does not fit.
+    ;; A chunk without a usable index entry is one segment.
+    (defun nl_gc_fused_plan ()
+      (let* ((ix (data-addr nl_gc_start_index))
+             (useix (ptr-read-u64 (data-addr nl_gc_par) 56))
+             (chunk (ptr-read-u64 268436160 0))
+             (entry (ptr-read-u64 ix 0))
+             (i 0) (k 0) (s 0) (stop 0) (end 0) (start 0) (iend 0) (bits 0)
+             (ok 1))
+        (seq
+         (while (and (= ok 1) (> chunk 0))
+           (seq
+            (setq start (ptr-read-u64 chunk 24))
+            (setq end (nl_gc_chunk_end chunk))
+            (setq bits 0)
+            (setq iend start)
+            (if (= useix 1)
+                (if (< i (ptr-read-u64 ix 24))
+                    (if (= (ptr-read-u64 entry 0) start)
+                        (seq (setq bits (ptr-read-u64 entry 16))
+                             (setq iend (ptr-read-u64 entry 8)))
+                      0)
+                  0)
+              0)
+            (setq s start)
+            (while (and (= ok 1) (< s end))
+              (seq
+               (setq stop (if (< (+ s 2097152) iend) (+ s 2097152) end))
+               (if (> stop end) (setq stop end) 0)
+               (if (< k 4096)
+                   (seq (nl_gc_fused_put k s stop end start bits iend)
+                        (setq k (+ k 1)))
+                 (setq ok 0))
+               (setq s stop)))
+            (setq i (+ i 1))
+            (setq entry (+ entry 24))
+            (setq chunk (ptr-read-u64 chunk 48))))
+         (if (= ok 1) k 0))))
+    ;; First indexed header in [S, LIMIT), or 0.  Bit SLOT stands for the
+    ;; header at START + SLOT*8 - 8 (see `nl_gc_index_fill').
+    (defun nl_gc_fused_first (start bits s limit)
+      (let* ((slot (/ (- (+ s 8) start) 8))
+             (last (/ (- (+ limit 8) start) 8))
+             (found 0))
+        (seq
+         (while (and (= found 0) (< slot last))
+           (if (if (= (logand slot 63) 0)
+                   (= (ptr-read-u64 (+ bits (/ slot 8)) 0) 0)
+                 0)
+               (setq slot (+ slot 64))
+             (if (= (logand (ptr-read-u8 bits (/ slot 8))
+                            (shl 1 (logand slot 7)))
+                    0)
+                 (setq slot (+ slot 1))
+               (setq found 1))))
+         (if (= found 1) (- (+ start (* slot 8)) 8) 0))))
+    (defun nl_gc_fused_link (slot hdr bt)
+      (let* ((b (if (< bt 473) (/ (- bt 16) 8)
+                  (+ 58 (nl_freelist_large_bin bt))))
+             (hp (+ slot (* b 8)))
+             (node (+ hdr 8)))
+        (seq
+         (ptr-write-u64 node 0 (ptr-read-u64 hp 0))
+         (if (= (ptr-read-u64 hp 0) 0) (ptr-write-u64 hp 528 node) 0)
+         (ptr-write-u64 hp 0 node)
+         0)))
+    ;; Close a run of N dead/free blocks at RUN totalling RUNBT bytes.
+    (defun nl_gc_fused_flush (slot run runbt n end)
+      (if (= run 0) 0
+        (seq
+         (if (= n 1)
+             (nl_hdr_set_mark run 2)
+           (ptr-write-u64 run 0 (+ runbt 2)))
+         (nl_gc_fused_link slot run runbt)
+         (if (>= runbt 65552) (nl_gc_discard_free_block run end) 0)
+         0)))
+    (defun nl_gc_fused_segment (slot first stop end)
+      (let* ((hdr first) (run 0) (runbt 0) (n 0) (bt 0) (m 0)
+             (freed 0) (kept 0) (live 0))
+        (seq
+         (while (and (> hdr 0) (< hdr stop))
+           (seq
+            (setq bt (nl_hdr_bt hdr))
+            (if (= (nl_gc_bt_ok hdr bt end) 0)
+                (setq hdr 0)
+              (seq
+               (setq m (nl_hdr_mark hdr))
+               (if (= (nl_gc_is_boot hdr) 1)
+                   (seq
+                    (nl_hdr_set_mark hdr 0)
+                    (setq live (+ live bt))
+                    (nl_gc_fused_flush slot run runbt n end)
+                    (setq run 0))
+                 (if (if (= m 1) 1 (if (= m 4) 1 0))
+                     (seq
+                      (nl_hdr_set_mark hdr 0)
+                      (setq kept (+ kept 1))
+                      (setq live (+ live bt))
+                      (nl_gc_fused_flush slot run runbt n end)
+                      (setq run 0))
+                   (if (if (= m 0) 1 (if (= m 2) 1 0))
+                       (seq
+                        (if (= m 0) (setq freed (+ freed 1)) 0)
+                        (if (= run 0)
+                            (seq (setq run hdr) (setq runbt bt) (setq n 1))
+                          (seq (setq runbt (+ runbt bt)) (setq n (+ n 1)))))
+                     (seq
+                      (nl_gc_fused_flush slot run runbt n end)
+                      (setq run 0)))))
+               (setq hdr (+ hdr bt))))))
+         (nl_gc_fused_flush slot run runbt n end)
+         (ptr-write-u64 slot 1056 (+ (ptr-read-u64 slot 1056) freed))
+         (ptr-write-u64 slot 1064 (+ (ptr-read-u64 slot 1064) kept))
+         (ptr-write-u64 slot 1072 (+ (ptr-read-u64 slot 1072) live))
+         0)))
+    (defun nl_gc_fused_run_seg (slot k)
+      (let* ((e (nl_gc_par_seg k))
+             (s (ptr-read-u64 e 0))
+             (stop (ptr-read-u64 e 8))
+             (start (ptr-read-u64 e 24))
+             (iend (ptr-read-u64 e 40))
+             (first (if (= s start) s
+                      (nl_gc_fused_first start (ptr-read-u64 e 32) s
+                                         (if (< stop iend) stop iend)))))
+        (seq
+         ;; Nothing indexed in the tail segment: blocks allocated since the
+         ;; index was built start exactly at the indexed end.
+         (if (= first 0) (if (< iend stop) (setq first iend) 0) 0)
+         (if (= first 0) 0
+           (nl_gc_fused_segment slot first stop (ptr-read-u64 e 16))))))
+    (defun nl_gc_fused_claim (slot)
+      (let* ((par (data-addr nl_gc_par)) (k 0) (go 1))
+        (seq
+         (while (= go 1)
+           (seq
+            (setq k (atomic-fetch-add (+ par 8) 1))
+            (if (< k (ptr-read-u64 par 16))
+                (seq (nl_gc_fused_run_seg slot k)
+                     (atomic-fetch-add (+ par 24) 1))
+              (setq go 0))))
+         0)))
+    ;; Called by a parked thread on every spin of its park loop.  The inside
+    ;; count lets the collector wait until no helper can still touch the job;
+    ;; it is taken only once a job is seen (so idle spinners never hold the
+    ;; collector's final wait) and the job is re-checked under it.
+    (defun nl_gc_help ()
+      (let* ((par (data-addr nl_gc_par)) (p 0))
+        (if (= (ptr-read-u64 par 0) 0) 0
+          (seq
+           (atomic-fetch-add (+ par 32) 1)
+           (if (= (atomic-fetch-add par 0) 1)
+               (if (< (atomic-fetch-add (+ par 8) 0) (ptr-read-u64 par 16))
+                   (seq
+                    (setq p (atomic-fetch-add (+ par 40) 1))
+                    (if (< p 16) (nl_gc_fused_claim (nl_gc_par_slot p)) 0))
+                 0)
+             0)
+           (atomic-fetch-add (+ par 32) (- 0 1))
+           0))))
+    (defun nl_gc_par_publish (value)
+      (if (= (atomic-compare-exchange
+              (data-addr nl_gc_par)
+              (atomic-fetch-add (data-addr nl_gc_par) 0) value)
+             1)
+          value
+        (nl_gc_par_publish value)))
+    (defun nl_gc_fused_merge_buckets (slot b)
+      (if (> b 65) 0
+        (nl_seq2
+         (if (= (ptr-read-u64 (+ slot (* b 8)) 0) 0) 0
+           (let ((gh (if (< b 58) (+ 268435696 (* b 8))
+                       (nl_freelist_large_head (- b 58)))))
+             (seq
+              (ptr-write-u64 (ptr-read-u64 (+ slot (+ 528 (* b 8))) 0) 0
+                             (ptr-read-u64 gh 0))
+              (ptr-write-u64 gh 0 (ptr-read-u64 (+ slot (* b 8)) 0))
+              (if (< b 58) (nl_freelist_small_mask_set (+ 16 (* b 8))) 0)
+              0)))
+         (nl_gc_fused_merge_buckets slot (+ b 1)))))
+    (defun nl_gc_fused_merge (p np)
+      (if (>= p np) 0
+        (let ((slot (nl_gc_par_slot p)))
+          (seq
+           (nl_gc_fused_merge_buckets slot 0)
+           (ptr-write-u64 268435632 0 (+ (ptr-read-u64 268435632 0)
+                                         (ptr-read-u64 slot 1056)))
+           (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0)
+                                         (ptr-read-u64 slot 1064)))
+           (nl_gc_live_add (ptr-read-u64 slot 1072))
+           (nl_gc_fused_merge (+ p 1) np)))))
+    ;; 1 when the fused pass ran, 0 when the heap was left untouched.
+    (defun nl_gc_fused_sweep ()
+      (let* ((par (data-addr nl_gc_par))
+             (n (nl_gc_fused_plan))
+             (np 0))
+        (if (= n 0) 0
+          (seq
+           (nl_alloc_zero_fill (nl_gc_par_slot 0) 0 18432)
+           (ptr-write-u64 par 8 0)
+           (ptr-write-u64 par 16 n)
+           (ptr-write-u64 par 24 0)
+           (ptr-write-u64 par 40 1)
+           (nl_gc_par_publish 1)
+           (nl_gc_fused_claim (nl_gc_par_slot 0))
+           (while (< (atomic-fetch-add (+ par 24) 0) n) 0)
+           (nl_gc_par_publish 0)
+           (while (> (atomic-fetch-add (+ par 32) 0) 0) 0)
+           (setq np (atomic-fetch-add (+ par 40) 0))
+           (if (> np 16) (setq np 16) 0)
+           (nl_gc_clear_freelist_buckets 0)
+           (nl_gc_fused_merge 0 np)
+           1))))
     ;; Doc 152 Stage 4c-1: prove a swept chunk contains only FREE blocks.
     ;; STATUS is the sole across-call loop local; END is threaded as an arg.
     ;; Reaching END exactly is required, so a malformed block walk retains the
@@ -4173,8 +4432,12 @@ REPL-facing module it feeds."
     (defun nl_gc_sweep ()
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
-       (nl_gc_sweep_chunks (ptr-read-u64 268436160 0))
-       (nl_gc_coalesce_and_rebuild_freelist)
+       (if (= (if (= (nl_gc_fused_ok) 1) (nl_gc_fused_sweep) 0) 0)
+           (seq
+            (nl_gc_sweep_chunks (ptr-read-u64 268436160 0))
+            (nl_gc_coalesce_and_rebuild_freelist))
+         0)
+       (ptr-write-u64 (data-addr nl_gc_par) 56 0)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (ptr-read-u64 268436160 0)
