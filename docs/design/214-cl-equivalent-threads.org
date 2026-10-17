@@ -109,3 +109,30 @@ no speedup), so the same code and ERT run on both.
 - S0.2 baseline nelisp-unsupported-primitive: on main 6d759c79 the
   windows-x86_64 build (76 s) answers =(nelisp-thread-spawn 2 0 1 2 3)= with
   =nelisp-unsupported-primitive=.
+- S1 (2026-10-17): thread blocks hold the signal/throw stash (193 TEB
+  loads on Windows); the Win64 rsp spill slot is
+  TlsSlots[nl_tls_rsp_index] (117 save/restore pairs); GC frame rings are
+  per-thread.  A Linux eval worker owns its block at env+2048, its FS
+  control block at env+3072 and its ring at env+1052672.
+  =tools/nelisp-bt-stash-smoke.el= gives BT-STASH-FAIL on 6d759c79 and
+  PASS 3/3 with the change.  On linux (WSL) the Doc 199 smokes pass; on
+  windows the reader, process, TLS and nelisp-service smokes pass.  Two
+  failures are unchanged from 6d759c79 and not caused by this work:
+  - emacs-parity's single finding under WSL Emacs 30.1
+  - windows =standalone-reader-test=: compile-runtime-image exit=1
+  =nl_bt_snapshot= (backtrace diagnostics) is still process-global.
+- S2 (2026-10-17): windows-x86_64 links the Doc 199 thread arms.  The
+  OS-specific units become VirtualAlloc (worker mmap, shared memory,
+  launch page) and CreateThread with a 64 MiB reserved stack; the entry
+  installs the worker's thread block with TlsSetValue and returns.  Two
+  fixes went beyond the port:
+  - A section starts in a chunk with 64 MiB free, growing a 512 MiB
+    chunk if needed.  Windows chunks are 64 MiB and the prelude nearly
+    fills the first one, so =gc-inhibit 1= used to return -12.
+  - Only the main thread starts a mid-form collection.  A worker's
+    =while= back-edge requested a park it could never satisfy and
+    missed after the bounded wait.  Once allocation debt was due it did
+    that on every iteration, which looked like a hang after about 6000
+    iterations.
+  On Windows the four Doc 199 smokes pass (checked=6/9/13/14, parked=3)
+  and nelisp-bt-stash-smoke passes 3/3 (38 s).  Linux is unchanged.
