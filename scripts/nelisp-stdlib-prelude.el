@@ -15349,10 +15349,80 @@ Doc 204 §6.2's own class-set boundary."
 ;; itself was missing.
 (unless (fboundp 'search-forward)
   (defun search-forward (string &optional bound noerror count)
-    "Literal forward search for STRING, layered on the native
-`re-search-forward' via `regexp-quote' (matching real Emacs's own
-signature: BOUND/NOERROR/COUNT all pass straight through)."
-    (re-search-forward (regexp-quote string) bound noerror count)))
+    "Literal forward search for STRING (BOUND, NOERROR and COUNT as in
+Emacs).  One forward match with no case folding to apply -- the common
+call -- scans the buffer text natively; anything else goes through
+`re-search-forward' on `regexp-quote', which folds case."
+    (if (and (stringp string) (or (null count) (eql count 1))
+             (fboundp 'nelisp--string-search-chars)
+             (or (not case-fold-search) (nelisp--caseless-ascii-p string)
+                 (and (fboundp 'nelisp--ascii-downcase) (nelisp--ascii-p string))))
+        (nelisp--search-forward-literal string bound noerror)
+      (re-search-forward (regexp-quote string) bound noerror count)))
+  ;; Non-nil if STRING is ASCII without letters, so case folding cannot
+  ;; change what it matches.  `downcase'/`upcase' answered the same but
+  ;; allocated enough per call to bill a collection to later calls (1.5
+  ;; to 40 ms each in a search loop).
+  (defun nelisp--ascii-p (string)
+    (let ((i 0) (n (length string)) (ok t))
+      (while (and ok (< i n))
+        (when (>= (aref string i) 128) (setq ok nil))
+        (setq i (1+ i)))
+      ok))
+  ;; (BUFFER TEXT FOLDED): FOLDED is TEXT, the memoized buffer string, with
+  ;; ASCII letters lowered; rebuilt when the buffer text changes.
+  (defvar nelisp--folded-text-cache nil)
+  (defun nelisp--buffer-folded-text (buf text)
+    (let ((c nelisp--folded-text-cache))
+      (if (and c (eq (car c) buf) (eq (nth 1 c) text))
+          (nth 2 c)
+        (let ((folded (nelisp--ascii-downcase text)))
+          (when folded (setq nelisp--folded-text-cache (list buf text folded)))
+          folded))))
+  (defun nelisp--caseless-ascii-p (string)
+    (let ((i 0) (n (length string)) (ok t))
+      (while (and ok (< i n))
+        (let ((c (aref string i)))
+          (when (or (>= c 128) (and (>= c ?A) (<= c ?Z)) (and (>= c ?a) (<= c ?z)))
+            (setq ok nil)))
+        (setq i (1+ i)))
+      ok))
+  ;; The regexp route cost 30 ms a call and 66 s to find the 2000 ` d="'
+  ;; of a 709 KB SVG; this one searches the memoized buffer text with the
+  ;; native char-indexed scanner.
+  (defun nelisp--search-forward-literal (string bound noerror)
+    (let* ((pt (point))
+           (lim (if bound
+                    (min (point-max)
+                         (if (markerp bound) (marker-position bound)
+                           (progn (unless (integerp bound)
+                                    (signal 'wrong-type-argument
+                                            (list 'integer-or-marker-p bound)))
+                                  bound)))
+                  (point-max))))
+      (when (< lim pt) (error "Invalid search bound (wrong side of point)"))
+      (let* ((raw (nelisp-buffer-string nelisp--current-buffer))
+             ;; With `case-fold-search' and an ASCII needle with letters
+             ;; (the caller checked), search lowered copies of both; ASCII
+             ;; folding keeps char positions.  Non-ASCII letters in the text
+             ;; are not folded against the ASCII needle (GNU's case table
+             ;; would fold a few, such as KELVIN SIGN to k).
+             (fold (and case-fold-search (not (nelisp--caseless-ascii-p string))))
+             (text (if fold (nelisp--buffer-folded-text nelisp--current-buffer raw) raw))
+             (needle (if fold (or (nelisp--ascii-downcase string) (downcase string)) string))
+             (idx (and text (nelisp--string-search-chars needle text (1- pt))))
+             (idx (if (eq idx t) (string-search needle text (1- pt)) idx))
+             (end (and idx (+ idx 1 (length string)))))
+        (if (null text)
+            ;; No lowered copy (a unibyte buffer): let the matcher fold.
+            (re-search-forward (regexp-quote string) bound noerror)
+        (if (and end (<= end lim))
+            (progn (setq nlre--last-caps (vector (cons (1+ idx) end)))
+                   (goto-char end)
+                   end)
+          (cond ((null noerror) (signal 'search-failed (list string)))
+                ((eq noerror t) nil)
+                (t (goto-char lim) nil))))))))
 ;; `search-backward' was missing entirely (plain `void-function', not just
 ;; absent from the ~80-file census above) even though its two building
 ;; blocks -- `re-search-backward' and `regexp-quote' -- were both already

@@ -7443,6 +7443,20 @@ argument (reachability + in-arena bounds checks).")
                                                            (wf_argval args 0)
                                                            (wf_argval args 1))
                                             (mut-str-finalize ms out) 0)))
+;; A copy of tag-5 string ARG0 with A-Z lowered and every other byte
+    ;; kept, so char positions are unchanged; nil for any other string.
+    ;; `search-forward' folds ASCII case by searching such a copy.
+    ((:lit "nelisp--ascii-downcase")
+     . (let* ((s (wf_arg_ptr args 0)))
+         (if (= (ptr-read-u64 s 0) 5)
+             (let* ((ms (alloc-bytes 32 8)) (n (m5_strlen s)) (i 0))
+               (seq (mut-str-make-empty ms (+ n 1))
+                    (while (< i n)
+                      (let* ((b (m5_byte_at s i)))
+                        (seq (mut-str-push-byte ms (if (< b 65) b (if (> b 90) b (+ b 32))))
+                             (setq i (+ i 1)))))
+                    (mut-str-finalize ms out) 0))
+           (seq (wf_write_nil out) 0))))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
     ((:lit "nelisp--string-search-chars")
      . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
@@ -28358,7 +28372,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
@@ -30172,10 +30186,28 @@ can use it."
             ;; becomes empty when OMIT-NULLS is set.
             ;; Emacs checks SEPARATORS before STRING, so a call with both
             ;; wrong names the separator.
+            "(defun nelisp--literal-separator-p (sep)\n"
+            "  (let* ((i 0) (n (length sep)) (ok (> n 0)))\n"
+            "    (while (and ok (< i n))\n"
+            "      (when (memq (aref sep i) '(?. ?* ?+ ?? ?[ ?] ?^ ?$ ?\\\\)) (setq ok nil))\n"
+            "      (setq i (1+ i)))\n"
+            "    ok))\n"
+            "(defun nelisp--split-string-literal (s sep omit)\n"
+            "  (let ((pos 0) (n (length sep)) (out nil) (i nil))\n"
+            "    (while (setq i (string-search sep s pos))\n"
+            "      (unless (and omit (= i pos)) (setq out (cons (substring s pos i) out)))\n"
+            "      (setq pos (+ i n)))\n"
+            "    (unless (and omit (= pos (length s))) (setq out (cons (substring s pos) out)))\n"
+            "    (nreverse out)))\n"
             "(defun split-string (s &optional sep omit trim)\n"
             "  (when sep (unless (stringp sep) (signal 'wrong-type-argument (list 'stringp sep))))\n"
             "  (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))\n"
-            "  (let ((parts (nlre-split-string s sep omit)))\n"
+            ;; A separator with no regexp operator in it is a literal; split on
+            ;; it with the native `string-search' instead of the interpreted
+            ;; matcher (13 s -> under 1 s for the lines of a 709 KB SVG).
+            "  (let ((parts (if (and sep (nelisp--literal-separator-p sep))\n"
+            "                   (nelisp--split-string-literal s sep omit)\n"
+            "                 (nlre-split-string s sep omit))))\n"
             "    (if (null trim) parts\n"
             "      (let ((out nil))\n"
             "        (dolist (p parts)\n"
