@@ -16804,6 +16804,95 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (< c 48) (setq ok 0) (if (> c 57) (setq ok 0) 0)))
           (setq i (+ i 1)))
         ok))
+    ;; 1 when S is exactly [+-]?D+(.D+)?([eE][+-]?D+)? with a fraction or an
+    ;; exponent: a float literal the reader's `nl_str_to_float' parses.
+    (defun m5_digits_end (s i n)
+      (let* ((j i))
+        (seq (while (if (< j n) (if (< (m5_byte_at s j) 48) 0 (if (> (m5_byte_at s j) 57) 0 1)) 0)
+               (setq j (+ j 1)))
+             j)))
+    (defun m5_float_token_p (s)
+      (let* ((n (m5_strlen s)) (i 0) (j 0) (shape 0))
+        (seq
+         (if (> n 0)
+             (if (= (m5_byte_at s 0) 45) (setq i 1) (if (= (m5_byte_at s 0) 43) (setq i 1) 0))
+           0)
+         (setq j (m5_digits_end s i n))
+         (if (> j i)
+             (seq
+              (setq i j)
+              (if (< i n)
+                  (if (= (m5_byte_at s i) 46)
+                      (seq (setq j (m5_digits_end s (+ i 1) n))
+                           (if (> j (+ i 1)) (seq (setq i j) (setq shape 1)) (setq i n)))
+                    0)
+                0)
+              (if (< i n)
+                  (if (or (= (m5_byte_at s i) 101) (= (m5_byte_at s i) 69))
+                      (let* ((k (+ i 1)))
+                        (seq (if (< k n)
+                                 (if (or (= (m5_byte_at s k) 45) (= (m5_byte_at s k) 43)) (setq k (+ k 1)) 0)
+                               0)
+                             (setq j (m5_digits_end s k n))
+                             (if (> j k) (seq (setq i j) (setq shape 1)) (setq shape 0))))
+                    0)
+                0)
+              (if (= i n) shape 0))
+           0))))
+    ;; Clinger's fast path for a token `m5_float_token_p' accepted: with at
+    ;; most 18 digits the decimal mantissa M is exact in an i64, and when M
+    ;; < 2^53 and the decimal exponent E is within +-22, M and 10^|E| are
+    ;; both exact doubles, so the one IEEE multiply or divide is the
+    ;; correctly rounded answer.  Writes the float into OUT and answers 1;
+    ;; 0 leaves the token to the reader's exact (big-integer) converter,
+    ;; which costs about 1 ms because it allocates and clears 32 KB per call.
+    (defun m5_pow10_bits (k)
+      (if (> k 18)
+          (f64-bits (f64-mul (i64-to-f64 1000000000000000000)
+                             (i64-to-f64 (m5_ipow10 (- k 18)))))
+        (f64-bits (i64-to-f64 (m5_ipow10 k)))))
+    (defun m5_ipow10 (k)
+      (let* ((v 1) (j 0))
+        (seq (while (< j k) (seq (setq v (* v 10)) (setq j (+ j 1)))) v)))
+    (defun m5_float_fast (s out)
+      (let* ((n (m5_strlen s)) (i 0) (neg 0) (m 0) (nd 0) (e 0) (ee 0) (eneg 0) (c 0))
+        (seq
+         (setq c (m5_byte_at s 0))
+         (if (= c 45) (seq (setq neg 1) (setq i 1)) (if (= c 43) (setq i 1) 0))
+         (while (if (< i n) (if (< (m5_byte_at s i) 48) 0 (if (> (m5_byte_at s i) 57) 0 1)) 0)
+           (seq (setq m (+ (* m 10) (- (m5_byte_at s i) 48)))
+                (setq nd (+ nd 1)) (setq i (+ i 1))))
+         (if (< i n)
+             (if (= (m5_byte_at s i) 46)
+                 (seq (setq i (+ i 1))
+                      (while (if (< i n) (if (< (m5_byte_at s i) 48) 0 (if (> (m5_byte_at s i) 57) 0 1)) 0)
+                        (seq (if (< nd 19) (setq m (+ (* m 10) (- (m5_byte_at s i) 48))) 0)
+                             (setq nd (+ nd 1)) (setq e (- e 1)) (setq i (+ i 1)))))
+               0)
+           0)
+         (if (< i n)
+             (seq (setq i (+ i 1))
+                  (if (< i n)
+                      (if (= (m5_byte_at s i) 45) (seq (setq eneg 1) (setq i (+ i 1)))
+                        (if (= (m5_byte_at s i) 43) (setq i (+ i 1)) 0))
+                    0)
+                  (while (< i n)
+                    (seq (if (< ee 1000) (setq ee (+ (* ee 10) (- (m5_byte_at s i) 48))) 0)
+                         (setq i (+ i 1))))
+                  (setq e (if (= eneg 1) (- e ee) (+ e ee))))
+           0)
+         (if (> nd 18) 0
+           (if (> m 9007199254740992) 0
+             (if (= m 0) 0
+               (if (> e 22) 0
+                 (if (< e -22) 0
+                   ;; Doubles cross `let' as their bits (see `wf_fsum').
+                   (let* ((mb (f64-bits (i64-to-f64 (if (= neg 1) (- 0 m) m))))
+                          (pb (m5_pow10_bits (if (< e 0) (- 0 e) e)))
+                          (rb (if (< e 0)
+                                  (f64-bits (f64-div (bits-to-f64 mb) (bits-to-f64 pb)))
+                                (f64-bits (f64-mul (bits-to-f64 mb) (bits-to-f64 pb))))))
+                     (seq (sexp-write-float out (bits-to-f64 rb)) 1))))))))))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
         (if (= (m5_byte_at a i) (m5_byte_at b i))
@@ -22071,6 +22160,15 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; optionally-signed decimal integer, so that caller can route it to
     ;; `nl--read-int' rather than its interpreted digit loop.
     ((:lit "nl--int-token-p") . (if (= (m5_int_token_p (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ;; Same contract: ARG0 is a string.  A whole float literal is read by the
+    ;; reader's own native parser, the float twin of `nl--read-int'; anything
+    ;; else answers nil and `string-to-number' keeps its full walk.
+    ((:lit "nl--read-float-token") . (let* ((s (wf_arg_ptr args 0)))
+                                       (if (= (m5_float_token_p s) 1)
+                                           (if (= (m5_float_fast s out) 1) 0
+                                             (if (= (extern-call nl_str_to_float (nl_bi_strptr s) (m5_strlen s) out) 1) 0
+                                               (seq (wf_write_nil out) 0)))
+                                         (seq (wf_write_nil out) 0))))
     ;; The float arm was missing, so (zerop 0.0) answered nil -- and a
     ;; non-number answered nil too, instead of signalling.  Masking the sign
     ;; bit is what makes -0.0 zero as well, which is what `=' reports.
@@ -22531,7 +22629,7 @@ families.")
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sin" "cos" "sxhash-eq"
     "nelisp--float-word-half"
-    "nl--read-int" "nl--int-token-p" "nl--nthcdr"
+    "nl--read-int" "nl--int-token-p" "nl--read-float-token" "nl--nthcdr"
     "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"
@@ -28244,7 +28342,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sxhash-eq"
-    "nl--read-int" "nl--int-token-p" "nl--nthcdr"
+    "nl--read-int" "nl--int-token-p" "nl--read-float-token" "nl--nthcdr"
     "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"

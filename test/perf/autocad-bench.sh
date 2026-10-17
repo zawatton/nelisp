@@ -5,9 +5,11 @@
 # newer than it.  Bounded: 120 s per bench, low priority.
 cd "$(dirname "$0")/../.." || exit 2
 : "${AUTOCAD_PERF_BIN:?set AUTOCAD_PERF_BIN to a built nelisp binary}"
-fixture=target/perf/inkscape-fixture.svg
-fixture4x=target/perf/inkscape-fixture-4x.svg
-if [ ! -f "$fixture4x" ] || [ test/perf/gen-inkscape-svg.py -nt "$fixture4x" ]; then
+fixture=$PWD/target/perf/inkscape-fixture.svg
+fixture4x=$PWD/target/perf/inkscape-fixture-4x.svg
+if [ ! -f "$fixture" ] || [ ! -f "$fixture4x" ] \
+   || [ test/perf/gen-inkscape-svg.py -nt "$fixture" ] \
+   || [ test/perf/gen-inkscape-svg.py -nt "$fixture4x" ]; then
   mkdir -p target/perf || exit 2
   python3 test/perf/gen-inkscape-svg.py "$fixture" >/dev/null || exit 2
   python3 test/perf/gen-inkscape-svg.py "$fixture4x" 8000 2200 >/dev/null || exit 2
