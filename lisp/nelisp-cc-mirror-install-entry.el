@@ -88,12 +88,11 @@
       ;; complexity.  All `Option<Sexp>' / `bool' resolution happens on
       ;; the Rust side before the call (= explicit unbound-marker /
       ;; Sexp::T / Sexp::Nil pointers).
-      (if (= (extern-call nl_thread_mirror_mutation_guard
-                          mirror-ptr sym-ptr) 1)
-          (- 0 4)
-        (nelisp_mirror_install_entry_apply
+      (extern-call nl_mirror_write_exit
+         (seq (extern-call nl_mirror_write_enter)
+              (nelisp_mirror_install_entry_apply
          (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-         value-ptr function-ptr plist-ptr constant-ptr))))
+         value-ptr function-ptr plist-ptr constant-ptr)))))
   "AOT source for Doc 111 §111.E #12 `mirror_install_entry'.
 
 Implements only the existing-entry update fast path (= 4

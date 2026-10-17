@@ -4,12 +4,11 @@
 
 ;;; Commentary:
 
-;; Interpreter-driven proof of the Tier-3a/3b write ceiling.  A registered
-;; worker must still call and read globals, but hit-path and miss-path `setq'
-;; mutations must signal `nelisp-worker-mirror-mutation' and leave the shared
-;; mirror unchanged.  Creating a new interned name is the same shared-global
-;; mutation class and is refused too; interning an existing name remains a
-;; lookup.  Every form is built before clone(2), and every section uses worker
+;; Interpreter-driven proof of the worker write contract.  Doc 199 Tier 3b
+;; refused worker writes to the shared mirror; Doc 214 S5 serialises them
+;; instead.  A registered worker reads and calls globals, and its hit-path
+;; and miss-path `setq's and fresh interns now take effect in the shared
+;; mirror and intern table, visible to the main thread.  Every form is built before clone(2), and every section uses worker
 ;; registry ID 2 under the Doc 199 GC-inhibit boundary.
 
 ;;; Code:
@@ -79,63 +78,45 @@
           (error "registered worker could not read/call global state"))
         (setq checked (+ checked 1))
 
-        ;; Existing-entry hit path: catch the named condition and prove the
-        ;; original value cell did not change.
+        ;; Existing-entry hit path: the write lands in the shared value cell.
         (unless (= (nl-thread-mirror-guard--run
-                    '(condition-case nl-thread-mirror-guard--error
-                         (progn
-                           (setq nl-thread-mirror-guard--target 99)
-                           -20)
-                       (nelisp-worker-mirror-mutation
-                        (if (eq (cadr nl-thread-mirror-guard--error)
-                                'nl-thread-mirror-guard--target)
-                            23
-                          24))))
+                    '(condition-case nil
+                         (progn (setq nl-thread-mirror-guard--target 99) 23)
+                       (error 24)))
                    23)
-          (error "worker hit-path mirror write was not catchably refused"))
+          (error "worker hit-path mirror write failed"))
         (setq checked (+ checked 1))
-        (unless (= nl-thread-mirror-guard--target 17)
-          (error "worker changed shared global to %S"
+        (unless (= nl-thread-mirror-guard--target 99)
+          (error "worker write not visible: shared global is %S"
                  nl-thread-mirror-guard--target))
         (setq checked (+ checked 1))
 
-        ;; Absent-entry miss path: the bucket vector/count must remain intact.
+        ;; Absent-entry miss path: the worker inserts a new global.
         (unless (= (nl-thread-mirror-guard--run
-                    '(condition-case nl-thread-mirror-guard--error
-                         (progn
-                           (setq nl-thread-mirror-guard--new-target 101)
-                           -25)
-                       (nelisp-worker-mirror-mutation
-                        (if (eq (cadr nl-thread-mirror-guard--error)
-                                'nl-thread-mirror-guard--new-target)
-                            25
-                          26))))
+                    '(condition-case nil
+                         (progn (setq nl-thread-mirror-guard--new-target 101) 25)
+                       (error 26)))
                    25)
-          (error "worker miss-path mirror write was not catchably refused"))
+          (error "worker miss-path mirror write failed"))
         (setq checked (+ checked 1))
-        (when (boundp 'nl-thread-mirror-guard--new-target)
-          (error "worker inserted an absent global into the shared mirror"))
+        (unless (and (boundp 'nl-thread-mirror-guard--new-target)
+                     (= (symbol-value 'nl-thread-mirror-guard--new-target) 101))
+          (error "worker-inserted global is not visible"))
         (setq checked (+ checked 1))
 
-        ;; Intern lookup is allowed, but a name-table insertion is a write.
+        ;; A fresh intern from a worker inserts into the shared name table.
         (when (intern-soft "nl-thread-mirror-guard--fresh-intern")
           (error "fresh intern probe unexpectedly existed before worker"))
         (setq checked (+ checked 1))
         (unless (= (nl-thread-mirror-guard--run
-                    '(condition-case nl-thread-mirror-guard--error
-                         (progn
-                           (intern "nl-thread-mirror-guard--fresh-intern")
-                           -27)
-                       (nelisp-worker-mirror-mutation
-                        (if (string= (cadr nl-thread-mirror-guard--error)
-                                     "nl-thread-mirror-guard--fresh-intern")
-                            27
-                          28))))
+                    '(condition-case nil
+                         (progn (intern "nl-thread-mirror-guard--fresh-intern") 27)
+                       (error 28)))
                    27)
-          (error "worker intern-table write was not catchably refused"))
+          (error "worker intern failed"))
         (setq checked (+ checked 1))
-        (when (intern-soft "nl-thread-mirror-guard--fresh-intern")
-          (error "worker inserted a new name into the shared intern table"))
+        (unless (intern-soft "nl-thread-mirror-guard--fresh-intern")
+          (error "worker-interned name is not in the shared intern table"))
         (setq checked (+ checked 1)))
     (progn
       (nl-thread-mirror-guard--should-unsupported

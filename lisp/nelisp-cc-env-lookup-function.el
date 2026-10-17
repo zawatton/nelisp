@@ -66,9 +66,12 @@
      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
        (if (= entry 0)
            1
-         (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
-             1
-           (and (record-slot-ref entry 1 out-ptr) 0)))))
+         ;; Doc 214 S5: copy the slot once, then test the copy.  Testing
+         ;; the live slot and copying it after was two loads, and a
+         ;; concurrent `fmakunbound' between them returned the unbound
+         ;; marker as a function.
+         (and (record-slot-ref entry 1 out-ptr)
+              (if (= (symbol-eq out-ptr unbound-ptr) 1) 1 0)))))
   "AOT source for Wave a-2 `Env::lookup_function' body.
 
 R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun

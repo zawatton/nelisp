@@ -325,10 +325,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
            (ptr-write-u64 result-slot 16 buf)
            (ptr-write-u64 result-slot 24 n)
            result-slot))
+    ;; Doc 214 S5: publish the buffer before the length.  A concurrent
+    ;; prober treats a nonzero length as a filled slot and reads +8 next;
+    ;; x86 keeps these stores in order.
     (defun nl_intern_insert (slot p n result-slot buf)
       (and (nl_alloc_str_copy_loop p buf 0 n)
-           (ptr-write-u64 slot 0 (+ n 1))
            (ptr-write-u64 slot 8 buf)
+           (ptr-write-u64 slot 0 (+ n 1))
            (nl_intern_write_sexp result-slot buf n)))
     ;; Plain per-occurrence buffer: used when the region is disabled and
     ;; when it is exhausted (SLOT 0 = table full, or the arena cannot take
@@ -338,7 +341,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (nl_alloc_symbol_write
        bytes-ptr n (if (= n 0) 1 n) result-slot
        (alloc-bytes (if (= n 0) 1 n) 1)))
-    (defun nl_intern_finish (slot p n result-slot)
+    (defun nl_intern_finish_at (slot p n result-slot)
       (if (= slot 0)
           (nl_alloc_symbol_plain p n result-slot)
         (if (= (ptr-read-u64 slot 0) 0)
@@ -346,6 +349,20 @@ lifetime of a Sexp value.  No `let' binding needed.")
                 (nl_intern_insert slot p n result-slot (nl_intern_bump n))
               (nl_alloc_symbol_plain p n result-slot))
           (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+    ;; Doc 214 S5: a miss inserts under the intern lock and probes again
+    ;; there, so two threads interning one new name agree on its slot and
+    ;; never claim the same empty slot or race the name-arena bump.  Hits
+    ;; stay lock-free; with no worker the lock is a no-op.
+    (defun nl_intern_finish (slot p n result-slot)
+      (if (if (= slot 0) 0 (= (ptr-read-u64 slot 0) 0))
+          (extern-call nl_intern_write_exit
+                       (seq (extern-call nl_intern_write_enter)
+                            (nl_intern_finish_at
+                             (nl_intern_probe (ptr-read-u64 268436288 0)
+                                              (logand (nl_intern_hash p 0 n 2166136261) 1048575)
+                                              p n 0)
+                             p n result-slot)))
+        (nl_intern_finish_at slot p n result-slot)))
 
     ;; ---- nil/t name canonicalization ----
     ;; `nil' and `t' are immediate Sexp values (tag=0 / tag=1 -- see

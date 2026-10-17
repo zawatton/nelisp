@@ -78,21 +78,45 @@
   '(eq nl-bt-backend 'native))
 ;;; Shared words (native)
 
+(defvar nl-bt--self nil
+  "The current nl-bt thread object; let-bound in every thread it starts.")
+
+(defmacro nl-bt--self-id ()
+  "The current thread's native owner id: its done word, or 1 for main."
+  '(if nl-bt--self (aref nl-bt--self 4) 1))
+
 (defvar nl-bt--slab 0 "Current shared-memory slab for words.")
 
 (defvar nl-bt--slab-left 0 "Words left in `nl-bt--slab'.")
 
+(defvar nl-bt--state-lock
+  (and (nl-bt--native-p) (nelisp-thread-shared-alloc 64))
+  "Native recursive lock guarding nl-bt's own shared state.
+The word slab, the started-thread list and the parallel section are
+global variables any thread may update.")
+
+(defmacro nl-bt--with-state-lock (&rest body)
+  "Run BODY holding `nl-bt--state-lock' (no-op on the emacs backend)."
+  (declare (indent 0))
+  (let ((id (make-symbol "id")))
+    `(if (nl-bt--native-p)
+         (let ((,id (nl-bt--self-id)))
+           (nelisp-thread-mutex-lock nl-bt--state-lock -1 ,id 1)
+           (unwind-protect (progn ,@body)
+             (nelisp-thread-mutex-unlock nl-bt--state-lock ,id)))
+       (progn ,@body))))
+
 (defun nl-bt--words (n)
-  "Return N fresh zeroed contiguous 8-byte words of shared memory.
-Main thread only (it assigns the slab globals)."
-  (when (< nl-bt--slab-left n)
-    (setq nl-bt--slab (nelisp-thread-shared-alloc 65536)
-          nl-bt--slab-left 8192))
-  (when (< nl-bt--slab 4096)
-    (signal 'nl-bt-error (list "shared memory allocation failed" nl-bt--slab)))
-  (prog1 nl-bt--slab
-    (setq nl-bt--slab (+ nl-bt--slab (* 8 n))
-          nl-bt--slab-left (- nl-bt--slab-left n))))
+  "Return N fresh zeroed contiguous 8-byte words of shared memory."
+  (nl-bt--with-state-lock
+    (when (< nl-bt--slab-left n)
+      (setq nl-bt--slab (nelisp-thread-shared-alloc 65536)
+            nl-bt--slab-left 8192))
+    (when (< nl-bt--slab 4096)
+      (signal 'nl-bt-error (list "shared memory allocation failed" nl-bt--slab)))
+    (prog1 nl-bt--slab
+      (setq nl-bt--slab (+ nl-bt--slab (* 8 n))
+            nl-bt--slab-left (- nl-bt--slab-left n)))))
 
 (defun nl-bt--word ()
   "Return a fresh zeroed 8-byte word of shared memory (main thread only)."
@@ -125,9 +149,6 @@ Main thread only (it assigns the slab globals)."
 (defun nl-bt--thread-p (x)
   (and (vectorp x) (= (length x) 8) (eq (aref x 0) 'nl-bt-thread)))
 
-(defvar nl-bt--self nil
-  "The current nl-bt thread object; let-bound in every thread it starts.")
-
 (defvar nl-bt--main-thread (vector 'nl-bt-thread "main thread" 'running
                                    nil nil nil nil nil)
   "The thread object of the thread that loaded nl-bt.")
@@ -141,10 +162,6 @@ Main thread only (it assigns the slab globals)."
 bordeaux-threads' `*default-special-bindings*'.  FORM is evaluated in
 the new thread.")
 
-(defmacro nl-bt--self-id ()
-  "The current thread's native owner id: its done word, or 1 for main."
-  '(if nl-bt--self (aref nl-bt--self 4) 1))
-
 (defun nl-bt-current-thread ()
   "Return the current thread object."
   (or nl-bt--self nl-bt--main-thread))
@@ -157,10 +174,44 @@ the new thread.")
   "Return non-nil when OBJECT is an nl-bt thread."
   (nl-bt--thread-p object))
 
+(defvar nlre--last-caps)
+(defvar nelisp--current-buffer)
+
+(defvar nlre--last-caps)
+(defvar nelisp--current-buffer)
+
+(defvar nl-bt-thread-local-variables
+  '(;; Regexp engine (lisp/nelisp-stdlib-regexp.el): match data, the
+    ;; in-progress match and parse state, and its compile cache, which
+    ;; every match mutates.  Each thread gets its own, as Emacs keeps
+    ;; match data per thread.
+    (nlre--last-caps . nil) (nlre--caps . nil) (nlre--fold . nil)
+    (nlre--gcount . 0)
+    (nlre--compiled-cache . (make-hash-table :test 'equal))
+    (nlre--compiled-cache-count . 0) (nlre--compiled-cache-lru . nil)
+    (nlre--compiled-cache-tick . 0) (nlre--compiled-cache-last . nil)
+    (nlre--compiled-cache-hits . 0) (nlre--compiled-cache-misses . 0)
+    (nlre--string-match-calls . 0) (nlre--leading-filter-calls . 0)
+    (nlre--plan-count . 0) (nlre--plan-failed . nil)
+    (nlre--fast-plan-hits . 0)
+    (load-file-name . nil))
+  "Alist of (SYMBOL . FORM): runtime state each new thread gets fresh.
+These are globals that ordinary library code `setq's as scratch or
+per-caller state; sharing them would let threads corrupt each other.
+Only the entries whose SYMBOL is bound when the thread is created are
+used; FORM is evaluated in the new thread.")
+
 (defun nl-bt--thread-form (fn thread bindings)
-  "Return the form that runs FN as THREAD with BINDINGS, in that thread."
+  "Return the form that runs FN as THREAD with BINDINGS, in that thread.
+Besides BINDINGS the thread gets `nl-bt-thread-local-variables' fresh and
+starts in its creator's current buffer, as in Emacs."
   `(let ((nelisp--last-signal-data nil)
          (nl-bt--self ',thread)
+         ,@(let (out)
+             (dolist (b nl-bt-thread-local-variables (nreverse out))
+               (when (boundp (car b)) (push (list (car b) (cdr b)) out))))
+         ,@(and (boundp 'nelisp--current-buffer)
+                `((nelisp--current-buffer ',nelisp--current-buffer)))
          ,@(mapcar (lambda (b) (list (car b) (cdr b))) bindings))
      (funcall ',fn)))
 
@@ -190,14 +241,16 @@ thread."
                (done (nl-bt--word)))
           (aset thread 3 slot)
           (aset thread 4 done)
-          (nl-bt--section-begin)
-          (let ((tid (nelisp-thread-spawn
-                      3 0 (nl-bt--thread-form function thread bindings)
-                      slot done)))
-            (unless (> tid 0)
-              (nl-bt--section-maybe-end)
-              (signal 'nl-bt-error (list "thread creation failed" tid))))
-          (push thread nl-bt--threads))
+          (nl-bt--with-state-lock
+            (nl-bt--section-begin)
+            (push thread nl-bt--threads)
+            (let ((tid (nelisp-thread-spawn
+                        3 0 (nl-bt--thread-form function thread bindings)
+                        slot done)))
+              (unless (> tid 0)
+                (setq nl-bt--threads (delq thread nl-bt--threads))
+                (nl-bt--section-maybe-end)
+                (signal 'nl-bt-error (list "thread creation failed" tid))))))
       (let ((cell (cons nil nil)))
         (aset thread 3 cell)
         (aset thread 7
@@ -232,8 +285,9 @@ thread."
           (aset thread 6 (cons (nelisp-thread-worker-sexp handle 2072)
                                (nelisp-thread-worker-sexp handle 2104)))
           (aset thread 2 'failed)))
-      (setq nl-bt--threads (delq thread nl-bt--threads))
-      (nl-bt--section-maybe-end)
+      (nl-bt--with-state-lock
+        (setq nl-bt--threads (delq thread nl-bt--threads))
+        (nl-bt--section-maybe-end))
       t))
    (t
     (let ((cell (aref thread 3)))

@@ -721,8 +721,9 @@ storage — not an arena reservation."
                        (if (nelisp-standalone--runtime-reload-enabled-p) 96 0)
                        (if (nelisp-standalone--callsite-enabled-p) 32 0)
                        ;; Doc 214: nl_tls_index (8) + nl_main_tcb (16) +
-                       ;; nl_tls_rsp_index (8) + nl_thread_retired (8) + pad.
-                       64)))
+                       ;; nl_tls_rsp_index (8) + nl_thread_retired (8) +
+                       ;; nl_mirror_lock (24) + nl_intern_lock (24) + pad.
+                       112)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -789,6 +790,12 @@ storage — not an arena reservation."
                                 :section 'bss :bind 'global :type 'object)
             ;; Eval workers of the current section whose body has returned.
             (nelisp-link-symbol "nl_thread_retired" (+ off 32)
+                                :section 'bss :bind 'global :type 'object)
+            ;; Recursive locks (futex word, owner thread block, depth)
+            ;; serialising global-mirror writes and intern inserts.
+            (nelisp-link-symbol "nl_mirror_lock" (+ off 40)
+                                :section 'bss :bind 'global :type 'object)
+            (nelisp-link-symbol "nl_intern_lock" (+ off 64)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -13955,13 +13962,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (seq (nl_ht_make table)
                         (if (= (nl_env_set_value env name table) 0) table 0))))
              (record-slot-ref-ptr entry 0))))))
+    ;; Doc 214 S5: the registry is one shared hash table; creating it and
+    ;; putting into it run under the mirror lock.
     (defun bf_declare_special (env name)
       (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16))
-          (let* ((table (bf_special_registry env 1)) (value (alloc-bytes 32 8)))
-            (if (= table 0) 1
-              (seq (wf_write_t value) (wf_dirty)
-                   (nl_ht_put_values name value table value))))
+          (extern-call nl_mirror_write_exit
+                       (seq (extern-call nl_mirror_write_enter)
+                            (bf_declare_special_locked env name)))
         (bf_wrong_type_symbolp name)))
+    (defun bf_declare_special_locked (env name)
+      (let* ((table (bf_special_registry env 1)) (value (alloc-bytes 32 8)))
+        (if (= table 0) 1
+          (seq (wf_write_t value) (wf_dirty)
+               (nl_ht_put_values name value table value)))))
     (defun bf_declared_special_p (mirror name)
       (let* ((table (bf_special_registry mirror 0)))
         (if (= table 0) 0
@@ -15894,12 +15907,9 @@ into that constant unconditionally is what broke every aarch64 build."
                                   (if (= (nl_intern_lookup
                                           (bf_str_ptr a) (bf_str_len a) out)
                                          0)
-                                      (if (= (extern-call
-                                              nl_thread_mirror_mutation_guard
-                                              (+ env 0) a)
-                                             1)
-                                          1
-                                        (seq (bf_intern a out) 0))
+                                      ;; Doc 214 S5: inserts are serialised
+                                      ;; inside `nl_intern_finish'.
+                                      (seq (bf_intern a out) 0)
                                     0)
                                 (bf_wrong_type_stringp a)))))
     ;; `intern-soft' natively (2026-09-06).  A symbol (nil and t included)
@@ -19096,11 +19106,9 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                  (or (= (sexp-tag base-sym-ptr) 4)
                      (= (sexp-tag base-sym-ptr) 5)
                      (= (sexp-tag base-sym-ptr) 14)))
-            (if (= (extern-call nl_thread_mirror_mutation_guard
-                                mirror-ptr alias-sym-ptr)
-                   1)
-                1
-              (let* ((base-entry-hit
+            (extern-call nl_mirror_write_exit
+             (seq (extern-call nl_mirror_write_enter)
+                  (let* ((base-entry-hit
                     (extern-call nelisp_mirror_lookup_entry mirror-ptr base-sym-ptr))
                    (scratch (alloc-bytes 32 8)))
               (let* ((base-entry
@@ -19148,7 +19156,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                    (extern-call nelisp_mirror_bucket_prepend
                                 mirror-ptr alias-sym-ptr base-entry scratch)
                    (nl_sexp_clone_into base-sym-ptr out)
-                   0)))))
+                   0))))))
           1)))
     (defun nl_sf_defvaralias (args env out _pad)
       ;; (defvaralias NEW-ALIAS-FORM BASE-VARIABLE-FORM [DOCSTRING-FORM])
@@ -26633,7 +26641,11 @@ matching the socket precedent."
         (cl-remove-if (lambda (form) (memq (cadr form) replaced))
                       (nelisp-standalone--thread-forms-linux))
         (nelisp-standalone--thread-forms-windows))))
-    (_ nil)))
+    ;; No threads: the Doc 214 S5 write locks are no-ops.
+    (_ (list '(defun nl_mirror_write_enter () 0)
+             '(defun nl_mirror_write_exit (v) v)
+             '(defun nl_intern_write_enter () 0)
+             '(defun nl_intern_write_exit (v) v)))))
 
 (defun nelisp-standalone--thread-forms-windows ()
   "Return the Windows replacements for the OS-specific worker units (Doc 214 S2).
@@ -26847,6 +26859,35 @@ with TlsSetValue; and the thread ends by returning from its entry."
            (atomic-fetch-add (data-addr nl_thread_retired) 1)
            (atomic-fetch-add done 1)
            0)))
+     ;; Doc 214 S5: recursive global locks.  W is three words (futex word,
+     ;; owner = the holder's thread block, depth).  With no worker
+     ;; registered they do nothing, so single-threaded runs never touch
+     ;; them.  Only the main thread adds workers, never inside a held
+     ;; region, so an ENTER that skipped the lock is never paired with an
+     ;; EXIT that finds itself the owner.  Waiters do not park (env 0);
+     ;; holders never wait inside.
+     '(defun nl_glock_enter (w)
+        (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+            0
+          (if (= (ptr-read-u64 w 8) (thread-block))
+              (seq (ptr-write-u64 w 16 (+ (ptr-read-u64 w 16) 1)) 0)
+            (seq (nl_thread_mutex_acquire w -1 0)
+                 (ptr-write-u64 w 8 (thread-block))
+                 (ptr-write-u64 w 16 1)
+                 0))))
+     '(defun nl_glock_exit (w v)
+        (if (= (ptr-read-u64 w 8) (thread-block))
+            (if (> (ptr-read-u64 w 16) 1)
+                (seq (ptr-write-u64 w 16 (- (ptr-read-u64 w 16) 1)) v)
+              (seq (ptr-write-u64 w 16 0)
+                   (ptr-write-u64 w 8 0)
+                   (nl_thread_mutex_release w)
+                   v))
+          v))
+     '(defun nl_mirror_write_enter () (nl_glock_enter (data-addr nl_mirror_lock)))
+     '(defun nl_mirror_write_exit (v) (nl_glock_exit (data-addr nl_mirror_lock) v))
+     '(defun nl_intern_write_enter () (nl_glock_enter (data-addr nl_intern_lock)))
+     '(defun nl_intern_write_exit (v) (nl_glock_exit (data-addr nl_intern_lock) v))
      ;; Doc 214 S4 OS waits: futex(2) on the low 32 bits, private.
      '(defun nl_thread_os_wait (addr expected ms)
         (let* ((ts (alloc-bytes 16 8)))

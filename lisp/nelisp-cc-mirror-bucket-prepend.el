@@ -236,11 +236,10 @@
                           count-slot))))
     (defun nelisp_mirror_bucket_prepend
         (mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)
-      (if (= (extern-call nl_thread_mirror_mutation_guard
-                          mirror-ptr sym-ptr) 1)
-          (- 0 4)
-        (nelisp_mirror_bucket_prepend_unchecked
-         mirror-ptr sym-ptr entry-ptr scratch-vec-ptr))))
+      (extern-call nl_mirror_write_exit
+         (seq (extern-call nl_mirror_write_enter)
+              (nelisp_mirror_bucket_prepend_unchecked
+         mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)))))
   "AOT source for Doc 119 §119.A `mirror_bucket_prepend'.
 
 Pure-elisp port of `Env::mirror_prepend_to_bucket' (~45 LOC).

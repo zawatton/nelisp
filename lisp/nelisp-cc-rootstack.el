@@ -77,13 +77,17 @@
     ;; helper arguments: cc-unit locals cannot carry them across calls.
     (defun nl_thread_registry_entry (i)
       (+ (data-addr nl_thread_registry) (+ 16 (* i 16))))
+    ;; Doc 214 S5: I was claimed with an atomic increment of the count, so
+    ;; workers may spawn workers.  Until the stores below land a reader
+    ;; sees a zeroed entry (`nl_thread_registry_clear' zeroes used ones),
+    ;; which every walker skips.
     (defun nl_thread_registry_add_at (env i)
-      (if (>= i 64) (- 0 1)
+      (if (>= i 64)
+          (seq (atomic-fetch-add (data-addr nl_thread_registry) (- 0 1)) (- 0 1))
         (seq
-         (ptr-write-u64 (nl_thread_registry_entry i) 0 env)
          (ptr-write-u64 (nl_thread_registry_entry i) 8
                         (ptr-read-u64 env 120))
-         (ptr-write-u64 (data-addr nl_thread_registry) 0 (+ i 1))
+         (ptr-write-u64 (nl_thread_registry_entry i) 0 env)
          i)))
     ;; Intern the refusal condition on the parent before publishing any worker.
     ;; Otherwise the first refusal would make `nl_alloc_symbol' insert the
@@ -104,9 +108,18 @@
       (seq
        (nl_thread_mirror_condition_init)
        (nl_thread_registry_add_at
-        env (ptr-read-u64 (data-addr nl_thread_registry) 0))))
+        env (atomic-fetch-add (data-addr nl_thread_registry) 1))))
+    (defun nl_thread_registry_zero_from (i n)
+      (if (>= i n) 0
+        (seq (ptr-write-u64 (nl_thread_registry_entry i) 0 0)
+             (ptr-write-u64 (nl_thread_registry_entry i) 8 0)
+             (nl_thread_registry_zero_from (+ i 1) n))))
     (defun nl_thread_registry_clear ()
       (seq
+       (nl_thread_registry_zero_from
+        0 (if (> (ptr-read-u64 (data-addr nl_thread_registry) 0) 64)
+              64
+            (ptr-read-u64 (data-addr nl_thread_registry) 0)))
        (ptr-write-u64 (data-addr nl_thread_retired) 0 0)
        (ptr-write-u64 (data-addr nl_thread_registry) 0 0)))
     (defun nl_thread_registry_find_from (env i count)
@@ -114,9 +127,17 @@
         (if (= (ptr-read-u64 (nl_thread_registry_entry i) 0) env)
             (nl_thread_registry_entry i)
           (nl_thread_registry_find_from env (+ i 1) count))))
+    ;; The count can exceed 64 for a moment while a failed claim undoes
+    ;; itself; walkers stop at 64.
+    (defun nl_thread_registry_used ()
+      (if (> (ptr-read-u64 (data-addr nl_thread_registry) 0) 64)
+          64
+        (ptr-read-u64 (data-addr nl_thread_registry) 0)))
+    ;; ENV 0 (a caller with no worker context) never matches a zeroed entry.
     (defun nl_thread_registry_find (env)
-      (nl_thread_registry_find_from
-       env 0 (ptr-read-u64 (data-addr nl_thread_registry) 0)))
+      (if (= env 0)
+          0
+        (nl_thread_registry_find_from env 0 (nl_thread_registry_used))))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
@@ -180,7 +201,7 @@
     ;; miss (each one a full bounded wait with the parked workers held).
     ;; Re-read on every spin so a worker retiring mid-request is honoured.
     (defun nl_thread_park_expected ()
-      (- (ptr-read-u64 (data-addr nl_thread_registry) 0)
+      (- (nl_thread_registry_used)
          (atomic-fetch-add (data-addr nl_thread_retired) 0)))
     (defun nl_thread_park_wait_bounded (_expected)
       (let ((status 16777216))
@@ -349,8 +370,7 @@
           (atomic-fetch-add (+ (nl_thread_registry_entry i) 8) 0))
          (nl_gc_mark_thread_roots_from (+ i 1) count))))
     (defun nl_gc_mark_thread_roots ()
-      (nl_gc_mark_thread_roots_from
-       0 (ptr-read-u64 (data-addr nl_thread_registry) 0))))
+      (nl_gc_mark_thread_roots_from 0 (nl_thread_registry_used))))
   "AOT source for the Doc 152 §11.37 Stage 2 dynamic root stack.
 
 Lazy-inits on the first main-thread `nl_root_reserve'.  Stage-3 evaluator callers use

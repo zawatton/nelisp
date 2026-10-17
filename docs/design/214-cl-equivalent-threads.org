@@ -168,3 +168,29 @@ no speedup), so the same code and ERT run on both.
   =tools/nelisp-bt-sync-smoke.el=: lock 80000 (unlocked 48164-48868),
   condvar 500500, semaphore 1000 plus a timeout; 3/3 on windows (~31 s)
   and 3/3 on linux.
+- S5 (2026-10-17): workers write globals.  Mirror values were already
+  published as a fresh box behind one 8-byte store, so unlocked readers
+  never see a torn value.  The 11 mirror write entry points, defvaralias
+  and the special-variable registry now run under one recursive
+  =nl_mirror_lock= instead of being refused.  The lock is skipped while
+  no worker is registered.  Intern misses re-probe under
+  =nl_intern_lock=, and an insert now publishes the name buffer before
+  the length; hits stay lock-free.  Further fixes:
+  - =lookup_function= copies the slot once, so a concurrent
+    =fmakunbound= cannot hand back the unbound marker.
+  - Registry slots are claimed atomically, so workers can spawn workers.
+  - Walkers stop at 64 entries, and env 0 matches no entry.
+  - nl-bt rebinds =nl-bt-thread-local-variables= in every thread: the
+    regexp engine's match data, in-progress captures, parse counter and
+    compile cache, plus =load-file-name=.  Sharing them corrupted
+    concurrent =string-match= (args-out-of-range, nil captures).
+  =tools/nelisp-bt-global-smoke.el= (8 threads) passes 3/3 on windows and
+  passes on linux; on the S4 binary it is refused with
+  nelisp-worker-mirror-mutation.  Each thread runs set, defalias, defvar
+  and a per-thread match, and a locked global counter reaches 8000.
+  40000 fresh interns are all found and 500 names interned concurrently
+  are =eq= everywhere.  The Doc 199 mirror-guard smoke now asserts the
+  new contract: the same 14 checks, with writes taking effect.
+  Not yet serialised: =put=/=setplist= (one global plist hash table),
+  =provide= and ordinary Lisp hash tables, all unsynchronised like
+  SBCL's non-:synchronized tables.

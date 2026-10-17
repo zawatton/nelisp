@@ -46,12 +46,11 @@
       ;;
       ;; Returns: i64.  1 on hit (slot 3 overwritten in place), 0 on
       ;; miss (entry not in mirror — caller may auto-vivify).
-      (if (= (extern-call nl_thread_mirror_mutation_guard
-                          mirror-ptr sym-ptr) 1)
-          (- 0 4)
-        (nelisp_mirror_set_constant_apply
+      (extern-call nl_mirror_write_exit
+         (seq (extern-call nl_mirror_write_enter)
+              (nelisp_mirror_set_constant_apply
          (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-         flag-ptr))))
+         flag-ptr)))))
   "AOT source for Doc 111 §111.E #11 `mirror_set_constant'.
 
 Compose-on-7 with slot index 3 (= the constant-flag slot).  Returns
