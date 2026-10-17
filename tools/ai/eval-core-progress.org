@@ -1,0 +1,33 @@
+#+TITLE: NeLisp evaluator core at GNU interpreter speed
+#+NOTE: Objective (user, 2026-10-17): reach GNU Emacs interpreter speed on ordinary
+#+NOTE: lexical-binding code, implemented quickly.  Approach: compile a function body
+#+NOTE: once into a compact instruction vector with variables resolved to frame
+#+NOTE: slots, and run it on a native VM whose values are the runtime's existing
+#+NOTE: tagged WORDs (int (n<<2)|1, nil 3, t 7, else a pointer to a 32-byte box) --
+#+NOTE: no per-value box, no name hashing, no consed argument lists.  Forms the VM
+#+NOTE: does not cover fall back to the current evaluator.  Heap format unchanged.
+#+NOTE: Baseline (ccore d983dec08): 42,529 instructions per iteration of
+#+NOTE: (while (< i n) (setq i (1+ i))); wall clock empty loop 3.2 us, defun call
+#+NOTE: 12.4 us.  GNU 31.1 interpreted: 0.06 us and 0.31 us.
+#+NOTE: S1 is a spike with a decision gate: continue only if S1.3 holds.
+
+* S1 Spike: the bench loop on the word VM
+** S1.1 The VM compiles and runs (let ((i 0) (n N)) (while (< i n) (setq i (1+ i))) i) and returns N for N in 0, 1, 1000, 2^40
+#+REQUIRES: EVAL_BIN
+cmd: timeout 120 "$EVAL_BIN" --load test/perf/fx-spike-check.el
+** S1.2 At most 2,000 instructions per loop iteration under the VM (callgrind record)
+#+REQUIRES: EVAL_BIN
+cmd: python3 test/perf/eval-callgrind.py check "$EVAL_BIN" target/perf/fx-callgrind.json --max instr=2000
+** S1.3 End to end: the VM runs one loop iteration in at most 0.18 us wall clock (3x GNU interpreted)
+#+REQUIRES: EVAL_BIN
+cmd: BENCH=fx-loop LIMIT=0.18 timeout 200 nice "$EVAL_BIN" --load test/perf/fx-bench.el
+
+* S2 Ordinary functions run on the VM
+** S2.1 A lexical defun whose body the VM covers runs on it automatically, with results identical to the current evaluator on a corpus of 200 generated forms
+pending
+** S2.2 Every test/standalone-*-check.el still passes
+pending
+** S2.3 A 3-argument defun call takes at most 1 us
+pending
+** S2.4 End to end: the autocad tokenizer (test/perf/autocad-bench.sh tokenize-fixture) finishes in at most 5 s
+pending
