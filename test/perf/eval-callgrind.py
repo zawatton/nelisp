@@ -11,7 +11,7 @@ check: exit 0 iff OUT.json was recorded on BIN (same sha256) and every
 --max NAME=LIMIT holds.  This is what tools/ai/evaluator-speed-progress.org
 calls, so the ledger stays cheap and still refuses a stale record.
 
-  eval-callgrind.py record BIN OUT.json
+  eval-callgrind.py record BIN OUT.json [--loop eval|fx]
   eval-callgrind.py check BIN OUT.json --max instr=46000 --max nl_alloc_bytes=10
 """
 import bisect, hashlib, json, os, re, subprocess, sys, tempfile
@@ -37,10 +37,18 @@ def symbols(binary):
     return [a for a, _ in syms], [n for _, n in syms]
 
 
+LOOPS = {
+    "eval": "(let ((i 0) (n {n})) (while (< i n) (setq i (1+ i))))\n",
+    # The same loop on the word VM (tools/ai/eval-core-progress.org).
+    "fx": "(nelisp--fx-eval '(let ((i 0) (n {n})) (while (< i n) (setq i (1+ i))) i))\n",
+}
+LOOP = "eval"
+
+
 def profile(binary, n, workdir, addrs, names):
     src = os.path.join(workdir, f"loop{n}.el")
     with open(src, "w") as f:
-        f.write(f"(let ((i 0) (n {n})) (while (< i n) (setq i (1+ i))))\n")
+        f.write(LOOPS[LOOP].format(n=n))
     out = os.path.join(workdir, f"cg{n}.out")
     subprocess.run(["valgrind", "--tool=callgrind", f"--callgrind-out-file={out}",
                     binary, "--load", src], capture_output=True, check=True)
@@ -77,7 +85,7 @@ def record(binary, out_json):
         t1, c1 = profile(binary, N_SMALL, d, addrs, names)
         t2, c2 = profile(binary, N_BIG, d, addrs, names)
     iters = N_BIG - N_SMALL
-    rec = {"binary_sha256": sha256(binary), "iterations": iters,
+    rec = {"binary_sha256": sha256(binary), "iterations": iters, "loop": LOOP,
            "instr": round((t2 - t1) / iters)}
     for k in HOT:
         rec[k] = round((c2.get(k, 0) - c1.get(k, 0)) / iters, 2)
@@ -102,6 +110,8 @@ def check(binary, out_json, limits):
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[0] == "record":
+        if "--loop" in a:
+            LOOP = a[a.index("--loop") + 1]
         record(a[1], a[2])
     elif a[0] == "check":
         lim = [a[i + 1] for i in range(3, len(a)) if a[i] == "--max"]

@@ -7625,6 +7625,12 @@ argument (reachability + in-arena bounds checks).")
                              (setq i (+ i 1)))))
                     (mut-str-finalize ms out) 0))
            (seq (wf_write_nil out) 0))))
+;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
+    ;; A bail answers ARG0 itself, so the caller can tell it from any result.
+    ((:lit "nelisp--fx-run")
+     . (let* ((code (wf_arg_ptr args 0)))
+         (if (= (m5_fx_run code (wf_argval args 1) out) 1) 0
+           (seq (nl_sexp_clone_into code out) 0))))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
     ((:lit "nelisp--string-search-chars")
      . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
@@ -17120,6 +17126,89 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (< ib 0) -1
                                 (if (= huni 1) ib
                                   (+ s (m5_count_chars hay sb ib)))))))))))))))))
+;; ---- Word VM (tools/ai/eval-core-progress.org S1 spike) ----
+    ;; Runs an instruction vector from `nelisp--fx-compile' with every value
+    ;; a runtime WORD (int (n<<2)|1, nil 3, t 7, else a box pointer): locals
+    ;; and the operand stack are word arrays, so no value is boxed, no
+    ;; variable is looked up by name and no argument list is consed.
+    ;; Opcodes (vector elements are int words; operands follow the opcode):
+    ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   4 ADD   5 SUB   6 LT
+    ;;  7 ADD1   8 JMP pc   9 JMPNIL pc   11 POP   12 DUP   13 NUMEQ
+    ;;  14 GT   15 SUB1   0 HALT.
+    ;; Arithmetic and comparisons accept fixnum words only; anything else,
+    ;; or a result outside the fixnum range, answers 2 ("bail") so the caller
+    ;; re-evaluates the form with the ordinary evaluator.
+    (defun m5_fx_int_p (w) (if (= (logand w 3) 1) 1 0))
+    (defun m5_fx_fix (n out_ok)
+      (if (> n 2305843009213693951) -1
+        (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
+    (defun m5_fx_word_out (w out)
+      (if (= w 3) (seq (wf_write_nil out) 0)
+        (if (= w 7) (seq (wf_write_t out) 0)
+          (if (= (m5_fx_int_p w) 1) (seq (wf_write_int out (sar w 2)) 0)
+            2))))
+    (defun m5_fx_run (code nlocals out)
+      (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
+             (mem (alloc-bytes (* (+ nlocals 256) 8) 8))
+             (stk (+ mem (* nlocals 8)))
+             (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0))
+        (seq
+         (while (< i nlocals)
+           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
+         (while (= status 0)
+           (seq
+            (setq op (sar (ptr-read-u64 (+ base (* pc 8)) 0) 2))
+            (if (= op 2)
+                (seq (ptr-write-u64 (+ stk (* sp 8)) 0
+                                    (ptr-read-u64 (+ mem (* (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2) 8)) 0))
+                     (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            (if (= op 3)
+                (seq (setq sp (- sp 1))
+                     (ptr-write-u64 (+ mem (* (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2) 8)) 0
+                                    (ptr-read-u64 (+ stk (* sp 8)) 0))
+                     (setq pc (+ pc 2)))
+            (if (= op 1)
+                (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                     (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            (if (= op 9)
+                (seq (setq sp (- sp 1))
+                     (if (= (ptr-read-u64 (+ stk (* sp 8)) 0) 3)
+                         (setq pc (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2))
+                       (setq pc (+ pc 2))))
+            (if (= op 8)
+                (setq pc (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2))
+            (if (if (= op 6) 1 (if (= op 13) 1 (if (= op 14) 1 (if (= op 4) 1 (if (= op 5) 1 0)))))
+                (seq (setq b (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
+                     (setq a (ptr-read-u64 (+ stk (* (- sp 2) 8)) 0))
+                     (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
+                         (seq
+                          (setq r (if (= op 6) (if (< a b) 7 3)
+                                    (if (= op 13) (if (= a b) 7 3)
+                                      (if (= op 14) (if (> a b) 7 3)
+                                        (m5_fx_fix (if (= op 4) (+ (sar a 2) (sar b 2))
+                                                     (- (sar a 2) (sar b 2))) 0)))))
+                          (if (= r -1) (setq status 2)
+                            (seq (setq sp (- sp 1))
+                                 (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
+                                 (setq pc (+ pc 1)))))
+                       (setq status 2)))
+            (if (if (= op 7) 1 (if (= op 15) 1 0))
+                (seq (setq a (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
+                     (if (= (m5_fx_int_p a) 1)
+                         (seq (setq r (m5_fx_fix (if (= op 7) (+ (sar a 2) 1) (- (sar a 2) 1)) 0))
+                              (if (= r -1) (setq status 2)
+                                (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
+                                     (setq pc (+ pc 1)))))
+                       (setq status 2)))
+            (if (= op 11) (seq (setq sp (- sp 1)) (setq pc (+ pc 1)))
+            (if (= op 12)
+                (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
+                     (setq sp (+ sp 1)) (setq pc (+ pc 1)))
+            (if (= op 0)
+                (seq (setq sp (- sp 1))
+                     (setq status (if (= (m5_fx_word_out (ptr-read-u64 (+ stk (* sp 8)) 0) out) 0) 1 2)))
+              (setq status 2)))))))))))))
+         status)))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
         (if (= (m5_byte_at a i) (m5_byte_at b i))
@@ -28540,7 +28629,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--fx-run" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"

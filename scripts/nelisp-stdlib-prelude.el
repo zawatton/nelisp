@@ -24805,3 +24805,82 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                          nil))))))
 (dolist (entry nelisp--bytecode-lisp-providers)
   (fset (intern (concat "nelisp--bytecode-" (symbol-name (car entry)))) (cdr entry)))
+
+;; ---- Word VM compiler (tools/ai/eval-core-progress.org S1 spike) ----
+;; Compiles a form over a small subset -- integer and nil/t constants,
+;; lexical variables, let/let*, setq, progn, if, while, <, >, =, +, -, 1+,
+;; 1- -- into the instruction vector `nelisp--fx-run' executes on runtime
+;; WORDs.  Variables are resolved to slots at compile time.  Anything else
+;; throws `nelisp--fx-unsupported'; `nelisp--fx-eval' then uses `eval'.
+(defun nelisp--fx-compile (form)
+  "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it."
+  (let ((out nil) (pc 0) (nloc 0) (vars nil) (patches nil) (labels nil) (nlab 0))
+    (cl-labels
+        ((emit (&rest items) (dolist (x items) (push x out) (setq pc (1+ pc))))
+         (label () (setq nlab (1+ nlab)) nlab)
+         (place (l) (push (cons l pc) labels))
+         (jump (op l) (emit op) (push (cons pc l) patches) (emit 0))
+         (body (forms)
+           (if (null forms) (emit 1 nil)
+             (while forms
+               (comp (car forms))
+               (when (cdr forms) (emit 11))
+               (setq forms (cdr forms)))))
+         (comp (x)
+           (cond
+            ((or (integerp x) (null x) (eq x t)) (emit 1 x))
+            ((symbolp x)
+             (let ((c (assq x vars)))
+               (unless c (throw 'nelisp--fx-unsupported x))
+               (emit 2 (cdr c))))
+            ((not (consp x)) (throw 'nelisp--fx-unsupported x))
+            (t
+             (let ((op (car x)))
+               (cond
+                ((memq op '(let let*))
+                 (let ((saved vars))
+                   (dolist (b (cadr x))
+                     (let ((name (if (consp b) (car b) b)))
+                       (comp (if (consp b) (cadr b) nil))
+                       (emit 3 nloc)
+                       (push (cons name nloc) vars)
+                       (setq nloc (1+ nloc))))
+                   (body (cddr x))
+                   (setq vars saved)))
+                ((eq op 'setq)
+                 (unless (= (length x) 3) (throw 'nelisp--fx-unsupported x))
+                 (let ((c (assq (nth 1 x) vars)))
+                   (unless c (throw 'nelisp--fx-unsupported x))
+                   (comp (nth 2 x)) (emit 12) (emit 3 (cdr c))))
+                ((eq op 'progn) (body (cdr x)))
+                ((eq op 'if)
+                 (let ((else (label)) (end (label)))
+                   (comp (nth 1 x)) (jump 9 else)
+                   (comp (nth 2 x)) (jump 8 end)
+                   (place else) (body (nthcdr 3 x))
+                   (place end)))
+                ((eq op 'while)
+                 (let ((top (label)) (end (label)))
+                   (place top) (comp (nth 1 x)) (jump 9 end)
+                   (body (cddr x)) (emit 11) (jump 8 top)
+                   (place end) (emit 1 nil)))
+                ((assq op '((< . 6) (> . 14) (= . 13) (+ . 4) (- . 5)))
+                 (unless (= (length x) 3) (throw 'nelisp--fx-unsupported x))
+                 (comp (nth 1 x)) (comp (nth 2 x))
+                 (emit (cdr (assq op '((< . 6) (> . 14) (= . 13) (+ . 4) (- . 5))))))
+                ((memq op '(1+ 1-))
+                 (unless (= (length x) 2) (throw 'nelisp--fx-unsupported x))
+                 (comp (nth 1 x)) (emit (if (eq op '1+) 7 15)))
+                (t (throw 'nelisp--fx-unsupported x))))))))
+      (when (eq (catch 'nelisp--fx-unsupported (comp form) (emit 0) 'ok) 'ok)
+        (let ((code (vconcat (nreverse out))))
+          (dolist (p patches)
+            (aset code (car p) (cdr (assq (cdr p) labels))))
+          (cons code nloc))))))
+
+(defun nelisp--fx-eval (form)
+  "Evaluate FORM on the word VM when it covers FORM, else with `eval'."
+  (let ((c (and (fboundp 'nelisp--fx-run) (nelisp--fx-compile form))))
+    (if (null c) (eval form t)
+      (let ((r (nelisp--fx-run (car c) (cdr c))))
+        (if (eq r (car c)) (eval form t) r)))))

@@ -12,7 +12,7 @@
 #+NOTE: S1 is a spike with a decision gate: continue only if S1.3 holds.
 
 * S1 Spike: the bench loop on the word VM
-** S1.1 The VM compiles and runs (let ((i 0) (n N)) (while (< i n) (setq i (1+ i))) i) and returns N for N in 0, 1, 1000, 2^40
+** S1.1 The VM compiles and runs the bench loop for N = 0, 1, 1000 and nine more forms (2^40 and fixnum-overflow arithmetic, if, let*, a non-covered form) with eval's answers
 #+REQUIRES: EVAL_BIN
 cmd: timeout 120 "$EVAL_BIN" --load test/perf/fx-spike-check.el
 ** S1.2 At most 2,000 instructions per loop iteration under the VM (callgrind record)
