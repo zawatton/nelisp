@@ -2524,6 +2524,21 @@ directory tracks the tree rather than accumulating every key ever built."
         (if (= (logand v 3) 1)
             2
           (if (= v 3) 0 1))))
+    ;; Word accessors (eval-core box migration): the container slot's own
+    ;; tagged WORD, never a materialized 32-byte view, so reading an
+    ;; immediate allocates nothing.  Classify with `nl_val_tag', read an
+    ;; Int with (sar w 2); a pointer WORD is the 32-byte child box itself.
+    ;; 0 (never a valid WORD) when the container has the wrong type, like
+    ;; the *_ptr accessors.
+    (defun nl_cons_car_word (arg)
+      (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 0) 0))
+    (defun nl_cons_cdr_word (arg)
+      (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 8) 0))
+    (defun nl_vector_slot_word (sexp-ptr idx)
+      (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 8) (* idx 8)) 0))
+    (defun nl_record_slot_word (sexp-ptr idx)
+      (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 32) (* idx 8)) 0))
+    (defun nl_word_int (w) (sar w 2))
     ;; Doc 146 §3.0 step 3/4: store a 32-byte storage Sexp at SLOT into a passing
     ;; value WORD.  Immediate tags collapse to their word (Int -> (n<<2)|1, Nil
     ;; -> 3, T -> 7); heap tags (Float/Symbol/Str/Cons/Vector/...) keep the slot
