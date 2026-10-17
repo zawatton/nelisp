@@ -17210,7 +17210,34 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; traces every word precisely -- an alloc-bytes block was protected
     ;; only by the conservative stack scan, and a float in a local was
     ;; collected with that scan switched off.
+    ;; ENTRY-CHECK, the first instruction: answers 0 to continue at pc 2,
+    ;; -3 to decline the run (no effect has happened yet).  C is nil or
+    ;; [GEN-CELL LAST-GEN NAME...], see `nelisp--fx-special-gen' (prelude).
+    (defun m5_fx_entry_check (c env)
+      (if (= c 3) 0
+        (let* ((gen (nl_vector_slot_word (nl_vector_slot_word c 0) 0)))
+          (if (= gen (nl_vector_slot_word c 1)) 0
+            (let* ((n (ptr-read-u64 (ptr-read-u64 c 8) 16)) (i 2) (special 0))
+              (seq
+               (while (if (< i n) (= special 0) 0)
+                 (seq (setq special (bf_declared_special_p env (nl_vector_slot_word c i)))
+                      (setq i (+ i 1))))
+               (if (= special 1) -3
+                 (seq (ptr-write-u64 (+ (ptr-read-u64 (ptr-read-u64 c 8) 8) 8) 0 gen) 0))))))))
+    ;; A run counts against the evaluator's recursion budget (env+96, limit
+    ;; env+104) like the ~2 `nelisp_eval_call' levels an interpreted call
+    ;; takes: VM code recursing through VM code never reaches that check,
+    ;; and a deep recursion overflowed the native stack (SIGSEGV) instead
+    ;; of signalling `excessive-lisp-nesting'.
     (defun m5_fx_run (code nlocals env out args nparams)
+      (let* ((rec (ptr-read-u64 (+ env 96) 0)) (rec_max (ptr-read-u64 (+ env 104) 0)))
+        (if (>= (+ rec 2) rec_max)
+            (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
+          (seq (ptr-write-u64 (+ env 96) 0 (+ rec 2))
+               (m5_fx_run_done (m5_fx_run_body code nlocals env out args nparams) env rec)))))
+    (defun m5_fx_run_done (st env rec)
+      (seq (ptr-write-u64 (+ env 96) 0 rec) st))
+    (defun m5_fx_run_body (code nlocals env out args nparams)
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
@@ -17294,6 +17321,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (seq (setq sp (+ (- sp n) 1))
                             (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (ptr-read-u64 resw 0))
                             (setq pc (+ pc 3)))))
+            (if (= op 17)
+                (if (= (m5_fx_entry_check (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) env) 0)
+                    (setq pc (+ pc 2))
+                  (setq status -3))
             (if (= op 11) (seq (setq sp (- sp 1)) (setq pc (+ pc 1)))
             (if (= op 12)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
@@ -17302,7 +17333,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (seq (setq sp (- sp 1))
                      (m5_fx_word_out (ptr-read-u64 (+ stk (* sp 8)) 0) out)
                      (setq status -1))
-              (setq status -2))))))))))))))
+              (setq status -2)))))))))))))))
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
@@ -20137,8 +20168,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((table (bf_special_registry env 1)) (value (alloc-bytes 32 8)))
             (if (= table 0) 1
               (seq (wf_write_t value) (wf_dirty)
+                   (bf_fx_special_bump env)
                    (nl_ht_put_values name value table value))))
         (bf_wrong_type_symbolp name)))
+    ;; Count a declaration in `nelisp--fx-special-gen' (prelude), a vector
+    ;; whose slot 0 compiled VM code compares at entry; see the prelude.
+    (defun bf_fx_special_bump (env)
+      (let* ((bytes (alloc-bytes 24 1)) (name (alloc-bytes 32 8)) (val (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 bytes 0 3255381746650998126)
+         (ptr-write-u64 (+ bytes 8) 0 7594024930319890534)
+         (ptr-write-u64 (+ bytes 16) 0 121381801782369)
+         (ptr-write-u64 name 0 4) (ptr-write-u64 name 8 0)
+         (ptr-write-u64 name 16 bytes) (ptr-write-u64 name 24 22)
+         (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+           (if (= entry 0) 0
+             (seq
+              (record-slot-ref entry 0 val)
+              (if (= (ptr-read-u64 val 0) 8)
+                  (let* ((w (nl_vector_slot_word val 0)))
+                    (if (= (logand w 3) 1)
+                        (seq (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 val 8) 8) 0 (+ w 4)) 0)
+                      0))
+                0)))))))
     (defun bf_declared_special_p (mirror name)
       (let* ((table (bf_special_registry mirror 0)))
         (if (= table 0) 0

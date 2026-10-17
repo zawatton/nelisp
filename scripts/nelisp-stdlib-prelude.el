@@ -24823,11 +24823,20 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defun nelisp--fx-special-p (sym)
   (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
 
+;; A `let' the VM compiled binds its variable lexically, decided when the
+;; function was defined; the interpreter decides at each evaluation, so a
+;; `defvar' loaded later makes the same `let' dynamic.  Every native
+;; `defvar'/`defconst' declaration bumps this cell's count.  Compiled code
+;; opens with ENTRY-CHECK [GEN-CELL LAST-GEN NAME...]: when the count moved
+;; since LAST-GEN and a NAME is now special, the run declines before any
+;; effect and the interpreter evaluates the call.
+(defvar nelisp--fx-special-gen (vector 0))
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
   (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
-        (depth 0) (maxdepth 0)
+        (depth 0) (maxdepth 0) (lexlets nil)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
         ((emit (&rest items)
@@ -24868,6 +24877,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (dolist (b (cadr x))
                      (let ((name (if (consp b) (car b) b)))
                        (when (nelisp--fx-special-p name) (unsupported x))
+                       (unless (memq name lexlets) (push name lexlets))
                        (comp (if (consp b) (cadr b) nil))
                        (emit 3 nloc)
                        (if (eq op 'let*) (push (cons name nloc) vars)
@@ -24934,6 +24944,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                  (emit 16 op (length (cdr x))))
                 (t (unsupported x))))))))
       (when (eq (catch 'nelisp--fx-unsupported
+                  ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
+                  (emit 17 nil)
                   (comp (if (fboundp 'macroexpand-all) (macroexpand-all form) form))
                   (emit 0) 'ok)
                 'ok)
@@ -24943,6 +24955,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
         (let ((code (vconcat (nreverse out))))
           (dolist (p patches)
             (aset code (car p) (cdr (assq (cdr p) labels))))
+          (when lexlets
+            (aset code 1 (vconcat (list nelisp--fx-special-gen -1) lexlets)))
           (cons code nloc))))))
 
 (defun nelisp--fx-eval (form)
