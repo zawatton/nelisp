@@ -39665,6 +39665,26 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                       (nl_root_release env_ptr root_mark) 0)
                  '(nl_root_release env_ptr root_mark)
                  form :test #'equal) out))
+         ((eq name 'nl_let_parse_name)
+          ;; A binding naming nil, t or a non-symbol answered 0 with no
+          ;; signal stashed, so `let' aborted the whole top-level form
+          ;; ("form aborted without signal"), past any condition-case.
+          ;; GNU signals setting-constant for nil and t, and
+          ;; wrong-type-argument symbolp otherwise.
+          (push '(defun nl_let_bad_name (p)
+                   (if (< (sexp-tag p) 2) (bf_setting_constant p)
+                     (bf_wrong_type_symbolp p)))
+                out)
+          (push '(defun nl_let_parse_name (b_ptr)
+                   (let* ((tag (sexp-tag b_ptr)))
+                     (if (or (= tag 4) (= tag 16)) b_ptr
+                       (if (= tag 7)
+                           (let* ((car_ptr (nl_cons_car_ptr b_ptr))
+                                  (car_tag (sexp-tag car_ptr)))
+                             (if (or (= car_tag 4) (= car_tag 16)) car_ptr
+                               (seq (nl_let_bad_name car_ptr) 0)))
+                         (seq (nl_let_bad_name b_ptr) 0)))))
+                out))
          ((eq name 'nl_let_bind_walk)
           (push (cl-subst
                  '(if (= (nl_logic_bind_local env name_ptr val_slot) 0) 1

@@ -2724,39 +2724,110 @@ of the elements of LIST is performed as if by `pcase-let'.
          (pcase-let ((,(nth 0 spec) ,nelisp--pcase-dolist-elt))
            ,@body)))))
 ;; `nelisp--cl-destructure' is the shared engine behind both
-;; `cl-destructuring-bind' and, further below, `cl-defmacro' (real
-;; Emacs's own `cl-defmacro' is built the same way: on top of the same
-;; destructuring machinery `cl-destructuring-bind' itself uses, via
-;; `cl--do-arglist').  Recurses one level per NESTED pattern (a cons in
-;; ARGLIST's own position, in place of a plain symbol) so a caller can
-;; write `((var iterator) &rest body)' -- exactly real GNU
-;; `emacs-lisp/generator.el''s own top-level `(cl-defmacro iter-do ((var
-;; iterator) &rest body) ...)', which needs this to define at all.
-;; DIVERGES from Emacs: no `&key'/`&aux'/`&whole'/`&environment', and no
-;; `&optional' default-value expressions -- this substrate's own
-;; pre-existing `cl-destructuring-bind' already omitted every one of
-;; those (flat symbols, `&optional' as a no-op marker, `&rest' only);
-;; only nested-pattern support is new here.
+;; `cl-destructuring-bind' and, further below, `cl-defmacro' (GNU builds
+;; both on `cl--do-arglist' the same way).  It takes GNU's full lambda
+;; list: required and nested patterns (a cons, or `()' which must match
+;; nil), `&optional' (VAR DEFAULT SVAR), `&rest'/`&body' and a dotted
+;; tail, `&key' ((KEYWORD VAR) DEFAULT SVAR) with `&allow-other-keys' and
+;; `:allow-other-keys', `&aux', `&whole' and `&environment' (bound to
+;; nil: there is no macro environment here).  Missing required values and
+;; leftovers without `&rest'/`&key' signal `wrong-number-of-arguments'
+;; with (ARGLIST LENGTH), and an unknown keyword signals GNU's "Keyword
+;; argument %S not one of %S".  ert.el's `ert-deftest' -- `(name ()
+;; &body ...)' destructured, then `((&key ...) body)' -- needs all of it.
+(defun nelisp--cl-key-tail (list key)
+  "The tail of plist LIST starting at KEY, or nil."
+  (while (and list (not (eq (car list) key)))
+    (setq list (cdr (cdr list))))
+  list)
+
+(defun nelisp--cl-check-keys (list keys)
+  "Signal unless every keyword in plist LIST is one of KEYS."
+  (unless (cadr (nelisp--cl-key-tail list :allow-other-keys))
+    (let ((l list))
+      (while l
+        (unless (memq (car l) keys)
+          (error "Keyword argument %S not one of %S" (car l) keys))
+        (setq l (cdr (cdr l)))))))
+
+(defun nelisp--cl-destructure-bindings (args val whole)
+  "`let*' bindings destructuring the value of symbol VAL by lambda list
+ARGS.  WHOLE is the top-level value's symbol, for error data."
+  (let ((r (make-symbol "rest")) (out nil) (state 'req) (keys nil)
+        (allow nil) (rest-p nil) (orig args))
+    (setq out (list (list r val)))
+    (when (eq (car-safe args) '&whole)
+      (push (list (cadr args) val) out)
+      (setq args (cddr args)))
+    (let ((bind
+           (lambda (pat expr)
+             ;; Bind PAT (a symbol, or a nested lambda list) to EXPR.
+             (if (and pat (symbolp pat))
+                 (push (list pat expr) out)
+               (let ((tmp (make-symbol "sub")))
+                 (push (list tmp expr) out)
+                 (if pat
+                     (setq out (append (reverse (nelisp--cl-destructure-bindings pat tmp whole))
+                                       out))
+                   (push (list (make-symbol "nil-check")
+                               `(when ,tmp
+                                  (signal 'wrong-number-of-arguments
+                                          (list nil (length ,tmp)))))
+                         out)))))))
+      (while args
+        (if (not (consp args))
+            ;; Dotted tail: (a b . rest).
+            (progn (funcall bind args r) (setq rest-p t args nil))
+          (let ((a (car args)))
+            (setq args (cdr args))
+            (cond
+             ((memq a '(&optional &key &aux)) (setq state a)
+              (when (eq a '&key) (setq rest-p t)))
+             ((memq a '(&rest &body))
+              (funcall bind (car args) r) (setq rest-p t args (cdr args)))
+             ((eq a '&allow-other-keys) (setq allow t))
+             ((eq a '&environment) (push (list (car args) nil) out) (setq args (cdr args)))
+             ((eq state 'req)
+              (funcall bind a `(if ,r (prog1 (car ,r) (setq ,r (cdr ,r)))
+                                 (signal 'wrong-number-of-arguments
+                                         (list ',orig (length ,whole))))))
+             ((eq state '&optional)
+              (let ((var (if (consp a) (car a) a)) (def (car-safe (cdr-safe a)))
+                    (svar (car-safe (cdr-safe (cdr-safe a)))))
+                (when svar (push (list svar `(and ,r t)) out))
+                (funcall bind var `(if ,r (prog1 (car ,r) (setq ,r (cdr ,r))) ,def))))
+             ((eq state '&key)
+              (let* ((spec (if (consp a) (car a) a))
+                     (var (if (consp spec) (cadr spec) spec))
+                     (key (if (consp spec) (car spec)
+                            (intern (concat ":" (symbol-name var)))))
+                     (def (car-safe (cdr-safe a)))
+                     (svar (car-safe (cdr-safe (cdr-safe a))))
+                     (tail (make-symbol "key")))
+                (push key keys)
+                (push (list tail `(nelisp--cl-key-tail ,r ',key)) out)
+                (when svar (push (list svar `(and ,tail t)) out))
+                (funcall bind var `(if ,tail (car (cdr ,tail)) ,def))))
+             ((eq state '&aux)
+              (if (consp a) (push (list (car a) (cadr a)) out)
+                (push (list a nil) out))))))))
+    (cond
+     ((and keys (not allow))
+      (push (list (make-symbol "key-check")
+                  `(nelisp--cl-check-keys ,r ',(nreverse keys)))
+            out))
+     ((not rest-p)
+      (push (list (make-symbol "count-check")
+                  `(when ,r (signal 'wrong-number-of-arguments
+                                    (list ',orig (length ,whole)))))
+            out)))
+    (nreverse out)))
+
 (defun nelisp--cl-destructure (arglist valform body)
-  (let* ((val (gensym "cl-destructure"))
-         (binds nil) (i 0) (rest nil) (args arglist))
-    (while args
-      (let ((a (car args)))
-        (cond
-         ((eq a '&rest) (setq rest (cadr args)) (setq args nil))
-         ((eq a '&optional) (setq args (cdr args)))
-         (t (push (cons a (list 'nth i val)) binds)
-            (setq i (1+ i))
-            (setq args (cdr args))))))
-    (setq binds (nreverse binds))
-    (when rest (setq binds (nconc binds (list (cons rest (list 'nthcdr i val))))))
-    (let ((form (cons 'progn body)))
-      (dolist (b (reverse binds))
-        (setq form
-              (if (consp (car b))
-                  (nelisp--cl-destructure (car b) (cdr b) (list form))
-                (list 'let* (list (list (car b) (cdr b))) form))))
-      (list 'let* (list (list val valform)) form))))
+  (let ((val (make-symbol "val")))
+    `(let* ((,val ,valform)
+            ,@(nelisp--cl-destructure-bindings arglist val val))
+       ,@body)))
 
 (unless (fboundp 'cl-destructuring-bind)
   (defmacro cl-destructuring-bind (arglist expr &rest body)
