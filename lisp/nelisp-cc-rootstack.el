@@ -106,7 +106,9 @@
        (nl_thread_registry_add_at
         env (ptr-read-u64 (data-addr nl_thread_registry) 0))))
     (defun nl_thread_registry_clear ()
-      (ptr-write-u64 (data-addr nl_thread_registry) 0 0))
+      (seq
+       (ptr-write-u64 (data-addr nl_thread_retired) 0 0)
+       (ptr-write-u64 (data-addr nl_thread_registry) 0 0)))
     (defun nl_thread_registry_find_from (env i count)
       (if (>= i count) 0
         (if (= (ptr-read-u64 (nl_thread_registry_entry i) 0) env)
@@ -172,18 +174,26 @@
       (nl_seq2
        (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 40) 1)
        0))
-    (defun nl_thread_park_wait_bounded (expected)
+    ;; Doc 214: workers that must park = registered - retired.  A worker
+    ;; retires when its body has returned; it never parks again, so counting
+    ;; it made every request after the first worker finished a guaranteed
+    ;; miss (each one a full bounded wait with the parked workers held).
+    ;; Re-read on every spin so a worker retiring mid-request is honoured.
+    (defun nl_thread_park_expected ()
+      (- (ptr-read-u64 (data-addr nl_thread_registry) 0)
+         (atomic-fetch-add (data-addr nl_thread_retired) 0)))
+    (defun nl_thread_park_wait_bounded (_expected)
       (let ((status 16777216))
         (seq
          (while (if (< (atomic-fetch-add
                         (+ (data-addr nl_thread_parallel_ctx) 32) 0)
-                       expected)
+                       (nl_thread_park_expected))
                     (> status 0)
                   0)
            (setq status (- status 1)))
          (if (>= (atomic-fetch-add
                   (+ (data-addr nl_thread_parallel_ctx) 32) 0)
-                 expected)
+                 (nl_thread_park_expected))
              1
            0))))
     (defun nl_thread_park_request_wait (expected)
@@ -324,8 +334,10 @@
          (nl_seq2
           ;; Doc 214 §2: a parked worker's pending signal TAG/VAL live in
           ;; its own thread block (env+2048), not the main thread's stash.
-          (nl_seq2 (nl_seq2 (extern-call nl_gc_mark_slot (+ env 2072))
-                            (extern-call nl_gc_mark_slot (+ env 2104)))
+          (nl_seq2 (nl_seq2 (nl_seq2 (extern-call nl_gc_mark_slot (+ env 2072))
+                                     (extern-call nl_gc_mark_slot (+ env 2104)))
+                            ;; ... and a finished worker's value until joined.
+                            (extern-call nl_gc_mark_slot (+ env 128)))
                    ;; ... and its in-flight eval frames in its own ring.
                    (extern-call nl_gc_mark_ring (+ env 1052672)))
           (nl_gc_mark_rootstack_walk (+ env 4096) top)))))

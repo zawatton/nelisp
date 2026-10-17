@@ -164,8 +164,10 @@
     ;; reader boot enables it after freezing the boot watermark) and reads its
     ;; root-set from nl_gc_loop_ctx, so this takes no arguments.
     ;; arity 4 (even -> rsp 16-aligned at the call site), exactly one extern-call.
-    (defun nl_sf_while_midform_collect (_a _b _c _d)
-      (extern-call nl_gc_midform_collect))
+    ;; Doc 214: ENV lets a worker thread use this back-edge as a park
+    ;; safepoint instead (`nl_gc_backedge').
+    (defun nl_sf_while_midform_collect (env _b _c _d)
+      (extern-call nl_gc_backedge env))
 
     ;;--- Result fixup: `while' is a statement -- it always yields Nil ---
 
@@ -210,7 +212,7 @@
              (seq
               (setq status (nl_sf_while_step args env out 0))
               (if (= status 0)
-                  (nl_sf_while_midform_collect 0 0 0 0)
+                  (nl_sf_while_midform_collect env 0 0 0)
                 0)))
            (if (= status 1)
                1

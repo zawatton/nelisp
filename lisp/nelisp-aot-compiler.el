@@ -14456,7 +14456,7 @@ their own restore, so the slot is never live across another save.")
 
 (defconst nelisp-aot-compiler--win64-dynamic-align-names
   '(CreateFileW ReadFile WriteFile CloseHandle
-    CreateThread
+    CreateThread SwitchToThread WaitOnAddress WakeByAddressSingle WakeByAddressAll
     CreateProcessW WaitForSingleObject GetExitCodeProcess
     VirtualAlloc VirtualFree CreatePipe SetHandleInformation PeekNamedPipe
     GetLastError GetEnvironmentStringsW FreeEnvironmentStringsW

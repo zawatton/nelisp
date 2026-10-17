@@ -720,8 +720,9 @@ storage — not an arena reservation."
                        64 192 64 40 8 64
                        (if (nelisp-standalone--runtime-reload-enabled-p) 96 0)
                        (if (nelisp-standalone--callsite-enabled-p) 32 0)
-                       ;; Doc 214: nl_tls_index (8) + nl_main_tcb (16) + pad.
-                       32)))
+                       ;; Doc 214: nl_tls_index (8) + nl_main_tcb (16) +
+                       ;; nl_tls_rsp_index (8) + nl_thread_retired (8) + pad.
+                       64)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -785,6 +786,9 @@ storage — not an arena reservation."
                                 :section 'bss :bind 'global :type 'object)
             ;; Win64 TLS index of the extern-call rsp spill slot.
             (nelisp-link-symbol "nl_tls_rsp_index" (+ off 24)
+                                :section 'bss :bind 'global :type 'object)
+            ;; Eval workers of the current section whose body has returned.
+            (nelisp-link-symbol "nl_thread_retired" (+ off 32)
                                 :section 'bss :bind 'global :type 'object)))
     (when (nelisp-standalone--runtime-reload-enabled-p)
       (list (nelisp-link-symbol "nl_runtime_reload_state"
@@ -2509,7 +2513,15 @@ expansion slots, which the inline TEB read cannot reach, so it is fatal
       (extern-call ExitProcess 88))))
 
 (defun nelisp-standalone--windows-chunk-try-alloc-form ()
-  "Return Windows `nl_chunk_try_alloc' with on-demand page commit."
+  "Return Windows `nl_chunk_try_alloc' with on-demand page commit.
+Doc 214 S4: pages are committed up to a per-chunk watermark (descriptor
++56, an offset from the chunk base) in 1 MiB steps, instead of one
+VirtualAlloc per allocation.  Inside a parallel section, where every
+allocation takes this bump path, the per-allocation commit made
+allocating code about 3x slower.  Concurrent allocators may commit the same
+pages twice, which VirtualAlloc allows; the watermark only moves up (CAS),
+and only after its pages are committed, so an allocation below it is
+always backed."
   '(defun nl_chunk_try_alloc (chunk want)
      (let* ((base (ptr-read-u64 (+ chunk 0) 0))
             (size (ptr-read-u64 (+ chunk 8) 0))
@@ -2523,7 +2535,7 @@ expansion slots, which the inline TEB read cannot reach, so it is fatal
             (if (> new size)
                 (setq done 1)
               (if (= (atomic-compare-exchange cursor_addr old new) 1)
-                  (if (= (nl_os_commit_range base old new) 0)
+                  (if (= (nl_chunk_commit_to chunk base size old new) 0)
                       (setq done 1)
                     (seq
                      (setq obj (+ base (+ old 8)))
@@ -2531,6 +2543,24 @@ expansion slots, which the inline TEB read cannot reach, so it is fatal
                      (setq done 1)))
                 0))))
         obj))))
+
+(defun nelisp-standalone--windows-chunk-commit-form ()
+  "Return Windows `nl_chunk_commit_to' (Doc 214 S4).
+Ensure [OLD, NEW) of CHUNK is committed; 1 on success, 0 on failure."
+  '(defun nl_chunk_commit_to (chunk base size old new)
+     (let* ((wm_addr (+ chunk 56))
+            (wm (ptr-read-u64 wm_addr 0)))
+       (if (<= new wm)
+           1
+         (let* ((up (* (/ (+ new 1048575) 1048576) 1048576))
+                (target (if (> up size) size up))
+                (from (if (< wm old) wm old)))
+           (if (= (nl_os_commit_range base from target) 0)
+               0
+             (seq
+              (while (< (ptr-read-u64 wm_addr 0) target)
+                (atomic-compare-exchange wm_addr (ptr-read-u64 wm_addr 0) target))
+              1)))))))
 
 (defun nelisp-standalone--macos-arena-init-form ()
   "Return the macOS `nl_arena_init' form using Darwin mmap(NULL, ...)."
@@ -2741,6 +2771,10 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
                           tls-forms
+                          (and try-alloc-form
+                               (memq nelisp-standalone--target
+                                     '(windows-x86_64 windows-aarch64))
+                               (list (nelisp-standalone--windows-chunk-commit-form)))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
                             nil)))))
@@ -5439,6 +5473,29 @@ REPL-facing module it feeds."
     ;; the former current chunk can become releasable.  Bump ctx+32 for each
     ;; fire.  MIDFORM uses recorded frames plus the conservative scan (mode 0),
     ;; never compaction.
+    ;; Doc 214: the `while' back-edge hook.  The main thread may start a
+    ;; mid-form collection there; a worker parks there when a collection is
+    ;; requested.  Without worker safepoints in loops, a park request waited
+    ;; out its bound whenever a worker was running Lisp, and the workers that
+    ;; did park sat stopped meanwhile; with three or more lock-contending
+    ;; threads that cost ~2-5 ms per lock round trip.
+    ;;
+    ;; While a section is open the main thread does not start one either:
+    ;; parked collections inside a section crash intermittently (seen once
+    ;; in three 4-thread lock runs on windows-x86_64, never with the
+    ;; mid-form collector off).  Before workers retired from the park count
+    ;; those collections almost never ran (every request missed), so this
+    ;; keeps that behaviour until Doc 214 S6 makes them sound.  The section's
+    ;; chunk headroom (`nl_thread_section_chunk') bounds the garbage.
+    (defun nl_gc_backedge (env)
+      (if (= (nl-main-thread-p) 1)
+          (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+              0
+            (nl_gc_midform_collect))
+        ;; Check the request word before the registry scan.
+        (if (= (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 24) 0) 1)
+            (nl_thread_park_safepoint env)
+          0)))
     ;; Doc 214 S2: only the main thread starts a mid-form collection.  A
     ;; worker would request a park it can never satisfy (it does not park
     ;; itself), miss after the bounded wait, leave the watermark unchanged
@@ -21214,6 +21271,11 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp-thread-atomic-read" "nelisp-thread-spawn"
     "nelisp-thread-join" "nelisp-thread-gc-inhibit"
     "nelisp-thread-worker-sexp"
+    "nelisp-thread-atomic-cas" "nelisp-thread-atomic-store"
+    "nelisp-thread-wait" "nelisp-thread-wake" "nelisp-thread-yield"
+    "nelisp-thread-mutex-lock" "nelisp-thread-mutex-unlock"
+    "nelisp-thread-cond-wait" "nelisp-thread-cond-notify"
+    "nelisp-thread-sem-wait"
     ;; Runtime symbol addresses and the environment pointer for the
     ;; in-process native loader (Doc 142 s6.4).
     "nelisp--native-symbol-addr" "nelisp--native-env")
@@ -21234,7 +21296,7 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
   (list (cons "KERNEL32.dll"
               (list "ExitProcess" "VirtualAlloc" "VirtualFree" "GetCommandLineW"
                     ;; Doc 214 §2/S2: thread blocks and worker threads.
-                    "TlsAlloc" "TlsSetValue" "CreateThread"
+                    "TlsAlloc" "TlsSetValue" "CreateThread" "SwitchToThread"
                     "GetStdHandle" "CreateFileW" "ReadFile" "WriteFile"
                     "CloseHandle" "WideCharToMultiByte"
                     "MultiByteToWideChar"
@@ -21282,6 +21344,9 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; core instead of sleeping.
                     "Sleep"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW"))
+        ;; Doc 214 S4: futex-style waits for nl-bt synchronisation.
+        (cons "api-ms-win-core-synch-l1-2-0.dll"
+              (list "WaitOnAddress" "WakeByAddressSingle" "WakeByAddressAll"))
         ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
         ;; listening, readiness and connect-status operations implemented by
         ;; `nelisp-standalone--socket-impl-forms'.
@@ -26562,7 +26627,8 @@ matching the socket precedent."
     ('windows-x86_64
      (let ((replaced '(nl_thread_private_env_make nl_thread_worker_start
                        nl_thread_spawn_wait_ack nl_thread_clone_dispatch
-                       nl_thread_shared_alloc_impl nl_thread_spawn_impl)))
+                       nl_thread_shared_alloc_impl nl_thread_spawn_impl
+                       nl_thread_os_wait nl_thread_os_wake nl_thread_os_yield)))
        (append
         (cl-remove-if (lambda (form) (memq (cadr form) replaced))
                       (nelisp-standalone--thread-forms-linux))
@@ -26580,6 +26646,18 @@ no caller stack and no clone frame-sharing handshake; the launch record
 is a separate VirtualAlloc page; a worker's thread block is installed
 with TlsSetValue; and the thread ends by returning from its entry."
   (list
+   ;; Doc 214 S4: WaitOnAddress compares the low 32 bits, like futex(2).
+   '(defun nl_thread_os_wait (addr expected ms)
+      (let* ((cmp (alloc-bytes 8 8)))
+        (seq
+         (ptr-write-u32 cmp 0 expected)
+         (extern-call WaitOnAddress addr cmp 4 ms)
+         0)))
+   '(defun nl_thread_os_wake (addr count)
+      (if (= count 1)
+          (extern-call WakeByAddressSingle addr)
+        (extern-call WakeByAddressAll addr)))
+   '(defun nl_thread_os_yield () (extern-call SwitchToThread))
    '(defun nl_thread_os_map (size)
       (let ((p (extern-call VirtualAlloc 0 size 12288 4)))
         (if (= p 0) (- 0 12) p)))
@@ -26765,7 +26843,213 @@ with TlsSetValue; and the thread ends by returning from its entry."
                     (ptr-read-u64 out 8)
                   (- 0 1002))
               (- 0 1001)))
+           ;; Doc 214: no more safepoints from here; see nl_thread_park_expected.
+           (atomic-fetch-add (data-addr nl_thread_retired) 1)
            (atomic-fetch-add done 1)
+           0)))
+     ;; Doc 214 S4 OS waits: futex(2) on the low 32 bits, private.
+     '(defun nl_thread_os_wait (addr expected ms)
+        (let* ((ts (alloc-bytes 16 8)))
+          (seq
+           (ptr-write-u64 ts 0 0)
+           (ptr-write-u64 ts 8 (* ms 1000000))
+           ;; FUTEX_WAIT_PRIVATE
+           (syscall-direct 202 addr 128 expected ts 0 0)
+           0)))
+     '(defun nl_thread_os_wake (addr count)
+        ;; FUTEX_WAKE_PRIVATE
+        (syscall-direct 202 addr 129 (if (= count 0) 2147483647 count) 0 0 0))
+     '(defun nl_thread_os_yield () (syscall-direct 24 0 0 0 0 0 0))
+     ;; Doc 214 S4: synchronisation primitives for nl-bt locks, condition
+     ;; variables and semaphores.  ADDR is a word in shared memory.
+     '(defun nl_thread_atomic_cas_impl (args out)
+        (seq
+         (wf_write_int out (atomic-compare-exchange (wf_argval args 0)
+                                                    (wf_argval args 1)
+                                                    (wf_argval args 2)))
+         0))
+     ;; SeqCst store: LOCK CMPXCHG is a full fence, a plain store is not.
+     '(defun nl_thread_atomic_store_impl (args out)
+        (let* ((addr (wf_argval args 0))
+               (v (wf_argval args 1))
+               (done 0))
+          (seq
+           (while (= done 0)
+             (if (= (atomic-compare-exchange addr (ptr-read-u64 addr 0) v) 1)
+                 (setq done 1)
+               0))
+           (wf_write_int out 0)
+           0)))
+     ;; ADDR EXPECTED MS -> 0 when the low 32 bits of ADDR differ from
+     ;; EXPECTED (or a wake arrived and they now differ), 1 on timeout.  MS
+     ;; < 0 waits forever.  The OS wait is sliced into 5 ms so a blocked
+     ;; worker still reaches the park safepoint and never stalls a
+     ;; collection; spurious wake-ups are the caller's to re-check, as with
+     ;; futex(2).
+     '(defun nl_thread_wait_impl (args env out)
+        (let* ((addr (wf_argval args 0))
+               (expected (wf_argval args 1))
+               (ms (wf_argval args 2))
+               (left ms)
+               (status 0))
+          (seq
+           (while (= status 0)
+             (if (= (ptr-read-u32 addr 0) expected)
+                 (if (if (< ms 0) 0 (< left 1))
+                     (setq status 2)
+                   (seq
+                    (nl_thread_os_wait addr expected
+                                       (if (< ms 0) 5 (if (< left 5) left 5)))
+                    (nl_thread_park_safepoint env)
+                    (setq left (- left 5))))
+               (setq status 1)))
+           (wf_write_int out (if (= status 2) 1 0))
+           0)))
+     ;; ADDR COUNT: wake up to COUNT waiters on ADDR (0 = all).
+     '(defun nl_thread_wake_impl (args out)
+        (seq
+         (nl_thread_os_wake (wf_argval args 0) (wf_argval args 1))
+         (wf_write_int out 0)
+         0))
+     '(defun nl_thread_yield_impl (args out)
+        (seq (nl_thread_os_yield) (wf_write_int out 0) 0))
+     ;; Doc 214 S4: whole lock/condition/semaphore operations in one call
+     ;; each.  Every interpreted call costs tens of microseconds, so doing
+     ;; Drepper's mutex loop in Lisp made one locked increment ~1 ms.
+     '(defun nl_thread_xchg (w v)
+        (let* ((old (ptr-read-u64 w 0)))
+          (seq
+           (while (= (atomic-compare-exchange w old v) 0)
+             (setq old (ptr-read-u64 w 0)))
+           old)))
+     ;; Sliced OS wait while the low 32 bits of W equal EXPECTED, at most
+     ;; MS (< 0 = forever) in total; a park safepoint after every slice.
+     ;; Returns the milliseconds left (0 = timed out, -1 = no limit).
+     '(defun nl_thread_wait_slice (w expected ms env)
+        (seq
+         (nl_thread_os_wait w expected (if (< ms 0) 5 (if (< ms 5) ms 5)))
+         (nl_thread_park_safepoint env)
+         (if (< ms 0) -1 (if (< ms 5) 0 (- ms 5)))))
+     ;; Futex mutex (0 free, 1 held, 2 held with waiters).  ADDR MS -> 1
+     ;; acquired, 0 timed out.
+     ;; Adaptive: spin a while on a held lock before the first OS wait, since
+     ;; critical sections here are short and a sleep/wake costs a context
+     ;; switch each way.
+     '(defun nl_thread_mutex_spin (w n)
+        (let* ((i n) (got 0))
+          (seq
+           (while (if (= got 0) (> i 0) 0)
+             (if (= (ptr-read-u64 w 0) 0)
+                 (if (= (atomic-compare-exchange w 0 1) 1)
+                     (setq got 1)
+                   (setq i (- i 1)))
+               (setq i (- i 1))))
+           got)))
+     '(defun nl_thread_mutex_acquire (w ms env)
+        (let* ((left ms) (state 0))
+          (seq
+           (if (= (atomic-compare-exchange w 0 1) 1)
+               (setq state 1)
+             (if (= (nl_thread_mutex_spin w 4000) 1)
+                 (setq state 1)
+               0))
+           (if (= state 1)
+               0
+             (while (= state 0)
+               (if (= (nl_thread_xchg w 2) 0)
+                   (setq state 1)
+                 (if (= left 0)
+                     (setq state 2)
+                   (setq left (nl_thread_wait_slice w 2 left env))))))
+           (if (= state 1) 1 0))))
+     '(defun nl_thread_mutex_release (w)
+        (if (= (atomic-fetch-add w -1) 1)
+            0
+          (seq (nl_thread_xchg w 0) (nl_thread_os_wake w 1) 0)))
+     ;; An nl-bt lock is three words: W the futex mutex, W+8 the owner id,
+     ;; W+16 the hold depth.  Owner ids are nonzero per-thread integers.
+     ;; W MS ID RECURSIVE -> 1 acquired, 0 timed out, -1 already held by ID
+     ;; and not recursive.
+     '(defun nl_thread_mutex_lock_impl (args env out)
+        (let* ((w (wf_argval args 0))
+               (id (wf_argval args 2)))
+          (seq
+           (wf_write_int
+            out
+            (if (= (ptr-read-u64 w 8) id)
+                (if (= (wf_argval args 3) 0)
+                    (- 0 1)
+                  (seq (ptr-write-u64 w 16 (+ (ptr-read-u64 w 16) 1)) 1))
+              (if (= (nl_thread_mutex_acquire w (wf_argval args 1) env) 1)
+                  (seq (ptr-write-u64 w 8 id) (ptr-write-u64 w 16 1) 1)
+                0)))
+           0)))
+     ;; W ID -> 0 released (or one level of a recursive hold), -1 not ID's.
+     '(defun nl_thread_mutex_unlock_impl (args out)
+        (let* ((w (wf_argval args 0)))
+          (seq
+           (wf_write_int
+            out
+            (if (= (ptr-read-u64 w 8) (wf_argval args 1))
+                (if (> (ptr-read-u64 w 16) 1)
+                    (seq (ptr-write-u64 w 16 (- (ptr-read-u64 w 16) 1)) 0)
+                  (seq (ptr-write-u64 w 16 0)
+                       (ptr-write-u64 w 8 0)
+                       (nl_thread_mutex_release w)
+                       0))
+              (- 0 1)))
+           0)))
+     ;; SEQ LOCK MS ID: fully release nl-bt LOCK (held by ID), wait for SEQ
+     ;; to move (a notify), take LOCK again at its old depth.  -> 1 notified
+     ;; (or spurious), 0 timed out, -1 LOCK not held by ID.
+     '(defun nl_thread_cond_wait_impl (args env out)
+        (let* ((sq (wf_argval args 0))
+               (m (wf_argval args 1))
+               (id (wf_argval args 3))
+               (seen (ptr-read-u32 sq 0))
+               (left (wf_argval args 2))
+               (depth (ptr-read-u64 m 16))
+               (state 0))
+          (if (= (ptr-read-u64 m 8) id)
+              (seq
+               (ptr-write-u64 m 8 0)
+               (ptr-write-u64 m 16 0)
+               (nl_thread_mutex_release m)
+               (while (= state 0)
+                 (if (= (ptr-read-u32 sq 0) seen)
+                     (if (= left 0)
+                         (setq state 2)
+                       (setq left (nl_thread_wait_slice sq seen left env)))
+                   (setq state 1)))
+               (nl_thread_mutex_acquire m -1 env)
+               (ptr-write-u64 m 8 id)
+               (ptr-write-u64 m 16 depth)
+               (wf_write_int out (if (= state 1) 1 0))
+               0)
+            (seq (wf_write_int out (- 0 1)) 0))))
+     ;; SEQ COUNT: bump SEQ and wake COUNT waiters (0 = all).
+     '(defun nl_thread_cond_notify_impl (args out)
+        (seq
+         (atomic-fetch-add (wf_argval args 0) 1)
+         (nl_thread_os_wake (wf_argval args 0) (wf_argval args 1))
+         (wf_write_int out 0)
+         0))
+     ;; COUNT-WORD MS: take one unit, waiting while it is 0.  -> 1 / 0.
+     '(defun nl_thread_sem_wait_impl (args env out)
+        (let* ((w (wf_argval args 0))
+               (left (wf_argval args 1))
+               (state 0))
+          (seq
+           (while (= state 0)
+             (let* ((c (ptr-read-u64 w 0)))
+               (if (> c 0)
+                   (if (= (atomic-compare-exchange w c (- c 1)) 1)
+                       (setq state 1)
+                     0)
+                 (if (= left 0)
+                     (setq state 2)
+                   (setq left (nl_thread_wait_slice w 0 left env))))))
+           (wf_write_int out (if (= state 1) 1 0))
            0)))
      ;; Doc 214 S3: ID 3 evaluates like ID 2 but keeps the full result.
      ;; RESULT is two words: +0 status (1 value, 2 error), +8 the worker
@@ -26780,7 +27064,10 @@ with TlsSetValue; and the thread ends by returning from its entry."
            (ptr-write-u64
             result 0
             (if (if (= rc 0) (= (ptr-read-u64 268435472 0) 0) 0) 1 2))
+           (atomic-fetch-add (data-addr nl_thread_retired) 1)
            (atomic-fetch-add done 1)
+           ;; Wake joiners blocked in `nelisp-thread-wait' on DONE.
+           (nl_thread_os_wake done 0)
            0)))
      '(defun nl_thread_eval_worker_p (worker_id)
         (if (= worker_id 2) 1 (if (= worker_id 3) 1 0)))
@@ -27016,7 +27303,13 @@ target the same installed names signal catchable
                  "nelisp-thread-spawn"
                  "nelisp-thread-join"
                  "nelisp-thread-gc-inhibit"
-                 "nelisp-thread-worker-sexp")))
+                 "nelisp-thread-worker-sexp"
+                 "nelisp-thread-atomic-cas" "nelisp-thread-atomic-store"
+                 "nelisp-thread-wait" "nelisp-thread-wake"
+                 "nelisp-thread-yield"
+                 "nelisp-thread-mutex-lock" "nelisp-thread-mutex-unlock"
+                 "nelisp-thread-cond-wait" "nelisp-thread-cond-notify"
+                 "nelisp-thread-sem-wait")))
     (if (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64))
         (list
          `((:lit "nelisp-thread-shared-alloc") .
@@ -27032,7 +27325,27 @@ target the same installed names signal catchable
          `((:lit "nelisp-thread-gc-inhibit") .
            (nl_thread_gc_inhibit_impl args out))
          `((:lit "nelisp-thread-worker-sexp") .
-           (nl_thread_worker_sexp_impl args out)))
+           (nl_thread_worker_sexp_impl args out))
+         `((:lit "nelisp-thread-atomic-cas") .
+           (nl_thread_atomic_cas_impl args out))
+         `((:lit "nelisp-thread-atomic-store") .
+           (nl_thread_atomic_store_impl args out))
+         `((:lit "nelisp-thread-wait") .
+           (nl_thread_wait_impl args env out))
+         `((:lit "nelisp-thread-wake") .
+           (nl_thread_wake_impl args out))
+         `((:lit "nelisp-thread-yield") .
+           (nl_thread_yield_impl args out))
+         `((:lit "nelisp-thread-mutex-lock") .
+           (nl_thread_mutex_lock_impl args env out))
+         `((:lit "nelisp-thread-mutex-unlock") .
+           (nl_thread_mutex_unlock_impl args out))
+         `((:lit "nelisp-thread-cond-wait") .
+           (nl_thread_cond_wait_impl args env out))
+         `((:lit "nelisp-thread-cond-notify") .
+           (nl_thread_cond_notify_impl args out))
+         `((:lit "nelisp-thread-sem-wait") .
+           (nl_thread_sem_wait_impl args env out)))
       (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
         (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
 

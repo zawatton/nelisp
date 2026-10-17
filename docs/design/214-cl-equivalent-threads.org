@@ -136,3 +136,35 @@ no speedup), so the same code and ERT run on both.
     iterations.
   On Windows the four Doc 199 smokes pass (checked=6/9/13/14, parked=3)
   and nelisp-bt-stash-smoke passes 3/3 (38 s).  Linux is unchanged.
+- S4 (2026-10-17): =packages/nelisp-bt= (native + emacs backends) on new
+  primitives:
+  - atomic cas/store
+  - futex-style wait/wake: futex(2) on Linux; WaitOnAddress and
+    WakeByAddress* on Windows, imported from
+    api-ms-win-core-synch-l1-2-0.dll
+  - whole-operation mutex lock/unlock: owner id and hold depth kept
+    natively, adaptive spin, then 5 ms OS-wait slices with a park
+    safepoint after each
+  - condition wait/notify and semaphore wait
+  Every interpreted call costs 20-60 µs, so moving each operation into one
+  primitive and expanding =nl-bt-with-lock-held= to direct primitive
+  calls took a worker's locked increment from ~1.1 ms to ~0.2 ms.  Three
+  runtime defects showed up and were fixed:
+  - A Windows bump allocation called VirtualAlloc for every object.
+    Commits now go through a per-chunk watermark (descriptor +56) in 1 MiB
+    steps; allocating code inside a section ran 3x slower before.
+  - Park requests counted finished workers, so after the first worker
+    finished every request was a guaranteed miss: the collector waited
+    out its bound while the parked workers stood still.  Retired workers
+    (=nl_thread_retired=) are now subtracted, and the count is re-read on
+    every spin.  A 4x1000 contended run went from 10.2 s with 30 misses to
+    1.9 s with 0.
+  - Worker =while= back-edges are now park safepoints (=nl_gc_backedge=).
+  Known S6 gap: once collections inside a section really ran, one 4-thread
+  lock run in three crashed (SIGSEGV).  The main thread therefore starts no
+  mid-form collection while a section is open, which matches the
+  effective behaviour before (every request missed).  With that gate
+  there were no crashes in 8 runs.
+  =tools/nelisp-bt-sync-smoke.el=: lock 80000 (unlocked 48164-48868),
+  condvar 500500, semaphore 1000 plus a timeout; 3/3 on windows (~31 s)
+  and 3/3 on linux.
