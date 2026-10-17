@@ -699,7 +699,16 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
     (or (null x) (consp x) (stringp x) (vectorp x)
         (and (fboundp 'bool-vector-p) (bool-vector-p x)))))
 (unless (fboundp 'string-search)
+  ;; The native scanner takes every ordinary case, multibyte included (a
+  ;; multibyte haystack used to fall to the walk below: an allocation and a
+  ;; compare per position, seconds on a 700 KB SVG).  It answers t for what
+  ;; it leaves to `nelisp--string-search-walk', errors included.
   (defun string-search (needle haystack &optional start)
+    (let ((r (if (fboundp 'nelisp--string-search-chars)
+                 (nelisp--string-search-chars needle haystack start)
+               t)))
+      (if (eq r t) (nelisp--string-search-walk needle haystack start) r)))
+  (defun nelisp--string-search-walk (needle haystack &optional start)
     (nelisp--check-string needle)
     (nelisp--check-string haystack)
     (when start

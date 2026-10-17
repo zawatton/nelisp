@@ -7443,6 +7443,12 @@ argument (reachability + in-arena bounds checks).")
                                                            (wf_argval args 0)
                                                            (wf_argval args 1))
                                             (mut-str-finalize ms out) 0)))
+    ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
+    ((:lit "nelisp--string-search-chars")
+     . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+                                         (wf_arg_ptr args 2))))
+         (if (= r -2) (wf_write_t out)
+           (if (= r -1) (wf_write_nil out) (wf_write_int out r)))))
     ((:lit "nelisp--string-search") . (let* ((idx (m5_string_search
                                                     (wf_arg_ptr args 1)
                                                     (wf_arg_ptr args 0)
@@ -16893,6 +16899,45 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (f64-bits (f64-div (bits-to-f64 mb) (bits-to-f64 pb)))
                                 (f64-bits (f64-mul (bits-to-f64 mb) (bits-to-f64 pb))))))
                      (seq (sexp-write-float out (bits-to-f64 rb)) 1))))))))))
+    ;; `string-search' on char indices for unibyte and multibyte (tag 5)
+    ;; strings alike.  UTF-8 makes a byte match of a valid needle a char
+    ;; match, so the byte scanner answers and only the START and result
+    ;; positions convert (START through the aref cursor cache).  Answers
+    ;; the char index, -1 for no match, or -2 when the caller must decide
+    ;; (a non-string, a bad START, a MutStr, or a non-ASCII unibyte string
+    ;; meeting a multibyte one): the prelude then runs its own path, which
+    ;; also signals the errors.
+    (defun m5_ascii_only_p (p)
+      (m5_ascii_bytes_p p 0 (m5_strlen p)))
+    (defun m5_count_chars (p from to)
+      (let* ((i from) (c 0))
+        (seq (while (< i to)
+               (seq (if (= (logand (m5_byte_at p i) 192) 128) 0 (setq c (+ c 1)))
+                    (setq i (+ i 1))))
+             c)))
+    (defun m5_string_search_chars (needle hay startp)
+      (let* ((nt (ptr-read-u64 needle 0)) (ht (ptr-read-u64 hay 0))
+             (st (ptr-read-u64 startp 0)))
+        (if (= (m5_string_tag_p nt) 0) -2
+          (if (= (m5_string_tag_p ht) 0) -2
+            (if (or (= nt 6) (= ht 6)) -2
+              (if (if (= st 0) 0 (if (= st 2) 0 1)) -2
+                (let* ((s (if (= st 2) (ptr-read-u64 startp 8) 0))
+                       (hnb (m5_strlen hay))
+                       (huni (m5_unibyte_tag_p ht)) (nuni (m5_unibyte_tag_p nt)))
+                  (if (< s 0) -2
+                    (if (if (= huni nuni) 0
+                          (if (= huni 1) (if (= (m5_ascii_only_p hay) 1) 0 1)
+                            (if (= (m5_ascii_only_p needle) 1) 0 1)))
+                        -2
+                      (let* ((sb (if (= huni 1) (if (> s hnb) -1 s)
+                                   (nl_str_sub_byte_off hay hnb s))))
+                        (if (< sb 0) -2
+                          (if (= (m5_strlen needle) 0) s
+                            (let* ((ib (m5_string_search hay needle sb)))
+                              (if (< ib 0) -1
+                                (if (= huni 1) ib
+                                  (+ s (m5_count_chars hay sb ib)))))))))))))))))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
         (if (= (m5_byte_at a i) (m5_byte_at b i))
@@ -28313,7 +28358,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
