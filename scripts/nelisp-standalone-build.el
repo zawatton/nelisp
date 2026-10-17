@@ -11230,9 +11230,24 @@ eval applyfn.")
                       ;; table), e.g. the per-buffer syntax-table lookup that
                       ;; every regexp call performs.
                       1)))))))))
-    (defun nl_ht_bucket_index (vec key_ptr)
+    ;; eq/eql tables hash what `eq' compares (`bf_identity_hash': the box
+    ;; pointer for a cons, vector or other boxed object; eql numbers by
+    ;; value).  Hashing cons contents to depth 8 there had two faults: a
+    ;; `setcar' on a key moved it to another bucket, so (gethash K H) missed
+    ;; a key that is still `eq' to the stored one; and every cons of a list
+    ;; longer than the depth was "unstable", so each miss -- every new key a
+    ;; `puthash' adds -- scanned all buckets: O(n^2) to fill a table with the
+    ;; conses of one list (4000 keys 1.76 s).  Addresses move only when
+    ;; compaction or image relocation moves objects; `nl_ht_identity_sync'
+    ;; rehashes an eq/eql table after either before any lookup.
+    (defun nl_ht_identity_key_hash (key_ptr mode)
+      (if (and (= mode 2) (= (ptr-read-u64 key_ptr 0) 13))
+          (nl_ht_key_hash key_ptr 8)
+        (bf_identity_hash key_ptr)))
+    (defun nl_ht_bucket_index (vec key_ptr mode)
       (let* ((n (vector-len vec))
-             (h (nl_ht_key_hash key_ptr 8)))
+             (h (if (= mode 0) (nl_ht_key_hash key_ptr 8)
+                  (nl_ht_identity_key_hash key_ptr mode))))
         (if (= (logand n (- n 1)) 0)
             (logand h (- n 1))
           (mod h n))))
@@ -11278,10 +11293,13 @@ eval applyfn.")
               0)))
          entry_ptr)))
     (defun nl_ht_find_table (data_ptr key_ptr mode)
+      (nl_ht_find_table_h data_ptr key_ptr mode 0))
+    ;; HMODE is the bucket hash (`nl_ht_hash_mode'); MODE the key test.
+    (defun nl_ht_find_table_h (data_ptr key_ptr mode hmode)
       (if (= data_ptr 0)
           0
         (if (= (ptr-read-u64 data_ptr 0) 8)
-            (let* ((idx (nl_ht_bucket_index data_ptr key_ptr))
+            (let* ((idx (nl_ht_bucket_index data_ptr key_ptr hmode))
                    (w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 data_ptr 8) 8) (* idx 8)) 0))
                    (entry_ptr (if (= (logand w 1) 0) (nl_ht_find w key_ptr mode) 0)))
               (if (= entry_ptr 0)
@@ -11292,7 +11310,8 @@ eval applyfn.")
                   (if (and (> mode 0)
                            (= (m5_string_tag_p (ptr-read-u64 key_ptr 0)) 1))
                       (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)
-                    (if (= (nl_ht_key_hash_stable_p key_ptr 8) 1)
+                    ;; An identity bucket is exact once the table is synced.
+                    (if (or (> hmode 0) (= (nl_ht_key_hash_stable_p key_ptr 8) 1))
                         0
                       (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)))
                 entry_ptr))
@@ -11328,39 +11347,39 @@ eval applyfn.")
     ;; Growth only ran once the count was kept (see `nl_ht_meta_count'), so
     ;; the rehash walks are loops: one native frame per bucket and per chain
     ;; node would not survive a table of tens of thousands of entries.
-    (defun nl_ht_rehash_entry_into (entry_ptr new_vec)
+    (defun nl_ht_rehash_entry_into (entry_ptr new_vec mode)
       (let* ((key_slot (nl_cons_car_ptr entry_ptr))
-             (idx (nl_ht_bucket_index new_vec key_slot))
+             (idx (nl_ht_bucket_index new_vec key_slot mode))
              (bucket_slot (vector-ref-ptr new_vec idx))
              (newhead_s (alloc-bytes 32 8)))
         (seq
          (nelisp_cons_construct entry_ptr bucket_slot newhead_s)
          (vector-slot-set new_vec idx newhead_s)
          0)))
-    (defun nl_ht_rehash_list_into (node_ptr new_vec)
+    (defun nl_ht_rehash_list_into (node_ptr new_vec mode)
       (let* ((node node_ptr))
         (seq
          (while (= (ptr-read-u64 node 0) 7)
            (seq
-            (nl_ht_rehash_entry_into (nl_cons_car_ptr node) new_vec)
+            (nl_ht_rehash_entry_into (nl_cons_car_ptr node) new_vec mode)
             (setq node (nl_cons_cdr_ptr node))))
          0)))
-    (defun nl_ht_rehash_vec_into (old_vec i n new_vec)
+    (defun nl_ht_rehash_vec_into (old_vec i n new_vec mode)
       (let* ((idx i)
              (w 0))
         (seq
          (while (< idx n)
            (seq
             (setq w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 old_vec 8) 8) (* idx 8)) 0))
-            (if (= (logand w 1) 0) (nl_ht_rehash_list_into w new_vec) 0)
+            (if (= (logand w 1) 0) (nl_ht_rehash_list_into w new_vec mode) 0)
             (setq idx (+ idx 1))))
          0)))
-    (defun nl_ht_rehash_table_into (data_ptr new_vec)
+    (defun nl_ht_rehash_table_into (data_ptr new_vec mode)
       (if (= data_ptr 0)
           0
         (if (= (ptr-read-u64 data_ptr 0) 8)
-            (nl_ht_rehash_vec_into data_ptr 0 (vector-len data_ptr) new_vec)
-          (nl_ht_rehash_list_into data_ptr new_vec))))
+            (nl_ht_rehash_vec_into data_ptr 0 (vector-len data_ptr) new_vec mode)
+          (nl_ht_rehash_list_into data_ptr new_vec mode))))
     (defun nl_ht_maybe_grow (table_ptr data_ptr count)
       (if (= data_ptr 0)
           0
@@ -11371,7 +11390,9 @@ eval applyfn.")
                          (new_vec (alloc-bytes 32 8)))
                     (seq
                      (vector-make new_n new_vec)
-                     (nl_ht_rehash_table_into data_ptr new_vec)
+                     (nl_ht_rehash_table_into data_ptr new_vec
+                                              (nl_ht_hash_mode table_ptr
+                                                               (nl_ht_test_mode table_ptr)))
                      (cons-set-cdr table_ptr new_vec)
                      0))
                 0))
@@ -11412,16 +11433,79 @@ eval applyfn.")
          (vector-make 8 buckets)
          (nelisp_cons_construct marker buckets out)
          0)))
+    ;; Identity stamp of an eq/eql table.  The prelude's tables carry an
+    ;; 8-slot marker (type, count, test, capacity, weakness, budget, stamp
+    ;; generation, stamp address); slots 6 and 7 hold the compaction
+    ;; generation (268436376, bumped by `nl_gc_compact') and the marker's own
+    ;; box address, both as immediate Int words, from when the buckets were
+    ;; last hashed.  Compaction bumps the generation; image relocation moves
+    ;; the marker; the prelude's resize installs a fresh marker.  Any of these
+    ;; makes the stamp differ, and the buckets are rehashed from the current
+    ;; addresses before the table is used.  The marker is never replaced
+    ;; here: the prelude's `puthash' holds it across the leaf call.  Tables
+    ;; with a shorter marker (`nl_ht_make', older images) and alist-data
+    ;; tables keep content hashing: `nl_ht_hash_mode' answers 0 for them.
+    (defun nl_ht_marker_word (meta i)
+      (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 meta 8) 8) (* i 8)) 0))
+    (defun nl_ht_marker_word_set (meta i w)
+      (seq (ptr-write-u64 (+ (ptr-read-u64 (ptr-read-u64 meta 8) 8) (* i 8)) 0 w) 0))
+    ;; The hash used for TABLE's buckets: its test mode for a stamped
+    ;; identity table, else 0 (content hash).
+    (defun nl_ht_hash_mode (table_ptr mode)
+      (if (= mode 0) 0
+        (let* ((meta (nl_ht_meta_slot table_ptr)))
+          (if (= (ptr-read-u64 meta 0) 8)
+              (if (>= (vector-len meta) 8) mode 0)
+            0))))
+    (defun nl_ht_identity_rehash (table_ptr mode)
+      (let* ((data (nl_ht_data_slot table_ptr)))
+        (seq
+         (let* ((new_vec (alloc-bytes 32 8)))
+           (seq
+            (vector-make (vector-len data) new_vec)
+            (nl_ht_rehash_table_into data new_vec mode)
+            (cons-set-cdr table_ptr new_vec)
+            0))
+         (let* ((meta (nl_ht_meta_slot table_ptr)))
+           (seq
+            (nl_ht_marker_word_set meta 6 (+ (* (ptr-read-u64 268436376 0) 4) 1))
+            (nl_ht_marker_word_set meta 7 (+ (* meta 4) 1))
+            0)))))
+    (defun nl_ht_identity_sync (table_ptr)
+      (if (= table_ptr 0) 0
+        (if (/= (ptr-read-u64 table_ptr 0) 7) 0
+          (let* ((mode (nl_ht_test_mode table_ptr)))
+            (if (= mode 0) 0
+              (let* ((meta (nl_ht_meta_slot table_ptr))
+                     (data (nl_ht_data_slot table_ptr)))
+                (if (/= (ptr-read-u64 meta 0) 8) 0
+                  (if (/= (ptr-read-u64 data 0) 8) 0
+                    (if (< (vector-len meta) 8) 0
+                      (if (and (= (nl_ht_marker_word meta 6)
+                                  (+ (* (ptr-read-u64 268436376 0) 4) 1))
+                               (= (nl_ht_marker_word meta 7) (+ (* meta 4) 1)))
+                          0
+                        (nl_ht_identity_rehash table_ptr mode)))))))))))
+    ;; Sync TABLE, then find KEY in it.
+    (defun nl_ht_find_in (table key_ptr)
+      (seq (nl_ht_identity_sync table)
+           (let* ((mode (nl_ht_test_mode table)))
+             (nl_ht_find_table_h (nl_ht_data_slot table) key_ptr mode
+                                 (nl_ht_hash_mode table mode)))))
     (defun nl_ht_put (args out)
       (nl_ht_put_values (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                         (wf_arg_ptr args 2) out))
     (defun nl_ht_put_values (key_ptr val_ptr table_ptr out)
+      (seq (nl_ht_identity_sync table_ptr)
+           (nl_ht_put_values_synced key_ptr val_ptr table_ptr out)))
+    (defun nl_ht_put_values_synced (key_ptr val_ptr table_ptr out)
         (if (= table_ptr 0)
             (wf_write_nil out)
           (if (= (ptr-read-u64 table_ptr 0) 7)
               (let* ((data_slot (nl_ht_data_slot table_ptr))
-                     (entry_ptr (nl_ht_find_table data_slot key_ptr
-                                                  (nl_ht_test_mode table_ptr))))
+                     (entry_ptr (nl_ht_find_table_h
+                                 data_slot key_ptr (nl_ht_test_mode table_ptr)
+                                 (nl_ht_hash_mode table_ptr (nl_ht_test_mode table_ptr)))))
                 (if (= entry_ptr 0)
                     ;; An EMPTY table's cdr is nil, and nil is an immediate:
                     ;; `nl_cons_cdr_ptr' hands back a FRESH 32B view of it,
@@ -11446,7 +11530,9 @@ eval applyfn.")
                            (nl_ht_copy32 out val_ptr)
                            0))
                       (if (= (ptr-read-u64 data_slot 0) 8)
-                          (let* ((idx (nl_ht_bucket_index data_slot key_ptr))
+                          (let* ((idx (nl_ht_bucket_index data_slot key_ptr
+                                                          (nl_ht_hash_mode table_ptr
+                                                                           (nl_ht_test_mode table_ptr))))
                                  (bucket_slot (vector-ref-ptr data_slot idx))
                                  (pair_s (alloc-bytes 32 8))
                                  (newhead_s (alloc-bytes 32 8)))
@@ -11478,17 +11564,25 @@ eval applyfn.")
                    0)))
             (wf_write_nil out))))
     (defun nl_ht_get (args out)
+      (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
+           (nl_ht_get_synced args out)))
+    (defun nl_ht_get_synced (args out)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
              (data_slot (if (= table_ptr 0) 0
                           (if (= (ptr-read-u64 table_ptr 0) 7)
                               (nl_ht_data_slot table_ptr)
                             0)))
              (mode (if (= data_slot 0) 0 (nl_ht_test_mode table_ptr)))
-             (entry_ptr (nl_ht_find_table data_slot key_ptr mode)))
+             (entry_ptr (if (= data_slot 0) 0
+                          (nl_ht_find_table_h data_slot key_ptr mode
+                                              (nl_ht_hash_mode table_ptr mode)))))
         (if (= entry_ptr 0)
             (nl_ht_get_default args out)
           (nl_ht_copy32 out (nl_cons_cdr_ptr entry_ptr)))))
     (defun nl_ht_rem (args out)
+      (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
+           (nl_ht_rem_synced args out)))
+    (defun nl_ht_rem_synced (args out)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
              (rebuilt (alloc-bytes 32 8)))
         (seq
@@ -11499,10 +11593,25 @@ eval applyfn.")
                  (if (= data_slot 0)
                      0
                    (let* ((mode (nl_ht_test_mode table_ptr))
-                          (entry_ptr (nl_ht_find_table data_slot key_ptr mode)))
+                          (hmode (nl_ht_hash_mode table_ptr mode))
+                          (entry_ptr (nl_ht_find_table_h data_slot key_ptr mode hmode)))
                      (seq
+                      ;; Rebuild only the bucket that holds KEY when its hash
+                      ;; places it (an identity table, or a stable content
+                      ;; hash), and nothing on a miss.  Rebuilding every
+                      ;; bucket's chain per call made `remhash' O(buckets)
+                      ;; with an allocation per node.
                       (if (= (ptr-read-u64 data_slot 0) 8)
-                          (nl_ht_rem_vec data_slot key_ptr 0 (vector-len data_slot) mode)
+                          (if (= entry_ptr 0)
+                              0
+                            (if (= (if (and (> mode 0)
+                                            (= (m5_string_tag_p (ptr-read-u64 key_ptr 0)) 1))
+                                       0
+                                     (if (> hmode 0) 1 (nl_ht_key_hash_stable_p key_ptr 8)))
+                                   1)
+                                (let* ((idx (nl_ht_bucket_index data_slot key_ptr hmode)))
+                                  (nl_ht_rem_vec data_slot key_ptr idx (+ idx 1) mode))
+                              (nl_ht_rem_vec data_slot key_ptr 0 (vector-len data_slot) mode)))
                         (seq
                          (nl_ht_rem_walk data_slot key_ptr rebuilt mode)
                          (nl_ht_copy32 data_slot rebuilt)))
@@ -13435,9 +13544,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (= (bf_hash_table_p_raw table) 0)
               -2
             (seq
-             (setq entry
-                   (nl_ht_find_table (nl_ht_data_slot table) key
-                                     (nl_ht_test_mode table)))
+             (setq entry (nl_ht_find_in table key))
              (if (= entry 0)
                  -1
                (let* ((target (nl_cons_cdr_ptr entry)))
@@ -19493,8 +19600,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_declared_special_p (mirror name)
       (let* ((table (bf_special_registry mirror 0)))
         (if (= table 0) 0
-          (if (= (nl_ht_find_table (nl_ht_data_slot table) name
-                                  (nl_ht_test_mode table)) 0) 0 1))))
+          (if (= (nl_ht_find_in table name) 0) 0 1))))
     (defun bf_declare_local_value (env name out)
       (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16))
           (let* ((rc (nelisp_frame_local_declare (+ env 32) name)))
@@ -19535,8 +19641,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (or (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                  (if (= table 0) 0
                    (if (= (nl_n4_captured_lexical_p frames name) 1) 0
-                     (/= (nl_ht_find_table (nl_ht_data_slot table) name
-                                          (nl_ht_test_mode table)) 0))))
+                     (/= (nl_ht_find_in table name) 0))))
              (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
                (let* ((names (alloc-bytes 32 8)))
                  (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)

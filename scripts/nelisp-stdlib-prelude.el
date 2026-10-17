@@ -3830,7 +3830,9 @@ trailing newline) that `message' would otherwise do.")
     size))
 
 (defun nelisp--hash-new (test capacity &optional weakness)
-  (cons (vector 'hash-table 0 test capacity weakness 0)
+  ;; Slots 6 and 7 are the runtime's identity stamp for eq/eql buckets
+  ;; (`nl_ht_identity_sync'); a 0 address never matches a live stamp.
+  (cons (vector 'hash-table 0 test capacity weakness 0 0 0)
         (make-vector (nelisp--hash-index-size capacity) nil)))
 
 (defun nelisp--hash-resize (table capacity)
@@ -3882,7 +3884,7 @@ internal compatibility objects, not calls to the new public constructor."
           ;; Cold-image caches already own their native bucket reservation.
           ;; Extending metadata avoids a hot interpreted rehash on adoption.
           (setcar table (vector 'hash-table count (or (aref marker 2) 'eql)
-                                (1- (length buckets)) nil count))
+                                (1- (length buckets)) nil count 0 0))
         (let ((capacity (if (> (length marker) 3) (aref marker 3)
                           (if (vectorp buckets) count (aref marker 1)))))
           (if (= count 0)
@@ -3906,7 +3908,7 @@ internal compatibility objects, not calls to the new public constructor."
           (and (eq (car keys) :test)
                (memq (cadr keys) '(eq eql equal))
                (null (cddr keys))))
-      (cons (vector 'hash-table 0 (if keys (cadr keys) 'eql) 0 nil 0)
+      (cons (vector 'hash-table 0 (if keys (cadr keys) 'eql) 0 nil 0 0 0)
             (vector nil))
     (let ((ks keys))
       (while ks
