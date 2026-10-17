@@ -4400,6 +4400,34 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
       (setq i (1+ i)))
     (cons (apply #'concat (nreverse chars)) initial)))
 
+;; GNU's SYNTAX_ENTRY: when `parse-sexp-lookup-properties' is non-nil, a
+;; `syntax-table' text property at a position overrides the buffer's table
+;; there -- a raw descriptor (CODE . MATCHING-CHAR) or a syntax table to
+;; look the character up in.  CC Mode depends on it: cc-defs.el marks `<'
+;; and `>' as parens that way at load and refuses to load if `forward-sexp'
+;; does not honour them.  The scanners below test the variable inline, so
+;; the default path costs one variable read per character.
+(defvar parse-sexp-lookup-properties nil)
+(defconst nelisp--syntax-code-classes " .w_()'\"$\\/<>@!|"
+  "Class character of each raw syntax code 0-15 (`string-to-syntax').")
+(defun nelisp--syntax-class-at (table text pos)
+  "Class char at buffer position POS: its `syntax-table' text property
+when that names a class, else TABLE's entry for the character (TEXT is
+the buffer string)."
+  (let ((prop (cond ((fboundp 'get-char-property)
+                     (get-char-property pos 'syntax-table))
+                    ;; The bare runtime has text properties but no overlays.
+                    ((fboundp 'get-text-property)
+                     (get-text-property pos 'syntax-table)))))
+    (cond
+     ((and (consp prop) (integerp (car prop))
+           (< (logand (car prop) 65535) 13))
+      (aref nelisp--syntax-code-classes (logand (car prop) 65535)))
+     ((and prop (not (consp prop)) (fboundp 'nelisp--syntax-table-p)
+           (nelisp--syntax-table-p prop))
+      (nelisp--syntax-lookup prop (aref text (1- pos))))
+     (t (nelisp--syntax-lookup table (aref text (1- pos)))))))
+
 (defun nelisp--cc03-scan-args (from count &optional depth)
   "Validate scan arguments and clamp FROM to the accessible buffer."
   (dolist (value (list from count (or depth 0)))
@@ -4417,7 +4445,7 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
       (let ((found nil))
         (while (and (< pos hi) (not found))
           (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
-                 (class (unless blocked (nelisp--syntax-lookup table (aref text (1- pos))))))
+                 (class (unless blocked (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos)))))))
             (when (and (= (aref v 0) 0) (not blocked)
                        (memq class '(?\( ?\")))
               (setq start pos))
@@ -4437,7 +4465,7 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
   "Return non-nil if the character at POS is escaped in TEXT."
   (let ((n 0) (p (1- pos)))
     (while (and (>= p lo)
-                (memq (nelisp--syntax-lookup table (aref text (1- p))) '(?\\ ?/)))
+                (memq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p)))) '(?\\ ?/)))
       (setq n (1+ n) p (1- p)))
     (= (mod n 2) 1)))
 
@@ -4451,7 +4479,7 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
         (while (and (> pos lo) (not found))
           (setq pos (1- pos))
           (unless (nelisp--cc03-escaped-p text pos lo table)
-            (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
+            (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
               (when (and (= level 0) (memq class '(?\) ?\"))) (setq start pos))
               (cond
                ((eq class ?\")
@@ -4478,7 +4506,7 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
   (let ((step direction) (done nil) result)
     (while (and (not done) (if (> step 0) (< pos hi) (> pos lo)))
       (let* ((at (if (> step 0) pos (1- pos)))
-             (class (nelisp--syntax-lookup table (aref text (1- at)))))
+             (class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text at) (nelisp--syntax-lookup table (aref text (1- at))))))
         (when (and (< step 0) (nelisp--cc03-escaped-p text at lo table))
           (setq class ?w))
         (cond
@@ -4505,7 +4533,7 @@ ACTION applies only to literal text; INITIAL also crosses substitutions."
           (let ((more t))
             (while (and more (if (> step 0) (< pos hi) (> pos lo)))
               (setq at (if (> step 0) pos (1- pos))
-                    class (nelisp--syntax-lookup table (aref text (1- at))))
+                    class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text at) (nelisp--syntax-lookup table (aref text (1- at)))))
               (cond
                ((memq class '(?w ?_)) (setq pos (+ pos step)))
                ((and (< step 0)
@@ -13868,7 +13896,9 @@ active syntax table; see the PERF block comment above."
   (let* ((text (or text (nelisp-buffer-string nelisp--current-buffer)))
          (table (or table (nelisp--syntax-current-table)))
          (ch (aref text (1- pos)))
-         (class (nelisp--syntax-lookup table ch))
+         (class (if parse-sexp-lookup-properties
+                    (nelisp--syntax-class-at table text pos)
+                  (nelisp--syntax-lookup table ch)))
          (depth (aref v 0)) (mindepth (aref v 1)) (stack (aref v 2))
          (instr (aref v 3)) (incom (aref v 5)))
     (cond
@@ -13907,7 +13937,7 @@ COMMENTSTOP's best-effort status."
       (while (< pos hi)
         (let ((was-instr (aref v 3)) (was-incom (aref v 5)))
           (when (and stopbefore (not was-instr) (not was-incom) (not (aref v 6)))
-            (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
+            (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
               (when (memq class '(?w ?_ ?\" ?<))
                 (nelisp-goto-char pos buf)
                 (throw 'nelisp--pps-done (nelisp--pps-encode v)))))
@@ -13960,7 +13990,7 @@ the same `nelisp--pps-advance' step `parse-partial-sexp' uses."
         (while (and (not found) (< pos hi))
           (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
                  (class (unless blocked
-                          (nelisp--syntax-lookup table (aref text (1- pos))))))
+                          (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos)))))))
             (nelisp--pps-advance v pos text table)
             (setq pos (1+ pos))
             (cond
@@ -13983,7 +14013,7 @@ above this section: does not skip parens inside strings/comments."
       (let ((found nil))
         (while (and (not found) (> pos lo))
           (setq pos (1- pos))
-          (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
+          (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
             (cond
              ((eq class ?\)) (setq lvl (1+ lvl)))
              ((eq class ?\()
@@ -14013,7 +14043,7 @@ honouring backslash escapes; signals `scan-error' if it never closes."
          (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table))
          (term (aref text (1- pos))) (p (1+ pos)))
     (while (and (< p hi) (/= (aref text (1- p)) term))
-      (if (eq (nelisp--syntax-lookup table (aref text (1- p))) ?\\)
+      (if (eq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p)))) ?\\)
           (setq p (+ p 2))
         (setq p (1+ p))))
     (if (< p hi) (1+ p) (signal 'scan-error (list "Unterminated string literal" pos hi)))))
@@ -14025,18 +14055,18 @@ prefix characters first."
   (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf))
          (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (< pos hi)
-                (memq (nelisp--syntax-lookup table (aref text (1- pos)))
+                (memq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))
                       '(?\s ?\')))
       (setq pos (1+ pos)))
     (when (>= pos hi) (signal 'scan-error (list "Scan error: reached end of buffer" pos pos)))
-    (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
+    (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text pos) (nelisp--syntax-lookup table (aref text (1- pos))))))
       (cond
        ((eq class ?\() (nelisp--scan-lists-forward pos 1 0))
        ((eq class ?\)) (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
        ((eq class ?\") (nelisp--scan-string-forward pos))
        (t (let ((p (1+ pos)))
             (while (and (< p hi)
-                        (memq (nelisp--syntax-lookup table (aref text (1- p)))
+                        (memq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p))))
                               '(?w ?_)))
               (setq p (1+ p)))
             p))))))
@@ -14076,11 +14106,11 @@ block comment above this section on backward scanning's limitation."
   (let* ((buf nelisp--current-buffer) (lo (nelisp-point-min buf))
          (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (> pos lo)
-                (memq (nelisp--syntax-lookup table (aref text (- pos 2)))
+                (memq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text (1- pos)) (nelisp--syntax-lookup table (aref text (- pos 2))))
                       '(?\s ?\')))
       (setq pos (1- pos)))
     (when (<= pos lo) (signal 'scan-error (list "Scan error: reached beginning of buffer" pos pos)))
-    (let ((class (nelisp--syntax-lookup table (aref text (- pos 2)))))
+    (let ((class (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text (1- pos)) (nelisp--syntax-lookup table (aref text (- pos 2))))))
       (cond
        ((eq class ?\)) (nelisp--scan-lists-backward pos 1 0))
        ((eq class ?\() (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
@@ -14096,7 +14126,7 @@ block comment above this section on backward scanning's limitation."
             (signal 'scan-error (list "Unterminated string literal" pos pos)))))
        (t (let ((p (1- pos)))
             (while (and (> p lo)
-                        (memq (nelisp--syntax-lookup table (aref text (- p 2)))
+                        (memq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text (1- p)) (nelisp--syntax-lookup table (aref text (- p 2))))
                               '(?w ?_)))
               (setq p (1- p)))
             p))))))
@@ -14158,12 +14188,12 @@ answers nil past the end and `nelisp--syntax-lookup' signals on nil."
   (let ((p pos) (saw nil)
         (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (< p hi)
-                (let ((cl (nelisp--syntax-lookup table (aref text (1- p)))))
+                (let ((cl (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p))))))
                   (or (eq cl ?\s) (eq cl ?>))))
       (setq p (1+ p)))
-    (when (and (< p hi) (eq (nelisp--syntax-lookup table (aref text (1- p))) ?<))
+    (when (and (< p hi) (eq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p)))) ?<))
       (setq saw t)
-      (while (and (< p hi) (not (eq (nelisp--syntax-lookup table (aref text (1- p))) ?>)))
+      (while (and (< p hi) (not (eq (if parse-sexp-lookup-properties (nelisp--syntax-class-at table text p) (nelisp--syntax-lookup table (aref text (1- p)))) ?>)))
         (setq p (1+ p)))
       (when (< p hi) (setq p (1+ p))))
     (cons p saw)))
