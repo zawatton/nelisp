@@ -1,0 +1,16 @@
+# shallow-binding baseline, fd786569d, 2026-10-18, linux-x86_64
+# VM on:
+SB-BENCH regex 6098.5
+SB-BENCH dynread 2.44
+SB-BENCH dynread-deep 2.11
+SB-BENCH globread 1.82
+# NELISP_FX_DISABLE=1:
+SB-BENCH regex 5829.3
+SB-BENCH dynread 6.23
+SB-BENCH dynread-deep 13.06
+SB-BENCH globread 7.47
+# GNU Emacs 31.1:
+SB-BENCH regex 0.5
+SB-BENCH dynread 0.10
+SB-BENCH dynread-deep 0.09
+SB-BENCH globread 0.09

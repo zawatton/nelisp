@@ -1,0 +1,68 @@
+#+TITLE: NeLisp shallow binding for special variables
+#+NOTE: Objective (user, 2026-10-18): replace deep binding (every dynamic variable
+#+NOTE: read walks the whole frame stack, comparing symbols by name) with GNU Emacs
+#+NOTE: style shallow binding: the global mirror entry's value slot holds the
+#+NOTE: current dynamic value, a binding saves the old value in its frame, and
+#+NOTE: unbinding restores it.  Lexical variables keep the frame cells.
+#+NOTE: Plan: S1 converts binders and unbinders only (readers that walk frames
+#+NOTE: then find nothing and fall back to the mirror, so answers stay right);
+#+NOTE: S2 short-circuits dynamic reads and writes to the mirror.  Per-thread
+#+NOTE: bindings (an SBCL-style thread-local slot per symbol) are a Doc 214
+#+NOTE: merge requirement, recorded in S3, not built on this branch.
+#+NOTE: Baseline (fd786569d, tools/ai/shallow-binding-baseline.txt): regexp
+#+NOTE: 6,099 us/match, dynread 2.44 us, interpreter-only dynread 6.23 us and
+#+NOTE: 13.06 us under 40 nested bindings.  GNU 31.1: 0.5 us, 0.10 us, 0.09 us.
+#+NOTE: Shallow binding removes the walk and its allocations (~15k of 37k per
+#+NOTE: regexp match); it is not expected to reach GNU on the regexp alone --
+#+NOTE: byte-code value boxing and collection cost remain.
+
+* S0 Reference semantics and baseline
+** S0.1 The binding semantics check passes on GNU Emacs (callee visibility, unbound before/after, every exit path, setq/set/set-default/makunbound inside, recursion, 10,000 signalled exits, watchers)
+cmd: emacs --batch -l test/standalone-shallow-binding-check.el
+** S0.2 The dynamic-binding-mode check passes on GNU Emacs
+cmd: emacs --batch -l test/standalone-shallow-binding-dyn-check.el
+** S0.3 Baseline measurements recorded
+evidence: tools/ai/shallow-binding-baseline.txt sha256=916c24580eeee5adb5df3ffc484506c4e96e28b7d8ca3817f55d045c8db7ff17
+
+* S1 Binders and unbinders use the mirror value slot
+** S1.1 The binding semantics check passes on the runtime (includes the lexical-parameter case, red before this work)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: timeout 300 "$EVAL_BIN" --load test/standalone-shallow-binding-check.el
+** S1.2 The dynamic-binding-mode check passes on the runtime
+#+REQUIRES: EVAL_BIN
+cmd: timeout 120 "$EVAL_BIN" --load test/standalone-shallow-binding-dyn-check.el
+** S1.3 Doc 199 worker smokes pass (workers read globals while the main thread binds)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: for f in tools/nelisp-thread-standalone-smoke.el tools/nelisp-thread-allocating-standalone-smoke.el tools/nelisp-thread-percpu-roots-smoke.el tools/nelisp-thread-mirror-guard-smoke.el; do timeout 140 "$EVAL_BIN" --load "$f" >/dev/null 2>&1 || exit 1; done
+** S1.4 End to end: every standalone check passes (known-red list only)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$EVAL_BIN" timeout 600 test/perf/standalone-checks.sh
+
+* S2 Dynamic reads and writes go straight to the mirror
+** S2.1 Interpreter-only dynamic read no longer grows with binding depth (40 nested bindings at most 1.3x the flat read)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: NELISP_FX_DISABLE=1 timeout 300 "$EVAL_BIN" --load test/perf/shallow-binding-bench.el 2>&1 | awk '/^SB-BENCH dynread /{a=$3} /^SB-BENCH dynread-deep /{b=$3} END{exit !(a!="" && b!="" && b <= 1.3*a)}'
+** S2.2 A dynamic read from VM code costs at most 1.2 us (baseline 2.44 us)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: timeout 300 "$EVAL_BIN" --load test/perf/shallow-binding-bench.el 2>&1 | awk '/^SB-BENCH dynread /{a=$3} END{exit !(a!="" && a <= 1.2)}'
+** S2.3 The locate-library regexp costs at most 4,000 us per match (baseline 6,099 us)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: timeout 300 "$EVAL_BIN" --load test/perf/shallow-binding-bench.el 2>&1 | awk '/^SB-BENCH regex /{a=$3} END{exit !(a!="" && a <= 4000)}'
+** S2.4 End to end: every standalone check and the binding semantics checks still pass after the read path change
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$EVAL_BIN" timeout 600 test/perf/standalone-checks.sh && timeout 300 "$EVAL_BIN" --load test/standalone-shallow-binding-check.el >/dev/null 2>&1
+
+* S3 Threads (Doc 214 merge)
+** S3.1 Per-thread dynamic bindings designed for feat/cl-threads (thread-local value slot per symbol, global value when unbound in the thread)
+pending
+** S3.2 feat/cl-threads BT smokes pass on the merged shallow-binding runtime
+pending
+** S3.3 End to end: Doc 214 ledger S1-S8 criteria that run on linux pass on the merged runtime
+pending

@@ -1562,6 +1562,18 @@ position and under `data-addr'."
 (defvar nelisp-standalone--inline-counter 0)
 (defvar nelisp-standalone--inline-stats nil)
 
+(defun nelisp-standalone--inline-clone-p (body)
+  "Non-nil when BODY makes syscall 56 (clone on x86_64).
+After clone the child runs the rest of the function on its new stack with
+the parent's frame pointer: a helper call there gave it a frame of its
+own, an inlined body reads and writes the parent's locals.  The Doc 199
+thread smokes all failed to spawn until such bodies were left alone.
+On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
+  (cond ((not (consp body)) nil)
+        ((and (eq (car body) 'syscall-direct) (eql (cadr body) 56)) t)
+        (t (or (nelisp-standalone--inline-clone-p (car body))
+               (nelisp-standalone--inline-clone-p (cdr body))))))
+
 (defun nelisp-standalone--inline-small-defuns (source)
   "SOURCE (a (seq FORM...) unit) with calls to small leaf defuns inlined."
   (if (not (and (member (nelisp-standalone--inline-level) '("1" "2")) (eq (car-safe source) 'seq)))
@@ -1598,7 +1610,9 @@ position and under `data-addr'."
                          (mapcar (lambda (form)
                                    (pcase form
                                      (`(defun ,name ,params . ,body)
-                                      `(defun ,name ,params ,@(mapcar #'expand body)))
+                                      (if (nelisp-standalone--inline-clone-p body)
+                                          form
+                                        `(defun ,name ,params ,@(mapcar #'expand body))))
                                      (_ form)))
                                  (cdr source)))))
           (push (list (hash-table-count cands) count) nelisp-standalone--inline-stats)
@@ -11005,9 +11019,16 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; N2 clause 2: collect and copy a typed snapshot before Lisp constructs
     ;; GNU-shaped rows. The allocator has no typed free-cell pools; their
     ;; truthful free count is zero (raw arena diagnostics remain separate).
+    ;; A Doc 199 worker keeps the pre-C-core answer (collect, then the
+    ;; arena counters): the GNU-shaped snapshot interns its field names and
+    ;; fills the shared typed-state block, both refused or racy off the main
+    ;; thread, and the worker's form failed (-1001 in the thread smokes).
     (defun bf_garbage_collect (func args env out)
       (let ((argc (m5_list_len args 0)))
-        (if (= argc 0) (bf_garbage_collect_snapshot env out)
+        (if (= argc 0)
+            (if (= (nl_sb_worker_p env) 1)
+                (seq (nl_gc_collect_from_recorded_roots 0) (bf_arena_stats out))
+              (bf_garbage_collect_snapshot env out))
           (bf_wrong_number_of_args func argc))))
     (defun bf_garbage_collect_snapshot (env out)
       (let* ((st (data-addr nl_gc_typed_state))
@@ -13878,8 +13899,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq
                   (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
                                             (nl_frame_push_sym1_ptr) scratch)
-                  (wf_bytecode_mark_dynamic frames canonical)
-                  (nl_bind_frame_fast frames canonical rooted-value))) 0)
+                  (if (= (nl_sb_bind env frames canonical rooted-value) 0) 0
+                    (seq
+                     (wf_bytecode_mark_dynamic frames canonical)
+                     (nl_bind_frame_fast frames canonical rooted-value))))) 0)
            (nl_root_release env mark) rc))))
     (defun wf_bytecode_unbind (frames n)
       (if (= n 0)
@@ -20323,17 +20346,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
                      (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
              (table (ptr-read-u64 frame 24)))
-        (seq
-         (nl_bind_frame_fast frames name value)
-         (if (or (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
-                 (if (= table 0) 0
-                   (if (= (nl_n4_captured_lexical_p frames name) 1) 0
-                     (/= (nl_ht_find_in table name) 0))))
-             (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
-               (let* ((names (alloc-bytes 32 8)))
-                 (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
-                      (record-slot-set frame 1 names) (wf_dirty) 1)))
-           1))))
+        ;; A formal binds dynamically only in dynamic-binding mode: under
+        ;; lexical-binding GNU 31.1 binds a parameter named after a special
+        ;; variable lexically.  TABLE (the declaration cache) is unused now.
+        (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
+            (if (= (nl_sb_bind env frames name value) 0) 1
+              (seq
+               (nl_bind_frame_fast frames name value)
+               (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
+                 (let* ((names (alloc-bytes 32 8)))
+                   (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
+                        (record-slot-set frame 1 names) (wf_dirty) 1)))))
+          (seq (nl_bind_frame_fast frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n4_bind_declared env frames name value)
@@ -40155,7 +40179,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (if (and (= (sexp-tag names) 7)
                (= (nl_val_tag (nl_cons_car_word names)) 7))
           (nl_n4_pop_repeat env names depth status)
-        (nl_n4_pop_names_raw env names depth status)))
+        (if (and (= (sexp-tag names) 7)
+                 (= (nl_val_tag (nl_cons_car_word names)) 8))
+            ;; Shallow binding: watchers see the value being restored; the
+            ;; restore itself happens in `nelisp_frame_pop'.
+            (let* ((e (nl_cons_car_ptr names)))
+              (seq (nl_n3_notify env (vector-ref-ptr e 0) (vector-ref-ptr e 1) 3)
+                   (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))
+          (nl_n4_pop_names_raw env names depth status))))
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
              (depth (sexp-int-unwrap (record-slot-ref-ptr frames 1)))
@@ -41817,7 +41848,105 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (if (= (nelisp_frame_stack_find_in_frame captured name) 0) 0
                   (if (= (nelisp_frame_binding_dynamic_p captured name) 1) 0 1))
               0)))))
+    ;; ---- Shallow binding (tools/ai/shallow-binding-progress.org) ----
+    ;; A dynamic binding writes the new value into the global mirror entry
+    ;; and records [NAME SAVED] (SAVED the previous value, or the env+64
+    ;; unbound marker) at the head of its frame's slot 1 name list; popping
+    ;; the frame writes SAVED back, most recent first.  No frame cell is
+    ;; created, so frame walks find nothing and readers get the mirror
+    ;; value -- the current dynamic value, as in GNU Emacs.  Entries with a
+    ;; buffer-local redirect or an alias slot, and bindings made inside a
+    ;; Doc 199 worker (which must not write the shared mirror), keep the
+    ;; frame-cell (deep) binding: nl_sb_bind answers -1 for them.
+    (defun nl_sb_dynamic_p (env frames name)
+      (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0) 1
+        (if (= (bf_declared_special_p (+ env 0) name) 1) 1
+          (nelisp_frame_local_special_p frames name))))
+    (defun nl_sb_worker_p (env)
+      (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+        (if (= (nl_thread_registry_find (+ env 0)) 0) 0 1)))
+    (defun nl_sb_plain_entry_p (entry)
+      (if (= entry 0) 1
+        (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
+          (if (> (record-slot-count entry) 5)
+              (if (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1 0)
+            1))))
+    ;; NAME and VALUE may be scratch views a lookup reuses, so they are
+    ;; copied before anything else runs.  No root-stack slot is reserved
+    ;; here: a parallel `let' keeps its not-yet-bound values just above the
+    ;; root-stack top while it binds them one by one, and a reservation
+    ;; overwrote the next binding's value (each variable got its
+    ;; predecessor's).  Scratch blocks, as the frame-cell binder uses.
+    (defun nl_sb_bind (env frames name value)
+      (if (= (nl_sb_worker_p env) 1) -1
+        (let* ((copies (alloc-bytes 64 8)))
+          (seq
+           (nl_sexp_clone_into name copies)
+           (nl_sexp_clone_into value (+ copies 32))
+           (if (= (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) copies)) 0) -1
+             (nl_sb_bind_plain env frames copies (+ copies 32)))))))
+    (defun nl_sb_bind_plain (env frames sym val)
+      (let* ((old (alloc-bytes 32 8)) (rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8)))
+        (seq
+         (if (= (nelisp_env_lkv_mirror (+ env 0) sym old 0) 0) 0
+           (nl_sexp_clone_into (+ env 64) old))
+         (let* ((box (nl_alloc_vector 2)))
+           (seq (nl_vector_set_slot box 0 sym) (nl_vector_set_slot box 1 old)
+                (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
+                (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)))
+         (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
+                         (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1))))
+           (seq (nelisp_cons_construct rec (record-slot-ref-ptr frame 1) cell)
+                (record-slot-set frame 1 cell)))
+         (nl_sb_set env sym val)
+         (wf_dirty)
+         0)))
+    ;; 1 when NAME's dynamic bindings are all shallow (mirror-held): a
+    ;; plain variable outside a worker.
+    (defun nl_sb_mirror_only_p (env name)
+      (if (= (nl_sb_worker_p env) 1) 0
+        (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) name))))
+    ;; Restore every shallow binding of the top frame of FRAMES (env+32),
+    ;; called by `nelisp_frame_pop' before the frame is dropped.
+    ;; Every frame pop passes here, so the common no-binding case reads raw
+    ;; words only: no box is materialised for the depth, frame or nil list.
+    (defun nl_sb_restore_top (frames)
+      (let* ((depth (sar (nelisp_frame_pop_depth_word frames) 2)))
+        (if (< depth 1) 0
+          (let* ((backing (nelisp_frame_slot_raw_word frames 0)))
+            (if (= (logand backing 1) 1) 0
+              (let* ((fw (nl_vector_slot_word backing (- depth 1))))
+                (if (= (logand fw 1) 1) 0
+                  (if (/= (ptr-read-u64 fw 0) 12) 0
+                    (if (< (record-slot-count fw) 2) 0
+                      (let* ((names (nelisp_frame_slot_raw_word fw 1)))
+                        (if (= (logand names 1) 1) 0
+                          (nl_sb_restore_list (- frames 32) names))))))))))))
+    ;; Write the mirror value slot in place when the entry exists.
+    (defun nl_sb_set (env sym val)
+      (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
+        (if (= entry 0)
+            (nelisp_env_setv_mirror_lazy (+ env 0) sym val (+ env 64))
+          (seq (record-slot-set entry 0 val) 0))))
+    (defun nl_sb_restore_list (env names)
+      (if (/= (sexp-tag names) 7) 0
+        (let* ((e (nl_cons_car_ptr names)))
+          (seq
+           (if (= (sexp-tag e) 8)
+               (nl_sb_set env (vector-ref-ptr e 0) (vector-ref-ptr e 1))
+             0)
+           (nl_sb_restore_list env (nl_cons_cdr_ptr names))))))
     (defun nl_n4_bind_declared (env frames name value)
+      (let* ((copies (alloc-bytes 64 8)))
+        (seq (nl_sexp_clone_into name copies)
+             (nl_sexp_clone_into value (+ copies 32))
+             (nl_n4_bind_declared_1 env frames copies (+ copies 32)))))
+    (defun nl_n4_bind_declared_1 (env frames name value)
+      (if (= (nl_sb_dynamic_p env frames name) 1)
+          (if (= (nl_sb_bind env frames name value) 0) 1
+            (nl_n4_bind_declared_deep env frames name value))
+        (nl_n4_bind_declared_deep env frames name value)))
+    (defun nl_n4_bind_declared_deep (env frames name value)
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
                       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
              (old (nelisp_frame_stack_find_in_frame frame name)))

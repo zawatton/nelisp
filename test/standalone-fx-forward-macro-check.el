@@ -19,6 +19,14 @@
 (defvar fx-fwd-check-before (fx-fwd-check-b-before))
 (defmacro fx-fwd-check-g (x) `(list 'macro ',x))
 
+;; A stub macro replaced by the real one (nemacs's bulk stubs expand to
+;; nil until the defining library loads): compiled code must not keep the
+;; stub's expansion, since the interpreter it stands in for re-expands.  M-x never reached the minibuffer when
+;; `read-extended-command-1' kept a stub `minibuffer-with-setup-hook'.
+(defmacro fx-fwd-check-stub (&rest _) nil)
+(defun fx-fwd-check-uses-stub (x) (let ((y (* x 2))) (fx-fwd-check-stub (+ y 1))))
+(defmacro fx-fwd-check-stub (form) form)
+
 ;; A call to a function defined later: compiled once the callee exists.
 (defun fx-fwd-check-c (x) (fx-fwd-check-d x))
 (defun fx-fwd-check-d (x) (* x 3))
@@ -35,6 +43,9 @@
   (funcall check (condition-case e (fx-fwd-check-a 5) (error e)) '(x 1))
   (funcall check fx-fwd-check-before 2)
   (funcall check (condition-case e (fx-fwd-check-b 5) (error e)) '(macro x))
+  ;; GNU's `load' expands eagerly and keeps the stub's nil; the NeLisp
+  ;; interpreter expands at each evaluation, and the VM must agree with it.
+  (funcall check (fx-fwd-check-uses-stub 3) (if (boundp 'nelisp--fx-table) 7 nil))
   (funcall check (fx-fwd-check-c 4) 12)
   (funcall check (fx-fwd-check-vm-p 'fx-fwd-check-c) t)
   (funcall check (fx-fwd-check-vm-p 'fx-fwd-check-a) t)

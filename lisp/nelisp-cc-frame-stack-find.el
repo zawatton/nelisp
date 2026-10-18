@@ -500,12 +500,17 @@
       ;; `record-slot-ref-ptr' on every call just to unwrap it right back
       ;; out with `sexp-int-unwrap' -- this call happens once per lexical
       ;; variable reference.
+      ;; Shallow binding: a dynamic binding of a plain variable lives in the
+      ;; mirror, never in a frame cell, so a dynamic lookup of one has
+      ;; nothing to find here (FRAMES-PTR is env+32; see `nl_sb_bind').
       (if (= (nelisp_frame_stack_find_valid_key name-ptr) 0)
           0
-        (nelisp_frame_stack_find_kind_descend
-         (record-slot-ref-ptr frames-ptr 0)
-         (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
-         name-ptr dynamic)))
+        (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
+            0
+          (nelisp_frame_stack_find_kind_descend
+           (record-slot-ref-ptr frames-ptr 0)
+           (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
+           name-ptr dynamic))))
 
     (defun nelisp_frame_stack_find_value (frames-ptr name-ptr)
       ;; A lexical binding remains authoritative even if a later declaration

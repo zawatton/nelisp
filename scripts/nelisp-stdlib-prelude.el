@@ -25056,6 +25056,8 @@ Defining it as a function compiles them again.")
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
+                (dolist (m (nelisp--fx-macros-used body))
+                  (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
                   (unless (memq name (gethash op nelisp--fx-callees))
                     (push name (gethash op nelisp--fx-callees)))))
@@ -25067,6 +25069,25 @@ Defining it as a function compiles them again.")
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table))))))))
+
+(defun nelisp--fx-macros-used (body)
+  "Macros named in operator position anywhere in BODY (before expansion).
+The compiled code holds their expansion as of compile time; the
+interpreter expands at each evaluation.  A library may install a stub
+macro first -- nemacs's bulk stubs make `minibuffer-with-setup-hook'
+expand to nil until minibuffer.el loads -- so redefining one of these
+recompiles its callers (`nelisp--fx-check-macro').  Macros that only
+appear inside another macro's expansion are not tracked."
+  (let ((seen nil) (todo (list body)))
+    (while todo
+      (let ((x (pop todo)))
+        (when (and (consp x) (not (eq (car x) 'quote)))
+          (when (and (symbolp (car x)) (macrop (car x)) (not (memq (car x) seen)))
+            (push (car x) seen))
+          (while (consp x)
+            (when (consp (car x)) (push (car x) todo))
+            (setq x (cdr x))))))
+    seen))
 
 (defun nelisp--fx-count ()
   "Number of compiled records registered so far (indices 0 .. count-1)."
@@ -25101,6 +25122,9 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
 ;; again, expanding the macro.  `defmacro' installs through
 ;; `fset', not `nl-afset', so both are watched.
 (defun nelisp--fx-check-macro (name)
+  ;; NAME is now a macro: either a function compiled code called, or a
+  ;; macro whose old expansion compiled code holds.  Either way its callers
+  ;; are compiled again against the current definition.
   (let ((callers (gethash name nelisp--fx-callees)))
     (when (and callers (macrop name))
       (remhash name nelisp--fx-callees)

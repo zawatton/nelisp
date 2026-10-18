@@ -30,6 +30,11 @@
   (funcall check 'callee (let ((sb-x 1)) (sb-read-x)) 1)
   (funcall check 'restored sb-x 0)
   (funcall check 'nested (let ((sb-x 1)) (list (let ((sb-x 2)) (sb-read-x)) (sb-read-x))) '(2 1))
+  ;; A parallel let binds several specials at once, each to its own value.
+  (funcall check 'parallel-let (let ((sb-x 1) (sb-y 2) (sb-unbound 3))
+                                 (list (sb-read-x) (sb-read 'sb-y) (sb-read 'sb-unbound)))
+           '(1 2 3))
+  (funcall check 'parallel-let-restored (list sb-x sb-y (sb-read 'sb-unbound)) '(0 global-y void))
   (funcall check 'let*-same-name (let* ((sb-x 1) (sb-x (+ sb-x 10))) (sb-read-x)) 11)
   (funcall check 'restored-2 sb-x 0)
   ;; A variable with no value before the binding has none after it.

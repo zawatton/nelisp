@@ -124,6 +124,13 @@
       ;; bootstrap-installed Sexp::Vector(BACKING) / Sexp::Int(DEPTH)
       ;; shape.  No tag-check here because the only legal frames-
       ;; record shape meets the precondition.
+      ;; Shallow binding: put back the values the frame's dynamic
+      ;; bindings saved (FRAMES-PTR is env+32).
+      (if (< 0 (sar (nelisp_frame_pop_depth_word frames-ptr) 2))
+          (nelisp_frame_pop_inner_sb
+           frames-ptr scratch-slot (nl_sb_restore_top frames-ptr) 0)
+        0))
+    (defun nelisp_frame_pop_inner_sb (frames-ptr scratch-slot _restored _pad)
       (if (< 0 (sar (nelisp_frame_pop_depth_word frames-ptr) 2))
           (nelisp_frame_pop_inner
            frames-ptr
