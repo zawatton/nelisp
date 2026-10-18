@@ -12749,7 +12749,7 @@ eval applyfn.")
                           (seq (nl_cons_stash_void_function env fn)
                                (nl_root_release env mark)
                                (nl_abi_fail 1 0))))
-                    (wf_mapcar_slow_w args env 0))))))))
+                    (wf_mapcar_slow_w args env 0)))))))))
     (defun wf_mapcar (args env out)
       (nl_abi_word_to_rc (wf_mapcar_w args env 0) out)))
   "Segment G1 native fast paths for `nth'/`nthcdr'/`last'/`butlast'/
