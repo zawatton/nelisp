@@ -14027,9 +14027,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (wf_bytecode_copy event (nl_cons_car_ptr unwinds))
                (wf_bytecode_copy tail-slot (nl_cons_cdr_ptr unwinds))
                (wf_bytecode_copy unwinds tail-slot)
-               (setq kind (sexp-int-unwrap (nl_cons_car_ptr event)))
-               (wf_bytecode_copy payload
-                                 (nl_cons_car_ptr (nl_cons_cdr_ptr event)))
+               (if (= (wf_bytecode_w_lean_event_p event) 1)
+                   (seq (wf_bytecode_w_lean_unbind env event payload)
+                        (setq kind 3))
+                 (seq (setq kind (sexp-int-unwrap (nl_cons_car_ptr event)))
+                      (wf_bytecode_copy payload
+                                        (nl_cons_car_ptr (nl_cons_cdr_ptr event)))))
+               (if (= kind 3) 0
                (if (= kind 0)
                    (seq (if (> remaining 0)
                             (wf_bytecode_unbind (+ env 32) 1) 0)
@@ -14039,7 +14043,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (if (= (wf_bytecode_unwind_cleanup env payload) 0)
                          0
                        (setq current-failed 1))
-                   (setq current-failed 1)))
+                   (setq current-failed 1))))
                ;; A replacement exit must search still-active handlers before
                ;; consuming any enclosing cleanup event.
                (if (= current-failed 0)
@@ -14967,7 +14971,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (record-slot-ref-ptr func 1)
                          (record-slot-ref-ptr func 2)
                          (ptr-read-u64 (record-slot-ref-ptr func 3) 8)
-                         env out 0 argc maxargs rest frame 0 0)))))))))))
+                         env out 0 argc maxargs rest frame 0 0 0)))))))))))
     (defun wf_bytecode_function (func args env out)
       (let* ((argc (bf_byte_code_arg_count args 0))
              (descriptor (record-slot-ref-ptr func 0))
@@ -15006,7 +15010,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                     initial-argc initial-maxargs initial-rest)
       (wf_bytecode_execute_frame code constants (ptr-read-u64 depth-p 8) env out
                                 initial-args initial-argc initial-maxargs
-                                initial-rest 0 0 0))
+                                initial-rest 0 0 0 0))
     ;; ---- Word frame (tools/ai/bytecode-word-progress.org) ----
     ;; The operand stack of an activation is the data of a fresh Lisp
     ;; vector of 64-bit WORDs held in a root-stack slot, as the word VM's
@@ -15191,11 +15195,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (nl_record_slot_word func 2)
                          (sar (nl_record_slot_word func 3) 2)
                          env out 0 argc maxargs rest 0
-                         (+ mem (* first 8)) outw)))))))))))
+                         (+ mem (* first 8)) outw 0)))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
-      ;; Dynamic-binding bytecode: bind the formals to the argument views
-      ;; (staged as a rooted frame for `wf_bytecode_bind_argframe'), run the
-      ;; body with no stack arguments, unbind.
+      ;; Dynamic-binding bytecode: the callee activation binds FORMALS to the
+      ;; argument words itself (`wf_bytecode_w_bind_formals').
       (let* ((shape (wf_bytecode_arglist_shape formals 0 0 0)))
         (if (< shape 0)
             (nl_apply_stash_invalid_function env func)
@@ -15204,21 +15207,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (rest (/ shape 4294967296)))
             (if (or (< argc required) (and (= rest 0) (> argc maximum)))
                 (bf_wrong_number_of_args func argc)
-              (let* ((mark (nl_root_mark env))
-                     (st (wf_bytecode_w_stage env mem first argc))
-                     (bound (if (= st 0) -2
-                              (wf_bytecode_bind_argframe env formals st argc))))
-                (seq
-                 (nl_root_release env mark)
-                 (if (= bound -2)
-                     (wf_bytecode_root_exhausted)
-                   (let* ((rc (if (< bound 0) 1
-                                (wf_bytecode_execute_frame
-                                 (nl_record_slot_word func 1)
-                                 (nl_record_slot_word func 2)
-                                 (sar (nl_record_slot_word func 3) 2)
-                                 env out 0 0 0 0 0 0 outw))))
-                     (seq (if (< bound 0) 0 (wf_bytecode_unbind (+ env 32) bound)) rc))))))))))
+              (wf_bytecode_execute_frame
+               (nl_record_slot_word func 1)
+               (nl_record_slot_word func 2)
+               (sar (nl_record_slot_word func 3) 2)
+               env out 0 argc 0 0 0 (+ mem (* first 8)) outw formals))))))
     (defun wf_bytecode_call (env mem sp argc bx)
       ;; Bcall.  A bytecode callee runs on the caller's argument words
       ;; directly; anything else goes through the shared interpreted
@@ -15358,9 +15351,81 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (nl_root_release env mark2)
            rc)))
        (t 1)))
+    ;; ---- Lean dynamic binding ----
+    ;; A plain special (no alias, no buffer-local redirect) outside a Doc 199
+    ;; worker is shallow-bound: the mirror entry's value word is the current
+    ;; value.  The interpreter binds one by recording (NAME . SAVED) on the
+    ;; activation's own unwind list and writing the new word into the entry;
+    ;; unwinding writes SAVED back.  No env frame, no [NAME SAVED] record,
+    ;; and no 32-byte copies.  Every exit of an activation unwinds its list,
+    ;; so the binding never outlives it.
+    (defun wf_bytecode_w_lean_bind (env name valw unwinds tmp)
+      ;; 0 when bound; 1 when NAME needs the general binder (nothing done).
+      (if (= (logand name 1) 1) 1
+        (if (/= (ptr-read-u64 name 0) 4) 1
+          (if (= (bf_keyword_raw name) 1) 1
+            (if (= (nl_sb_worker_p env) 1) 1
+              (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+                (if (= entry 0) 1
+                  (if (= (nl_sb_plain_entry_p entry) 0) 1
+                    (let* ((saved (nl_record_slot_word entry 0)))
+                      (seq
+                       (nelisp_cons_construct (wf_bytecode_w_cons name saved tmp) unwinds unwinds)
+                       (wf_dirty)
+                       (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 entry 8) 32) 0 valw)
+                       0))))))))))
+    (defun wf_bytecode_w_lean_event_p (event)
+      (let* ((carw (nl_cons_car_word event)))
+        (if (= carw 0) 0
+          (if (= (logand carw 1) 1) 0
+            (if (= (ptr-read-u64 carw 0) 4) 1 0)))))
+    (defun wf_bytecode_w_lean_unbind (env event scratch)
+      (let* ((name (nl_cons_car_word event))
+             (saved (nl_cons_cdr_word event))
+             (entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+        (seq (wf_dirty)
+             (if (= entry 0)
+                 (nl_sb_set env name (wf_bytecode_w_view saved scratch))
+               (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 entry 8) 32) 0 saved))
+             0)))
+    (defun wf_bytecode_w_bind_formals (env formals args argc unwinds nil-unwinds tmp wtmp)
+      ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
+      ;; at ARGS (arity already checked) as events of this activation.
+      ;; Answers 2 * (frame bindings made) + (1 if a binder signalled).
+      (let* ((params formals) (index 0) (bound 0) (stop 0) (rc 0) (k 0) (name 0))
+        (seq
+         (while (if (= stop 0) (wf_bytecode_w_consp params) 0)
+           (seq
+            (setq name (ptr-read-u64 (ptr-read-u64 params 8) 0))
+            (setq params (ptr-read-u64 (ptr-read-u64 params 8) 8))
+            (if (= (wf_bytecode_optional_marker_p name) 1)
+                0
+              (seq
+               (if (= (wf_bytecode_rest_marker_p name) 1)
+                   (seq (ptr-write-u64 wtmp 0 3)
+                        (setq k (- argc 1))
+                        (while (>= k index)
+                          (seq (ptr-write-u64
+                                wtmp 0 (wf_bytecode_w_cons (ptr-read-u64 (+ args (* k 8)) 0)
+                                                           (ptr-read-u64 wtmp 0) tmp))
+                               (setq k (- k 1))))
+                        (setq name (ptr-read-u64 (ptr-read-u64 params 8) 0))
+                        (setq stop 1))
+                 (if (< index argc)
+                     (seq (ptr-write-u64 wtmp 0 (ptr-read-u64 (+ args (* index 8)) 0))
+                          (setq index (+ index 1)))
+                   (ptr-write-u64 wtmp 0 3)))
+               (if (= (wf_bytecode_w_lean_bind env name (ptr-read-u64 wtmp 0) unwinds tmp) 0)
+                   0
+                 (if (= (wf_bytecode_varbind
+                         env name (wf_bytecode_w_view (ptr-read-u64 wtmp 0) tmp)) 0)
+                     (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                          (setq bound (+ bound 1)))
+                   (seq (setq rc 1) (setq stop 1))))))))
+         (+ (* bound 2) rc))))
     (defun wf_bytecode_execute_frame (code constants depth env out initial-args
                                      initial-argc initial-maxargs initial-rest
-                                     initial-frame initial-words outw)
+                                     initial-frame initial-words outw formals)
       ;; CODE and CONSTANTS are views (heap words); DEPTH is the stack depth.
       ;; Arguments come from exactly one of INITIAL-WORDS (the caller's word
       ;; frame), INITIAL-FRAME (a rooted 32-byte frame) or INITIAL-ARGS (a
@@ -15447,7 +15512,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (setq arg-cursor (ptr-read-u64 (ptr-read-u64 arg-cursor 8) 8)))))
                   (ptr-write-u64 dst 0 3)))
               (setq arg-index (+ arg-index 1)))))
-         (if (and (= done 0) (= initial-slots 0)
+         ;; A dynamic-binding function binds its formals as events of
+         ;; this activation, so every exit below unbinds them.
+         (if (if (= done 0) (> formals 0) 0)
+             (let* ((r (wf_bytecode_w_bind_formals env formals initial-words initial-argc
+                                                   unwinds nil-unwinds bt resw)))
+               (seq (setq bindings (sar r 1))
+                    (ptr-write-u64 resw 0 3)
+                    (if (= (logand r 1) 1) (setq done 4) 0)))
+           0)
+         (if (and (= done 0) (= initial-slots 0) (= formals 0)
                   (= (wf_bytecode_fixnum_fast_p code-data code-len constants) 1))
              (seq (wf_bytecode_fixnum_fast code-data code-len constants depth out)
                   (setq done 3)))
@@ -15640,12 +15714,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((= base 24)
                       (if (if (< operand 0) 1 (if (< operand nconst) 0 1))
                           (seq (setq bad-op raw) (setq done 2))
-                        (if (= (wf_bytecode_varbind
+                        (if (= (wf_bytecode_w_lean_bind
                                 env (ptr-read-u64 (+ cdata (* operand 8)) 0)
-                                (wf_bytecode_w_view (ptr-read-u64 top 0) bx)) 0)
-                            (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
-                                 (setq sp (- sp 1)) (setq bindings (+ bindings 1)))
-                          (setq done 4))))
+                                (ptr-read-u64 top 0) unwinds bt) 0)
+                            (setq sp (- sp 1))
+                          (if (= (wf_bytecode_varbind
+                                  env (ptr-read-u64 (+ cdata (* operand 8)) 0)
+                                  (wf_bytecode_w_view (ptr-read-u64 top 0) bx)) 0)
+                              (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                                   (setq sp (- sp 1)) (setq bindings (+ bindings 1)))
+                            (setq done 4)))))
                      ((= base 16)
                       (if (if (< operand 0) 1 (if (< operand nconst) 0 1))
                           (seq (setq bad-op raw) (setq done 2))
