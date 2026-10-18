@@ -222,6 +222,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Returns result-slot.
     (defun nl_alloc_str (bytes-ptr len result-slot)
       (nl_alloc_str_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_str_w returns the result WORD; nl_alloc_str keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_str_w (bytes-ptr len _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_str bytes-ptr len s) s)))
 
     ;; Raw-byte counterpart used by standalone conversion builtins.
     (defun nl_alloc_unibyte_str_pos (bytes-ptr n result-slot)
@@ -552,6 +556,11 @@ lifetime of a Sexp value.  No `let' binding needed.")
       ;; it lazily in a checked root slot; this keeps intern hits allocation
       ;; free and avoids retaining an unrooted 32-byte scratch box here.
       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_symbol_w returns the result WORD; nl_alloc_symbol keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_symbol_w (bytes-ptr len _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_symbol bytes-ptr len s)
+             (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))))))
 
     ;; The miss-only heap fallback allocates before rereading the rooted input
     ;; string. A GC during `alloc-bytes' may move its byte buffer.
@@ -901,7 +910,11 @@ helper threads the runtime value through without any `let' binding.")
 
     (defun nl_alloc_unibyte_mut_str (cap result-slot)
       (nl_alloc_unibyte_mut_str_pos
-       (if (< cap 0) 0 cap) result-slot)))
+       (if (< cap 0) 0 cap) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_unibyte_mut_str_w returns the result WORD; nl_alloc_unibyte_mut_str keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_unibyte_mut_str_w (cap _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_unibyte_mut_str cap s) s))))
   "AOT direct-symbol source for `nl_alloc_mut_str'.
 
 Single `(seq DEFUN ...)' manifest exporting four symbols:

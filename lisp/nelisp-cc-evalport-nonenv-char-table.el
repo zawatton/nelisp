@@ -105,6 +105,10 @@
         (if (= tag 9)
             (nl_ct_get_box (ptr-read-u64 (+ arg 8) 0) idx out)
           1)))
+    ;; Doc 215 builtin word ABI: nl_char_table_get_raw_w returns the result WORD; nl_char_table_get_raw keeps the direct slot-writing form (hot leaf).
+    (defun nl_char_table_get_raw_w (arg idx _pad)
+      (let* ((s (alloc-bytes 32 8)) (rc (nl_char_table_get_raw arg idx s)))
+        (if (= rc 0) (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))) (extern-call nl_abi_fail rc 0))))
     ;; Merge entry P with its right / left neighbour when adjacent and `eq'.
     (defun nl_ct_coalesce (box p)
       (let* ((eptr (ptr-read-u64 (+ box 64) 0))
@@ -206,6 +210,10 @@
                  (nl_sexp_clone_into val out)
                  0)
           1)))
+    ;; Doc 215 builtin word ABI: nl_char_table_set_raw_w returns the result WORD; nl_char_table_set_raw keeps the direct slot-writing form (hot leaf).
+    (defun nl_char_table_set_raw_w (arg idx val _pad)
+      (let* ((s (alloc-bytes 32 8)) (rc (nl_char_table_set_raw arg idx val s)))
+        (if (= rc 0) (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))) (extern-call nl_abi_fail rc 0))))
     (defun nl_char_table_set_range_raw (arg from to val out)
       (let* ((tag (nelisp_ptr_read_u8 arg 0)))
         (if (= tag 9)

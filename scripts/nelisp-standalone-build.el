@@ -8271,15 +8271,27 @@ leave symbols unresolved at link time."
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
          1)))
-    (defun wf_numeric_marker_value (value out check)
+    ;; Doc 215 builtin word ABI: wf_numeric_marker_value_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value keeps the (rc, OUT) ABI.
+    (defun wf_numeric_marker_value_w (value _pad check)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (wf_numeric_marker_p value) 1)
           (if (= (sexp-tag (record-slot-ref-ptr value 0)) 0)
               (wf_numeric_detached_marker)
             (seq (record-slot-ref value 1 out) 0))
         (if (and (= check 1) (= (wf_num_tag_ok (sexp-tag value)) 0))
             (bf_wrong_type_number_or_marker value)
-          (seq (wf_copy32 out value) 0))))
-    (defun wf_numeric_marker_copy (args env out)
+          (seq (wf_copy32 out value) 0)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_numeric_marker_value (value out check)
+      (nl_abi_word_to_rc (wf_numeric_marker_value_w value 0 check) out))
+    ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
+    (defun wf_numeric_marker_copy_w (args env _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (nl_val_tag args) 7)
           (let* ((value (nl_root_reserve env)) (tail (nl_root_reserve env))
                  (rc (wf_numeric_marker_value_word (nl_cons_car_word args) value 1)))
@@ -8288,14 +8300,22 @@ leave symbols unresolved at link time."
                     (seq (nelisp_cons_construct value tail out) 0)
                   1)
               rc))
-        (seq (wf_word_store_out out args) 0)))
+        (seq (wf_word_store_out out args) 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_numeric_marker_copy (args env out)
+      (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
     (defun wf_numeric_marker_relation (a b mode)
       (cond ((= mode 1) (wf_num_lt a b))
             ((= mode 2) (wf_num_gt a b))
             ((= mode 3) (wf_num_le a b))
             ((= mode 4) (wf_num_ge a b))
             (t (wf_num_eq a b))))
-    (defun wf_numeric_marker_compare (args env mode out)
+    ;; Doc 215 builtin word ABI: wf_numeric_marker_compare_w returns the result WORD (0 = signal stashed); wf_numeric_marker_compare keeps the (rc, OUT) ABI.
+    (defun wf_numeric_marker_compare_w (args env mode _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       ;; GNU comparisons coerce BOTH markers in the current pair before type
       ;; validation. They do not visit later pairs after a false comparison,
       ;; and a unary comparison returns t even for a detached marker.
@@ -8318,7 +8338,11 @@ leave symbols unresolved at link time."
                            (if (= mode 5) (wf_write_t out) (wf_write_nil out))))) 0)
              (nl_root_release env mark)
              rc))
-        (wf_write_t out)))
+        (wf_write_t out))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_numeric_marker_compare (args env mode out)
+      (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
     (defun wf_argval (args n) (ptr-read-u64 (wf_arg_ptr args n) 8))
     ;; Doc 190 Phase A: tag 13 (Bignum) has NO stable pointer at offset 8
     ;; (that word is the sign, 0/1 -- almost always 0) -- the generic
@@ -8612,9 +8636,15 @@ leave symbols unresolved at link time."
     (defun wf_copy32 (dst_ptr src)
       (seq (ptr-write-u64 dst_ptr 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst_ptr 8 (ptr-read-u64 src 8))
            (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)) 0))
+    ;; Doc 215 builtin word ABI: wf_write_int_w returns the result WORD (0 = signal stashed); wf_write_int keeps the (rc, OUT) ABI.
+    (defun wf_write_int_w (_pad v)
+      (if (if (< v -2305843009213693952) 1 (if (> v 2305843009213693951) 1 0))
+          (let* ((s (alloc-bytes 32 8)))
+            (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
+                 (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
+        (nl_imm_int v)))
     (defun wf_write_int (out v)
-      (seq (ptr-write-u64 out 0 2) (ptr-write-u64 out 8 v)
-           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+      (nl_abi_word_to_rc (wf_write_int_w 0 v) out))
     ;; Doc 187: `wf_write_int' ALWAYS returns 0 (its own `seq' ends in 0), so
     ;; `(wf_write_int out (wf_sum args 0))' would unconditionally write
     ;; whatever `wf_sum' returned into OUT and report rc=0 "ok" -- even when
@@ -8645,17 +8675,21 @@ leave symbols unresolved at link time."
       (if (= (ptr-read-u64 268435472 0) 0)
           (wf_write_int out v)
         1))
+    ;; Doc 215 builtin word ABI: wf_write_t_w returns the result WORD (0 = signal stashed); wf_write_t keeps the (rc, OUT) ABI.
+    (defun wf_write_t_w (_pad)
+      7)
     (defun wf_write_t (out)
-      (seq (ptr-write-u64 out 0 1) (ptr-write-u64 out 8 0)
-           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+      (nl_abi_word_to_rc (wf_write_t_w 0) out))
+    ;; Doc 215 builtin word ABI: wf_write_nil_w returns the result WORD (0 = signal stashed); wf_write_nil keeps the (rc, OUT) ABI.
+    (defun wf_write_nil_w (_pad)
+      3)
     (defun wf_write_nil (out)
-      (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+      (nl_abi_word_to_rc (wf_write_nil_w 0) out))
+    ;; Doc 215 builtin word ABI: wf_cons_int_w returns the result WORD (0 = signal stashed); wf_cons_int keeps the (rc, OUT) ABI.
+    (defun wf_cons_int_w (v rest _pad)
+      (nelisp_cons_construct_w (nl_imm_int v) rest 0))
     (defun wf_cons_int (v rest out)
-      (let* ((slot (alloc-bytes 32 8)))
-        (seq (wf_write_int slot v)
-             (nelisp_cons_construct slot rest out)
-             0)))
+      (nl_abi_word_to_rc (wf_cons_int_w v rest 0) out))
     ;; Env-bridge CAPTURE (Doc 17 §11.2 Bridge 1) for the heap-v0 cold-loader.
     ;; Reads the codec's env-root-manifest 5 roots from the LIVE recorded EvalCtx
     ;; (env = nl_gc_loop_ctx+64, the GC-recorded frame-0 context) and returns the
@@ -8868,7 +8902,11 @@ leave symbols unresolved at link time."
                                   (if (< value 0) 0 value))
                                  (nl_seq2 (nl_gc_debt_refresh_limit) 0)))
                             0))))))))))))
-    (defun bf_debug_switch (args out)
+    ;; Doc 215 builtin word ABI: bf_debug_switch_w returns the result WORD (0 = signal stashed); bf_debug_switch keeps the (rc, OUT) ABI.
+    (defun bf_debug_switch_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
           (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
@@ -8970,7 +9008,11 @@ leave symbols unresolved at link time."
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 0) s1 out)
-            0))))
+            0)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_debug_switch (args out)
+      (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
     ;; percentage, 100 or more meaning the next allocation check or `while'
     ;; back edge collects.  The larger of two readings: the debt (bytes
@@ -8982,7 +9024,11 @@ leave symbols unresolved at link time."
     ;; middle of the next command; an explicit collection re-arms both
     ;; triggers (`nl_gc_explicit_rearm').  Native under clause 2 (GC entry):
     ;; it reads collector state with no Lisp form.
-    (defun bf_gc_pressure (out)
+    ;; Doc 215 builtin word ABI: bf_gc_pressure_w returns the result WORD (0 = signal stashed); bf_gc_pressure keeps the (rc, OUT) ABI.
+    (defun bf_gc_pressure_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((st (data-addr nl_gc_stats))
              (lim (ptr-read-u64 st 8))
              (debt (if (if (< (ptr-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
@@ -8996,8 +9042,16 @@ leave symbols unresolved at link time."
                          0)
                        (/ (* (- now base) 100) (- mark base))
                      0)))
-        (wf_write_int out (if (< debt grow) grow debt))))
-    (defun bf_arena_stats (out)
+        (wf_write_int out (if (< debt grow) grow debt)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_gc_pressure (out)
+      (nl_abi_word_to_rc (bf_gc_pressure_w 0) out))
+    ;; Doc 215 builtin word ABI: bf_arena_stats_w returns the result WORD (0 = signal stashed); bf_arena_stats keeps the (rc, OUT) ABI.
+    (defun bf_arena_stats_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((bump (ptr-read-u64 268435456 0))
              (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
              (nil-slot (alloc-bytes 32 8))
@@ -9028,7 +9082,11 @@ leave symbols unresolved at link time."
          (wf_cons_int bump s3 s2)
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_stats (out)
+      (nl_abi_word_to_rc (bf_arena_stats_w 0) out))
     ;; flat-arena spike step 2 (READ-ONLY): full multi-chunk heap walk at
     ;; native speed.  Walks every chunk in the descriptor chain, and within
     ;; each chunk follows the [header][object] BLOCK_TOTAL sequence from the
@@ -9065,7 +9123,11 @@ leave symbols unresolved at link time."
         (nl_seq2 (bf_arena_wv_chunk chunk cb cl cf cby cok)
                  (bf_arena_wv_chunks (ptr-read-u64 (+ chunk 48) 0)
                                      cb cl cf cby cok))))
-    (defun bf_arena_walk_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_walk_verify_w returns the result WORD (0 = signal stashed); bf_arena_walk_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_walk_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cb (alloc-bytes 8 8)) (cl (alloc-bytes 8 8)) (cf (alloc-bytes 8 8))
              (cby (alloc-bytes 8 8)) (cok (alloc-bytes 8 8))
              (nil-slot (alloc-bytes 32 8))
@@ -9082,7 +9144,11 @@ leave symbols unresolved at link time."
          (wf_cons_int (ptr-read-u64 cf 0) s3 s2)
          (wf_cons_int (ptr-read-u64 cl 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cb 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_walk_verify (out)
+      (nl_abi_word_to_rc (bf_arena_walk_verify_w 0) out))
     ;; flat-arena spike step 3a (READ-ONLY source): the bulk-copy mechanic
     ;; -- the "memcpy" half of memcpy+relocate.  Copy chunk-0's live region
     ;; [data-start, base+cursor) into a fresh large-object buffer (8-byte
@@ -9093,7 +9159,11 @@ leave symbols unresolved at link time."
     ;; cursor / used are snapshot BEFORE the dest + scratch allocs, so the
     ;; copied range excludes them.  Multi-chunk copy + the pointer-swizzle
     ;; pass (step 3b) and file emit are deferred.
-    (defun bf_arena_dump_copy_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_dump_copy_verify_w returns the result WORD (0 = signal stashed); bf_arena_dump_copy_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_dump_copy_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -9116,7 +9186,11 @@ leave symbols unresolved at link time."
          (wf_cons_int dest nil-slot s2)
          (wf_cons_int mism s2 s1)
          (wf_cons_int slen s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_dump_copy_verify (out)
+      (nl_abi_word_to_rc (bf_arena_dump_copy_verify_w 0) out))
     ;; flat-arena spike step 3b-i (root-reachability precondition for the
     ;; pointer swizzle): prove the recorded root set reaches the whole live
     ;; object set, so a from-roots per-type walk that records pointer fields
@@ -9313,7 +9387,11 @@ leave symbols unresolved at link time."
         (if (if (< addr ib) 0 (if (< addr ie) 1 0))
             (+ span (- addr ib))
           -1)))
-    (defun bf_arena_image_root_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_image_root_verify_w returns the result WORD (0 = signal stashed); bf_arena_image_root_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_image_root_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -9333,7 +9411,11 @@ leave symbols unresolved at link time."
          (wf_cons_int (nl_img_off ubox sstart slen ib ie) nil-slot s2)
          (wf_cons_int (nl_img_off fbox sstart slen ib ie) s2 s1)
          (wf_cons_int (nl_img_off gbox sstart slen ib ie) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_image_root_verify (out)
+      (nl_abi_word_to_rc (bf_arena_image_root_verify_w 0) out))
     ;; flat-arena spike step 4-boot (table-driven load): the boot loader copies
     ;; the regions, then relocates with a flat RELOCATION TABLE -- no per-type
     ;; graph walk on load.  `bf_arena_dump_table_verify' demonstrates the whole
@@ -9345,7 +9427,11 @@ leave symbols unresolved at link time."
     ;; loaded image is well-formed.  Returns (TABLE-LEN OUT-OF-REGION BLOCKS
     ;; WELLFORMED): OUT-OF-REGION 0 + WELLFORMED 1 means the table fully
     ;; describes the relocation and the table-driven load rebuilds a sound arena.
-    (defun bf_arena_force_grow_smoke (out)
+    ;; Doc 215 builtin word ABI: bf_arena_force_grow_smoke_w returns the result WORD (0 = signal stashed); bf_arena_force_grow_smoke keeps the (rc, OUT) ABI.
+    (defun bf_arena_force_grow_smoke_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((chunk (ptr-read-u64 268436168 0))
              (cursor-addr (if (= chunk (ptr-read-u64 268436160 0))
                               268435456
@@ -9358,7 +9444,11 @@ leave symbols unresolved at link time."
          (setq p (alloc-bytes 64 8))
          (if (= p 0)
              (wf_write_int out 0)
-           (bf_arena_stats out)))))
+           (bf_arena_stats out))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_force_grow_smoke (out)
+      (nl_abi_word_to_rc (bf_arena_force_grow_smoke_w 0) out))
     ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
     ;; in `nelisp_eval_call').  Called by every primitive that installs a box
     ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
@@ -9427,11 +9517,17 @@ leave symbols unresolved at link time."
     ;; layout exactly (cap/ptr/len -> sign/ptr/limb-count).  (Doc 190 Phase
     ;; A originally, moved from the reader-only bignum-helpers group to
     ;; core for Phase B -- see this block's own header comment above.)
+    ;; Doc 215 builtin word ABI: nl_bignum_write_w returns the result WORD (0 = signal stashed); nl_bignum_write keeps the (rc, OUT) ABI.
+    (defun nl_bignum_write_w (sign limb_ptr limb_count _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (ptr-write-u8  s 0  13)
+             (ptr-write-u64 s 8  sign)
+             (ptr-write-u64 s 16 limb_ptr)
+             (ptr-write-u64 s 24 limb_count)
+             s)))
+    ;; Old callers may use the returned slot pointer, so the adapter keeps it.
     (defun nl_bignum_write (sign limb_ptr limb_count result_slot)
-      (seq (ptr-write-u8  result_slot 0  13)
-           (ptr-write-u64 result_slot 8  sign)
-           (ptr-write-u64 result_slot 16 limb_ptr)
-           (ptr-write-u64 result_slot 24 limb_count)
+      (seq (nl_abi_word_to_rc (nl_bignum_write_w sign limb_ptr limb_count 0) result_slot)
            result_slot))
     ;; Reconstruct a plain Sexp::Int (tag 2) from a <=2-limb magnitude and
     ;; SIGN.  Only called once `nl_bignum_mag_le_bound' has already proven
@@ -9440,11 +9536,14 @@ leave symbols unresolved at link time."
     ;; is not routed through Doc 187's checked `-' (the magnitude is
     ;; already proven <= 2^61, far short of the 2^63 two's-complement
     ;; limit).  (Doc 190 Phase A originally, moved to core for Phase B.)
-    (defun nl_bignum_write_int (limb_ptr limb_count sign result_slot)
+    ;; Doc 215 builtin word ABI: nl_bignum_write_int_w returns the result WORD (0 = signal stashed); nl_bignum_write_int keeps the (rc, OUT) ABI.
+    (defun nl_bignum_write_int_w (limb_ptr limb_count sign _pad)
       (let* ((lo (if (> limb_count 0) (ptr-read-u32 limb_ptr 0) 0))
              (hi (if (> limb_count 1) (ptr-read-u32 limb_ptr 4) 0))
              (mag (logior lo (shl hi 32))))
-        (wf_write_int result_slot (if (= sign 1) (- 0 mag) mag))))
+        (wf_write_int_w 0 (if (= sign 1) (- 0 mag) mag))))
+    (defun nl_bignum_write_int (limb_ptr limb_count sign result_slot)
+      (nl_abi_word_to_rc (nl_bignum_write_int_w limb_ptr limb_count sign 0) result_slot))
     ;; Canonical Bignum-or-Int write, DEMOTING to a plain Sexp::Int
     ;; whenever the magnitude fits the fixnum bound for SIGN (Doc 190 §2's
     ;; contraction rule) -- the single choke point every arithmetic result
@@ -9453,14 +9552,15 @@ leave symbols unresolved at link time."
     ;; `nl_bignum_write_int'/`nl_bignum_write'.  ALWAYS returns 0 (matching
     ;; every other arithmetic dispatch arm's success convention in this
     ;; file -- `nl_bignum_write' alone would return a nonzero pointer).
-    (defun nl_bignum_finish (sign limb_ptr limb_count result_slot)
+    ;; Doc 215 builtin word ABI: nl_bignum_finish_w returns the result WORD (0 = signal stashed); nl_bignum_finish keeps the (rc, OUT) ABI.
+    (defun nl_bignum_finish_w (sign limb_ptr limb_count _pad)
       (let* ((bound_hi (if (= sign 1) 536870912 536870911))
              (bound_lo (if (= sign 1) 0 4294967295)))
-        (seq
-         (if (= (nl_bignum_mag_le_bound limb_ptr limb_count bound_hi bound_lo) 1)
-             (nl_bignum_write_int limb_ptr limb_count sign result_slot)
-           (nl_bignum_write sign limb_ptr limb_count result_slot))
-         0)))
+        (if (= (nl_bignum_mag_le_bound limb_ptr limb_count bound_hi bound_lo) 1)
+            (nl_bignum_write_int_w limb_ptr limb_count sign 0)
+          (nl_bignum_write_w sign limb_ptr limb_count 0))))
+    (defun nl_bignum_finish (sign limb_ptr limb_count result_slot)
+      (nl_abi_word_to_rc (nl_bignum_finish_w sign limb_ptr limb_count 0) result_slot))
     ;; Ripple-carry magnitude add, LSB-first, N limbs (caller passes
     ;; N = `nl_bignum_addsub_bound' or the exact same-sign extent needed).
     ;; A_PTR/B_PTR may be shorter than N (the missing high limbs read as 0)
@@ -9600,11 +9700,12 @@ leave symbols unresolved at link time."
     ;; back to a fixnum when the magnitude re-fits -- Doc 190 §2).
     ;; LIST_PTR is a Cons view or a cdr WORD (an immediate ends the list).
     ;; A fixnum element is read from its WORD; only a boxed one gets a view.
-    (defun wf_sum (list_ptr acc out)
-      (if (= (logand list_ptr 1) 1) (wf_write_int out acc)
+    ;; Doc 215 builtin word ABI: wf_sum_w returns the result WORD (0 = signal stashed); wf_sum keeps the (rc, OUT) ABI.
+    (defun wf_sum_w (list_ptr acc _pad)
+      (if (= (logand list_ptr 1) 1) (wf_write_int_w 0 acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
         (if (= (logand (nl_cons_car_word list_ptr) 3) 1)
-          (wf_sum_fix list_ptr acc (sar (nl_cons_car_word list_ptr) 2) out)
+          (wf_sum_fix_w list_ptr acc (sar (nl_cons_car_word list_ptr) 2) 0)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
                 (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9614,10 +9715,13 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acount e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_add_raw asign abuf acount e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-              (wf_sum_fix list_ptr acc (ptr-read-u64 car_ptr 8) out))))
-        (wf_write_int out acc))))
-    (defun wf_sum_fix (list_ptr acc v out)
+                  (wf_sum_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
+              (wf_sum_fix_w list_ptr acc (ptr-read-u64 car_ptr 8) 0))))
+        (wf_write_int_w 0 acc))))
+    (defun wf_sum (list_ptr acc out)
+      (nl_abi_word_to_rc (wf_sum_w list_ptr acc 0) out))
+    ;; Doc 215 builtin word ABI: wf_sum_fix_w returns the result WORD (0 = signal stashed); wf_sum_fix keeps the (rc, OUT) ABI.
+    (defun wf_sum_fix_w (list_ptr acc v _pad)
                 (if (or (and (> v 0) (> acc (- 2305843009213693951 v)))
                         (and (< v 0) (< acc (- -2305843009213693952 v))))
                     (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9627,15 +9731,18 @@ leave symbols unresolved at link time."
                            (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acount ecount) 4) 4))
                            (sign_slot (alloc-bytes 8 8))
                            (rcount (nl_bignum_add_raw asign abuf acount esign ebuf ecount rbuf sign_slot)))
-                      (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-                  (wf_sum (nl_cons_cdr_word list_ptr) (+ acc v) out)))
+                      (wf_sum_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
+                  (wf_sum_w (nl_cons_cdr_word list_ptr) (+ acc v) 0)))
+    (defun wf_sum_fix (list_ptr acc v out)
+      (nl_abi_word_to_rc (wf_sum_fix_w list_ptr acc v 0) out))
     ;; Doc 190 Phase B: BIGNUM-MODE continuation of `wf_sum''s fold, entered
     ;; once ACC has been promoted.  ACC is carried as (ACC_SIGN, ACC_PTR,
     ;; ACC_COUNT) from here on; the base case (list exhausted) demotes back
     ;; to a plain Int when the final magnitude re-fits, via `nl_bignum_
     ;; finish' -- the same choke point `wf_sum''s own fast-path base case
     ;; uses conceptually, just for the boxed representation.
-    (defun wf_sum_big (list_ptr acc_sign acc_ptr acc_count out)
+    ;; Doc 215 builtin word ABI: wf_sum_big_w returns the result WORD (0 = signal stashed); wf_sum_big keeps the (rc, OUT) ABI.
+    (defun wf_sum_big_w (list_ptr acc_sign acc_ptr acc_count _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
@@ -9644,14 +9751,16 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acc_count e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_add_raw acc_sign acc_ptr acc_count e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
+                  (wf_sum_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
               (let* ((ebuf (alloc-bytes 8 4)) (e_sign (nl_bignum_int_limbs (ptr-read-u64 car_ptr 8) ebuf))
                      (e_count (nl_bignum_canon_count ebuf 2))
                      (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acc_count e_count) 4) 4))
                      (sign_slot (alloc-bytes 8 8))
                      (rcount (nl_bignum_add_raw acc_sign acc_ptr acc_count e_sign ebuf e_count rbuf sign_slot)))
-                (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))))
-        (seq (nl_bignum_finish acc_sign acc_ptr acc_count out) 0)))
+                (wf_sum_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))))
+        (nl_bignum_finish_w acc_sign acc_ptr acc_count 0)))
+    (defun wf_sum_big (list_ptr acc_sign acc_ptr acc_count out)
+      (nl_abi_word_to_rc (wf_sum_big_w list_ptr acc_sign acc_ptr acc_count 0) out))
     ;; `*': the div-round-trip alone (matching `expt''s shape) only catches
     ;; a product that overflows the TRUE 64-bit register (verified: it
     ;; correctly flags `(* 100000000000 100000000000)', whose true product
@@ -9667,7 +9776,8 @@ leave symbols unresolved at link time."
     ;; promoted branch, since a TRUE-64-bit overflow already means `prod'
     ;; is a wrapped, meaningless i64 (that is exactly what the div-round-
     ;; trip check above catches it BY), not a value safe to reuse.
-    (defun wf_prod (list_ptr acc out)
+    ;; Doc 215 builtin word ABI: wf_prod_w returns the result WORD (0 = signal stashed); wf_prod keeps the (rc, OUT) ABI.
+    (defun wf_prod_w (list_ptr acc _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
@@ -9678,7 +9788,7 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (+ acount e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_mul_raw asign abuf acount e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_prod_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
+                  (wf_prod_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
               (let* ((v (ptr-read-u64 car_ptr 8))
                      (prod (* acc v)))
                 (if (or (and (/= acc 0) (/= (/ prod acc) v))
@@ -9691,10 +9801,13 @@ leave symbols unresolved at link time."
                            (rbuf (alloc-bytes (* (+ acount ecount) 4) 4))
                            (sign_slot (alloc-bytes 8 8))
                            (rcount (nl_bignum_mul_raw asign abuf acount esign ebuf ecount rbuf sign_slot)))
-                      (wf_prod_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-                  (wf_prod (nl_cons_cdr_ptr list_ptr) prod out)))))
-        (wf_write_int out acc)))
-    (defun wf_prod_big (list_ptr acc_sign acc_ptr acc_count out)
+                      (wf_prod_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
+                  (wf_prod_w (nl_cons_cdr_ptr list_ptr) prod 0)))))
+        (wf_write_int_w 0 acc)))
+    (defun wf_prod (list_ptr acc out)
+      (nl_abi_word_to_rc (wf_prod_w list_ptr acc 0) out))
+    ;; Doc 215 builtin word ABI: wf_prod_big_w returns the result WORD (0 = signal stashed); wf_prod_big keeps the (rc, OUT) ABI.
+    (defun wf_prod_big_w (list_ptr acc_sign acc_ptr acc_count _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
@@ -9703,14 +9816,16 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (+ acc_count e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_mul_raw acc_sign acc_ptr acc_count e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_prod_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
+                  (wf_prod_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
               (let* ((ebuf (alloc-bytes 8 4)) (e_sign (nl_bignum_int_limbs (ptr-read-u64 car_ptr 8) ebuf))
                      (e_count (nl_bignum_canon_count ebuf 2))
                      (rbuf (alloc-bytes (* (+ acc_count e_count) 4) 4))
                      (sign_slot (alloc-bytes 8 8))
                      (rcount (nl_bignum_mul_raw acc_sign acc_ptr acc_count e_sign ebuf e_count rbuf sign_slot)))
-                (wf_prod_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))))
-        (seq (nl_bignum_finish acc_sign acc_ptr acc_count out) 0)))
+                (wf_prod_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))))
+        (nl_bignum_finish_w acc_sign acc_ptr acc_count 0)))
+    (defun wf_prod_big (list_ptr acc_sign acc_ptr acc_count out)
+      (nl_abi_word_to_rc (wf_prod_big_w list_ptr acc_sign acc_ptr acc_count 0) out))
     ;; `/' folds over EVERY divisor: (/ 100 5 2) is 10, and reading only the
     ;; first two arguments answered 20 -- a wrong number, silently.  Integer
     ;; division by zero traps in hardware, so the divisors are scanned for a
@@ -9753,7 +9868,8 @@ leave symbols unresolved at link time."
     ;; `wf_subtail_big' (via `nl_bignum_sub_raw' = `nl_bignum_add_raw' with
     ;; the subtrahend's sign flipped, so `a - b' reuses the exact same
     ;; magnitude-combine/demote machinery `wf_sum' does).
-    (defun wf_subtail (list_ptr acc out)
+    ;; Doc 215 builtin word ABI: wf_subtail_w returns the result WORD (0 = signal stashed); wf_subtail keeps the (rc, OUT) ABI.
+    (defun wf_subtail_w (list_ptr acc _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
@@ -9764,7 +9880,7 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acount e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_sub_raw asign abuf acount e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_subtail_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
+                  (wf_subtail_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
               (let* ((v (ptr-read-u64 car_ptr 8)))
                 (if (or (and (< v 0) (> acc (+ 2305843009213693951 v)))
                         (and (> v 0) (< acc (+ -2305843009213693952 v))))
@@ -9775,10 +9891,13 @@ leave symbols unresolved at link time."
                            (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acount ecount) 4) 4))
                            (sign_slot (alloc-bytes 8 8))
                            (rcount (nl_bignum_sub_raw asign abuf acount esign ebuf ecount rbuf sign_slot)))
-                      (wf_subtail_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-                  (wf_subtail (nl_cons_cdr_ptr list_ptr) (- acc v) out)))))
-        (wf_write_int out acc)))
-    (defun wf_subtail_big (list_ptr acc_sign acc_ptr acc_count out)
+                      (wf_subtail_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
+                  (wf_subtail_w (nl_cons_cdr_ptr list_ptr) (- acc v) 0)))))
+        (wf_write_int_w 0 acc)))
+    (defun wf_subtail (list_ptr acc out)
+      (nl_abi_word_to_rc (wf_subtail_w list_ptr acc 0) out))
+    ;; Doc 215 builtin word ABI: wf_subtail_big_w returns the result WORD (0 = signal stashed); wf_subtail_big keeps the (rc, OUT) ABI.
+    (defun wf_subtail_big_w (list_ptr acc_sign acc_ptr acc_count _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
@@ -9787,14 +9906,16 @@ leave symbols unresolved at link time."
                        (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acc_count e_count) 4) 4))
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_sub_raw acc_sign acc_ptr acc_count e_sign e_ptr e_count rbuf sign_slot)))
-                  (wf_subtail_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
+                  (wf_subtail_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))
               (let* ((ebuf (alloc-bytes 8 4)) (e_sign (nl_bignum_int_limbs (ptr-read-u64 car_ptr 8) ebuf))
                      (e_count (nl_bignum_canon_count ebuf 2))
                      (rbuf (alloc-bytes (* (nl_bignum_addsub_bound acc_count e_count) 4) 4))
                      (sign_slot (alloc-bytes 8 8))
                      (rcount (nl_bignum_sub_raw acc_sign acc_ptr acc_count e_sign ebuf e_count rbuf sign_slot)))
-                (wf_subtail_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))))
-        (seq (nl_bignum_finish acc_sign acc_ptr acc_count out) 0)))
+                (wf_subtail_big_w (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount 0))))
+        (nl_bignum_finish_w acc_sign acc_ptr acc_count 0)))
+    (defun wf_subtail_big (list_ptr acc_sign acc_ptr acc_count out)
+      (nl_abi_word_to_rc (wf_subtail_big_w list_ptr acc_sign acc_ptr acc_count 0) out))
     ;; Doc 190 Phase A: same Bignum-operand guard, checked on the FIRST
     ;; operand before `first' is ever read as a value -- covers both the
     ;; n-ary delegation to `wf_subtail' (which re-checks each later operand
@@ -9812,28 +9933,31 @@ leave symbols unresolved at link time."
     ;; general combine machinery -- host-verified
     ;; (`scripts/standalone-bignum-smoke.el'): `(- most-negative-fixnum)'
     ;; = 2305843009213693952 = 2^61 = limb0:0 limb1:536870912 (2^29).
-    (defun wf_diff (list_ptr out)
+    ;; Doc 215 builtin word ABI: wf_diff_w returns the result WORD (0 = signal stashed); wf_diff keeps the (rc, OUT) ABI.
+    (defun wf_diff_w (list_ptr _pad)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (rest (nl_cons_cdr_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
                 (let* ((f_sign (ptr-read-u64 car_ptr 8)) (f_ptr (ptr-read-u64 car_ptr 16))
                        (f_count (ptr-read-u64 car_ptr 24)))
                   (if (= (ptr-read-u64 rest 0) 7)
-                      (wf_subtail_big rest f_sign f_ptr f_count out)
-                    (seq (nl_bignum_finish (- 1 f_sign) f_ptr f_count out) 0)))
+                      (wf_subtail_big_w rest f_sign f_ptr f_count 0)
+                    (nl_bignum_finish_w (- 1 f_sign) f_ptr f_count 0)))
               (let* ((first (ptr-read-u64 car_ptr 8)))
                 ;; elisp `-': 1-arg `(- x)' = NEGATION (-x), not x; n-arg subtracts
                 ;; the tail from the first.  The old `first' fallthrough made `(- 5)'
                 ;; return 5, breaking every `(ash v (- (* i 8)))' byte-extraction.
                 (if (= (ptr-read-u64 rest 0) 7)
-                    (wf_subtail rest first out)
+                    (wf_subtail_w rest first 0)
                   (if (or (and (< first 0) (> 0 (+ 2305843009213693951 first)))
                           (and (> first 0) (< 0 (+ -2305843009213693952 first))))
                       (let* ((rbuf (alloc-bytes 8 4)))
                         (seq (ptr-write-u32 rbuf 0 0) (ptr-write-u32 rbuf 4 536870912)
-                             (nl_bignum_write 0 rbuf 2 out) 0))
-                    (seq (wf_write_int out (- 0 first)) 0))))))
-        (seq (wf_write_int out 0) 0)))
+                             (nl_bignum_write_w 0 rbuf 2 0)))
+                    (wf_write_int_w 0 (- 0 first)))))))
+        (wf_write_int_w 0 0)))
+    (defun wf_diff (list_ptr out)
+      (nl_abi_word_to_rc (wf_diff_w list_ptr 0) out))
     ;; --- Doc 190 Phase C: `/'/`%'/`mod' accept a Bignum DIVIDEND paired
     ;; with a small FIXNUM divisor -----------------------------------------
     ;; `mod' itself (scripts/nelisp-stdlib-prelude.el) needs no change: it
@@ -9923,13 +10047,21 @@ leave symbols unresolved at link time."
     ;; limb buffer, once constructed, is treated as immutable everywhere
     ;; else in this runtime (Doc 190 §6.1's own "sound because a bignum
     ;; is immutable from construction" argument for `nl_sexp_clone_into').
-    (defun nl_bignum_quot_small (a_ptr d out)
+    ;; Doc 215 builtin word ABI: nl_bignum_quot_small_w returns the result WORD (0 = signal stashed); nl_bignum_quot_small keeps the (rc, OUT) ABI.
+    (defun nl_bignum_quot_small_w (a_ptr d _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((asign (ptr-read-u64 a_ptr 8)) (amag (ptr-read-u64 a_ptr 16)) (acount (ptr-read-u64 a_ptr 24))
              (dsign (if (< d 0) 1 0)) (dmag (if (< d 0) (- 0 d) d))
              (qbuf (alloc-bytes (* acount 4) 4)))
         (seq (nl_bignum_divsmall_copy amag qbuf acount)
              (nl_bignum_divmod_small_loop qbuf (- acount 1) dmag 0)
-             (nl_bignum_finish (if (= asign dsign) 0 1) qbuf (nl_bignum_canon_count qbuf acount) out))))
+             (nl_bignum_finish (if (= asign dsign) 0 1) qbuf (nl_bignum_canon_count qbuf acount) out)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_quot_small (a_ptr d out)
+      (nl_abi_word_to_rc (nl_bignum_quot_small_w a_ptr d 0) out))
     ;; `%' with a Bignum DIVIDEND and a supported small fixnum divisor D:
     ;; the TRUNCATING remainder, sign of the DIVIDEND (`%''s own C-style
     ;; contract).  Always fits a plain fixnum (magnitude < |D| <= 2^31),
@@ -10051,9 +10183,12 @@ leave symbols unresolved at link time."
     ;; Write into a fresh scratch slot, then copy to `out' -- exactly like the
     ;; float arithmetic (nl_sexp_write_float -> scratch, wf_copy32 -> out).
     ;; Calling the extern with `out' (the dispatch result slot) directly aborts.
-    (defun wf_float_time (out)
+    ;; Doc 215 builtin word ABI: wf_float_time_w returns the result WORD (0 = signal stashed); wf_float_time keeps the (rc, OUT) ABI.
+    (defun wf_float_time_w (_pad)
       (let* ((sc (alloc-bytes 32 8)))
-        (seq (nl_os_float_time sc) (wf_copy32 out sc))))
+        (seq (nl_os_float_time sc) sc)))
+    (defun wf_float_time (out)
+      (nl_abi_word_to_rc (wf_float_time_w 0) out))
     ;; `float-time' TIME.  The wrapper above answers the CLOCK; these answer
     ;; the ARGUMENT, which the dispatch arm used to drop on the floor -- it
     ;; took no argument at all, so (float-time 5) returned the wall clock and
@@ -10112,12 +10247,19 @@ leave symbols unresolved at link time."
       (let* ((nb (wf_int_fbits num scratch))
              (db (wf_int_fbits den scratch)))
         (f64-bits (f64-div (bits-to-f64 nb) (bits-to-f64 db)))))
+    ;; Doc 215 builtin word ABI: wf_ft_write_w returns the result WORD (0 = signal stashed); wf_ft_write keeps the (rc, OUT) ABI.
+    (defun wf_ft_write_w (bits _pad scratch)
+      (seq (sexp-write-float scratch (bits-to-f64 bits)) scratch))
     (defun wf_ft_write (bits out scratch)
-      (seq (sexp-write-float scratch (bits-to-f64 bits)) (wf_copy32 out scratch)))
+      (nl_abi_word_to_rc (wf_ft_write_w bits 0 scratch) out))
     ;; 0 = wrote OUT, 1 = P is not a time specification.  The CALLER raises
     ;; the signal: the message string needs `nl_alloc_str'/`bf_error', which
     ;; are reader-only, and this group is linked into the baked applyfn too.
-    (defun wf_ft_convert (p out)
+    ;; Doc 215 builtin word ABI: wf_ft_convert_w returns the result WORD (0 = signal stashed); wf_ft_convert keeps the (rc, OUT) ABI.
+    (defun wf_ft_convert_w (p _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((tg (ptr-read-u64 p 0)) (sc (alloc-bytes 32 8)))
         (if (= tg 3)
             (wf_copy32 out p)
@@ -10146,7 +10288,11 @@ leave symbols unresolved at link time."
                                 1)
                             1)
                         1))))
-              1)))))
+              1))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_ft_convert (p out)
+      (nl_abi_word_to_rc (wf_ft_convert_w p 0) out))
     (defun bf_sig_copy32 (dst_ptr src)
       (seq (ptr-write-u64 dst_ptr 0 (ptr-read-u64 src 0))
            (ptr-write-u64 dst_ptr 8 (ptr-read-u64 src 8))
@@ -10251,11 +10397,19 @@ leave symbols unresolved at link time."
       (if (= (nl_val_tag w) 7) (wf_word_view (nl_cons_car_word w)) 0))
     ;; `wf_numeric_marker_value' for a WORD: an immediate is never a
     ;; marker, so it is type-checked by tag and stored into OUT directly.
-    (defun wf_numeric_marker_value_word (w out check)
+    ;; Doc 215 builtin word ABI: wf_numeric_marker_value_word_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value_word keeps the (rc, OUT) ABI.
+    (defun wf_numeric_marker_value_word_w (w _pad check)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (logand w 1) 0) (wf_numeric_marker_value w out check)
         (if (and (= check 1) (= (wf_num_tag_ok (nl_val_tag w)) 0))
             (bf_wrong_type_number_or_marker (wf_word_view w))
-          (seq (wf_word_store_out out w) 0))))
+          (seq (wf_word_store_out out w) 0)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_numeric_marker_value_word (w out check)
+      (nl_abi_word_to_rc (wf_numeric_marker_value_word_w w 0 check) out))
     (defun bf_wrong_type_int_or_marker (offender)
       (bf_wrong_type_named offender 3274791373809938025 7308060583107850863 7351666 19))
     (defun bf_first_non_integer (args)
@@ -10339,7 +10493,11 @@ leave symbols unresolved at link time."
            (nl_seq2 (ptr-write-u8 (+ trl (+ 16 i)) 0 (ptr-read-u8 (+ p i) 0))
                     (setq i (+ i 1))))
          0)))
-    (defun bf_arena_dump_image_to_file (args out)
+    ;; Doc 215 builtin word ABI: bf_arena_dump_image_to_file_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_to_file keeps the (rc, OUT) ABI.
+    (defun bf_arena_dump_image_to_file_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
@@ -10398,7 +10556,11 @@ leave symbols unresolved at link time."
             (nl_fa_write_all fd tbl (* tlen 8) 0)
             (nl_fa_write_all fd dest (+ slen isz) 0)
             (nl_os_close_handle fd)
-            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_dump_image_to_file (args out)
+      (nl_abi_word_to_rc (bf_arena_dump_image_to_file_w args 0) out))
     ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
     ;; `dest' scratch copy that `bf_arena_dump_image_to_file' uses.  That copy
     ;; doubles the in-arena footprint (~2*heap), which -- with the <2GB arena cap
@@ -10428,7 +10590,11 @@ leave symbols unresolved at link time."
                 (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
               (setq i (+ i 1)))))
          0)))
-    (defun bf_arena_dump_image_stream (args out)
+    ;; Doc 215 builtin word ABI: bf_arena_dump_image_stream_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_stream keeps the (rc, OUT) ABI.
+    (defun bf_arena_dump_image_stream_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))   ; alloc the header FIRST so all used/total
                                         ; computations below see a stable cursor (no
@@ -10544,8 +10710,16 @@ leave symbols unresolved at link time."
                             ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                                  '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
                                       written -1)
-                               '(+ 64 (+ (* tlen 8) (+ total (+ isz 48))))))))))))
-    (defun bf_arena_load_image_from_file (args out)
+                               '(+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_dump_image_stream (args out)
+      (nl_abi_word_to_rc (bf_arena_dump_image_stream_w args 0) out))
+    ;; Doc 215 builtin word ABI: bf_arena_load_image_from_file_w returns the result WORD (0 = signal stashed); bf_arena_load_image_from_file keeps the (rc, OUT) ABI.
+    (defun bf_arena_load_image_from_file_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
              (fd (nl_os_open_read cpath))
@@ -10589,7 +10763,11 @@ leave symbols unresolved at link time."
               (wf_cons_int nblk s3 s2)
               (wf_cons_int tlen s2 s1)
               (wf_cons_int (if (= magic 1179407692) 1 0) s1 out)
-              0))))))
+              0)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_load_image_from_file (args out)
+      (nl_abi_word_to_rc (bf_arena_load_image_from_file_w args 0) out))
     ;; flat-arena boot-wiring (3): the boot-load INSTALL mechanism.  This is the
     ;; exact code a boot hook runs: read the image, relocate it (table apply),
     ;; then RECONSTRUCT the EvalCtx globals root -- a 32B Sexp slot whose tag is
@@ -10600,7 +10778,11 @@ leave symbols unresolved at link time."
     ;; scratch slot so the live runtime is untouched.)  Returns
     ;; (MAGIC-OK ROOT-TAG ROOT-IN-CHUNK0 GBOX-BLOCK-TOTAL): (1 12 1 ~72) means a
     ;; boot would install a sound globals root from the persisted image.
-    (defun bf_arena_boot_load_verify (args out)
+    ;; Doc 215 builtin word ABI: bf_arena_boot_load_verify_w returns the result WORD (0 = signal stashed); bf_arena_boot_load_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_boot_load_verify_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
              (fd (nl_os_open_read cpath))
@@ -10643,7 +10825,11 @@ leave symbols unresolved at link time."
                 (wf_cons_int rin s3 s2)
                 (wf_cons_int rtag s2 s1)
                 (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
-                0)))))))
+                0))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_boot_load_verify (args out)
+      (nl_abi_word_to_rc (bf_arena_boot_load_verify_w args 0) out))
     ;; flat-arena boot-wiring (4): SPLIT relocate -- the real-arena load.  In a
     ;; live runtime chunk-0 and the interned region are SEPARATE mmaps at
     ;; unrelated bases, so the load cannot use one contiguous `+ newbase'; it
@@ -10656,7 +10842,11 @@ leave symbols unresolved at link time."
     ;; (MAGIC-OK WELLFORMED BLOCKS BAD-POINTERS): (1 1 ~464k 0) means the
     ;; split relocate rebuilds a sound heap across separate region bases --
     ;; exactly what loading into the mmap'd arena needs.
-    (defun bf_arena_load_split_verify (args out)
+    ;; Doc 215 builtin word ABI: bf_arena_load_split_verify_w returns the result WORD (0 = signal stashed); bf_arena_load_split_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_load_split_verify_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
              (fd (nl_os_open_read cpath))
@@ -10712,7 +10902,11 @@ leave symbols unresolved at link time."
               (wf_cons_int nblk s3 s2)
               (wf_cons_int wf s2 s1)
               (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
-              0))))))
+              0)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_load_split_verify (args out)
+      (nl_abi_word_to_rc (bf_arena_load_split_verify_w args 0) out))
     ;; Doc 156 increment 2 (concept-proof): value-survival.  Loads IMAGE into
     ;; scratch (chunk-0 c0 + interned ir), applies the split relocation (same as
     ;; bf_arena_load_split_verify), rebuilds the globals Record root (tag 12,
@@ -10720,7 +10914,11 @@ leave symbols unresolved at link time."
     ;; nelisp_mirror_lookup_value.  Proves a global's VALUE survives
     ;; dump->file->load->relocate WITHOUT writing the live arena (the real-arena
     ;; INSTALL, Doc 156 sec 3, is the separate next increment).
-    (defun bf_arena_value_survival (args out)
+    ;; Doc 215 builtin word ABI: bf_arena_value_survival_w returns the result WORD (0 = signal stashed); bf_arena_value_survival keeps the (rc, OUT) ABI.
+    (defun bf_arena_value_survival_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (qsym (wf_arg_ptr args 1))
              (hdr (alloc-bytes 64 8))
@@ -10761,7 +10959,11 @@ leave symbols unresolved at link time."
                 (if (= entry 0)
                     (wf_write_nil out)
                   (record-slot-ref entry 0 out)))
-              0))))))
+              0)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_value_survival (args out)
+      (nl_abi_word_to_rc (bf_arena_value_survival_w args 0) out))
     ;; The rest of the flat-arena in-memory swizzle machinery, moved from
     ;; `nelisp-standalone--applyfn-core-helpers': it calls `nl_gc_mark_block'/
     ;; `nl_gc_in_arena'/`nl_gc_pool_cap' (directly or transitively), which
@@ -10974,7 +11176,11 @@ leave symbols unresolved at link time."
                           ds span dest cin cout dir)
        (nl_seq2 (nl_fa_rootstack ds span dest cin cout dir)
                 (nl_fa_symentry ds span dest cin cout dir))))
-    (defun bf_arena_swizzle_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_swizzle_verify_w returns the result WORD (0 = signal stashed); bf_arena_swizzle_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_swizzle_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -11020,7 +11226,11 @@ leave symbols unresolved at link time."
          (wf_cons_int (ptr-read-u64 cmis 0) nil-slot s2)
          (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cin 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_swizzle_verify (out)
+      (nl_abi_word_to_rc (bf_arena_swizzle_verify_w 0) out))
     ;; flat-arena spike step 4 (core LOAD mechanic): relocate the image into a
     ;; FRESH base and prove the result is a structurally valid arena.  Copy
     ;; chunk-0 into DEST (so DEST itself is the new base = where data-start now
@@ -11035,7 +11245,11 @@ leave symbols unresolved at link time."
     ;; + chunk-0; the boot hook that installs a loaded image in place of the
     ;; source replay is the remaining integration -- it needs the multi-region
     ;; / multi-root completeness of step 3c first.)
-    (defun bf_arena_load_relocate_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_load_relocate_verify_w returns the result WORD (0 = signal stashed); bf_arena_load_relocate_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_load_relocate_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -11091,7 +11305,11 @@ leave symbols unresolved at link time."
          (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s2)
          (wf_cons_int (ptr-read-u64 cnblk 0) s2 s1)
          (wf_cons_int (ptr-read-u64 crel 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_load_relocate_verify (out)
+      (nl_abi_word_to_rc (bf_arena_load_relocate_verify_w 0) out))
     ;; flat-arena spike step 4-boot precondition: capture the ROOT METADATA the
     ;; boot loader needs.  An image is loaded by mmap'ing a fresh arena, copying
     ;; the regions, relocating the pointers (steps done), then pointing a fresh
@@ -11104,7 +11322,11 @@ leave symbols unresolved at link time."
     ;; env+64; each a 32B Sexp slot whose boxed payload pointer is at slot+8).
     ;; A non-negative offset means the root lives inside the dumped image and
     ;; the boot can relocate + reinstall it as `newbase + offset'.  READ-ONLY.
-    (defun bf_arena_dump_table_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_dump_table_verify_w returns the result WORD (0 = signal stashed); bf_arena_dump_table_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_dump_table_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -11165,7 +11387,11 @@ leave symbols unresolved at link time."
          (wf_cons_int (ptr-read-u64 cnblk 0) s3 s2)
          (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cin 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_dump_table_verify (out)
+      (nl_abi_word_to_rc (bf_arena_dump_table_verify_w 0) out))
     ;; flat-arena FILE persistence (nl_fa_write_all/nl_fa_read_all,
     ;; bf_arena_dump_image_to_file/_stream, bf_arena_load_image_from_file,
     ;; bf_arena_boot_load_verify, bf_arena_load_split_verify,
@@ -11289,14 +11515,26 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; arena counters): the GNU-shaped snapshot interns its field names and
     ;; fills the shared typed-state block, both refused or racy off the main
     ;; thread, and the worker's form failed (-1001 in the thread smokes).
-    (defun bf_garbage_collect (func args env out)
+    ;; Doc 215 builtin word ABI: bf_garbage_collect_w returns the result WORD (0 = signal stashed); bf_garbage_collect keeps the (rc, OUT) ABI.
+    (defun bf_garbage_collect_w (func args env _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let ((argc (m5_list_len args 0)))
         (if (= argc 0)
             (if (= (nl_sb_worker_p env) 1)
                 (seq (nl_gc_collect_from_recorded_roots 0) (bf_arena_stats out))
               (bf_garbage_collect_snapshot env out))
-          (bf_wrong_number_of_args func argc))))
-    (defun bf_garbage_collect_snapshot (env out)
+          (bf_wrong_number_of_args func argc)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_garbage_collect (func args env out)
+      (nl_abi_word_to_rc (bf_garbage_collect_w func args env 0) out))
+    ;; Doc 215 builtin word ABI: bf_garbage_collect_snapshot_w returns the result WORD (0 = signal stashed); bf_garbage_collect_snapshot keeps the (rc, OUT) ABI.
+    (defun bf_garbage_collect_snapshot_w (env _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((st (data-addr nl_gc_typed_state))
              (mark (nl_root_mark env)) (snapshot (nl_root_reserve env))
              (argv (nl_root_reserve env)) (tmp (nl_root_reserve env)) (i 0))
@@ -11324,7 +11562,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
             (ptr-write-u64 st 8 0) (ptr-write-u64 st 16 0)
             (wf_write_nil tmp) (nelisp_cons_construct snapshot tmp argv)
             (let ((rc (bf_n2_call_lisp_gc argv env out)))
-              (nl_root_release env mark) rc))))))
+              (nl_root_release env mark) rc)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_garbage_collect_snapshot (env out)
+      (nl_abi_word_to_rc (bf_garbage_collect_snapshot_w env 0) out))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
@@ -11426,7 +11668,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; built: `wf_cons_int' allocates, and with checked mode enabled
     ;; each allocation bumps the generation / checked-alloc counters —
     ;; reading them lazily mid-consing would skew the reported values.
-    (defun bf_alloc_check_report (out)
+    ;; Doc 215 builtin word ABI: bf_alloc_check_report_w returns the result WORD (0 = signal stashed); bf_alloc_check_report keeps the (rc, OUT) ABI.
+    (defun bf_alloc_check_report_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((acc (alloc-bytes 88 8))
              (nil-slot (alloc-bytes 32 8))
              (s10 (alloc-bytes 32 8))
@@ -11464,7 +11710,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
          (wf_cons_int (ptr-read-u64 (+ acc 32) 0) s3 s2)
          (wf_cons_int (ptr-read-u64 (+ acc 24) 0) s2 s1)
          (wf_cons_int (ptr-read-u64 (+ acc 16) 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_alloc_check_report (out)
+      (nl_abi_word_to_rc (bf_alloc_check_report_w 0) out))
     ;; bf_arena_mark_reach_verify (Doc 156): moved from
     ;; `nelisp-standalone--applyfn-core-helpers'.  Same reason as the
     ;; census family above -- it calls the real GC mark entry points
@@ -11473,7 +11723,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; (the pure pointer-walk half) stay in core-helpers; this reaches
     ;; them across the unit boundary the same way the census walk reaches
     ;; `nl_gc_bt_ok'/`nl_gc_chunk_end'.
-    (defun bf_arena_mark_reach_verify (out)
+    ;; Doc 215 builtin word ABI: bf_arena_mark_reach_verify_w returns the result WORD (0 = signal stashed); bf_arena_mark_reach_verify keeps the (rc, OUT) ABI.
+    (defun bf_arena_mark_reach_verify_w (_pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((reach (alloc-bytes 8 8)) (total (alloc-bytes 8 8))
              (nil-slot (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
         (seq
@@ -11488,7 +11742,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
          (wf_write_nil nil-slot)
          (wf_cons_int (ptr-read-u64 total 0) nil-slot s1)
          (wf_cons_int (ptr-read-u64 reach 0) s1 out)
-         0)))
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_arena_mark_reach_verify (out)
+      (nl_abi_word_to_rc (bf_arena_mark_reach_verify_w 0) out))
     ;; POOL ROOT COVERAGE.  Mark from the recorded roots twice -- once with the
     ;; recorded-frame parse-pool slot walk on, once with it off -- and answer
     ;; (WITH WITHOUT), the reachable block count each way.  Same "mark, count,
@@ -12783,7 +13041,11 @@ above this defconst for the shadow-vs-delegate rationale.")
     ;; re-validate the token shape.  Writes a plain Sexp::Int when the
     ;; value fits the fixnum bound for its sign, else a canonical
     ;; Sexp::Bignum; either way returns RESULT_SLOT.
-    (defun nl_read_int_or_bignum (sp result_slot)
+    ;; Doc 215 builtin word ABI: nl_read_int_or_bignum_w returns the result WORD (0 = signal stashed); nl_read_int_or_bignum keeps the (rc, OUT) ABI.
+    (defun nl_read_int_or_bignum_w (sp _pad)
+      (let* ((result_slot (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((n (let* ((len (m5_strlen sp)))
                   ;; `1.' is the integer 1: drop a trailing dot (the lexer
                   ;; only passes it for GNU's trailing-dot integer syntax).
@@ -12810,7 +13072,11 @@ above this defconst for the shadow-vs-delegate rationale.")
                 (bound_lo (if (= neg 1) 0 4294967295)))
            (if (= (nl_bignum_mag_le_bound scratch count bound_hi bound_lo) 1)
                (nl_bignum_write_int scratch count neg result_slot)
-             (nl_bignum_write neg scratch count result_slot))))))
+             (nl_bignum_write neg scratch count result_slot)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word result_slot) (nl_abi_fail abi_rc 0)))))
+    (defun nl_read_int_or_bignum (sp result_slot)
+      (nl_abi_word_to_rc (nl_read_int_or_bignum_w sp 0) result_slot))
     ;; --- decimal printing (prin1/princ/number-to-string round-trip) ----
     ;; Copy N limbs SRC -> DST (used to get a disposable working copy
     ;; before the destructive divide-by-10 pass below -- printing must
@@ -19099,7 +19365,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              0))
                     (bf_wrong_type_fixnump depth))
                 (bf_wrong_type_arrayp constants)))))))
-    (defun bf_make_native_subr (args out env)
+    ;; Doc 215 builtin word ABI: bf_make_native_subr_w returns the result WORD (0 = signal stashed); bf_make_native_subr keeps the (rc, OUT) ABI.
+    (defun bf_make_native_subr_w (args _pad env)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((argc (m5_list_len args 0)))
         (if (= argc 4) (bf_make_rooted_subr args out env)
         (if (and (/= argc 3) (/= argc 5) (/= argc 6))
@@ -19208,7 +19478,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  (nl_root_release env mark)
                                  0)
                           (seq (nl_root_release env mark)
-                               (bf_signal_memory_full))))))))))))))))
+                               (bf_signal_memory_full)))))))))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_make_native_subr (args out env)
+      (nl_abi_word_to_rc (bf_make_native_subr_w args 0 env) out))
     ;; ---------------------------------------------------------------
     ;; Doc 186 P0/P1/P2 -- char-table Elisp-visible constructor/accessor
     ;; layer.  `nl_char_table_get_raw'/`nl_char_table_set_raw' (the
@@ -19670,11 +19944,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; took offset 8 of whatever Sexp it was handed, so (aref "\u3042\u3044" t)
     ;; answered 12354 -- t's payload word read as a character index -- and a
     ;; string index came back as `args-out-of-range' rather than a type error.
-    (defun bf_aref (args out)
+    ;; Doc 215 builtin word ABI: bf_aref_w returns the result WORD (0 = signal stashed); bf_aref keeps the (rc, OUT) ABI.
+    (defun bf_aref_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
           (bf_aref_checked args out)
-        (bf_wrong_type_fixnump (wf_arg_ptr args 1))))
-    (defun bf_aref_checked (args out)
+        (bf_wrong_type_fixnump (wf_arg_ptr args 1)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aref (args out)
+      (nl_abi_word_to_rc (bf_aref_w args 0) out))
+    ;; Doc 215 builtin word ABI: bf_aref_checked_w returns the result WORD (0 = signal stashed); bf_aref_checked keeps the (rc, OUT) ABI.
+    (defun bf_aref_checked_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((arr (wf_arg_ptr args 0))
              (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (tg (ptr-read-u64 arr 0)))
@@ -19755,11 +20041,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ;; indexes as its interpreted-function slots.
                 (if (= (nl_closure_shape_p arr) 1)
                     (bf_aref_closure arr (wf_arg_ptr args 1) out)
-                  (bf_wrong_type_arrayp arr))))))))))))
+                  (bf_wrong_type_arrayp arr)))))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aref_checked (args out)
+      (nl_abi_word_to_rc (bf_aref_checked_w args 0) out))
     ;; `aref' on an interpreted closure: GNU Emacs 31's slot view (see
     ;; `nl_closure_shape_p' in the m5 helpers), range-checked against the
     ;; same 3/5/6 size `length' reports.
-    (defun bf_aref_closure (c idxp out)
+    ;; Doc 215 builtin word ABI: bf_aref_closure_w returns the result WORD (0 = signal stashed); bf_aref_closure keeps the (rc, OUT) ABI.
+    (defun bf_aref_closure_w (c idxp _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((idx (ptr-read-u64 idxp 8))
              (n (nl_closure_length c)))
         (if (if (< idx 0) 1 (if (< idx n) 0 1))
@@ -19786,7 +20080,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (seq (wf_copy32 out (nl_closure_doc_value b0)) 0)
                 (seq (wf_write_nil out) 0)))
              (t (bf_closure_iform_value
-                 (nl_cons_cdr_ptr (nl_cons_car_word b1)) out)))))))
+                 (nl_cons_cdr_ptr (nl_cons_car_word b1)) out))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aref_closure (c idxp out)
+      (nl_abi_word_to_rc (bf_aref_closure_w c idxp 0) out))
     ;; Slot 2 of a closure with captured bindings, as GNU lays out a lexical
     ;; environment: innermost binding first, each variable once.  This
     ;; runtime captures outer frames first and keeps a shadowed outer
@@ -19804,7 +20102,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
               1
             (bf_closure_env_shadowed_p key (nl_cons_cdr_ptr rest)))
         0))
-    (defun bf_closure_env_view_rev (node acc out)
+    ;; Doc 215 builtin word ABI: bf_closure_env_view_rev_w returns the result WORD (0 = signal stashed); bf_closure_env_view_rev keeps the (rc, OUT) ABI.
+    (defun bf_closure_env_view_rev_w (node acc _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 node 0) 7)
           (let* ((entry (nl_cons_car_ptr node))
                  (rest (nl_cons_cdr_ptr node)))
@@ -19823,11 +20125,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (nelisp_cons_construct pair acc cell)))
                    (nelisp_cons_construct entry acc cell))
                  (bf_closure_env_view_rev rest cell out)))))
-        (seq (wf_copy32 out acc) 0)))
-    (defun bf_closure_env_view (env out)
+        (seq (wf_copy32 out acc) 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_closure_env_view_rev (node acc out)
+      (nl_abi_word_to_rc (bf_closure_env_view_rev_w node acc 0) out))
+    ;; Doc 215 builtin word ABI: bf_closure_env_view_w returns the result WORD (0 = signal stashed); bf_closure_env_view keeps the (rc, OUT) ABI.
+    (defun bf_closure_env_view_w (env _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((acc (alloc-bytes 32 8)))
         (seq (wf_write_nil acc)
-             (bf_closure_env_view_rev env acc out))))
+             (bf_closure_env_view_rev env acc out)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_closure_env_view (env out)
+      (nl_abi_word_to_rc (bf_closure_env_view_w env 0) out))
     ;; The same view in capture order (the order `make-interpreted-closure'
     ;; was given, or first-mention order for a `lambda' evaluated here), for
     ;; a closure carrying a `(:documentation 'TYPE)' marker.  This runtime
@@ -19836,7 +20150,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; cannot give GNU's order; oclosure.el pairs slot 2 with the OClosure's
     ;; slots by position, and `oclosure--lambda' mentions the slots in slot
     ;; order, so capture order is the order it needs.
-    (defun bf_closure_env_view_fwd (node out)
+    ;; Doc 215 builtin word ABI: bf_closure_env_view_fwd_w returns the result WORD (0 = signal stashed); bf_closure_env_view_fwd keeps the (rc, OUT) ABI.
+    (defun bf_closure_env_view_fwd_w (node _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 node 0) 7)
           (let* ((entry (nl_cons_car_ptr node))
                  (rest (nl_cons_cdr_ptr node))
@@ -19856,7 +20174,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (nelisp_cons_construct pair tail out)
                           0))
                  (seq (nelisp_cons_construct entry tail out) 0)))))
-        (seq (wf_write_nil out) 0)))
+        (seq (wf_write_nil out) 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_closure_env_view_fwd (node out)
+      (nl_abi_word_to_rc (bf_closure_env_view_fwd_w node 0) out))
     ;; 1 when the closure body B0 starts with a `(:documentation 'TYPE)' form.
     (defun bf_closure_typed_p (b0)
       (if (= (nl_closure_doc_p b0) 1)
@@ -19865,7 +20187,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; P itself when non-nil, else a fresh one-element list: `(nil)' for an
     ;; empty body (GNU never stores an empty body), `(t)' for an empty
     ;; lexical environment (GNU's marker for lexical binding).
-    (defun bf_closure_slot_or_singleton (p elt-t out)
+    ;; Doc 215 builtin word ABI: bf_closure_slot_or_singleton_w returns the result WORD (0 = signal stashed); bf_closure_slot_or_singleton keeps the (rc, OUT) ABI.
+    (defun bf_closure_slot_or_singleton_w (p elt-t _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 p 0) 0)
           (let* ((e (alloc-bytes 32 8))
                  (nil-slot (alloc-bytes 32 8)))
@@ -19873,10 +20199,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (wf_write_nil nil-slot)
                  (nelisp_cons_construct e nil-slot out)
                  0))
-        (seq (wf_copy32 out p) 0)))
+        (seq (wf_copy32 out p) 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_closure_slot_or_singleton (p elt-t out)
+      (nl_abi_word_to_rc (bf_closure_slot_or_singleton_w p elt-t 0) out))
     ;; Slot 5 from IFCDR = (cdr (interactive ...)): the lone spec, or
     ;; [SPEC MODES] when modes follow, as `make-interpreted-closure' does.
-    (defun bf_closure_iform_value (ifcdr out)
+    ;; Doc 215 builtin word ABI: bf_closure_iform_value_w returns the result WORD (0 = signal stashed); bf_closure_iform_value keeps the (rc, OUT) ABI.
+    (defun bf_closure_iform_value_w (ifcdr _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 ifcdr 0) 7)
           (if (= (nl_val_tag (nl_cons_cdr_word ifcdr)) 7)
               (let* ((spec (nl_cons_car_word ifcdr))
@@ -19886,7 +20220,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (vector-slot-set out 1 modes)
                      0))
             (seq (wf_copy32 out (nl_cons_car_ptr ifcdr)) 0))
-        (seq (wf_write_nil out) 0)))
+        (seq (wf_write_nil out) 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_closure_iform_value (ifcdr out)
+      (nl_abi_word_to_rc (bf_closure_iform_value_w ifcdr 0) out))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -20088,13 +20426,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 200 P3: string mutation is fixed-width.  Resolve the payload through
     ;; `bf_str_ptr' for EVERY tag: tag 15 is boxed and reading arr+16 directly
     ;; treats an NlStr box word as a byte pointer (measured SIGSEGV in P1).
-    (defun bf_aset_string_write (arr byte-idx val out)
+    ;; Doc 215 builtin word ABI: bf_aset_string_write_w returns the result WORD (0 = signal stashed); bf_aset_string_write keeps the (rc, OUT) ABI.
+    (defun bf_aset_string_write_w (arr byte-idx val _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (seq
        (wf_dirty)
        (ptr-write-u8 (bf_str_ptr arr) byte-idx (ptr-read-u64 val 8))
        (wf_copy32 out val)
-       0))
-    (defun bf_aset_unibyte_string (arr idx idx-slot val out)
+       0)
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset_string_write (arr byte-idx val out)
+      (nl_abi_word_to_rc (bf_aset_string_write_w arr byte-idx val 0) out))
+    ;; Doc 215 builtin word ABI: bf_aset_unibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_unibyte_string keeps the (rc, OUT) ABI.
+    (defun bf_aset_unibyte_string_w (arr idx idx-slot val _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 val 0) 2)
           (if (if (< idx 0) 1 (if (< idx (bf_str_len arr)) 0 1))
               (bf_args_out_of_range arr idx-slot)
@@ -20103,12 +20453,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (bf_args_out_of_range_byte val)
                 (seq (nl_aref_cache_invalidate (bf_str_ptr arr))
                      (bf_aset_string_write arr idx val out)))))
-        (bf_wrong_type_integerp val)))
+        (bf_wrong_type_integerp val))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset_unibyte_string (arr idx idx-slot val out)
+      (nl_abi_word_to_rc (bf_aset_unibyte_string_w arr idx idx-slot val 0) out))
     ;; Tag 5 goes through the same O(1)-amortized cache `bf_aref_checked'
     ;; uses (fusing the bounds check into the walk); tag 6 keeps the old
     ;; unconditional `nl_str_charlen' + `nl_u8_cidx_byte' pair -- see the
     ;; `bf_aref_checked' comment for why tag 6 is left as-is.
-    (defun bf_aset_multibyte_string (arr idx idx-slot val out)
+    ;; Doc 215 builtin word ABI: bf_aset_multibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_multibyte_string keeps the (rc, OUT) ABI.
+    (defun bf_aset_multibyte_string_w (arr idx idx-slot val _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 val 0) 2)
           (if (< idx 0)
               (bf_args_out_of_range arr idx-slot)
@@ -20129,16 +20487,32 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (if (>= (m5_byte_at arr byte-idx) 128) 1 0)))
                       (bf_aset_fixed_width_rejected out)
                     (bf_aset_string_write arr byte-idx val out))))))
-        (bf_wrong_type_integerp val)))
+        (bf_wrong_type_integerp val))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset_multibyte_string (arr idx idx-slot val out)
+      (nl_abi_word_to_rc (bf_aset_multibyte_string_w arr idx idx-slot val 0) out))
     ;; aset ARR IDX VAL: vector/string/record/char-table mutation.
     ;; Writes into a PRE-EXISTING container -> persistent escape -> bump the
     ;; mutation epoch (NO-ESCAPE gate).  Validate IDX before reading payload@8;
     ;; the old code treated any Sexp's second word as an index.
-    (defun bf_aset (args out)
+    ;; Doc 215 builtin word ABI: bf_aset_w returns the result WORD (0 = signal stashed); bf_aset keeps the (rc, OUT) ABI.
+    (defun bf_aset_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
           (bf_aset_checked args out)
-        (bf_wrong_type_fixnump (wf_arg_ptr args 1))))
-    (defun bf_aset_checked (args out)
+        (bf_wrong_type_fixnump (wf_arg_ptr args 1)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset (args out)
+      (nl_abi_word_to_rc (bf_aset_w args 0) out))
+    ;; Doc 215 builtin word ABI: bf_aset_checked_w returns the result WORD (0 = signal stashed); bf_aset_checked keeps the (rc, OUT) ABI.
+    (defun bf_aset_checked_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((arr (wf_arg_ptr args 0))
              (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (val (wf_arg_ptr args 2)))
@@ -20194,8 +20568,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     ;; GNU Emacs 31: an interpreted closure is not an array.
                     (if (= (nl_closure_shape_p arr) 1)
                         (bf_wrong_type_arrayp arr)
-                      (seq (wf_copy32 out val) 0))))))))))
-    (defun bf_aset_bool_vector (arr idx idx-slot val out)
+                      (seq (wf_copy32 out val) 0)))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset_checked (args out)
+      (nl_abi_word_to_rc (bf_aset_checked_w args 0) out))
+    ;; Doc 215 builtin word ABI: bf_aset_bool_vector_w returns the result WORD (0 = signal stashed); bf_aset_bool_vector keeps the (rc, OUT) ABI.
+    (defun bf_aset_bool_vector_w (arr idx idx-slot val _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((box (ptr-read-u64 arr 8)))
         (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
             (bf_args_out_of_range arr idx-slot)
@@ -20203,7 +20585,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (nl_bv_bit_set (ptr-read-u64 box 8) idx
                               (if (= (ptr-read-u64 val 0) 0) 0 1))
                (wf_copy32 out val)
-               0))))
+               0)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_aset_bool_vector (arr idx idx-slot val out)
+      (nl_abi_word_to_rc (bf_aset_bool_vector_w arr idx idx-slot val 0) out))
     ;; nelisp-emacs-lib keeps its sparse compatibility char-table as an exact
     ;; seven-slot tagged vector.  Ordinary vectors stay on the direct native
     ;; aref/aset path; only this marker shape calls back into the library.
@@ -20286,7 +20672,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; uses, so the two cannot render a directive differently.  A non-string
     ;; first argument keeps the old whole-list behaviour rather than reading
     ;; its bytes as a format string.
-    (defun bf_error (args out)
+    ;; Doc 215 builtin word ABI: bf_error_w returns the result WORD (0 = signal stashed); bf_error keeps the (rc, OUT) ABI.
+    (defun bf_error_w (args _pad)
+    (nl_abi_fail (seq
+
       (let* ((ebuf (alloc-bytes 8 1))
              (fmt (nl_cons_car_ptr args))
              (tg (ptr-read-u64 fmt 0)))
@@ -20305,7 +20694,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (bf_sig_copy32 268435512 args))
          (ptr-write-u64 268435472 0 1)                    ; raise flag
          (atomic-fetch-add 268435544 1)
-         1)))
+         1))
+    ) 0))
+    (defun bf_error (args out)
+      (nl_abi_word_to_rc (bf_error_w args 0) out))
     (defun bf_raw_byte_unrepresentable ()
       (let* ((sbuf (alloc-bytes 32 1))
              (nil-slot (alloc-bytes 32 8)))
@@ -20340,7 +20732,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nelisp_cons_construct idx nil-slot tail)
          (nelisp_cons_construct fmt tail head)
          (bf_error head out))))
-    (defun bf_aset_fixed_width_rejected (out)
+    ;; Doc 215 builtin word ABI: bf_aset_fixed_width_rejected_w returns the result WORD (0 = signal stashed); bf_aset_fixed_width_rejected keeps the (rc, OUT) ABI.
+    (defun bf_aset_fixed_width_rejected_w (_pad)
+    (nl_abi_fail (seq
+
       (let* ((mbuf (alloc-bytes 40 1))
              (msg (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -20354,14 +20749,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_alloc_str mbuf 37 msg)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct msg nil-slot head)
-         (bf_error head out))))
+         (bf_error_w head 0)))
+    ) 0))
+    (defun bf_aset_fixed_width_rejected (out)
+      (nl_abi_word_to_rc (bf_aset_fixed_width_rejected_w 0) out))
     ;; `(error "Invalid time specification")' -- the exact signal Emacs
     ;; raises for a TIME argument `float-time' cannot decode.  Same shape as
     ;; `bf_aset_fixed_width_rejected' above: pack the 26-byte message, cons
     ;; it with nil, hand it to `bf_error'.  Reader-only, because
     ;; `nl_alloc_str'/`bf_error' are; `wf_ft_convert' (core) therefore
     ;; REPORTS the failure and this arm-side helper raises it.
-    (defun bf_invalid_time_spec (out)
+    ;; Doc 215 builtin word ABI: bf_invalid_time_spec_w returns the result WORD (0 = signal stashed); bf_invalid_time_spec keeps the (rc, OUT) ABI.
+    (defun bf_invalid_time_spec_w (_pad)
+    (nl_abi_fail (seq
+
       (let* ((mbuf (alloc-bytes 32 1))
              (msg (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -20374,7 +20775,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_alloc_str mbuf 26 msg)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct msg nil-slot head)
-         (bf_error head out))))
+         (bf_error_w head 0)))
+    ) 0))
+    (defun bf_invalid_time_spec (out)
+      (nl_abi_word_to_rc (bf_invalid_time_spec_w 0) out))
     (defun bf_wrong_type_consp (offender)
       (let* ((wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
@@ -22917,7 +23321,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; `nl_bignum_canon_count' before `nl_bignum_finish', the same
     ;; discipline the EXTR=1 branch below already had for free (`nl_
     ;; bignum_add_raw' already returns a canonical count).
-    (defun nl_bignum_finalize_bitop (r n extr out)
+    ;; Doc 215 builtin word ABI: nl_bignum_finalize_bitop_w returns the result WORD (0 = signal stashed); nl_bignum_finalize_bitop keeps the (rc, OUT) ABI.
+    (defun nl_bignum_finalize_bitop_w (r n extr _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= extr 0)
           (nl_bignum_finish 0 r (nl_bignum_canon_count r n) out)
         (let* ((notbuf (alloc-bytes (* n 4) 4)) (one (alloc-bytes 4 4))
@@ -22925,7 +23333,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (nl_bignum_not_loop r notbuf 0 n)
                (ptr-write-u32 one 0 1)
                (let* ((mc (nl_bignum_add_raw 0 notbuf n 0 one 1 magbuf sign_slot)))
-                 (nl_bignum_finish 1 magbuf mc out))))))
+                 (nl_bignum_finish 1 magbuf mc out)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_finalize_bitop (r n extr out)
+      (nl_abi_word_to_rc (nl_bignum_finalize_bitop_w r n extr 0) out))
     ;; Top-level driver for `logand'/`logior'/`logxor' (OPCODE 0/1/2) on
     ;; two operands, either a fixnum or a Bignum: normalize both, widen to
     ;; N = max(their limb counts) two's-complement digits, combine
@@ -22934,7 +23346,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; operands' digit functions have already reached their own constant
     ;; tail, so the combined result's own tail is fully determined by
     ;; N-1's value and needs no further limb to express.
-    (defun nl_bignum_bitop (opcode a_sexp b_sexp out)
+    ;; Doc 215 builtin word ABI: nl_bignum_bitop_w returns the result WORD (0 = signal stashed); nl_bignum_bitop keeps the (rc, OUT) ABI.
+    (defun nl_bignum_bitop_w (opcode a_sexp b_sexp _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((scratch2a (alloc-bytes 8 4)) (scratch2b (alloc-bytes 8 4))
              (sign_a (alloc-bytes 8 8)) (magptr_a (alloc-bytes 8 8)) (count_a (alloc-bytes 8 8))
              (sign_b (alloc-bytes 8 8)) (magptr_b (alloc-bytes 8 8)) (count_b (alloc-bytes 8 8)))
@@ -22958,7 +23374,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq (nl_bignum_combine_loop ta tb r 0 n opcode)
                    (let* ((exta (if (= sa 1) 4294967295 0)) (extb (if (= sb 1) 4294967295 0))
                           (extr (if (= opcode 0) (logand exta extb) (if (= opcode 1) (logior exta extb) (logxor exta extb)))))
-                     (nl_bignum_finalize_bitop r n extr out)))))))))
+                     (nl_bignum_finalize_bitop r n extr out))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_bitop (opcode a_sexp b_sexp out)
+      (nl_abi_word_to_rc (nl_bignum_bitop_w opcode a_sexp b_sexp 0) out))
     ;; N-ary fold for `logand'/`logior'/`logxor' once a Bignum operand has
     ;; been detected (the all-fixnum fast path -- `wf_logand_fold' et al.
     ;; above -- is unchanged and stays on the native-i64 fold for that
@@ -22966,12 +23386,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the elisp identity value's Sexp (-1 for `logand', 0 for `logior'/
     ;; `logxor') and is combined against each remaining list element in
     ;; turn via `nl_bignum_bitop'.
-    (defun wf_bitop_fold (opcode lp acc_ptr out)
+    ;; Doc 215 builtin word ABI: wf_bitop_fold_w returns the result WORD (0 = signal stashed); wf_bitop_fold keeps the (rc, OUT) ABI.
+    (defun wf_bitop_fold_w (opcode lp acc_ptr _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (if (= (ptr-read-u64 lp 0) 7)
           (let* ((tmp (alloc-bytes 32 8)))
             (seq (nl_bignum_bitop opcode acc_ptr (nl_cons_car_ptr lp) tmp)
                  (wf_bitop_fold opcode (nl_cons_cdr_ptr lp) tmp out)))
-        (wf_copy32 out acc_ptr)))
+        (wf_copy32 out acc_ptr))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_bitop_fold (opcode lp acc_ptr out)
+      (nl_abi_word_to_rc (wf_bitop_fold_w opcode lp acc_ptr 0) out))
     ;; `lognot' on a Bignum operand: X -> -(X+1), computed by adding the
     ;; constant 1 (via `nl_bignum_add_raw', which already threads a
     ;; result sign through) and then FLIPPING that sign -- the identity
@@ -22980,7 +23408,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; (`nl_bignum_finish' demotes any zero magnitude to plain Int 0
     ;; regardless of the sign passed to it, Phase B's own established
     ;; behavior).
-    (defun bf_lognot_general (x_sexp out)
+    ;; Doc 215 builtin word ABI: bf_lognot_general_w returns the result WORD (0 = signal stashed); bf_lognot_general keeps the (rc, OUT) ABI.
+    (defun bf_lognot_general_w (x_sexp _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((scratch2 (alloc-bytes 8 4))
              (sign_slot (alloc-bytes 8 8)) (magptr_slot (alloc-bytes 8 8)) (count_slot (alloc-bytes 8 8)))
         (seq
@@ -22989,7 +23421,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (one (alloc-bytes 4 4)) (sumbuf (alloc-bytes (* (+ cx 1) 4) 4)) (sum_sign_slot (alloc-bytes 8 8)))
            (seq (ptr-write-u32 one 0 1)
                 (let* ((rc (nl_bignum_add_raw sx px cx 0 one 1 sumbuf sum_sign_slot)))
-                  (nl_bignum_finish (- 1 (ptr-read-u64 sum_sign_slot 0)) sumbuf rc out)))))))
+                  (nl_bignum_finish (- 1 (ptr-read-u64 sum_sign_slot 0)) sumbuf rc out))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_lognot_general (x_sexp out)
+      (nl_abi_word_to_rc (bf_lognot_general_w x_sexp 0) out))
     ;; --- `ash', unified over fixnum and Bignum operands (see this
     ;; block's own header comment for why the fixnum path is routed
     ;; through the same magnitude-limb machinery rather than kept as a
@@ -23010,13 +23446,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (nextcarry (if (= bitshift 0) 0 (shr v (- 32 bitshift)))))
           (seq (ptr-write-u32 obuf_ptr (* (+ i limbshift) 4) lo)
                (nl_bignum_shl_bits_loop mag_ptr mag_count obuf_ptr (+ i 1) limbshift bitshift nextcarry)))))
-    (defun nl_bignum_ash_left (sign mag_ptr mag_count c out)
+    ;; Doc 215 builtin word ABI: nl_bignum_ash_left_w returns the result WORD (0 = signal stashed); nl_bignum_ash_left keeps the (rc, OUT) ABI.
+    (defun nl_bignum_ash_left_w (sign mag_ptr mag_count c _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((limbshift (/ c 32)) (bitshift (mod c 32))
              (outcount (+ (+ mag_count limbshift) 1))
              (outbuf (alloc-bytes (* outcount 4) 4)))
         (seq (nl_bignum_shl_zero_pad outbuf 0 limbshift)
              (nl_bignum_shl_bits_loop mag_ptr mag_count outbuf 0 limbshift bitshift 0)
-             (nl_bignum_finish sign outbuf (nl_bignum_canon_count outbuf outcount) out))))
+             (nl_bignum_finish sign outbuf (nl_bignum_canon_count outbuf outcount) out)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_ash_left (sign mag_ptr mag_count c out)
+      (nl_abi_word_to_rc (nl_bignum_ash_left_w sign mag_ptr mag_count c 0) out))
     ;; Right shift (K = -C > 0), floor semantics.  Non-negative operand:
     ;; a plain truncating (== floor, since magnitude is non-negative)
     ;; logical shift of the magnitude.  Negative operand: floor(-M/2^K) =
@@ -23049,7 +23493,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (logand (logior (shr lo bitshift) (shl hi (- 32 bitshift))) 4294967295))))
           (seq (ptr-write-u32 obuf_ptr (* i 4) v)
                (nl_bignum_shr_bits_loop mag_ptr mag_count obuf_ptr (+ i 1) limbshift bitshift n)))))
-    (defun nl_bignum_ash_right (sign mag_ptr mag_count k out)
+    ;; Doc 215 builtin word ABI: nl_bignum_ash_right_w returns the result WORD (0 = signal stashed); nl_bignum_ash_right keeps the (rc, OUT) ABI.
+    (defun nl_bignum_ash_right_w (sign mag_ptr mag_count k _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((limbshift (/ k 32)) (bitshift (mod k 32))
              (n (if (> mag_count limbshift) (- mag_count limbshift) 0)))
         (if (= sign 0)
@@ -23068,11 +23516,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (let* ((one (alloc-bytes 4 4)) (sign_slot (alloc-bytes 8 8)))
                          (seq (ptr-write-u32 one 0 1)
                               (let* ((rc (nl_bignum_add_raw 0 qbuf n 0 one 1 qbuf sign_slot)))
-                                (nl_bignum_finish 1 qbuf rc out))))))))))))
+                                (nl_bignum_finish 1 qbuf rc out)))))))))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_ash_right (sign mag_ptr mag_count k out)
+      (nl_abi_word_to_rc (nl_bignum_ash_right_w sign mag_ptr mag_count k 0) out))
     ;; `ash' top-level: normalize X (fixnum or Bignum), branch on shift
     ;; direction.  C (the shift count) stays fixnum-only -- the dispatch
     ;; entry below still gates on tag 2 for it, unchanged.
-    (defun nl_bignum_ash_general (x_ptr c out)
+    ;; Doc 215 builtin word ABI: nl_bignum_ash_general_w returns the result WORD (0 = signal stashed); nl_bignum_ash_general keeps the (rc, OUT) ABI.
+    (defun nl_bignum_ash_general_w (x_ptr c _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((scratch2 (alloc-bytes 8 4))
              (sign_slot (alloc-bytes 8 8)) (magptr_slot (alloc-bytes 8 8)) (count_slot (alloc-bytes 8 8)))
         (seq
@@ -23080,7 +23536,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (let* ((sx (ptr-read-u64 sign_slot 0)) (px (ptr-read-u64 magptr_slot 0)) (cx (ptr-read-u64 count_slot 0)))
            (if (>= c 0)
                (nl_bignum_ash_left sx px cx c out)
-             (nl_bignum_ash_right sx px cx (- 0 c) out))))))
+             (nl_bignum_ash_right sx px cx (- 0 c) out)))))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bignum_ash_general (x_ptr c out)
+      (nl_abi_word_to_rc (nl_bignum_ash_general_w x_ptr c 0) out))
     (defun nl_copy_words (dst src n)
       (if (= n 0) 0
         (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
@@ -23129,9 +23589,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; concurrent threads in O(1) stack.
     (defun nl_spin_until (addr target)
       (while (< (ptr-read-u64 addr 0) target) 0))
-    (defun bf_thread_join (args env out)
+    ;; Doc 215 builtin word ABI: bf_thread_join_w returns the result WORD (0 = signal stashed); bf_thread_join keeps the (rc, OUT) ABI.
+    (defun bf_thread_join_w (args env _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (seq (nl_spin_until (wf_argval args 0) (wf_argval args 1))
-           (wf_write_int out 0)))
+           (wf_write_int out 0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun bf_thread_join (args env out)
+      (nl_abi_word_to_rc (bf_thread_join_w args env 0) out))
     ;; fork-spawn: fork(2) (syscall 57) a child with a COW-isolated copy of the
     ;; WHOLE address space (own arena / mirror / frames / env), so N children
     ;; compiling CONCURRENTLY share NO mutable eval state and cannot race (the
@@ -24850,7 +25318,11 @@ extern arms in dynamic builds."
                                   8227343653525545326
                                   7814639756477035365
                                   1882027119 20))
-           (defun nl_reader_native_result_ref (src env marker args out)
+           ;; Doc 215 builtin word ABI: nl_reader_native_result_ref_w returns the result WORD (0 = signal stashed); nl_reader_native_result_ref keeps the (rc, OUT) ABI.
+    (defun nl_reader_native_result_ref_w (src env marker args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
              (let* ((control (data-addr nl_root_pin_control))
                     (base (data-addr nl_root_pin_region))
                     (top (atomic-fetch-add (+ control 24) 0)))
@@ -24873,7 +25345,11 @@ extern arms in dynamic builds."
                                  (nl_reader_native_result_ref_error args))))
                          (nl_reader_native_result_ref_error args))
                      (nl_reader_native_result_ref_error args))
-                 (nl_reader_native_result_ref_error args))))))
+                 (nl_reader_native_result_ref_error args)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_reader_native_result_ref (src env marker args out)
+      (nl_abi_word_to_rc (nl_reader_native_result_ref_w src env marker args 0) out))))
    (nelisp-standalone--guard-fixed-arities
     (append (nelisp-standalone--applyfn-reader-table)
             (list
@@ -25080,7 +25556,11 @@ extern arms in dynamic builds."
     ;; took 17 s to bring back 50 KB of column text, the whole budget of an
     ;; MCP request.  The UTF-8 step stays in Lisp: pair these with
     ;; `string-as-unibyte' / `string-as-multibyte'.
-    (defun nl_bi_ptr_read_bytes (args out)
+    ;; Doc 215 builtin word ABI: nl_bi_ptr_read_bytes_w returns the result WORD (0 = signal stashed); nl_bi_ptr_read_bytes keeps the (rc, OUT) ABI.
+    (defun nl_bi_ptr_read_bytes_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((src (wf_argval args 0))
              (n (wf_argval args 1))
              (ms (alloc-bytes 32 8))
@@ -25092,8 +25572,16 @@ extern arms in dynamic builds."
             (mut-str-push-byte ms (ptr-read-u8 src i))
             (setq i (+ i 1))))
          (mut-str-finalize ms out)
-         0)))
-    (defun nl_bi_ptr_write_bytes (args out)
+         0))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bi_ptr_read_bytes (args out)
+      (nl_abi_word_to_rc (nl_bi_ptr_read_bytes_w args 0) out))
+    ;; Doc 215 builtin word ABI: nl_bi_ptr_write_bytes_w returns the result WORD (0 = signal stashed); nl_bi_ptr_write_bytes keeps the (rc, OUT) ABI.
+    (defun nl_bi_ptr_write_bytes_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (let* ((abi_rc (seq
+
       (let* ((dst (wf_argval args 0))
              (sx (wf_arg_ptr args 1))
              (src (nl_bi_strptr sx))
@@ -25104,7 +25592,11 @@ extern arms in dynamic builds."
            (seq
             (ptr-write-u8 dst i (ptr-read-u8 src i))
             (setq i (+ i 1))))
-         (wf_write_int out n))))
+         (wf_write_int out n)))
+)))
+          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun nl_bi_ptr_write_bytes (args out)
+      (nl_abi_word_to_rc (nl_bi_ptr_write_bytes_w args 0) out))
     ;; str-kv-line SOURCE KEY -> for the first line of SOURCE whose text
     ;; before the first TAB equals KEY, return everything after that TAB;
     ;; "" when no line matches.  Native scan for the nemacs GUI bridge

@@ -16,10 +16,14 @@
 ;;; Code:
 
 (defconst nelisp-cc-eq-symbol--source
-  '(defun nelisp_eq_symbol (arg0 arg1 result-slot)
+  '(seq
+    (defun nelisp_eq_symbol (arg0 arg1 result-slot)
      (if (= 0 (symbol-eq arg0 arg1))
          (sexp-write-nil result-slot)
        (sexp-write-t result-slot)))
+    ;; Doc 215 builtin word ABI: nil (3) or t (7) as an immediate WORD.
+    (defun nelisp_eq_symbol_w (arg0 arg1 _pad)
+      (if (= 0 (symbol-eq arg0 arg1)) 3 7)))
   "AOT source for the §101.C `(eq SYMBOL SYMBOL)' swap.
 
 `arg0' and `arg1' are `*const Sexp' inputs; `result-slot' is a
