@@ -17696,20 +17696,40 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; pointers, durable, so nothing is materialised and no later lookup can
     ;; clobber them.  A closure is (closure (t) ARGS . BODY).
     (defun m5_fx_word_cons_p (w _pad) (if (= (logand w 1) 1) 0 (if (= (ptr-read-u64 w 0) 7) 1 0)))
+    ;; prim lane: a captured environment the VM takes -- a non-empty list
+    ;; whose elements are all `t' or symbols (bare local special declarations
+    ;; such as a file's `(defvar NAME)'), with no (NAME . VALUE) binding.
+    ;; The VM reads and sets every free variable through `symbol-value' /
+    ;; `set', as the interpreter does for a declared name nothing binds; the
+    ;; compiler (`nelisp--fx-declared') refuses bodies that bind one.  Was:
+    ;; exactly (t), which left every library function defined after a
+    ;; declaration interpreted.  LST is a WORD or a cons view; 1 or 0.
+    (defun m5_fx_env_ok (lst _pad)
+      (if (/= (m5_fx_word_cons_p lst 0) 1) 0
+        (let* ((w lst) (r 2))
+          (seq
+           (while (= r 2)
+             (if (= w 3) (setq r 1)
+               (if (/= (m5_fx_word_cons_p w 0) 1) (setq r 0)
+                 (let* ((e (nl_cons_car_word w)))
+                   (if (if (= e 7) 1
+                         (if (= (logand e 1) 1) 0
+                           (if (= (ptr-read-u64 e 0) 4) 1 0)))
+                       (setq w (nl_cons_cdr_word w))
+                     (setq r 0))))))
+           r))))
     (defun m5_fx_closure_rec (head c1 env scratch)
       (if (/= (m5_fx_word_cons_p c1 0) 1) 0
         (let* ((captured (nl_cons_car_word c1)))
-          (if (/= (m5_fx_word_cons_p captured 0) 1) 0
-            (if (/= (nl_cons_car_word captured) 7) 0
-              (if (/= (nl_cons_cdr_word captured) 3) 0
-                (if (= (logand head 1) 1) 0
-                  (if (/= (ptr-read-u64 head 0) 4) 0
-                    (if (/= (nl_apply_name_eq_closure head) 1) 0
-                      (let* ((c2 (nl_cons_cdr_word c1)))
-                        (if (/= (m5_fx_word_cons_p c2 0) 1) 0
-                          (let* ((body (nl_cons_cdr_word c2)))
-                            (if (/= (m5_fx_word_cons_p body 0) 1) 0
-                              (m5_fx_rec_hinted body env scratch 0))))))))))))))
+          (if (/= (m5_fx_env_ok captured 0) 1) 0
+            (if (= (logand head 1) 1) 0
+              (if (/= (ptr-read-u64 head 0) 4) 0
+                (if (/= (nl_apply_name_eq_closure head) 1) 0
+                  (let* ((c2 (nl_cons_cdr_word c1)))
+                    (if (/= (m5_fx_word_cons_p c2 0) 1) 0
+                      (let* ((body (nl_cons_cdr_word c2)))
+                        (if (/= (m5_fx_word_cons_p body 0) 1) 0
+                          (m5_fx_rec_hinted body env scratch 0))))))))))))
     ;; BODY's record; 0 leaves the call to the interpreter, and records BODY
     ;; as the hint for `nl_apply_lambda_inner' (`nl_fx_hint').
     (defun m5_fx_rec_hinted (body env scratch _pad)
@@ -40944,14 +40964,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0))
                        (nl_n3_apply_mode captured formals body-list args-list env out)
                      (seq ,@(cdddr (car out))))) out)
-          ;; eval-core: a closure capturing nothing -- CAPTURED is exactly (t)
-          ;; -- whose body `nelisp--fx-table' has compiled runs on the word VM.
+          ;; eval-core: a closure capturing nothing -- CAPTURED is (t), or only
+          ;; bare declarations (`m5_fx_env_ok') -- whose body `nelisp--fx-table'
+          ;; has compiled runs on the word VM.
           (push '(defun nl_apply_lambda_inner (captured formals body-list args-list env out)
                    (let* ((rec (if (= (sexp-tag captured) 7)
-                                   (if (= (nl_cons_car_word captured) 7)
-                                       (if (= (nl_cons_cdr_word captured) 3)
+                                   (if (= (m5_fx_env_ok captured 0) 1)
                                            (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
-                                               (m5_fx_inner_lookup body-list env) 0) 0) 0) 0))
+                                               (m5_fx_inner_lookup body-list env) 0) 0) 0))
                           (st (if (= rec 0) -3 (m5_fx_apply rec args-list env out))))
                      (if (= st -3)
                          (nl_apply_lambda_inner_n3 captured formals body-list args-list env out)

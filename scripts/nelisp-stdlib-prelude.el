@@ -25958,8 +25958,28 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defvar nelisp--fx-callees (make-hash-table :test 'eq)
   "Function -> names whose compiled code calls it.")
 
+(defvar nelisp--fx-declared nil
+  "Bare declarations in the environment of the closure being compiled.
+A closure whose captured environment holds only `t' and symbols -- local
+special declarations, such as a file's `(defvar NAME)' -- runs on the VM
+\(see `nelisp--fx-env-ok-p'); binding one of these names would be dynamic
+there, so the compiler treats them as special and leaves such a body to
+the interpreter.")
+
+(defun nelisp--fx-env-ok-p (env)
+  "Non-nil when ENV, a closure's captured environment, is one the VM takes:
+a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
+  (and (consp env)
+       (let ((ok t))
+         (while (and ok env)
+           (if (and (consp env) (car env) (symbolp (car env)))
+               (setq env (cdr env))
+             (setq ok nil)))
+         ok)))
+
 (defun nelisp--fx-special-p (sym)
-  (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
+  (or (and nelisp--fx-declared (memq sym nelisp--fx-declared) t)
+      (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym))))
 
 ;; A `let' the VM compiled binds its variable lexically, decided when the
 ;; function was defined; the interpreter decides at each evaluation, so a
@@ -26170,7 +26190,7 @@ Never signals: a failure leaves NAME to the interpreter."
   (condition-case nil
       (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
         (let ((fn (symbol-function name)))
-          (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+          (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
             (let ((body (nthcdr 3 fn)))
               (unless (gethash body nelisp--fx-table)
                 (puthash body name nelisp--fx-pending)
@@ -26266,8 +26286,9 @@ Defining it as a function compiles them again.")
 (defun nelisp--fx-register-1 (name)
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
-      (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+      (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
         (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
+               (nelisp--fx-declared (remq t (nth 1 fn)))
                (shape (nelisp--fx-arglist-shape args)))
           (when (and shape
                      (not (cl-some #'nelisp--fx-special-p (car shape)))

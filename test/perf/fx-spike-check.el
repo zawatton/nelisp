@@ -66,6 +66,30 @@
                  (list ok k))))))
   (unless (equal got '(t -1)) (push (list 'gc-held-conses got) fx-spike-failures)))
 
+;; A closure whose captured environment holds only bare declarations (a
+;; file's `(defvar NAME)' without a value) runs on the VM, reading and
+;; setting the declared names dynamically; one that binds a declared name
+;; stays with the interpreter, which binds it dynamically.
+(defvar fx-spike-dx)
+(defvar fx-spike-dy)
+(defun fx-spike-dread () fx-spike-dx)
+(defun fx-spike-dset (v) (setq fx-spike-dx v) fx-spike-dx)
+(defun fx-spike-dready () (if (boundp 'fx-spike-dy) fx-spike-dy 'unbound))
+(defun fx-spike-dlet (v) (let ((fx-spike-dy v)) (fx-spike-dready)))
+(let ((got nil) (cov nil))
+  (dotimes (_ 2)
+    (setq got (list (let ((fx-spike-dx 10)) (fx-spike-dread))
+                    (let ((fx-spike-dx 1)) (list (fx-spike-dset 5) fx-spike-dx))
+                    (fx-spike-dlet 42)
+                    (fx-spike-dready))))
+  (setq cov (mapcar (lambda (s)
+                      (vectorp (gethash (nthcdr 3 (symbol-function s)) nelisp--fx-table)))
+                    '(fx-spike-dread fx-spike-dset fx-spike-dready fx-spike-dlet)))
+  (unless (equal got '(10 (5 5) 42 unbound))
+    (push (list 'declared-env got) fx-spike-failures))
+  (unless (equal cov '(t t t nil))
+    (push (list 'declared-env-coverage cov) fx-spike-failures)))
+
 (dolist (f (reverse fx-spike-failures)) (princ (format "  MISMATCH %S\n" f)))
 (princ (format "FX-SPIKE failures=%d %s\n" (length fx-spike-failures)
                (if fx-spike-failures "FAIL" "PASS")))
