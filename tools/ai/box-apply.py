@@ -812,6 +812,18 @@ def flip_arms(root, write):
     return flipped, hand
 
 
+# Doc 215: F_w that answer 2 ("not found / not handled / EOF") besides 0
+# and a WORD -- the env lookups (adapter nl_abi_lookup_to_rc), the
+# --abi-box-split `status' / `special' kinds, the special-form dispatcher
+# and the reader.  A status test (= (F ..) 0) cannot become (/= w 0) there.
+RETURNS_TWO = re.compile(
+    r"^(nelisp_env_lookup_value|nelisp_env_lookup_function|nelisp_env_lkv_mirror"
+    r"|nelisp_env_lkv_mirror_with_frames|nl_env_lookup_val|nl_env_lookup_val_done"
+    r"|nelisp_mirror_lookup_value|nl_lookup_fn_autoload|nl_lookup_fn_autoload_load"
+    r"|nl_sf_definer_lookup|nl_sf_defun|nl_sf_defvar|nl_sf_defconst|nl_sf_defalias"
+    r"|nl_sf_defvaralias|nl_sf_defmacro|nl_apply_special\w*|nelisp_reader_\w+)$")
+
+
 def repoint(root, dump, write):
     """Re-point status-testing call sites of F onto F_w where F_w exists.
 
@@ -840,6 +852,11 @@ def repoint(root, dump, write):
                 continue
             fw, oi = wmap[n[0]]
             args = n[1:]
+            if RETURNS_TWO.match(str(n[0])):
+                # Doc 215: these _w answer 2 for "not found / not handled /
+                # EOF", where the adapter returned rc 1 or 2; (/= w 0) would
+                # read that as success, so the site stays on the adapter.
+                report.append((cname, n[0], "F_w may return 2 (lookup, special or reader)")); continue
             if oi >= len(args) or not isinstance(args[oi], Sym):
                 report.append((cname, n[0], "out argument is not a local symbol")); continue
             o = args[oi]
