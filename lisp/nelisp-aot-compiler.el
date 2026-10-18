@@ -17170,6 +17170,18 @@ SETE AL + MOVZX RAX, AL: rax = 1 on success, 0 on failure."
     (nelisp-asm-x86_64-sete-al buf)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
+(defun nelisp-aot-compiler--imm-disp32 (node)
+  "NODE's value when it is an `imm' integer that fits a signed disp32."
+  (and (eq (nelisp-aot-compiler--ir-kind node) 'imm)
+       (let ((v (nelisp-aot-compiler--ir-get node :value)))
+         (and (integerp v) (<= -2147483648 v) (<= v 2147483647) v))))
+
+(defun nelisp-aot-compiler--disp32-bytes (v)
+  "V as 4 little-endian two's-complement bytes."
+  (let ((u (logand v #xFFFFFFFF)))
+    (unibyte-string (logand u #xFF) (logand (ash u -8) #xFF)
+                    (logand (ash u -16) #xFF) (logand (ash u -24) #xFF))))
+
 (defun nelisp-aot-compiler--emit-ptr-read (node buf helper-name)
   "Emit `ptr-read-u{8,16,32,64}' — inline MOV/MOVZX at [RDI+RSI] (no PLT call).
 Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
@@ -17180,6 +17192,23 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
 Result is zero-extended to i64 in rax in all cases."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
         (offset (nelisp-aot-compiler--ir-get node :offset)))
+    (if (nelisp-aot-compiler--imm-disp32 offset)
+        ;; Constant offset: evaluate ptr -> rax and load from [rax+disp32]
+        ;; (one instruction instead of push / mov imm / mov / pop / load).
+        (progn
+          (nelisp-aot-compiler--emit-value ptr buf)
+          (nelisp-asm-x86_64-emit-bytes
+           buf
+           (concat
+            (cond
+             ((string= helper-name "nl_ptr_read_u64") (unibyte-string #x48 #x8B #x80))
+             ((string= helper-name "nl_ptr_read_u8") (unibyte-string #x48 #x0F #xB6 #x80))
+             ((string= helper-name "nl_ptr_read_u16") (unibyte-string #x48 #x0F #xB7 #x80))
+             ((string= helper-name "nl_ptr_read_u32") (unibyte-string #x8B #x80))
+             (t (signal 'nelisp-aot-compiler-error
+                        (list :unknown-ptr-read-helper helper-name))))
+            (nelisp-aot-compiler--disp32-bytes
+             (nelisp-aot-compiler--imm-disp32 offset)))))
     ;; Evaluate ptr → rax, save; evaluate offset → rax (= rsi after pop).
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-aot-compiler--emit-temp-push buf 'rax)
@@ -17197,7 +17226,7 @@ Result is zero-extended to i64 in rax in all cases."
      ((string= helper-name "nl_ptr_read_u32")
       (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf))
      (t (signal 'nelisp-aot-compiler-error
-                (list :unknown-ptr-read-helper helper-name))))))
+                (list :unknown-ptr-read-helper helper-name)))))))
 
 (defun nelisp-aot-compiler--emit-ptr-write (node buf helper-name)
   "Emit `ptr-write-u{8,16,32,64}' — inline MOV store at [RDI+RSI] (no PLT call).
@@ -17210,6 +17239,26 @@ Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-exte
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
         (offset (nelisp-aot-compiler--ir-get node :offset))
         (val (nelisp-aot-compiler--ir-get node :val)))
+    (if (nelisp-aot-compiler--imm-disp32 offset)
+        ;; Constant offset: ptr -> rdi, val -> rdx, store to [rdi+disp32].
+        (progn
+          (nelisp-aot-compiler--emit-value ptr buf)
+          (nelisp-aot-compiler--emit-temp-push buf 'rax)
+          (nelisp-aot-compiler--emit-value val buf)
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)
+          (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
+          (nelisp-asm-x86_64-emit-bytes
+           buf
+           (concat
+            (cond
+             ((string= helper-name "nl_ptr_write_u64") (unibyte-string #x48 #x89 #x97))
+             ((string= helper-name "nl_ptr_write_u8") (unibyte-string #x88 #x97))
+             ((string= helper-name "nl_ptr_write_u16") (unibyte-string #x66 #x89 #x97))
+             ((string= helper-name "nl_ptr_write_u32") (unibyte-string #x89 #x97))
+             (t (signal 'nelisp-aot-compiler-error
+                        (list :unknown-ptr-write-helper helper-name))))
+            (nelisp-aot-compiler--disp32-bytes
+             (nelisp-aot-compiler--imm-disp32 offset)))))
     ;; Evaluate ptr, offset, val; assign to rdi, rsi, rdx.
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-aot-compiler--emit-temp-push buf 'rax)
@@ -17230,7 +17279,7 @@ Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-exte
      ((string= helper-name "nl_ptr_write_u32")
       (nelisp-asm-x86_64-mov-dword-rdi-rsi-edx buf))
      (t (signal 'nelisp-aot-compiler-error
-                (list :unknown-ptr-write-helper helper-name))))
+                (list :unknown-ptr-write-helper helper-name)))))
     ;; rax = 1 sentinel (matches Rust void extern contract for and-chain).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 

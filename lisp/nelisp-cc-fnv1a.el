@@ -77,7 +77,19 @@
           (if (= (sexp-tag right) 16)
               (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
             0)
-        (if (= (sexp-tag right) 16) 0 (str-eq left right))))
+        (if (= (sexp-tag right) 16) 0
+          ;; Interned symbols share their name buffer, so two tag-4 keys
+          ;; with the same buffer and length name the same symbol: answer
+          ;; without the byte compare.  Any other pair still compares names.
+          (if (if (= (sexp-tag left) 4)
+                  (if (= (sexp-tag right) 4)
+                      (if (= (ptr-read-u64 left 16) (ptr-read-u64 right 16))
+                          (= (ptr-read-u64 left 24) (ptr-read-u64 right 24))
+                        0)
+                    0)
+                0)
+              1
+            (str-eq left right)))))
     (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the

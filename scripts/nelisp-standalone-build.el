@@ -1120,26 +1120,91 @@ cross-unit call) before the freed payload is poisoned."
     ;; bills the debt, carves WANT off the run's head and zeroes the payload;
     ;; this does the same writes in the same order without the call chain.
     ;; Every other case, the exact-fit run included, takes the full path.
+    ;;
+    ;; prim lane (2026-10-19): the steady-state case -- the size's exact-fit
+    ;; bucket is NOT empty -- also skips the chain.  Measured on an
+    ;; interpreted (funcall f i) loop: 44 allocations per iteration, ~810
+    ;; instructions each, nearly all of them `nl_freelist_take' ->
+    ;; `nl_freelist_bucket_pop' call overhead.  `nl_alloc_pop_fast' repeats
+    ;; bucket_pop's integrity checks (in arena, 8-aligned, mark FREE, BT ==
+    ;; WANT) in the same order; any failure answers 0 and the request takes
+    ;; the full path, which re-reads the same head and records the trip
+    ;; exactly as before.  On success it does the full path's writes: debt,
+    ;; unlink, occupancy-mask sync, mark 0, zero the payload.
     (defun nl_alloc_bytes (size align)
       (let* ((p8 (logand (+ size 7) -8))
              (want (+ 8 (if (< p8 8) 8 p8)))
-             (r (ptr-read-u64 (data-addr nl_gc_diag) 48)))
-        (if (if (> want 472) 0
-              (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
-                  (if (= (ptr-read-u64 (data-addr nl_alloc_diag) 0) 0)
-                      (if (= (ptr-read-u64 268435624 0) 1) 0
-                        (if (< want (ptr-read-u64 268435656 0)) 0
-                          (if (= (ptr-read-u64 (+ 268435696 (- want 16)) 0) 0)
-                              (if (= (logand (ptr-read-u64 (data-addr nl_freelist_small_mask) 0)
-                                             (shl 1 (/ (- want 16) 8)))
-                                     0)
-                                  (if (= (ptr-read-u64 268435632 0) 0) 0
-                                    (if (= r 0) 0
-                                      (if (< (logand (ptr-read-u64 r 0) 4294967288) (+ want 16)) 0 1)))
-                                0)
-                            0)))
-                    0)
-                0))
+             (gate (if (> want 472) 0
+                     (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+                         (if (= (ptr-read-u64 (data-addr nl_alloc_diag) 0) 0)
+                             (if (= (ptr-read-u64 268435624 0) 1) 0
+                               (if (< want (ptr-read-u64 268435656 0)) 0 1))
+                           0)
+                       0))))
+        (if (= gate 0) (nl_alloc_bytes_slow size align)
+          (if (= (ptr-read-u64 (+ 268435696 (- want 16)) 0) 0)
+              (nl_alloc_bytes_run size align want)
+            (let* ((popped (nl_alloc_pop_fast want)))
+              (if (= popped 0) (nl_alloc_bytes_slow size align) popped))))))
+    (defun nl_alloc_bytes_slow (size align)
+      (nl_alloc_check_stamp
+       (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))
+    ;; In-arena test for a free-list head: the first two arms of
+    ;; `nl_gc_in_arena' (chunk 0 and the current chunk), else the full walk.
+    (defun nl_alloc_pop_in_arena (cur)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (tail (ptr-read-u64 268436168 0)))
+        (if (and (> head 0)
+                 (>= cur (ptr-read-u64 head 24))
+                 (< cur (+ (ptr-read-u64 head 0) (ptr-read-u64 268435456 0))))
+            1
+          (if (and (> tail 0) (not (= tail head))
+                   (>= cur (ptr-read-u64 tail 24))
+                   (< cur (+ (ptr-read-u64 tail 0) (ptr-read-u64 tail 16))))
+              1
+            (nl_gc_in_arena cur)))))
+    (defun nl_alloc_pop_fast (want)
+      (let* ((head (+ 268435696 (- want 16)))
+             (cur (ptr-read-u64 head 0)))
+        (if (= cur 0) 0
+          (if (= (nl_alloc_pop_in_arena cur) 0) 0
+            (if (= (logand cur 7) 0)
+                (let* ((hw (ptr-read-u64 (- cur 8) 0)))
+                  (if (= (logand hw 7) 2)
+                      (if (= (logand hw 4294967288) want)
+                          (let* ((next (ptr-read-u64 cur 0))
+                                 (mask (ptr-read-u64 (data-addr nl_freelist_small_mask) 0))
+                                 (bit (shl 1 (/ (- want 16) 8)))
+                                 (o 0))
+                            (seq
+                             (ptr-write-u64 (data-addr nl_gc_stats) 0
+                                            (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
+                             (ptr-write-u64 head 0 next)
+                             (ptr-write-u64 (data-addr nl_freelist_small_mask) 0
+                                            (if (= next 0)
+                                                (if (= (logand mask bit) 0) mask (- mask bit))
+                                              (logior mask bit)))
+                             (ptr-write-u64 (- cur 8) 0 (logand hw 4294967288))
+                             (while (< o (- want 8))
+                               (ptr-write-u64 (+ cur o) 0 0)
+                               (setq o (+ o 8)))
+                             cur))
+                        0)
+                    0))
+              0)))))
+    ;; The pre-existing body of `nl_alloc_bytes': the bucket-empty run fast
+    ;; path, else the full checked path.  WANT is the caller's BLOCK_TOTAL.
+    ;; Bucket-empty case of `nl_alloc_bytes' (caller checked the gate and
+    ;; the empty head): the original run-carving fast path.
+    (defun nl_alloc_bytes_run (size align want)
+      (let* ((r (ptr-read-u64 (data-addr nl_gc_diag) 48)))
+        (if (if (= (logand (ptr-read-u64 (data-addr nl_freelist_small_mask) 0)
+                           (shl 1 (/ (- want 16) 8)))
+                   0)
+                (if (= (ptr-read-u64 268435632 0) 0) 0
+                  (if (= r 0) 0
+                    (if (< (logand (ptr-read-u64 r 0) 4294967288) (+ want 16)) 0 1)))
+              0)
             (let* ((bt (logand (ptr-read-u64 r 0) 4294967288))
                    (obj (+ r 8))
                    (o 0))
@@ -1153,8 +1218,7 @@ cross-unit call) before the freed payload is poisoned."
                  (ptr-write-u64 (+ obj o) 0 0)
                  (setq o (+ o 8)))
                obj))
-          (nl_alloc_check_stamp
-           (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))))
+          (nl_alloc_bytes_slow size align))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
     ;; BEFORE poison-on-free overwrites the suffix).  Armed only via
     ;; the boot env probe, so every freed block carries a guard; the
@@ -3439,15 +3503,34 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          (cdr nelisp-standalone--arena-source))))
        (setq body
              (if (nelisp-standalone--runtime-reload-enabled-p)
-                 (mapcar (lambda (form)
-                           (if (and (consp form)
-                                    (eq (car form) 'defun)
-                                    (eq (cadr form) 'nl_alloc_bytes_uncheck))
-                               (cons 'defun
-                                     (cons 'nl_runtime_reload_alloc_original
-                                           (cddr form)))
-                             form))
-                         body)
+                 (append
+                  (mapcar (lambda (form)
+                           (cond
+                            ((and (consp form)
+                                  (eq (car form) 'defun)
+                                  (eq (cadr form) 'nl_alloc_bytes_uncheck))
+                             (cons 'defun
+                                   (cons 'nl_runtime_reload_alloc_original
+                                         (cddr form))))
+                            ;; `nl_alloc_bytes' serves the common small
+                            ;; request inline (free-list pop, run carving)
+                            ;; without reaching `nl_alloc_bytes_uncheck'.
+                            ;; Keep that only while the original allocator is
+                            ;; installed; once a replacement is published,
+                            ;; every request goes through the dispatch
+                            ;; (the `nl_alloc_bytes' wrapper appended below).
+                            ((and (consp form)
+                                  (eq (car form) 'defun)
+                                  (eq (cadr form) 'nl_alloc_bytes))
+                             (cons 'defun
+                                   (cons 'nl_runtime_reload_alloc_fast
+                                         (cddr form))))
+                            (t form)))
+                          body)
+                  '((defun nl_alloc_bytes (size align)
+                      (if (= (ptr-read-u64 (data-addr nl_runtime_reload_state) 0) 0)
+                          (nl_runtime_reload_alloc_fast size align)
+                        (nl_alloc_bytes_slow size align)))))
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
@@ -17963,20 +18046,40 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; pointers, durable, so nothing is materialised and no later lookup can
     ;; clobber them.  A closure is (closure (t) ARGS . BODY).
     (defun m5_fx_word_cons_p (w _pad) (if (= (logand w 1) 1) 0 (if (= (ptr-read-u64 w 0) 7) 1 0)))
+    ;; prim lane: a captured environment the VM takes -- a non-empty list
+    ;; whose elements are all `t' or symbols (bare local special declarations
+    ;; such as a file's `(defvar NAME)'), with no (NAME . VALUE) binding.
+    ;; The VM reads and sets every free variable through `symbol-value' /
+    ;; `set', as the interpreter does for a declared name nothing binds; the
+    ;; compiler (`nelisp--fx-declared') refuses bodies that bind one.  Was:
+    ;; exactly (t), which left every library function defined after a
+    ;; declaration interpreted.  LST is a WORD or a cons view; 1 or 0.
+    (defun m5_fx_env_ok (lst _pad)
+      (if (/= (m5_fx_word_cons_p lst 0) 1) 0
+        (let* ((w lst) (r 2))
+          (seq
+           (while (= r 2)
+             (if (= w 3) (setq r 1)
+               (if (/= (m5_fx_word_cons_p w 0) 1) (setq r 0)
+                 (let* ((e (nl_cons_car_word w)))
+                   (if (if (= e 7) 1
+                         (if (= (logand e 1) 1) 0
+                           (if (= (ptr-read-u64 e 0) 4) 1 0)))
+                       (setq w (nl_cons_cdr_word w))
+                     (setq r 0))))))
+           r))))
     (defun m5_fx_closure_rec (head c1 env scratch)
       (if (/= (m5_fx_word_cons_p c1 0) 1) 0
         (let* ((captured (nl_cons_car_word c1)))
-          (if (/= (m5_fx_word_cons_p captured 0) 1) 0
-            (if (/= (nl_cons_car_word captured) 7) 0
-              (if (/= (nl_cons_cdr_word captured) 3) 0
-                (if (= (logand head 1) 1) 0
-                  (if (/= (ptr-read-u64 head 0) 4) 0
-                    (if (/= (nl_apply_name_eq_closure head) 1) 0
-                      (let* ((c2 (nl_cons_cdr_word c1)))
-                        (if (/= (m5_fx_word_cons_p c2 0) 1) 0
-                          (let* ((body (nl_cons_cdr_word c2)))
-                            (if (/= (m5_fx_word_cons_p body 0) 1) 0
-                              (m5_fx_rec_hinted body env scratch 0))))))))))))))
+          (if (/= (m5_fx_env_ok captured 0) 1) 0
+            (if (= (logand head 1) 1) 0
+              (if (/= (ptr-read-u64 head 0) 4) 0
+                (if (/= (nl_apply_name_eq_closure head) 1) 0
+                  (let* ((c2 (nl_cons_cdr_word c1)))
+                    (if (/= (m5_fx_word_cons_p c2 0) 1) 0
+                      (let* ((body (nl_cons_cdr_word c2)))
+                        (if (/= (m5_fx_word_cons_p body 0) 1) 0
+                          (m5_fx_rec_hinted body env scratch 0))))))))))))
     ;; BODY's record; 0 leaves the call to the interpreter, and records BODY
     ;; as the hint for `nl_apply_lambda_inner' (`nl_fx_hint').
     (defun m5_fx_rec_hinted (body env scratch _pad)
@@ -21461,19 +21564,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
             1)
         1))
     (defun bf_bind_frame_silent (env frames name value)
-      ;; Clause 2: argument binding cannot reenter Lisp. The frame's private
-      ;; view caches the declaration table for this binding phase only, so
-      ;; several formals need just one registry-name lookup. The mirror owns
-      ;; the table; no value, heap layout or bridge ABI is added. Local
+      ;; Clause 2: argument binding cannot reenter Lisp. Local
       ;; declaration markers do not classify formal parameters in GNU;
       ;; globals and dynamic mode do. Ignoring caller/captured local markers
       ;; both preserves formal shadowing and avoids a caller-frame walk.
       (let* ((frame (nl_vector_slot_word (record-slot-ref-ptr frames 0)
-                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
-             (table (ptr-read-u64 frame 24)))
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
         ;; A formal binds dynamically only in dynamic-binding mode: under
         ;; lexical-binding GNU 31.1 binds a parameter named after a special
-        ;; variable lexically.  TABLE (the declaration cache) is unused now.
+        ;; variable lexically.  The frame's +24 declaration cache is no
+        ;; longer filled (`nl_push_and_bind').
         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
             (if (= (nl_sb_bind env frames name value) 0) 1
               (seq
@@ -41992,14 +42092,19 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0))
                        (nl_n3_apply_mode captured formals body-list args-list env out)
                      (seq ,@(cdddr (car out))))) out)
-          ;; eval-core: a closure capturing nothing -- CAPTURED is exactly (t)
-          ;; -- whose body `nelisp--fx-table' has compiled runs on the word VM.
+          ;; eval-core: a closure capturing nothing -- CAPTURED is (t), or only
+          ;; bare declarations (`m5_fx_env_ok') -- whose body `nelisp--fx-table'
+          ;; has compiled runs on the word VM.
+          ;; The VM record for such a closure, or 0 (shared by the legacy
+          ;; dispatcher below and its word form `nl_apply_lambda_fx_w').
+          (push '(defun nl_apply_lambda_fx_rec (captured body-list env _pad)
+                   (if (= (sexp-tag captured) 7)
+                       (if (= (m5_fx_env_ok captured 0) 1)
+                           (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
+                               (m5_fx_inner_lookup body-list env) 0) 0) 0))
+                out)
           (push '(defun nl_apply_lambda_inner (captured formals body-list args-list env out)
-                   (let* ((rec (if (= (sexp-tag captured) 7)
-                                   (if (= (nl_cons_car_word captured) 7)
-                                       (if (= (nl_cons_cdr_word captured) 3)
-                                           (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
-                                               (m5_fx_inner_lookup body-list env) 0) 0) 0) 0))
+                   (let* ((rec (nl_apply_lambda_fx_rec captured body-list env 0))
                           (st (if (= rec 0) -3 (m5_fx_apply rec args-list env out))))
                      (if (= st -3)
                          (nl_apply_lambda_inner_n3 captured formals body-list args-list env out)
@@ -42009,8 +42114,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           ;; rather than box-split: the closure path's word form calls
           ;; `nl_apply_lambda_fx_w' and the interpreted body answers its WORD
           ;; with no box (only n3 mode and the fx VM still fill one).
-          ;; (nth 2 out) is nl_n3_apply_lambda_raw: the original body.
-          (pcase (cdddr (nth 2 out))
+          ;; (nth 3 out) is nl_n3_apply_lambda_raw: the original body.
+          (pcase (cdddr (nth 3 out))
             ((and `((nl_abi_word_to_rc (,inner-w . ,_) out))
                   (guard (eq inner-w 'nl_apply_lambda_inner_w))))
             (body (error "lambda word ABI: unexpected nl_apply_lambda_inner body %S" body)))
@@ -42023,11 +42128,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                      (nl_apply_lambda_inner_w captured formals body-list args-list env 0)))
                 out)
           (push '(defun nl_apply_lambda_fx_w (captured formals body-list args-list env _pad)
-                   (let* ((rec (if (= (sexp-tag captured) 7)
-                                   (if (= (nl_cons_car_word captured) 7)
-                                       (if (= (nl_cons_cdr_word captured) 3)
-                                           (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
-                                               (m5_fx_inner_lookup body-list env) 0) 0) 0) 0)))
+                   (let* ((rec (nl_apply_lambda_fx_rec captured body-list env 0)))
                      (if (= rec 0)
                          (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
                        (let* ((out (alloc-bytes 32 8)))
@@ -42068,8 +42169,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_frame_push_sym1_ptr) push_scratch)
                        (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames_ptr 0)
                                       (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))))
+                         ;; +16 marks a formal-binding frame for `nl_n3_pop'.
+                         ;; +24 used to cache `bf_special_registry' for the
+                         ;; binder; its only reader (`bf_bind_frame_silent')
+                         ;; stopped using it, so the per-call registry lookup
+                         ;; (a mirror hash probe, ~3.6k instructions) is gone.
                          (seq (ptr-write-u64 frame 16 13109)
-                              (ptr-write-u64 frame 24 (bf_special_registry env 0)))))
+                              (ptr-write-u64 frame 24 0))))
                  '(nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                    (nl_frame_push_sym1_ptr) push_scratch)
                  (cl-subst

@@ -91,8 +91,12 @@
           (let* ((cell-box (ptr-read-u64 cell-ptr 8)))
             (let* ((pair-word (ptr-read-u64 cell-box 0))
                    (next-word (ptr-read-u64 cell-box 8)))
+              ;; A shared closure environment (`nelisp_frame_try_share_chain')
+              ;; also holds bare declarations: skip any non-pair element.
               (if (= (nelisp_frame_stack_find_word_tag_p pair-word 7) 0)
-                  0
+                  (if (= (logand next-word 1) 1)
+                      0
+                    (nelisp_frame_stack_find_walk_bucket next-word name-ptr))
                 (let* ((pair-box (ptr-read-u64 pair-word 8)))
                   (let* ((key-word (ptr-read-u64 pair-box 0))
                          (value-word (ptr-read-u64 pair-box 8)))
@@ -128,8 +132,12 @@
                 0
               (let* ((frame-data (ptr-read-u64 frame-box 32)))
                 (let* ((ht-word (ptr-read-u64 frame-data 0)))
+                  ;; Small frame: slot 0 is nil or an alist, i.e. one
+                  ;; bucket chain (`nelisp_frame_push_direct').
                   (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
-                      0
+                      (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
+                          (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
+                        0)
                     (let* ((ht-box (ptr-read-u64 ht-word 8)))
                       (if (/= (sexp-tag ht-box) 4)
                           0
@@ -405,9 +413,90 @@
     (defun nelisp_frame_declaration_scope_p (frame)
       ;; Empty and dynamic-only lets do not establish a lexical environment.
       (if (= (nelisp_frame_scope_boundary_p frame) 1) 1
-        (> (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+        (> (nelisp_frame_cell_count frame)
            (if (> (record-slot-count frame) 1)
                (nelisp_frame_name_count (record-slot-ref-ptr frame 1)) 0))))
+
+    ;; Bindings in FRAME's cell table, either shape.
+    (defun nelisp_frame_cell_count (frame)
+      (let* ((w (nelisp_frame_slot_raw_word frame 0)))
+        (if (= (nelisp_frame_stack_find_word_tag_p w 12) 1)
+            (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+          (nelisp_frame_chain_length w 0))))
+
+    (defun nelisp_frame_chain_length (w n)
+      (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1)
+          (nelisp_frame_chain_length
+           (nl_cons_cdr_word w)
+           (+ n (nelisp_frame_stack_find_word_tag_p (nl_cons_car_word w) 7)))
+        n))
+
+    ;; Closure calls (perf/prim phase 2).  A closure environment whose
+    ;; entries are at most 8 (NAME . CELL) pairs with distinct names, plus
+    ;; any bare declarations, already is a frame chain in GNU order: install
+    ;; it as the captured frame's cell table instead of rebinding every
+    ;; pair, and mark the frame view (+16 = 13110) so that a later bind into
+    ;; this frame first copies the chain into a hash table
+    ;; (`nelisp_frame_bind_in_frame') and never writes the closure's pairs.
+    ;; Answers 1 when installed, 0 to take `nl_push_captured_walk'.
+    (defun nelisp_frame_try_share_chain (frames alist)
+      (if (= (nelisp_frame_stack_find_word_tag_p alist 7) 0)
+          0
+        (if (= (nelisp_frame_chain_shareable alist 0) 0)
+            0
+          (let* ((frame (vector-ref-ptr
+                         (record-slot-ref-ptr frames 0)
+                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
+            (seq (record-slot-set frame 0 alist)
+                 (ptr-write-u64 frame 16 13110)
+                 1)))))
+
+    (defun nelisp_frame_chain_shareable (al n)
+      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
+          1
+        (let* ((p (nl_cons_car_word al)))
+          (if (= (nelisp_frame_stack_find_word_tag_p p 7) 0)
+              (nelisp_frame_chain_shareable (nl_cons_cdr_word al) n)
+            (if (>= n 8)
+                0
+              (if (= (nelisp_frame_stack_find_word_tag_p (nl_cons_cdr_word p) 11) 0)
+                  0
+                (if (= (nelisp_frame_stack_find_word_name_p (nl_cons_car_word p)) 0)
+                    0
+                  (if (= (nelisp_frame_chain_has_name
+                          (nl_cons_cdr_word al) (nl_cons_car_word p))
+                         1)
+                      0
+                    (nelisp_frame_chain_shareable (nl_cons_cdr_word al) (+ n 1))))))))))
+
+    (defun nelisp_frame_chain_has_name (al name)
+      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
+          0
+        (let* ((p (nl_cons_car_word al)))
+          (if (if (= (nelisp_frame_stack_find_word_tag_p p 7) 1)
+                  (= (extern-call nelisp_symbol_key_equal (nl_cons_car_word p) name) 1)
+                0)
+              1
+            (nelisp_frame_chain_has_name (nl_cons_cdr_word al) name)))))
+
+    ;; The bare declarations of a shared environment, recorded on the top
+    ;; frame as `nl_push_captured_walk' does.
+    (defun nelisp_frame_captured_decls (al frames)
+      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
+          0
+        (let* ((p (nl_cons_car_word al)))
+          (seq (if (= (logand p 1) 1)
+                   0
+                 (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
+                         (= (sexp-tag p) 6)
+                         (= (sexp-tag p) 15))
+                     (nelisp_frame_local_declare_one
+                      (vector-ref-ptr
+                       (record-slot-ref-ptr frames 0)
+                       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+                      p)
+                   0))
+               (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames)))))
 
     (defun nelisp_frame_local_declare_one (frame name)
       (if (> (record-slot-count frame) 3)
@@ -567,6 +656,12 @@
       (if (= cell-ptr 0)
           1
         (if (= (sexp-tag cell-ptr) 7)
+          (if (= (nelisp_frame_stack_find_word_tag_p (nl_cons_car_word cell-ptr) 7) 0)
+            ;; Bare declaration in a shared closure environment
+            ;; (`nelisp_frame_try_share_chain'): skip it.
+            (nl_capture_walk_bucket
+             (extern-call nl_cons_cdr_word cell-ptr)
+             pair-slot out filtered filter-ptr frame-ptr)
             ;; Doc 215: pair and name are boxed (WORD = the old view); the
             ;; cell WORD goes to the cloning constructor in emit_one as is.
             (let* ((pair-view (nl_cons_car_word cell-ptr))
@@ -579,7 +674,7 @@
                      1)
                    (nl_capture_walk_bucket
                     (extern-call nl_cons_cdr_word cell-ptr)
-                    pair-slot out filtered filter-ptr frame-ptr)))
+                    pair-slot out filtered filter-ptr frame-ptr))))
           1)))
 
     (defun nl_capture_walk_buckets (buckets-ptr j bc pair-slot out filtered filter-ptr frame-ptr)
@@ -606,6 +701,9 @@
              (nl_capture_walk_buckets buckets-ptr (+ j 1) bc
                                       pair-slot out filtered filter-ptr frame-ptr))))
 
+    (defun nl_capture_frame_chain (w)
+      (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1) w 0))
+
     (defun nl_capture_walk_frame (frame-ptr pair-slot out filtered filter-ptr)
       ;; Walk one `nelisp-lexframe' record by reading its inner
       ;; `fast-hash-table' (= slot 0) then iterating every bucket.
@@ -618,11 +716,17 @@
       ;;                                      here; we walk every bucket
       ;;                                      regardless of population).
       (if (= filtered 0)
-          (let* ((ht-ptr (record-slot-ref-ptr frame-ptr 0)))
-            (nl_capture_walk_buckets
-             (record-slot-ref-ptr ht-ptr 1)
-             0
-             (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+          (if (= (nelisp_frame_stack_find_word_tag_p
+                  (nelisp_frame_slot_raw_word frame-ptr 0) 12) 1)
+              (let* ((ht-ptr (record-slot-ref-ptr frame-ptr 0)))
+                (nl_capture_walk_buckets
+                 (record-slot-ref-ptr ht-ptr 1)
+                 0
+                 (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+                 pair-slot out filtered filter-ptr frame-ptr))
+            ;; Small frame: the alist is one chain.
+            (nl_capture_walk_bucket
+             (nl_capture_frame_chain (nelisp_frame_slot_raw_word frame-ptr 0))
              pair-slot out filtered filter-ptr frame-ptr))
         (nl_capture_walk_filter_symbols frame-ptr filter-ptr pair-slot out)))
 

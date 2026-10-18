@@ -3869,17 +3869,13 @@ trailing newline) that `message' would otherwise do.")
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
 (defun maphash (fn table)
   (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
-  (if (fboundp 'nelisp--hash-table-entries)
-      ;; The native helper collects the entry cells in the order the loop
-      ;; below visits them, so the cost is per entry, not per bucket slot
-      ;; (a 2-entry table has 2048 buckets: ~130 ms a call here).
-      (let ((entries (nelisp--hash-table-entries table)))
-        (while entries
-          (funcall fn (car (car entries)) (cdr (car entries)))
-          (setq entries (cdr entries))))
   ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
   ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
   ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
+  ;; The branch through the native `nelisp--hash-table-entries' went with
+  ;; that native's demotion (63a1055c8); its guarded call to the undefined
+  ;; name kept the word VM from compiling this function at all, so every
+  ;; bucket slot cost an interpreted `let'.
   (let ((data (cdr table)))
     (if (vectorp data)
         (let ((i 0) (n (length data)))
@@ -3894,7 +3890,7 @@ trailing newline) that `message' would otherwise do.")
         (while (consp node)
           (let ((entry (car node)))
             (when (consp entry) (funcall fn (car entry) (cdr entry))))
-          (setq node (cdr node)))))))
+          (setq node (cdr node))))))
   nil)
 
 (unless (fboundp 'hash-table-test)
@@ -23171,17 +23167,25 @@ vector), so the plain `(consp x) 'cons)' branch below already caught
 them before this fix and had to be pre-empted, not merely supplemented
 -- and a record's `consp' is nil, so it fell all the way to the final
 `(t 'cons)' default with nothing catching it earlier either.  The
-record branch returns `(aref x 0)' unconditionally, matching Emacs
-31.1's own `Ftype_of' exactly (verified: `(type-of (record 'foo 1))'
--> `foo', and `(type-of (record 42 1))' -> `42' -- Emacs does not
-special-case a non-symbol first slot, it always returns it verbatim).
+record branch returns `(aref x 0)', matching Emacs 31.1's own
+`Ftype_of' (verified: `(type-of (record 'foo 1))' -> `foo', and
+`(type-of (record 42 1))' -> `42' -- a non-symbol first slot is
+returned verbatim), except that a first slot which is itself a record
+of more than one slot -- a class object -- yields that record's slot 1,
+the class name (`(type-of (record (record 'cls 'myname) 1))' ->
+`myname', `(type-of (record (record 'cls) 1))' -> `#s(cls)').
+Records are tested first: `recordp' is native from the start, nothing
+earlier in the chain answers t for a record, and record types are what
+struct predicates ask about most.
 `cl-type-of' does not exist in this runtime (verified: `fboundp' is
 nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
+     ((recordp x)
+      (let ((ty (aref x 0)))
+        (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))
      ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
-     ((and (fboundp 'recordp) (recordp x)) (aref x 0))
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.
      ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
@@ -25958,8 +25962,28 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defvar nelisp--fx-callees (make-hash-table :test 'eq)
   "Function -> names whose compiled code calls it.")
 
+(defvar nelisp--fx-declared nil
+  "Bare declarations in the environment of the closure being compiled.
+A closure whose captured environment holds only `t' and symbols -- local
+special declarations, such as a file's `(defvar NAME)' -- runs on the VM
+\(see `nelisp--fx-env-ok-p'); binding one of these names would be dynamic
+there, so the compiler treats them as special and leaves such a body to
+the interpreter.")
+
+(defun nelisp--fx-env-ok-p (env)
+  "Non-nil when ENV, a closure's captured environment, is one the VM takes:
+a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
+  (and (consp env)
+       (let ((ok t))
+         (while (and ok env)
+           (if (and (consp env) (car env) (symbolp (car env)))
+               (setq env (cdr env))
+             (setq ok nil)))
+         ok)))
+
 (defun nelisp--fx-special-p (sym)
-  (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym)))
+  (or (and nelisp--fx-declared (memq sym nelisp--fx-declared) t)
+      (if (fboundp 'special-variable-p) (special-variable-p sym) (boundp sym))))
 
 ;; A `let' the VM compiled binds its variable lexically, decided when the
 ;; function was defined; the interpreter decides at each evaluation, so a
@@ -26170,7 +26194,7 @@ Never signals: a failure leaves NAME to the interpreter."
   (condition-case nil
       (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
         (let ((fn (symbol-function name)))
-          (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+          (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
             (let ((body (nthcdr 3 fn)))
               (unless (gethash body nelisp--fx-table)
                 (puthash body name nelisp--fx-pending)
@@ -26266,12 +26290,15 @@ Defining it as a function compiles them again.")
 (defun nelisp--fx-register-1 (name)
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
-      (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+      (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
         (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
+               (nelisp--fx-declared (remq t (nth 1 fn)))
                (shape (nelisp--fx-arglist-shape args)))
           (when (and shape
                      (not (cl-some #'nelisp--fx-special-p (car shape)))
                      (not (gethash body nelisp--fx-table)))
+            (if (nelisp--fx-hopeless-p body)
+                (puthash body 'none nelisp--fx-table)
             (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
                    ;; Expanding here is an optimisation the user never asked
                    ;; for: macroexp's warnings (a compiler macro failing
@@ -26298,7 +26325,35 @@ Defining it as a function compiles them again.")
                                                (nth 2 shape) (nth 3 shape))
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
-                       nelisp--fx-table))))))))
+                       nelisp--fx-table)))))))))
+
+(defconst nelisp--fx-hopeless-heads
+  '(lambda condition-case unwind-protect catch save-excursion
+    save-restriction save-current-buffer)
+  "Forms `nelisp--fx-compile' never covers and no common macro removes.")
+
+(defun nelisp--fx-hopeless-p (body)
+  "Non-nil when BODY, before macro expansion, already contains a form the
+VM never covers (`nelisp--fx-hopeless-heads'; #'(lambda ...) is found
+through its `lambda').  A form is any cons in the body, so a variable
+named like one of the heads, bound as (NAME VALUE), also counts: such a
+body only stays with the interpreter.
+Compiling such a body ends in `none' after `macroexpand-all' of all of it,
+which at boot is most of a failed first-call compilation's cost.  Quoted
+and backquoted data is not searched, so a template mentioning `lambda'
+still compiles."
+  (let ((todo (list body)) (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (when (consp x)
+          (let ((head (car x)))
+            (cond
+             ((memq head '(quote \`)) nil)
+             ((memq head nelisp--fx-hopeless-heads) (setq found t))
+             (t (while (consp x)
+                  (when (consp (car x)) (push (car x) todo))
+                  (setq x (cdr x)))))))))
+    found))
 
 (defun nelisp--fx-arglist-shape (args)
   "(LOCALS MIN MAX REST-INDEX) for the lambda list ARGS, or nil.
