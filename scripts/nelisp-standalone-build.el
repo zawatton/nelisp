@@ -40906,7 +40906,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (push (cl-subst
                  '(seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                         (nl_frame_push_sym1_ptr) push_scratch)
-                       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
+                       (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames_ptr 0)
                                       (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))))
                          (seq (ptr-write-u64 frame 16 13109)
                               (ptr-write-u64 frame 24 (bf_special_registry env 0)))))
@@ -40915,7 +40915,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (cl-subst
                   '(let* ((n3-bind-rc (nl_bind_formals_impl formals_ptr args_list_ptr env 0)))
                      (seq (ptr-write-u64
-                           (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
+                           (nl_vector_slot_word (nl_record_slot_word frames_ptr 0)
                             (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1)) 24 0)
                           n3-bind-rc))
                   '(nl_bind_formals_impl formals_ptr args_list_ptr env 0)
@@ -40943,10 +40943,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                    (let* ((tag (sexp-tag b_ptr)))
                      (if (or (= tag 4) (= tag 16)) b_ptr
                        (if (= tag 7)
-                           (let* ((car_ptr (nl_cons_car_ptr b_ptr))
-                                  (car_tag (sexp-tag car_ptr)))
-                             (if (or (= car_tag 4) (= car_tag 16)) car_ptr
-                               (seq (nl_let_bad_name car_ptr) 0)))
+                           ;; Doc 215: test the car WORD; box it only on
+                           ;; the error path, which needs a view.
+                           (let* ((car_w (nl_cons_car_word b_ptr))
+                                  (car_tag (nl_val_tag car_w)))
+                             (if (or (= car_tag 4) (= car_tag 16)) car_w
+                               (seq (nl_let_bad_name (nl_cons_car_ptr b_ptr)) 0)))
                          (seq (nl_let_bad_name b_ptr) 0)))))
                 out))
          ((eq name 'nl_let_bind_walk)

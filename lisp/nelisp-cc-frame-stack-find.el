@@ -326,12 +326,15 @@
            1))
 
     (defun nl_capture_filter_contains (filter-ptr name-ptr)
-      (if (= (sexp-tag filter-ptr) 7)
-          (let* ((sym-ptr (extern-call nl_cons_car_ptr filter-ptr)))
-            (if (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
+      ;; Doc 215: FILTER-PTR may be a view or a WORD; walk by WORD.
+      (if (= (nl_val_tag filter-ptr) 7)
+          (let* ((sym-ptr (nl_cons_car_word filter-ptr)))
+            (if (if (= (logand sym-ptr 1) 0)
+                    (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
+                  0)
                 1
               (nl_capture_filter_contains
-               (extern-call nl_cons_cdr_word filter-ptr)
+               (nl_cons_cdr_word filter-ptr)
                name-ptr)))
         0))
 
@@ -393,7 +396,7 @@
         0))
 
     (defun nelisp_frame_local_names (frame)
-      (if (> (record-slot-count frame) 3) (record-slot-ref-ptr frame 3) 0))
+      (if (> (record-slot-count frame) 3) (nl_record_slot_word frame 3) 0))
 
     (defun nelisp_frame_name_count (names)
       (if (= (sexp-tag names) 7)
@@ -444,7 +447,8 @@
       ;; Bare names carry local declarations, distinct from (NAME . CELL).
       ;; Preserve all declarations, including names bound inside lambda bodies
       ;; that a free-variable filter would otherwise omit.
-      (if (= (sexp-tag names) 7)
+      ;; Doc 215: NAMES is a WORD (nelisp_frame_local_names).
+      (if (= (nl_val_tag names) 7)
           (seq (cons-make-with-clone (nl_cons_car_word names) out out)
                (nl_capture_local_names (nl_cons_cdr_word names) out))
         1))
@@ -563,9 +567,11 @@
       (if (= cell-ptr 0)
           1
         (if (= (sexp-tag cell-ptr) 7)
-            (let* ((pair-view (extern-call nl_cons_car_word cell-ptr))
-                   (name-ptr (extern-call nl_cons_car_ptr pair-view))
-                   (cell-view (extern-call nl_cons_cdr_word pair-view)))
+            ;; Doc 215: pair and name are boxed (WORD = the old view); the
+            ;; cell WORD goes to the cloning constructor in emit_one as is.
+            (let* ((pair-view (nl_cons_car_word cell-ptr))
+                   (name-ptr (nl_cons_car_word pair-view))
+                   (cell-view (nl_cons_cdr_word pair-view)))
               (and (if (if (= (nelisp_frame_binding_dynamic_p frame-ptr name-ptr) 1)
                            0
                          (nl_capture_name_allowed filtered filter-ptr name-ptr))

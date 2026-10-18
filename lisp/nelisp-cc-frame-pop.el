@@ -102,11 +102,13 @@
       ;; non-zero hence truthy), and `record-slot-set' (= §111.B
       ;; rax = 1 epilogue) all produce truthy values, so the chain
       ;; reaches the final `1' constant.
+      ;; Doc 215: both writes take a value WORD (nil 3, fixnum (n<<2)|1);
+      ;; the setters store an immediate WORD as it is, so SCRATCH-SLOT is
+      ;; no longer touched and callers may pass 0.
       (and (vector-slot-set (record-slot-ref-ptr frames-ptr 0)
                             new-depth
-                            scratch-slot)
-           (sexp-int-make scratch-slot new-depth)
-           (record-slot-set frames-ptr 1 scratch-slot)
+                            3)
+           (record-slot-set frames-ptr 1 (+ (* new-depth 4) 1))
            1))
     (defun nelisp_frame_pop (frames-ptr scratch-slot)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record (=

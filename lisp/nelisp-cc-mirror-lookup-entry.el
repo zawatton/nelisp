@@ -76,13 +76,19 @@
       ;; under the recursive descent).
       (if (= cell-ptr 0)
           0
-        (if (= (sexp-tag cell-ptr) 7)
-            (let ((pair-view (extern-call nl_cons_car_word cell-ptr)))
-              (if (= (extern-call nelisp_symbol_key_equal
-                                 (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
-                  (extern-call nl_cons_cdr_ptr pair-view)
+        ;; Doc 215: walk by WORD.  Cells, pairs, keys and entries are all
+        ;; boxed, so their WORDs are the same pointers the views were; an
+        ;; immediate key or entry (malformed bucket) is rejected, not boxed.
+        (if (= (nl_val_tag cell-ptr) 7)
+            (let* ((pair (nl_cons_car_word cell-ptr))
+                   (key (if (= (nl_val_tag pair) 7) (nl_cons_car_word pair) 3)))
+              (if (if (= (logand key 1) 0)
+                      (= (extern-call nelisp_symbol_key_equal key sym-ptr) 1)
+                    0)
+                  (let ((entry (nl_cons_cdr_word pair)))
+                    (if (= (logand entry 1) 0) entry 0))
                 (nelisp_mirror_walk_bucket
-                 (extern-call nl_cons_cdr_word cell-ptr)
+                 (nl_cons_cdr_word cell-ptr)
                  sym-ptr)))
           0)))
     (defun nelisp_mirror_lookup_entry_valid_key (sym-ptr)
@@ -177,7 +183,7 @@
         ;; image most lookups of names that have no global entry (every
         ;; lexical variable reference and `setq' checks one) land on an
         ;; empty bucket.  A pointer head is the bucket's first Cons view.
-        (let ((ht-rec-ptr (record-slot-ref-ptr mirror-ptr 0)))
+        (let ((ht-rec-ptr (nl_record_slot_word mirror-ptr 0)))
           (let ((head (ptr-read-u64
                        (+ (ptr-read-u64
                            (ptr-read-u64 (record-slot-ref-ptr ht-rec-ptr 1) 8) 8)
