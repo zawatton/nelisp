@@ -3387,15 +3387,34 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          (cdr nelisp-standalone--arena-source))))
        (setq body
              (if (nelisp-standalone--runtime-reload-enabled-p)
-                 (mapcar (lambda (form)
-                           (if (and (consp form)
-                                    (eq (car form) 'defun)
-                                    (eq (cadr form) 'nl_alloc_bytes_uncheck))
-                               (cons 'defun
-                                     (cons 'nl_runtime_reload_alloc_original
-                                           (cddr form)))
-                             form))
-                         body)
+                 (append
+                  (mapcar (lambda (form)
+                           (cond
+                            ((and (consp form)
+                                  (eq (car form) 'defun)
+                                  (eq (cadr form) 'nl_alloc_bytes_uncheck))
+                             (cons 'defun
+                                   (cons 'nl_runtime_reload_alloc_original
+                                         (cddr form))))
+                            ;; `nl_alloc_bytes' serves the common small
+                            ;; request inline (free-list pop, run carving)
+                            ;; without reaching `nl_alloc_bytes_uncheck'.
+                            ;; Keep that only while the original allocator is
+                            ;; installed; once a replacement is published,
+                            ;; every request goes through the dispatch
+                            ;; (the `nl_alloc_bytes' wrapper appended below).
+                            ((and (consp form)
+                                  (eq (car form) 'defun)
+                                  (eq (cadr form) 'nl_alloc_bytes))
+                             (cons 'defun
+                                   (cons 'nl_runtime_reload_alloc_fast
+                                         (cddr form))))
+                            (t form)))
+                          body)
+                  '((defun nl_alloc_bytes (size align)
+                      (if (= (ptr-read-u64 (data-addr nl_runtime_reload_state) 0) 0)
+                          (nl_runtime_reload_alloc_fast size align)
+                        (nl_alloc_bytes_slow size align)))))
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
