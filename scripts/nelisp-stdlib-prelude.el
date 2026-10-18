@@ -7,6 +7,12 @@
   "Dynamic transaction log used only by explicit `autoload-do-load'.")
 (fset 'nl-afset
       (lambda (symbol definition)
+        ;; Names defined before the word VM's registration hooks, newest
+        ;; first, for `nelisp--fx-register-prelude'.  No `defvar' here: the
+        ;; build splices GNU forms after the first four forms of this file.
+        (unless (and (boundp 'nelisp--fx-recording) (null nelisp--fx-recording))
+          (setq nelisp--fx-early-names
+                (cons symbol (and (boundp 'nelisp--fx-early-names) nelisp--fx-early-names))))
         (when (and nelisp--autoload-queue (fboundp symbol))
           (setq nelisp--autoload-queue
                 (cons (list 'function symbol (symbol-function symbol))
@@ -24832,6 +24838,10 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; effect and the interpreter evaluates the call.
 (defvar nelisp--fx-special-gen (vector 0))
 
+(defvar nelisp--fx-expand t
+  "Nil while compiling a body known to name no macro: `macroexpand-all'
+would return it unchanged, and expanding is most of a compilation's cost.")
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
@@ -24952,7 +24962,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
       (when (eq (catch 'nelisp--fx-unsupported
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                   (emit 17 nil)
-                  (comp (if (fboundp 'macroexpand-all) (macroexpand-all form) form))
+                  (comp (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
+                            (macroexpand-all form)
+                          form))
                   (emit 0) 'ok)
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
@@ -24972,13 +24984,34 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
     (if c (nelisp--fx-run (car c) (cdr c)) (eval form t))))
 
 ;; Lexical defuns on the VM.  `nelisp--fx-table' maps a closure's body list
-;; to [CODE NLOCALS NPARAMS] (or `none'); the runtime's closure application
+;; to [CODE NLOCALS MIN INDEX NAME MAX REST-INDEX] (or `none'; MAX -1 with
+;; &rest, REST-INDEX -1 without, see `nelisp--fx-arglist-shape'); the
+;; runtime's closure application
 ;; looks the body up and runs the VM when the closure captures nothing.  The
 ;; closure object itself is unchanged, so `symbol-function', `aref' and
-;; printing see exactly what they did.  Registered when `defalias' (and so
-;; `defun') defines the function; `nelisp-fx-enabled' nil turns that off.
+;; printing see exactly what they did.  Noted when `defalias' (and so
+;; `defun') defines the function and compiled on its first call
+;; (`nelisp--fx-first-call'); `nelisp-fx-enabled' nil turns that off.
 (defvar nelisp--fx-table (make-hash-table :test 'eq :weakness 'key))
 (defvar nelisp-fx-enabled t)
+
+(defvar nelisp--fx-env-disabled nil
+  "(ENVIRONMENT . DISABLED): NELISP_FX_DISABLE as read from ENVIRONMENT.")
+(defun nelisp--fx-active-p ()
+  "Non-nil when functions should be noted and compiled for the VM.
+NELISP_FX_DISABLE=1 turns the runtime's VM lookups off; it also turns off
+every registration and its bookkeeping here.  Read once per process: the
+driver sets `process-environment' afresh in every process, a restored
+image included, so the cached answer is keyed by that list's identity
+\(`emacs-pid' costs ~10 ms here)."
+  (and nelisp-fx-enabled
+       (progn
+         (unless (eq (car nelisp--fx-env-disabled) process-environment)
+           (let ((v (getenv "NELISP_FX_DISABLE")))
+             (setq nelisp--fx-env-disabled
+                   (cons process-environment
+                         (and v (> (length v) 0) (eq (aref v 0) ?1))))))
+         (not (cdr nelisp--fx-env-disabled)))))
 
 (defun nelisp--fx-register (name)
   "Compile NAME's closure for the VM if the VM covers it; return NAME.
@@ -24988,6 +25021,50 @@ Never signals: a failure leaves NAME to the interpreter."
 
 (defvar nelisp--fx-next-index 0
   "Registration index of the next compiled record (see NELISP_FX_RANGE).")
+
+;; Compile on first call.  Defining a function only notes its body here;
+;; the runtime calls `nelisp--fx-first-call' the first time a closure body
+;; absent from `nelisp--fx-table' is applied (that call runs interpreted),
+;; so a boot compiles only what it runs.  The body is the key, so a name
+;; redefined before its first call compiles its current body, and an old
+;; closure of it (still held somewhere) stays interpreted.
+(defvar nelisp--fx-pending (make-hash-table :test 'eq :weakness 'key)
+  "Body -> the name it was defined under, not compiled yet.")
+(defvar nelisp--fx-pending-tries (make-hash-table :test 'eq :weakness 'key)
+  "Body -> failed compilations so far, for `nelisp--fx-errored'.")
+
+(defun nelisp--fx-defer (name &optional tries)
+  "Note NAME's closure for compilation on its first call; return NAME."
+  (condition-case nil
+      (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
+        (let ((fn (symbol-function name)))
+          (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+            (let ((body (nthcdr 3 fn)))
+              (unless (gethash body nelisp--fx-table)
+                (puthash body name nelisp--fx-pending)
+                (when tries (puthash body tries nelisp--fx-pending-tries)))))))
+    (error nil))
+  name)
+
+(defun nelisp--fx-first-call (body)
+  "Compile BODY, a closure body just applied for the first time.
+Called by the runtime with re-entry blocked; leaves BODY in
+`nelisp--fx-table' (its record, or `none') whatever happens."
+  (condition-case nil
+      (let ((name (gethash body nelisp--fx-pending))
+            (nelisp--fx-tries (gethash body nelisp--fx-pending-tries 0)))
+        (remhash body nelisp--fx-pending)
+        (remhash body nelisp--fx-pending-tries)
+        (when (and name (fboundp name)
+                   (eq (nthcdr 3 (symbol-function name)) body))
+          (nelisp--fx-register name)
+          (nelisp--fx-retry-errored)))
+    (error nil))
+  (condition-case nil
+      (unless (gethash body nelisp--fx-table)
+        (puthash body 'none nelisp--fx-table))
+    (error nil))
+  nil)
 
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
@@ -25009,8 +25086,7 @@ compiled again after the next compilation that succeeds.")
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (let ((nelisp--fx-tries (cdr e)))
-              (nelisp--fx-register (car e))))))))
+            (nelisp--fx-defer (car e) (cdr e)))))))
   (setq nelisp--fx-compiled-ok nil))
 
 (defvar nelisp--fx-missing nil
@@ -25034,29 +25110,31 @@ Defining it as a function compiles them again.")
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (nelisp--fx-register w)))))))
+            (nelisp--fx-defer w)))))))
 
 (defun nelisp--fx-register-1 (name)
-  (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
+  (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
       (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
-        (let ((args (nth 2 fn)) (body (nthcdr 3 fn)))
-          (when (and (listp args) (cl-every #'symbolp args)
-                     (not (memq '&optional args)) (not (memq '&rest args))
-                     (not (cl-some #'nelisp--fx-special-p args))
+        (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
+               (shape (nelisp--fx-arglist-shape args)))
+          (when (and shape
+                     (not (cl-some #'nelisp--fx-special-p (car shape)))
                      (not (gethash body nelisp--fx-table)))
             (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
                    ;; Expanding here is an optimisation the user never asked
                    ;; for: macroexp's warnings (a compiler macro failing
                    ;; early in startup) must not reach the output.
                    (inhibit-message t)
-                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
+                   (macros (nelisp--fx-macros-used body))
+                   (nelisp--fx-expand (and macros t))
+                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
                         (error (setq failed t) nil))))
               (if c (setq nelisp--fx-compiled-ok t)
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
-                (dolist (m (nelisp--fx-macros-used body))
+                (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
                   (unless (memq name (gethash op nelisp--fx-callees))
@@ -25064,11 +25142,40 @@ Defining it as a function compiles them again.")
               (when (and (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
                 (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
               (puthash body (if c
-                                (prog1 (vector (car c) (cdr c) (length args)
-                                               nelisp--fx-next-index name)
+                                (prog1 (vector (car c) (cdr c) (nth 1 shape)
+                                               nelisp--fx-next-index name
+                                               (nth 2 shape) (nth 3 shape))
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table))))))))
+
+(defun nelisp--fx-arglist-shape (args)
+  "(LOCALS MIN MAX REST-INDEX) for the lambda list ARGS, or nil.
+LOCALS are the parameter names in order, the &rest one last; MAX is -1
+and REST-INDEX that local's index with &rest, else REST-INDEX is -1.
+Nil for a list the VM does not take: a non-symbol, a repeated or
+misplaced keyword, or &rest not followed by exactly one name."
+  (let ((locals nil) (min 0) (opt 0) (state 'req) (rest nil) (ok t))
+    (while (and ok args)
+      (let ((a (car args)))
+        (cond
+         ((not (and a (symbolp a) (not (eq a t)) (not (keywordp a)))) (setq ok nil))
+         ((eq a '&optional) (if (eq state 'req) (setq state 'opt) (setq ok nil)))
+         ((eq a '&rest)
+          (if (and (memq state '(req opt)) (consp (cdr args)) (null (cddr args))
+                   (symbolp (cadr args)) (cadr args)
+                   (not (memq (cadr args) '(&optional &rest t))))
+              (progn (setq rest (cadr args)) (setq args nil))
+            (setq ok nil)))
+         ((eq state 'req) (push a locals) (setq min (1+ min)))
+         (t (push a locals) (setq opt (1+ opt)))))
+      (setq args (cdr args)))
+    (when rest (push rest locals))
+    ;; A repeated name: the interpreter binds in order, so the last one
+    ;; wins, where slot resolution would take the first.
+    (when (and ok (let ((l locals)) (while (and l (not (memq (car l) (cdr l)))) (setq l (cdr l))) (null l)))
+      (list (nreverse locals) min (if rest -1 (+ min opt))
+            (if rest (+ min opt) -1)))))
 
 (defun nelisp--fx-macros-used (body)
   "Macros named in operator position anywhere in BODY (before expansion).
@@ -25106,15 +25213,45 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
 
 ;; Every `defun' (the prelude's and GNU byte-run's alike) and `defalias'
 ;; reaches `nl-afset' through the native `defalias' special form, so the
-;; registration hooks there.
+;; registration hooks there.  What the prelude defined before this point is
+;; in `nelisp--fx-early-names'; compiling it all costs ~10 ms a function, so
+;; a normal boot leaves it to the interpreter and only a dumped image (S3.1,
+;; `nelisp--fx-register-prelude') carries it compiled.
+(defvar nelisp--fx-early-names nil
+  "Names defined before the word VM's registration hooks, newest first.")
+(defvar nelisp--fx-recording nil)
+(setq nelisp--fx-recording nil)
+(unless (nelisp--fx-active-p) (setq nelisp--fx-early-names nil))
+(defun nelisp--fx-register-prelude ()
+  "Compile every function defined before the VM's hooks; answer the count.
+The cold-image dump calls this just before dumping, so a `--cold-load-from'
+boot starts with the prelude already on the VM."
+  (let ((names (reverse nelisp--fx-early-names)))
+    (setq nelisp--fx-early-names nil)
+    ;; And everything defined since that has not been called yet.
+    (maphash (lambda (_body name) (push name names)) nelisp--fx-pending)
+    (clrhash nelisp--fx-pending)
+    ;; A first call early in the boot may have found the VM unable to take a
+    ;; body only because `macroexpand-all' was not loaded yet: try again.
+    (dolist (n names)
+      (let ((fn (and (fboundp n) (symbol-function n))))
+        (when (and (eq (car-safe fn) 'closure)
+                   (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
+          (remhash (nthcdr 3 fn) nelisp--fx-table)
+          ;; Pending too: compiling another function may call N first.
+          (nelisp--fx-defer n))))
+    (dolist (n names) (nelisp--fx-register n))
+    (clrhash nelisp--fx-pending)
+    (condition-case nil (nelisp--fx-retry-errored) (error nil))
+    (nelisp--fx-count)))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
   (fset 'nl-afset
         (lambda (name def &rest rest)
           (prog1 (apply 'nelisp--fx-plain-afset name def rest)
-            (when (symbolp name)
+            (when (and (symbolp name) (nelisp--fx-active-p))
               (nelisp--fx-check-macro name)
-              (nelisp--fx-register name)
+              (nelisp--fx-defer name)
               (nelisp--fx-retry-waiters name)
               (condition-case nil (nelisp--fx-retry-errored) (error nil)))))))
 
@@ -25134,12 +25271,12 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (nelisp--fx-register w)))))))
+            (nelisp--fx-defer w)))))))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
   (fset 'fset
         (lambda (symbol definition)
           (prog1 (nelisp--fx-plain-fset symbol definition)
-            (when (eq (car-safe definition) 'macro)
+            (when (and (eq (car-safe definition) 'macro) (nelisp--fx-active-p))
               (nelisp--fx-check-macro symbol)
               (nelisp--fx-retry-waiters symbol))))))

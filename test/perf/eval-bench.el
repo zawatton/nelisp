@@ -24,12 +24,14 @@
 ;; Cases are evaluated with `eval', as top-level code is, not from inside a
 ;; lambda: a closure body can be run differently from a top-level form.
 (defun eval-bench-net (n form)
-  "Microseconds per evaluation of FORM beyond the empty loop."
-  (eval-bench-best
-   (lambda ()
-     (let ((base (eval `(eval-bench-loop ,n nil) t))
-           (run (eval `(eval-bench-loop ,n ,form) t)))
-       (max 0.0 (/ (* 1e6 (- run base)) n))))))
+  "Microseconds per evaluation of FORM beyond the empty loop.
+The best base and the best run are taken separately, then subtracted: a
+collection landing in one base trial made that trial's difference
+negative, clamped to 0, and the best of three then reported 0.00 for
+any form."
+  (let ((base (eval-bench-best (lambda () (eval `(eval-bench-loop ,n nil) t))))
+        (run (eval-bench-best (lambda () (eval `(eval-bench-loop ,n ,form) t)))))
+    (max 0.0 (/ (* 1e6 (- run base)) n))))
 
 (defun eval-bench-f3 (a _b _c) a)
 (defvar eval-bench-special 0)
