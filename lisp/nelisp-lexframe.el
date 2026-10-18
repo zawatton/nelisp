@@ -146,8 +146,19 @@ Empty and dynamic-only let frames do not introduce a declaration scope."
        (eq (nelisp--record-type obj) 'nelisp-lexframe)))
 
 (defun nelisp-lexframe--ht (frame)
-  "Return FRAME's underlying fast-hash-table.  Internal."
-  (nelisp--record-ref frame 0))
+  "Return FRAME's underlying fast-hash-table.  Internal.
+The standalone evaluator keeps a small frame's cell table as an alist
+\((NAME . CELL) ...) newest first, or nil, until its ninth name
+\(`nelisp-cc-frame-bind.el').  Such a frame is moved to a fresh table
+here, keeping every cell, so the readers below see one shape."
+  (let ((ht (nelisp--record-ref frame 0)))
+    (if (listp ht)
+        (let ((new (nelisp--fast-hash-make nelisp-lexframe--default-bucket-count)))
+          (dolist (pair (reverse ht))
+            (nelisp--fast-hash-put new (car pair) (cdr pair) (symbolp (car pair))))
+          (nelisp--record-set frame 0 new)
+          new)
+      ht)))
 
 (defun nelisp-lexframe-count (frame)
   "Return the number of bindings live in FRAME."

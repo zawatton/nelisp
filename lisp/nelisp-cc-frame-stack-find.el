@@ -128,8 +128,12 @@
                 0
               (let* ((frame-data (ptr-read-u64 frame-box 32)))
                 (let* ((ht-word (ptr-read-u64 frame-data 0)))
+                  ;; Small frame: slot 0 is nil or an alist, i.e. one
+                  ;; bucket chain (`nelisp_frame_push_direct').
                   (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
-                      0
+                      (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
+                          (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
+                        0)
                     (let* ((ht-box (ptr-read-u64 ht-word 8)))
                       (if (/= (sexp-tag ht-box) 4)
                           0
@@ -405,9 +409,21 @@
     (defun nelisp_frame_declaration_scope_p (frame)
       ;; Empty and dynamic-only lets do not establish a lexical environment.
       (if (= (nelisp_frame_scope_boundary_p frame) 1) 1
-        (> (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+        (> (nelisp_frame_cell_count frame)
            (if (> (record-slot-count frame) 1)
                (nelisp_frame_name_count (record-slot-ref-ptr frame 1)) 0))))
+
+    ;; Bindings in FRAME's cell table, either shape.
+    (defun nelisp_frame_cell_count (frame)
+      (let* ((w (nelisp_frame_slot_raw_word frame 0)))
+        (if (= (nelisp_frame_stack_find_word_tag_p w 12) 1)
+            (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+          (nelisp_frame_chain_length w 0))))
+
+    (defun nelisp_frame_chain_length (w n)
+      (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1)
+          (nelisp_frame_chain_length (nl_cons_cdr_word w) (+ n 1))
+        n))
 
     (defun nelisp_frame_local_declare_one (frame name)
       (if (> (record-slot-count frame) 3)
@@ -606,6 +622,9 @@
              (nl_capture_walk_buckets buckets-ptr (+ j 1) bc
                                       pair-slot out filtered filter-ptr frame-ptr))))
 
+    (defun nl_capture_frame_chain (w)
+      (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1) w 0))
+
     (defun nl_capture_walk_frame (frame-ptr pair-slot out filtered filter-ptr)
       ;; Walk one `nelisp-lexframe' record by reading its inner
       ;; `fast-hash-table' (= slot 0) then iterating every bucket.
@@ -618,11 +637,17 @@
       ;;                                      here; we walk every bucket
       ;;                                      regardless of population).
       (if (= filtered 0)
-          (let* ((ht-ptr (record-slot-ref-ptr frame-ptr 0)))
-            (nl_capture_walk_buckets
-             (record-slot-ref-ptr ht-ptr 1)
-             0
-             (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+          (if (= (nelisp_frame_stack_find_word_tag_p
+                  (nelisp_frame_slot_raw_word frame-ptr 0) 12) 1)
+              (let* ((ht-ptr (record-slot-ref-ptr frame-ptr 0)))
+                (nl_capture_walk_buckets
+                 (record-slot-ref-ptr ht-ptr 1)
+                 0
+                 (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+                 pair-slot out filtered filter-ptr frame-ptr))
+            ;; Small frame: the alist is one chain.
+            (nl_capture_walk_bucket
+             (nl_capture_frame_chain (nelisp_frame_slot_raw_word frame-ptr 0))
              pair-slot out filtered filter-ptr frame-ptr))
         (nl_capture_walk_filter_symbols frame-ptr filter-ptr pair-slot out)))
 

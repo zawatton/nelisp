@@ -319,14 +319,109 @@
       (let* ((depth (sar (nelisp_frame_bind_slot_raw_word frames-ptr 1) 2)))
         (if (= depth 0)
             0
-          (nelisp_frame_bind_in_ht
-           (record-slot-ref-ptr
-            (vector-ref-ptr
-             (record-slot-ref-ptr frames-ptr 0)
-             (- depth 1))
-            0)
+          (nelisp_frame_bind_in_frame
+           (vector-ref-ptr
+            (record-slot-ref-ptr frames-ptr 0)
+            (- depth 1))
            name-ptr cell-ptr
-           scratch-pair-slot scratch-outer-slot scratch-count-slot)))))
+           scratch-pair-slot scratch-outer-slot scratch-count-slot))))
+    ;; Small frames (perf/prim phase 2, see `nelisp_frame_push_direct'):
+    ;; slot 0 of FRAME-PTR is nil, an alist ((NAME . CELL) ...) newest
+    ;; first, or the fast-hash-table record.  The alist is exactly one
+    ;; bucket chain of the hash table, so the chain walkers serve both.
+    (defun nelisp_frame_bind_in_frame
+        (frame-ptr name-ptr cell-ptr
+                   scratch-pair-slot scratch-outer-slot scratch-count-slot)
+      (if (= (nelisp_frame_bind_word_tag_p
+              (nelisp_frame_bind_slot_raw_word frame-ptr 0) 12)
+             1)
+          (nelisp_frame_bind_in_ht
+           (record-slot-ref-ptr frame-ptr 0)
+           name-ptr cell-ptr
+           scratch-pair-slot scratch-outer-slot scratch-count-slot)
+        (nelisp_frame_bind_in_list
+         frame-ptr name-ptr cell-ptr
+         scratch-pair-slot scratch-outer-slot scratch-count-slot)))
+    (defun nelisp_frame_bind_word_tag_p (word tag)
+      (if (= word 0) 0
+        (if (= (logand word 1) 1) 0
+          (if (= (sexp-tag word) tag) 1 0))))
+    ;; Rebind in place when NAME is in the chain VIEW (answer -1), else
+    ;; answer N plus the chain length.
+    (defun nelisp_frame_list_update (view name-ptr cell-ptr n)
+      (if (= (nelisp_frame_bind_word_tag_p view 7) 0)
+          n
+        (let ((pair-view (extern-call nl_cons_car_ptr view)))
+          (if (= (extern-call nelisp_symbol_key_equal
+                              (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
+              (and (cons-set-cdr pair-view cell-ptr) -1)
+            (nelisp_frame_list_update
+             (extern-call nl_cons_cdr_word view) name-ptr cell-ptr (+ n 1))))))
+    ;; A frame keeps its alist while it has at most 8 names; the 9th new
+    ;; name moves every binding into a fresh 16-bucket hash table first, so
+    ;; a large frame (a captured environment, a long `let') keeps hashed
+    ;; lookups and binds.
+    (defun nelisp_frame_bind_in_list
+        (frame-ptr name-ptr cell-ptr
+                   scratch-pair-slot scratch-outer-slot scratch-count-slot)
+      (let* ((n (nelisp_frame_list_update
+                 (nelisp_frame_bind_slot_raw_word frame-ptr 0)
+                 name-ptr cell-ptr 0)))
+        (if (< n 0)
+            1
+          (if (< n 8)
+              (nelisp_frame_list_prepend
+               frame-ptr name-ptr cell-ptr
+               scratch-pair-slot scratch-outer-slot scratch-count-slot)
+            (and (nelisp_frame_bind_migrate
+                  frame-ptr (nelisp_frame_bind_slot_raw_word frame-ptr 0))
+                 (nelisp_frame_bind_in_ht
+                  (record-slot-ref-ptr frame-ptr 0)
+                  name-ptr cell-ptr
+                  scratch-pair-slot scratch-outer-slot scratch-count-slot))))))
+    ;; Same construction as `nelisp_frame_bind_prepend', installed as the
+    ;; new head of the frame's alist instead of a bucket.
+    (defun nelisp_frame_list_prepend
+        (frame-ptr name-ptr cell-ptr
+                   scratch-pair-slot scratch-outer-slot scratch-count-slot)
+      (and (cons-make scratch-count-slot scratch-count-slot scratch-pair-slot)
+           (cons-set-car scratch-pair-slot name-ptr)
+           (cons-set-cdr scratch-pair-slot cell-ptr)
+           (cons-make scratch-count-slot scratch-count-slot scratch-outer-slot)
+           (cons-set-car scratch-outer-slot scratch-pair-slot)
+           (cons-set-cdr scratch-outer-slot
+                         (nelisp_frame_list_head_word frame-ptr))
+           (record-slot-set frame-ptr 0 scratch-outer-slot)))
+    (defun nelisp_frame_list_head_word (frame-ptr)
+      (let ((w (nelisp_frame_bind_slot_raw_word frame-ptr 0)))
+        (if (= w 0) 3 w)))
+    ;; Even arity: `record-make' / `vector-make' assume an aligned rsp.
+    (defun nelisp_frame_bind_new_ht (ht-slot buckets-slot)
+      (and (record-make (nl_frame_push_sym1_ptr) 3 ht-slot)
+           (vector-make 16 buckets-slot)
+           (record-slot-set ht-slot 1 buckets-slot)
+           (record-slot-set ht-slot 0 65)   ; Int 16, the bucket count
+           (record-slot-set ht-slot 2 1)    ; Int 0, the size
+           1))
+    (defun nelisp_frame_bind_migrate (frame-ptr chain)
+      (let* ((ht-slot (alloc-bytes 64 8)))
+        (and (nelisp_frame_bind_new_ht ht-slot (+ ht-slot 32))
+             (nelisp_frame_bind_rehash ht-slot chain)
+             (record-slot-set frame-ptr 0 ht-slot)
+             1)))
+    ;; Insert every (NAME . CELL) of CHAIN into the table HT-PTR, keeping
+    ;; each cell (closures that captured it still share it).
+    (defun nelisp_frame_bind_rehash (ht-ptr chain)
+      (if (= (nelisp_frame_bind_word_tag_p chain 7) 0)
+          1
+        (let* ((blk (alloc-bytes 96 8)))
+          (and (nelisp_frame_bind_prepend
+                ht-ptr
+                (extern-call nl_cons_car_ptr (extern-call nl_cons_car_ptr chain))
+                (extern-call nl_cons_cdr_ptr (extern-call nl_cons_car_ptr chain))
+                blk (+ blk 32) (+ blk 64))
+               (nelisp_frame_bind_rehash
+                ht-ptr (extern-call nl_cons_cdr_word chain)))))))
   "AOT source for Doc 111 §111.E #23 / Doc 115 §115.5
 `frame_bind_rust_direct'.
 

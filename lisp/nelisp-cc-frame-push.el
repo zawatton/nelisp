@@ -204,40 +204,26 @@
     ;; (`record-slot-set' / `vector-slot-set' go through
     ;; `nl_val_clone_into', which reboxes), and nothing keeps a pointer
     ;; into the block after this function returns.  Arity 4 (even).
-    (defun nelisp_frame_push_direct (frames-ptr lex-sym-ptr ht-sym-ptr cap-scratch-ptr)
-     (let* ((ht-slot (alloc-bytes 128 8))
-            (buckets-slot (+ ht-slot 32))
-            (frame-slot (+ ht-slot 64))
-            (int-slot (+ ht-slot 96)))
+    ;; Small frames (perf/prim phase 2): the frame's cell table (slot 0)
+    ;; starts as nil and holds an alist ((NAME . CELL) ...) while the frame
+    ;; has at most `nelisp_frame_bind_in_list''s limit of bindings; the
+    ;; binder migrates it to the 16-bucket fast-hash-table on the next new
+    ;; name (`nelisp-cc-frame-bind.el').  A push therefore allocates only the
+    ;; frame record: the hash-table record, the bucket vector and the two
+    ;; Int slot installs are paid by large frames only.  Every reader of
+    ;; slot 0 dispatches on its shape (nil / cons / fast-hash-table record):
+    ;; `nelisp_frame_stack_find_in_frame', `nl_capture_walk_frame',
+    ;; `nelisp_frame_cell_count' and `nelisp-lexframe--ht' (Lisp side).
+    ;; HT-SYM-PTR is kept for the unchanged 4-argument ABI.
+    (defun nelisp_frame_push_direct (frames-ptr lex-sym-ptr _ht-sym-ptr cap-scratch-ptr)
+     (let* ((frame-slot (alloc-bytes 64 8))
+            (int-slot (+ frame-slot 32)))
        (and
-        ;; Step 1: allocate fresh fast-hash-table record (3 slots).
-        (record-make ht-sym-ptr
-                     3
-                     ht-slot)
-        ;; Step 2: allocate 16-bucket Sexp::Vector.
-        (vector-make 16 buckets-slot)
-        ;; Step 3: install buckets into ht.slot 1.
-        (record-slot-set ht-slot
-                         1
-                         buckets-slot)
-        ;; Step 4: ht.slot 0 = Sexp::Int(16) — bucket-count.
-        (sexp-int-make int-slot 16)
-        (record-slot-set ht-slot
-                         0
-                         int-slot)
-        ;; Step 5: ht.slot 2 = Sexp::Int(0) — size.
-        (sexp-int-make int-slot 0)
-        (record-slot-set ht-slot
-                         2
-                         int-slot)
-        ;; Step 6: cell table, dynamic names, scope boundary, local declarations.
+        ;; Step 6: cell table (nil = empty alist), dynamic names, scope
+        ;; boundary, local declarations.
         (record-make lex-sym-ptr
                      4
                      frame-slot)
-        ;; Step 7: install fast-hash-table into frame.slot 0.
-        (record-slot-set frame-slot
-                         0
-                         ht-slot)
         ;; Step 8: ensure backing capacity >= depth+1.  The helper re-reads
         ;; depth immediately before the extern call; no call-crossing
         ;; `needed' local is trusted here.
