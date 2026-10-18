@@ -41275,7 +41275,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     nl_sf_prog1 nl_sf_prog2 nl_n3_special_cell nl_n3_special_call)
   "Entries with a Doc 215 word form F_w taking 0 in OUT's position.  `nl_apply_special_w' calls F_w directly.")
 
-(defun nelisp-standalone--special-tail-words (form out)
+(defun nelisp-standalone--special-tail-words (form out &optional word-forms)
   "FORM, a tail of the `nl_apply_special' dispatch body answering an rc with
 the value in OUT, rewritten to answer the result WORD (2 = not special).
 Tail calls of `nelisp-standalone--special-word-forms' become F_w calls with
@@ -41302,7 +41302,7 @@ OUT replaced by 0; any other tail rc form runs against a private OUT box
              (if (or (uses-out (nth 1 x)) (cl-some #'uses-out init))
                  (wrap x)
                `(,(car x) ,(nth 1 x) ,@init ,(tail (car (last x)))))))
-          ((and (consp x) (memq (car x) nelisp-standalone--special-word-forms)
+          ((and (consp x) (memq (car x) (or word-forms nelisp-standalone--special-word-forms))
                 (= (cl-count out (cdr x)) 1)
                 (not (cl-some #'uses-out (cl-remove out (cdr x)))))
            `(,(intern (format "%s_w" (car x))) ,@(cl-substitute 0 out (cdr x))))
@@ -42503,13 +42503,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                    (m5_fx_word_list addr n n 0)))))))
     (defun nl_n4_store_args (frame w)
       (if (= w 3) (wf_write_nil (+ frame 32)) (wf_copy32 (+ frame 32) w)))
-    (defun nl_n4_exit_debug (env out)
+    (defun nl_n4_exit_debug_w (w env)
+      ;; Debug-on-exit: call (debugger 'exit VALUE); its answer is the value.
       (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
              (fn (nl_root_reserve env)) (args (nl_root_reserve env))
              (value (nl_root_reserve env)) (tag (nl_root_reserve env))
              (buf (alloc-bytes 8 1)))
         (seq
-         (nl_sexp_clone_into out value)
+         (nl_abi_word_to_rc w value)
          (ptr-write-u64 buf 0 8243108387020236132) ; debugger
          (nl_alloc_symbol buf 8 name)
          (ptr-write-u64 buf 0 1953069157) ; exit
@@ -42519,16 +42520,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (nelisp_cons_construct tag args args)
          (nl_cons_root_finish env mark
           (if (= (bf_dynamic_lookup env name fn) 0)
-              (nl_apply_function fn args env out) 1)))))
+              (nl_apply_function_w fn args env 0)
+            (nl_abi_fail 1 0))))))
+    ;; Doc 215 word ABI: W is the activation's result WORD (0 = signal).
+    (defun nl_n4_finish_w (w env _pad frame)
+      (if (= frame 0) w
+        (let* ((state (ptr-read-u64 env 176))
+               (r (if (and (/= w 0) (/= (ptr-read-u64 frame 120) 0))
+                      (nl_n4_exit_debug_w w env)
+                    w)))
+          (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) r))))
+    ;; (rc, OUT) form for the fx VM's activations: OUT holds the value.
+    (defun nl_n4_finish_rc (rc r out _pad)
+      (if (= r 0) (if (= rc 0) 1 rc) (nl_abi_word_to_rc r out)))
     (defun nl_n4_finish (rc env out frame)
-      (if (= frame 0) rc
-        (let* ((state (ptr-read-u64 env 176)))
-          (seq
-           (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
-               (setq rc (nl_n4_exit_debug env out)) 0)
-           (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1))
-           rc))))
-    (defun nl_n4_direct_apply (function args env out)
+      (nl_n4_finish_rc rc
+                       (nl_n4_finish_w (if (= rc 0) (nl_val_store_word out) 0) env 0 frame)
+                       out 0))
+    (defun nl_n4_direct_apply_w (function args env _pad)
       ;; The cons evaluator already owns the activation. Keep its original
       ;; operator (including aliases), and replace forms only after evaluation.
       (let* ((state (ptr-read-u64 env 176))
@@ -42536,16 +42545,20 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (seq (wf_copy32 (+ frame 32) args)
              (ptr-write-u64 frame 152 0)
              (ptr-write-u64 frame 112 1)
-             (nl_n4_apply_raw function args env out))))
+             (nl_n4_apply_raw_w function args env 0))))
+    (defun nl_n4_direct_apply (function args env out)
+      (nl_abi_word_to_rc (nl_n4_direct_apply_w function args env 0) out))
     (defun nl_n4_apply_name (function)
       (if (= (sexp-tag function) 18) (let* ((nw (nl_record_slot_word function 0))) (if (= (logand nw 1) 0) nw (record-slot-ref-ptr function 0)))
         (if (= (sexp-tag function) 7)
             (if (= (let* ((fw (nl_cons_car_word function))) (if (= (logand fw 1) 1) 0 (sexp-name-eq fw "builtin"))) 1)
                 (nl_apply_list_nth function 1) function)
           function)))
-    (defun nl_n4_named_apply (name function args env out)
+    (defun nl_n4_named_apply_w (name function args env _pad)
       (let* ((frame (nl_n4_push env name args 1)))
-        (nl_n4_finish (nl_n4_apply_raw function args env out) env out frame)))
+        (nl_n4_finish_w (nl_n4_apply_raw_w function args env 0) env 0 frame)))
+    (defun nl_n4_named_apply (name function args env out)
+      (nl_abi_word_to_rc (nl_n4_named_apply_w name function args env 0) out))
     (defun nl_n4_mark_env (env)
       (if (= (ptr-read-u64 env 176) 0) 0
         (let* ((state (ptr-read-u64 env 176)) (i 0))
@@ -42908,11 +42921,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
           ;; The applied body still writes a private OUT box until the
           ;; combiner chain has word forms.
           (push '(defun nl_apply_function_w (func_ptr args_list_ptr env _pad)
-                   (let* ((out (alloc-bytes 32 8)))
-                     (nl_abi_rc_to_word
-                      (nl_n4_named_apply (nl_n4_apply_name func_ptr)
-                       func_ptr args_list_ptr env out)
-                      out))) result)
+                   (nl_n4_named_apply_w (nl_n4_apply_name func_ptr)
+                    func_ptr args_list_ptr env 0)) result)
           (push '(defun nl_apply_function (func_ptr args_list_ptr env out)
                    (nl_abi_word_to_rc
                     (nl_apply_function_w func_ptr args_list_ptr env 0) out)) result))
@@ -42925,7 +42935,38 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                    '(nl_apply_function func_slot spliced_slot env out)
                                    form :test #'equal) :test #'equal) result))
          (t (push form result)))))
-    (cons 'seq (nreverse result))))
+    (cons 'seq (nelisp-standalone--apply-word-forms (nreverse result)))))
+
+(defconst nelisp-standalone--apply-word-names
+  '(nl_n4_apply_raw nl_apply_closure_or_lambda nl_apply_builtin nl_apply_native_subr)
+  "Combiner-apply defuns given a Doc 215 word form by
+`nelisp-standalone--apply-word-forms' (their last parameter is OUT).")
+
+(defun nelisp-standalone--apply-word-forms (forms)
+  "FORMS (the final combiner-apply defuns) with each of
+`nelisp-standalone--apply-word-names' split into F_w, whose tail calls of
+the same set and of `nelisp_apply_function' become word calls (other
+tails run against a private box), and the (rc, OUT) adapter F."
+  (let ((words (cons 'nelisp_apply_function nelisp-standalone--apply-word-names))
+        result)
+    (dolist (form forms)
+      (if (and (eq (car-safe form) 'defun)
+               (memq (cadr form) nelisp-standalone--apply-word-names))
+          (let* ((name (cadr form)) (params (nth 2 form))
+                 (out (car (last params)))
+                 (wname (intern (format "%s_w" name)))
+                 (wparams (append (butlast params) '(_pad))))
+            (unless (eq out 'out)
+              (error "apply word ABI: %s does not end in OUT" name))
+            (push `(defun ,wname ,wparams
+                     ,(nelisp-standalone--special-tail-words
+                       (cons 'progn (nthcdr 3 form)) out words))
+                  result)
+            (push `(defun ,name ,params
+                     (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
+                  result))
+        (push form result)))
+    (nreverse result)))
 
 ;; Preserve the original lowered evaluator body as the executable reference.
 (setq nelisp-standalone--n4-source
@@ -43038,19 +43079,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                  (nelisp_eval_call_w exp_slot env 0))
           (nl_abi_fail 1 0))))
     (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
-      (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out))
-    ;; nl_n4: record the evaluated arguments in the activation, then apply.
-    (defun nl_n4_direct_apply_w (function args env _pad)
-      (let* ((state (ptr-read-u64 env 176))
-             (frame (nl_n4_record state (- (ptr-read-u64 state 0) 1))))
-        (seq (wf_copy32 (+ frame 32) args)
-             (ptr-write-u64 frame 152 0)
-             (ptr-write-u64 frame 112 1)
-             (nl_n4_apply_raw_w function args env 0))))
-    ;; The combiner's apply body is still (rc, OUT): private box.
-    (defun nl_n4_apply_raw_w (function args env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (nl_abi_rc_to_word (nl_n4_apply_raw function args env out) out))))
+      (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
 
 (defun nelisp-standalone--patch-combiner-cons-word (src)
@@ -43092,20 +43121,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_ei_cons_tail_w (cdr-ptr car-ptr form env _pad)
       (let* ((n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
         (nl_n4_finish_w (nl_ei_cons_eval_w cdr-ptr car-ptr form env)
-                        env 0 n4-frame)))
-    ;; Debug-on-exit hands the value to the debugger through a box.
-    (defun nl_n4_finish_w (w env _pad frame)
-      (if (= frame 0)
-          w
-        (let* ((state (ptr-read-u64 env 176))
-               (r (if (and (/= w 0) (/= (ptr-read-u64 frame 120) 0))
-                      (nl_n4_exit_debug_w w env)
-                    w)))
-          (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) r))))
-    (defun nl_n4_exit_debug_w (w env)
-      (let* ((box (alloc-bytes 32 8)))
-        (seq (nl_abi_word_to_rc w box)
-             (nl_abi_status_fail (nl_n4_exit_debug env box) box)))))
+                        env 0 n4-frame))))
   "Word forms of `nl_eval_inner' and its cons dispatch (Doc 215).")
 
 (defun nelisp-standalone--patch-eval-inner-word (src)
