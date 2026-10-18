@@ -7421,12 +7421,12 @@ argument (reachability + in-arena bounds checks).")
                           (if (= (wf_argval args 0) 0)
                               (bf_arith_error)
                             (wf_write_int out (/ 1 (wf_argval args 0)))))))))))
-    ((:u8 "mod") . (let* ((bad (wf_first_non_number args)))
+    ((:u8 "mod") :word . (let* ((bad (wf_first_non_number args)))
                     (if (= bad 0)
                         (if (= (wf_argval args 1) 0)
-                            (bf_arith_error)
-                          (wf_write_int out (mod (wf_argval args 0) (wf_argval args 1))))
-                      (bf_wrong_type_number_or_marker bad))))
+                            (nl_abi_fail (bf_arith_error) 0)
+                          (nl_g4arm_int_w 0 (mod (wf_argval args 0) (wf_argval args 1))))
+                      (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0))))
     ;; `%' = C-style integer remainder (sign of dividend): x - y*trunc(x/y).
     ;; Dialect `/' is truncating i64 division, so this matches Emacs `%'.
     ;; `%' is INTEGER remainder, so Emacs names `integer-or-marker-p' -- not
@@ -7435,20 +7435,20 @@ argument (reachability + in-arena bounds checks).")
     ;;
     ;; Doc 190 Phase C: a Bignum DIVIDEND is checked first, same reasoning
     ;; as `/' just above -- `bf_first_non_integer' does not know tag 13.
-    ((:u8 "%") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
+    ((:u8 "%") :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
                      (let* ((dptr (wf_arg_ptr args 1)))
                        (if (= (nl_bignum_small_divisor_p dptr) 1)
                            (if (= (ptr-read-u64 dptr 8) 0)
-                               (bf_arith_error)
-                             (wf_write_int out (nl_bignum_rem_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8))))
-                         (bf_signal_bignum_division_unsupported)))
+                               (nl_abi_fail (bf_arith_error) 0)
+                             (nl_g4arm_int_w 0 (nl_bignum_rem_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8))))
+                         (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
                    (let* ((bad (bf_first_non_integer args)))
                     (if (= bad 0)
                         (let* ((a (wf_argval args 0)) (b (wf_argval args 1)))
                           (if (= b 0)
-                              (bf_arith_error)
-                            (wf_write_int out (- a (* b (/ a b))))))
-                      (bf_wrong_type_int_or_marker bad)))))
+                              (nl_abi_fail (bf_arith_error) 0)
+                            (nl_g4arm_int_w 0 (- a (* b (/ a b))))))
+                      (nl_abi_fail (bf_wrong_type_int_or_marker bad) 0)))))
     ;; `/=' = 2-arg numeric not-equal (int/float via wf_num_eq).
     ((:u8 "/=") . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare args env 5 out)
@@ -7528,18 +7528,18 @@ argument (reachability + in-arena bounds checks).")
                                (nl_root_release env mark)
                                0))))
                       (bf_wrong_type_number_or_marker bad)))))
-    ((:u8 "floor")    . (let* ((p (wf_arg_ptr args 0)))
+    ((:u8 "floor")    :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (wf_write_int out (wf_ffloor p))
-                            (wf_write_int out (ptr-read-u64 p 8)))))
-    ((:u8 "truncate") . (let* ((p (wf_arg_ptr args 0)))
+                              (nl_g4arm_int_w 0 (wf_ffloor p))
+                            (nl_g4arm_int_w 0 (ptr-read-u64 p 8)))))
+    ((:u8 "truncate") :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (wf_write_int out (wf_ftrunc p))
-                            (wf_write_int out (ptr-read-u64 p 8)))))
-    ((:u8 "ceiling")  . (let* ((p (wf_arg_ptr args 0)))
+                              (nl_g4arm_int_w 0 (wf_ftrunc p))
+                            (nl_g4arm_int_w 0 (ptr-read-u64 p 8)))))
+    ((:u8 "ceiling")  :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (wf_write_int out (wf_fceil p))
-                            (wf_write_int out (ptr-read-u64 p 8)))))
+                              (nl_g4arm_int_w 0 (wf_fceil p))
+                            (nl_g4arm_int_w 0 (ptr-read-u64 p 8)))))
     ((:u8 "=") . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare args env 0 out)
                   (let* ((r (wf_chain_eq args)))
@@ -7586,7 +7586,7 @@ argument (reachability + in-arena bounds checks).")
                                 (nl_abi_rc_to_word (wf_copy32 out (nl_cons_cdr_ptr a)) out)))))
     ((:u8 "cons") :word . (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                                                  (alloc-bytes 32 8)))
-    ((:u8 "list") . (seq (wf_copy32 out args) 0))
+    ((:u8 "list") :word . (nl_g4arm_copy_w 0 args))
     ;; --- list search hot paths ---
     ;; `memq' walked with the cons accessors and stopped at a non-list,
     ;; answering nil -- which is also the answer for "not a member".
@@ -7663,13 +7663,14 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--plist-member-eq") . (bf_plist_member_eq args out))
     ;; Private fixture for the opaque byte-code object storage tests. This
     ;; clones a RecordBox-backed value and changes only its public tag.
-    ((:lit "nelisp--byte-code-wrap-test") .
+    ((:lit "nelisp--byte-code-wrap-test") :word .
      (let* ((p (wf_arg_ptr args 0)))
        (if (= (ptr-read-u8 p 0) 12)
-           (seq (nl_sexp_clone_into p out)
-                (ptr-write-u8 out 0 17)
-                0)
-         (bf_wrong_type_sequencep p))))
+           (let ((b (alloc-bytes 32 8)))
+             (seq (nl_sexp_clone_into p b)
+                  (ptr-write-u8 b 0 17)
+                  b))
+         (nl_abi_fail (bf_wrong_type_sequencep p) 0))))
     ;; A closure's captured value is a lexical CELL (tag 11), and the printer
     ;; had no way to look inside one -- so every captured variable printed as
     ;; `#<unprintable>' where Emacs shows the value.  This is the read side of
@@ -7697,10 +7698,10 @@ argument (reachability + in-arena bounds checks).")
                                         (bf_wrong_type_hash_table h))))))
     ;; This read a count out of whatever it was handed: (hash-table-count 0)
     ;; answered 0, which is also what an empty table answers.
-    ((:lit "hash-table-count") . (let* ((h (wf_arg_ptr args 0)))
+    ((:lit "hash-table-count") :word . (let* ((h (wf_arg_ptr args 0)))
                                    (if (= (bf_hash_table_p_raw h) 1)
-                                       (wf_write_int out (nl_ht_count_table (nl_ht_data_slot h)))
-                                     (bf_wrong_type_hash_table h))))
+                                       (nl_g4arm_int_w 0 (nl_ht_count_table (nl_ht_data_slot h)))
+                                     (nl_abi_fail (bf_wrong_type_hash_table h) 0))))
     ((:lit "maphash")          . (nl_ht_maphash args out))
     ;; --- M5 strings + format ---
     ((:lit "length")           . (bf_length_checked (wf_arg_ptr args 0) out))
@@ -7708,27 +7709,27 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "string-byte")      . (wf_write_int out
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
-    ((:lit "string-bytes")     . (let* ((s (wf_arg_ptr args 0))
+    ((:lit "string-bytes")     :word . (let* ((s (wf_arg_ptr args 0))
                                           (tag (ptr-read-u64 s 0)))
                                   (if (= (m5_string_tag_p tag) 1)
-                                      (wf_write_int out (m5_strlen s))
-                                    (bf_wrong_type_stringp s))))
-    ((:lit "string=")          . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
-                                      (bf_wrong_type_stringp (wf_arg_ptr args 0))
+                                      (nl_g4arm_int_w 0 (m5_strlen s))
+                                    (nl_abi_fail (bf_wrong_type_stringp s) 0))))
+    ((:lit "string=")          :word . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
+                                      (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 0)) 0)
                                     (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
-                                        (bf_wrong_type_stringp (wf_arg_ptr args 1))
+                                        (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 1)) 0)
                                       (seq (if (= (m5_streq
                                                 (bf_str_or_name_w (wf_arg_ptr args 0) 0)
                                                 (bf_str_or_name_w (wf_arg_ptr args 1) 0)) 1)
-                                            (wf_write_t out) (wf_write_nil out))))))
-    ((:lit "unibyte-string-p") . (if (= (bf_string_unibyte_p (wf_arg_ptr args 0)) 1)
-                                      (wf_write_t out) (wf_write_nil out)))
-    ((:lit "multibyte-string-p") .
+                                            7 3)))))
+    ((:lit "unibyte-string-p") :word . (if (= (bf_string_unibyte_p (wf_arg_ptr args 0)) 1)
+                                      7 3))
+    ((:lit "multibyte-string-p") :word .
      (let* ((sx (wf_arg_ptr args 0)) (tag (ptr-read-u64 sx 0)))
        (if (and (= (m5_string_tag_p tag) 1)
                 (= (m5_observably_unibyte_p sx) 0))
-           (wf_write_t out)
-         (wf_write_nil out))))
+           7
+         3)))
     ((:lit "string-as-unibyte") .
      (let* ((sx (wf_arg_ptr args 0)))
        (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
@@ -7759,58 +7760,57 @@ argument (reachability + in-arena bounds checks).")
        (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
            (bf_string_to_multibyte sx out)
          (bf_wrong_type_stringp sx))))
-    ((:lit "string-to-char")   . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 5) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 6) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 14) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 15) 1 0))))
-                            (wf_write_int out
-                                  (if (= (m5_strlen (wf_arg_ptr args 0)) 0) 0
+    ((:lit "string-to-char")   :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 5) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 6) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 14) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 15) 1 0))))
+                            (nl_g4arm_int_w 0 (if (= (m5_strlen (wf_arg_ptr args 0)) 0) 0
                                     (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 14)
                                             (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 15))
                                         (m5_byte_at (wf_arg_ptr args 0) 0)
                                       (nl_u8_decode (wf_arg_ptr args 0) 0))))
-                          (bf_wrong_type_stringp (wf_arg_ptr args 0))))
+                          (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 0)) 0)))
     ((:lit "string-to-number") . (wf_write_int out (m5_s2n (wf_arg_ptr args 0))))
     ;; Doc 190 Phase A: accepts tag 13 (Bignum) too, via `m5_push_bignum'.
-    ((:lit "number-to-string") . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13) 1 0)))
+    ((:lit "number-to-string") :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13) 1 0)))
                             (let* ((arg (wf_arg_ptr args 0)))
-                                   (seq (mut-str-make-empty out 16)
+                                   (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 16)
                                         (if (= (ptr-read-u64 arg 0) 3)
-                                            (m5_push_float out arg)
+                                            (m5_push_float sb arg)
                                           (if (= (ptr-read-u64 arg 0) 13)
-                                              (m5_push_bignum out arg)
-                                            (m5_push_dec out (ptr-read-u64 arg 8))))
-                                        (mut-str-finalize out out) 0))
+                                              (m5_push_bignum sb arg)
+                                            (m5_push_dec sb (ptr-read-u64 arg 8))))
+                                        (mut-str-finalize sb sb) sb)))
                           ;; `numberp', not `number-or-marker-p': this
                           ;; converts a number, it does not do arithmetic
                           ;; on one, and Emacs names the narrower predicate.
-                          (bf_wrong_type_numberp (wf_arg_ptr args 0))))
+                          (nl_abi_fail (bf_wrong_type_numberp (wf_arg_ptr args 0)) 0)))
     ;; (nelisp--fmt-float FLOAT CONV-CODE PREC) -> string (Doc 159 §4):
     ;; precision-aware %f/%e/%g body for `format'.  FLOAT is a Float Sexp.
-    ((:lit "nelisp--fmt-float") . (let* ((buf (alloc-bytes 512 1))
+    ((:lit "nelisp--fmt-float") :word . (let* ((buf (alloc-bytes 512 1))
                                          (sc (alloc-bytes 32 8)))
-                                    (seq (mut-str-make-empty out 32)
-                                         (m5_fmt_float_body out
+                                    (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 32)
+                                         (m5_fmt_float_body sb
                                             (sexp-float-unwrap (wf_arg_ptr args 0))
                                             (ptr-read-u64 (wf_arg_ptr args 1) 8)
                                             (ptr-read-u64 (wf_arg_ptr args 2) 8)
                                             buf sc)
-                                         (mut-str-finalize out out) 0)))
-    ((:lit "char-to-string")   . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
+                                         (mut-str-finalize sb sb) sb))))
+    ((:lit "char-to-string")   :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
                                    (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
-                            (seq (mut-str-make-empty out 4)
+                            (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 4)
                                         ;; Doc 161: UTF-8-encode the codepoint
-                                        (nl_u8_encode out (ptr-read-u64 (wf_arg_ptr args 0) 8))
-                                        (mut-str-finalize out out) 0)
-                          (bf_wrong_type_characterp (wf_arg_ptr args 0))))
-    ((:lit "make-string")      . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
+                                        (nl_u8_encode sb (ptr-read-u64 (wf_arg_ptr args 0) 8))
+                                        (mut-str-finalize sb sb) sb))
+                          (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 0)) 0)))
+    ((:lit "make-string")      :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
                                         (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
                               (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
                                    (if (< (ptr-read-u64 (wf_arg_ptr args 1) 8) 0) 0 1) 0)
-                              (seq (mut-str-make-empty out 16)
+                              (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 16)
                                         ;; Doc 161: COUNT copies of CHAR's UTF-8
-                                        (nl_u8_repeat out (ptr-read-u64 (wf_arg_ptr args 0) 8)
+                                        (nl_u8_repeat sb (ptr-read-u64 (wf_arg_ptr args 0) 8)
                                                       (ptr-read-u64 (wf_arg_ptr args 1) 8))
-                                        (mut-str-finalize out out) 0)
-                            (bf_wrong_type_characterp (wf_arg_ptr args 1)))
-                          (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9)))
+                                        (mut-str-finalize sb sb) sb))
+                            (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
+                          (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
     ((:lit "concat")           . (let* ((why (m5_concat_first_bad_kind args)))
                                    (if (= why 0)
                                        (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
@@ -7950,51 +7950,51 @@ argument (reachability + in-arena bounds checks).")
                                           (m5_fmt_loop out fmt 0 (m5_strlen fmt)
                                                        (nl_cons_cdr_ptr args))
                                           (m5_finish_string out out (- 1 all-unibyte)) 0)))
-    ((:lit "nelisp--repr")     . (seq (mut-str-make-empty out 32)
-                                        (m5_prin1 out (wf_arg_ptr args 0))
-                                        (mut-str-finalize out out) 0))
-    ((:lit "nelisp--json-encode") . (seq (mut-str-make-empty out 64)
-                                           (m5_json out (wf_arg_ptr args 0))
-                                           (mut-str-finalize out out) 0))
+    ((:lit "nelisp--repr")     :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 32)
+                                        (m5_prin1 sb (wf_arg_ptr args 0))
+                                        (mut-str-finalize sb sb) sb)))
+    ((:lit "nelisp--json-encode") :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 64)
+                                           (m5_json sb (wf_arg_ptr args 0))
+                                           (mut-str-finalize sb sb) sb)))
     ;; Clause 3: read-only access to the linked image's raw rodata identity.
     ;; No pointer or caller-selected pathname escapes. Lisp reference:
     ;; `nelisp-build-digest-reference' in the identity test.
-    ((:lit "nelisp--build-digest") .
+    ((:lit "nelisp--build-digest") :word .
      (if (= (nl_build_digest_stamped_p) 0)
-         (wf_write_nil out)
+         3
        (let* ((p (nl_build_digest_ptr)) (i 0))
-         (seq (mut-str-make-empty out 64)
+         (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 64)
               (while (< i 32)
-                (seq (m5_sha_hexword out (m5_sha_word p i))
+                (seq (m5_sha_hexword sb (m5_sha_word p i))
                      (setq i (+ i 4))))
-              (mut-str-finalize out out) 0))))
-    ((:lit "nelisp--sha256") . (seq (mut-str-make-empty out 64)
-                                      (m5_sha256 out (wf_arg_ptr args 0))
-                                      (mut-str-finalize out out) 0))
+              (mut-str-finalize sb sb) sb)))))
+    ((:lit "nelisp--sha256") :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 64)
+                                      (m5_sha256 sb (wf_arg_ptr args 0))
+                                      (mut-str-finalize sb sb) sb)))
     ;; Digest LEN bytes at an ADDRESS.  `nelisp--sha256' takes a string and
     ;; hashes its internal UTF-8, so it agrees with other implementations on
     ;; ASCII and disagrees on any byte over 127 -- which makes it unusable
     ;; for validating an artifact.  This is the shape the in-process loader
     ;; already works in: it writes the decoded text to a page byte by byte.
-    ((:lit "nelisp--sha256-bytes") . (seq (mut-str-make-empty out 64)
-                                            (m5_sha256_ptr out
+    ((:lit "nelisp--sha256-bytes") :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 64)
+                                            (m5_sha256_ptr sb
                                                            (wf_argval args 0)
                                                            (wf_argval args 1))
-                                            (mut-str-finalize out out) 0))
+                                            (mut-str-finalize sb sb) sb)))
 ;; A copy of tag-5 string ARG0 with A-Z lowered and every other byte
     ;; kept, so char positions are unchanged; nil for any other string.
     ;; `search-forward' folds ASCII case by searching such a copy.
     ((:lit "nelisp--ascii-downcase")
-     . (let* ((s (wf_arg_ptr args 0)))
+     :word . (let* ((s (wf_arg_ptr args 0)))
          (if (= (ptr-read-u64 s 0) 5)
              (let* ((n (m5_strlen s)) (i 0))
-               (seq (mut-str-make-empty out (+ n 1))
+               (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb (+ n 1))
                     (while (< i n)
                       (let* ((b (m5_byte_at s i)))
-                        (seq (mut-str-push-byte out (if (< b 65) b (if (> b 90) b (+ b 32))))
+                        (seq (mut-str-push-byte sb (if (< b 65) b (if (> b 90) b (+ b 32))))
                              (setq i (+ i 1)))))
-                    (mut-str-finalize out out) 0))
-           (seq (wf_write_nil out) 0))))
+                    (mut-str-finalize sb sb) sb)))
+           3)))
 ;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
     ((:lit "nelisp--fx-run")
      . (let* ((st (m5_fx_run (wf_arg_ptr args 0) (wf_argval args 1) env out 0 0 0 0)))
@@ -8002,17 +8002,17 @@ argument (reachability + in-arena bounds checks).")
            (if (= st -2) (bf_wrong_type_arrayp (wf_arg_ptr args 0)) st))))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
     ((:lit "nelisp--string-search-chars")
-     . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+     :word . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                                          (wf_arg_ptr args 2))))
-         (if (= r -2) (wf_write_t out)
-           (if (= r -1) (wf_write_nil out) (wf_write_int out r)))))
-    ((:lit "nelisp--string-search") . (let* ((idx (m5_string_search
+         (if (= r -2) 7
+           (if (= r -1) 3 (nl_g4arm_int_w 0 r)))))
+    ((:lit "nelisp--string-search") :word . (let* ((idx (m5_string_search
                                                     (wf_arg_ptr args 1)
                                                     (wf_arg_ptr args 0)
                                                     (wf_argval args 2))))
                                         (if (< idx 0)
-                                            (wf_write_nil out)
-                                          (wf_write_int out idx))))
+                                            3
+                                          (nl_g4arm_int_w 0 idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "nelisp--gc-pressure") . (bf_gc_pressure out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
@@ -8062,20 +8062,20 @@ argument (reachability + in-arena bounds checks).")
     ;; `exit' below is the status-only sibling the driver's top-level loop is
     ;; built on; this is the one `kill-emacs' needs.
     ((:lit "nelisp--exit-process")
-     . (let* ((code (if (= args 0)
+     :word . (let* ((code (if (= args 0)
                         0
                       (if (= (ptr-read-u64 args 0) 7)
                           (ptr-read-u64 (nl_cons_car_ptr args) 8)
                         0))))
          (seq (nl_os_exit_process code)
-              (wf_write_int out code))))
-    ((:u8 "exit") . (let* ((code (if (= args 0)
+              (nl_g4arm_int_w 0 code))))
+    ((:u8 "exit") :word . (let* ((code (if (= args 0)
                                      0
                                    (if (= (ptr-read-u64 args 0) 7)
                                        (ptr-read-u64 (nl_cons_car_ptr args) 8)
                                      0))))
                        (seq (ptr-write-u64 268435464 0 (+ code 1))
-                            (wf_write_int out code)))))
+                            (nl_g4arm_int_w 0 code)))))
   "Unified (MATCH . IMPL) builtin dispatch table for `nelisp_apply_function'.
 MATCH = (:u8 NAME) for <=8-byte u64-packed names, (:lit NAME) for full-length
 `sexp-name-eq' compare (any length).")
@@ -8731,6 +8731,27 @@ leave symbols unresolved at link time."
     (defun wf_write_int (out v)
       (seq (ptr-write-u64 out 0 2) (ptr-write-u64 out 8 v)
            (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+    ;; Doc 215 word ABI, local to the G4 dispatch-arm pass: the Int V as a
+    ;; result WORD -- a fixnum word in the 62-bit range, else a fresh Int box
+    ;; (what wf_write_int wrote into OUT).  Same body as G1's
+    ;; `wf_write_int_w'; the integrator repoints these to it after the merge.
+    (defun nl_g4arm_int_w (_pad v)
+      (if (if (< v -2305843009213693952) 1 (if (> v 2305843009213693951) 1 0))
+          (let* ((s (alloc-bytes 32 8)))
+            (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
+                 (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
+        (nl_imm_int v)))
+    ;; The 32-byte value at SRC as a result WORD with the same sharing the
+    ;; old (wf_copy32 out SRC) arms had: an immediate collapses to its word,
+    ;; anything else is a shallow copy in a fresh box (never SRC itself,
+    ;; which may be an argument-list slot).
+    (defun nl_g4arm_copy_w (_pad src)
+      (let ((tg (ptr-read-u8 src 0)))
+        (if (= tg 2) (nl_imm_int (ptr-read-u64 src 8))
+          (if (= tg 0) 3
+            (if (= tg 1) 7
+              (let ((b (alloc-bytes 32 8)))
+                (seq (wf_copy32 b src) b)))))))
     ;; Doc 187: `wf_write_int' ALWAYS returns 0 (its own `seq' ends in 0), so
     ;; `(wf_write_int out (wf_sum args 0))' would unconditionally write
     ;; whatever `wf_sum' returned into OUT and report rc=0 "ok" -- even when
@@ -23279,7 +23300,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
   '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
     ((:lit "nelisp-process-start") . (nl_bi_process_start_process args out))
     ((:lit "nelisp-process-start-process") . (nl_bi_process_start_process args out))
-    ((:lit "nelisp-process-object-p") . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "nelisp-process-object-p") :word . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) 7 3))
     ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
     ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
     ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_status_code (wf_arg_ptr args 0))))
@@ -23289,14 +23310,14 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp-process-close-stdin") . (nl_bi_process_close_stdin args out))
     ((:lit "nelisp-process-poll") . (nl_bi_process_poll args out))
     ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_wait_object (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-delete") . (seq (nl_bi_process_delete_object (wf_arg_ptr args 0)) (wf_write_nil out))))
+    ((:lit "nelisp-process-delete") :word . (seq (nl_bi_process_delete_object (wf_arg_ptr args 0)) 3)))
   "The pre-existing process arms, unchanged for every POSIX target.")
 
 (defconst nelisp-standalone--process-windows-real-arms
   '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
     ((:lit "nelisp-process-start") . (nl_bi_process_windows_start args out))
     ((:lit "nelisp-process-start-process") . (nl_bi_process_windows_start args out))
-    ((:lit "nelisp-process-object-p") . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "nelisp-process-object-p") :word . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) 7 3))
     ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
     ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
     ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_windows_status_code (wf_arg_ptr args 0))))
@@ -23306,7 +23327,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp-process-close-stdin") . (nl_bi_process_windows_close_stdin args out))
     ((:lit "nelisp-process-poll") . (nl_bi_process_windows_poll args out))
     ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_windows_wait_object (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-delete") . (seq (nl_bi_process_windows_delete_object (wf_arg_ptr args 0)) (wf_write_nil out))))
+    ((:lit "nelisp-process-delete") :word . (seq (nl_bi_process_windows_delete_object (wf_arg_ptr args 0)) 3)))
   "Complete async-process lifecycle arms for windows-x86_64.")
 
 (defun nelisp-standalone--process-dispatch-arms ()
@@ -23470,50 +23491,50 @@ into that constant unconditionally is what broke every aarch64 build."
 (defconst nelisp-standalone--applyfn-bf-arms
   (append
    '(;; --- predicates ---
-    ((:lit "consp")    . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_t out) (wf_write_nil out)))
-    ((:lit "atom")     . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_nil out) (wf_write_t out)))
+    ((:lit "consp")    :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) 7 3))
+    ((:lit "atom")     :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) 3 7))
     ;; NativeSubr has its own tag; the legacy builtin cons remains accepted.
-    ((:lit "subrp")    . (let* ((obj (wf_arg_ptr args 0)))
+    ((:lit "subrp")    :word . (let* ((obj (wf_arg_ptr args 0)))
                            (if (= (ptr-read-u8 obj 0) 18)
-                               (wf_write_t out)
+                               7
                            (if (= (ptr-read-u64 obj 0) 7)
                                (if (= (let* ((carw (nl_cons_car_word obj))) (if (= (logand carw 1) 0) (nl_sp_eq_lit carw 7 31078196194145634 0) 0)) 1)
-                                   (wf_write_t out) (wf_write_nil out))
-                             (wf_write_nil out)))))
-    ((:lit "stringp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
-                           (if (= tg 5) (wf_write_t out) (if (= tg 6) (wf_write_t out)
-                             (if (= tg 14) (wf_write_t out) (if (= tg 15) (wf_write_t out)
-                               (wf_write_nil out)))))))
-    ((:lit "symbolp")  . (let* ((arg (wf_arg_ptr args 0))
+                                   7 3)
+                             3))))
+    ((:lit "stringp")  :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 5) 7 (if (= tg 6) 7
+                             (if (= tg 14) 7 (if (= tg 15) 7
+                               3))))))
+    ((:lit "symbolp")  :word . (let* ((arg (wf_arg_ptr args 0))
                                   (sym (if (= (ptr-read-u8 arg 0) 19)
                                            (if (= (nl_positioned_flag 0) 1)
                                                (ptr-read-u64 arg 8) arg) arg))
                                   (tg (ptr-read-u64 sym 0)))
                            ;; nil and t are also symbols in elisp
-                           (if (or (= tg 4) (= tg 16)) (wf_write_t out) (if (= tg 0) (wf_write_t out) (if (= tg 1) (wf_write_t out) (wf_write_nil out))))))
+                           (if (or (= tg 4) (= tg 16)) 7 (if (= tg 0) 7 (if (= tg 1) 7 3)))))
     ;; Clause 1: immutable positioned symbol, box@+8; bare Sexp@box+0,
     ;; signed fixnum position@box+32. These accessors ignore the enable flag.
     ((:lit "symbol-with-pos-p")
-     . (if (= (ptr-read-u8 (wf_arg_ptr args 0) 0) 19)
-           (wf_write_t out) (wf_write_nil out)))
+     :word . (if (= (ptr-read-u8 (wf_arg_ptr args 0) 0) 19)
+           7 3))
     ;; Installed explicitly by the Lisp prelude, not the native bridge list.
     ;; OP 0 constructs from validated BARE/POS; OP 1 extracts position.
     ((:lit "nelisp--symbol-position-op")
-     . (let* ((sym (wf_arg_ptr args 1)))
+     :word . (let* ((sym (wf_arg_ptr args 1)))
          (if (= (wf_argval args 0) 0)
-             (let ((box (alloc-bytes 40 8)))
+             (let ((box (alloc-bytes 40 8)) (w (alloc-bytes 32 8)))
                (seq (wf_copy32 box sym)
                     (ptr-write-u64 box 32 (wf_argval args 2))
-                    (ptr-write-u64 out 0 19) (ptr-write-u64 out 8 box)
-                    (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
-           (seq (wf_write_int out (ptr-read-u64 (ptr-read-u64 sym 8) 32)) 0))))
-    ((:lit "bare-symbol") . (let* ((arg (wf_arg_ptr args 0))
+                    (ptr-write-u64 w 0 19) (ptr-write-u64 w 8 box)
+                    (ptr-write-u64 w 16 0) (ptr-write-u64 w 24 0) w))
+           (nl_g4arm_int_w 0 (ptr-read-u64 (ptr-read-u64 sym 8) 32)))))
+    ((:lit "bare-symbol") :word . (let* ((arg (wf_arg_ptr args 0))
                                    (sym (if (= (ptr-read-u8 arg 0) 19)
                                             (ptr-read-u64 arg 8) arg))
                                    (tg (ptr-read-u64 sym 0)))
                                (if (if (or (= tg 0) (= tg 1)) 1
                                      (if (= tg 4) 1 (if (= tg 16) 1 0)))
-                                   (seq (wf_copy32 out sym) 0)
+                                   (nl_g4arm_copy_w 0 sym)
                                  (let* ((wbuf (alloc-bytes 24 1))
                                         (cbuf1 (alloc-bytes 8 1))
                                         (cbuf2 (alloc-bytes 24 1))
@@ -23523,7 +23544,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                         (predicate (alloc-bytes 32 8))
                                         (nil-slot (alloc-bytes 32 8))
                                         (data-tail (alloc-bytes 32 8)))
-                                   (seq
+                                   (nl_abi_fail (seq
                                     (ptr-write-u64 wbuf 0 8751669898145395319)
                                     (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
                                     (ptr-write-u64 (+ wbuf 16) 0 7630437)
@@ -23541,32 +23562,32 @@ into that constant unconditionally is what broke every aarch64 build."
                                     (nelisp_cons_construct predicate data-tail 268435512)
                                     (ptr-write-u64 268435472 0 1)
                                     (atomic-fetch-add 268435544 1)
-                                    1)))))
+                                    1) 0)))))
     ;; Doc 190 Phase A: `integerp'/`numberp' accept tag 13 (Bignum) too --
     ;; this is what makes `type-of' (an elisp `cond' over `integerp' et al,
     ;; `scripts/nelisp-stdlib-prelude.el') answer `integer' for a bignum,
     ;; with no separate change needed there.
-    ((:lit "integerp") . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
-                           (if (= tg 2) (wf_write_t out) (if (= tg 13) (wf_write_t out) (wf_write_nil out)))))
-    ((:lit "natnump")  . (let* ((p (wf_arg_ptr args 0)))
+    ((:lit "integerp") :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 2) 7 (if (= tg 13) 7 3))))
+    ((:lit "natnump")  :word . (let* ((p (wf_arg_ptr args 0)))
                            (if (= (ptr-read-u64 p 0) 2)
-                               (if (>= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
-                             (wf_write_nil out))))
-    ((:lit "numberp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
-                           (if (= tg 2) (wf_write_t out) (if (= tg 3) (wf_write_t out) (if (= tg 13) (wf_write_t out) (wf_write_nil out))))))
-    ((:lit "floatp")   . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) (wf_write_t out) (wf_write_nil out)))
+                               (if (>= (ptr-read-u64 p 8) 0) 7 3)
+                             3)))
+    ((:lit "numberp")  :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 2) 7 (if (= tg 3) 7 (if (= tg 13) 7 3)))))
+    ((:lit "floatp")   :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) 7 3))
     ;; Doc 201 §6.17: `sxhash-eq' hashes what `eq' compares -- identity --
     ;; so two equal-content strings hash apart as they do in Emacs, while
     ;; `(eq a b)' still implies equal hashes (`bf_identity_hash').
     ((:lit "sxhash-eq") . (wf_write_int out (bf_identity_hash (wf_arg_ptr args 0))))
-    ((:lit "vectorp")  . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 8) (wf_write_t out) (wf_write_nil out)))
-    ((:lit "listp")    . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
-                           (if (= tg 7) (wf_write_t out) (if (= tg 0) (wf_write_t out) (wf_write_nil out)))))
+    ((:lit "vectorp")  :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 8) 7 3))
+    ((:lit "listp")    :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 7) 7 (if (= tg 0) 7 3))))
     ;; GNU Emacs C primitive `nlistp': every non-cons object except nil.
-    ((:lit "nlistp")   . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "nlistp")   :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
                            (if (or (= tg 7) (= tg 0))
-                               (wf_write_nil out)
-                             (wf_write_t out))))
+                               3
+                             7)))
     ;; Doc 190 Phase A: reader-only entry point for `nl_read_int_or_bignum'
     ;; (`nelisp-standalone--applyfn-bignum-helpers'), called from
     ;; `src/nelisp-read.el''s `nelisp-read--atom' for the plain-decimal-
@@ -23583,7 +23604,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; `nelisp--check-string').  Answers t when the string is a bare
     ;; optionally-signed decimal integer, so that caller can route it to
     ;; `nl--read-int' rather than its interpreted digit loop.
-    ((:lit "nl--int-token-p") . (if (= (m5_int_token_p (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "nl--int-token-p") :word . (if (= (m5_int_token_p (wf_arg_ptr args 0)) 1) 7 3))
     ;; Same contract: ARG0 is a string.  A whole float literal is read by the
     ;; reader's own native parser, the float twin of `nl--read-int'; anything
     ;; else answers nil and `string-to-number' keeps its full walk.
@@ -23596,13 +23617,13 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; The float arm was missing, so (zerop 0.0) answered nil -- and a
     ;; non-number answered nil too, instead of signalling.  Masking the sign
     ;; bit is what makes -0.0 zero as well, which is what `=' reports.
-    ((:lit "zerop")    . (let* ((p (wf_arg_ptr args 0)) (tg (ptr-read-u64 p 0)))
+    ((:lit "zerop")    :word . (let* ((p (wf_arg_ptr args 0)) (tg (ptr-read-u64 p 0)))
                            (if (= tg 2)
-                               (if (= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
+                               (if (= (ptr-read-u64 p 8) 0) 7 3)
                              (if (= tg 3)
                                  (if (= (logand (ptr-read-u64 p 8) 9223372036854775807) 0)
-                               (wf_write_t out) (wf_write_nil out))
-                               (bf_wrong_type_number_or_marker p)))))
+                               7 3)
+                               (nl_abi_fail (bf_wrong_type_number_or_marker p) 0)))))
     ;; P1 native byte-code loop.  Keep the public surface to string, vector
     ;; and integer arguments, matching the requested builtin contract.
     ((:lit "byte-code") . (let* ((cp (wf_arg_ptr args 0))
@@ -23818,14 +23839,14 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
     ;; Installs V (possibly a box) into a PRE-EXISTING cons -> persistent escape
     ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
-    ((:lit "setcar")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+    ((:lit "setcar")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
-                                  (seq (wf_dirty) (cons-set-car c v) (wf_copy32 out v) 0)
-                                (bf_wrong_type_consp c))))
-    ((:lit "setcdr")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+                                  (seq (wf_dirty) (cons-set-car c v) (nl_g4arm_copy_w 0 v))
+                                (nl_abi_fail (bf_wrong_type_consp c) 0))))
+    ((:lit "setcdr")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
-                                  (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0)
-                                (bf_wrong_type_consp c))))
+                                  (seq (wf_dirty) (cons-set-cdr c v) (nl_g4arm_copy_w 0 v))
+                                (nl_abi_fail (bf_wrong_type_consp c) 0))))
     ;; load FILE &optional ...: reader-only absolute-path file load.  The
     ;; optional args are ignored for now; callers in nelisp-emacs pass absolute
     ;; paths and use a post-load proof form to verify the file actually ran.
@@ -23885,10 +23906,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; (e.g. `(/ (nl-unix-time-usec) 1000000.0)') is then done in a SEPARATE
     ;; builtin dispatch across an eval-loop boundary, sidestepping the
     ;; syscall<->f64 codegen abort.  Lets `float-time' be a pure-elisp polyfill.
-    ((:lit "nl-unix-time-usec") . (let* ((buf (alloc-bytes 16 8)))
+    ((:lit "nl-unix-time-usec") :word . (let* ((buf (alloc-bytes 16 8)))
                                     (seq (syscall-direct 96 buf 0 0 0 0 0)
-                                         (wf_write_int out
-                                           (+ (* (ptr-read-u64 buf 0) 1000000)
+                                         (nl_g4arm_int_w 0 (+ (* (ptr-read-u64 buf 0) 1000000)
                                               (ptr-read-u64 buf 8))))))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ;; Doc 190 Phase C: `ash' accepts a Bignum (tag 13) N -- always via
@@ -23930,13 +23950,13 @@ into that constant unconditionally is what broke every aarch64 build."
                               (bf_lognot_general (wf_arg_ptr args 0) out)
                             (bf_wrong_type_integerp (wf_arg_ptr args 0)))))
     ;; --- Wave-2 (C) string<: byte-lexicographic less-than ---
-    ((:lit "string<") . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
-                            (bf_wrong_type_stringp (wf_arg_ptr args 0))
+    ((:lit "string<") :word . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
+                            (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 0)) 0)
                           (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
-                              (bf_wrong_type_stringp (wf_arg_ptr args 1))
+                              (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 1)) 0)
                             (seq (if (= (bf_str_lt (bf_str_or_name_w (wf_arg_ptr args 0) 0)
                                                 (bf_str_or_name_w (wf_arg_ptr args 1) 0)) 1)
-                                  (wf_write_t out) (wf_write_nil out))))))
+                                  7 3)))))
     ;; --- §S4 low-level thread / atomic / memory primitives (interpreter
     ;; dispatch).  These let INTERPRETED driver code spawn clone(2) threads,
     ;; do SeqCst atomics, raw memory access, and arena allocation — the
@@ -23960,11 +23980,11 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "syscall-direct") . (wf_write_int out (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
     ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-read-u8") . (wf_write_int out (ptr-read-u8 (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "ptr-write-u8") . (seq (ptr-write-u8 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
+    ((:lit "ptr-write-u8") :word . (seq (ptr-write-u8 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (nl_g4arm_int_w 0 0)))
     ((:lit "ptr-read-u32") . (wf_write_int out (ptr-read-u32 (wf_argval args 0) (wf_argval args 1))))
     ;; Read raw IEEE-754 limbs from a canonical Float Sexp without numeric
     ;; conversion, preserving signed zero and NaN payload bits exactly.
-    ((:lit "nelisp--float-word-half") .
+    ((:lit "nelisp--float-word-half") :word .
      (let* ((builtin_argc (m5_list_len args 0)))
        (if (= builtin_argc 2)
            (let* ((value-ptr (wf_arg_ptr args 0))
@@ -23975,16 +23995,16 @@ into that constant unconditionally is what broke every aarch64 build."
              (if (= value-tag 3)
                  (if (= half-tag 2)
                      (if (= half 0)
-                         (wf_write_int out (ptr-read-u32 value-ptr 8))
+                         (nl_g4arm_int_w 0 (ptr-read-u32 value-ptr 8))
                        (if (= half 1)
-                           (wf_write_int out (ptr-read-u32 value-ptr 12))
+                           (nl_g4arm_int_w 0 (ptr-read-u32 value-ptr 12))
                          (bf_args_out_of_range3 name_ptr half-ptr half-ptr)))
-                   (bf_wrong_type_fixnump half-ptr))
-               (bf_wrong_type_floatp value-ptr)))
-         (bf_wrong_number_of_args name_ptr builtin_argc))))
-    ((:lit "ptr-write-u32") . (seq (ptr-write-u32 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
+                   (nl_abi_fail (bf_wrong_type_fixnump half-ptr) 0))
+               (nl_abi_fail (bf_wrong_type_floatp value-ptr) 0)))
+         (nl_abi_fail (bf_wrong_number_of_args name_ptr builtin_argc) 0))))
+    ((:lit "ptr-write-u32") :word . (seq (ptr-write-u32 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (nl_g4arm_int_w 0 0)))
     ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
+    ((:lit "ptr-write-u64") :word . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (nl_g4arm_int_w 0 0)))
     ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
     ;; Bulk byte transfer between raw memory and Lisp strings (Doc 138,
     ;; SQLite arm): the native counterparts of an interpreted per-byte
