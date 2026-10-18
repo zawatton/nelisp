@@ -124,10 +124,14 @@
                  (setq status 1)
                (if (<= (record-slot-count entry) 4)
                    (setq done 1)
-                 (setq next (record-slot-ref-ptr entry 4))
-                 (if (= (sexp-tag next) 0)
+                 ;; Doc 215: the slot's own WORD; nil is 3, any other
+                 ;; immediate is not a symbol.
+                 (setq next (ptr-read-u64
+                             (+ (ptr-read-u64 (ptr-read-u64 entry 8) 32) 32) 0))
+                 (if (if (= next 3) 1
+                       (if (= (logand next 1) 1) 0 (= (sexp-tag next) 0)))
                      (setq done 1)
-                   (if (/= (sexp-tag next) 4)
+                   (if (if (= (logand next 1) 1) 1 (/= (sexp-tag next) 4))
                        (setq status 1)
                      (setq current next)
                      (setq steps (+ steps 1)))))))))
