@@ -26178,6 +26178,17 @@ Never signals: a failure leaves NAME to the interpreter."
     (error nil))
   name)
 
+(defvar nelisp--fx-env-trace nil
+  "(ENVIRONMENT . FILE): NELISP_FX_TRACE as read from ENVIRONMENT.")
+(defun nelisp--fx-trace-file ()
+  "File named by NELISP_FX_TRACE, or nil: each first-call compilation is
+appended to it as \"START-TIME NAME MILLISECONDS macros|plain\"."
+  (unless (eq (car nelisp--fx-env-trace) process-environment)
+    (let ((v (getenv "NELISP_FX_TRACE")))
+      (setq nelisp--fx-env-trace
+            (cons process-environment (and v (> (length v) 0) v)))))
+  (cdr nelisp--fx-env-trace))
+
 (defun nelisp--fx-first-call (body)
   "Compile BODY, a closure body just applied for the first time.
 Called by the runtime with re-entry blocked; leaves BODY in
@@ -26189,8 +26200,16 @@ Called by the runtime with re-entry blocked; leaves BODY in
         (remhash body nelisp--fx-pending-tries)
         (when (and name (fboundp name)
                    (eq (nthcdr 3 (symbol-function name)) body))
-          (nelisp--fx-register name)
-          (nelisp--fx-retry-errored)))
+          (let ((trace (nelisp--fx-trace-file)) (t0 (float-time)))
+            (nelisp--fx-register name)
+            (nelisp--fx-retry-errored)
+            (when trace
+              (condition-case nil
+                  (write-region
+                   (format "%.3f %s %.2f %s\n" t0 name (* 1000 (- (float-time) t0))
+                           (if (nelisp--fx-macros-used body) "macros" "plain"))
+                   nil trace t 'silent)
+                (error nil))))))
     (error nil))
   (condition-case nil
       (unless (gethash body nelisp--fx-table)
@@ -26376,6 +26395,291 @@ boot starts with the prelude already on the VM."
     (clrhash nelisp--fx-pending)
     (condition-case nil (nelisp--fx-retry-errored) (error nil))
     (nelisp--fx-count)))
+
+;; Every heap image is written by `nelisp--arena-dump-image-stream': the
+;; build's cold image and the GUI, package and SKK images of
+;; tools/c-core-image.sh alike.  Functions a dumped image's processes run
+;; first -- a GUI's command loop and redisplay, on its first keystrokes --
+;; are only noted when defined, so compiling them on first call put that
+;; cost on those keystrokes (S5.0c p95 0.42 -> 0.93 s).  Compiling every
+;; pending function at the dump costs too much (GUI image build 35 -> 170 s
+;; against a 180 s limit), so the dump compiles a profile: the names in
+;; `nelisp--fx-warm-names' (first-called by a traced GUI session, see
+;; NELISP_FX_TRACE) and in the file NELISP_FX_PROFILE, one trace line or
+;; name per line.  NELISP_FX_DUMP=all compiles everything pending instead,
+;; as the build's own cold image does.
+(defconst nelisp--fx-warm-names
+  '(
+    char-width cl--loop-handle-accum cl--wrap-in-nil-block
+    coding-system-eol-type coding-system-list coding-system-p current-message
+    emacs-buffer-buffer-local-value emacs-buffer-buffer-local-variables
+    emacs-buffer-buffer-text-tick
+    emacs-buffer-builtins--get-text-property-around
+    emacs-buffer-builtins-prn-to-string emacs-buffer-current
+    emacs-buffer--ext-text-tick emacs-buffer-get-char-property
+    emacs-buffer-get-text-property emacs-buffer-overlays-in
+    emacs-buffer-text-property-view emacs-cc-census-buffer-w203--arity
+    emacs-cc-census-buffer-w203--intervals emacs-cc-census-display-w301--arity
+    emacs-cc-coding-1--coding-system-get emacs-cc-print-1--call-native
+    emacs-cc-print-1--collect-strings emacs-cc-print-1--note-stdout
+    emacs-cc-print-1--prin1-to-string-around
+    emacs-cc-print-1--prn-to-string-around emacs-cc-print-1--stdout-around
+    emacs-cc-xdisp-1--long-line-clip emacs-cc-xdisp-1--long-line-found-p
+    emacs-cc-xdisp-1--update-long-line-state emacs-char-table-aref
+    emacs-char-table-ascii-vector emacs-char-table--fill-ascii
+    emacs-command-loop-kill-emacs emacs-edit-install-native-command-shims
+    emacs-edit-overwrite-mode-active-p emacs-edit--pure-buffer-p
+    emacs-edit-self-insert-direct emacs-fnh-file-remote-p
+    emacs-font-lock--current-buffer emacs-font-lock--ensure-state
+    emacs-font-lock-mark-dirty-region emacs-font-lock--state-get
+    emacs-font-lock--state-set emacs-frame--apply-params
+    emacs-frame--check-live emacs-frame-frame-focus emacs-frame-frame-height
+    emacs-frame-frame-width emacs-frame--get emacs-frame-input-focus-in
+    emacs-frame-input-focus-out emacs-frame-menu-bar-lines
+    emacs-frame-parameters emacs-frame-pixels-install
+    emacs-frame-pixels-install-builtins emacs-frame-pixels-string-columns
+    emacs-frame-set-frame-parameter emacs-init-load-command-features
+    emacs-keymap--active-minor-mode-maps emacs-keymap--alist-var-value
+    emacs-keymap-build-single-key-cache emacs-keymap-chain-at
+    emacs-keymap--command-remapping emacs-keymap-define-key-fast
+    emacs-keymap-direct-slot-vector emacs-keymap-full-slot
+    emacs-keymap--get-keyelt emacs-keymap-key-binding emacs-keymap-lookup-key
+    emacs-keymap--lookup-with-parent emacs-keymap-make-compatible-full-keymap
+    emacs-keymap-menu-binding emacs-keymap--var-value
+    emacs-mark-state-initialize-interactive emacs-mode-emacs-lisp-mode
+    emacs-mode-fundamental-mode emacs-mode-kill-all-local-variables
+    emacs-mode-lisp-interaction-mode emacs-mode-run-mode-hooks
+    emacs-mode-set-major-mode emacs-mouse-install-bindings emacs-mouse-mark
+    emacs-process-dispatch-pending emacs-process-events--all-fds
+    emacs-process-events-dispatch-pending emacs-process-events--reap-children
+    emacs-process--native-live-processes emacs-process-wait-source-p
+    emacs-redisplay--apply-overlay-face emacs-redisplay--ascii-glyph-vector-p
+    emacs-redisplay--base-direction emacs-redisplay--bidi-close-bracket-p
+    emacs-redisplay--bidi-dir-of emacs-redisplay--bidi-levels
+    emacs-redisplay--bidi-neutral-p emacs-redisplay--bidi-open-bracket
+    emacs-redisplay--bidi-reorder-glyphs
+    emacs-redisplay--bidi-resolve-brackets emacs-redisplay--bidi-resolve-weak
+    emacs-redisplay--buffer-name emacs-redisplay--buffer-string
+    emacs-redisplay--buffer-substring emacs-redisplay--cache-key
+    emacs-redisplay--char-bidi-class emacs-redisplay--char-level
+    emacs-redisplay--char-width emacs-redisplay--check-handle
+    emacs-redisplay--coding-eol emacs-redisplay--coding-mnemonic
+    emacs-redisplay--combining-mark-p emacs-redisplay--cursor-for-point
+    emacs-redisplay--display-replacement-string
+    emacs-redisplay--display-tokens emacs-redisplay--ensure-matrix
+    emacs-redisplay--face-attributes-from-registry
+    emacs-redisplay--face-merge-plists emacs-redisplay--face-plist->alist
+    emacs-redisplay--face-resolve-spec emacs-redisplay--face-weight->bold
+    emacs-redisplay--fill-row emacs-redisplay--format-line-glyphs
+    emacs-redisplay--get-matrix emacs-redisplay-glyph-buf-pos
+    emacs-redisplay-glyph-char emacs-redisplay-glyph-composition
+    emacs-redisplay-glyph-face emacs-redisplay--glyph-list-vector
+    emacs-redisplay-glyph-matrix emacs-redisplay-glyph-matrix-cursor
+    emacs-redisplay-glyph-matrix-dirty-set
+    emacs-redisplay-glyph-matrix-fingerprint
+    emacs-redisplay-glyph-matrix-height
+    emacs-redisplay-glyph-matrix-line-cache emacs-redisplay-glyph-matrix-rows
+    emacs-redisplay-glyph-matrix-width emacs-redisplay-glyph-realized-face
+    emacs-redisplay-glyph-row-direction emacs-redisplay-glyph-row-end-pos
+    emacs-redisplay-glyph-row-glyphs emacs-redisplay-glyph-row-hash
+    emacs-redisplay-glyph-row-pos-delta emacs-redisplay-glyph-row-start-pos
+    emacs-redisplay-glyph-row-text emacs-redisplay-glyph-row-used
+    emacs-redisplay-glyph-width emacs-redisplay-handle-alive-p
+    emacs-redisplay-handle-id emacs-redisplay-handlep
+    emacs-redisplay-handle-window-cache emacs-redisplay--header-line-enabled-p
+    emacs-redisplay--header-line-format emacs-redisplay-init
+    emacs-redisplay--invisibility-value emacs-redisplay--invisible-at-p
+    emacs-redisplay--log emacs-redisplay--make-empty-matrix
+    emacs-redisplay--make-empty-row emacs-redisplay--make-glyph
+    emacs-redisplay--make-glyph-matrix emacs-redisplay--make-glyph-row
+    emacs-redisplay--make-handle emacs-redisplay--make-text-glyph
+    emacs-redisplay--minor-modes emacs-redisplay--ml-escape
+    emacs-redisplay--ml-fit-spans emacs-redisplay--ml-line
+    emacs-redisplay--ml-local emacs-redisplay--ml-local-1
+    emacs-redisplay--ml-narrowed-p emacs-redisplay--ml-percent
+    emacs-redisplay--ml-plain-plan emacs-redisplay--ml-plain-spans
+    emacs-redisplay--ml-spans emacs-redisplay--ml-string
+    emacs-redisplay--ml-text-before-point emacs-redisplay--mode-line-format
+    emacs-redisplay--mode-line-modified-indicator emacs-redisplay--nil-padding
+    emacs-redisplay--overlays-in
+    emacs-redisplay--overlays-with-after-string-ending-at
+    emacs-redisplay--overlays-with-before-string-at
+    emacs-redisplay--plain-ascii-tokens emacs-redisplay--plain-scroll-start
+    emacs-redisplay--plain-source-p emacs-redisplay--put-matrix
+    emacs-redisplay-realize-face emacs-redisplay-redisplay-window
+    emacs-redisplay--redisplay-window-rebuild emacs-redisplay--region-face
+    emacs-redisplay--resolve-display emacs-redisplay--resolve-face
+    emacs-redisplay--right-divider-p emacs-redisplay--row-hash
+    emacs-redisplay--shift-row-positions emacs-redisplay--snapshot-fingerprint
+    emacs-redisplay--snapshot-line-spans emacs-redisplay--source-entries
+    emacs-redisplay--source-property-spans emacs-redisplay--source-value
+    emacs-redisplay--space-display-width emacs-redisplay--standard-buffer-p
+    emacs-redisplay--string-face-at emacs-redisplay--string-tokens
+    emacs-redisplay--text-property-at emacs-redisplay--token-newline-p
+    emacs-redisplay--token-rows emacs-redisplay--viewport-text
+    emacs-select-install emacs-special-buffers-append-to-buffer
+    emacs-special-buffers--backend-call
+    emacs-special-buffers--core-buffer-substrate-p
+    emacs-special-buffers-default-text emacs-special-buffers-ensure-buffer
+    emacs-special-buffers--ensure-core-buffer
+    emacs-special-buffers--find-buffer emacs-special-buffers-message
+    emacs-special-buffers-read-only-p emacs-special-buffers--set-echo-message
+    emacs-special-buffers-special-buffer-p
+    emacs-special-buffers--standalone-batch-p
+    emacs-special-buffers--trim-message-log emacs-standalone-init
+    emacs-string--build-char-width-table emacs-string--char-width
+    emacs-string-char-width-table emacs-stub--encode-latin-1
+    emacs-subr-extras-event-convert-list emacs-timer-idle-seconds
+    emacs-timer-next-delay emacs-timer--now emacs-timer-p
+    emacs-timer-reset-idle emacs-tui-event--host-window-size
+    emacs-undo-buffer-undo-list emacs-undo--cell-for
+    emacs-undo--current-buffer emacs-undo-disabled-p
+    emacs-undo--native-buffer-p emacs-undo-record-insert
+    emacs-undo-set-buffer-undo-list emacs-window--all-leaves
+    emacs-window-buffer emacs-window--check-leaf emacs-window--check-live
+    emacs-window-deleted-p emacs-window--edges-of emacs-window--ensure-root
+    emacs-window-get-window emacs-window-id emacs-window-leaf-p
+    emacs-window--leaves-of emacs-window--make emacs-window--next-id
+    emacs-window-p emacs-window-parameters emacs-window-parent
+    emacs-window-point emacs-window-selected-window
+    emacs-window-set-window-buffer emacs-window-set-window-parameter
+    emacs-window-set-window-point emacs-window-start emacs-window-top-line
+    emacs-window-total-cols emacs-window-total-lines
+    emacs-window-window-buffer emacs-window-window-edges
+    emacs-window-window-frame emacs-window-window-height
+    emacs-window-window-list emacs-window-window-parameter
+    emacs-window-window-start emacs-window-window-width event-convert-list
+    ffi:library files--set-buffer-modified-value files--set-buffer-state-cell
+    get-char-property install-jobctrl-handlers install-sigint-handler
+    install-winsize-handler keyboard-coding-system nelisp-ec-buffer-killed-p
+    nelisp-ec-buffer-markers nelisp-ec-buffer-modified-p
+    nelisp-ec-buffer-modified-p--setter nelisp-ec-buffer-name
+    nelisp-ec-buffer-narrow-end nelisp-ec-buffer-narrow-start
+    nelisp-ec-buffer-point nelisp-ec-buffer-point--setter
+    nelisp-ec-buffer--set-slot nelisp-ec-buffer-size nelisp-ec-buffer--slot
+    nelisp-ec-buffer-string nelisp-ec-buffer-substring nelisp-ec-buffer-text
+    nelisp-ec-buffer-text-tick nelisp-ec-buffer-text-tick--setter
+    nelisp-ec--bump-buffer-text-tick nelisp-ec--check-live
+    nelisp-ec-check-live nelisp-ec-current-buffer nelisp-ec--ensure-current
+    nelisp-ec-insert nelisp-ec--insert-1 nelisp-ec-marker-p
+    nelisp-ec--markers-after-insert nelisp-ec--max2 nelisp-ec--min2
+    nelisp-ec-point nelisp-ec-point-max nelisp-ec-point-min
+    nelisp-ec--position-arg nelisp-ec-set-buffer
+    nelisp-ec--set-buffer-modified-p nelisp-ec--set-buffer-point
+    nelisp-ec--set-buffer-text-tick nelisp-ec--set-slot-by-accessor
+    nelisp-ec--sync-cursor nelisp-ec--text
+    nelisp-gui-frontend--direct-command-p nelisp-gui-frontend--dispatch
+    nelisp-gui-frontend--dispatch-pure nelisp-gui-frontend--paint
+    nelisp-gui-frontend--point nelisp-gui-frontend--pump
+    nelisp-gui-frontend--pure-buffer-p nelisp-gui-frontend--repr
+    nelisp-gui-frontend-run nelisp-gui-frontend--run-self-insert
+    nelisp-gui-frontend--self-insert-edit
+    nelisp-gui-frontend--self-insert-point nelisp-gui-frontend--service
+    nelisp-gui-frontend--set-command-event nelisp-gui-frontend--set-prefix
+    nelisp-gui-frontend--timing-dispatch nelisp-gui-frontend--wait-ms
+    nelisp-gui-menu-paint nelisp-gui-pango--clear-layouts
+    nelisp-gui-pango--color nelisp-gui-pango--families nelisp-gui-pango--font
+    nelisp-gui-pango-glyph-face nelisp-gui-pango--layout nelisp-gui-pango-open
+    nelisp-gui-pango-paint nelisp-gui-pango--rect nelisp-gui-pango-row
+    nelisp-gui-pango-run nelisp-gui-pango--size nelisp-gui-pango--source
+    nelisp-gui-pango--text nelisp-gui-selection-active-p
+    nelisp-gui-selection--atom nelisp-gui-selection-event
+    nelisp-gui-selection-expire nelisp-gui-selection--flush
+    nelisp-gui-selection-input-pending-p nelisp-gui-selection-next-delay
+    nelisp-gui-selection-open nelisp-gui-selection-poll
+    nelisp-gui-selection--reply nelisp-gui-selection--request
+    nelisp-gui-xcb-barrier nelisp-gui-xcb-bytes-number nelisp-gui-xcb-call
+    nelisp-gui-xcb-check nelisp-gui-xcb-checked nelisp-gui-xcb-cookie
+    nelisp-gui-xcb-file-descriptor nelisp-gui-xcb-key nelisp-gui-xcb-open
+    nelisp-gui-xcb-poll nelisp-gui-xcb-refresh-keymap
+    nelisp-gui-xcb-request-check nelisp-gui-xcb--scalar-address
+    nelisp-gui-xcb--screen nelisp-gui-xcb-select-keyboard-events
+    nelisp-gui-xcb--signed16 nelisp-gui-xcb--update-mask nelisp-gui-xcb-wait
+    nelisp-text-buffer-byte-count--setter nelisp-text-buffer-bytes
+    nelisp-text-buffer-bytes--setter nelisp-text-buffer-char-count
+    nelisp-text-buffer-char-count--setter
+    nelisp-text-buffer-cursor-byte--setter nelisp-text-buffer-cursor-char
+    nelisp-text-buffer-cursor-char--setter nelisp-text-buffer-gap-end
+    nelisp-text-buffer-gap-end--setter nelisp-text-buffer-gap-start
+    nelisp-text-buffer-gap-start--setter nelisp-text-buffer-p
+    nelisp-text-buffer--set-byte-count nelisp-text-buffer--set-bytes
+    nelisp-text-buffer--set-char-count nelisp-text-buffer--set-cursor-byte
+    nelisp-text-buffer--set-cursor-char nelisp-text-buffer--set-gap-end
+    nelisp-text-buffer--set-gap-start nelisp-text-buffer--set-slot
+    nelisp-text-buffer--set-slot-by-accessor nelisp-text-buffer--slot
+    nelisp-text-buffer--standalone-byte-length
+    nelisp-text-buffer--standalone-logical-string
+    nelisp-text-buffer--standalone-p
+    nelisp-text-buffer--standalone-replace-logical
+    nemacs--apply-initial-major-mode nemacs--directory-with-slash
+    nemacs--ensure-scratch-buffer nemacs--home-directory nemacs-init
+    nemacs-load-user-init-files nemacs-main nemacs-main--apply-options
+    nemacs-main--apply-startup-gate nemacs-main--define-key
+    nemacs-main--init-keymap nemacs-main-kill nemacs-main-option
+    nemacs-main--rebuild-single-key-cache
+    nemacs-main--refresh-standalone-foundation
+    nemacs-main--startup-gate-option nemacs-main--sync-selected-window-buffer
+    nemacs--maybe-startup-screen nemacs--report-banner
+    nemacs-resolve-user-emacs-directory nemacs--xdg-config-emacs-directory
+    nl-ffi--call-checked nl-ffi--call-with-owned-cstring nl-ffi-compat-call
+    nl-ffi--convert-arg nl-ffi--dlopen nl-ffi--dlsym nl-ffi--ensure-memory-api
+    nl-ffi-get-string nl-ffi--invoke nl-ffi-known-soname-p nl-ffi-libffi-call
+    nl-ffi-libffi-prepare nl-ffi-libffi-scalar nl-ffi-libffi--type
+    nl-ffi-libffi-u16 nl-ffi-libffi-u32 nl-ffi-library-handle
+    nl-ffi-loader-handle-p nl-ffi-memory-address nl-ffi-memory-allocate
+    nl-ffi-memory-cstring nl-ffi-memory-release nl-ffi-memory--supported-p
+    nl-ffi-memory--valid-owner-p nl-ffi--ptr-call-invoke
+    nl-ffi--ptr-call-typed-sig nl-ffi--resolve-via-dlsym
+    nl-ffi--retry-cstring-releases nl-ffi--signature-types
+    nl-ffi--symbol-address-in-library nl-ffi-type-p nlre--downcase-char
+    nlre--upcase-char object-intervals set-buffer-modified-p string-empty-p
+    string-width terminal-coding-system terminal-raw-mode-leave
+    terminal-raw-mode--release-bufs text-buffer-insert text-buffer-length
+    text-buffer-substring text-quoting-style timerp tooltip-hide undo-boundary)
+  "Functions a dumped image compiles ahead of their first call.
+The 479 functions first called by a GUI session (bin/nemacs-xcb --init=-Q,
+startup and S5.0c's 20 keys) traced with NELISP_FX_TRACE on 441166d9d; the
+list is tools/ai/fx-warm-gui-profile.txt.  Names an image does not define
+are skipped.")
+
+(defun nelisp--fx-profile-names ()
+  (let ((names (copy-sequence nelisp--fx-warm-names))
+        (file (getenv "NELISP_FX_PROFILE")))
+    (when (and file (> (length file) 0) (file-readable-p file))
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents file)
+            (dolist (line (split-string (buffer-string) "\n" t))
+              (let* ((fields (split-string line " " t))
+                     (name (if (cdr fields) (nth 1 fields) (car fields))))
+                (when name (push (intern name) names)))))
+        (error nil)))
+    names))
+
+(defun nelisp--fx-warm-for-dump ()
+  "Compile what a dump should carry compiled; answer the number compiled."
+  (let ((before (nelisp--fx-count)))
+    (if (equal (getenv "NELISP_FX_DUMP") "all")
+        (nelisp--fx-register-prelude)
+      (dolist (n (nelisp--fx-profile-names))
+        (let ((fn (and (symbolp n) (fboundp n) (symbol-function n))))
+          (when (and (eq (car-safe fn) 'closure)
+                     (null (gethash (nthcdr 3 fn) nelisp--fx-table)))
+            (remhash (nthcdr 3 fn) nelisp--fx-pending)
+            (nelisp--fx-register n)))))
+    (- (nelisp--fx-count) before)))
+
+(when (and (fboundp 'nelisp--arena-dump-image-stream)
+           (not (fboundp 'nelisp--fx-plain-dump-image-stream)))
+  (fset 'nelisp--fx-plain-dump-image-stream
+        (symbol-function 'nelisp--arena-dump-image-stream))
+  (fset 'nelisp--arena-dump-image-stream
+        (lambda (path)
+          (when (nelisp--fx-active-p)
+            (when (> (condition-case nil (nelisp--fx-warm-for-dump) (error 0)) 0)
+              ;; The compiler's garbage stays out of the image.
+              (garbage-collect)))
+          (nelisp--fx-plain-dump-image-stream path))))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
   (fset 'nl-afset
