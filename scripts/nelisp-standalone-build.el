@@ -40656,7 +40656,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   (bf_mark_binding_result (seq ,@(cdddr form))
                                           mirror-ptr frames-ptr name-ptr)))
               ((memq (cadr form) '(nelisp_env_set_value nelisp_env_set_value_lazy
-                                  nelisp_env_lookup_value))
+                                  nelisp_env_lookup_value nelisp_env_lookup_value_w))
                (replace-lookup form))
               (t form)))
            (if (eq (car source) 'seq) (cdr source) (list source)))))

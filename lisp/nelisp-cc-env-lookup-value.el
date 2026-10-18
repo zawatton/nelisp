@@ -269,10 +269,10 @@
             (nelisp_env_lkv_mirror_with_frames_w
              mirror-ptr frames-ptr name-ptr 0 0 0 0 0)
           ;; Frame hit: read cell value (refcount-safe) into a private box.
-          (nelisp_env_lookup_value_cell cell-ptr (alloc-bytes 32 8))))))
+          (nelisp_env_lookup_value_cell cell-ptr (alloc-bytes 32 8)))))
 
     (defun nelisp_env_lookup_value_cell (cell-ptr out-ptr)
-      (nl_abi_rc_to_word (extern-call nl_cell_get_value cell-ptr out-ptr) out-ptr))
+      (nl_abi_rc_to_word (extern-call nl_cell_get_value cell-ptr out-ptr) out-ptr)))
   "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:

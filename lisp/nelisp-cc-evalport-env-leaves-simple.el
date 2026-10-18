@@ -45,10 +45,12 @@
     ;; Doc 215 word ABI: the value WORD; 2 when NAME is unbound (not found,
     ;; or an entry holding only the env+64 unbound marker); 0 on a signal.
     (defun nl_env_lookup_val_w (name_ptr env _pad)
-      (nl_env_lookup_val_w_done
+      (nl_env_lookup_val_done_w
        (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
        env 0 0))
-    (defun nl_env_lookup_val_w_done (w env _pad _pad1)
+    ;; W is the looked-up value WORD (or 0 / 2 from the lookup); answers 2
+    ;; when it is the env+64 unbound marker.
+    (defun nl_env_lookup_val_done_w (w env _pad _pad1)
       (if (= (logand w 1) 1) w
         (if (< w 8) w
           (if (= (symbol-eq w (+ env 64)) 1) 2 w))))
@@ -56,10 +58,10 @@
     ;; unbound; never expose that internal marker as a successful lookup.
     ;; Consume the lookup result as a helper argument so it cannot be lost
     ;; across a native call.  Preserve all other lookup failures unchanged.
+    ;; Legacy (rc, OUT already holding the value) form of the check above.
     (defun nl_env_lookup_val_done (rc env out _pad)
-      (if (= rc 0)
-          (if (= (symbol-eq out (+ env 64)) 1) 1 0)
-        rc)))
+      (nl_abi_lookup_to_rc
+       (nl_env_lookup_val_done_w (nl_abi_status_to_word rc out) env 0 0) out)))
   "Doc 135 Stage 135.C AOT source for simple env-leaf ctx-accessors.
 
 One public entry and a lookup-result helper in a `(seq DEFUN ...)' manifest.

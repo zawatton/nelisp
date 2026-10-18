@@ -217,7 +217,11 @@ eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
   =nl_env_lookup_val_w=, =nelisp_env_lookup_function_w=) answer 2 where the
   legacy ABI returned rc 1 without a stash (unbound / no entry; for
   =nl_env_lookup_val_w= also an entry holding only the env+64 unbound
-  marker); their adapters map 2 back to rc 1 (=nl_abi_lookup_to_rc=).
+  marker), =nl_env_lookup_val_done_w= and =nelisp_mirror_lookup_value_w=
+  (no entry; its adapter still writes nil); their adapters map 2 back to
+  the legacy answer (=nl_abi_lookup_to_rc=: rc 1).  The reader (G3) uses 2
+  for end of input the same way.  A miss never goes through =nl_abi_fail=:
+  that would stash a generic error and leave the THROW flag set.
 - 2 ("not handled") is otherwise produced only by =nl_apply_special_w=.
   =nl_abi_word_to_rc= hands 2 through as rc 2, so the =nl_apply_special=
   adapter keeps its contract.  Every other consumer of =nl_apply_special_w=
