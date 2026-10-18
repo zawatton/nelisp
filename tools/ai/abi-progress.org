@@ -111,7 +111,7 @@ cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1669
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
-** S6.3 End to end: boot median <= 3.34 s and regex median <= 705 us, alternating with the baseline
+** S6.3 End to end: boot and regex medians <= the baseline's medians from the same alternating run
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh perf "$ABI_BIN" "$ABI_BASE_BIN"

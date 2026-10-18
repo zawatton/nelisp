@@ -4,10 +4,13 @@
 #   abi-merge-gate.sh perf CANDIDATE BASELINE
 #       Runs CANDIDATE and BASELINE alternately on this machine: `--eval nil'
 #       boot wall time (5 rounds) and the regex line of
-#       test/perf/shallow-binding-bench.el (3 rounds).  Exits 0 only if the
-#       candidate's medians are within ABI_GATE_BOOT_MAX seconds (default 3.34)
-#       and ABI_GATE_REGEX_MAX microseconds (default 705).  Prints every sample,
-#       both medians and the load average.
+#       test/perf/shallow-binding-bench.el (3 rounds).  Exits 0 only if each
+#       candidate median is <= the BASELINE median measured in the same run
+#       times ABI_GATE_RATIO (default 1.00), so machine load moves both sides
+#       alike.  The absolute figures ABI_GATE_BOOT_MAX (3.34 s) and
+#       ABI_GATE_REGEX_MAX (705 us), measured once on 441166d9d, are printed
+#       for information only.  Prints every sample, both medians and the load
+#       average.
 #   abi-merge-gate.sh census CENSUS_TSV MAX
 #       Exits 0 only if box-census.py's TOTAL for CENSUS_TSV is below MAX.
 #   abi-merge-gate.sh store-word CENSUS_TSV MAX
@@ -45,9 +48,13 @@ case "$1" in
     bb=$(median < $tmp/boot-base); bc_=$(median < $tmp/boot-cand)
     rb=$(median < $tmp/regex-base); rc_=$(median < $tmp/regex-cand)
     rm -rf "$tmp"
-    echo "median boot base $bb cand $bc_ (max $boot_max); regex base $rb cand $rc_ (max $regex_max)"
-    awk -v b="$bc_" -v bm="$boot_max" -v r="$rc_" -v rm="$regex_max" \
-      'BEGIN { exit !((b + 0 <= bm + 0) && (r + 0 <= rm + 0)) }'
+    ratio=${ABI_GATE_RATIO:-1.00}
+    echo "median boot base $bb cand $bc_; regex base $rb cand $rc_ (gate: cand <= base x $ratio)"
+    echo "info: absolute boot $bc_ vs $boot_max s, regex $rc_ vs $regex_max us (not gating)"
+    awk -v b="$bc_" -v bb="$bb" -v r="$rc_" -v rb="$rb" -v k="$ratio" \
+      'BEGIN { ok = (b + 0 <= (bb + 0) * k) && (r + 0 <= (rb + 0) * k);
+               printf "boot %s, regex %s\n", (b + 0 <= (bb + 0) * k) ? "PASS" : "FAIL",
+                      (r + 0 <= (rb + 0) * k) ? "PASS" : "FAIL"; exit !ok }'
     ;;
   census)
     total=$(python3 tools/ai/box-census.py summary "$2" | awk '$1 == "TOTAL" {print $2}')

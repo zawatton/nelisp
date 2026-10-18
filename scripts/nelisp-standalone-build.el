@@ -1951,7 +1951,10 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (bf_env_capture_roots) (nelisp_eval_call_with_err)
     (nl_apply_flat_builtin_frame) (nl_apply_rooted_subr) (nl_apply_rooted_subr_frame)
     (nl_apply_list_append)
-    (nl_lookup_fn_autoload . status) (nl_lookup_fn_autoload_load . status)
+    ;; `nl_lookup_fn_autoload' is not split: it is on every call dispatch
+    ;; and its word form is written by hand next to it (no box unless the
+    ;; cell is an autoload).
+    (nl_lookup_fn_autoload_load . status)
     (nl_sf_definer_lookup . status))
   "Defuns split into a private-box F_w and an (rc, OUT) adapter F.")
 
@@ -18171,6 +18174,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (let* ((code (m5_fx_arity_code rec argc)))
                 (if (< code 0) -3
                   (m5_fx_interp_run rec fn tail env out argc code scratch))))))))
+    ;; Doc 215 word form of `m5_fx_interp_call': 2 when the fx VM declines
+    ;; (the legacy -3; -3 itself would read as a fixnum WORD), else the
+    ;; value WORD or 0.  The result box is allocated only once the VM takes
+    ;; the call.
+    (defun m5_fx_interp_call_w (fn tail env scratch)
+      (let* ((rec (m5_fx_covered_rec fn env scratch 0)))
+        (if (= rec 0) 2
+          (let* ((argc (m5_fx_form_count tail 0)))
+            (if (< argc 0) 2
+              (let* ((code (m5_fx_arity_code rec argc)))
+                (if (< code 0) 2
+                  (let* ((out (alloc-bytes 32 8)))
+                    (m5_fx_interp_word
+                     (m5_fx_interp_run rec fn tail env out argc code scratch) out)))))))))
+    (defun m5_fx_interp_word (st out)
+      (if (= st -3) 2 (nl_abi_rc_to_word st out)))
     ;; The length of the proper list TAIL (a Sexp slot), or -1.
     (defun m5_fx_form_count (tail _pad)
       (let* ((n 0) (cur tail) (done 0))
@@ -43490,7 +43509,20 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
             (if (= (nl_autoload_cell_p out) 1)
                 (nl_lookup_fn_autoload_load mirror unbound sym out)
               0)
-          rc))))
+          rc)))
+    ;; Doc 215 word form: the function cell's WORD, 2 when unbound, 0 on a
+    ;; signal.  Only an autoload cell takes a private box (the loader
+    ;; reads the cell from it and rewrites it with the new definition).
+    (defun nl_lookup_fn_autoload_w (mirror unbound sym _pad)
+      (let* ((w (nelisp_env_lookup_function_w mirror unbound sym 0)))
+        (if (= (logand w 1) 1) w
+          (if (< w 4096) w
+            (if (= (nl_autoload_cell_p w) 1)
+                (let* ((out (alloc-bytes 32 8)))
+                  (seq (nl_abi_word_to_rc w out)
+                       (nl_abi_status_to_word
+                        (nl_lookup_fn_autoload_load mirror unbound sym out) out)))
+              w))))))
   "Autoload-aware call-dispatch lookup helpers (see comment above).")
 
 (defun nelisp-standalone--autoload-mentions-apply-p (form)
@@ -44274,13 +44306,14 @@ tails run against a private box), and the (rc, OUT) adapter F."
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
+    ;; `m5_fx_interp_call_w' answers 2 when the fx VM does not take the
+    ;; call, so the common interpreted call allocates no result box.
     (defun nl_eic_eval_args_w (tail_ptr env func_slot args_slot call_name)
-      (let* ((box (alloc-bytes 32 8))
-             (st (m5_fx_interp_call func_slot tail_ptr env box args_slot)))
-        (if (= st -3)
+      (let* ((w (m5_fx_interp_call_w func_slot tail_ptr env args_slot)))
+        (if (= w 2)
             (nl_eic_after_args_w (nl_eval_arg_list tail_ptr env args_slot)
                                  env func_slot args_slot call_name)
-          (nl_abi_rc_to_word st box))))
+          w)))
     (defun nl_eic_after_args_w (rc_args env func_slot args_slot call_name)
       (if (= rc_args 0)
           (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
