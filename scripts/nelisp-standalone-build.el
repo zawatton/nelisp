@@ -8741,12 +8741,6 @@ leave symbols unresolved at link time."
             (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
                  (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
         (nl_imm_int v)))
-    ;; Word twin of `wf_write_int_checked': 0 (signal already stashed) when
-    ;; the fold that produced V raised the THROW flag.
-    (defun nl_g4arm_int_checked_w (_pad v)
-      (if (= (ptr-read-u64 268435472 0) 0)
-          (nl_g4arm_int_w 0 v)
-        (nl_abi_fail 1 0)))
     ;; The 32-byte value at SRC as a result WORD with the same sharing the
     ;; old (wf_copy32 out SRC) arms had: an immediate collapses to its word,
     ;; anything else is a shallow copy in a fresh box (never SRC itself,
