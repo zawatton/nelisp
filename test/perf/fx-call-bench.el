@@ -18,6 +18,9 @@
         (let ((d (- (float-time) t0))) (when (or (null best) (< d best)) (setq best d))))
       (setq k (1+ k)))
     best))
+;; A defun is compiled on its first call.
+(fx-call-bench-vm 2)
+(fx-call-bench-vm0 2)
 (defun fx-call-bench-covered-p (name)
   (vectorp (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table)))
 (let* ((name (or (getenv "BENCH") ""))

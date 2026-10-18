@@ -24989,8 +24989,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
 ;; runtime's closure application
 ;; looks the body up and runs the VM when the closure captures nothing.  The
 ;; closure object itself is unchanged, so `symbol-function', `aref' and
-;; printing see exactly what they did.  Registered when `defalias' (and so
-;; `defun') defines the function; `nelisp-fx-enabled' nil turns that off.
+;; printing see exactly what they did.  Noted when `defalias' (and so
+;; `defun') defines the function and compiled on its first call
+;; (`nelisp--fx-first-call'); `nelisp-fx-enabled' nil turns that off.
 (defvar nelisp--fx-table (make-hash-table :test 'eq :weakness 'key))
 (defvar nelisp-fx-enabled t)
 
@@ -25002,6 +25003,50 @@ Never signals: a failure leaves NAME to the interpreter."
 
 (defvar nelisp--fx-next-index 0
   "Registration index of the next compiled record (see NELISP_FX_RANGE).")
+
+;; Compile on first call.  Defining a function only notes its body here;
+;; the runtime calls `nelisp--fx-first-call' the first time a closure body
+;; absent from `nelisp--fx-table' is applied (that call runs interpreted),
+;; so a boot compiles only what it runs.  The body is the key, so a name
+;; redefined before its first call compiles its current body, and an old
+;; closure of it (still held somewhere) stays interpreted.
+(defvar nelisp--fx-pending (make-hash-table :test 'eq :weakness 'key)
+  "Body -> the name it was defined under, not compiled yet.")
+(defvar nelisp--fx-pending-tries (make-hash-table :test 'eq :weakness 'key)
+  "Body -> failed compilations so far, for `nelisp--fx-errored'.")
+
+(defun nelisp--fx-defer (name &optional tries)
+  "Note NAME's closure for compilation on its first call; return NAME."
+  (condition-case nil
+      (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
+        (let ((fn (symbol-function name)))
+          (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
+            (let ((body (nthcdr 3 fn)))
+              (unless (gethash body nelisp--fx-table)
+                (puthash body name nelisp--fx-pending)
+                (when tries (puthash body tries nelisp--fx-pending-tries)))))))
+    (error nil))
+  name)
+
+(defun nelisp--fx-first-call (body)
+  "Compile BODY, a closure body just applied for the first time.
+Called by the runtime with re-entry blocked; leaves BODY in
+`nelisp--fx-table' (its record, or `none') whatever happens."
+  (condition-case nil
+      (let ((name (gethash body nelisp--fx-pending))
+            (nelisp--fx-tries (gethash body nelisp--fx-pending-tries 0)))
+        (remhash body nelisp--fx-pending)
+        (remhash body nelisp--fx-pending-tries)
+        (when (and name (fboundp name)
+                   (eq (nthcdr 3 (symbol-function name)) body))
+          (nelisp--fx-register name)
+          (nelisp--fx-retry-errored)))
+    (error nil))
+  (condition-case nil
+      (unless (gethash body nelisp--fx-table)
+        (puthash body 'none nelisp--fx-table))
+    (error nil))
+  nil)
 
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
@@ -25023,8 +25068,7 @@ compiled again after the next compilation that succeeds.")
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (let ((nelisp--fx-tries (cdr e)))
-              (nelisp--fx-register (car e))))))))
+            (nelisp--fx-defer (car e) (cdr e)))))))
   (setq nelisp--fx-compiled-ok nil))
 
 (defvar nelisp--fx-missing nil
@@ -25048,7 +25092,7 @@ Defining it as a function compiles them again.")
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (nelisp--fx-register w)))))))
+            (nelisp--fx-defer w)))))))
 
 (defun nelisp--fx-register-1 (name)
   (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
@@ -25165,6 +25209,18 @@ The cold-image dump calls this just before dumping, so a `--cold-load-from'
 boot starts with the prelude already on the VM."
   (let ((names (reverse nelisp--fx-early-names)))
     (setq nelisp--fx-early-names nil)
+    ;; And everything defined since that has not been called yet.
+    (maphash (lambda (_body name) (push name names)) nelisp--fx-pending)
+    (clrhash nelisp--fx-pending)
+    ;; A first call early in the boot may have found the VM unable to take a
+    ;; body only because `macroexpand-all' was not loaded yet: try again.
+    (dolist (n names)
+      (let ((fn (and (fboundp n) (symbol-function n))))
+        (when (and (eq (car-safe fn) 'closure)
+                   (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
+          (remhash (nthcdr 3 fn) nelisp--fx-table)
+          ;; Pending too: compiling another function may call N first.
+          (nelisp--fx-defer n))))
     (dolist (n names) (nelisp--fx-register n))
     (condition-case nil (nelisp--fx-retry-errored) (error nil))
     (nelisp--fx-count)))
@@ -25175,7 +25231,7 @@ boot starts with the prelude already on the VM."
           (prog1 (apply 'nelisp--fx-plain-afset name def rest)
             (when (symbolp name)
               (nelisp--fx-check-macro name)
-              (nelisp--fx-register name)
+              (nelisp--fx-defer name)
               (nelisp--fx-retry-waiters name)
               (condition-case nil (nelisp--fx-retry-errored) (error nil)))))))
 
@@ -25195,7 +25251,7 @@ boot starts with the prelude already on the VM."
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
-            (nelisp--fx-register w)))))))
+            (nelisp--fx-defer w)))))))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
   (fset 'fset

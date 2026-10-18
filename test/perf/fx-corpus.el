@@ -111,10 +111,7 @@
            (shape (fx-corpus-arglist))
            (body (fx-corpus-expr (+ 2 (fx-corpus-rand 3)) (fx-corpus-params (car shape)))))
       (eval `(defun ,name ,(car shape) ,body) t)
-      (push (list name (nth 1 shape) (nth 2 shape)) fx-corpus-funs)
-      (when (and (boundp 'nelisp--fx-table)
-                 (vectorp (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table)))
-        (setq covered (1+ covered)))))
+      (push (list name (nth 1 shape) (nth 2 shape)) fx-corpus-funs)))
   ;; Every valid argument count (up to two past MIN with &rest) on two
   ;; value pools, and one count too many.
   (dolist (f (reverse fx-corpus-funs))
@@ -127,4 +124,9 @@
       (princ (format "%s %S => %S\n" (car f) args
                      (condition-case e (apply (car f) args)
                        (error (list 'signal (car e))))))))
+  ;; Counted after the calls: a defun is compiled on its first call.
+  (dolist (f fx-corpus-funs)
+    (when (and (boundp 'nelisp--fx-table)
+               (vectorp (gethash (nthcdr 3 (symbol-function (car f))) nelisp--fx-table)))
+      (setq covered (1+ covered))))
   (princ (format "FX-CORPUS covered=%d/%d\n" covered n)))

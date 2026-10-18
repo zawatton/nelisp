@@ -52,11 +52,6 @@
                 (unless (equal got want)
                   (setq fails (1+ fails))
                   (princ (format "FX-CALL-SHAPE FAIL %s got %S want %S\n" what got want))))))
-  (when (boundp 'nelisp--fx-table)
-    (dolist (f '(fxs-a fxs-r fxs-or fxs-r0 fxs-mut fxs-ten fxs-vm-calls fxs-vm-two fxs-vm-hold
-                 fxs-leaf fxs-rleaf fxs-mid))
-      (funcall check (list 'covered f)
-               (vectorp (gethash (nthcdr 3 (symbol-function f)) nelisp--fx-table)) t)))
   (funcall check 'vm-calls (fxs-vm-calls) fxs-calls-want)
   (funcall check 'interp-calls
            (eval '(list (fxs-a 1) (fxs-a 1 2) (fxs-a 1 2 3)
@@ -104,5 +99,23 @@
   (setq fxs-frames nil)
   (funcall check 'interp-leaf (eval '(let ((x 4)) (fxs-leaf x (* x 2) 9)) t) 21)
   (funcall check 'interp-backtrace fxs-frames '((fxs-leaf 4 8 9)))
+  ;; Compiled on first call: each has been called by now.
+  (when (boundp 'nelisp--fx-table)
+    (dolist (f '(fxs-a fxs-r fxs-or fxs-r0 fxs-mut fxs-ten fxs-vm-calls fxs-vm-two fxs-vm-hold
+                 fxs-leaf fxs-rleaf fxs-mid))
+      (funcall check (list 'covered f)
+               (vectorp (gethash (nthcdr 3 (symbol-function f)) nelisp--fx-table)) t))
+    ;; Defined twice before its first call: the current body is the one
+    ;; compiled, an old closure of it keeps the old behaviour (interpreted),
+    ;; and nothing is compiled before the first call.
+    (defun fxs-redef (x) (list 'old x))
+    (let ((old (symbol-function 'fxs-redef)))
+      (defun fxs-redef (x) (list 'new x))
+      (funcall check 'redef-not-yet (gethash (nthcdr 3 (symbol-function 'fxs-redef)) nelisp--fx-table) nil)
+      (funcall check 'redef-calls (list (fxs-redef 1) (fxs-redef 2) (funcall old 3) (funcall old 4))
+               '((new 1) (new 2) (old 3) (old 4)))
+      (let ((rec (gethash (nthcdr 3 (symbol-function 'fxs-redef)) nelisp--fx-table)))
+        (funcall check 'redef-compiled (and (vectorp rec) (aref rec 4)) 'fxs-redef))
+      (funcall check 'redef-old-body (gethash (nthcdr 3 old) nelisp--fx-table) 'none)))
   (princ (format "FX-CALL-SHAPE failures=%d %s\n" fails (if (= fails 0) "PASS" "FAIL")))
   (kill-emacs (if (= fails 0) 0 1)))
