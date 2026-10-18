@@ -28,7 +28,7 @@ cmd: BENCH=fx-loop LIMIT=0.18 timeout 200 nice "$EVAL_BIN" --load test/perf/fx-b
 cmd: timeout 300 "$EVAL_BIN" --load test/perf/fx-spike-check.el
 ** S2.2 A lexical defun whose body the VM covers runs on it automatically (compiled on first call, kept out of band so the GNU-visible closure shape is unchanged), with results identical to the current evaluator on a corpus of generated forms
 #+REQUIRES: EVAL_BIN
-#+TIMEOUT: 1500
+#+TIMEOUT: 600
 #+NOTE: test/perf/fx-corpus.el generates 200 defuns (fixed-seed LCG; &optional/&rest arglists, nested
 #+NOTE: calls with valid and invalid counts, apply, fixnum overflow, catch/condition-case left to the
 #+NOTE: interpreter) and prints ~950 call results; fx-corpus-check.sh requires byte-identical output
@@ -63,7 +63,13 @@ cmd: BENCH=defun-call-3 LIMIT=3 timeout 200 nice "$EVAL_BIN" --load test/perf/ev
 
 * S3 The prelude runs on the VM
 ** S3.1 Prelude functions the VM covers are compiled at build time into the image, not on first call
-pending
+#+REQUIRES: EVAL_BIN
+#+NOTE: The cold-image dump calls nelisp--fx-register-prelude, which compiles every name the prelude
+#+NOTE: defined before the VM's hooks (recorded by nl-afset); a normal boot leaves those to the
+#+NOTE: interpreter (~10 ms a compile).  test/perf/fx-prelude-image-check.el boots the image: >= 1000
+#+NOTE: records at startup (e0ab2ae3a image: 321), compare-strings/last/butlast on the VM, right
+#+NOTE: answers, and no compilation when they are called.
+cmd: timeout 120 "$EVAL_BIN" --cold-load-from "$EVAL_BIN.cold" --load test/perf/fx-prelude-image-check.el
 ** S3.2 string-match "[0-9]+" on a 70-char line takes at most 20 us with the regexp engine on the VM
 pending
 ** S3.3 End to end: the autocad tokenizer (test/perf/autocad-bench.sh tokenize-fixture) finishes in at most 5 s

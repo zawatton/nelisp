@@ -17315,23 +17315,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Same conditions as `nl_apply_lambda_inner': a closure capturing
     ;; nothing, not in the dynamic-binding mode.  SCRATCH is a free rooted slot.
     (defun m5_fx_covered (fn argc env scratch)
+      (let* ((rec (m5_fx_covered_rec fn env scratch 0)))
+        (if (= rec 0) 0
+          (if (> argc 255) 0
+            (if (< (m5_fx_arity_code rec argc) 0) 0 rec)))))
+    ;; FN's record, any arity.  The cheap shape tests come first: most
+    ;; functions reaching here are builtins, (builtin NAME), whose second
+    ;; element is a symbol, not the captured environment (t).
+    (defun m5_fx_covered_rec (fn env scratch _pad)
       (if (/= (ptr-read-u64 fn 0) 7) 0
         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0) 0
-          (if (> argc 255) 0
-          (let* ((head (nl_cons_car_ptr fn)))
-            (if (/= (ptr-read-u64 head 0) 4) 0
-              (if (/= (nl_apply_name_eq_closure head) 1) 0
-                (let* ((c1 (nl_cons_cdr_ptr fn)))
-                  (if (/= (ptr-read-u64 c1 0) 7) 0
-                    (let* ((captured (nl_cons_car_ptr c1)) (c2 (nl_cons_cdr_ptr c1)))
-                      (if (/= (ptr-read-u64 c2 0) 7) 0
-                        (if (/= (ptr-read-u64 captured 0) 7) 0
-                          (if (/= (nl_cons_car_word captured) 7) 0
-                            (if (/= (nl_cons_cdr_word captured) 3) 0
-                              (let* ((rec (nl_fx_lookup (nl_cons_cdr_ptr c2) env scratch 0)))
-                                (if (= rec 0) 0
-                                  (if (< (m5_fx_arity_code rec argc) 0) 0
-                                    rec)))))))))))))))))
+          (let* ((c1 (nl_cons_cdr_ptr fn)))
+            (if (/= (ptr-read-u64 c1 0) 7) 0
+              (let* ((captured (nl_cons_car_ptr c1)))
+                (if (/= (ptr-read-u64 captured 0) 7) 0
+                  (if (/= (nl_cons_car_word captured) 7) 0
+                    (if (/= (nl_cons_cdr_word captured) 3) 0
+                      (let* ((head (nl_cons_car_ptr fn)))
+                        (if (/= (ptr-read-u64 head 0) 4) 0
+                          (if (/= (nl_apply_name_eq_closure head) 1) 0
+                            (let* ((c2 (nl_cons_cdr_ptr c1)))
+                              (if (/= (ptr-read-u64 c2 0) 7) 0
+                                (nl_fx_lookup (nl_cons_cdr_ptr c2) env scratch 0)))))))))))))))
     ;; The run's NPARAMS operand for ARGC arguments to REC, or -1 when REC
     ;; does not take ARGC (the interpreter then signals as usual).  REC is
     ;; [CODE NLOCALS MIN INDEX NAME MAX REST-INDEX]; MAX -1 means &rest.
@@ -17376,11 +17381,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; cons evaluator) records the slots lazily.  Answers -3 before anything
     ;; is evaluated when the call is not taken; else the call's rc.
     (defun m5_fx_interp_call (fn tail env out scratch _pad)
-      (let* ((argc (m5_fx_form_count tail 0)))
-        (if (< argc 0) -3
-          (let* ((rec (m5_fx_covered fn argc env scratch)))
-            (if (= rec 0) -3
-              (m5_fx_interp_run rec fn tail env out argc (m5_fx_arity_code rec argc) 0))))))
+      (let* ((rec (m5_fx_covered_rec fn env scratch 0)))
+        (if (= rec 0) -3
+          (let* ((argc (m5_fx_form_count tail 0)))
+            (if (< argc 0) -3
+              (let* ((code (m5_fx_arity_code rec argc)))
+                (if (< code 0) -3
+                  (m5_fx_interp_run rec fn tail env out argc code 0))))))))
     ;; The length of the proper list TAIL (a Sexp slot), or -1.
     (defun m5_fx_form_count (tail _pad)
       (let* ((n 0) (cur tail) (done 0))
@@ -42980,7 +42987,9 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                                                 nelisp-standalone--repo-root))))
                    (if optimizer-bytecode (format "(load %S nil t t)" (nelisp-standalone--cold-target-path optimizer-bytecode)) "nil")
                    (nelisp-standalone--cold-target-path image))
-                (format "(nelisp--arena-dump-image-stream %S)"
+                ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
+                ;; functions go into the image already compiled for the VM.
+                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (nelisp--arena-dump-image-stream %S))"
                         (nelisp-standalone--cold-target-path image))))
              (process-environment (nelisp-standalone--cold-build-environment))
              (status nil) (output nil))

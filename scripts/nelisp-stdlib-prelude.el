@@ -7,6 +7,12 @@
   "Dynamic transaction log used only by explicit `autoload-do-load'.")
 (fset 'nl-afset
       (lambda (symbol definition)
+        ;; Names defined before the word VM's registration hooks, newest
+        ;; first, for `nelisp--fx-register-prelude'.  No `defvar' here: the
+        ;; build splices GNU forms after the first four forms of this file.
+        (unless (and (boundp 'nelisp--fx-recording) (null nelisp--fx-recording))
+          (setq nelisp--fx-early-names
+                (cons symbol (and (boundp 'nelisp--fx-early-names) nelisp--fx-early-names))))
         (when (and nelisp--autoload-queue (fboundp symbol))
           (setq nelisp--autoload-queue
                 (cons (list 'function symbol (symbol-function symbol))
@@ -24832,6 +24838,10 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; effect and the interpreter evaluates the call.
 (defvar nelisp--fx-special-gen (vector 0))
 
+(defvar nelisp--fx-expand t
+  "Nil while compiling a body known to name no macro: `macroexpand-all'
+would return it unchanged, and expanding is most of a compilation's cost.")
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
@@ -24952,7 +24962,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
       (when (eq (catch 'nelisp--fx-unsupported
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                   (emit 17 nil)
-                  (comp (if (fboundp 'macroexpand-all) (macroexpand-all form) form))
+                  (comp (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
+                            (macroexpand-all form)
+                          form))
                   (emit 0) 'ok)
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
@@ -25052,13 +25064,15 @@ Defining it as a function compiles them again.")
                    ;; for: macroexp's warnings (a compiler macro failing
                    ;; early in startup) must not reach the output.
                    (inhibit-message t)
+                   (macros (nelisp--fx-macros-used body))
+                   (nelisp--fx-expand (and macros t))
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
                         (error (setq failed t) nil))))
               (if c (setq nelisp--fx-compiled-ok t)
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
-                (dolist (m (nelisp--fx-macros-used body))
+                (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
                   (unless (memq name (gethash op nelisp--fx-callees))
@@ -25137,7 +25151,23 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
 
 ;; Every `defun' (the prelude's and GNU byte-run's alike) and `defalias'
 ;; reaches `nl-afset' through the native `defalias' special form, so the
-;; registration hooks there.
+;; registration hooks there.  What the prelude defined before this point is
+;; in `nelisp--fx-early-names'; compiling it all costs ~10 ms a function, so
+;; a normal boot leaves it to the interpreter and only a dumped image (S3.1,
+;; `nelisp--fx-register-prelude') carries it compiled.
+(defvar nelisp--fx-early-names nil
+  "Names defined before the word VM's registration hooks, newest first.")
+(defvar nelisp--fx-recording nil)
+(setq nelisp--fx-recording nil)
+(defun nelisp--fx-register-prelude ()
+  "Compile every function defined before the VM's hooks; answer the count.
+The cold-image dump calls this just before dumping, so a `--cold-load-from'
+boot starts with the prelude already on the VM."
+  (let ((names (reverse nelisp--fx-early-names)))
+    (setq nelisp--fx-early-names nil)
+    (dolist (n names) (nelisp--fx-register n))
+    (condition-case nil (nelisp--fx-retry-errored) (error nil))
+    (nelisp--fx-count)))
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
   (fset 'nl-afset
