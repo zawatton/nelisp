@@ -64,31 +64,16 @@
 ;;; Code:
 
 (defconst nelisp-cc-cons-prepend-clone--source
-  '(defun nl_cons_prepend_clone (car-ptr cdr-ptr out)
-     ;; car-ptr: *const Sexp — caller-owned car, will be deep-cloned.
-     ;; cdr-ptr: *const Sexp — caller-owned cdr, will be deep-cloned.
-     ;; out:     *mut Sexp   — destination slot (may alias car-ptr or cdr-ptr;
-     ;;                        the fused op reads both srcs before writing dst).
-     ;;
-     ;; The fused `cons-make-with-clone' grammar op (Doc 120.E) does
-     ;; everything we need in one composed value form:
-     ;;   1. call `nl_alloc_consbox' (fresh NlConsBox, car/cdr = Nil,
-     ;;      refcount = 1),
-     ;;   2. `nl_sexp_clone_into(*car-ptr, &box->car)'  (refcount-aware
-     ;;      deep clone; safe to overwrite the pre-initialised Nil slot),
-     ;;   3. `nl_sexp_clone_into(*cdr-ptr, &box->cdr)',
-     ;;   4. write `Sexp::Cons(box)' into `*out' (tag byte 7 + payload ptr).
-     ;; `(and ... 0)' threads the side-effecting constructor through to a
-     ;; stable `0' return value (= TRAMPOLINE_OK).  The constructor returns
-     ;; `out' in rax, which is a non-nil pointer, so the `and' chain
-     ;; continues to the final `0'.
-     ;;
-     ;; Alias safety: `nl_cons_prepend_clone' is called with out = one of
-     ;; the src ptrs (e.g., `nl_cons_prepend_clone(s1, out, out)' in
-     ;; nelisp-cc-sf-lambda.el).  `cons-make-with-clone' reads *car-ptr and
-     ;; *cdr-ptr (via `nl_sexp_clone_into') BEFORE overwriting *out, so the
-     ;; alias is safe.
-     (and (cons-make-with-clone car-ptr cdr-ptr out) 0))
+  '(seq
+    ;; Doc 215 word ABI.  The fresh cons box is the result object, so it is
+    ;; returned as the WORD without a copy.  Both sources are cloned before
+    ;; the box is written, so aliasing with the caller's OUT stays safe.
+    (defun nl_cons_prepend_clone_w (car-ptr cdr-ptr _pad _pad1)
+      (let* ((box (alloc-bytes 32 8)))
+        (seq (cons-make-with-clone car-ptr cdr-ptr box)
+             (nl_val_store_word box))))
+    (defun nl_cons_prepend_clone (car-ptr cdr-ptr out)
+      (nl_abi_word_to_rc (nl_cons_prepend_clone_w car-ptr cdr-ptr 0 0) out)))
   "AOT source for `nl_cons_prepend_clone' (special_forms.rs → elisp).
 
 Single defun.  The `cons-make-with-clone' grammar op (Doc 120.E) fuses
