@@ -1,0 +1,4071 @@
+{
+ "note": "Doc 215 builtin word ABI fan-out; disjoint by defun owner. Convert each defun F to F_w (WORD, 0 = signal stashed) and keep F as the adapter; convert each arm to (MATCH :word . FORM).",
+ "excluded": "wf_bytecode_*, m5_fx_*, nl_fx_* (other lanes)",
+ "groups": {
+  "G1": {
+   "arms": [
+    {
+     "name": "+",
+     "converted": false
+    },
+    {
+     "name": "-",
+     "converted": false
+    },
+    {
+     "name": "*",
+     "converted": false
+    },
+    {
+     "name": "/",
+     "converted": false
+    },
+    {
+     "name": "%",
+     "converted": false
+    },
+    {
+     "name": "=",
+     "converted": false
+    },
+    {
+     "name": "<",
+     "converted": false
+    },
+    {
+     "name": ">",
+     "converted": false
+    },
+    {
+     "name": "/=",
+     "converted": false
+    },
+    {
+     "name": "1+",
+     "converted": false
+    },
+    {
+     "name": "1-",
+     "converted": false
+    },
+    {
+     "name": "<=",
+     "converted": false
+    },
+    {
+     "name": ">=",
+     "converted": false
+    },
+    {
+     "name": "mod",
+     "converted": false
+    },
+    {
+     "name": "ash",
+     "converted": false
+    },
+    {
+     "name": "sin",
+     "converted": false
+    },
+    {
+     "name": "cos",
+     "converted": false
+    },
+    {
+     "name": "floor",
+     "converted": false
+    },
+    {
+     "name": "zerop",
+     "converted": false
+    },
+    {
+     "name": "floatp",
+     "converted": false
+    },
+    {
+     "name": "logand",
+     "converted": false
+    },
+    {
+     "name": "logior",
+     "converted": false
+    },
+    {
+     "name": "logxor",
+     "converted": false
+    },
+    {
+     "name": "lognot",
+     "converted": false
+    },
+    {
+     "name": "ceiling",
+     "converted": false
+    },
+    {
+     "name": "natnump",
+     "converted": false
+    },
+    {
+     "name": "numberp",
+     "converted": false
+    },
+    {
+     "name": "truncate",
+     "converted": false
+    },
+    {
+     "name": "integerp",
+     "converted": false
+    },
+    {
+     "name": "ptr-call",
+     "converted": false
+    },
+    {
+     "name": "float-time",
+     "converted": false
+    },
+    {
+     "name": "ptr-read-u8",
+     "converted": false
+    },
+    {
+     "name": "alloc-bytes",
+     "converted": false
+    },
+    {
+     "name": "nl-ffi-call",
+     "converted": false
+    },
+    {
+     "name": "nl-nanosleep",
+     "converted": false
+    },
+    {
+     "name": "nl--read-int",
+     "converted": false
+    },
+    {
+     "name": "ptr-write-u8",
+     "converted": false
+    },
+    {
+     "name": "ptr-read-u32",
+     "converted": false
+    },
+    {
+     "name": "ptr-read-u64",
+     "converted": false
+    },
+    {
+     "name": "ptr-write-u32",
+     "converted": false
+    },
+    {
+     "name": "ptr-write-u64",
+     "converted": false
+    },
+    {
+     "name": "nelisp--sha256",
+     "converted": false
+    },
+    {
+     "name": "syscall-direct",
+     "converted": false
+    },
+    {
+     "name": "ptr-read-bytes",
+     "converted": false
+    },
+    {
+     "name": "ptr-call-typed",
+     "converted": false
+    },
+    {
+     "name": "garbage-collect",
+     "converted": false
+    },
+    {
+     "name": "nelisp--gc-diag",
+     "converted": false
+    },
+    {
+     "name": "nl--int-token-p",
+     "converted": false
+    },
+    {
+     "name": "ptr-write-bytes",
+     "converted": false
+    },
+    {
+     "name": "garbage-collect",
+     "converted": false
+    },
+    {
+     "name": "number-to-string",
+     "converted": false
+    },
+    {
+     "name": "nelisp--raw-aref",
+     "converted": false
+    },
+    {
+     "name": "nelisp--raw-aset",
+     "converted": false
+    },
+    {
+     "name": "nelisp--fmt-float",
+     "converted": false
+    },
+    {
+     "name": "nl-unix-time-usec",
+     "converted": false
+    },
+    {
+     "name": "nelisp-spin-until",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-env",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-stats",
+     "converted": false
+    },
+    {
+     "name": "nelisp--gc-pressure",
+     "converted": false
+    },
+    {
+     "name": "nelisp--sha256-bytes",
+     "converted": false
+    },
+    {
+     "name": "nelisp--float-word-half",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-pin-copy",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-walk-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-subr-arity",
+     "converted": false
+    },
+    {
+     "name": "nelisp--alloc-check-report",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-subr-create",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-symbol-addr",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-pin-copy-v2",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-pin-eq-slots",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-swizzle-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-value-survival",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-dump-copy-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-boot-load-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-force-grow-smoke",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-subr-live-count",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-unbox-reference",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-mark-reach-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-image-root-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-dump-table-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-dump-image-stream",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-load-split-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-dump-image-to-file",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-load-relocate-verify",
+     "converted": false
+    },
+    {
+     "name": "nelisp--arena-load-image-from-file",
+     "converted": false
+    },
+    {
+     "name": "nelisp--native-runtime-contract-word",
+     "converted": false
+    }
+   ],
+   "defuns": [
+    {
+     "defun": "nl_alloc_mut_str_write_tag",
+     "unit": "alloc-mut-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_unibyte_mut_str",
+     "unit": "alloc-mut-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_unibyte_mut_str_inner",
+     "unit": "alloc-mut-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_unibyte_mut_str_pos",
+     "unit": "alloc-mut-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_str",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_str_copy_loop",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_str_pos",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_str_write",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_symbol",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_symbol_plain",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_symbol_pos",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_symbol_write",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_finish",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_insert",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_next",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_next_scan",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_write_sexp",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symname_copy80",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_write_canonical_nil",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_write_canonical_t",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "bf_alloc_check_report",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aref",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aref_checked",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aref_closure",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_boot_load_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_dump_copy_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_dump_image_stream",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_dump_image_to_file",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_dump_table_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_force_grow_smoke",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_image_root_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_load_image_from_file",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_load_relocate_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_load_split_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_mark_reach_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_stats",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_swizzle_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_value_survival",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_arena_walk_verify",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_bool_vector",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_checked",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_fixed_width_rejected",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_multibyte_string",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_string_write",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_unibyte_string",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_closure_env_view",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_closure_env_view_fwd",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_closure_env_view_rev",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_closure_iform_value",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_closure_slot_or_singleton",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_debug_switch",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_error",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_garbage_collect",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_garbage_collect_snapshot",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_gc_pressure",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_invalid_time_spec",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_lognot_general",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_native_subr",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_sig_copy32",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_thread_join",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_bn_digits",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_copy_digits",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_copy_str_bytes",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_dec9",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_fill_zeros",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_add_loop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_add_raw",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_ash_general",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_ash_left",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_ash_right",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_bitop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_copy_limbs",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_dec_mag",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_divsmall_copy",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_finalize_bitop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_finish",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_mag_mul",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_mul_carry_prop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_mul_raw",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_mul_row",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_not_loop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_quot_small",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_shl_bits_loop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_shl_zero_pad",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_shr_bits_loop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_sub_loop",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_sub_raw",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_twos_fill_neg",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_twos_fill_pos",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_write",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bignum_write_int",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_read_int_or_bignum",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_reader_native_pin_copy",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_reader_native_result_ref",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_bitop_fold",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_cons_int",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_copy32",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_diff",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_float_time",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_ft_convert",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_ft_write",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_numeric_marker_compare",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_numeric_marker_copy",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_numeric_marker_value",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_numeric_marker_value_word",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_prod",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_prod_big",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_subtail",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_subtail_big",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_sum",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_sum_big",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_sum_fix",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_word_store_out",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_write_int",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_write_nil",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_write_t",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_char_table_get_raw",
+     "unit": "chartable-getset.o",
+     "file": "lisp/nelisp-cc-evalport-nonenv-char-table.el"
+    },
+    {
+     "defun": "nl_char_table_set_raw",
+     "unit": "chartable-getset.o",
+     "file": "lisp/nelisp-cc-evalport-nonenv-char-table.el"
+    },
+    {
+     "defun": "nl_sci_copy",
+     "unit": "clone.o",
+     "file": "lisp/nelisp-cc-sexp-clone-into.el"
+    },
+    {
+     "defun": "nl_sci_dispatch",
+     "unit": "clone.o",
+     "file": "lisp/nelisp-cc-sexp-clone-into.el"
+    },
+    {
+     "defun": "nl_sci_rc",
+     "unit": "clone.o",
+     "file": "lisp/nelisp-cc-sexp-clone-into.el"
+    },
+    {
+     "defun": "nl_sci_store_imm",
+     "unit": "clone.o",
+     "file": "lisp/nelisp-cc-sexp-clone-into.el"
+    },
+    {
+     "defun": "nl_sexp_clone_into",
+     "unit": "clone.o",
+     "file": "lisp/nelisp-cc-sexp-clone-into.el"
+    },
+    {
+     "defun": "nelisp_cons_construct",
+     "unit": "cons-ctor.o",
+     "file": "lisp/nelisp-cc-cons-construct.el"
+    },
+    {
+     "defun": "nelisp_eq_symbol",
+     "unit": "eq-symbol.o",
+     "file": "lisp/nelisp-cc-eq-symbol.el"
+    },
+    {
+     "defun": "nl_cell_get_value",
+     "unit": "nlcell-get-value.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_ptr_read_bytes",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_ptr_write_bytes",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_gc_mark_recorded_frame",
+     "unit": "reader-gc.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_vci_copy32",
+     "unit": "val-load.o",
+     "file": "lisp/nelisp-cc-val-load.el"
+    }
+   ]
+  },
+  "G2": {
+   "arms": [
+    {
+     "name": "eq",
+     "converted": true
+    },
+    {
+     "name": "not",
+     "converted": true
+    },
+    {
+     "name": "car",
+     "converted": true
+    },
+    {
+     "name": "cdr",
+     "converted": true
+    },
+    {
+     "name": "nth",
+     "converted": false
+    },
+    {
+     "name": "elt",
+     "converted": false
+    },
+    {
+     "name": "null",
+     "converted": true
+    },
+    {
+     "name": "cons",
+     "converted": true
+    },
+    {
+     "name": "list",
+     "converted": false
+    },
+    {
+     "name": "memq",
+     "converted": false
+    },
+    {
+     "name": "assq",
+     "converted": false
+    },
+    {
+     "name": "last",
+     "converted": false
+    },
+    {
+     "name": "atom",
+     "converted": false
+    },
+    {
+     "name": "aref",
+     "converted": false
+    },
+    {
+     "name": "aset",
+     "converted": false
+    },
+    {
+     "name": "assoc",
+     "converted": false
+    },
+    {
+     "name": "consp",
+     "converted": false
+    },
+    {
+     "name": "listp",
+     "converted": false
+    },
+    {
+     "name": "equal",
+     "converted": false
+    },
+    {
+     "name": "member",
+     "converted": false
+    },
+    {
+     "name": "rassoc",
+     "converted": false
+    },
+    {
+     "name": "nthcdr",
+     "converted": false
+    },
+    {
+     "name": "append",
+     "converted": false
+    },
+    {
+     "name": "mapcar",
+     "converted": false
+    },
+    {
+     "name": "length",
+     "converted": false
+    },
+    {
+     "name": "nlistp",
+     "converted": false
+    },
+    {
+     "name": "vector",
+     "converted": false
+    },
+    {
+     "name": "record",
+     "converted": false
+    },
+    {
+     "name": "setcar",
+     "converted": false
+    },
+    {
+     "name": "setcdr",
+     "converted": false
+    },
+    {
+     "name": "butlast",
+     "converted": false
+    },
+    {
+     "name": "puthash",
+     "converted": false
+    },
+    {
+     "name": "gethash",
+     "converted": false
+    },
+    {
+     "name": "remhash",
+     "converted": false
+    },
+    {
+     "name": "maphash",
+     "converted": false
+    },
+    {
+     "name": "vectorp",
+     "converted": false
+    },
+    {
+     "name": "recordp",
+     "converted": false
+    },
+    {
+     "name": "plist-get",
+     "converted": false
+    },
+    {
+     "name": "sxhash-eq",
+     "converted": false
+    },
+    {
+     "name": "make-vector",
+     "converted": false
+    },
+    {
+     "name": "bool-vector",
+     "converted": false
+    },
+    {
+     "name": "make-record",
+     "converted": false
+    },
+    {
+     "name": "bool-vector-p",
+     "converted": false
+    },
+    {
+     "name": "make-hash-table",
+     "converted": false
+    },
+    {
+     "name": "hash-table-count",
+     "converted": false
+    },
+    {
+     "name": "make-bool-vector",
+     "converted": false
+    },
+    {
+     "name": "atomic-fetch-add",
+     "converted": false
+    },
+    {
+     "name": "nelisp--assoc-raw",
+     "converted": false
+    },
+    {
+     "name": "nelisp--cell-value",
+     "converted": false
+    },
+    {
+     "name": "nelisp--plist-get-eq",
+     "converted": false
+    },
+    {
+     "name": "nelisp--plist-member-eq",
+     "converted": false
+    },
+    {
+     "name": "nelisp--hash-table-make-raw",
+     "converted": false
+    }
+   ],
+   "defuns": [
+    {
+     "defun": "bf_aref_nemacs_bridge",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_aset_nemacs_bridge",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_bool_vector",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_bool_vector_p",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_ct_subtable_lookup",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_ct_top_lookup",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_ct_top_lookup_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_elt",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_elt_checked",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_elt_list_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_elt_list_walk2",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_length_checked",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_length_list",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_bool_vector",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_record",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_vector",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_n2_call_lisp_equal",
+     "unit": "applyfn-reader.o",
+     "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)"
+    },
+    {
+     "defun": "bf_nemacs_char_table_call",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_nthcdr_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_plist_get_eq",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_plist_member_eq",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_plist_member_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_record",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_recordp",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_vector",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_copy32",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_get",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_get_default",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_get_synced",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_make",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_maphash",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_put",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_put_values",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_put_values_synced",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_rem",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_rem_synced",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_rem_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_write_eql_sym",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ht_write_marker_sym",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_append",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_append_slow",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assoc",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assoc_dispatch",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assoc_fast",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assoc_slow",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assoc_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assq",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_assq_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_butlast",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_last",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_mapcar",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_mapcar_slow",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_member",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_member_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_memq",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_memq_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_nth",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_nthcdr",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_plist_get_dispatch",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_plist_get_slow",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_rassoc",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_rassoc_walk",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector_pos",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector_with_data",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_bv_write_sexp",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    }
+   ]
+  },
+  "G3": {
+   "arms": [
+    {
+     "name": "wrf",
+     "converted": false
+    },
+    {
+     "name": "rdf",
+     "converted": false
+    },
+    {
+     "name": "slen",
+     "converted": false
+    },
+    {
+     "name": "exit",
+     "converted": false
+    },
+    {
+     "name": "load",
+     "converted": false
+    },
+    {
+     "name": "concat",
+     "converted": false
+    },
+    {
+     "name": "format",
+     "converted": false
+    },
+    {
+     "name": "intern",
+     "converted": false
+    },
+    {
+     "name": "string=",
+     "converted": false
+    },
+    {
+     "name": "stringp",
+     "converted": false
+    },
+    {
+     "name": "symbolp",
+     "converted": false
+    },
+    {
+     "name": "require",
+     "converted": false
+    },
+    {
+     "name": "string<",
+     "converted": false
+    },
+    {
+     "name": "featurep",
+     "converted": false
+    },
+    {
+     "name": "substring",
+     "converted": false
+    },
+    {
+     "name": "fork-spawn",
+     "converted": false
+    },
+    {
+     "name": "string-byte",
+     "converted": false
+    },
+    {
+     "name": "make-string",
+     "converted": false
+    },
+    {
+     "name": "str-kv-line",
+     "converted": false
+    },
+    {
+     "name": "symbol-name",
+     "converted": false
+    },
+    {
+     "name": "intern-soft",
+     "converted": false
+    },
+    {
+     "name": "make-symbol",
+     "converted": false
+    },
+    {
+     "name": "string-bytes",
+     "converted": false
+    },
+    {
+     "name": "str-count-nl",
+     "converted": false
+    },
+    {
+     "name": "symbol-value",
+     "converted": false
+    },
+    {
+     "name": "char-table-p",
+     "converted": false
+    },
+    {
+     "name": "thread-spawn",
+     "converted": false
+    },
+    {
+     "name": "nl-write-file",
+     "converted": false
+    },
+    {
+     "name": "string-to-char",
+     "converted": false
+    },
+    {
+     "name": "char-to-string",
+     "converted": false
+    },
+    {
+     "name": "str-line-start",
+     "converted": false
+    },
+    {
+     "name": "unibyte-string",
+     "converted": false
+    },
+    {
+     "name": "symbol-function",
+     "converted": false
+    },
+    {
+     "name": "make-char-table",
+     "converted": false
+    },
+    {
+     "name": "unibyte-string-p",
+     "converted": false
+    },
+    {
+     "name": "string-to-number",
+     "converted": false
+    },
+    {
+     "name": "char-table-range",
+     "converted": false
+    },
+    {
+     "name": "read-stdin-bytes",
+     "converted": false
+    },
+    {
+     "name": "string-as-unibyte",
+     "converted": false
+    },
+    {
+     "name": "string-to-unibyte",
+     "converted": false
+    },
+    {
+     "name": "symbol-with-pos-p",
+     "converted": false
+    },
+    {
+     "name": "char-table-parent",
+     "converted": false
+    },
+    {
+     "name": "multibyte-string-p",
+     "converted": false
+    },
+    {
+     "name": "char-table-subtype",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-pid",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-send",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-recv",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-poll",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-join",
+     "converted": false
+    },
+    {
+     "name": "string-make-unibyte",
+     "converted": false
+    },
+    {
+     "name": "string-as-multibyte",
+     "converted": false
+    },
+    {
+     "name": "string-to-multibyte",
+     "converted": false
+    },
+    {
+     "name": "nelisp--json-encode",
+     "converted": false
+    },
+    {
+     "name": "nelisp--size-census",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-poll",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-wait",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-close",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-spawn",
+     "converted": false
+    },
+    {
+     "name": "nelisp--build-digest",
+     "converted": false
+    },
+    {
+     "name": "nelisp--exit-process",
+     "converted": false
+    },
+    {
+     "name": "nl--read-float-token",
+     "converted": false
+    },
+    {
+     "name": "set-char-table-range",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-path",
+     "converted": false
+    },
+    {
+     "name": "nl-current-unix-time",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-start",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-write",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-listen",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-accept",
+     "converted": false
+    },
+    {
+     "name": "string-make-multibyte",
+     "converted": false
+    },
+    {
+     "name": "nelisp--string-search",
+     "converted": false
+    },
+    {
+     "name": "nelisp--intern-lookup",
+     "converted": false
+    },
+    {
+     "name": "nelisp--format-simple",
+     "converted": false
+    },
+    {
+     "name": "set-char-table-parent",
+     "converted": false
+    },
+    {
+     "name": "char-table-extra-slot",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-path2",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-mount",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-status",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-delete",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-connect",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-utimes",
+     "converted": false
+    },
+    {
+     "name": "nelisp--target-os-code",
+     "converted": false
+    },
+    {
+     "name": "str-filter-prefix-lines",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-unshare",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-object-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp-portable-syscall",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-path-int",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-stat-buf",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-readlink",
+     "converted": false
+    },
+    {
+     "name": "nelisp--readdir-scan-raw",
+     "converted": false
+    },
+    {
+     "name": "nelisp--target-arch-code",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-atomic-add",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-gc-inhibit",
+     "converted": false
+    },
+    {
+     "name": "set-char-table-extra-slot",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-read-file",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-lstat-buf",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-statx-buf",
+     "converted": false
+    },
+    {
+     "name": "nelisp--write-stderr-line",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-atomic-read",
+     "converted": false
+    },
+    {
+     "name": "nelisp--pool-root-coverage",
+     "converted": false
+    },
+    {
+     "name": "nelisp--eval-source-string",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-stat-field",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-pivot-root",
+     "converted": false
+    },
+    {
+     "name": "nelisp--write-stdout-bytes",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-exit-status",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-read-output",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-close-stdin",
+     "converted": false
+    },
+    {
+     "name": "nelisp-thread-shared-alloc",
+     "converted": false
+    },
+    {
+     "name": "nelisp--string-search-chars",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-call-process",
+     "converted": false
+    },
+    {
+     "name": "nelisp-socket-connect-error",
+     "converted": false
+    },
+    {
+     "name": "nelisp--intern-table-symbols",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-start-process",
+     "converted": false
+    },
+    {
+     "name": "nelisp-process-async-ready-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp--syscall-readdir-names",
+     "converted": false
+    },
+    {
+     "name": "nelisp--char-table-vector-bridge-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp--read-all-from-string-native",
+     "converted": false
+    }
+   ],
+   "defuns": [
+    {
+     "defun": "nl_alloc_symbol_named",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_symbol_plain_named",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_alloc_uninterned_symbol_named",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_finish_named",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_lookup",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_lookup_finish",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_intern_lookup_pos",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symbol_name_copy_out",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symbol_name_immediate",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symbol_name_value",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symbol_name_value_create",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_symname_copy32",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "nl_uninterned_symbol_write",
+     "unit": "alloc-str.o",
+     "file": "lisp/nelisp-cc-nlstr-direct-ops.el"
+    },
+    {
+     "defun": "bf_cannot_convert_unibyte",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_bad_range",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_extra_slot",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_p",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_parent",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_parent_cycle_error",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_range",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_char_table_subtype",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_dynamic_lookup",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_eval_source_string",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_eval_source_string_inner",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_featurep",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_features_get",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_features_symbol",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_fork_spawn",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_format_simple",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_intern",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_intern_soft",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_intern_table_symbols",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_candidate_plain",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_current_buffer",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_file_name_symbol",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_inner",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_path_get",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_path_symbol",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_restore_buffer",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_search",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_searched",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_load_with_lfn",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_char_table",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_symbol",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_pool_root_coverage",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_read_all_from_string_native",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_read_load_file_name",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_read_one_from_string_native",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_require",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_require_after_load",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_require_candidate",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_require_load_file",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_require_search",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_rq_copy",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set_char_table_extra_slot",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set_char_table_parent",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set_char_table_range",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_size_census",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_str_or_name",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_string_as_multibyte",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_string_as_unibyte",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_string_to_multibyte",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_string_to_unibyte",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_symbol_function",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_symbol_value",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_thread_spawn",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_unibyte_string",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_finish_string",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "m5_float_fast",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_char_table_alloc",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_copy_words",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector_from_bytes",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector_from_bytes_pos",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_alloc_bool_vector_from_bytes_with_data",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_bv_copy_loop",
+     "unit": "boolvec-alloc.o",
+     "file": "lisp/nelisp-cc-nlboolvector-alloc.el"
+    },
+    {
+     "defun": "nl_char_table_get_local_raw",
+     "unit": "chartable-getset.o",
+     "file": "lisp/nelisp-cc-evalport-nonenv-char-table.el"
+    },
+    {
+     "defun": "nl_char_table_set_range_raw",
+     "unit": "chartable-getset.o",
+     "file": "lisp/nelisp-cc-evalport-nonenv-char-table.el"
+    },
+    {
+     "defun": "nl_bi_cpath_loop",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_call_process",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_close_stdin",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_make_object",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_poll",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_poll_one",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_read_output",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_start_process",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_process_write",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_read_file",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_read_file_maybe_raw",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_read_stdin_bytes",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_readdir_scan_raw",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_rf_copy4k",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_rf_read_loop",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_rf_read_rest",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_rf_withfd",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_slen",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_str_count_nl",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_str_filter_prefix_lines",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_str_kv_line",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_str_line_start",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_lstat_buf",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_mount",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_path",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_path2",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_path_int",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_path_int_slots",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_pivot_root",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_readdir_buffer",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_readdir_names",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_readlink",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_stat_buf",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_stat_field",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_statx_buf",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_unshare",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_syscall_utimes",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_write_file",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_write_file_t",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_write_stderr_line",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_bi_write_stdout_bytes",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_readdir_scan_raw",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_copy32_strnil",
+     "unit": "reader-fileio.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_reader_p_build_bool_vector",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_build_hash_table",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_build_record",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_copy32",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_dispatch",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_leaf",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_at",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_bool_vector",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_byte_code",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_label_def",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_label_ref",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_list_step",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_propertized_string",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_seq",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_sharps_paren",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_parse_vector",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_record_fill",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_seq_dispatch",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_seq_dot",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_seq_loop",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_p_wrap",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_parse_one_with_context",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nelisp_reader_parse_one_with_load_file_name",
+     "unit": "reader-parser.o",
+     "file": "lisp/nelisp-cc-reader-parser.el"
+    },
+    {
+     "defun": "nlf_big_shift_copy_words",
+     "unit": "str-to-float.o",
+     "file": "lisp/nelisp-cc-evalport-str-to-float.el"
+    },
+    {
+     "defun": "nlf_t91_copy",
+     "unit": "str-to-float.o",
+     "file": "lisp/nelisp-cc-evalport-str-to-float.el"
+    },
+    {
+     "defun": "nlf_t91_copy_words",
+     "unit": "str-to-float.o",
+     "file": "lisp/nelisp-cc-evalport-str-to-float.el"
+    },
+    {
+     "defun": "nlf_t91_shift_copy",
+     "unit": "str-to-float.o",
+     "file": "lisp/nelisp-cc-evalport-str-to-float.el"
+    }
+   ]
+  },
+  "G4": {
+   "arms": [
+    {
+     "name": "set",
+     "converted": false
+    },
+    {
+     "name": "subrp",
+     "converted": false
+    },
+    {
+     "name": "error",
+     "converted": false
+    },
+    {
+     "name": "boundp",
+     "converted": false
+    },
+    {
+     "name": "signal",
+     "converted": false
+    },
+    {
+     "name": "fboundp",
+     "converted": false
+    },
+    {
+     "name": "byte-code",
+     "converted": false
+    },
+    {
+     "name": "nl--nthcdr",
+     "converted": false
+    },
+    {
+     "name": "makunbound",
+     "converted": false
+    },
+    {
+     "name": "bare-symbol",
+     "converted": false
+    },
+    {
+     "name": "nelisp--repr",
+     "converted": false
+    },
+    {
+     "name": "nelisp--fx-run",
+     "converted": false
+    },
+    {
+     "name": "make-byte-code",
+     "converted": false
+    },
+    {
+     "name": "fetch-bytecode",
+     "converted": false
+    },
+    {
+     "name": "map-char-table",
+     "converted": false
+    },
+    {
+     "name": "special-form-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp--equal-leaf",
+     "converted": false
+    },
+    {
+     "name": "nelisp--debug-switch",
+     "converted": false
+    },
+    {
+     "name": "byte-code-function-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp--record-expand",
+     "converted": false
+    },
+    {
+     "name": "nelisp--ascii-downcase",
+     "converted": false
+    },
+    {
+     "name": "nelisp--env-capture-roots",
+     "converted": false
+    },
+    {
+     "name": "nelisp--symbol-position-op",
+     "converted": false
+    },
+    {
+     "name": "nelisp--clear-string-bytes",
+     "converted": false
+    },
+    {
+     "name": "nelisp--byte-code-wrap-test",
+     "converted": false
+    },
+    {
+     "name": "nelisp--symbol-global-cell-p",
+     "converted": false
+    },
+    {
+     "name": "nelisp--declare-local-special",
+     "converted": false
+    }
+   ],
+   "defuns": [
+    {
+     "defun": "nelisp_aot_builtin_call1",
+     "unit": "aot-builtin-call1.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_aot_builtin_calln",
+     "unit": "aot-builtin-calln.o",
+     "file": "lisp/nelisp-cc-evalport-aot-builtin-calln.el"
+    },
+    {
+     "defun": "nl_ali_after_cap",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_bind_done",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_after_cdr",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_after_clone",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_drive",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_eval",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_mark",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_slot",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_start",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_body_step",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_finish",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_ali_push_frame",
+     "unit": "apply-lambda-inner.o",
+     "file": "lisp/nelisp-cc-apply-lambda-inner.el"
+    },
+    {
+     "defun": "nl_apply_lambda_inner",
+     "unit": "apply-lambda-inner.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_lambda_inner_n3",
+     "unit": "apply-lambda-inner.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_apply_lambda_raw",
+     "unit": "apply-lambda-inner.o",
+     "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)"
+    },
+    {
+     "defun": "bf_boundp",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_byte_code_function_p",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_byte_code_name",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_clear_string_bytes",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_declare_local_value",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_defconst_install",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_env_capture_roots",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_equal",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_expand_slot",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_expand_word",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_expand_words_list",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_fboundp",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_invalid_byte_code_object",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_make_byte_code",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_makunbound",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_map_char_table",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_nthcdr",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_record_expand",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set_declared_default",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_set_defvar_value",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "bf_signal",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_declared_default_raw",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "wf_bytecode",
+     "unit": "applyfn-reader.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_arg_list_copy32",
+     "unit": "arglist.o",
+     "file": "lisp/nelisp-cc-evalport-combiner-arglist.el"
+    },
+    {
+     "defun": "nl_apply_closure_or_lambda",
+     "unit": "combiner-apply-fix.o",
+     "file": "lisp/nelisp-cc-evalport-combiner-apply.el"
+    },
+    {
+     "defun": "nl_apply_flat_builtin_frame",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_function",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_list_append",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_native_subr",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_rooted_subr",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_rooted_subr_frame",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_lookup_fn_autoload",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_lookup_fn_autoload_load",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_apply_raw",
+     "unit": "combiner-apply-fix.o",
+     "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)"
+    },
+    {
+     "defun": "nl_rooted_vector_copy",
+     "unit": "combiner-apply-fix.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_apply_special",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_cons_macro_apply_eval",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_after_args",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_after_head_eval",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_after_lookup",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_alias",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_callable_mark",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_callable_slot",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_eval_args",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_symbol_dispatch",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_symbol_mark",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner_cons_symbol_slot",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_defvaralias_raw",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_special_call",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_special_cell",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_special_unchecked",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)"
+    },
+    {
+     "defun": "nl_sf_and",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_and_walk",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_cond",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_cond_walk",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_decl_normalize_tail",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defalias",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defconst",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_definer_lookup",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defmacro",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defun",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defvar",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defvaralias",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_defvaralias_apply",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_dolist",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_or",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_or_walk",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_prog1",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_prog2",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_unless",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_when",
+     "unit": "combiner-cons-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_env_lookup_val",
+     "unit": "env-leaves-simple.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_env_lookup_val_done",
+     "unit": "env-leaves-simple.o",
+     "file": "lisp/nelisp-cc-evalport-env-leaves-simple.el"
+    },
+    {
+     "defun": "nl_ei_cons_dispatch",
+     "unit": "eval-inner-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ei_cons_tail",
+     "unit": "eval-inner-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_eval_inner",
+     "unit": "eval-inner-mxcache.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_env_lookup_function",
+     "unit": "lookup-fn.o",
+     "file": "lisp/nelisp-cc-env-lookup-function.el"
+    },
+    {
+     "defun": "nelisp_mirror_alloc_entry",
+     "unit": "mirror-alloc.o",
+     "file": "lisp/nelisp-cc-mirror-alloc-entry.el"
+    },
+    {
+     "defun": "nelisp_mirror_lookup_value",
+     "unit": "mirror-lookup-value.o",
+     "file": "lisp/nelisp-cc-mirror-lookup-value.el"
+    },
+    {
+     "defun": "nl_clx_build_symbol_filter",
+     "unit": "reader-capture.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_clx_symbol_filter_walk",
+     "unit": "reader-capture.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_clx_symbol_filter_walk_raw",
+     "unit": "reader-capture.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_env_capture_lexical_filtered",
+     "unit": "reader-capture.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_env_capture_lexical_with_filter",
+     "unit": "reader-capture.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_active_body",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_active_prepare",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_args_check",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_args_done",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_after_tag",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_body",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_body_eval",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_body_step",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_caught",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_check_tag",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_got_body",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_got_tag_form",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_catch_on_match",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_copy32",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_throw_after_tag",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_throw_eval_tag",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_throw_got_cdr1",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_ct_throw_got_tag_form",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_catch",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_catch_mark",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_catch_run",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_catch_slots",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_throw",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_throw_mark",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_throw_run",
+     "unit": "reader-catch-throw.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_eval_call_with_err",
+     "unit": "reader-errstub.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_cc_after_cdr1",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_after_eval",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_after_match",
+     "unit": "sf-cc-flagclear.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_cc_after_success",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_cloned",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_eval",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_mark",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_slot",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_step",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_body_walk",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_dispatch",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_finish",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_released",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_split_rest",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_try_success",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_cc_with_var",
+     "unit": "sf-cc-flagclear.o",
+     "file": "lisp/nelisp-cc-sf-condition-case.el"
+    },
+    {
+     "defun": "nl_sf_condition_case",
+     "unit": "sf-cc-flagclear.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_cons_prepend_clone",
+     "unit": "sf-cons-prepend-clone.o",
+     "file": "lisp/nelisp-cc-cons-prepend-clone.el"
+    },
+    {
+     "defun": "nelisp_env_lkv_mirror",
+     "unit": "sf-env-lookup-value.o",
+     "file": "lisp/nelisp-cc-env-lookup-value.el"
+    },
+    {
+     "defun": "nelisp_env_lkv_mirror_with_frames",
+     "unit": "sf-env-lookup-value.o",
+     "file": "lisp/nelisp-cc-env-lookup-value.el"
+    },
+    {
+     "defun": "nelisp_env_lookup_value",
+     "unit": "sf-env-lookup-value.o",
+     "file": "lisp/nelisp-cc-env-lookup-value.el"
+    },
+    {
+     "defun": "nelisp_frame_stack_ensure_capacity_copy",
+     "unit": "sf-frame-ensure-cap-epoch.o",
+     "file": "lisp/nelisp-cc-frame-ensure-capacity.el"
+    },
+    {
+     "defun": "nl_capture_descend_native",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_emit_one",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_local_declarations",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_local_names",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_walk_bucket",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_walk_buckets",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_walk_filter_symbols",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_walk_frame",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_capture_walk_frames",
+     "unit": "sf-frame-stack-find.o",
+     "file": "lisp/nelisp-cc-frame-stack-find.el"
+    },
+    {
+     "defun": "nl_sf_function",
+     "unit": "sf-function.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_function_check_lambda",
+     "unit": "sf-function.o",
+     "file": "lisp/nelisp-cc-sf-function.el"
+    },
+    {
+     "defun": "nl_sf_function_do_lambda",
+     "unit": "sf-function.o",
+     "file": "lisp/nelisp-cc-sf-function.el"
+    },
+    {
+     "defun": "nl_sf_function_got_car",
+     "unit": "sf-function.o",
+     "file": "lisp/nelisp-cc-sf-function.el"
+    },
+    {
+     "defun": "nl_sf_function_got_form",
+     "unit": "sf-function.o",
+     "file": "lisp/nelisp-cc-sf-function.el"
+    },
+    {
+     "defun": "nl_sf_if",
+     "unit": "sf-if.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_if_branch",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_cdr",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_else",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_else_eval",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_else_rc",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_test_ptr",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_then_eval",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_if_truthy",
+     "unit": "sf-if.o",
+     "file": "lisp/nelisp-cc-sf-if.el"
+    },
+    {
+     "defun": "nl_sf_lambda",
+     "unit": "sf-lambda.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_lambda_captured",
+     "unit": "sf-lambda.o",
+     "file": "lisp/nelisp-cc-sf-lambda.el"
+    },
+    {
+     "defun": "nl_sf_lambda_with_sym",
+     "unit": "sf-lambda.o",
+     "file": "lisp/nelisp-cc-sf-lambda.el"
+    },
+    {
+     "defun": "nl_sf_lambda_with_tail",
+     "unit": "sf-lambda.o",
+     "file": "lisp/nelisp-cc-sf-lambda.el"
+    },
+    {
+     "defun": "nl_sf_let_star",
+     "unit": "sf-let-star.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_let_star_body",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_body_eval",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_body_step",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_finish",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_got_bindings",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_next",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let_star_setup_done",
+     "unit": "sf-let-star.o",
+     "file": "lisp/nelisp-cc-sf-let-star.el"
+    },
+    {
+     "defun": "nl_sf_let",
+     "unit": "sf-let.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_let_body",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_let_body_eval",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_let_body_step",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_let_finish",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_let_got_bindings",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_let_setup_done",
+     "unit": "sf-let.o",
+     "file": "lisp/nelisp-cc-sf-let.el"
+    },
+    {
+     "defun": "nl_sf_progn",
+     "unit": "sf-progn.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_progn_after",
+     "unit": "sf-progn.o",
+     "file": "lisp/nelisp-cc-sf-progn.el"
+    },
+    {
+     "defun": "nl_sf_progn_body_step",
+     "unit": "sf-progn.o",
+     "file": "lisp/nelisp-cc-sf-progn.el"
+    },
+    {
+     "defun": "nl_sf_setq",
+     "unit": "sf-setq.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_setq_evaled",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_pair",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_rest",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_set_rc",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_step",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_sym",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_setq_val",
+     "unit": "sf-setq.o",
+     "file": "lisp/nelisp-cc-sf-setq.el"
+    },
+    {
+     "defun": "nl_sf_unwind_protect",
+     "unit": "sf-uwp.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_uw_after_body",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_cleanup",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_cleanup_after_body_exit",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_cleanup_evaled",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_do_cleanup",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_do_cleanup_body_exit",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_do_cleanup_preserve",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_got_car",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_got_cdr",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_uw_with_cleanup",
+     "unit": "sf-uwp.o",
+     "file": "lisp/nelisp-cc-sf-unwind-protect.el"
+    },
+    {
+     "defun": "nl_sf_while",
+     "unit": "sf-while.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_sf_while_body",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_body_done",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_body_eval",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_body_start",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_out_nil",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_step",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_step2",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nl_sf_while_step3",
+     "unit": "sf-while.o",
+     "file": "lisp/nelisp-cc-sf-while.el"
+    },
+    {
+     "defun": "nelisp_eval_call",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_eval_call_inner",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nelisp_eval_call_recorded_done",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_gc_ctx_push",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_gc_ctx_store",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_alias_write",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_apply_mode",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n3_default_write",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_capture_filtered",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_direct_apply",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_exit_debug",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_finish",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    },
+    {
+     "defun": "nl_n4_named_apply",
+     "unit": "shim.o",
+     "file": "scripts/nelisp-standalone-build.el"
+    }
+   ]
+  }
+ },
+ "arms_file": "scripts/nelisp-standalone-build.el (nelisp-standalone--applyfn-dispatch-table and the reader overrides near nelisp-standalone--applyfn-source)"
+}
