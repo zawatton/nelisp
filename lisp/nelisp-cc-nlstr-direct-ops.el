@@ -175,15 +175,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
 (defconst nelisp-cc-nlstr-direct-ops--alloc-str-source
   '(seq
     ;; Tail-recursive byte copier: copies N bytes from SRC to DST.
-    (defun nl_alloc_str_copy_loop (src dst i n)
+    (defun nl_alloc_str_copy_loop (src dst_ptr i n)
       ;; ITERATIVE 8-byte bulk + byte tail.  The old per-byte tail recursion
       ;; recursed once per byte, so a large string drove the native stack to
       ;; ~768MB -- the dominant peak-RSS contributor + deep-stack SIGSEGV source.
       (let ((k i))
         (while (<= (+ k 8) n)
-          (and (ptr-write-u64 dst k (ptr-read-u64 src k)) (setq k (+ k 8))))
+          (and (ptr-write-u64 dst_ptr k (ptr-read-u64 src k)) (setq k (+ k 8))))
         (while (< k n)
-          (and (ptr-write-u8 dst k (ptr-read-u8 src k)) (setq k (+ k 1))))
+          (and (ptr-write-u8 dst_ptr k (ptr-read-u8 src k)) (setq k (+ k 1))))
         1))
 
     ;; Shared inline-string writer.  TAG is 5 for UTF-8 Str and 14 for
@@ -200,19 +200,19 @@ lifetime of a Sexp value.  No `let' binding needed.")
        (ptr-write-u64 result-slot 24 n)
        result-slot))
 
-    (defun nl_alloc_str_write (bytes-ptr n alloc-n result-slot char-buf)
+    (defun nl_alloc_str_write (bytes-ptr n alloc-n dest-slot char-buf)
       (and
        (nl_alloc_str_copy_loop bytes-ptr char-buf 0 n)
-       (ptr-write-u8  result-slot 0  5)
-       (ptr-write-u64 result-slot 8  alloc-n)
-       (ptr-write-u64 result-slot 16 char-buf)
-       (ptr-write-u64 result-slot 24 n)
-       result-slot))
+       (ptr-write-u8  dest-slot 0  5)
+       (ptr-write-u64 dest-slot 8  alloc-n)
+       (ptr-write-u64 dest-slot 16 char-buf)
+       (ptr-write-u64 dest-slot 24 n)
+       dest-slot))
 
     ;; Alloc + write with n >= 0 already normalised.
-    (defun nl_alloc_str_pos (bytes-ptr n result-slot)
+    (defun nl_alloc_str_pos (bytes-ptr n dest-slot)
       (nl_alloc_str_write
-       bytes-ptr n (if (= n 0) 1 n) result-slot
+       bytes-ptr n (if (= n 0) 1 n) dest-slot
        (alloc-bytes (if (= n 0) 1 n) 1)))
 
     ;; Public entry: nl_alloc_str(bytes_ptr, len, result_slot).
@@ -222,6 +222,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Returns result-slot.
     (defun nl_alloc_str (bytes-ptr len result-slot)
       (nl_alloc_str_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_str_w returns the result WORD; nl_alloc_str keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_str_w (bytes-ptr len _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_str bytes-ptr len s) s)))
 
     ;; Raw-byte counterpart used by standalone conversion builtins.
     (defun nl_alloc_unibyte_str_pos (bytes-ptr n result-slot)
@@ -234,14 +238,14 @@ lifetime of a Sexp value.  No `let' binding needed.")
        bytes-ptr (if (< len 0) 0 len) result-slot))
 
     ;; Inner Sexp::Symbol writer (tag=4, identical to Str write modulo tag).
-    (defun nl_alloc_symbol_write (bytes-ptr n alloc-n result-slot char-buf)
+    (defun nl_alloc_symbol_write (bytes-ptr n alloc-n dest-slot char-buf)
       (and
        (nl_alloc_str_copy_loop bytes-ptr char-buf 0 n)
-       (ptr-write-u8  result-slot 0  4)
-       (ptr-write-u64 result-slot 8  alloc-n)
-       (ptr-write-u64 result-slot 16 char-buf)
-       (ptr-write-u64 result-slot 24 n)
-       result-slot))
+       (ptr-write-u8  dest-slot 0  4)
+       (ptr-write-u64 dest-slot 8  alloc-n)
+       (ptr-write-u64 dest-slot 16 char-buf)
+       (ptr-write-u64 dest-slot 24 n)
+       dest-slot))
 
     ;; Canonical mutable name objects are kept in an external open-addressed
     ;; table.  It is outside the moving Lisp heap; values at entry+40 are
@@ -252,10 +256,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (if (>= off 32) 1
         (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
              (nl_symname_copy32 src dst (+ off 8)))))
-    (defun nl_symname_copy80 (src dst off)
+    (defun nl_symname_copy80 (src dst_ptr off)
       (if (>= off 80) 1
-        (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
-             (nl_symname_copy80 src dst (+ off 8)))))
+        (seq (ptr-write-u64 dst_ptr off (ptr-read-u64 src off))
+             (nl_symname_copy80 src dst_ptr (+ off 8)))))
     (defun nl_symname_entry_match (entry kind key len hash)
       (if (or (/= (ptr-read-u64 entry 8) kind)
               (/= (ptr-read-u64 entry 32) hash)) 0
@@ -465,33 +469,33 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (and (ptr-write-u64 268436296 0
                           (+ (ptr-read-u64 268436296 0) (if (= n 0) 1 n)))
            (- (ptr-read-u64 268436296 0) (if (= n 0) 1 n))))
-    (defun nl_intern_write_sexp (result-slot buf n)
-      (and (ptr-write-u8  result-slot 0  4)
-           (ptr-write-u64 result-slot 8  (if (= n 0) 1 n))
-           (ptr-write-u64 result-slot 16 buf)
-           (ptr-write-u64 result-slot 24 n)
-           result-slot))
-    (defun nl_intern_insert (slot p n result-slot buf)
+    (defun nl_intern_write_sexp (dest-slot buf n)
+      (and (ptr-write-u8  dest-slot 0  4)
+           (ptr-write-u64 dest-slot 8  (if (= n 0) 1 n))
+           (ptr-write-u64 dest-slot 16 buf)
+           (ptr-write-u64 dest-slot 24 n)
+           dest-slot))
+    (defun nl_intern_insert (slot p n dest-slot buf)
       (and (nl_alloc_str_copy_loop p buf 0 n)
            (ptr-write-u64 slot 0 (+ n 1))
            (ptr-write-u64 slot 8 buf)
-           (nl_intern_write_sexp result-slot buf n)))
+           (nl_intern_write_sexp dest-slot buf n)))
     ;; Plain per-occurrence buffer: used when the region is disabled and
     ;; when it is exhausted (SLOT 0 = table full, or the arena cannot take
     ;; the name).  The symbol is still correct -- `eq' compares names -- it
     ;; is just not deduplicated and `intern-soft' cannot see it.
-    (defun nl_alloc_symbol_plain (bytes-ptr n result-slot)
+    (defun nl_alloc_symbol_plain (bytes-ptr n dest-slot)
       (nl_alloc_symbol_write
-       bytes-ptr n (if (= n 0) 1 n) result-slot
+       bytes-ptr n (if (= n 0) 1 n) dest-slot
        (alloc-bytes (if (= n 0) 1 n) 1)))
-    (defun nl_intern_finish (slot p n result-slot)
+    (defun nl_intern_finish (slot p n dest-slot)
       (if (= slot 0)
-          (nl_alloc_symbol_plain p n result-slot)
+          (nl_alloc_symbol_plain p n dest-slot)
         (if (= (ptr-read-u64 slot 0) 0)
             (if (= (nl_intern_arena_fits n) 1)
-                (nl_intern_insert slot p n result-slot (nl_intern_bump n))
-              (nl_alloc_symbol_plain p n result-slot))
-          (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+                (nl_intern_insert slot p n dest-slot (nl_intern_bump n))
+              (nl_alloc_symbol_plain p n dest-slot))
+          (nl_intern_write_sexp dest-slot (ptr-read-u64 slot 8) n))))
 
     ;; ---- nil/t name canonicalization ----
     ;; `nil' and `t' are immediate Sexp values (tag=0 / tag=1 -- see
@@ -520,31 +524,31 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (if (= n 1)
           (if (= (ptr-read-u8 p 0) 116) 1 0)
         0))
-    (defun nl_write_canonical_nil (result-slot)
-      (and (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-           (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-           result-slot))
-    (defun nl_write_canonical_t (result-slot)
-      (and (ptr-write-u64 result-slot 0 1) (ptr-write-u64 result-slot 8 0)
-           (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-           result-slot))
+    (defun nl_write_canonical_nil (dest-slot)
+      (and (ptr-write-u64 dest-slot 0 0) (ptr-write-u64 dest-slot 8 0)
+           (ptr-write-u64 dest-slot 16 0) (ptr-write-u64 dest-slot 24 0)
+           dest-slot))
+    (defun nl_write_canonical_t (dest-slot)
+      (and (ptr-write-u64 dest-slot 0 1) (ptr-write-u64 dest-slot 8 0)
+           (ptr-write-u64 dest-slot 16 0) (ptr-write-u64 dest-slot 24 0)
+           dest-slot))
 
     ;; Alloc + write with n >= 0.  "nil"/"t" short-circuit to the canonical
     ;; immediate value first (see above); otherwise intern via the region
     ;; when set up (+832 != 0), or fall back to a fresh per-occurrence
     ;; buffer.
-    (defun nl_alloc_symbol_pos (bytes-ptr n result-slot)
+    (defun nl_alloc_symbol_pos (bytes-ptr n dest-slot)
       (if (= (nl_name_is_nil bytes-ptr n) 1)
-          (nl_write_canonical_nil result-slot)
+          (nl_write_canonical_nil dest-slot)
         (if (= (nl_name_is_t bytes-ptr n) 1)
-            (nl_write_canonical_t result-slot)
+            (nl_write_canonical_t dest-slot)
           (if (= (ptr-read-u64 268436288 0) 0)
-              (nl_alloc_symbol_plain bytes-ptr n result-slot)
+              (nl_alloc_symbol_plain bytes-ptr n dest-slot)
             (nl_intern_finish
              (nl_intern_probe (ptr-read-u64 268436288 0)
                               (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                               bytes-ptr n 0)
-             bytes-ptr n result-slot)))))
+             bytes-ptr n dest-slot)))))
 
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
     (defun nl_alloc_symbol (bytes-ptr len result-slot)
@@ -552,6 +556,11 @@ lifetime of a Sexp value.  No `let' binding needed.")
       ;; it lazily in a checked root slot; this keeps intern hits allocation
       ;; free and avoids retaining an unrooted 32-byte scratch box here.
       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_symbol_w returns the result WORD; nl_alloc_symbol keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_symbol_w (bytes-ptr len _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_symbol bytes-ptr len s)
+             (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))))))
 
     ;; The miss-only heap fallback allocates before rereading the rooted input
     ;; string. A GC during `alloc-bytes' may move its byte buffer.
@@ -750,7 +759,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; an invalid cursor, and leaves RESULT-SLOT untouched.  This deliberately
     ;; does not call Lisp or allocate: interned name bytes live in the
     ;; permanent mmap region and the caller owns RESULT-SLOT.
-    (defun nl_intern_next_scan (table cursor result-slot)
+    (defun nl_intern_next_scan (table cursor dest-slot)
       (let* ((scan cursor) (slot 0) (word 0))
         (while (and (< scan 1048576) (= word 0))
           (setq slot (+ table (* scan 16)))
@@ -760,13 +769,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
             -1
           (seq
            (nl_intern_write_sexp
-            result-slot (ptr-read-u64 slot 8) (- word 1))
+            dest-slot (ptr-read-u64 slot 8) (- word 1))
            (+ scan 1)))))
-    (defun nl_intern_next (cursor result-slot)
+    (defun nl_intern_next (cursor dest-slot)
       (if (or (< cursor 0) (>= cursor 1048576)
               (= (ptr-read-u64 268436288 0) 0))
           -1
-        (nl_intern_next_scan (ptr-read-u64 268436288 0) cursor result-slot)))
+        (nl_intern_next_scan (ptr-read-u64 268436288 0) cursor dest-slot)))
   )
   "AOT direct-symbol source for `nl_alloc_str' + `nl_alloc_symbol' +
 `nl_intern_lookup'.
@@ -850,15 +859,15 @@ helper threads the runtime value through without any `let' binding.")
     ;; nlstr-box:   fresh 32-byte NlStr allocation
     ;; char-buf:    fresh alloc-n-byte char buffer
     (defun nl_alloc_mut_str_write_tag
-        (alloc-n result-slot nlstr-box char-buf tag)
+        (alloc-n dest-slot nlstr-box char-buf tag)
       (and
        (ptr-write-u64 nlstr-box 0  alloc-n)    ; String.cap
        (ptr-write-u64 nlstr-box 8  char-buf)   ; String.ptr
        (ptr-write-u64 nlstr-box 16 0)          ; String.len = 0
        (ptr-write-u64 nlstr-box 24 1)          ; refcount = 1
-       (ptr-write-u8  result-slot 0 tag)
-       (ptr-write-u64 result-slot 8 nlstr-box) ; NlStr*
-       result-slot))
+       (ptr-write-u8  dest-slot 0 tag)
+       (ptr-write-u64 dest-slot 8 nlstr-box) ; NlStr*
+       dest-slot))
 
     (defun nl_alloc_mut_str_write (alloc-n result-slot nlstr-box char-buf)
       (and
@@ -891,17 +900,21 @@ helper threads the runtime value through without any `let' binding.")
       (nl_alloc_mut_str_pos (if (< cap 0) 0 cap) result-slot))
 
     (defun nl_alloc_unibyte_mut_str_inner
-        (alloc-n result-slot nlstr-box)
+        (alloc-n dest-slot nlstr-box)
       (nl_alloc_mut_str_write_tag
-       alloc-n result-slot nlstr-box (alloc-bytes alloc-n 1) 15))
+       alloc-n dest-slot nlstr-box (alloc-bytes alloc-n 1) 15))
 
-    (defun nl_alloc_unibyte_mut_str_pos (n result-slot)
+    (defun nl_alloc_unibyte_mut_str_pos (n dest-slot)
       (nl_alloc_unibyte_mut_str_inner
-       (if (= n 0) 1 n) result-slot (alloc-bytes 32 8)))
+       (if (= n 0) 1 n) dest-slot (alloc-bytes 32 8)))
 
     (defun nl_alloc_unibyte_mut_str (cap result-slot)
       (nl_alloc_unibyte_mut_str_pos
-       (if (< cap 0) 0 cap) result-slot)))
+       (if (< cap 0) 0 cap) result-slot))
+    ;; Doc 215 builtin word ABI: nl_alloc_unibyte_mut_str_w returns the result WORD; nl_alloc_unibyte_mut_str keeps the direct slot-writing form (hot leaf).
+    (defun nl_alloc_unibyte_mut_str_w (cap _pad)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_unibyte_mut_str cap s) s))))
   "AOT direct-symbol source for `nl_alloc_mut_str'.
 
 Single `(seq DEFUN ...)' manifest exporting four symbols:

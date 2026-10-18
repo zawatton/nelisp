@@ -112,13 +112,13 @@
             (ptr-write-u64 dst_word_ptr 0 box))
        box))
 
-    (defun nl_vci_copy32 (src dst)
+    (defun nl_vci_copy32 (src dst_ptr)
       (nl_vl_prog2
-       (and (ptr-write-u64 dst 0  (ptr-read-u64 src 0))
-            (ptr-write-u64 dst 8  (ptr-read-u64 src 8))
-            (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
-            (ptr-write-u64 dst 24 (ptr-read-u64 src 24)))
-       dst))
+       (and (ptr-write-u64 dst_ptr 0  (ptr-read-u64 src 0))
+            (ptr-write-u64 dst_ptr 8  (ptr-read-u64 src 8))
+            (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16))
+            (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)))
+       dst_ptr))
 
     ;; Shallow rebox path for immutable Symbol/String slots.  SRC may be
     ;; a temporary arena slot, so allocate a fresh 32B box for the word.

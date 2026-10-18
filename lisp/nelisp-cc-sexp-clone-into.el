@@ -84,13 +84,13 @@
 
     ;; Copy the 32-byte Sexp slot (4 u64 words) src->dst, return dst.
     ;; ptr-write-u64 returns 1 (sentinel) so the `and' never short-circuits.
-    (defun nl_sci_copy (src dst)
+    (defun nl_sci_copy (src dst_ptr)
       (nl_sci_prog2
-       (and (ptr-write-u64 dst 0  (ptr-read-u64 src 0))
-            (ptr-write-u64 dst 8  (ptr-read-u64 src 8))
-            (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
-            (ptr-write-u64 dst 24 (ptr-read-u64 src 24)))
-       dst))
+       (and (ptr-write-u64 dst_ptr 0  (ptr-read-u64 src 0))
+            (ptr-write-u64 dst_ptr 8  (ptr-read-u64 src 8))
+            (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16))
+            (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)))
+       dst_ptr))
 
     ;; Refcount-bump the box for a boxed variant (tags 6..12). 7-way tail
     ;; dispatch to the per-type clone (each bumps rc + returns box-ptr).
@@ -106,10 +106,10 @@
                     0))))))))
 
     ;; Boxed path: bump rc, then bit-copy the slot.
-    (defun nl_sci_rc (src dst tag)
+    (defun nl_sci_rc (src dst_ptr tag)
       (nl_sci_prog2
        (nl_sci_bump tag (ptr-read-u64 src 8))
-       (nl_sci_copy src dst)))
+       (nl_sci_copy src dst_ptr)))
 
     ;; Dispatch on tag (threaded as a param to avoid AOT `let').
     ;; tag 5 Str / 4 Symbol = String clone.  Doc 149: behind flag 268435648
@@ -133,51 +133,51 @@
     ;; has no tag-13 arm and falls through to its 0 default) while implying
     ;; a refcounted box that does not exist for this tag; this is an
     ;; explicit tag-13 arm instead, matching Str/Symbol's own explicitness.
-    (defun nl_sci_dispatch (src dst tag)
+    (defun nl_sci_dispatch (src dst_ptr tag)
       (if (or (= tag 14) (= tag 16) (= tag 18))
           ;; Immutable raw-byte strings and identity-bearing symbols retain
           ;; their buffers; cloning must not create a new symbol identity.
-          (nl_sci_copy src dst)
+          (nl_sci_copy src dst_ptr)
         (if (= tag 5)
           (if (= (ptr-read-u64 268435648 0) 1)
-              (nl_sci_copy src dst)
-            (seq (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst)
+              (nl_sci_copy src dst_ptr)
+            (seq (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst_ptr)
                  ;; Preserve the standalone immutable-string multibyte flag.
-                 (ptr-write-u64 dst 8
-                   (logior (ptr-read-u64 dst 8)
+                 (ptr-write-u64 dst_ptr 8
+                   (logior (ptr-read-u64 dst_ptr 8)
                            (logand (ptr-read-u64 src 8) 4611686018427387904)))
-                 dst))
+                 dst_ptr))
         (if (= tag 4)
             (if (= (ptr-read-u64 268435648 0) 1)
-                (nl_sci_copy src dst)
-              (nl_alloc_symbol (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
-          (if (= tag 13) (nl_sci_copy src dst)
-          (if (< tag 4) (nl_sci_copy src dst)
-            (nl_sci_rc src dst tag)))))))
+                (nl_sci_copy src dst_ptr)
+              (nl_alloc_symbol (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst_ptr))
+          (if (= tag 13) (nl_sci_copy src dst_ptr)
+          (if (< tag 4) (nl_sci_copy src dst_ptr)
+            (nl_sci_rc src dst_ptr tag)))))))
 
     ;; Public C-ABI entry: nl_sexp_clone_into(src, dst) = ptr::write(dst,(*src).clone()).
     ;; The executable defun and callers use source first, destination second;
     ;; the final writes always target DST.
-    (defun nl_sci_store_imm (word dst)
+    (defun nl_sci_store_imm (word dst_ptr)
       ;; Doc 146 §3.0 step 6: materialise an immediate value WORD as a 32-byte
       ;; storage Sexp at DST.  (word&3)==1 Int -> tag2 + (sar word 2); word==3
       ;; Nil(tag0); word==7 T(tag1).
       (if (= (logand word 3) 1)
-          (seq (ptr-write-u64 dst 0 2) (ptr-write-u64 dst 8 (sar word 2))
-               (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst)
+          (seq (ptr-write-u64 dst_ptr 0 2) (ptr-write-u64 dst_ptr 8 (sar word 2))
+               (ptr-write-u64 dst_ptr 16 0) (ptr-write-u64 dst_ptr 24 0) dst_ptr)
         (if (= word 3)
-            (seq (ptr-write-u64 dst 0 0) (ptr-write-u64 dst 8 0)
-                 (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst)
-          (seq (ptr-write-u64 dst 0 1) (ptr-write-u64 dst 8 0)
-               (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst))))
-    (defun nl_sexp_clone_into (src dst)
+            (seq (ptr-write-u64 dst_ptr 0 0) (ptr-write-u64 dst_ptr 8 0)
+                 (ptr-write-u64 dst_ptr 16 0) (ptr-write-u64 dst_ptr 24 0) dst_ptr)
+          (seq (ptr-write-u64 dst_ptr 0 1) (ptr-write-u64 dst_ptr 8 0)
+               (ptr-write-u64 dst_ptr 16 0) (ptr-write-u64 dst_ptr 24 0) dst_ptr))))
+    (defun nl_sexp_clone_into (src dst_ptr)
       ;; Doc 146 §3.0 step 6: SRC is an immediate value word (low bit 1) or an
       ;; 8-aligned slot pointer (low bit 0).  Immediates materialise into the
       ;; 32-byte storage Sexp at DST; slot pointers use the tag dispatch.
       ;; Behaviour-preserving until immediates are produced (SRC always a slot).
       (if (= (logand src 1) 0)
-          (nl_sci_dispatch src dst (ptr-read-u8 src 0))
-        (nl_sci_store_imm src dst))))
+          (nl_sci_dispatch src dst_ptr (ptr-read-u8 src 0))
+        (nl_sci_store_imm src dst_ptr))))
   "AOT source for nl_sexp_clone_into.
 
 Re-provides the deleted Rust clone entry point from
