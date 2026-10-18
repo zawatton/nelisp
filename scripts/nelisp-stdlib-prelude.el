@@ -3869,17 +3869,13 @@ trailing newline) that `message' would otherwise do.")
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
 (defun maphash (fn table)
   (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
-  (if (fboundp 'nelisp--hash-table-entries)
-      ;; The native helper collects the entry cells in the order the loop
-      ;; below visits them, so the cost is per entry, not per bucket slot
-      ;; (a 2-entry table has 2048 buckets: ~130 ms a call here).
-      (let ((entries (nelisp--hash-table-entries table)))
-        (while entries
-          (funcall fn (car (car entries)) (cdr (car entries)))
-          (setq entries (cdr entries))))
   ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
   ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
   ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
+  ;; The branch through the native `nelisp--hash-table-entries' went with
+  ;; that native's demotion (63a1055c8); its guarded call to the undefined
+  ;; name kept the word VM from compiling this function at all, so every
+  ;; bucket slot cost an interpreted `let'.
   (let ((data (cdr table)))
     (if (vectorp data)
         (let ((i 0) (n (length data)))
@@ -3894,7 +3890,7 @@ trailing newline) that `message' would otherwise do.")
         (while (consp node)
           (let ((entry (car node)))
             (when (consp entry) (funcall fn (car entry) (cdr entry))))
-          (setq node (cdr node)))))))
+          (setq node (cdr node))))))
   nil)
 
 (unless (fboundp 'hash-table-test)
