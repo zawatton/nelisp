@@ -284,3 +284,10 @@ no speedup), so the same code and ERT run on both.
   on 8 threads, 4.05-4.25x, with one 5.49x outlier on the new binary.  The
   runs did not count collections, so it is not shown that the fused sweep ran
   on linux in them.  S8.2 passes on linux (>= 3x) with both binaries.
+  Caveat (found the same day): on both binaries no automatic collection ran
+  inside a thread section at all -- the allocation-debt trigger stayed
+  unarmed (fixed in 94e6eae52) -- so the figures above are speed-ups with
+  collection effectively off, and an allocating thread grew the heap without
+  bound (9.5 GB in a 100000-iteration test).  With the fix the speed-up smoke
+  collects 9 times; 5 runs under load average about 10 gave 3.02-4.00x,
+  median 3.11x.  Re-measure on an idle machine before quoting S8 numbers.
