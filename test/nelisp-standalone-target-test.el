@@ -594,7 +594,9 @@ silently repoint every later index at a different function -- and a stub
 aimed at the wrong function is a jump, not a diagnosable error."
   (let* ((arms (nelisp-standalone--reader-native-addr-arms))
          (arm (car arms))
-         (chain (nth 2 (cdr arm)))
+         ;; The chain is the arm's last element: the integer argument of
+         ;; `wf_write_int' (legacy) or `wf_write_int_w' (Doc 215 word arm).
+         (chain (car (last (cdr arm))))
          (seen nil))
     (should (equal (mapcar (lambda (a) (cadr (car a))) arms)
                    '("nelisp--native-symbol-addr" "nelisp--native-env")))
@@ -1272,23 +1274,24 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
   (let* ((nelisp-standalone--target 'windows-x86_64)
          (arms (nelisp-standalone--process-dispatch-arms))
          (arm (lambda (name) (assoc (list :lit name) arms))))
+    ;; Doc 215: converted arms are word arms (:word . WORD-FORM).
     (should (equal (cdr (funcall arm "nelisp-process-call-process"))
-                   '(nl_bi_process_call_process args out)))
+                   '(:word nl_bi_process_call_process_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-start"))
                    '(nl_bi_process_windows_start args out)))
     (should (equal (cdr (funcall arm "nelisp-process-poll"))
                    '(nl_bi_process_windows_poll args out)))
     (should (equal (cdr (funcall arm "nelisp-process-status"))
-                   '(wf_write_int out
+                   '(:word wf_write_int_w 0
                      (nl_bi_process_windows_status_code (wf_arg_ptr args 0)))))
     (should (equal (cdr (funcall arm "nelisp-process-write"))
                    '(nl_bi_process_windows_write args out)))
     (should (equal (cdr (funcall arm "nelisp-process-close-stdin"))
                    '(nl_bi_process_windows_close_stdin args out)))
     (should (equal (cdr (funcall arm "nelisp-process-delete"))
-                   '(seq
+                   '(:word seq
                      (nl_bi_process_windows_delete_object (wf_arg_ptr args 0))
-                     (wf_write_nil out))))
+                     3)))
     (let ((source (nelisp-standalone--fileio-source)))
       (should (memq 'CreatePipe (flatten-tree source)))
       (should (memq 'SetHandleInformation (flatten-tree source)))

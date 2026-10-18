@@ -24609,25 +24609,29 @@ families.")
 
 (defun nelisp-standalone--math-unary-arm (symbol)
   "Return a direct native unary libm arm for SYMBOL (`sin' or `cos')."
+  ;; Doc 215 word arm: the float box written here is the result object,
+  ;; so it is the WORD itself.
   (if (nelisp-standalone--reader-ffi-live-p)
-      `(let* ((arg (wf_arg_ptr args 0))
-                (tag (ptr-read-u64 arg 0)))
+      `(:word let* ((arg (wf_arg_ptr args 0))
+                    (tag (ptr-read-u64 arg 0)))
            (if (= tag 3)
                (let* ((input-bits (sexp-float-unwrap arg))
                       (result-bits
                        (f64-bits
                         (extern-call-f64 ,symbol
-                                         (:f64 (bits-to-f64 input-bits))))))
-                 (seq (sexp-write-float out (bits-to-f64 result-bits)) 0))
+                                         (:f64 (bits-to-f64 input-bits)))))
+                      (fbox (alloc-bytes 32 8)))
+                 (seq (sexp-write-float fbox (bits-to-f64 result-bits)) fbox))
              (if (= tag 2)
                  (let* ((input-bits
                          (f64-bits (i64-to-f64 (ptr-read-u64 arg 8))))
                         (result-bits
                          (f64-bits
                           (extern-call-f64 ,symbol
-                                           (:f64 (bits-to-f64 input-bits))))))
-                   (seq (sexp-write-float out (bits-to-f64 result-bits)) 0))
-               (bf_wrong_type_numberp arg))))
+                                           (:f64 (bits-to-f64 input-bits)))))
+                        (fbox (alloc-bytes 32 8)))
+                   (seq (sexp-write-float fbox (bits-to-f64 result-bits)) fbox))
+               (nl_abi_fail (bf_wrong_type_numberp arg) 0))))
     (nelisp-standalone--applyfn-unsupported-primitive-form)))
 
 (defconst nelisp-standalone--applyfn-bf-builtins
@@ -25107,9 +25111,10 @@ Out-of-range indices return 0, which is not an address, so a caller that
 ignores the check gets a null dereference at the stub rather than a jump
 into whatever the index happened to select."
   (append (list
+   ;; Doc 215 word arms: the integer result is the WORD (wf_write_int_w).
    (cons '(:u8 "nelisp--native-symbol-addr")
-         `(wf_write_int
-           out
+         `(:word wf_write_int_w
+           0
            ,(let ((form 0)
                   (idx (length nelisp-standalone--reader-neln-bridgeable-symbols)))
               (dolist (name (reverse
@@ -25132,26 +25137,26 @@ into whatever the index happened to select."
    ;; The `mirror' slot has no such source.  Both providers ignore it,
    ;; so a loader may pass this pointer there too rather than a wild
    ;; one; that stops being safe if a boundary callee ever reads mirror.
-   (cons '(:u8 "nelisp--native-env") '(wf_write_int out env))
+   (cons '(:u8 "nelisp--native-env") '(:word wf_write_int_w 0 env))
    ;; Read-only mirror-state admission query for GNU object views. Ordinary
    ;; tag-4 keys compare by name; tag-16 keys compare by identity. A nonzero
    ;; exact lookup means this symbol already has global variable-cell state.
    (cons '(:u8 "nelisp--symbol-global-cell-p")
-         '(let* ((builtin_argc (m5_list_len args 0)))
+         '(:word let* ((builtin_argc (m5_list_len args 0)))
             (if (/= builtin_argc 1)
-                (bf_wrong_number_of_args name_ptr builtin_argc)
+                (nl_abi_fail (bf_wrong_number_of_args name_ptr builtin_argc) 0)
               (let* ((sym (wf_arg_ptr args 0)))
                 (if (and (/= (sexp-tag sym) 4)
                          (/= (sexp-tag sym) 16))
-                    (bf_wrong_type_symbolp sym)
+                    (nl_abi_fail (bf_wrong_type_symbolp sym) 0)
                   (if (= (nelisp_mirror_lookup_entry (+ env 0) sym) 0)
-                      (wf_write_nil out)
-                    (wf_write_t out))))))))
+                      3
+                    7)))))))
    ;; Every reader embeds its ABI identity for raw artifact admission.
    ;; Runtime replacement addresses remain exclusive to the opt-in build.
    (list
     (cons '(:u8 "nelisp--native-runtime-contract-word")
-          `(wf_write_int out
+          `(:word wf_write_int_w 0
             ,(let ((digest (nelisp-runtime-reload-contract-hash))
                    (form -1) (index 7))
                (while (>= index 0)
@@ -25166,7 +25171,7 @@ into whatever the index happened to select."
    (when (nelisp-standalone--runtime-reload-enabled-p)
     (list
    (cons '(:u8 "nelisp--native-runtime-symbol-addr")
-         `(wf_write_int out
+         `(:word wf_write_int_w 0
            ,(let ((form 0)
                   (idx (length nelisp-standalone--reader-runtime-reload-symbols)))
               (dolist (name (reverse
@@ -25288,9 +25293,7 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
 (defun nelisp-standalone--special-form-p-arm ()
   "Return the native dispatch arm for `special-form-p'."
   (cons '(:lit "special-form-p")
-        '(if (= (bf_special_form_p_walk (wf_arg_ptr args 0) env 0) 1)
-             (wf_write_t out)
-           (wf_write_nil out))))
+        '(:word if (= (bf_special_form_p_walk (wf_arg_ptr args 0) env 0) 1) 7 3)))
 
 (defun nelisp-standalone--n5-syscall-dispatch (form)
   "Route the existing interpreted syscall bridge through child-exec setup.
