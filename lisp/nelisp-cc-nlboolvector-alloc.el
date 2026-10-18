@@ -224,6 +224,13 @@
              (nl_bv_mask_last data full bytelen rem)
              data)
         bytelen n)))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_bool_vector_from_bytes_with_data' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_bool_vector_from_bytes_with_data_w (_pad box data src n bytelen full rem)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_bool_vector_from_bytes_with_data result-slot box data src n bytelen full rem) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
 
     (defun nl_alloc_bool_vector_from_bytes_pos
         (n src result-slot bytelen full rem)
@@ -231,6 +238,13 @@
        result-slot (alloc-bytes 32 8)
        (alloc-bytes (if (= bytelen 0) 1 bytelen) 1)
        src n bytelen full rem))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_bool_vector_from_bytes_pos' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_bool_vector_from_bytes_pos_w (n src _pad bytelen full rem)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_bool_vector_from_bytes_pos n src result-slot bytelen full rem) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
 
     ;; Public entry.  N is a validated non-negative bit count; SRC must
     ;; point at least `(nl_bv_bytelen n)' readable bytes (the reader
@@ -239,6 +253,13 @@
       (nl_alloc_bool_vector_from_bytes_pos
        n src result-slot
        (nl_bv_bytelen n) (nl_bv_full_bytes n) (nl_bv_rem_bits n)))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_bool_vector_from_bytes' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_bool_vector_from_bytes_w (n src _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_bool_vector_from_bytes n src result-slot) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
 
     ;; ---------------------------------------------------------------
     ;; `equal': value comparison (same N, same bytes).  Both operands are

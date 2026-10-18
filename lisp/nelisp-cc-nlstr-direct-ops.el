@@ -385,6 +385,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= (ptr-read-u64 entry 0) 1)
             (seq (nl_symname_copy32 (+ entry 40) out 0) 1)
           0)))
+    ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
+    ;; `nl_symbol_name_copy_out' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_symbol_name_copy_out_w (entry _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (/= (nl_symbol_name_copy_out entry out) 0)
+            (nl_val_store_word out)
+          3)))
 
     (defun nl_next_symbol_identity ()
       ;; Shared with the reader and C-ABI producer. The mutation epoch is
@@ -401,6 +408,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
        (ptr-write-u64 result-slot 16 char-buf)
        (ptr-write-u64 result-slot 24 n)
        result-slot))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_uninterned_symbol_write' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_uninterned_symbol_write_w (bytes-ptr n identity _pad char-buf)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_uninterned_symbol_write bytes-ptr n identity result-slot char-buf) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
     (defun nl_alloc_uninterned_symbol (bytes-ptr n identity result-slot)
       (if (> identity 0)
           (nl_uninterned_symbol_write bytes-ptr n identity result-slot
@@ -560,6 +574,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
              (char-buf (alloc-bytes alloc-n 1)))
         (nl_alloc_symbol_write (str-bytes-ptr name-slot) n alloc-n
                                result-slot char-buf)))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_symbol_plain_named' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_symbol_plain_named_w (name-slot n _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_symbol_plain_named name-slot n result-slot) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
     (defun nl_intern_finish_named (slot n name-slot result-slot)
       (if (= slot 0)
           (nl_alloc_symbol_plain_named name-slot n result-slot)
@@ -569,6 +590,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                                   (nl_intern_bump n))
               (nl_alloc_symbol_plain_named name-slot n result-slot))
           (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_intern_finish_named' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_intern_finish_named_w (slot n name-slot _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_intern_finish_named slot n name-slot result-slot) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
     ;; NAME-SLOT is a borrowed, caller-rooted string Sexp for the whole call.
     ;; Re-read its byte pointer after any allocating fallback. Existing
     ;; intern rows retain their first canonical string.
@@ -596,6 +624,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                 (if (= was-present 1) 1
                   (nl_symbol_name_register
                    1 (ptr-read-u64 result-slot 16) n name-slot))))))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_symbol_named_w (bytes-ptr len name-slot _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_symbol_named bytes-ptr len name-slot result-slot) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
 
     ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
     ;; that updated Sexp only after the destination buffer has been allocated.
@@ -606,6 +641,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
           (if (= (nl_uninterned_symbol_write
                   (str-bytes-ptr name-slot) n identity result-slot char-buf) 0) 0
             (nl_symbol_name_register 2 identity n name-slot)))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_alloc_uninterned_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_alloc_uninterned_symbol_named_w (bytes-ptr n identity name-slot _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_alloc_uninterned_symbol_named bytes-ptr n identity name-slot result-slot) 0)
+            (nl_val_store_word result-slot)
+          (nl_abi_fail 1 0))))
 
     ;; Return the canonical original name Sexp for a symbol, lazily creating
     ;; it for symbols produced by the reader's byte-only construction path.
@@ -627,6 +669,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                     (nl_symbol_name_copy_out entry out)
                   (nl_symbol_name_value_create env symbol-slot out)))
             0))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_symbol_name_value' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_symbol_name_value_w (env symbol-slot _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (/= (nl_symbol_name_value env symbol-slot out) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
 
     (defun nl_symbol_name_value_create (env symbol-slot out)
       (let* ((marker (nl_root_mark env))
@@ -653,6 +702,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                          (seq (nl_symname_copy32 tmp out 0)
                               (nl_root_release env marker) 1)
                        (seq (nl_root_release env marker) 0)))))))))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_symbol_name_value_create' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_symbol_name_value_create_w (env symbol-slot _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (/= (nl_symbol_name_value_create env symbol-slot out) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
 
     (defun nl_symbol_name_immediate (env tag out)
       (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
@@ -676,6 +732,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                       1))
                (nl_root_release env marker)
                (if (= (ptr-read-u64 state 0) 5) 1 0))))))))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
+    ;; `nl_symbol_name_immediate' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_symbol_name_immediate_w (env tag _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (/= (nl_symbol_name_immediate env tag out) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
 
     ;; ---- symbol-name LOOKUP WITHOUT INSERT (Doc 163 Phase C) ----
     ;; `nl_alloc_symbol' always inserts on a miss (= `intern' semantics: the
@@ -706,6 +769,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= (ptr-read-u64 slot 0) 0)
             0
           (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+    ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
+    ;; `nl_intern_lookup_finish' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_intern_lookup_finish_w (slot n _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_intern_lookup_finish slot n result-slot) 0)
+            (nl_val_store_word result-slot)
+          3)))
 
     ;; Probe-only counterpart of `nl_alloc_symbol_pos'.  "nil"/"t" short-
     ;; circuit to a HIT on the canonical immediate value first: they are
@@ -731,6 +801,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
                               (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                               bytes-ptr n 0)
              n result-slot)))))
+    ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
+    ;; `nl_intern_lookup_pos' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_intern_lookup_pos_w (bytes-ptr n _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_intern_lookup_pos bytes-ptr n result-slot) 0)
+            (nl_val_store_word result-slot)
+          3)))
 
     ;; Public entry: nl_intern_lookup(bytes_ptr, len, result_slot).
     ;; Returns 0 (RESULT-SLOT left untouched) when NAME has never been
@@ -743,6 +820,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; lisp/nelisp-stdlib-misc.el).
     (defun nl_intern_lookup (bytes-ptr len result-slot)
       (nl_intern_lookup_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+    ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
+    ;; `nl_intern_lookup' keeps its C-ABI (nonzero/0) and is unchanged.
+    (defun nl_intern_lookup_w (bytes-ptr len _pad)
+      (let* ((result-slot (alloc-bytes 32 8)))
+        (if (/= (nl_intern_lookup bytes-ptr len result-slot) 0)
+            (nl_val_store_word result-slot)
+          3)))
 
     ;; Internal read-only cursor used by native diagnostics and future
     ;; obarray work.  CURSOR is a slot index in [0, 2^20].  A hit writes the
