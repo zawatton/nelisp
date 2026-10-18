@@ -24846,27 +24846,46 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
 
 
 (defun nelisp-standalone--n2-lisp-delegates ()
-  "Narrow evaluator bridges; GNU policy and row construction live in Lisp."
-  (mapcar
+  "Narrow evaluator bridges; GNU policy and row construction live in Lisp.
+`bf_n2_call_lisp_equal' also gets a word-ABI variant (Doc 215)."
+  (mapcan
    (lambda (entry)
      (let* ((name (string-as-unibyte (cdr entry)))
             (writes nil))
        (dotimes (i (length name))
          (push `(ptr-write-u8 buf ,i ,(aref name i)) writes))
-       `(defun ,(car entry) (args env out)
-          (let* ((mark (nl_root_mark env))
-                 (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
-                 (buf (alloc-bytes ,(length name) 1)))
-            (seq ,@(nreverse writes)
-                 (nl_alloc_symbol buf ,(length name) sym)
-                 (let ((rc (if (if (= (nelisp_env_lookup_function
-                                       (+ env 0) (+ env 64) sym fn) 0)
-                                   (/= (sexp-tag fn) 0) 0)
-                               (nl_apply_function fn args env out)
-                             ,(if (eq (car entry) 'bf_n2_call_lisp_equal)
-                                  '(bf_equal args out)
-                                '(nl_cons_stash_void_function env sym)))))
-                   (nl_root_release env mark) rc))))))
+       (setq writes (nreverse writes))
+       (if (eq (car entry) 'bf_n2_call_lisp_equal)
+           (list
+            `(defun bf_n2_call_lisp_equal_w (args env _pad)
+               (let* ((mark (nl_root_mark env))
+                      (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
+                      (buf (alloc-bytes ,(length name) 1))
+                      (out (alloc-bytes 32 8)))
+                 (seq ,@writes
+                      (nl_alloc_symbol buf ,(length name) sym)
+                      (let ((rc (if (if (= (nelisp_env_lookup_function
+                                            (+ env 0) (+ env 64) sym fn) 0)
+                                        (/= (sexp-tag fn) 0) 0)
+                                    (nl_apply_function fn args env out)
+                                  (bf_equal args out))))
+                        (nl_root_release env mark)
+                        (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0))))))
+            `(defun bf_n2_call_lisp_equal (args env out)
+               (nl_abi_word_to_rc (bf_n2_call_lisp_equal_w args env 0) out)))
+         (list
+          `(defun ,(car entry) (args env out)
+             (let* ((mark (nl_root_mark env))
+                    (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
+                    (buf (alloc-bytes ,(length name) 1)))
+               (seq ,@writes
+                    (nl_alloc_symbol buf ,(length name) sym)
+                    (let ((rc (if (if (= (nelisp_env_lookup_function
+                                          (+ env 0) (+ env 64) sym fn) 0)
+                                      (/= (sexp-tag fn) 0) 0)
+                                  (nl_apply_function fn args env out)
+                                (nl_cons_stash_void_function env sym))))
+                      (nl_root_release env mark) rc))))))))
    '((bf_n2_call_lisp_gc . "nelisp--gc-statistics")
      (bf_n2_call_lisp_equal . "nelisp--equal-reference"))))
 
