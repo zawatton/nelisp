@@ -7,7 +7,7 @@
 #   ABI_BIN         that dynamic binary
 #   ABI_STATIC_BIN  static build of the same source
 #   ABI_CENSUS      NELISP_BOX_CENSUS output (census.tsv) of a dynamic build of the same source
-#   ABI_BASE_BIN    the eval/core baseline binary (441166d9d) the merge gate compares against
+#   ABI_BASE_BIN    the eval/core baseline binary (9ad3c5588) the merge gate compares against
 # The dump and binaries are produced by hand (about 3 minutes per build):
 #   NELISP_BOX_DUMP=$PWD/target/abi/dump.jsonl NELISP_READER_DYNAMIC=1 \
 #   NELISP_STANDALONE_READER_OUTPUT=target/abi/nelisp-dynamic ... -f nelisp-standalone-build-reader
@@ -96,22 +96,27 @@ cmd: timeout 600 "$ABI_BIN" --load test/perf/fx-spike-check.el 2>&1 | grep -q 'F
 #+TIMEOUT: 600
 cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do timeout 600 "$ABI_STATIC_BIN" --load tools/nelisp-thread-$n-smoke.el 2>&1 | grep -q "^nelisp-thread-$n-smoke: PASS" || exit 1; done
 
-* S6 Merge gate into eval/core (no regression against the 441166d9d baseline)
+* S6 Merge gate into eval/core (no regression against the 9ad3c5588 baseline)
 
 # Added 2026-10-19 by the integrator after the first integrated build measured
 # boot 3.56 s vs 3.34 s, regex 759 vs 705 us and census 1824 vs 1669.
 # tools/ai/abi-merge-gate.sh runs the comparisons; perf alternates with the
 # baseline on the same machine and judges the candidate's medians.
+# 2026-10-19 (abi p2): eval/core moved to 9ad3c5588 (prim lane); the baseline
+# is now that binary.  Its census (NELISP_BOX_CENSUS of a dynamic build of
+# 9ad3c5588) is TOTAL 1676, nl_val_store_word 3.  S6.3 compares callgrind
+# instruction counts (`ir'): wall time on this shared machine moves by ~1%
+# between runs, more than the differences being judged.
 
-** S6.1 Box census TOTAL is below the baseline's 1669
+** S6.1 Box census TOTAL is below the baseline's (9ad3c5588: 1676)
 #+REQUIRES: ABI_CENSUS
-cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1669
+cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No nl_val_store_word left in any census family (1824-total build: 221; evaluator 129, other 83, regexp 9)
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
-** S6.3 End to end: boot and regex medians <= the baseline's medians from the same alternating run
+** S6.3 End to end: boot and regex-load instruction counts <= the baseline's (callgrind)
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
-#+TIMEOUT: 600
-cmd: tools/ai/abi-merge-gate.sh perf "$ABI_BIN" "$ABI_BASE_BIN"
+#+TIMEOUT: 1500
+cmd: tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"
