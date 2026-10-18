@@ -125,3 +125,81 @@ queue (=queue= mode, committed as tools/ai/box-manual-queue.json) lists
 sites needing judgment: R2/R3 (root-stack reservations), R4 (a non-local
 box passed into a convertible out position), worker-only code, raw memory
 access, and unknown uses.  wf_bytecode_* and m5_fx_*/nl_fx_* are excluded.
+
+* Builtin word ABI (eval/abi-20261018)
+
+** Contract
+
+- A converted builtin or producer =F_w= takes WORD / view arguments and
+  returns the result WORD.  0 means "failed, signal stashed" (THROW flag
+  @268435472, TAG @268435480, VAL @268435512, as every rc=1 path already
+  does).  2 means "not handled" and is used only by =nl_apply_special_w=
+  (the special-form dispatcher's old rc 2).  Neither 0 nor 2 is a WORD: a
+  fixnum is odd, nil 3, t 7, a box pointer is >= 4096 and 8-aligned.
+- Arity is kept even: a function that loses its OUT parameter takes a
+  trailing =_pad= instead (callers pass 0).
+- The returned WORD may be the object's own box (a cons cell's car is
+  returned as the child box, not a copy).  A caller must never write into
+  a WORD it received; it stores it through a setter or =nl_abi_word_to_rc=.
+
+** Coexistence (one function at a time)
+
+- Every converted =F= keeps its old name and (rc, OUT) ABI as a one-line
+  adapter: =(defun F (.. out) (nl_abi_word_to_rc (F_w .. 0) out))=.
+  =nl_abi_word_to_rc= stores an immediate with =nl_sci_store_imm= and a
+  pointer WORD with a 32-byte copy (what the old =wf_copy32= arms did),
+  returns 1 for 0.
+- The reverse adapter =nl_abi_rc_to_word rc out= turns an unconverted rc
+  form that wrote a private fresh box into a WORD: the box itself is the
+  value (=nl_val_store_word=), so there is no extra copy.
+- Dispatch tables: an arm is either legacy =(MATCH . RC-FORM)= (writes the
+  free variable =out=) or word =(MATCH :word . WORD-FORM)=.
+  =nelisp-standalone--applyfn-build-dispatch= with WORD-ABI wraps legacy
+  arms as =(let ((out (alloc-bytes 32 8))) (nl_abi_rc_to_word RC-FORM out))=
+  (=nelisp-standalone--applyfn-word-arm=); without WORD-ABI (other
+  dispatch users) it wraps word arms as =(nl_abi_word_to_rc FORM out)=.
+  =nelisp-standalone--guard-fixed-arities= keeps the marker and answers 0
+  on an arity error.
+- Generated dispatchers: =nelisp_apply_function_w (func args env _pad)=
+  holds the dispatch; =nelisp_apply_function (func args env out)= is the
+  adapter.  While an arm is still legacy it costs one private 32-byte box
+  per call inside the WORD dispatcher (the callers' OUT box did the same
+  job before); converting the arm removes it.
+
+** The three blockers from the dry run
+
+1. Callers branching on the status (191 sites).  They keep calling the old
+   name through its adapter until converted.  Converting one is a local
+   rewrite: =(if (= (F a out) 0) OK ERR)= becomes
+   =(let ((w (F_w a 0))) (if (/= w 0) OK' ERR))= with OUT's uses in OK
+   rewritten to W (tag tests, setters, cons walks as in the mechanical
+   pass; =wf_copy32 dst out= becomes =(nl_abi_word_to_rc w dst)=).
+2. Table-dispatched builtins (90 bf_* with no direct caller).  They are
+   reached only through the dispatch table: convert the arm to =:word=
+   and add =bf_X_w=; =bf_X= stays as the adapter for any remaining direct
+   or table user (the reader table overrides some baked arms, e.g. car /
+   cdr / eq -> bf_car / bf_cdr / bf_eq).
+3. Names referenced from the compiler and tools (78).  The old names keep
+   their ABI forever (adapters), so the AOT compiler's helper calls by
+   string (=nl_record_set_slot=, =nl_vector_set_slot=, ...), the
+   native inventory, tests and tools are untouched.  New code calls the
+   =_w= names; an adapter is deleted only when no reference remains
+   (grep over lisp/ scripts/ src/ test/ tools/).
+
+** Bytecode interpreter (wf_bytecode_*, owned by eval/bytecode-20261018)
+
+Its builtin path is =wf_bytecode_call_gateway=,
+=wf_bytecode_call_interpreted_gateway=, =wf_bytecode_call_named_value=,
+=wf_bytecode_nth=, =wf_bytecode_try_jit_frame= and
+=wf_bytecode_unwind_cleanup= -> =nl_apply_function= (combiner, rc + OUT)
+-> =nl_apply_builtin= -> =nelisp_apply_function= (now the adapter), plus
+=wf_bytecode_unwind_cleanup= -> =nelisp_eval_call=.  Nothing there has to
+change: the adapters keep the ABI.  To drop the per-call box store, that
+lane switches those six call sites to =nl_apply_function_w= /
+=nelisp_eval_call_w= once they exist and stores the WORD into its VM slot.
+
+** Playbook landed
+
+Dispatchers (=nelisp_apply_function_w= + adapter, builder support), arms
+eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
+=bf_cdr_w=, =bf_eq_w= (reader table) with adapters.

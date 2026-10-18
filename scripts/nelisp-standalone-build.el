@@ -2750,6 +2750,22 @@ directory tracks the tree rather than accumulating every key ever built."
           (if (= tg 0) 3
             (if (= tg 1) 7
               slot)))))
+    ;; Doc 215 builtin word ABI adapters.  A WORD is never 0, so 0 carries
+    ;; "failed, signal stashed"; 2 (never a WORD either) is reserved for
+    ;; "not handled" (nl_apply_special_w).
+    ;; rc + private OUT box -> WORD: the box itself is the value (no copy).
+    (defun nl_abi_rc_to_word (rc out)
+      (if (= rc 0) (nl_val_store_word out) 0))
+    ;; WORD -> rc + caller's OUT box, for callers still on the legacy ABI.
+    (defun nl_abi_word_to_rc (w out)
+      (if (= w 0) 1
+        (if (= (logand w 1) 1)
+            (seq (nl_sci_store_imm w out) 0)
+          (seq (ptr-write-u64 out 0 (ptr-read-u64 w 0))
+               (ptr-write-u64 out 8 (ptr-read-u64 w 8))
+               (ptr-write-u64 out 16 (ptr-read-u64 w 16))
+               (ptr-write-u64 out 24 (ptr-read-u64 w 24))
+               0))))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -7437,12 +7453,22 @@ argument (reachability + in-arena bounds checks).")
                     (if (= r 2)
                         (bf_wrong_type_number_or_marker (wf_first_non_number args))
                       (if (= r 1) (wf_write_t out) (wf_write_nil out))))))
-    ((:u8 "eq")   . (if (= (wf_raw_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "null") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "not")  . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "car")  . (wf_copy32 out (nl_cons_car_ptr (wf_arg_ptr args 0))))
-    ((:u8 "cdr")  . (wf_copy32 out (nl_cons_cdr_ptr (wf_arg_ptr args 0))))
-    ((:u8 "cons") . (seq (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1) out) 0))
+    ;; Doc 215 word-ABI playbook arms: the value is the result WORD.
+    ((:u8 "eq")   :word . (if (= (wf_raw_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) 7 3))
+    ((:u8 "null") :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 7 3))
+    ((:u8 "not")  :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 7 3))
+    ;; A cons answers its car/cdr WORD (the child itself, no copy); any other
+    ;; argument keeps the legacy path through a private box.
+    ((:u8 "car")  :word . (let* ((a (wf_arg_ptr args 0)))
+                            (if (= (sexp-tag a) 7) (nl_cons_car_word a)
+                              (let ((out (alloc-bytes 32 8)))
+                                (nl_abi_rc_to_word (wf_copy32 out (nl_cons_car_ptr a)) out)))))
+    ((:u8 "cdr")  :word . (let* ((a (wf_arg_ptr args 0)))
+                            (if (= (sexp-tag a) 7) (nl_cons_cdr_word a)
+                              (let ((out (alloc-bytes 32 8)))
+                                (nl_abi_rc_to_word (wf_copy32 out (nl_cons_cdr_ptr a)) out)))))
+    ((:u8 "cons") :word . (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+                                                 (alloc-bytes 32 8)))
     ((:u8 "list") . (seq (wf_copy32 out args) 0))
     ;; --- list search hot paths ---
     ;; `memq' walked with the cons accessors and stopped at a non-list,
@@ -8013,11 +8039,24 @@ by name pending that follow-up; this paragraph is the record of why."
         (atomic-fetch-add 268435544 1)
         1))))
 
-(defun nelisp-standalone--applyfn-build-dispatch (&optional table default-form)
+(defun nelisp-standalone--applyfn-word-arm (impl)
+  "Doc 215 builtin word ABI: IMPL as a form whose value is the result WORD,
+or 0 after stashing a signal.  An arm written for the word ABI is
+`(:word . FORM)' and is used as is; a legacy arm (an rc form that writes
+the free variable `out') runs against a fresh private box, which becomes
+the WORD itself (`nl_abi_rc_to_word').  This is the per-builtin adapter
+that lets arms convert one at a time."
+  (if (eq (car-safe impl) :word)
+      (cdr impl)
+    `(let ((out (alloc-bytes 32 8))) (nl_abi_rc_to_word ,impl out))))
+
+(defun nelisp-standalone--applyfn-build-dispatch (&optional table default-form word-abi)
   "Fold the (MATCH . IMPL) TABLE (default the full dispatch table) into a
 nested-if Phase47 dispatch chain, defaulting to DEFAULT-FORM (an IR form
 returned for an unknown builtin).  DEFAULT-FORM defaults to the catchable
-`nelisp-unsupported-primitive' signal below; pass a self-contained form
+`nelisp-unsupported-primitive' signal below.  With WORD-ABI every arm and the
+default are wrapped by `nelisp-standalone--applyfn-word-arm' (Doc 215), so
+the chain yields a WORD instead of an rc; pass a self-contained form
 (e.g. `1') for link sets whose manifest does not carry the units that
 signal needs (`nl_alloc_symbol' / `nelisp_cons_construct' / `bf_signal''s
 reserved-arena convention) -- the baked eval applyfn passes `1' because its
@@ -8036,7 +8075,21 @@ leave symbols unresolved at link time."
          ;; the unit whenever DEFAULT-FORM is nil; a caller-supplied
          ;; DEFAULT-FORM (the baked build's bare `1') is used as is.
          (dispatch-default (or default-form '(nl_applyfn_unsupported name_ptr)))
-         (entries (or table nelisp-standalone--applyfn-dispatch-table))
+         (dispatch-default (if word-abi
+                               (nelisp-standalone--applyfn-word-arm dispatch-default)
+                             dispatch-default))
+         (entries (let ((es (or table nelisp-standalone--applyfn-dispatch-table)))
+                    (if word-abi
+                        (mapcar (lambda (e) (cons (car e)
+                                                  (nelisp-standalone--applyfn-word-arm (cdr e))))
+                                es)
+                      ;; A legacy (rc) chain over a table holding word arms:
+                      ;; store the WORD into OUT.
+                      (mapcar (lambda (e)
+                                (if (eq (car-safe (cdr e)) :word)
+                                    (cons (car e) `(nl_abi_word_to_rc ,(cddr e) out))
+                                  e))
+                              es))))
          ;; perf/call-overhead: bucket the arms by NAME byte length.  The
          ;; former shape was one flat first-match chain over every arm
          ;; (~200 `sexp-name-eq' blocks in the reader table), so a builtin
@@ -22396,9 +22449,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0))
              (t (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))
           0))))
+    (defun bf_eq_w (args _pad)
+      (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) 7 3))
     (defun bf_eq (args out)
-      (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
-          (wf_write_t out) (wf_write_nil out)))
+      (nl_abi_word_to_rc (bf_eq_w args 0) out))
     ;; Eq-only plist walks used by the prelude wrappers.  Keep these under
     ;; private names: the public functions accept an arbitrary predicate.
     (defun bf_plist_cons_identity (a b)
@@ -22630,18 +22684,26 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (ptr-read-u64 args 0) 7)
           (if (= (nl_val_tag (nl_cons_cdr_word args)) 0) 1 0)
         0))
+    ;; Doc 215 builtin word ABI: the car WORD (the child itself), nil 3, or 0
+    ;; after the error is stashed.  `bf_car' keeps the (rc, OUT) ABI.
+    (defun bf_car_w (args _pad)
+      (if (= (bf_list_access_arity_p args) 1)
+          (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
+            (if (= tg 7) (nl_cons_car_word a)
+              (if (= tg 0) 3 (seq (bf_wrong_type_listp a) 0))))
+        (seq (bf_wrong_number_of_args_list_access 7496035 (m5_list_len args 0)) 0)))
     (defun bf_car (args out)
+      (nl_abi_word_to_rc (bf_car_w args 0) out))
+    ;; Doc 215 builtin word ABI: the cdr WORD (the child itself), nil 3, or 0
+    ;; after the error is stashed.  `bf_cdr' keeps the (rc, OUT) ABI.
+    (defun bf_cdr_w (args _pad)
       (if (= (bf_list_access_arity_p args) 1)
           (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
-            (if (= tg 7) (wf_copy32 out (nl_cons_car_ptr a))
-              (if (= tg 0) (wf_write_nil out) (bf_wrong_type_listp a))))
-        (bf_wrong_number_of_args_list_access 7496035 (m5_list_len args 0))))
+            (if (= tg 7) (nl_cons_cdr_word a)
+              (if (= tg 0) 3 (seq (bf_wrong_type_listp a) 0))))
+        (seq (bf_wrong_number_of_args_list_access 7496803 (m5_list_len args 0)) 0)))
     (defun bf_cdr (args out)
-      (if (= (bf_list_access_arity_p args) 1)
-          (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
-            (if (= tg 7) (wf_copy32 out (nl_cons_cdr_ptr a))
-              (if (= tg 0) (wf_write_nil out) (bf_wrong_type_listp a))))
-        (bf_wrong_number_of_args_list_access 7496803 (m5_list_len args 0))))
+      (nl_abi_word_to_rc (bf_cdr_w args 0) out))
     ;; --- Wave-2 (C) bitwise + shift + string-lessp ---
     ;; ash N C: arithmetic shift.  C>=0 -> logical-left (shl); C<0 -> signed
     ;; arithmetic-right (sar) by -C.  (shl/sar are the Doc 100 §100.D shift OPs;
@@ -24415,11 +24477,11 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
        ((equal (car entry) '(:lit "length"))
         '((:lit "length") . (bf_length_checked (wf_arg_ptr args 0) out)))
        ((equal (car entry) '(:u8 "eq"))
-        '((:u8 "eq") . (bf_eq args out)))
+        '((:u8 "eq") :word . (bf_eq_w args 0)))
        ((equal (car entry) '(:u8 "car"))
-        '((:u8 "car") . (bf_car args out)))
+        '((:u8 "car") :word . (bf_car_w args 0)))
        ((equal (car entry) '(:u8 "cdr"))
-        '((:u8 "cdr") . (bf_cdr args out)))
+        '((:u8 "cdr") :word . (bf_cdr_w args 0)))
        (t entry)))
     nelisp-standalone--applyfn-dispatch-table)
    ;; `alloc-bytes'/`ptr-read-*'/`ptr-write-*'/`ptr-call' stay real entries in
@@ -24527,7 +24589,7 @@ appended in order) and the dispatch TABLE, ending in nelisp_apply_function.
 DEFAULT-FORM is the unknown-builtin fallthrough passed to
 `nelisp-standalone--applyfn-build-dispatch' (pass `1' for the baked eval link
 set, which lacks the reader-only `nl_os_write_stderr')."
-  (let ((dispatch (nelisp-standalone--applyfn-build-dispatch table default-form)))
+  (let ((dispatch (nelisp-standalone--applyfn-build-dispatch table default-form t)))
     ;; N5 clauses 3/4: keep the bridge inventory and ordering unchanged.
     ;; Only the reader's existing raw syscall implementation needs child-exec
     ;; signal setup; baked arithmetic-only link sets have no OS helpers.
@@ -24542,9 +24604,15 @@ set, which lacks the reader-only `nl_os_write_stderr')."
      (unless default-form
        (list `(defun nl_applyfn_unsupported (name_ptr)
                 ,(nelisp-standalone--applyfn-unsupported-primitive-form))))
-     (list `(defun nelisp_apply_function (func_ptr args env out)
+     ;; Doc 215 builtin word ABI: the dispatcher returns the result WORD, 0
+     ;; after stashing a signal.  `nelisp_apply_function' keeps the legacy
+     ;; (rc, OUT) ABI as an adapter for callers not converted yet and for
+     ;; every name reference outside the runtime sources.
+     (list `(defun nelisp_apply_function_w (func_ptr args env _pad)
               (let* ((name_ptr (nl_cons_car_word (nl_cons_cdr_word func_ptr))))
-                ,dispatch))))))
+                ,dispatch))
+           '(defun nelisp_apply_function (func_ptr args env out)
+              (nl_abi_word_to_rc (nelisp_apply_function_w func_ptr args env 0) out))))))
 
 ;; Baked-form eval applyfn: core helpers + arithmetic/list dispatch only.  Self-
 ;; contained against `nelisp-standalone--manifest' (no mut-str / str-direct / file
@@ -24649,11 +24717,20 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
   (mapcar
    (lambda (entry)
      (let ((contract (assoc (cadr (car entry)) contracts)))
-       (if (null contract) entry
+       (cond
+        ((null contract) entry)
+        ;; Doc 215 word arm: the arity error answers 0 (signal stashed).
+        ((eq (car-safe (cdr entry)) :word)
+         (cons (car entry)
+               (cons :word
+                     `(let* ((builtin_argc (m5_list_len args 0)))
+                        (if (= builtin_argc ,(cdr contract)) ,(cddr entry)
+                          (seq (bf_wrong_number_of_args func_ptr builtin_argc) 0))))))
+        (t
          (cons (car entry)
                `(let* ((builtin_argc (m5_list_len args 0)))
                   (if (= builtin_argc ,(cdr contract)) ,(cdr entry)
-                    (bf_wrong_number_of_args func_ptr builtin_argc)))))))
+                    (bf_wrong_number_of_args func_ptr builtin_argc))))))))
    table))
 
 
@@ -28854,9 +28931,10 @@ outside it needs; copied rather than the whole block pulled in."
                       (if (= ta 13) (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0)
                         (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))
           0)))
+    (defun bf_eq_w (args _pad)
+      (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) 7 3))
     (defun bf_eq (args out)
-      (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
-          (wf_write_t out) (wf_write_nil out)))
+      (nl_abi_word_to_rc (bf_eq_w args 0) out))
     (defun bf_marker_vec_is (p w0 w1 len)
       (if (= (ptr-read-u64 p 0) 8)
           (if (< (vector-len p) 2)
