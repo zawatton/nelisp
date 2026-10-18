@@ -8278,8 +8278,10 @@ leave symbols unresolved at link time."
     ;; when the THROW flag (268435472) is clear this stashes
     ;; (error "nelisp: word ABI failure without a stashed signal") first.
     (defun nl_abi_fail (_rc _pad)
-      (if (= (ptr-read-u64 268435472 0) 1) 0
-        (seq (nl_abi_stash_unstashed) 0)))
+      ;; Any in-flight state counts as stashed: 1 = signal, 2 = throw.
+      (if (= (ptr-read-u64 268435472 0) 0)
+          (seq (nl_abi_stash_unstashed) 0)
+        0))
     (defun nl_abi_stash_unstashed ()
       (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
@@ -26638,17 +26640,17 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_ct_active_finish 0 (nl_ct_head_slot env) (ptr-read-u64 node 8)))
     (defun nl_ct_active_finish (rc head_slot previous)
       (seq (ptr-write-u64 head_slot 0 previous) rc))
-    (defun nl_ct_active_prepare (body tag_slot env out head_slot node)
+    (defun nl_ct_active_prepare_w (body tag_slot env _pad head_slot node)
       (seq
        (sexp-int-make node (ptr-read-u64 head_slot 0))
        (ptr-write-u64 node 16 tag_slot)
        (ptr-write-u64 head_slot 0 node)
        (nl_ct_active_finish
-        (nl_ct_catch_body body tag_slot env out 0 0)
+        (nl_ct_catch_body_w body tag_slot env 0 0 0)
         head_slot (ptr-read-u64 node 8))))
-    (defun nl_ct_active_body (body tag_slot env out)
-      (nl_ct_active_prepare body tag_slot env out
-                            (nl_ct_head_slot env) (nl_root_reserve env)))
+    (defun nl_ct_active_body_w (body tag_slot env _pad)
+      (nl_ct_active_prepare_w body tag_slot env 0
+                              (nl_ct_head_slot env) (nl_root_reserve env)))
     (defun nl_ct_no_catch_publish (env data error_slot name_buf)
       (seq
        (ptr-write-u64 name_buf 0 7521983764263432046)
@@ -26708,21 +26710,22 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                             marker (nl_root_reserve env)))
     (defun nl_ct_arg_error (env datum name_word kind)
       (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
-    (defun nl_ct_args_done (count args env out mode)
+    ;; Doc 215 word ABI: catch / throw answer the result WORD (0 = signal
+    ;; or throw in flight).  `throw' never returns a value.
+    (defun nl_ct_args_done_w (count args env _pad mode)
       (if (= mode 0)
           (if (= count 2)
-              (nl_sf_throw_mark args env out (nl_root_mark env))
-            (nl_ct_arg_error env count 512970877044 0))
+              (nl_sf_throw_mark_w args env 0 (nl_root_mark env))
+            (nl_abi_fail (nl_ct_arg_error env count 512970877044 0) 0))
         (if (> count 0)
-            (nl_sf_catch_mark args env out (nl_root_mark env))
-          (nl_ct_arg_error env count 448345170275 0))))
-    (defun nl_ct_args_check (tail count args env out mode)
+            (nl_sf_catch_mark_w args env 0 (nl_root_mark env))
+          (nl_abi_fail (nl_ct_arg_error env count 448345170275 0) 0))))
+    (defun nl_ct_args_check_w (tail count args env _pad mode)
       (if (= (sexp-tag tail) 0)
-          (nl_ct_args_done count args env out mode)
+          (nl_ct_args_done_w count args env 0 mode)
         (if (= (sexp-tag tail) 7)
-            (nl_ct_args_check (nl_cons_cdr_ptr tail) (+ count 1)
-                              args env out mode)
-          (nl_ct_arg_error env tail 482990057836 1))))
+            (nl_ct_args_check_w (nl_cons_cdr_ptr tail) (+ count 1) args env 0 mode)
+          (nl_abi_fail (nl_ct_arg_error env tail 482990057836 1) 0))))
     ;;================= THROW =================
     (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
       (if (= rc 0)
@@ -26743,41 +26746,42 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            (atomic-fetch-add 268435544 1)
            1))
         1))
-    (defun nl_ct_throw_after_tag (rc val_form env out tag_slot val_slot)
+    (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
       (if (= rc 0)
           (nl_ct_throw_after_val
            (extern-call nelisp_eval_call val_form env val_slot)
            val_slot tag_slot env)
         1))
-    (defun nl_ct_throw_eval_tag (tag_form val_form env out tag_slot val_slot)
+    (defun nl_ct_throw_eval_tag (tag_form val_form env _pad tag_slot val_slot)
       (nl_ct_throw_after_tag
        (extern-call nelisp_eval_call tag_form env tag_slot)
-       val_form env out tag_slot val_slot))
-    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env out tag_slot val_slot)
+       val_form env 0 tag_slot val_slot))
+    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env _pad tag_slot val_slot)
       (nl_ct_throw_eval_tag
        tag_form
        (extern-call nl_cons_car_ptr cdr1)
-       env out tag_slot val_slot))
-    (defun nl_ct_throw_got_tag_form (tag_form args env out tag_slot val_slot)
+       env 0 tag_slot val_slot))
+    (defun nl_ct_throw_got_tag_form (tag_form args env _pad tag_slot val_slot)
       (nl_ct_throw_got_cdr1
        (extern-call nl_cons_cdr_word args)
-       tag_form env out tag_slot val_slot))
+       tag_form env 0 tag_slot val_slot))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
     ;; back blanked, `nl_ct_copy32' stashed a nil tag, and the throw missed its
     ;; own `catch': `(catch 'tg (throw 'tg (f)))' answered `no-catch: (0 7)'.
     ;; Rooted for the whole of `nl_sf_throw'; VAL_SLOT is written by the eval
     ;; and read immediately after, so it needs no root of its own.
-    (defun nl_sf_throw_run (args env out tag_slot val_slot root_mark)
-      (nl_ct_root_finish
-       env root_mark
-       (nl_ct_throw_got_tag_form
-        (nl_cons_car_ptr args) args env out tag_slot val_slot)))
-    (defun nl_sf_throw_mark (args env out root_mark)
-      (nl_sf_throw_run args env out (nl_root_reserve env)
-                       (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_throw_run_w (args env _pad tag_slot val_slot root_mark)
+      (nl_ct_root_finish env root_mark
+                         (nl_abi_fail (nl_ct_throw_got_tag_form (nl_cons_car_ptr args)
+                                                                args env 0 tag_slot val_slot)
+                                      0)))
+    (defun nl_sf_throw_mark_w (args env _pad root_mark)
+      (nl_sf_throw_run_w args env 0 (nl_root_reserve env) (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_throw_w (args env _pad _pad1)
+      (nl_ct_args_check_w args 0 args env 0 0))
     (defun nl_sf_throw (args env out _pad)
-      (nl_ct_args_check args 0 args env out 0))
+      (nl_abi_word_to_rc (nl_sf_throw_w args env 0 0) out))
     ;;================= CATCH =================
     ;; Generic `eq' tag-match helper.  `nl_ct_catch_check_tag' used to reuse
     ;; `nelisp_eq_symbol' for the tag comparison, but that primitive
@@ -26828,76 +26832,59 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                           (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0)
                         (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))))
         0))
-    (defun nl_ct_catch_on_match (eqres tag_slot env out _p4 _p5)
-      (if (= eqres 1)
-          (seq (nl_ct_copy32 out 268435512 0 0)
-               (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-               0)
-        1))
-    (defun nl_ct_catch_check_tag (tag_slot env out eqres_slot _p4 _p5)
-      (nl_ct_catch_on_match
-       (nl_ct_tag_eq 268435480 tag_slot)
-       tag_slot env out 0 0))
-    (defun nl_ct_catch_caught (_rc tag_slot env out eqres_slot _p5)
-      ;; Flag value 2 = `throw' (1 = signal/error).  `catch' only intercepts
-      ;; throws; a signal (flag==1) re-propagates so the right condition-case
-      ;; traps it.
+    ;; The thrown value is copied out of the stash into a fresh box before the
+    ;; flag is cleared (the stash is reused by the next signal); no safepoint
+    ;; lies between here and the return.
+    (defun nl_ct_caught_word (box _pad)
+      (seq (nl_ct_copy32 box 268435512 0 0)
+           (ptr-write-u64 268435472 0 0)
+           (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+           (nl_val_store_word box)))
+    (defun nl_ct_catch_on_match_w (eqres _p1 _p2 _p3)
+      (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
+    (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
       (if (= (ptr-read-u64 268435472 0) 2)
-          (nl_ct_catch_check_tag tag_slot env out eqres_slot 0 0)
-        1))
+          (nl_ct_catch_on_match_w (nl_ct_tag_eq 268435480 tag_slot) 0 0 0)
+        0))
     ;; The body list's cdr is taken AFTER the body form's own eval, not before:
     ;; a one-form body ends in Nil, `nl_cons_cdr_ptr' materialises an unrooted
     ;; view for it, and a collection inside the body frees that view under the
     ;; walker.  Same shape as the nine walkers closed earlier on this branch.
-    (defun nl_ct_catch_body_step (rc body tag_slot env out eqres_slot)
-      (if (= rc 0)
-          (nl_ct_catch_body
-           (extern-call nl_cons_cdr_word body) tag_slot env out eqres_slot 0)
-        (nl_ct_catch_caught rc tag_slot env out eqres_slot 0)))
-    (defun nl_ct_catch_body_eval (car body tag_slot env out eqres_slot)
-      (nl_ct_catch_body_step
-       (extern-call nelisp_eval_call car env out)
-       body tag_slot env out eqres_slot))
-    (defun nl_ct_catch_body (body tag_slot env out eqres_slot _p5)
-      (if (= (sexp-tag body) 0)
-          0
-        (nl_ct_catch_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body tag_slot env out eqres_slot)))
-    (defun nl_ct_catch_after_tag (rc body tag_slot env out eqres_slot)
-      (if (= rc 0)
-          ;; OUT is cleared first: an empty catch body must answer nil, not
-          ;; the previous sibling form's value in the shared result slot.
-          (seq
-           (nl_cons_write_nil out)
-           (nl_ct_active_body body tag_slot env out))
-        1))
-    (defun nl_ct_catch_got_body (body tag_form env out tag_slot eqres_slot)
-      (nl_ct_catch_after_tag
-       (extern-call nelisp_eval_call tag_form env tag_slot)
-       body tag_slot env out eqres_slot))
-    (defun nl_ct_catch_got_tag_form (tag_form args env out tag_slot eqres_slot)
-      (nl_ct_catch_got_body
-       (extern-call nl_cons_cdr_word args)
-       tag_form env out tag_slot eqres_slot))
+    ;; The body is a progn; a signal or throw out of it is checked against
+    ;; this catch's tag.
+    (defun nl_ct_catch_result_w (w tag_slot env _pad)
+      (if (= w 0) (nl_ct_catch_caught_w tag_slot env 0 0) w))
+    (defun nl_ct_catch_body_w (body tag_slot env _pad _p4 _p5)
+      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tag_slot env 0))
+    (defun nl_ct_catch_after_tag_w (rc body tag_slot env _pad eqres_slot)
+      (if (= rc 0) (nl_ct_active_body_w body tag_slot env 0) (nl_abi_fail rc 0)))
+    ;; The tag is evaluated into its reserved root slot (it must survive the
+    ;; body), through the legacy adapter.
+    (defun nl_ct_catch_got_body_w (body tag_form env _pad tag_slot eqres_slot)
+      (nl_ct_catch_after_tag_w (extern-call nelisp_eval_call tag_form env tag_slot)
+                               body tag_slot env 0 eqres_slot))
+    (defun nl_ct_catch_got_tag_form_w (tag_form args env _pad tag_slot eqres_slot)
+      (nl_ct_catch_got_body_w (extern-call nl_cons_cdr_word args)
+                              tag_form env 0 tag_slot eqres_slot))
     ;; TAG_SLOT holds the evaluated catch tag for the whole body evaluation, so
     ;; it has to be a GC root.  As an `alloc-bytes' scratch a collection inside
     ;; the body freed it, `nl_ct_tag_eq' then compared a `throw' against a
     ;; blanked slot and answered no-match, and the throw escaped its own
     ;; `catch' as `no-catch' -- no crash, just a wrong answer.
-    (defun nl_sf_catch_run (args env out tag_slot eqres_slot root_mark)
-      (nl_ct_root_finish
-       env root_mark
-       (nl_ct_catch_got_tag_form
-        (nl_cons_car_ptr args) args env out tag_slot eqres_slot)))
+    (defun nl_sf_catch_run_w (args env _pad tag_slot eqres_slot root_mark)
+      (nl_ct_root_finish env root_mark
+                         (nl_ct_catch_got_tag_form_w (nl_cons_car_ptr args)
+                                                     args env 0 tag_slot eqres_slot)))
     (defun nl_ct_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
-    (defun nl_sf_catch_slots (args env out root_mark tag_slot)
-      (nl_sf_catch_run args env out tag_slot (alloc-bytes 32 8) root_mark))
-    (defun nl_sf_catch_mark (args env out root_mark)
-      (nl_sf_catch_slots args env out root_mark (nl_root_reserve env)))
+    (defun nl_sf_catch_slots_w (args env _pad root_mark tag_slot)
+      (nl_sf_catch_run_w args env 0 tag_slot (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_catch_mark_w (args env _pad root_mark)
+      (nl_sf_catch_slots_w args env 0 root_mark (nl_root_reserve env)))
+    (defun nl_sf_catch_w (args env _pad _pad1)
+      (nl_ct_args_check_w args 0 args env 0 1))
     (defun nl_sf_catch (args env out _pad)
-      (nl_ct_args_check args 0 args env out 1)))
+      (nl_abi_word_to_rc (nl_sf_catch_w args env 0 0) out)))
   "M6 catch/throw special-form impls.  nl_sf_catch/nl_sf_throw are dispatched
 from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 

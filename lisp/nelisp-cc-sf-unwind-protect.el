@@ -94,35 +94,35 @@
 
     ;; After a normally completed cleanup following a body non-local exit:
     ;; cleanup's value is discarded; recurse on remaining cleanup forms.
-    ;; Arity 6 (even): truthy, cdr, body-rc, env, out, _pad6.
-    (defun nl_sf_uw_cleanup_done (truthy cdr body-rc env out _pad6)
-      (nl_sf_uw_cleanup cdr body-rc env out 0 0))
+    ;; Arity 6 (even): truthy, cdr, body-rc, env, vslot, _pad6.
+    (defun nl_sf_uw_cleanup_done (truthy cdr body-rc env vslot _pad6)
+      (nl_sf_uw_cleanup cdr body-rc env vslot 0 0))
 
     ;; After nelisp_eval_call on a cleanup form for a normal body:
     ;; rc=0 continues to the next cleanup, rc=1 propagates the stashed
-    ;; cleanup error and leaves *out holding the protected body's value.
-    ;; Arity 6 (even): cleanup-rc, cdr, body-rc, env, out, _pad6.
-    (defun nl_sf_uw_cleanup_evaled (cleanup-rc cdr body-rc env out _pad6)
+    ;; cleanup error and leaves *vslot holding the protected body's value.
+    ;; Arity 6 (even): cleanup-rc, cdr, body-rc, env, vslot, _pad6.
+    (defun nl_sf_uw_cleanup_evaled (cleanup-rc cdr body-rc env vslot _pad6)
       (if (= cleanup-rc 0)
-          (nl_sf_uw_cleanup cdr body-rc env out 0 0)
+          (nl_sf_uw_cleanup cdr body-rc env vslot 0 0)
         cleanup-rc))
 
     ;; scratch = temporary result slot.  Eval this cleanup form via
     ;; nelisp_eval_call so cleanup errors are stashed normally.
-    ;; Arity 6 (even): scratch, car, cdr, body-rc, env, out.
-    (defun nl_sf_uw_do_cleanup_preserve (scratch car cdr body-rc env out)
+    ;; Arity 6 (even): scratch, car, cdr, body-rc, env, vslot.
+    (defun nl_sf_uw_do_cleanup_preserve (scratch car cdr body-rc env vslot)
       (nl_sf_uw_cleanup_evaled
        (extern-call nelisp_eval_call car env scratch)
-       cdr body-rc env out 0))
+       cdr body-rc env vslot 0))
 
     ;; After evaluating a cleanup while the body already has a non-local exit:
     ;; cleanup-rc=0 restores the body FLAG/TAG/VAL and continues the cleanup
     ;; walk; cleanup-rc!=0 keeps the cleanup's freshly stashed exit, so cleanup
     ;; throws/errors override the protected body's exit.
     ;; Arity 8 (even): cleanup-rc, flag-save, tag-save, val-save, cdr, body-rc,
-    ;; env, out.
+    ;; env, vslot.
     (defun nl_sf_uw_cleanup_after_body_exit
-        (cleanup-rc flag-save tag-save val-save cdr body-rc env out)
+        (cleanup-rc flag-save tag-save val-save cdr body-rc env vslot)
       (if (= cleanup-rc 0)
           (seq
            (nl_sexp_clone_into tag-save 268435480)
@@ -130,7 +130,7 @@
            (ptr-write-u64 268435472 0 flag-save)
            (dealloc-bytes tag-save 32 8)
            (dealloc-bytes val-save 32 8)
-           (nl_sf_uw_cleanup cdr body-rc env out 0 0))
+           (nl_sf_uw_cleanup cdr body-rc env vslot 0 0))
         (seq
          (dealloc-bytes tag-save 32 8)
          (dealloc-bytes val-save 32 8)
@@ -140,23 +140,23 @@
     ;; saved the body stash before this call; cleanup_after_body_exit restores
     ;; it only when cleanup returns normally.
     ;; Arity 8 (even): flag-save, tag-save, val-save, car, cdr, body-rc, env,
-    ;; out.
+    ;; vslot.
     (defun nl_sf_uw_do_cleanup_body_exit
-        (flag-save tag-save val-save car cdr body-rc env out)
+        (flag-save tag-save val-save car cdr body-rc env vslot)
       (let* ((scratch (alloc-bytes 32 8)))
         (nl_sf_uw_cleanup_after_body_exit
          (extern-call nelisp_eval_call car env scratch)
-         flag-save tag-save val-save cdr body-rc env out)))
+         flag-save tag-save val-save cdr body-rc env vslot)))
 
     ;; car = nl_cons_car_ptr(cleanup) already fetched as first arg.
     ;; If body was normal, evaluate cleanup through nelisp_eval_call so
     ;; cleanup errors propagate.  If body already non-locally exited, save its
     ;; stash before cleanup and restore it only when cleanup completes normally.
-    ;; Arity 6 (even): car, cdr, body-rc, env, out, _pad6.
-    (defun nl_sf_uw_do_cleanup (car cdr body-rc env out _pad6)
+    ;; Arity 6 (even): car, cdr, body-rc, env, vslot, _pad6.
+    (defun nl_sf_uw_do_cleanup (car cdr body-rc env vslot _pad6)
       (if (= body-rc 0)
           (let* ((scratch (alloc-bytes 32 8)))
-            (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env out))
+            (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env vslot))
         (let* ((flag-save (ptr-read-u64 268435472 0))
                (tag-save (alloc-bytes 32 8))
                (val-save (alloc-bytes 32 8)))
@@ -164,67 +164,93 @@
            (nl_sexp_clone_into 268435480 tag-save)
            (nl_sexp_clone_into 268435512 val-save)
            (nl_sf_uw_do_cleanup_body_exit
-            flag-save tag-save val-save car cdr body-rc env out)))))
+            flag-save tag-save val-save car cdr body-rc env vslot)))))
 
     ;; cdr = nl_cons_cdr_ptr(cleanup) already fetched as first arg.
     ;; Get car(cleanup) (extern-call FIRST ✓) and delegate to do_cleanup.
-    ;; Arity 6 (even): cdr, cleanup, body-rc, env, out, _pad6.
-    (defun nl_sf_uw_got_cdr (cdr cleanup body-rc env out _pad6)
+    ;; Arity 6 (even): cdr, cleanup, body-rc, env, vslot, _pad6.
+    (defun nl_sf_uw_got_cdr (cdr cleanup body-rc env vslot _pad6)
       (nl_sf_uw_do_cleanup
        (extern-call nl_cons_car_ptr cleanup)
-       cdr body-rc env out 0))
+       cdr body-rc env vslot 0))
 
     ;; Recursive cleanup walk entry.
     ;; If cleanup is Nil (tag 0): all forms done, return body-rc.
     ;; Otherwise: get cdr first (extern-call FIRST ✓), then car, then eval.
-    ;; Arity 6 (even): cleanup, body-rc, env, out, _pad5, _pad6.
-    (defun nl_sf_uw_cleanup (cleanup body-rc env out _pad5 _pad6)
+    ;; Arity 6 (even): cleanup, body-rc, env, vslot, _pad5, _pad6.
+    (defun nl_sf_uw_cleanup (cleanup body-rc env vslot _pad5 _pad6)
       (if (= (sexp-tag cleanup) 0)
           body-rc
         (nl_sf_uw_got_cdr
          (extern-call nl_cons_cdr_word cleanup)
-         cleanup body-rc env out 0)))
+         cleanup body-rc env vslot 0)))
 
     ;; Bridge arity-4 → arity-6 cleanup entry.
-    ;; Arity 4 (even): cleanup, body-rc, env, out.
-    (defun nl_sf_uw_with_cleanup (cleanup body-rc env out)
-      (nl_sf_uw_cleanup cleanup body-rc env out 0 0))
+    ;; Arity 4 (even): cleanup, body-rc, env, vslot.
+    (defun nl_sf_uw_with_cleanup (cleanup body-rc env vslot)
+      (nl_sf_uw_cleanup cleanup body-rc env vslot 0 0))
 
     ;;--- Body + init ---
 
-    ;; body-rc = result of nelisp_eval_call(body, env, out).
-    ;; On rc=0: *out holds body result; nelisp--last-signal-data untouched.
-    ;; On rc=1: nelisp--last-signal-data holds body error; *out unchanged.
+    ;; body-rc = result of nelisp_eval_call(body, env, vslot).
+    ;; On rc=0: *vslot holds body result; nelisp--last-signal-data untouched.
+    ;; On rc=1: nelisp--last-signal-data holds body error; *vslot unchanged.
     ;; Either way: get cleanup list = cdr(args) (extern-call FIRST ✓), run cleanup.
-    ;; Arity 4 (even): body-rc, args, env, out.
-    (defun nl_sf_uw_after_body (body-rc args env out)
+    ;; Arity 4 (even): body-rc, args, env, vslot.
+    (defun nl_sf_uw_after_body (body-rc args env vslot)
       (nl_sf_uw_with_cleanup
        (extern-call nl_cons_cdr_word args)
-       body-rc env out))
+       body-rc env vslot))
 
     ;; car = nl_cons_car_ptr(args) already fetched as first arg.
     ;; Eval body form via nelisp_eval_call (extern-call FIRST ✓).
-    ;; Arity 4 (even): car, args, env, out.
-    (defun nl_sf_uw_got_car (car args env out)
-      (nl_sf_uw_after_body
-       (extern-call nelisp_eval_call car env out)
-       args env out))
+    ;; Arity 4 (even): car, args, env, vslot.
+    ;; Doc 215 word ABI.  `nl_sf_unwind_protect_w' answers the body's value
+    ;; WORD, or 0 with the body's (or a cleanup's) signal stashed.  The body
+    ;; value must survive the cleanup forms (Doc 215 R2), so it is stored
+    ;; in a root slot VSLOT reserved under a root mark for the whole form;
+    ;; the cleanup chain above only carries VSLOT.  The result is a fresh
+    ;; copy of VSLOT made before the mark is released (no safepoint after).
+    (defun nl_sf_uw_stored (w args env vslot)
+      (if (= w 0)
+          (nl_sf_uw_after_body 1 args env vslot)
+        (nl_sf_uw_after_body (nl_abi_word_to_rc w vslot) args env vslot)))
 
-    ;; Public entry: nl_sf_unwind_protect(args, env, out, _pad) → i64
-    ;; args: *const Sexp = (BODYFORM CLEANUP...).
-    ;; env:  *mut c_void = &mut Env.
-    ;; out:  *mut Sexp   = result slot (Nil initially from Rust thin shell).
-    ;; _pad: unused alignment pad (makes arity 4 = even).
-    ;; Returns: 0=Ok (result in *out), 1=Err (body error stashed in env var).
-    ;; Empty args (Nil, tag 0) → return 1 (malformed: no body form).
-    ;; Otherwise: get body = car(args) (extern-call FIRST ✓), eval, then cleanup.
-    ;; Arity 4 (even).
-    (defun nl_sf_unwind_protect (args env out _pad)
+    (defun nl_sf_uw_got_car_w (car args env vslot)
+      (nl_sf_uw_stored (extern-call nelisp_eval_call_w car env 0) args env vslot))
+
+    (defun nl_sf_uw_value_w (box vslot)
+      (seq (ptr-write-u64 box 0 (ptr-read-u64 vslot 0))
+           (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
+           (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
+           (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
+           (nl_val_store_word box)))
+
+    (defun nl_sf_uw_release_w (w env mark _pad)
+      (seq (nl_root_release env mark) w))
+
+    (defun nl_sf_uw_finish_w (rc env mark vslot)
+      (nl_sf_uw_release_w
+       (if (= rc 0) (nl_sf_uw_value_w (alloc-bytes 32 8) vslot) (nl_abi_fail rc 0))
+       env mark 0))
+
+    (defun nl_sf_uw_slot_w (args env mark vslot)
+      (nl_sf_uw_finish_w
+       (nl_sf_uw_got_car_w (extern-call nl_cons_car_ptr args) args env vslot)
+       env mark vslot))
+
+    (defun nl_sf_uw_marked_w (args env _pad mark)
+      (nl_sf_uw_slot_w args env mark (nl_root_reserve env)))
+
+    ;; `(unwind-protect)' with no body form fails the form.
+    (defun nl_sf_unwind_protect_w (args env _pad _pad1)
       (if (= (sexp-tag args) 0)
-          1
-        (nl_sf_uw_got_car
-         (extern-call nl_cons_car_ptr args)
-         args env out))))
+          (nl_abi_fail 1 0)
+        (nl_sf_uw_marked_w args env 0 (nl_root_mark env))))
+
+    ;; (rc, OUT) adapter.
+    (defun nl_sf_unwind_protect (args env out _pad)
+      (nl_abi_word_to_rc (nl_sf_unwind_protect_w args env 0 0) out)))
 
   "AOT source for `nl_sf_unwind_protect'.
 
