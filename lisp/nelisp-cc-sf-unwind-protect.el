@@ -224,7 +224,7 @@
            (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
            (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
            (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
-           (nl_val_store_word box)))
+           (let* ((tg (ptr-read-u8 box 0))) (if (= tg 2) (+ (* (ptr-read-u64 box 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 box))))))
 
     (defun nl_sf_uw_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))

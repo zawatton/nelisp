@@ -29,7 +29,7 @@
 ;;       SCRATCH32.  The caller owns SCRATCH32 (a transient 32B slot);
 ;;       the returned VIEW is valid only for the consumer's read.  This
 ;;       is the inverse of the Doc 146 producer (storage Sexp -> word)
-;;       in the arena glue, which Phase 1 renames `nl_val_store_word' to
+;;       in the arena glue, which Phase 1 renamed to
 ;;       free the `nl_val_load' name for this consumer-side contract.
 ;;     `nl_sci_store_imm' is provided by `nl_sexp_clone_into.o'
 ;;     (lisp/nelisp-cc-sexp-clone-into.el).

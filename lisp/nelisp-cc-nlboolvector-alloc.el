@@ -241,7 +241,7 @@
     (defun nl_alloc_bool_vector_from_bytes_with_data_w (_pad box data src n bytelen full rem)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_bool_vector_from_bytes_with_data result-slot box data src n bytelen full rem) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
 
     (defun nl_alloc_bool_vector_from_bytes_pos
@@ -255,7 +255,7 @@
     (defun nl_alloc_bool_vector_from_bytes_pos_w (n src _pad bytelen full rem)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_bool_vector_from_bytes_pos n src result-slot bytelen full rem) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
 
     ;; Public entry.  N is a validated non-negative bit count; SRC must
@@ -270,7 +270,7 @@
     (defun nl_alloc_bool_vector_from_bytes_w (n src _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_bool_vector_from_bytes n src result-slot) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
 
     ;; ---------------------------------------------------------------
