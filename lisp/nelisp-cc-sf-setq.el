@@ -65,142 +65,64 @@
 
 (defconst nelisp-cc-sf-setq--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_setq_w' answers the last assigned value
+    ;; WORD (nil 3 for `(setq)'), or 0 with the signal stashed.  Each
+    ;; extern-call is the first argument; arity even.
 
-    ;; perf/setq-pair-cdr-raw-word: `nl_sf_setq_evaled' fetches
-    ;; `nl_cons_cdr_ptr(val-cdr)' purely to learn "is there another
-    ;; (SYM VAL) pair, or is this the end of the arg list" -- the
-    ;; overwhelmingly common case for `setq' (one pair) makes this the
-    ;; Nil list terminator, an IMMEDIATE WORD, so `nl_cons_cdr_ptr'
-    ;; (lisp/nelisp-cc-jit-cons-cdr-ptr.el) pays `(alloc-bytes 32 8)' +
-    ;; `nl_val_load' on every `setq' just to materialise a Nil box that
-    ;; `nl_sf_setq_step' immediately reduces to a single `sexp-tag == 0'
-    ;; test and discards.  When more pairs follow, the materialised
-    ;; pointer is used only to re-derive the SAME address a moment
-    ;; later via `nl_cons_car_ptr'/`nl_cons_cdr_ptr' in
-    ;; `nl_sf_setq_pair' -- it is never stored past this walk.
-    ;;
-    ;; Fix (mirrors A1/A2's raw-word pattern, ab4a72484 / 441aa152c):
-    ;; read the cdr's raw 8-byte tagged WORD directly (same box_ptr ->
-    ;; NlConsBox -> cdr-word addressing `nl_cons_cdr_ptr' itself uses)
-    ;; and thread the WORD -- not a materialised view -- through
-    ;; `nl_sf_setq_rest' / `nl_sf_setq_set_rc' / `nl_sf_setq_step'.
-    ;; This is safe because a tagged WORD and "the pointer
-    ;; `nl_cons_cdr_ptr' would have returned" are THE SAME VALUE in the
-    ;; non-immediate case (low bit 0 already IS the 8-aligned `*const
-    ;; Sexp' the accessor's own pointer branch returns unchanged), so
-    ;; every downstream use that used to dereference a materialised
-    ;; pointer keeps working once its `sexp-tag' call is replaced by
-    ;; `nl_val_tag' (scripts/nelisp-standalone-build.el, Doc 146 §3.0),
-    ;; which classifies a raw WORD the identical way `sexp-tag' would
-    ;; classify the corresponding materialised view (for a pointer WORD
-    ;; it dereferences the same tag byte; for an immediate WORD it
-    ;; decodes the tag from the bits) for every value this slot can
-    ;; hold.  VAL-CDR must already be a validated Cons view (tag 7):
-    ;; `nl_sf_setq_sym' just called `nl_cons_car_ptr(val-cdr)' on the
-    ;; same pointer to fetch VAL-FORM, which already requires it.
-    ;; Guard mirrors `nl_cons_cdr_ptr' exactly (returns the same 0
-    ;; sentinel for a non-Cons argument, rather than blindly
-    ;; dereferencing) -- belt-and-suspenders: `nl_sf_setq_sym' already
-    ;; calls `nl_cons_car_ptr(val-cdr)' moments earlier, which would
-    ;; itself have faulted on a non-Cons val-cdr before this is ever
-    ;; reached, but this keeps the two accessors' contracts identical
-    ;; for every VAL-CDR value, not just the ones that survive that
-    ;; earlier call.
+    ;; The cdr WORD of the (VAL . REST) cons (0 for a non-cons, like
+    ;; `nl_cons_cdr_ptr'); usually the nil terminator, an immediate.
     (defun nl_sf_setq_cdr_word (val-cdr)
       (if (= (sexp-tag val-cdr) 7)
           (ptr-read-u64 (ptr-read-u64 val-cdr 8) 8)
         0))
 
-    ;; After nl_env_set_value: check rc, then recurse on rest.
-    ;; REST is now a raw tagged WORD (perf/setq-pair-cdr-raw-word above),
-    ;; not a materialised pointer; `nl_sf_setq_step' classifies it via
-    ;; `nl_val_tag' accordingly.
-    ;; Arity 4 (even).
-    (defun nl_sf_setq_set_rc (set-rc rest env out)
-      (if (= set-rc 0)
-          (nl_sf_setq_step rest env out 0)
-        1))
+    ;; `nl_env_set_value' reads a 32-byte view: a pointer WORD is its own
+    ;; box; an immediate is materialised into SCRATCH.
+    (defun nl_sf_setq_view_into (w scratch)
+      (extern-call nl_val_load w scratch))
+    (defun nl_sf_setq_view (w _pad)
+      (if (= (logand w 1) 0) w (nl_sf_setq_view_into w (alloc-bytes 32 8))))
 
-    ;; rest = nl_sf_setq_cdr_word(val-cdr) already fetched as first arg
-    ;; (a raw WORD, perf/setq-pair-cdr-raw-word above -- no allocation).
-    ;; Set the evaluated value via nl_env_set_value (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_setq_rest (rest sym env out)
-      (nl_sf_setq_set_rc
-       (extern-call nl_env_set_value env sym out)
-       rest env out))
+    ;; Next pair, or W (the value just assigned) at the end.  W is
+    ;; referenced from the variable's cell by now, so it stays reachable.
+    (defun nl_sf_setq_step_w (rest env w _pad)
+      (if (= (nl_val_tag rest) 0)
+          w
+        (nl_sf_setq_pair_w (extern-call nl_cons_cdr_ptr rest) rest env 0)))
 
-    ;; After nelisp_eval_call: check rc; if Ok, fetch rest as a raw WORD
-    ;; (perf/setq-pair-cdr-raw-word above -- replaces the materialising
-    ;; nl_cons_cdr_ptr call, which used to be sequenced after eval only
-    ;; so its (formerly materialised, now raw-word) result would not
-    ;; need to survive across eval's GC; a raw WORD carries no such
-    ;; concern -- an immediate is a self-contained value and a pointer
-    ;; WORD is exactly the address the box already lives at, unaffected
-    ;; by whether it is read before or after this eval).  val-cdr is the
-    ;; real CONS box and is already kept alive by the form.
-    ;; Arity 6 (even): _pad6 makes arity even → no prologue sub rsp.
-    (defun nl_sf_setq_evaled (eval-rc sym val-cdr env out _pad6)
-      (if (= eval-rc 0)
-          (nl_sf_setq_rest
-           (nl_sf_setq_cdr_word val-cdr)
-           sym env out)
-        1))
+    (defun nl_sf_setq_set_w (set-rc rest env w)
+      (if (= set-rc 0) (nl_sf_setq_step_w rest env w 0) (nl_abi_fail set-rc 0)))
 
-    ;; val-form = nl_cons_car_ptr(val-cdr) already fetched as first arg.
-    ;; Now eval val-form via nelisp_eval_call (extern-call FIRST ✓), carrying
-    ;; the rooted val-cdr rather than a possibly materialised rest view.
-    ;; Arity 6 (even): _pad6 makes arity even.
-    (defun nl_sf_setq_val (val-form sym val-cdr env out _pad6)
-      (nl_sf_setq_evaled
-       (extern-call nelisp_eval_call val-form env out)
-       sym val-cdr env out 0))
+    (defun nl_sf_setq_rest_w (rest view sym env w _pad)
+      (nl_sf_setq_set_w (extern-call nl_env_set_value env sym view) rest env w))
 
-    ;; sym = nl_cons_car_ptr(args-pair) already fetched as first arg.
-    ;; val-cdr = cdr(args-pair) already available.
-    ;; Fetch val-form = nl_cons_car_ptr(val-cdr) (extern-call FIRST ✓).
-    ;; nl_sf_setq_val is now arity 6; pass 0 as _pad6.
-    ;; Arity 4 (even).
-    (defun nl_sf_setq_sym (sym val-cdr env out)
-      (nl_sf_setq_val
-       (extern-call nl_cons_car_ptr val-cdr)
-       sym val-cdr env out 0))
-
-    ;; val-cdr = nl_cons_cdr_ptr(args-pair) already fetched as first arg.
-    ;; Fetch sym = nl_cons_car_ptr(args-pair) (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_setq_pair (val-cdr args-pair env out)
-      (nl_sf_setq_sym
-       (extern-call nl_cons_car_ptr args-pair)
-       val-cdr env out))
-
-    ;; Recursive step: cdr is the remaining (SYM VAL ...) cons list, now a
-    ;; raw tagged WORD (perf/setq-pair-cdr-raw-word above) rather than a
-    ;; materialised pointer -- `nl_val_tag' classifies it the same way
-    ;; `sexp-tag' classified the old materialised view (see that
-    ;; commentary).  If Nil → done, no allocation at all on this, the
-    ;; overwhelmingly common, path.  Else CDR is already the exact
-    ;; pointer a materialising call would have returned (a pointer WORD
-    ;; IS that `*const Sexp'), so it is used unchanged both as the next
-    ;; ARGS-PAIR and as the argument to `nl_cons_cdr_ptr' below.
-    ;; Arity 4 (even).
-    (defun nl_sf_setq_step (cdr env out _pad)
-      (if (= (nl_val_tag cdr) 0)
+    (defun nl_sf_setq_evaled_w (w sym val-cdr env _pad _pad6)
+      (if (= w 0)
           0
-        (nl_sf_setq_pair
-         (extern-call nl_cons_cdr_ptr cdr)
-         cdr env out)))
+        (nl_sf_setq_viewed_w (nl_sf_setq_view w 0) w sym val-cdr env 0)))
 
-    ;; Public entry: nl_sf_setq(args, env, out, _pad) → i64
-    ;; Empty args → 0; else start first pair: cdr(args) FIRST ✓.
-    ;; Arity 4 (even): no prologue sub rsp → no double-sub misalignment.
-    (defun nl_sf_setq (args env out _pad)
+    ;; One nested call per argument list, in first position.
+    (defun nl_sf_setq_viewed_w (view w sym val-cdr env _pad)
+      (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) view sym env w 0))
+
+    (defun nl_sf_setq_val_w (val-form sym val-cdr env _pad _pad6)
+      (nl_sf_setq_evaled_w (extern-call nelisp_eval_call_w val-form env 0)
+                           sym val-cdr env 0 0))
+
+    (defun nl_sf_setq_sym_w (sym val-cdr env _pad)
+      (nl_sf_setq_val_w (extern-call nl_cons_car_ptr val-cdr) sym val-cdr env 0 0))
+
+    (defun nl_sf_setq_pair_w (val-cdr args-pair env _pad)
+      (nl_sf_setq_sym_w (extern-call nl_cons_car_ptr args-pair) val-cdr env 0))
+
+    (defun nl_sf_setq_w (args env _pad _pad1)
       (if (= (sexp-tag args) 0)
-          ;; Empty `(setq)' answers nil, not the previous sibling's value.
-          (seq (nl_cons_write_nil out) 0)
-        (nl_sf_setq_pair
-         (extern-call nl_cons_cdr_ptr args)
-         args env out))))
+          3
+        (nl_sf_setq_pair_w (extern-call nl_cons_cdr_ptr args) args env 0)))
+
+    ;; (rc, OUT) adapter.
+    (defun nl_sf_setq (args env out _pad)
+      (nl_abi_word_to_rc (nl_sf_setq_w args env 0 0) out)))
 
   "AOT source for `nl_sf_setq' (eval/special_forms.rs sf_setq → elisp).
 

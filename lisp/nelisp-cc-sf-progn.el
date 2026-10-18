@@ -51,72 +51,38 @@
 
 (defconst nelisp-cc-sf-progn--source
   '(seq
-    ;; Called after `nelisp_eval_call(car, env, out)' returns.
-    ;; eval-rc: return code from nelisp_eval_call (0=Ok, 1=Err).
-    ;; cdr: the real CONS box whose car was just evaluated.
-    ;; Fetch its cdr only now: an immediate cdr makes nl_cons_cdr_ptr
-    ;; materialise an unrooted view, which must not live across eval's GC.
-    ;; Arity 4 (even): eval-rc, cdr, env, out.
-    (defun nl_sf_progn_eval_step (eval-rc cdr env out)
-      (if (= eval-rc 0)
-          ;; Fetch the tail after eval (extern-call FIRST arg) and recurse.
-          (nl_sf_progn_step
-           (extern-call nl_cons_cdr_word cdr)
-           env out 0)
-        ;; Propagate error.
-        1))
+    ;; Doc 215 word ABI.  `nl_sf_progn_w' answers the last form's value
+    ;; WORD (nil 3 for an empty body), or 0 with the signal stashed.
+    ;; Arity 4 (even) throughout; every extern-call is the first argument.
 
-    ;; Called with car-ptr already fetched from the cons.  Carry the real
-    ;; cons box, not a possibly materialised cdr view, across eval.
-    ;; Calls nelisp_eval_call(car-ptr, env, out) — extern-call FIRST arg ✓.
-    ;; Arity 4 (even): car-ptr, cdr, env, out.
-    (defun nl_sf_progn_body_step (car-ptr cdr env out)
-      (nl_sf_progn_after
-       (extern-call nelisp_eval_call car-ptr env out)
-       cdr env out))
+    ;; Evaluate one body form (CUR is the real cons whose car it is).
+    (defun nl_sf_progn_eval_w (car-ptr cur env _pad)
+      (extern-call nelisp_eval_call_w car-ptr env 0))
 
-    (defun nl_sf_progn_after (eval-rc cur env out)
-      (if (= eval-rc 0)
-          ;; Doc 215: read the cdr WORD; only a non-nil immediate (dotted
-          ;; tail) still needs the materialised view.
-          (let ((tail (ptr-read-u64 (ptr-read-u64 cur 8) 8)))
-            (if (= (logand tail 1) 1)
-                (if (= tail 3) 0 (extern-call nl_cons_cdr_ptr cur))
-              (if (= (sexp-tag tail) 0) 0 tail)))
-        -1))
+    ;; The next loop state after CUR: 0 at the end, else the tail.  Read
+    ;; the cdr WORD; only a non-nil immediate (dotted tail) still needs the
+    ;; materialised view.
+    (defun nl_sf_progn_next (cur _pad)
+      (let ((tail (ptr-read-u64 (ptr-read-u64 cur 8) 8)))
+        (if (= (logand tail 1) 1)
+            (if (= tail 3) 0 (extern-call nl_cons_cdr_ptr cur))
+          (if (= (sexp-tag tail) 0) 0 tail))))
 
-    ;; Recursive step.  cdr is the remaining tail cons list.
-    ;; If cdr is Nil (tag 0) the last value is already in *out → return 0.
-    ;; Otherwise, get car and eval it.
-    ;; Arity 4 (even): cdr, env, out, _pad.
-    (defun nl_sf_progn_step (cdr env out _pad)
-      (if (= (sexp-tag cdr) 0)
-          0
-        ;; cdr is Cons: fetch its car (extern-call FIRST arg) ✓
-        (nl_sf_progn_body_step
-         (extern-call nl_cons_car_ptr cdr)
-         cdr env out)))
+    ;; The returned WORD is produced by the last eval with no safepoint
+    ;; after it, so it needs no root (Doc 215 R1/R2).
+    (defun nl_sf_progn_w (args env _pad _pad1)
+      (let ((state (if (= (sexp-tag args) 0) 0 args)) (w 3))
+        (seq
+         (while (> state 0)
+           (seq
+            (setq w (nl_sf_progn_eval_w
+                     (extern-call nl_cons_car_ptr state) state env 0))
+            (setq state (if (= w 0) -1 (nl_sf_progn_next state 0)))))
+         (if (= state -1) 0 w))))
 
-    ;; Public entry: nl_sf_progn(args, env, out, _pad) → i64
-    ;; args: *const Sexp = the raw `(FORM ...)' arg list.
-    ;; env:  *mut c_void = &mut Env cast.
-    ;; out:  *mut Sexp   = result slot.
-    ;; _pad: unused alignment pad (makes arity 4 = even).
-    ;; Returns: 0=Ok (last form value in *out), 1=Err.
-    ;; Empty progn (args is Nil, tag 0) → out stays Nil, returns 0.
-    ;; Arity 4 (even): no prologue sub rsp → no needs-align double-sub.
-    ;; OUT is cleared to nil first: an empty progn must answer nil, and OUT is
-    ;; not guaranteed to start nil -- callers reuse one result slot across
-    ;; sibling forms (`(list (list 1) (progn))' answered ((1) (1))).
+    ;; (rc, OUT) adapter.
     (defun nl_sf_progn (args env out _pad)
-      (let ((state (if (= (sexp-tag args) 0) 0 args)))
-        (nl_cons_write_nil out)
-        (while (> state 0)
-          (setq state
-                (nl_sf_progn_body_step
-                 (extern-call nl_cons_car_ptr state)
-                 state env out)))
-        (if (= state -1) 1 0))))
+      (nl_abi_word_to_rc (nl_sf_progn_w args env 0 0) out)))
   "AOT source for `nl_sf_progn' (eval/special_forms.rs sf_progn → elisp).
 
 Four defuns (seq form):
