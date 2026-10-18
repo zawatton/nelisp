@@ -20652,8 +20652,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
           (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
               (bf_nemacs_char_table_call_w args env 0 439788658989)
-            (let* ((bout (alloc-bytes 32 8)))
-              (let* ((rcw (bf_aref_checked args bout))) (if (= rcw 0) (nl_val_store_word bout) (nl_abi_fail rcw 0)))))
+            ;; bf_aref_checked is the adapter of bf_aref_checked_w: call the word
+            ;; form (no box filled and turned back into a WORD).
+            (bf_aref_checked_w args 0))
         (nl_abi_fail (bf_wrong_type_fixnump (wf_arg_ptr args 1)) 0)))
     (defun bf_aref_nemacs_bridge (args env out)
       (nl_abi_word_to_rc (bf_aref_nemacs_bridge_w args env 0) out))
@@ -20661,8 +20662,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
           (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
               (bf_nemacs_char_table_call_w args env 0 499918266669)
-            (let* ((bout (alloc-bytes 32 8)))
-              (let* ((rcw (bf_aset_checked args bout))) (if (= rcw 0) (nl_val_store_word bout) (nl_abi_fail rcw 0)))))
+            ;; bf_aset_checked is the adapter of bf_aset_checked_w: call the word
+            ;; form (no box filled and turned back into a WORD).
+            (bf_aset_checked_w args 0))
         (nl_abi_fail (bf_wrong_type_fixnump (wf_arg_ptr args 1)) 0)))
     (defun bf_aset_nemacs_bridge (args env out)
       (nl_abi_word_to_rc (bf_aset_nemacs_bridge_w args env 0) out))
