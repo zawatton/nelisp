@@ -17343,18 +17343,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_covered_rec (fn env scratch _pad)
       (if (/= (ptr-read-u64 fn 0) 7) 0
         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0) 0
-          (let* ((c1 (nl_cons_cdr_ptr fn)))
-            (if (/= (ptr-read-u64 c1 0) 7) 0
-              (let* ((captured (nl_cons_car_ptr c1)))
-                (if (/= (ptr-read-u64 captured 0) 7) 0
-                  (if (/= (nl_cons_car_word captured) 7) 0
-                    (if (/= (nl_cons_cdr_word captured) 3) 0
-                      (let* ((head (nl_cons_car_ptr fn)))
-                        (if (/= (ptr-read-u64 head 0) 4) 0
-                          (if (/= (nl_apply_name_eq_closure head) 1) 0
-                            (let* ((c2 (nl_cons_cdr_ptr c1)))
-                              (if (/= (ptr-read-u64 c2 0) 7) 0
-                                (m5_fx_rec_hinted (nl_cons_cdr_ptr c2) env scratch 0)))))))))))))))
+          (m5_fx_closure_rec (nl_cons_car_word fn) (nl_cons_cdr_word fn) env scratch))))
+    ;; FN = (HEAD . C1) read as WORDs (Doc 215): the cells' own child
+    ;; pointers, durable, so nothing is materialised and no later lookup can
+    ;; clobber them.  A closure is (closure (t) ARGS . BODY).
+    (defun m5_fx_word_cons_p (w _pad) (if (= (logand w 1) 1) 0 (if (= (ptr-read-u64 w 0) 7) 1 0)))
+    (defun m5_fx_closure_rec (head c1 env scratch)
+      (if (/= (m5_fx_word_cons_p c1 0) 1) 0
+        (let* ((captured (nl_cons_car_word c1)))
+          (if (/= (m5_fx_word_cons_p captured 0) 1) 0
+            (if (/= (nl_cons_car_word captured) 7) 0
+              (if (/= (nl_cons_cdr_word captured) 3) 0
+                (if (= (logand head 1) 1) 0
+                  (if (/= (ptr-read-u64 head 0) 4) 0
+                    (if (/= (nl_apply_name_eq_closure head) 1) 0
+                      (let* ((c2 (nl_cons_cdr_word c1)))
+                        (if (/= (m5_fx_word_cons_p c2 0) 1) 0
+                          (let* ((body (nl_cons_cdr_word c2)))
+                            (if (/= (m5_fx_word_cons_p body 0) 1) 0
+                              (m5_fx_rec_hinted body env scratch 0))))))))))))))
     ;; BODY's record; 0 leaves the call to the interpreter, and records BODY
     ;; as the hint for `nl_apply_lambda_inner' (`nl_fx_hint').
     (defun m5_fx_rec_hinted (body env scratch _pad)
@@ -17724,41 +17731,47 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; reserved here.
     (defun nl_fx_lookup (body env scratch _pad)
       (if (= (nl_fx_disabled) 1) 0
-        (if (/= scratch 0) (nl_fx_lookup_in body env scratch 0)
-          (let* ((mark (nl_root_mark env))
-                 (rec (nl_fx_lookup_in body env (nl_root_reserve env) 0)))
-            (seq (nl_root_release env mark) rec)))))
-    (defun nl_fx_lookup_in (body env tbl _pad)
+        (nl_fx_lookup_in body env (nl_fx_table_word env 0) 0)))
+    ;; The value of `nelisp--fx-table' as a WORD, or 0: read from the cached
+    ;; global-mirror entry (its own slot word, Doc 215), the entry found again
+    ;; only when the cache is stale.
+    (defun nl_fx_table_word (env _pad)
       (let* ((entry (nl_fx_tbl_entry)))
+        (if (/= entry 0) (nl_fx_table_entry_word entry 0)
+          (let* ((mark (nl_root_mark env)))
+            (seq (nl_fx_table_refind env (nl_root_reserve env) (nl_root_reserve env) 0)
+                 (nl_root_release env mark)
+                 (if (= (nl_fx_tbl_entry) 0) 0 (nl_fx_table_entry_word (nl_fx_tbl_entry) 0)))))))
+    (defun nl_fx_table_entry_word (entry _pad)
+      (let* ((w (nl_record_slot_word entry 0)))
+        (if (= (logand w 1) 1) 0 (if (= (ptr-read-u64 w 0) 7) w 0))))
+    ;; SYM and VAL are rooted slots.
+    (defun nl_fx_table_refind (env sym val _pad)
+      (let* ((buf (alloc-bytes 16 1)))
         (seq
-         ;; A cached entry was a hash table when found; the prelude never
-         ;; rebinds it, so only the cons tag is rechecked.
-         (if (/= entry 0)
-             (seq (record-slot-ref entry 0 tbl)
-                  (if (/= (ptr-read-u64 tbl 0) 7) (ptr-write-u64 tbl 0 0) 0))
-           (let* ((buf (alloc-bytes 16 1)) (sym (alloc-bytes 32 8)))
-             (seq
-              (ptr-write-u64 buf 0 3255381746650998126)
-              (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
-              (nl_alloc_symbol buf 16 sym)
-              (if (/= (nl_env_lookup_val sym env tbl) 0) (ptr-write-u64 tbl 0 0)
-                (if (= (bf_hash_table_p_raw tbl) 1)
-                    (nl_fx_tbl_entry_put (nelisp_mirror_lookup_entry (+ env 0) sym))
-                  (ptr-write-u64 tbl 0 0))))))
-         (if (= (ptr-read-u64 tbl 0) 0) 0
-           (seq
-            (nl_ht_identity_sync tbl)
-            (let* ((data (nl_ht_data_slot tbl))
-                   (mode (nl_ht_test_mode tbl))
-                   (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
-              ;; 1: BODY is not in the table yet (`m5_fx_rec_or_first').
-              (if (= entry 0) 1
-                (let* ((w (nl_cons_cdr_word entry)))
-                  (if (= (logand w 1) 0)
-                      (if (= (ptr-read-u64 w 0) 8)
-                          (if (= (nl_fx_out_of_range w) 1) 0 w)
-                        0)
-                    0)))))))))
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 7308324466015959142)
+         (nl_alloc_symbol buf 16 sym)
+         (if (/= (nl_env_lookup_val sym env val) 0) 0
+           (if (= (bf_hash_table_p_raw val) 1)
+               (nl_fx_tbl_entry_put (nelisp_mirror_lookup_entry (+ env 0) sym))
+             0)))))
+    ;; TBL: the table's WORD (a durable box pointer), or 0.
+    (defun nl_fx_lookup_in (body env tbl _pad)
+      (if (= tbl 0) 0
+        (seq
+         (nl_ht_identity_sync tbl)
+         (let* ((data (nl_ht_data_slot tbl))
+                (mode (nl_ht_test_mode tbl))
+                (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
+           ;; 1: BODY is not in the table yet (`m5_fx_rec_or_first').
+           (if (= entry 0) 1
+             (let* ((w (nl_cons_cdr_word entry)))
+               (if (= (logand w 1) 0)
+                   (if (= (ptr-read-u64 w 0) 8)
+                       (if (= (nl_fx_out_of_range w) 1) 0 w)
+                     0)
+                 0)))))))
     ;; `nl_apply_lambda_inner''s lookup: skipped when the call path just found
     ;; BODY not covered (`nl_fx_hint').
     (defun m5_fx_inner_lookup (body env)
