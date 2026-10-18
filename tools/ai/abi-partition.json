@@ -1,6 +1,6 @@
 {
  "note": "Doc 215 builtin word ABI fan-out; disjoint by defun owner. Convert each defun F to F_w (WORD, 0 = signal stashed) and keep F as the adapter; convert each arm to (MATCH :word . FORM).",
- "excluded": "wf_bytecode_*, m5_fx_*, nl_fx_* (other lanes)",
+ "excluded": "none (bytecode and s2s3 lanes merged); the bytecode gateways and m5_fx_* producers are G4's tail",
  "groups": {
   "G1": {
    "arms": [
@@ -4064,8 +4064,781 @@
      "unit": "shim.o",
      "file": "scripts/nelisp-standalone-build.el"
     }
+   ],
+   "tail": [
+    {
+     "defun": "wf_bytecode_call_gateway",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "wf_bytecode_call_interpreted_gateway",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "wf_bytecode_call_named_value",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "wf_bytecode_nth",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "wf_bytecode_try_jit_frame",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "wf_bytecode_unwind_cleanup",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "bytecode gateway -> nl_apply_function_w / nelisp_eval_call_w"
+    },
+    {
+     "defun": "m5_fx_take",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "word VM producer/consumer"
+    },
+    {
+     "defun": "m5_fx_slot_word",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "word VM producer/consumer"
+    },
+    {
+     "defun": "m5_fx_word_out",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "word VM producer/consumer"
+    },
+    {
+     "defun": "m5_fx_eval_forms",
+     "file": "scripts/nelisp-standalone-build.el",
+     "note": "word VM producer/consumer"
+    }
+   ],
+   "hand_arms": [
+    "+",
+    "-",
+    "*",
+    "/",
+    "mod",
+    "%",
+    "/=",
+    "1+",
+    "1-",
+    "floor",
+    "truncate",
+    "ceiling",
+    "=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "list",
+    "memq",
+    "member",
+    "assq",
+    "rassoc",
+    "nelisp--assoc-raw",
+    "nelisp--byte-code-wrap-test",
+    "nelisp--cell-value",
+    "puthash",
+    "gethash",
+    "remhash",
+    "hash-table-count",
+    "string-bytes",
+    "string=",
+    "unibyte-string-p",
+    "multibyte-string-p",
+    "string-as-unibyte",
+    "string-to-unibyte",
+    "string-make-unibyte",
+    "string-as-multibyte",
+    "string-to-multibyte",
+    "string-make-multibyte",
+    "string-to-char",
+    "number-to-string",
+    "nelisp--fmt-float",
+    "char-to-string",
+    "make-string",
+    "concat",
+    "substring",
+    "format",
+    "nelisp--repr",
+    "nelisp--json-encode",
+    "nelisp--build-digest",
+    "nelisp--sha256",
+    "nelisp--sha256-bytes",
+    "nelisp--ascii-downcase",
+    "nelisp--fx-run",
+    "nelisp--string-search-chars",
+    "nelisp--string-search",
+    "wrf",
+    "rdf",
+    "slen",
+    "str-count-nl",
+    "str-line-start",
+    "str-kv-line",
+    "str-filter-prefix-lines",
+    "nelisp--exit-process",
+    "exit",
+    "nelisp-process-object-p",
+    "nelisp-process-delete",
+    "nelisp-process-object-p",
+    "nelisp-process-delete",
+    "consp",
+    "atom",
+    "subrp",
+    "stringp",
+    "symbolp",
+    "symbol-with-pos-p",
+    "nelisp--symbol-position-op",
+    "bare-symbol",
+    "integerp",
+    "natnump",
+    "numberp",
+    "floatp",
+    "vectorp",
+    "listp",
+    "nlistp",
+    "nl--read-int",
+    "nl--int-token-p",
+    "nl--read-float-token",
+    "zerop",
+    "byte-code",
+    "symbol-value",
+    "featurep",
+    "symbol-name",
+    "intern",
+    "intern-soft",
+    "unibyte-string",
+    "nelisp--native-subr-arity",
+    "setcar",
+    "setcdr",
+    "nelisp--syscall-read-file",
+    "float-time",
+    "nl-unix-time-usec",
+    "ash",
+    "logand",
+    "logior",
+    "logxor",
+    "lognot",
+    "string<",
+    "ptr-write-u8",
+    "nelisp--float-word-half",
+    "ptr-write-u32",
+    "ptr-write-u64"
    ]
   }
  },
- "arms_file": "scripts/nelisp-standalone-build.el (nelisp-standalone--applyfn-dispatch-table and the reader overrides near nelisp-standalone--applyfn-source)"
+ "arms_file": "scripts/nelisp-standalone-build.el (nelisp-standalone--applyfn-dispatch-table and the reader overrides near nelisp-standalone--applyfn-source)",
+ "flip_arms": {
+  "note": "Integrator runs `python3 tools/ai/box-apply.py flip-arms` after the merges: it flips ((MATCH) . (F .. out ..)) to ((MATCH) :word . (F_w .. 0 ..)) wherever F_w exists. Edits are exactly: `.` -> `:word .`, F -> F_w, the one `out` argument -> 0.",
+  "single_call_arms": [
+   "assoc",
+   "nth",
+   "nthcdr",
+   "last",
+   "butlast",
+   "append",
+   "plist-get",
+   "mapcar",
+   "make-hash-table",
+   "nelisp--hash-table-make-raw",
+   "nelisp--plist-get-eq",
+   "nelisp--plist-member-eq",
+   "maphash",
+   "length",
+   "string-byte",
+   "string-to-number",
+   "nelisp--arena-stats",
+   "nelisp--gc-pressure",
+   "nelisp--arena-walk-verify",
+   "nelisp--arena-dump-copy-verify",
+   "nelisp--arena-mark-reach-verify",
+   "nelisp--pool-root-coverage",
+   "nelisp--arena-swizzle-verify",
+   "nelisp--arena-load-relocate-verify",
+   "nelisp--arena-image-root-verify",
+   "nelisp--arena-dump-table-verify",
+   "nelisp--arena-dump-image-to-file",
+   "nelisp--arena-dump-image-stream",
+   "nelisp--arena-load-image-from-file",
+   "nelisp--env-capture-roots",
+   "nelisp--record-expand",
+   "nelisp--arena-boot-load-verify",
+   "nelisp--arena-load-split-verify",
+   "nelisp--arena-value-survival",
+   "garbage-collect",
+   "nelisp--debug-switch",
+   "nelisp--gc-diag",
+   "nelisp--arena-force-grow-smoke",
+   "nelisp--size-census",
+   "nelisp--alloc-check-report",
+   "nl-nanosleep",
+   "nelisp-process-call-process",
+   "nelisp-process-start",
+   "nelisp-process-start-process",
+   "nelisp-process-async-ready-p",
+   "nelisp-process-pid",
+   "nelisp-process-status",
+   "nelisp-process-exit-status",
+   "nelisp-process-read-output",
+   "nelisp-process-write",
+   "nelisp-process-close-stdin",
+   "nelisp-process-poll",
+   "nelisp-process-wait",
+   "nelisp-process-call-process",
+   "nelisp-process-start",
+   "nelisp-process-start-process",
+   "nelisp-process-async-ready-p",
+   "nelisp-process-pid",
+   "nelisp-process-status",
+   "nelisp-process-exit-status",
+   "nelisp-process-read-output",
+   "nelisp-process-write",
+   "nelisp-process-close-stdin",
+   "nelisp-process-poll",
+   "nelisp-process-wait",
+   "sxhash-eq",
+   "nl--nthcdr",
+   "set",
+   "makunbound",
+   "fboundp",
+   "symbol-function",
+   "boundp",
+   "nelisp--declare-local-special",
+   "require",
+   "make-symbol",
+   "nelisp--intern-lookup",
+   "nelisp--intern-table-symbols",
+   "nelisp--format-simple",
+   "make-vector",
+   "vector",
+   "make-bool-vector",
+   "bool-vector",
+   "bool-vector-p",
+   "record",
+   "nelisp--native-subr-create",
+   "nelisp--native-subr-live-count",
+   "make-record",
+   "make-byte-code",
+   "fetch-bytecode",
+   "recordp",
+   "byte-code-function-p",
+   "aref",
+   "elt",
+   "aset",
+   "nelisp--raw-aref",
+   "nelisp--raw-aset",
+   "nelisp--char-table-vector-bridge-p",
+   "char-table-p",
+   "make-char-table",
+   "char-table-subtype",
+   "char-table-parent",
+   "set-char-table-parent",
+   "char-table-extra-slot",
+   "set-char-table-extra-slot",
+   "char-table-range",
+   "set-char-table-range",
+   "map-char-table",
+   "signal",
+   "error",
+   "nelisp--clear-string-bytes",
+   "nelisp--equal-leaf",
+   "equal",
+   "load",
+   "nelisp--eval-source-string",
+   "nl-write-file",
+   "nelisp--syscall-path",
+   "nelisp--syscall-path2",
+   "nelisp--syscall-path-int",
+   "nelisp--syscall-stat-field",
+   "nelisp--syscall-stat-buf",
+   "nelisp--syscall-lstat-buf",
+   "nelisp--syscall-readlink",
+   "nelisp--syscall-readdir-names",
+   "nelisp--readdir-scan-raw",
+   "nelisp--syscall-utimes",
+   "nelisp--syscall-statx-buf",
+   "nelisp--syscall-unshare",
+   "nelisp--syscall-mount",
+   "nelisp--syscall-pivot-root",
+   "nelisp--write-stdout-bytes",
+   "nelisp--write-stderr-line",
+   "nelisp--read-all-from-string-native",
+   "read-stdin-bytes",
+   "nl-current-unix-time",
+   "syscall-direct",
+   "atomic-fetch-add",
+   "ptr-read-u8",
+   "ptr-read-u32",
+   "ptr-read-u64",
+   "alloc-bytes",
+   "ptr-read-bytes",
+   "ptr-write-bytes",
+   "garbage-collect",
+   "nelisp-portable-syscall",
+   "ptr-call",
+   "thread-spawn",
+   "nelisp-spin-until",
+   "fork-spawn",
+   "nelisp--target-os-code",
+   "nelisp--target-arch-code",
+   "length",
+   "nelisp-thread-shared-alloc",
+   "nelisp-thread-atomic-add",
+   "nelisp-thread-atomic-read",
+   "nelisp-thread-spawn",
+   "nelisp-thread-join",
+   "nelisp-thread-gc-inhibit"
+  ],
+  "hand_arms_G4": [
+   {
+    "arm": "+",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "-",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "*",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "/",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "mod",
+    "form": "[\"let*\", [[\"bad\", [\"wf_first_non_number\", \"args\"]]], [\"if\", [\"=\", \"bad\", 0], [\"if\", [\"=\", [\"wf_argva"
+   },
+   {
+    "arm": "%",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 13], [\"let*\", [[\"dptr\", [\"wf_arg_ptr\", "
+   },
+   {
+    "arm": "/=",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 5, "
+   },
+   {
+    "arm": "1+",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "1-",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"let*\", [[\"mark\", [\"nl_root_mark\", \"env\"]], [\"n"
+   },
+   {
+    "arm": "floor",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u64\", \"p\", 0], 3], [\"wf_write_i"
+   },
+   {
+    "arm": "truncate",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u64\", \"p\", 0], 3], [\"wf_write_i"
+   },
+   {
+    "arm": "ceiling",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u64\", \"p\", 0], 3], [\"wf_write_i"
+   },
+   {
+    "arm": "=",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 0, "
+   },
+   {
+    "arm": "<",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 1, "
+   },
+   {
+    "arm": ">",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 2, "
+   },
+   {
+    "arm": "<=",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 3, "
+   },
+   {
+    "arm": ">=",
+    "form": "[\"if\", [\"=\", [\"wf_numeric_has_marker\", \"args\"], 1], [\"wf_numeric_marker_compare\", \"args\", \"env\", 4, "
+   },
+   {
+    "arm": "list",
+    "form": "[\"seq\", [\"wf_copy32\", \"out\", \"args\"], 0]"
+   },
+   {
+    "arm": "memq",
+    "form": "[\"let*\", [[\"l\", [\"wf_arg_ptr\", \"args\", 1]], [\"tg\", [\"ptr-read-u64\", \"l\", 0]]], [\"if\", [\"if\", [\"=\", \""
+   },
+   {
+    "arm": "member",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 0], 0], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "assq",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 0], 0], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "rassoc",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 0], 0], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "nelisp--assoc-raw",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 0], 0], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "nelisp--byte-code-wrap-test",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u8\", \"p\", 0], 12], [\"seq\", [\"nl"
+   },
+   {
+    "arm": "nelisp--cell-value",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 11], [\"nl_cell_get_value\", [\"wf_arg_ptr"
+   },
+   {
+    "arm": "puthash",
+    "form": "[\"let*\", [[\"argc\", [\"m5_list_len\", \"args\", 0]]], [\"if\", [\"/=\", \"argc\", 3], [\"bf_wrong_number_of_args"
+   },
+   {
+    "arm": "gethash",
+    "form": "[\"if\", [\"=\", [\"bf_hash_table_p_raw\", [\"wf_arg_ptr\", \"args\", 1]], 1], [\"nl_ht_get\", \"args\", \"out\"], ["
+   },
+   {
+    "arm": "remhash",
+    "form": "[\"let*\", [[\"argc\", [\"m5_list_len\", \"args\", 0]]], [\"if\", [\"/=\", \"argc\", 2], [\"bf_wrong_number_of_args"
+   },
+   {
+    "arm": "hash-table-count",
+    "form": "[\"let*\", [[\"h\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"bf_hash_table_p_raw\", \"h\"], 1], [\"wf_wri"
+   },
+   {
+    "arm": "string-bytes",
+    "form": "[\"let*\", [[\"s\", [\"wf_arg_ptr\", \"args\", 0]], [\"tag\", [\"ptr-read-u64\", \"s\", 0]]], [\"if\", [\"=\", [\"m5_st"
+   },
+   {
+    "arm": "string=",
+    "form": "[\"if\", [\"=\", [\"bf_strsym_raw\", [\"wf_arg_ptr\", \"args\", 0]], 0], [\"bf_wrong_type_stringp\", [\"wf_arg_pt"
+   },
+   {
+    "arm": "unibyte-string-p",
+    "form": "[\"if\", [\"=\", [\"bf_string_unibyte_p\", [\"wf_arg_ptr\", \"args\", 0]], 1], [\"wf_write_t\", \"out\"], [\"wf_wri"
+   },
+   {
+    "arm": "multibyte-string-p",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]], [\"tag\", [\"ptr-read-u64\", \"sx\", 0]]], [\"if\", [\"and\", [\"="
+   },
+   {
+    "arm": "string-as-unibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-to-unibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-make-unibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-as-multibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-to-multibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-make-multibyte",
+    "form": "[\"let*\", [[\"sx\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_string_tag_p\", [\"ptr-read-u64\", \"sx\""
+   },
+   {
+    "arm": "string-to-char",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 5], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "number-to-string",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 2], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "nelisp--fmt-float",
+    "form": "[\"let*\", [[\"buf\", [\"alloc-bytes\", 512, 1]], [\"sc\", [\"alloc-bytes\", 32, 8]]], [\"seq\", [\"mut-str-make-"
+   },
+   {
+    "arm": "char-to-string",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 2], [\"if\", [\"<\", [\"ptr-read-u64\""
+   },
+   {
+    "arm": "make-string",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 2], [\"if\", [\"<\", [\"ptr-read-u64\""
+   },
+   {
+    "arm": "concat",
+    "form": "[\"let*\", [[\"why\", [\"m5_concat_first_bad_kind\", \"args\"]]], [\"if\", [\"=\", \"why\", 0], [\"let*\", [[\"all-un"
+   },
+   {
+    "arm": "substring",
+    "form": "[\"if\", [\"=\", [\"bf_arrayp_raw\", [\"wf_arg_ptr\", \"args\", 0]], 0], [\"bf_wrong_type_named\", [\"wf_arg_ptr\""
+   },
+   {
+    "arm": "format",
+    "form": "[\"let*\", [[\"fmt\", [\"wf_arg_ptr\", \"args\", 0]], [\"all-unibyte\", [\"m5_concat_all_unibyte_p\", \"args\"]]],"
+   },
+   {
+    "arm": "nelisp--repr",
+    "form": "[\"seq\", [\"mut-str-make-empty\", \"out\", 32], [\"m5_prin1\", \"out\", [\"wf_arg_ptr\", \"args\", 0]], [\"mut-str"
+   },
+   {
+    "arm": "nelisp--json-encode",
+    "form": "[\"seq\", [\"mut-str-make-empty\", \"out\", 64], [\"m5_json\", \"out\", [\"wf_arg_ptr\", \"args\", 0]], [\"mut-str-"
+   },
+   {
+    "arm": "nelisp--build-digest",
+    "form": "[\"if\", [\"=\", [\"nl_build_digest_stamped_p\"], 0], [\"wf_write_nil\", \"out\"], [\"let*\", [[\"p\", [\"nl_build_"
+   },
+   {
+    "arm": "nelisp--sha256",
+    "form": "[\"seq\", [\"mut-str-make-empty\", \"out\", 64], [\"m5_sha256\", \"out\", [\"wf_arg_ptr\", \"args\", 0]], [\"mut-st"
+   },
+   {
+    "arm": "nelisp--sha256-bytes",
+    "form": "[\"seq\", [\"mut-str-make-empty\", \"out\", 64], [\"m5_sha256_ptr\", \"out\", [\"wf_argval\", \"args\", 0], [\"wf_a"
+   },
+   {
+    "arm": "nelisp--ascii-downcase",
+    "form": "[\"let*\", [[\"s\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u64\", \"s\", 0], 5], [\"let*\", [[\""
+   },
+   {
+    "arm": "nelisp--fx-run",
+    "form": "[\"let*\", [[\"st\", [\"m5_fx_run\", [\"wf_arg_ptr\", \"args\", 0], [\"wf_argval\", \"args\", 1], \"env\", \"out\", 0,"
+   },
+   {
+    "arm": "nelisp--string-search-chars",
+    "form": "[\"let*\", [[\"r\", [\"m5_string_search_chars\", [\"wf_arg_ptr\", \"args\", 0], [\"wf_arg_ptr\", \"args\", 1], [\"w"
+   },
+   {
+    "arm": "nelisp--string-search",
+    "form": "[\"let*\", [[\"idx\", [\"m5_string_search\", [\"wf_arg_ptr\", \"args\", 1], [\"wf_arg_ptr\", \"args\", 0], [\"wf_ar"
+   },
+   {
+    "arm": "wrf",
+    "form": "[\"seq\", [\"nl_bi_write_file\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "rdf",
+    "form": "[\"seq\", [\"nl_bi_read_file_maybe_raw\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "slen",
+    "form": "[\"seq\", [\"nl_bi_slen\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "str-count-nl",
+    "form": "[\"seq\", [\"nl_bi_str_count_nl\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "str-line-start",
+    "form": "[\"seq\", [\"nl_bi_str_line_start\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "str-kv-line",
+    "form": "[\"seq\", [\"nl_bi_str_kv_line\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "str-filter-prefix-lines",
+    "form": "[\"seq\", [\"nl_bi_str_filter_prefix_lines\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "nelisp--exit-process",
+    "form": "[\"let*\", [[\"code\", [\"if\", [\"=\", \"args\", 0], 0, [\"if\", [\"=\", [\"ptr-read-u64\", \"args\", 0], 7], [\"ptr-r"
+   },
+   {
+    "arm": "exit",
+    "form": "[\"let*\", [[\"code\", [\"if\", [\"=\", \"args\", 0], 0, [\"if\", [\"=\", [\"ptr-read-u64\", \"args\", 0], 7], [\"ptr-r"
+   },
+   {
+    "arm": "nelisp-process-object-p",
+    "form": "[\"if\", [\"=\", [\"nl_bi_process_object_p_raw\", [\"wf_arg_ptr\", \"args\", 0]], 1], [\"wf_write_t\", \"out\"], ["
+   },
+   {
+    "arm": "nelisp-process-delete",
+    "form": "[\"seq\", [\"nl_bi_process_delete_object\", [\"wf_arg_ptr\", \"args\", 0]], [\"wf_write_nil\", \"out\"]]"
+   },
+   {
+    "arm": "nelisp-process-object-p",
+    "form": "[\"if\", [\"=\", [\"nl_bi_process_object_p_raw\", [\"wf_arg_ptr\", \"args\", 0]], 1], [\"wf_write_t\", \"out\"], ["
+   },
+   {
+    "arm": "nelisp-process-delete",
+    "form": "[\"seq\", [\"nl_bi_process_windows_delete_object\", [\"wf_arg_ptr\", \"args\", 0]], [\"wf_write_nil\", \"out\"]]"
+   },
+   {
+    "arm": "consp",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 7], [\"wf_write_t\", \"out\"], [\"wf_write_n"
+   },
+   {
+    "arm": "atom",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 7], [\"wf_write_nil\", \"out\"], [\"wf_write"
+   },
+   {
+    "arm": "subrp",
+    "form": "[\"let*\", [[\"obj\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u8\", \"obj\", 0], 18], [\"wf_wri"
+   },
+   {
+    "arm": "stringp",
+    "form": "[\"let*\", [[\"tg\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"=\", \"tg\", 5], [\"wf_write"
+   },
+   {
+    "arm": "symbolp",
+    "form": "[\"let*\", [[\"arg\", [\"wf_arg_ptr\", \"args\", 0]], [\"sym\", [\"if\", [\"=\", [\"ptr-read-u8\", \"arg\", 0], 19], ["
+   },
+   {
+    "arm": "symbol-with-pos-p",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u8\", [\"wf_arg_ptr\", \"args\", 0], 0], 19], [\"wf_write_t\", \"out\"], [\"wf_write_n"
+   },
+   {
+    "arm": "nelisp--symbol-position-op",
+    "form": "[\"let*\", [[\"sym\", [\"wf_arg_ptr\", \"args\", 1]]], [\"if\", [\"=\", [\"wf_argval\", \"args\", 0], 0], [\"let\", [["
+   },
+   {
+    "arm": "bare-symbol",
+    "form": "[\"let*\", [[\"arg\", [\"wf_arg_ptr\", \"args\", 0]], [\"sym\", [\"if\", [\"=\", [\"ptr-read-u8\", \"arg\", 0], 19], ["
+   },
+   {
+    "arm": "integerp",
+    "form": "[\"let*\", [[\"tg\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"=\", \"tg\", 2], [\"wf_write"
+   },
+   {
+    "arm": "natnump",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"ptr-read-u64\", \"p\", 0], 2], [\"if\", [\">=\""
+   },
+   {
+    "arm": "numberp",
+    "form": "[\"let*\", [[\"tg\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"=\", \"tg\", 2], [\"wf_write"
+   },
+   {
+    "arm": "floatp",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 3], [\"wf_write_t\", \"out\"], [\"wf_write_n"
+   },
+   {
+    "arm": "vectorp",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 8], [\"wf_write_t\", \"out\"], [\"wf_write_n"
+   },
+   {
+    "arm": "listp",
+    "form": "[\"let*\", [[\"tg\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"=\", \"tg\", 7], [\"wf_write"
+   },
+   {
+    "arm": "nlistp",
+    "form": "[\"let*\", [[\"tg\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"or\", [\"=\", \"tg\", 7], [\"="
+   },
+   {
+    "arm": "nl--read-int",
+    "form": "[\"seq\", [\"nl_read_int_or_bignum\", [\"wf_arg_ptr\", \"args\", 0], \"out\"], 0]"
+   },
+   {
+    "arm": "nl--int-token-p",
+    "form": "[\"if\", [\"=\", [\"m5_int_token_p\", [\"wf_arg_ptr\", \"args\", 0]], 1], [\"wf_write_t\", \"out\"], [\"wf_write_ni"
+   },
+   {
+    "arm": "nl--read-float-token",
+    "form": "[\"let*\", [[\"s\", [\"wf_arg_ptr\", \"args\", 0]]], [\"if\", [\"=\", [\"m5_float_token_p\", \"s\"], 1], [\"if\", [\"=\""
+   },
+   {
+    "arm": "zerop",
+    "form": "[\"let*\", [[\"p\", [\"wf_arg_ptr\", \"args\", 0]], [\"tg\", [\"ptr-read-u64\", \"p\", 0]]], [\"if\", [\"=\", \"tg\", 2]"
+   },
+   {
+    "arm": "byte-code",
+    "form": "[\"let*\", [[\"cp\", [\"wf_arg_ptr\", \"args\", 0]], [\"vp\", [\"wf_arg_ptr\", \"args\", 1]], [\"dp\", [\"wf_arg_ptr\""
+   },
+   {
+    "arm": "symbol-value",
+    "form": "[\"if\", [\"if\", [\"or\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 4], [\"=\", [\"ptr-read-u64\""
+   },
+   {
+    "arm": "featurep",
+    "form": "[\"if\", [\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 4], 1, [\"if\", [\"=\", [\"ptr-read-u"
+   },
+   {
+    "arm": "symbol-name",
+    "form": "[\"let*\", [[\"arg\", [\"wf_arg_ptr\", \"args\", 0]], [\"s\", [\"if\", [\"=\", [\"ptr-read-u8\", \"arg\", 0], 19], [\"i"
+   },
+   {
+    "arm": "intern",
+    "form": "[\"if\", [\"=\", [\"bf_obarray_arg_bad\", \"args\"], 1], 1, [\"let*\", [[\"a\", [\"wf_arg_ptr\", \"args\", 0]], [\"tg"
+   },
+   {
+    "arm": "intern-soft",
+    "form": "[\"if\", [\"=\", [\"bf_obarray_arg_bad\", \"args\"], 1], 1, [\"let*\", [[\"a\", [\"wf_arg_ptr\", \"args\", 0]], [\"tg"
+   },
+   {
+    "arm": "unibyte-string",
+    "form": "[\"let*\", [[\"bad\", [\"bf_first_bad_byte\", \"args\"]]], [\"if\", [\"=\", \"bad\", 0], [\"bf_unibyte_string\", \"ar"
+   },
+   {
+    "arm": "nelisp--native-subr-arity",
+    "form": "[\"let*\", [[\"value\", [\"wf_arg_ptr\", \"args\", 0]], [\"slots\", [\"if\", [\"=\", [\"ptr-read-u8\", \"value\", 0], "
+   },
+   {
+    "arm": "setcar",
+    "form": "[\"let*\", [[\"c\", [\"wf_arg_ptr\", \"args\", 0]], [\"v\", [\"wf_arg_ptr\", \"args\", 1]]], [\"if\", [\"=\", [\"ptr-re"
+   },
+   {
+    "arm": "setcdr",
+    "form": "[\"let*\", [[\"c\", [\"wf_arg_ptr\", \"args\", 0]], [\"v\", [\"wf_arg_ptr\", \"args\", 1]]], [\"if\", [\"=\", [\"ptr-re"
+   },
+   {
+    "arm": "nelisp--syscall-read-file",
+    "form": "[\"seq\", [\"nl_bi_read_file_maybe_raw\", \"args\", \"out\"], 0]"
+   },
+   {
+    "arm": "float-time",
+    "form": "[\"if\", [\"=\", \"args\", 0], [\"wf_float_time\", \"out\"], [\"if\", [\"=\", [\"ptr-read-u64\", \"args\", 0], 7], [\"l"
+   },
+   {
+    "arm": "nl-unix-time-usec",
+    "form": "[\"let*\", [[\"buf\", [\"alloc-bytes\", 16, 8]]], [\"seq\", [\"syscall-direct\", 96, \"buf\", 0, 0, 0, 0, 0], [\""
+   },
+   {
+    "arm": "ash",
+    "form": "[\"let*\", [[\"n0\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0]]], [\"if\", [\"if\", [\"=\", \"n0\", 2], 1, "
+   },
+   {
+    "arm": "logand",
+    "form": "[\"if\", [\"=\", [\"bf_first_non_integer\", \"args\"], 0], [\"wf_write_int\", \"out\", [\"wf_logand_fold\", \"args\""
+   },
+   {
+    "arm": "logior",
+    "form": "[\"if\", [\"=\", [\"bf_first_non_integer\", \"args\"], 0], [\"wf_write_int\", \"out\", [\"wf_logior_fold\", \"args\""
+   },
+   {
+    "arm": "logxor",
+    "form": "[\"if\", [\"=\", [\"bf_first_non_integer\", \"args\"], 0], [\"wf_write_int\", \"out\", [\"wf_logxor_fold\", \"args\""
+   },
+   {
+    "arm": "lognot",
+    "form": "[\"if\", [\"=\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 0], 0], 2], [\"wf_write_int\", \"out\", [\"-\", [\"-\","
+   },
+   {
+    "arm": "string<",
+    "form": "[\"if\", [\"=\", [\"bf_strsym_raw\", [\"wf_arg_ptr\", \"args\", 0]], 0], [\"bf_wrong_type_stringp\", [\"wf_arg_pt"
+   },
+   {
+    "arm": "ptr-write-u8",
+    "form": "[\"seq\", [\"ptr-write-u8\", [\"wf_argval\", \"args\", 0], [\"wf_argval\", \"args\", 1], [\"wf_argval\", \"args\", 2"
+   },
+   {
+    "arm": "nelisp--float-word-half",
+    "form": "[\"let*\", [[\"builtin_argc\", [\"m5_list_len\", \"args\", 0]]], [\"if\", [\"=\", \"builtin_argc\", 2], [\"let*\", ["
+   },
+   {
+    "arm": "ptr-write-u32",
+    "form": "[\"seq\", [\"ptr-write-u32\", [\"wf_argval\", \"args\", 0], [\"wf_argval\", \"args\", 1], [\"wf_argval\", \"args\", "
+   },
+   {
+    "arm": "ptr-write-u64",
+    "form": "[\"seq\", [\"ptr-write-u64\", [\"wf_argval\", \"args\", 0], [\"wf_argval\", \"args\", 1], [\"wf_argval\", \"args\", "
+   }
+  ]
+ }
 }

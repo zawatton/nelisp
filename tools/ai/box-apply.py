@@ -2,6 +2,8 @@
 """Doc 215 apply mode: rewrite SOURCE files from 32-byte transport boxes to WORDs.
 
   box-apply.py apply DUMP [--root .] [--dry] [--families f1,f2,...]
+  box-apply.py flip-arms [--root .] [--dry] [--json OUT]
+  box-apply.py repoint DUMP [--root .] [--dry] [--json OUT]
 
 DUMP is a NELISP_BOX_DUMP file (it decides which defuns are linked and their
 unit).  Edits are made to scripts/nelisp-standalone-build.el and
@@ -715,6 +717,8 @@ class Engine:
 
 
 def main(a):
+    if a and a[0] in ("flip-arms", "repoint"):
+        return abi_main(a)
     if len(a) < 2 or a[0] != "apply":
         sys.exit(__doc__)
     root = a[a.index("--root") + 1] if "--root" in a else "."
@@ -733,6 +737,172 @@ def main(a):
         for f, t in new.items():
             with open(os.path.join(root, f), "w", encoding="utf-8") as fh:
                 fh.write(t)
+
+
+
+
+# ================================================================ word ABI
+# Doc 215 "Builtin word ABI" integration passes (run by the integrator).
+
+def defun_params(trees):
+    """name -> list of param lists (one per textual definition)."""
+    out = {}
+    for f, tree in trees.items():
+        for n, _, _ in walk(tree):
+            if is_call(n) and n[0] == "defun" and len(n) > 2 and isinstance(n[1], str) \
+                    and isinstance(n[2], list):
+                out.setdefault(str(n[1]), []).append([str(p) for p in n[2]])
+    return out
+
+
+def word_out_index(params, wparams):
+    """Index of the OUT parameter F replaced by a _pad in F_w, or None."""
+    if len(params) != len(wparams):
+        return None
+    idx = [i for i, (a, b) in enumerate(zip(params, wparams)) if a != b]
+    if len(idx) == 1 and wparams[idx[0]].startswith("_"):
+        return idx[0]
+    return None
+
+
+def flip_arms(root, write):
+    """Rewrite literal dispatch arms ((:u8|:lit NAME) . (F ... out ...)) whose
+    F_w exists into ((MATCH) :word . (F_w ... 0 ...)).  The only token edits
+    are: the `.' becomes `:word .', F becomes F_w, and the single `out'
+    argument becomes 0 (OUT is not bound in the word dispatcher; F_w takes
+    a _pad there).  Everything else in the arm is left byte-for-byte."""
+    path = os.path.join("scripts", "nelisp-standalone-build.el")
+    texts, trees = {}, {}
+    files = [path] + sorted(os.path.join("lisp", f) for f in os.listdir(os.path.join(root, "lisp"))
+                            if f.startswith("nelisp-cc-") and f.endswith(".el"))
+    for f in files:
+        texts[f] = open(os.path.join(root, f), encoding="utf-8").read()
+        trees[f] = read_file(texts[f], f)
+    params = defun_params(trees)
+    ed = Edits()
+    flipped, hand = [], []
+    for n, _, _ in walk(trees[path]):
+        if not (isinstance(n, list) and len(n) == 3 and isinstance(n[1], Sym) and n[1] == "."
+                and isinstance(n[0], list) and len(n[0]) == 2 and n[0][0] in (":u8", ":lit")
+                and is_call(n[0][1]) is False):
+            continue
+        name = n[0][1][1] if isinstance(n[0][1], list) else str(n[0][1])
+        impl = n[2]
+        if isinstance(impl, list) and impl and impl[0] == ":word":
+            continue
+        ok = False
+        if is_call(impl) and impl[0] != "extern-call" and isinstance(impl[0], Sym):
+            f = str(impl[0]); fw = f + "_w"
+            outs = [i for i, a in enumerate(impl[1:]) if isinstance(a, Sym) and a == "out"]
+            if fw in params and f in params and len(outs) == 1:
+                oi = word_out_index(params[f][0], params[fw][0])
+                if oi is not None and oi == outs[0] and len(params[f]) == 1 and len(params[fw]) == 1:
+                    ed.add(path, n[1].start, n[1].end, ":word .")
+                    ed.add(path, impl[0].start, impl[0].end, fw)
+                    a = impl[1 + oi]
+                    ed.add(path, a.start, a.end, "0")
+                    flipped.append(name); ok = True
+        if not ok:
+            hand.append({"arm": name, "form": json.dumps(impl)[:100]})
+    new = ed.apply(texts)
+    if write:
+        for f, t in new.items():
+            open(os.path.join(root, f), "w", encoding="utf-8").write(t)
+    print("flip-arms: flipped %d, left on the legacy adapter %d" % (len(flipped), len(hand)))
+    return flipped, hand
+
+
+def repoint(root, dump, write):
+    """Re-point status-testing call sites of F onto F_w where F_w exists.
+
+    Site shape: a caller local O bound to (alloc-bytes 32 8), a call
+    (F .. O ..) whose value is only compared with 0, and every other use of
+    O word-safe (writer, tag test, setter value, cons walk, another such
+    call).  Rewrite: O's init -> 0;  (= (F .. O ..) 0) ->
+    (/= (setq O (F_w .. 0 ..)) 0)  (and /= -> =).  Anything else stays on
+    the adapter and is reported with its reason."""
+    eng = Engine(root, dump, list(census.FAMILIES and [f for f, _ in census.FAMILIES]))
+    params = defun_params(eng.trees)
+    wmap = {}
+    for f in params:
+        fw = f + "_w"
+        if fw in params and len(params[f]) == 1 and len(params[fw]) == 1:
+            oi = word_out_index(params[f][0], params[fw][0])
+            if oi is not None:
+                wmap[f] = (fw, oi)
+    report, done = [], 0
+    for cname, cd in eng.single.items():
+        if has_unquote(cd.node):
+            continue
+        pm = eng.pm(cd)
+        for n, parent, idx in walk(cd.node):
+            if not is_call(n) or n[0] not in wmap:
+                continue
+            fw, oi = wmap[n[0]]
+            args = n[1:]
+            if oi >= len(args) or not isinstance(args[oi], Sym):
+                report.append((cname, n[0], "out argument is not a local symbol")); continue
+            o = args[oi]
+            if not (is_call(parent) and parent[0] in ("=", "/=") and len(parent) == 3
+                    and any(isinstance(a, Num) and a == 0 for a in parent[1:])):
+                report.append((cname, n[0], "status not compared with 0 here")); continue
+            site = eng.local_box(cd, o)
+            if site is None:
+                report.append((cname, n[0], "out box %s is not a local (alloc-bytes 32 8)" % o)); continue
+            eds, why = [], None
+            for occ, par, ix in occurrences(eng.local_scope(site), o):
+                if par is n:
+                    continue
+                if is_call(par) and par[0] in wmap and wmap[par[0]][1] == ix - 1:
+                    why = "another status call shares the box"; break
+                w = eng.writer_of(par, set()) if is_call(par) else None
+                if w and w[0] == ix - (2 if par[0] == "extern-call" else 1):
+                    if not discarded(pm, par, cd.node, False):
+                        why = "writer value used"; break
+                    continue
+                e = eng.word_use(par, ix, set())
+                if e is None:
+                    why = "use %s" % (par[0] if is_call(par) else "data"); break
+                eds += e
+            if why:
+                report.append((cname, n[0], why)); continue
+            p = cd.path
+            nb = site[2]
+            eng.edits.add(p, nb[1].start, nb[1].end, "0")
+            for occ, par, ix in occurrences(eng.local_scope(site), o):
+                if par is n or not is_call(par):
+                    continue
+                w = eng.writer_of(par, set())
+                if w and w[0] == ix - (2 if par[0] == "extern-call" else 1):
+                    eng.writer_edit(p, par, str(o), w[1], w[0])
+            for e in eds:
+                eng.edits.add(p, *e)
+            eng.edits.add(p, parent[0].start, parent[0].end, "/=" if parent[0] == "=" else "=")
+            eng.edits.add(p, n.start, n.start, "(setq %s " % o)
+            eng.edits.add(p, n[0].start, n[0].end, fw)
+            eng.edits.add(p, args[oi].start, args[oi].end, "0")
+            eng.edits.add(p, n.end, n.end, ")")
+            done += 1
+    new = eng.edits.apply(eng.texts)
+    if write:
+        for f, t in new.items():
+            open(os.path.join(root, f), "w", encoding="utf-8").write(t)
+    print("repoint: %d sites re-pointed, %d left on adapters" % (done, len(report)))
+    return done, report
+
+
+def abi_main(a):
+    root = a[a.index("--root") + 1] if "--root" in a else "."
+    write = "--dry" not in a
+    if a[0] == "flip-arms":
+        flipped, hand = flip_arms(root, write)
+        if "--json" in a:
+            json.dump({"flipped": flipped, "hand": hand}, open(a[a.index("--json") + 1], "w"), indent=1)
+    elif a[0] == "repoint":
+        done, rep = repoint(root, a[1], write)
+        if "--json" in a:
+            json.dump([{"caller": c, "callee": f, "reason": r} for c, f, r in rep],
+                      open(a[a.index("--json") + 1], "w"), indent=1)
 
 
 if __name__ == "__main__":

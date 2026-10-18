@@ -2,6 +2,10 @@
 """Partition the builtin word-ABI conversion into 4 disjoint groups (Doc 215).
 
   abi-partition.py DUMP OUT.json
+  abi-partition.py check GROUP DUMP [PARTITION.json] [--arms|--defuns]
+      exit 0 iff GROUP has no legacy arm left in nelisp_apply_function_w and
+      every listed defun is converted: F_w is defined, or F no longer has an
+      OUT-style parameter (default partition: tools/ai/abi-partition.json)
 
 Reads the unit-source dump (NELISP_BOX_DUMP), takes the dispatch arms of
 nelisp_apply_function_w (one per builtin name), the runtime defuns each arm
@@ -160,5 +164,39 @@ def main(dump, outp):
         print(g, "arms %d (converted %d)  defuns %d" % (
             len(v["arms"]), sum(a["converted"] for a in v["arms"]), len(v["defuns"])))
 
+def legacy_arm(arm):
+    """True when the dispatcher still runs ARM through the private-box adapter."""
+    return (isinstance(arm, list) and len(arm) == 3 and arm[0] == "let"
+            and isinstance(arm[2], list) and arm[2] and arm[2][0] == "nl_abi_rc_to_word")
+
+
+def check(group, dump, part, only=None):
+    defs, _ = load(dump)
+    d = json.load(open(part))
+    g = d["groups"][group]
+    arms_now = dict(arms(defs["nelisp_apply_function_w"]))
+    bad_arms = [a["name"] for a in g["arms"]
+                if a["name"] in arms_now and legacy_arm(arms_now[a["name"]])]
+    bad_defs = [e["defun"] for e in g["defuns"]
+                if e["defun"] + "_w" not in defs and e["defun"] in defs and has_out(defs[e["defun"]])]
+    for e in g.get("tail", []):
+        if e["defun"] + "_w" not in defs and e["defun"] in defs and has_out(defs[e["defun"]]):
+            bad_defs.append(e["defun"])
+    if only == "arms":
+        bad_defs = []
+    elif only == "defuns":
+        bad_arms = []
+    print("ABI-CHECK %s legacy arms %d, unconverted defuns %d %s" % (
+        group, len(bad_arms), len(bad_defs), "PASS" if not bad_arms and not bad_defs else "FAIL"))
+    for x in (bad_arms + bad_defs)[:10]:
+        print("  " + x)
+    sys.exit(0 if not bad_arms and not bad_defs else 1)
+
+
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if sys.argv[1] == "check":
+        a = [x for x in sys.argv[2:] if not x.startswith("--")]
+        only = "arms" if "--arms" in sys.argv else ("defuns" if "--defuns" in sys.argv else None)
+        check(a[0], a[1], a[2] if len(a) > 2 else "tools/ai/abi-partition.json", only)
+    else:
+        main(sys.argv[1], sys.argv[2])

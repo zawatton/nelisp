@@ -203,3 +203,34 @@ lane switches those six call sites to =nl_apply_function_w= /
 Dispatchers (=nelisp_apply_function_w= + adapter, builder support), arms
 eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
 =bf_cdr_w=, =bf_eq_w= (reader table) with adapters.
+
+** Failure, "not handled", and the integration passes
+
+- =nl_abi_fail RC _pad= is the one way to answer "failed": RC is the value
+  of the call that stashed the signal and is ignored; it returns 0.  When
+  the THROW flag (268435472) is clear it first stashes
+  =(error "nelisp: word ABI failure without a stashed signal")=, so a bare
+  0 can never surface later as a garbage error.  Write
+  =(nl_abi_fail (bf_wrong_type_listp a) 0)=, never =(seq ... 0)=.
+- 2 ("not handled") is produced only by =nl_apply_special_w=.
+  =nl_abi_word_to_rc= hands 2 through as rc 2, so the =nl_apply_special=
+  adapter keeps its contract.  Every other consumer of =nl_apply_special_w=
+  tests =(= w 2)= before using W; no other =_w= function may return 2.
+- =F_w= keeps F's parameter list with the OUT parameter renamed to a
+  =_pad= at the same position (callers pass 0).  The integration tools
+  rely on this.
+- =python3 tools/ai/box-apply.py flip-arms= (run once after the group
+  merges) rewrites each literal arm =((MATCH) . (F .. out ..))= whose =F_w=
+  exists into =((MATCH) :word . (F_w .. 0 ..))=.  Its only edits are the
+  =:word= marker, the callee name and the one =out= argument (OUT is not
+  bound in the word dispatcher).  Arms whose form is not a single such call
+  (111 at 85cc06423, listed in tools/ai/abi-partition.json as
+  =hand_arms_G4=) are converted by hand, by G4 only.
+- =python3 tools/ai/box-apply.py repoint DUMP= rewrites status-testing
+  call sites: a caller local O bound to =(alloc-bytes 32 8)=,
+  =(= (F .. O ..) 0)= -> =(/= (setq O (F_w .. 0 ..)) 0)= (and =/== -> ===),
+  O's init -> 0, O's writers and word-safe uses rewritten as in the
+  mechanical pass.  Sites that do not fit stay on the adapter and are
+  reported with the reason (=--json OUT=).
+- =python3 tools/ai/abi-partition.py check GROUP DUMP [--arms|--defuns]=
+  is the per-group gate; tools/ai/abi-progress.org runs it per stage.

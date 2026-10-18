@@ -2757,15 +2757,18 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_abi_rc_to_word (rc out)
       (if (= rc 0) (nl_val_store_word out) 0))
     ;; WORD -> rc + caller's OUT box, for callers still on the legacy ABI.
+    ;; W = 2 ("not handled") is returned as rc 2; only nl_apply_special_w
+    ;; produces it, and its adapter nl_apply_special must hand it on.
     (defun nl_abi_word_to_rc (w out)
       (if (= w 0) 1
+       (if (= w 2) 2
         (if (= (logand w 1) 1)
             (seq (nl_sci_store_imm w out) 0)
           (seq (ptr-write-u64 out 0 (ptr-read-u64 w 0))
                (ptr-write-u64 out 8 (ptr-read-u64 w 8))
                (ptr-write-u64 out 16 (ptr-read-u64 w 16))
                (ptr-write-u64 out 24 (ptr-read-u64 w 24))
-               0))))
+               0)))))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -8233,6 +8236,34 @@ leave symbols unresolved at link time."
          (ptr-write-u64 (+ buf 24) 0 111542002022265)
          (nl_alloc_str buf 30 msg)
                   (nelisp_cons_construct msg 3 args)
+         (let ((tag (alloc-bytes 8 1)))
+           (seq (ptr-write-u64 tag 0 491496043109)
+                (nl_alloc_symbol tag 5 268435480)))
+         (wf_copy32 268435512 args)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
+    ;; Doc 215 builtin word ABI: the one way to answer "failed".  RC is the
+    ;; value of the call that stashed the signal (ignored); 0 is returned.
+    ;; A 0 with nothing stashed would surface later as a garbage error, so
+    ;; when the THROW flag (268435472) is clear this stashes
+    ;; (error "nelisp: word ABI failure without a stashed signal") first.
+    (defun nl_abi_fail (_rc _pad)
+      (if (= (ptr-read-u64 268435472 0) 1) 0
+        (seq (nl_abi_stash_unstashed) 0)))
+    (defun nl_abi_stash_unstashed ()
+      (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
+             (args (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 (+ buf 0) 0 2322292198855173486)
+         (ptr-write-u64 (+ buf 8) 0 5278853320611622775)
+         (ptr-write-u64 (+ buf 16) 0 7310034253660644896)
+         (ptr-write-u64 (+ buf 24) 0 8391735975095138080)
+         (ptr-write-u64 (+ buf 32) 0 7526466555041833248)
+         (ptr-write-u64 (+ buf 40) 0 7020662571717911653)
+         (ptr-write-u64 (+ buf 48) 0 108)
+         (nl_alloc_str buf 49 msg)
+         (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
                 (nl_alloc_symbol tag 5 268435480)))
@@ -22690,8 +22721,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (bf_list_access_arity_p args) 1)
           (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
             (if (= tg 7) (nl_cons_car_word a)
-              (if (= tg 0) 3 (seq (bf_wrong_type_listp a) 0))))
-        (seq (bf_wrong_number_of_args_list_access 7496035 (m5_list_len args 0)) 0)))
+              (if (= tg 0) 3 (nl_abi_fail (bf_wrong_type_listp a) 0))))
+        (nl_abi_fail (bf_wrong_number_of_args_list_access 7496035 (m5_list_len args 0)) 0)))
     (defun bf_car (args out)
       (nl_abi_word_to_rc (bf_car_w args 0) out))
     ;; Doc 215 builtin word ABI: the cdr WORD (the child itself), nil 3, or 0
@@ -22700,8 +22731,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (bf_list_access_arity_p args) 1)
           (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
             (if (= tg 7) (nl_cons_cdr_word a)
-              (if (= tg 0) 3 (seq (bf_wrong_type_listp a) 0))))
-        (seq (bf_wrong_number_of_args_list_access 7496803 (m5_list_len args 0)) 0)))
+              (if (= tg 0) 3 (nl_abi_fail (bf_wrong_type_listp a) 0))))
+        (nl_abi_fail (bf_wrong_number_of_args_list_access 7496803 (m5_list_len args 0)) 0)))
     (defun bf_cdr (args out)
       (nl_abi_word_to_rc (bf_cdr_w args 0) out))
     ;; --- Wave-2 (C) bitwise + shift + string-lessp ---
@@ -24725,7 +24756,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
                (cons :word
                      `(let* ((builtin_argc (m5_list_len args 0)))
                         (if (= builtin_argc ,(cdr contract)) ,(cddr entry)
-                          (seq (bf_wrong_number_of_args func_ptr builtin_argc) 0))))))
+                          (nl_abi_fail (bf_wrong_number_of_args func_ptr builtin_argc) 0))))))
         (t
          (cons (car entry)
                `(let* ((builtin_argc (m5_list_len args 0)))
