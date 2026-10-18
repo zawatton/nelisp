@@ -451,6 +451,19 @@
 (defconst nelisp-cc-apply-lambda-inner--source
   '(seq
 
+    ;; Doc 215 word ABI (group G4).  The whole chain answers the value WORD
+    ;; of the last body form (nil 3 for an empty body) or 0 on failure; no
+    ;; OUT box is threaded.  A 0 is returned exactly as the old rc 1 was:
+    ;; it may come WITHOUT a stashed signal (callers treat that as a
+    ;; non-signal outcome), so it is never routed through `nl_abi_fail'.
+    ;; The `nl_ali_*' helpers keep their names and are converted in place:
+    ;; they are used only inside this unit, and the build script rewrites
+    ;; `nl_ali_bind_done' / `nl_ali_done' / `nl_ali_finish2' BY NAME.
+    ;; `nl_ali_done' and `nl_ali_finish2' stay status helpers (body-rc 0/1;
+    ;; patched to answer 1 when a frame pop fails); the WORD travels beside
+    ;; them in `nl_ali_finish'.  The WORD crosses only `nl_env_pop_frame'
+    ;; and `nl_root_release', which have no safepoint (Doc 215 R2).
+
     ;; Return body-rc after the second pop.
     ;; Arity 4 (even).
     (defun nl_ali_done (pop2-rc body-rc _p3 _p4)
@@ -467,154 +480,182 @@
          (extern-call nl_env_pop_frame env)
          body-rc 0 0)))
 
-    ;; Pop main frame unconditionally (extern-call FIRST ✓).
-    ;; Arity 6 (even).
-    (defun nl_ali_finish (body-rc env out cap-flag _p5 _p6)
-      (nl_ali_finish2
-       (extern-call nl_env_pop_frame env)
-       body-rc env cap-flag))
+    ;; The status of both pops decides: 0 answers the WORD, anything else
+    ;; fails (0).  Arity 4 (even).
+    (defun nl_ali_finish_ret (rc w _p3 _p4)
+      (if (= rc 0) w 0))
 
-    ;; After nelisp_eval_call: check eval-rc.
-    ;; eval-rc=0 → fetch cdr(body) (extern-call FIRST ✓), then recurse.
-    ;; Fetching the cdr only after eval avoids carrying an unrooted
-    ;; materialised immediate-cdr view across eval's possible collection;
-    ;; body is the real CONS box and is already kept alive by the form.
-    ;; eval-rc!=0 → finish with error (pop both frames as needed).
+    ;; Pop main frame unconditionally (extern-call FIRST ✓).  BODY-RC is
+    ;; 0 for a body that produced W, 1 for a failure (W is then 0).
+    ;; Arity 6 (even).
+    (defun nl_ali_finish (body-rc env w cap-flag _p5 _p6)
+      (nl_ali_finish_ret
+       (nl_ali_finish2
+        (extern-call nl_env_pop_frame env)
+        body-rc env cap-flag)
+       w 0 0))
+
+    ;; 1 when the cdr of the body CONS in STATE-SLOT is nil, read as a
+    ;; WORD so nothing is materialised or allocated while the last value
+    ;; word is live (same reading as `nl_sf_progn_next').  Arity 2 (even).
+    (defun nl_ali_body_tail_nil (state-slot _pad)
+      (let ((tail (ptr-read-u64 (ptr-read-u64 state-slot 8) 8)))
+        (if (= (logand tail 1) 1)
+            (if (= tail 3) 1 0)
+          (if (= (sexp-tag tail) 0) 1 0))))
+
+    ;; Continue after the cdr was cloned into the root slot.
     ;; Arity 6 (even).
     (defun nl_ali_body_after_clone
-        (_clone-rc state-slot env out cap-flag root-mark)
-      (nl_ali_body_drive state-slot env out cap-flag root-mark 0))
+        (_clone-rc state-slot env _pad cap-flag root-mark)
+      (nl_ali_body_drive state-slot env 0 cap-flag root-mark 0))
 
     (defun nl_ali_body_after_cdr
-        (cdr-ptr state-slot env out cap-flag root-mark)
+        (cdr-ptr state-slot env _pad cap-flag root-mark)
       (nl_ali_body_after_clone
        (extern-call nl_sexp_clone_into cdr-ptr state-slot)
-       state-slot env out cap-flag root-mark))
+       state-slot env 0 cap-flag root-mark))
 
-    (defun nl_ali_body_step (eval-rc state-slot env out cap-flag root-mark)
-      (if (= eval-rc 0)
+    ;; After nelisp_eval_call_w: EVAL-W is the form's value WORD or 0.
+    ;; 0 → finish with failure (pop both frames as needed).
+    ;; The last form (nil cdr) → finish with EVAL-W; the cdr is read as a
+    ;; word, so EVAL-W crosses no allocation.  Otherwise fetch cdr(body)
+    ;; (extern-call FIRST ✓) only after eval, so no materialised
+    ;; immediate-cdr view crosses eval's possible collection, and loop;
+    ;; EVAL-W is dead then.
+    ;; Arity 6 (even).
+    (defun nl_ali_body_step (eval-w state-slot env _pad cap-flag root-mark)
+      (if (= eval-w 0)
+          (seq
+           (nl_root_release env root-mark)
+           (nl_ali_finish 1 env 0 cap-flag 0 0))
+        (if (= (nl_ali_body_tail_nil state-slot 0) 1)
+            (seq
+             (nl_root_release env root-mark)
+             (nl_ali_finish 0 env eval-w cap-flag 0 0))
           (nl_ali_body_after_cdr
            (extern-call nl_cons_cdr_ptr state-slot)
-           state-slot env out cap-flag root-mark)
-        (seq
-         (nl_root_release env root-mark)
-         (nl_ali_finish 1 env out cap-flag 0 0))))
+           state-slot env 0 cap-flag root-mark))))
 
     ;; car-ptr = nl_cons_car_ptr(body) fetched as first arg.
     ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
     ;; rather than a possibly materialised cdr view.
     ;; Arity 6 (even).
     (defun nl_ali_body_eval
-        (car-ptr state-slot env out cap-flag root-mark)
+        (car-ptr state-slot env _pad cap-flag root-mark)
       (nl_ali_body_step
-       (extern-call nelisp_eval_call car-ptr env out)
-       state-slot env out cap-flag root-mark))
+       (extern-call nelisp_eval_call_w car-ptr env 0)
+       state-slot env 0 cap-flag root-mark))
 
     ;; Recursive body-eval entry.
-    ;; sexp-tag 0 = Nil → body done, finish with 0.
+    ;; sexp-tag 0 = Nil → empty body: finish with nil (3).
     ;; Else: fetch car(body) FIRST ✓.
     ;; Arity 6 (even).
-    (defun nl_ali_body_drive (state-slot env out cap-flag root-mark _pad)
+    (defun nl_ali_body_drive (state-slot env _pad cap-flag root-mark _pad1)
       (if (= (sexp-tag state-slot) 0)
           (seq
            (nl_root_release env root-mark)
-           (nl_ali_finish 0 env out cap-flag 0 0))
+           (nl_ali_finish 0 env 3 cap-flag 0 0))
         (nl_ali_body_eval
          (extern-call nl_cons_car_ptr state-slot)
-         state-slot env out cap-flag root-mark)))
+         state-slot env 0 cap-flag root-mark)))
 
     (defun nl_ali_body_start
-        (_clone-rc state-slot env out cap-flag root-mark)
-      (nl_ali_body_drive state-slot env out cap-flag root-mark 0))
+        (_clone-rc state-slot env _pad cap-flag root-mark)
+      (nl_ali_body_drive state-slot env 0 cap-flag root-mark 0))
 
     (defun nl_ali_body_slot
-        (state-slot body env out cap-flag root-mark)
+        (state-slot body env _pad cap-flag root-mark)
       (nl_ali_body_start
        (extern-call nl_sexp_clone_into body state-slot)
-       state-slot env out cap-flag root-mark))
+       state-slot env 0 cap-flag root-mark))
 
-    (defun nl_ali_body_mark (root-mark body env out cap-flag _pad)
+    (defun nl_ali_body_mark (root-mark body env _pad cap-flag _pad1)
       (nl_ali_body_slot
-       (nl_root_reserve env) body env out cap-flag root-mark))
+       (nl_root_reserve env) body env 0 cap-flag root-mark))
 
+    ;; `out' is an unused pad kept by name (test/nelisp-lambda-body-loop-test
+    ;; matches this header).
     (defun nl_ali_body (body env out cap-flag _p5 _p6)
       (nl_ali_body_mark
-       (nl_root_mark env) body env out cap-flag 0))
+       (nl_root_mark env) body env 0 cap-flag 0))
 
-    ;; After nl_push_and_bind: start body eval or finish cleanup on error.
+    ;; After nl_push_and_bind: start body eval or fail on error.
     ;; nl_push_and_bind: 0=Ok (frame pushed, formals bound),
-    ;;                   1=Err (frame NOT left pushed on error path).
-    ;; If error: no frame was pushed, so just signal error (no pop needed).
-    ;; Wait — if nl_push_and_bind succeeds on push but fails on bind, does
-    ;; it pop the frame? Yes: nl_push_and_bind pops on bind failure.
-    ;; So on rc=1: no frame is left; just return 1 (and maybe pop cap frame).
+    ;;                   1=Err (frame already popped on the error path).
     ;; On rc=0: frame is pushed; proceed to body, nl_ali_finish pops it.
+    ;; On rc=1: only the captured frame, if pushed, is popped; answer 0.
+    ;; The build script rewrites this defun by name: it expects one `if'
+    ;; whose else branch is the bind-failure path (it prepends the subr
+    ;; arity repair there) and the parameters `body-list' and `env'.
     ;; Arity 6 (even).
-    (defun nl_ali_bind_done (bind-rc body-list env out cap-flag _p6)
+    (defun nl_ali_bind_done (bind-rc body-list env _pad cap-flag _p6)
       (if (= bind-rc 0)
           (seq
            (if (= cap-flag 0) (nelisp_frame_scope_mark (+ env 32)) 0)
-           (nl_ali_body body-list env out cap-flag 0 0))
-        ;; Frame already cleaned up by nl_push_and_bind on error.
-        ;; Only pop captured frame if it was pushed.
+           (nl_ali_body body-list env 0 cap-flag 0 0))
         (if (= cap-flag 0)
-            1
-          (nl_ali_done
-           (extern-call nl_env_pop_frame env)
-           1 0 0))))
+            0
+          (seq
+           (nl_ali_done
+            (extern-call nl_env_pop_frame env)
+            1 0 0)
+           0))))
 
     ;; Push frame + bind formals in one extern-call (extern-call FIRST ✓).
     ;; nl_push_and_bind: pushes frame, binds formals, pops on bind failure.
     ;; Arity 6 (even).
-    (defun nl_ali_push_frame (formals body-list args-list env out cap-flag)
+    (defun nl_ali_push_frame (formals body-list args-list env _pad cap-flag)
       (nl_ali_bind_done
        (extern-call nl_push_and_bind formals args-list env)
-       body-list env out cap-flag 0))
+       body-list env 0 cap-flag 0))
 
     ;; After nl_env_push_captured:
     ;; cap-rc=0 → proceed with cap-flag=1.
     ;; cap-rc!=0 → error, nothing was pushed yet.
     ;; Arity 6 (even).
-    (defun nl_ali_after_cap (cap-rc formals body-list args-list env out)
+    (defun nl_ali_after_cap (cap-rc formals body-list args-list env _pad)
       (if (= cap-rc 0)
           (seq
            (nelisp_frame_scope_mark (+ env 32))
-           (nl_ali_push_frame formals body-list args-list env out 1))
-        1))
+           (nl_ali_push_frame formals body-list args-list env 0 1))
+        0))
 
-    ;; Public entry.
+    ;; 1 when CAPTURED pushes no frame: nil, or exactly `(t)' (a closure
+    ;; that captured nothing).  Reads WORDs only.  Arity 2 (even).
+    (defun nl_ali_cap_none (captured _pad)
+      (if (= (sexp-tag captured) 0)
+          1
+        (if (= (sexp-tag captured) 7)
+            (if (= (nl_cons_car_word captured) 7)
+                (if (= (nl_cons_cdr_word captured) 3) 1 0)
+              0)
+          0)))
+
+    ;; Public entry, word form.
     ;; captured:  *const Sexp — Nil or captured alist.
     ;; formals:   *const Sexp — cons list of formal parameter symbols.
     ;; body-list: *const Sexp — cons list of body forms.
     ;; args-list: *const Sexp — cons list of evaluated arguments.
     ;; env:       *mut c_void — &mut Env.
-    ;; out:       *mut Sexp   — result slot (Sexp::Nil on entry).
-    ;; Returns: 0=Ok (last body value in *out), 1=Err.
+    ;; Returns the last body value WORD (nil 3 for an empty body) or 0.
+    ;; An empty body used to need an explicit nil write into OUT (callers
+    ;; reuse slots); the WORD carries nil itself.
     ;; Arity 6 (even).
-    (defun nl_apply_lambda_inner (captured formals body-list args-list env out)
-      ;; OUT is documented above as "Sexp::Nil on entry", and that was an
-      ;; assumption about every caller rather than something enforced here.
-      ;; Callers reuse a slot, so a lambda with an EMPTY body -- which walks
-      ;; to `nl_ali_body' with a Nil body-list and finishes without ever
-      ;; writing OUT -- returned whatever the previous form had left in it.
-      ;; Measured 2026-08-19: `(progn 42 (f))' answered 42 where Emacs
-      ;; answers nil, and the same in a `let' body, an `if' branch, an `or',
-      ;; and after a `while'.  `(funcall (lambda ()))' too, so it was never
-      ;; about `defun'.  Only a top-level call and `list' -- which gives each
-      ;; element its own slot -- came out right.
-      ;;
-      ;; Establishing the contract instead of assuming it: one write, and a
-      ;; non-empty body overwrites it with the last form's value as before.
-      (seq
-       (nl_cons_write_nil out)
-       (if (= (sexp-tag captured) 0)
-           ;; No captured env: skip push_captured, cap-flag=0.
-           (nl_ali_push_frame formals body-list args-list env out 0)
-         ;; Has captured env: push it FIRST ✓, cap-flag=1 on success.
-         (nl_ali_after_cap
-          (extern-call nl_env_push_captured env captured)
-          formals body-list args-list env out)))))
+    (defun nl_apply_lambda_inner_w (captured formals body-list args-list env _pad)
+      (if (= (nl_ali_cap_none captured 0) 1)
+          ;; No captured env: skip push_captured, cap-flag=0.
+          (nl_ali_push_frame formals body-list args-list env 0 0)
+        ;; Has captured env: push it FIRST ✓, cap-flag=1 on success.
+        (nl_ali_after_cap
+         (extern-call nl_env_push_captured env captured)
+         formals body-list args-list env 0)))
 
+    ;; (rc, OUT) adapter: rc 0 with the value in OUT, rc 1 on failure.
+    (defun nl_apply_lambda_inner (captured formals body-list args-list env out)
+      (nl_abi_word_to_rc
+       (nl_apply_lambda_inner_w captured formals body-list args-list env 0)
+       out)))
   "AOT source for `nl_apply_lambda_inner'
 (eval/mod.rs apply_lambda_inner → elisp).
 
