@@ -1620,8 +1620,75 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
                    (hash-table-count cands) count)
           out)))))
 
+(defconst nelisp-standalone--box-census-idioms
+  '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
+    nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
+    wf_copy32 nl_root_reserve nl_val_store_word nl_sci_store_imm)
+  "Call heads counted by the box-migration census (see
+`nelisp-standalone--box-census-record').  `(alloc-bytes 32 8)' is counted
+separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here
+are counted under their own names.")
+
+(defun nelisp-standalone--box-census-record (name source)
+  "Append the box-migration census of unit NAME's SOURCE to the census file.
+Only active when NELISP_BOX_CENSUS names a file.  Called for every unit
+compiled by `nelisp-standalone--compile-to-unit' and for every cache hit in
+`nelisp-standalone--cached-unit', so a build sees each unit it links.
+SOURCE is the unit source as the cache key sees it: after every source
+patch, before the inliner (an inlined helper body would otherwise be counted
+once per call site).  Each line is UNIT TAB DEFUN TAB IDIOM TAB COUNT, one
+per defun and idiom with a nonzero count, plus UNIT TAB DEFUN TAB defun TAB 1
+for every defun; DEFUN is `-' for code outside any defun.  A unit compiled
+twice appears twice; readers keep the last occurrence of each unit."
+  (let ((file (getenv "NELISP_BOX_CENSUS")))
+    (when (and file (not (string= file "")))
+      (let ((rows nil) (fn "-") (counts nil))
+        (cl-labels
+            ((bump (k) (let ((c (assq k counts)))
+                         (if c (setcdr c (1+ (cdr c))) (push (cons k 1) counts))))
+             (flush ()
+               (dolist (c counts) (push (list fn (car c) (cdr c)) rows))
+               (setq counts nil))
+             (head (sym)
+               (when (and (symbolp sym)
+                          (or (memq sym nelisp-standalone--box-census-idioms)
+                              (string-suffix-p "_clone_into" (symbol-name sym))))
+                 (bump sym)))
+             (walk (x)
+               (when (consp x)
+                 (cond
+                  ((eq (car x) 'quote) nil)
+                  ((and (eq (car x) 'defun) (symbolp (car-safe (cdr x))))
+                   (let ((outer fn) (outer-counts counts))
+                     (setq fn (symbol-name (cadr x)) counts nil)
+                     (push (list fn 'defun 1) rows)
+                     (dolist (f (cddr x)) (walk f))
+                     (flush)
+                     (setq fn outer counts outer-counts)))
+                  (t
+                   (when (and (eq (car x) 'alloc-bytes)
+                              (equal (cdr-safe x) '(32 8)))
+                     (bump 'alloc-bytes-32-8))
+                   (if (eq (car x) 'extern-call)
+                       (head (car-safe (cdr x)))
+                     (head (car x)))
+                   ;; Walk proper and dotted lists alike.
+                   (let ((tail (cdr x)))
+                     (while (consp tail)
+                       (walk (car tail))
+                       (setq tail (cdr tail)))))))))
+          (walk source)
+          (flush))
+        (with-temp-buffer
+          (dolist (r (nreverse rows))
+            (insert (format "%s\t%s\t%s\t%d\n" name (nth 0 r) (nth 1 r) (nth 2 r))))
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region (point-min) (point-max) file t 'silent)))))))
+
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
+  (nelisp-standalone--box-census-record
+   (nelisp-standalone--target-object-name name) source)
   (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
          ;; (the reader applyfn's deep right-nested if-chain, plus the
          ;; `nl-ffi-call' extern sub-chain) nests far enough to blow the default
@@ -1846,6 +1913,8 @@ directory tracks the tree rather than accumulating every key ever built."
          (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir)))
     (if (file-exists-p cache)
         (progn
+          ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
+          (nelisp-standalone--box-census-record name source)
           (when nelisp-standalone--build-trace-path
             (cl-incf nelisp-standalone--build-trace-hits))
           (nelisp-standalone--build-trace-phase "cache-decode"
@@ -13891,7 +13960,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          offset))
                    -2))))))))
     (defun wf_bytecode_current_frame (frames)
-      (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames 1))))
         (if (> depth 0)
             (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 1))
           0)))
@@ -14081,8 +14150,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (wf_bytecode_copy event (nl_cons_car_ptr unwinds))
                (wf_bytecode_copy tail-slot (nl_cons_cdr_ptr unwinds))
                (wf_bytecode_copy unwinds tail-slot)
-               (setq kind (let* ((kw (nl_cons_car_word event)))
-                            (if (= (logand kw 1) 1) (sar kw 2) (ptr-read-u64 kw 8))))
+               (setq kind (sexp-int-unwrap (nl_cons_car_ptr event)))
                (wf_bytecode_copy payload
                                  (nl_cons_car_ptr (nl_cons_cdr_ptr event)))
                (if (= kind 0)
@@ -14754,16 +14822,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_arglist_shape (formals state required maximum)
       ;; Return counts packed with a private, wider layout:
       ;; required[0..15], maximum[16..31], rest[32].
-      ;; FORMALS is a view or, past the head, the cdr WORD: an immediate
-      ;; nil ends the list and any other immediate is malformed.
-      (if (= (logand formals 1) 1)
-          (if (= formals 3) (+ required (* maximum 65536)) -1)
       (let* ((tag (ptr-read-u64 formals 0)))
         (if (= tag 0)
             (+ required (* maximum 65536))
           (if (= tag 7)
               (let* ((name (nl_cons_car_ptr formals))
-                     (tail (nl_cons_cdr_word formals))
+                     (tail (nl_cons_cdr_ptr formals))
                      (name-tag (ptr-read-u64 name 0)))
                 (if (= name-tag 4)
                     (if (= (wf_bytecode_optional_marker_p name) 1)
@@ -14771,13 +14835,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (wf_bytecode_arglist_shape tail 1 required maximum)
                           -1)
                       (if (= (wf_bytecode_rest_marker_p name) 1)
-                          (if (if (= (logand tail 1) 1) 0 (= (ptr-read-u64 tail 0) 7))
+                          (if (= (ptr-read-u64 tail 0) 7)
                               (let* ((rest-name (nl_cons_car_ptr tail))
-                                     (after-rest (nl_cons_cdr_word tail)))
+                                     (after-rest (nl_cons_cdr_ptr tail)))
                                 (if (and (= (ptr-read-u64 rest-name 0) 4)
-                                         (if (= (logand after-rest 1) 1)
-                                             (= after-rest 3)
-                                           (= (ptr-read-u64 after-rest 0) 0))
+                                         (= (ptr-read-u64 after-rest 0) 0)
                                          (= (wf_bytecode_optional_marker_p rest-name) 0)
                                          (= (wf_bytecode_rest_marker_p rest-name) 0))
                                     (+ required (* maximum 65536) 4294967296)
@@ -14794,7 +14856,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                          (+ maximum 1)))
                           -1)))
                   -1))
-            -1)))))
+            -1))))
     (defun wf_bytecode_copy_arg_tail (env source out)
       ;; &rest receives a fresh list spine, while its elements retain
       ;; their original identities as in funcall_lambda.
@@ -15032,23 +15094,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; consume the caller's rooted frame without a temporary argument list.
       (if (or (/= (sexp-tag func) 17) (< (record-slot-count func) 4))
           2
-        ;; The argument descriptor of a lexical function is a fixnum; read
-        ;; it from the slot WORD rather than boxing it on every call.
-        (let* ((dw (nelisp_frame_slot_raw_word func 0)))
-          (if (= (logand dw 3) 1)
-              (wf_bytecode_function_frame_lex func frame argc env out (sar dw 2))
-            (let* ((descriptor (record-slot-ref-ptr func 0)))
-              (if (/= (sexp-tag descriptor) 2)
-                  (if (or (= (sexp-tag descriptor) 0) (= (sexp-tag descriptor) 7))
-                      (wf_bytecode_dynamic_function_frame func descriptor frame argc env out)
-                    2)
-                (wf_bytecode_function_frame_lex func frame argc env out
-                                                (ptr-read-u64 descriptor 8))))))))
-    (defun wf_bytecode_function_frame_lex (func frame argc env out template)
+        (let* ((descriptor (record-slot-ref-ptr func 0)))
+          (if (/= (sexp-tag descriptor) 2)
+              (if (or (= (sexp-tag descriptor) 0) (= (sexp-tag descriptor) 7))
+                  (wf_bytecode_dynamic_function_frame func descriptor frame argc env out)
+                2)
             (let* ((jit-status (wf_bytecode_try_jit_frame func 0 argc env out frame)))
               (if (= jit-status 1) 0
                 (if (= jit-status 2) 1
-                  (let* ((mandatory (logand template 127))
+                  (let* ((template (ptr-read-u64 descriptor 8))
+                         (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
                     (if (or (< template 0) (> maxargs 127))
@@ -15060,7 +15115,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (record-slot-ref-ptr func 1)
                          (record-slot-ref-ptr func 2)
                          (record-slot-ref-ptr func 3)
-                         env out 0 argc maxargs rest frame))))))))
+                         env out 0 argc maxargs rest frame)))))))))))
     (defun wf_bytecode_function (func args env out)
       (let* ((argc (bf_byte_code_arg_count args 0))
              (descriptor (record-slot-ref-ptr func 0))
@@ -28367,8 +28422,8 @@ manifests use.")
       (:start (nelisp-standalone--target-start-unit))
       ;; driver is form-dependent and tiny: always recompiled, never cached.
       (:driver (let* ((name (nelisp-standalone--target-object-name "driver.o"))
-                      (u (nelisp-standalone--compile-to-unit name
-                                                            (nelisp-standalone--driver-source))))
+                      (src (nelisp-standalone--driver-source))
+                      (u (nelisp-standalone--compile-to-unit name src)))
                  (push name nelisp-standalone--recompiled) u))
       (:glue (nelisp-standalone--cached-unit
               name

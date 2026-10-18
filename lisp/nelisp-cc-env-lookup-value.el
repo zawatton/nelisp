@@ -165,7 +165,10 @@
         (if (or (= status 0) (= status 3))
             (let* ((canonical (ptr-read-u64 address 0))
                    (entry (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
-              (if (and (/= entry 0) (> (record-slot-count entry) 5))
+              ;; Only a Vector slot 5 is a redirect; test its WORD first so
+              ;; the usual nil slot is not boxed just to be rejected.
+              (if (and (/= entry 0) (> (record-slot-count entry) 5)
+                       (= (nelisp_env_entry_slot_tag entry 5) 8))
                   (let ((redirect (record-slot-ref-ptr entry 5)))
                     (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
                         (let ((buffer (alloc-bytes 32 8))

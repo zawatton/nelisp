@@ -1,0 +1,114 @@
+#+TITLE: Doc 215 — Word transport: retire the 32-byte transport box
+#+STATUS: IN PROGRESS
+#+LEDGER: tools/ai/box-review-progress.org
+
+* Reading of the goal
+
+Transport only.  Every runtime function passes and returns 64-bit tagged
+WORDs: fixnum =(n<<2)|1=, nil =3=, t =7=, otherwise a pointer to the
+object's 32-byte Sexp box.  The 32-byte boxes that exist only to carry a
+value between functions (a materialised view of an immediate, a scratch
+copy, an out-parameter slot) go away.
+
+The heap object layout does NOT change: cons, string, vector and record
+objects keep their 32-byte Sexp header box and their existing payload
+layout, and containers keep storing WORDs (Doc 147).  A pointer WORD is
+still the address of an object's 32-byte box; what disappears is the
+box that is allocated per read or per call to carry a value.
+
+Out of scope until eval/bytecode-20261018 merges: =wf_bytecode_*=, which
+that lane rebuilds on words.  =m5_fx_*= and =nl_fx_*= belong to the
+eval-s2s3 lane; edits there are coordinated first.
+
+* Census
+
+=nelisp-standalone--box-census-record= runs for every unit built by
+=nelisp-standalone--cached-unit= (and the driver), on the unit source after
+all source patches and before the inliner, when =NELISP_BOX_CENSUS= names a
+file.  It counts call heads per unit: =(alloc-bytes 32 8)=, the =*_ptr=
+materialisers (=nl_cons_car_ptr=, =nl_cons_cdr_ptr=, =record-slot-ref-ptr=,
+=vector-ref-ptr=, =nl_vector_slot_ptr=, =nl_record_slot_ptr=), every
+=*_clone_into=, =wf_copy32=, =nl_root_reserve=, and the two ABI shims
+=nl_val_store_word= (box -> word) and =nl_sci_store_imm= (word -> box),
+which are remaining debt.  Counting before the inliner is deliberate: an
+inlined helper body would otherwise be counted once per call site, and the
+inliner only runs on a cache miss.  =tools/ai/box-census.py= summarises the
+file per idiom and per unit family.
+
+* Rooting rule
+
+Facts, read from the source at e0ab2ae3a:
+
+1. Nothing moves in production.  =268435608= (compaction) is written 0 at
+   boot (Doc 152 §11.21).  =nl_gc_collect= compacts only when that flag is
+   1 *and* the conservative scan pinned nothing.  The mid-form collector
+   (=nl_gc_midform_collect= -> =nl_gc_collect_from_recorded_roots 0=), the
+   parked collector used under live workers, and the explicit
+   =garbage-collect= builtin are always mark+sweep.  So =nl_gc_compact=
+   cannot run mid-form, and a pointer WORD's value stays valid for the
+   object's lifetime.
+2. The conservative scan pins.  =nl_gc_conserv_maybe= walks the main
+   thread's native stack from the current =rsp= to the driver-entry top
+   (=268436456=), resolves each word to its owning block, marks it 4
+   (pinned) and scans that block's payload as opaque words, transitively.
+   A pinned block is never freed by the sweep and blocks compaction.
+3. The scan is on in every production mode: the driver writes =268436464 = 1=
+   at boot.  Only the debug primitive op 28 turns it off (op 29 back on);
+   that configuration is for proving whether a precise root arm is
+   load-bearing, and it is where =m5_fx_run='s float local was lost.
+4. Worker threads (Doc 199) have no native-stack scan.  Their roots are the
+   recorded EvalCtx and the private reserve at =env+4096=
+   (=nl_gc_mark_thread_roots=).  A collection runs only with every worker
+   parked at a safepoint.
+5. Root-stack slots reserved inside a binder overwrote a parallel =let='s
+   pending values, which sit just above the root-stack top while it binds
+   them one by one.
+
+Rule:
+
+- R1 (main thread).  A pointer WORD held in a native local or argument
+  stays alive and valid across an allocating call or safepoint: the scan
+  pins its block and nothing moves.  No root slot is needed for it.
+- R2 (worker-reachable code).  A WORD that must survive a safepoint in code
+  a Doc 199 worker can run must also be reachable from a precise root: the
+  worker's private reserve (=nl_root_reserve=) or a rooted container.
+  Converting a box to a WORD never weakens this: a fresh transport box in a
+  native local was itself unrooted, and the WORD references the same
+  object the box did.  A box that WAS in a root slot keeps a root slot.
+- R3.  Never reserve root-stack slots inside a binder or anywhere a caller
+  may hold pending values above the root-stack top (fact 5).  Reserve in
+  the caller before binding starts, or keep the WORD where R1 covers it.
+- R4.  A WORD read from a container is the container's own child pointer:
+  it cannot be clobbered by a later lookup the way a shared scratch view
+  can.  An argument that is still a scratch view (from unconverted code)
+  must be converted to a WORD at the call boundary, before any lookup.
+- R5.  If compaction is ever re-enabled, R1 still holds for the main
+  thread because any conservative pin vetoes compaction; R2 code would need
+  forwarding, which is why the parked collector never compacts.
+
+* Coexistence ABI
+
+- A converted function takes WORDs and returns the value WORD.  0 is never
+  a valid WORD (a fixnum is odd, nil is 3, t is 7, a box pointer is
+  non-null), so 0 means failure with the signal stashed (the existing
+  =268435472= pending-signal stash), matching the =*_ptr= accessors' 0
+  for a wrong-type container.
+- Unconverted callers reach a converted callee through =nl_val_store_word=
+  (32-byte slot -> WORD); a converted caller reaches an unconverted callee
+  through =nl_val_load= / =nl_sci_store_imm= (WORD -> view).  Both shims
+  are census debt and must reach 0 per family.
+- Setters (=nl_record_set_slot=, =nl_vector_set_slot=,
+  =nl_consbox_set_car/cdr=, =nelisp_cons_construct=) already accept a WORD
+  for the value: they go through =nl_val_clone_into=, which stores an
+  immediate WORD as it is.  A =*_ptr= read whose only consumer is a setter
+  converts by passing the raw WORD.
+- Families convert one at a time, cons accessors and their immediate
+  callers first.  Each family's gate is its census row at 0 plus every
+  behavioural gate in the ledger.
+
+* Stage 1 (hot paths)
+
+Evaluator, VM call path (coordinated with eval-s2s3), regexp support,
+GC, binders.  After stage 1: report allocations and instructions per
+iteration before and after (=test/perf/box-callgrind.py=) and stop for an
+S1.3 startup re-measure.
