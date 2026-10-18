@@ -21006,19 +21006,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
             1)
         1))
     (defun bf_bind_frame_silent (env frames name value)
-      ;; Clause 2: argument binding cannot reenter Lisp. The frame's private
-      ;; view caches the declaration table for this binding phase only, so
-      ;; several formals need just one registry-name lookup. The mirror owns
-      ;; the table; no value, heap layout or bridge ABI is added. Local
+      ;; Clause 2: argument binding cannot reenter Lisp. Local
       ;; declaration markers do not classify formal parameters in GNU;
       ;; globals and dynamic mode do. Ignoring caller/captured local markers
       ;; both preserves formal shadowing and avoids a caller-frame walk.
       (let* ((frame (nl_vector_slot_word (record-slot-ref-ptr frames 0)
-                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
-             (table (ptr-read-u64 frame 24)))
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
         ;; A formal binds dynamically only in dynamic-binding mode: under
         ;; lexical-binding GNU 31.1 binds a parameter named after a special
-        ;; variable lexically.  TABLE (the declaration cache) is unused now.
+        ;; variable lexically.  The frame's +24 declaration cache is no
+        ;; longer filled (`nl_push_and_bind').
         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
             (if (= (nl_sb_bind env frames name value) 0) 1
               (seq
@@ -40996,8 +40993,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_frame_push_sym1_ptr) push_scratch)
                        (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames_ptr 0)
                                       (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))))
+                         ;; +16 marks a formal-binding frame for `nl_n3_pop'.
+                         ;; +24 used to cache `bf_special_registry' for the
+                         ;; binder; its only reader (`bf_bind_frame_silent')
+                         ;; stopped using it, so the per-call registry lookup
+                         ;; (a mirror hash probe, ~3.6k instructions) is gone.
                          (seq (ptr-write-u64 frame 16 13109)
-                              (ptr-write-u64 frame 24 (bf_special_registry env 0)))))
+                              (ptr-write-u64 frame 24 0))))
                  '(nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                    (nl_frame_push_sym1_ptr) push_scratch)
                  (cl-subst
