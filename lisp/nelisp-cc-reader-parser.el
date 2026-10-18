@@ -751,7 +751,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_leaf kind result-slot payload-slot)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail nl_abi_st 0)))))))
@@ -983,7 +983,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_label_def str-ptr cursor-slot result-slot pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1014,7 +1014,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_label_ref result-slot pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail nl_abi_st 0)))))))
@@ -1092,7 +1092,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_at str-ptr cursor-slot result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))))))) ; scratch-slot
@@ -1211,7 +1211,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_dispatch str-ptr cursor-slot result-slot slot-pool depth kind)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1242,7 +1242,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_propertized_string str-ptr cursor-slot result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1291,7 +1291,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_build_bool_vector n-slot str-slot result-slot)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail nl_abi_st 0)))))))
@@ -1351,7 +1351,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_bool_vector str-ptr cursor-slot result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1402,7 +1402,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_wrap str-ptr cursor-slot result-slot slot-pool depth tag-byte)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1465,7 +1465,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_seq str-ptr cursor-slot result-slot slot-pool depth mode)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1490,7 +1490,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_seq_loop str-ptr cursor-slot result-slot slot-pool depth mode)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1531,7 +1531,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_seq_dot str-ptr cursor-slot result-slot slot-pool depth _pad2)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1594,7 +1594,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_seq_dispatch str-ptr cursor-slot result-slot slot-pool depth km)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1615,7 +1615,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_list_step str-ptr cursor-slot result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -1828,7 +1828,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_build_hash_table body result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail nl_abi_st 0)))))))
@@ -1881,7 +1881,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_build_record body result-slot)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail nl_abi_st 0)))))))
@@ -1911,7 +1911,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_sharps_paren str-ptr cursor-slot result-slot slot-pool depth _pad2)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -2025,7 +2025,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_vector str-ptr cursor-slot result-slot slot-pool depth _pad2)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -2099,7 +2099,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_p_parse_byte_code str-ptr cursor-slot result-slot slot-pool depth)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -2128,7 +2128,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_parse_one_with_load_file_name str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
@@ -2181,7 +2181,7 @@
          (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
          (let* ((nl_abi_st (nelisp_reader_parse_one_with_context str-ptr cursor-slot result-slot slot-pool depth context-slot)))
            (if (= nl_abi_st 1)
-               (nl_val_store_word result-slot)
+               (nl_abi_rc_to_word 0 result-slot)
              (if (= nl_abi_st 2)
                  2
                (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))))))))
