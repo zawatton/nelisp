@@ -1,0 +1,5 @@
+# Tests excluded from tools/ai/gnu-tests.sh, one per line:
+#   FILE:TEST CATEGORY REASON
+# FILE is as on the command line (src/data-tests); CATEGORY is one of
+# display, tty, subprocess, network, native-comp, gnu-internal.  The list
+# may hold at most 5% of the suite's 989 tests (--check-exclusions).

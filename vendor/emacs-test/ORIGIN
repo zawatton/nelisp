@@ -9,3 +9,8 @@ one's sha256 is in SHA256SUMS.  The 35 test files are the ones
 tools/ai/gnu-language-conformance-progress.org measures; the *-resources
 directories are the data files three of them read.
 License: GPL-3.0-or-later, as in the tarball.
+Support libraries (added 2026-10-18): lisp/emacs-lisp/{debug,backtrace,
+find-func,ewoc}.el and lisp/help-mode.el, which ert.el requires, copied
+verbatim from the same tarball because the library bundle the runner loads
+no longer carries them.  tools/ai/gnu-tests-support.el appends this tree
+to the end of load-path, so a provider already present wins.
