@@ -76,6 +76,19 @@
       ;; Keep the original single-alias validation contract.
       (nelisp_mirror_alias_stage_valid_role
        mirror-ptr key-ptr entry-ptr env-tag-ptr table-tag-ptr entry-tag-ptr 1))
+    ;; Doc 215 (R2): write value WORD W into the 32-byte root slot DST in
+    ;; Sexp form.  A pointer WORD's box is copied (what `wf_copy32' of the
+    ;; old view did); an immediate is written as its storage form.
+    (defun nl_mas_root_store_word (dst w)
+      (if (= (logand w 1) 0)
+          (wf_copy32 dst w)
+        (seq
+         (ptr-write-u64 dst 0 (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))
+         (ptr-write-u64 dst 8 (if (= (logand w 3) 1) (sar w 2) 0))
+         (ptr-write-u64 dst 16 0)
+         (ptr-write-u64 dst 24 0)
+         dst)))
+
     (defun nelisp_mirror_alias_stage_prepare_role
         (mirror-ptr key-ptr entry-ptr env-tag-ptr table-tag-ptr entry-tag-ptr role)
       (if (/= (nl_thread_mirror_mutation_guard mirror-ptr key-ptr) 0)
@@ -121,12 +134,14 @@
            (wf_copy32 base mirror-ptr)
            (wf_copy32 key-root key-ptr)
            (wf_copy32 entry-root entry-ptr)
-           (wf_copy32 table-root (record-slot-ref-ptr base 0))
-           (wf_copy32 buckets-root (record-slot-ref-ptr table-root 1))
+           ;; Doc 215 (R2): the root slots keep their 32-byte Sexp form;
+           ;; fill them from the container's WORD, never a fresh view box.
+           (nl_mas_root_store_word table-root (nl_record_slot_word base 0))
+           (nl_mas_root_store_word buckets-root (nl_record_slot_word table-root 1))
            (setq idx
                  (logand (extern-call nelisp_fnv1a key-root)
                          (- (sar (nelisp_mirror_slot_raw_word table-root 0) 2) 1)))
-           (wf_copy32 old-head-root (vector-ref-ptr buckets-root idx))
+           (nl_mas_root_store_word old-head-root (nl_vector_slot_word buckets-root idx))
            ;; Mirror keys for uninterned symbols retain the actual identity;
            ;; the established prepend path clones tag16 symbols instead of
            ;; flattening their names to Str. Interned symbols remain name-keyed.
@@ -134,15 +149,15 @@
                (extern-call nl_sexp_clone_into key-root key-string-root)
              (sexp-write-str key-string-root
                              (str-bytes-ptr key-root) (str-len key-root)))
-           (let ((nil-slot (alloc-bytes 32 8)))
-             (sexp-write-nil nil-slot)
-             (cons-make nil-slot nil-slot pair-root)
+           ;; Doc 215: nil is the WORD 3; the cons constructor stores an
+           ;; immediate WORD as it is, so no nil scratch box is needed.
+           (seq
+             (extern-call nelisp_cons_construct 3 3 pair-root)
              (cons-set-car pair-root key-string-root)
              (cons-set-cdr pair-root entry-root)
-             (cons-make nil-slot nil-slot head-root)
+             (extern-call nelisp_cons_construct 3 3 head-root)
              (cons-set-car head-root pair-root)
              (cons-set-cdr head-root old-head-root)
-             (dealloc-bytes nil-slot 32 8)
              (sexp-int-make count-root
                             (+ (sar (nelisp_mirror_slot_raw_word table-root 2) 2) 1)))
            ;; The checked root stack is scanned by this recorded-root
@@ -259,12 +274,12 @@
                    (/= (nelisp_mirror_alias_stage_valid_role
                         mirror-root key-b-root entry-b-root env-tag-root
                         table-tag-root entry-tag-root 0) 1)
-                   (or (and (/= (sexp-tag (record-slot-ref-ptr entry-a-root 4)) 4)
-                            (/= (sexp-tag (record-slot-ref-ptr entry-a-root 4)) 16))
+                   (or (and (/= (nl_val_tag (nl_record_slot_word entry-a-root 4)) 4)
+                            (/= (nl_val_tag (nl_record_slot_word entry-a-root 4)) 16))
                        (and (/= (sexp-tag key-b-root) 4)
                             (/= (sexp-tag key-b-root) 16))
                        (/= (extern-call nelisp_symbol_key_equal
-                                        (record-slot-ref-ptr entry-a-root 4)
+                                        (nl_record_slot_word entry-a-root 4)
                                         key-b-root) 1)))
                (setq status 1)
              (seq

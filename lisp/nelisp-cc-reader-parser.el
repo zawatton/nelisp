@@ -1464,14 +1464,17 @@
         0))
 
     (defun nelisp_reader_p_hash_plist_find_data (plist)
-      (if (= (ptr-read-u64 plist 0) 7)
-          (let* ((key (nl_cons_car_ptr plist))
-                 (rest (nl_cons_cdr_ptr plist)))
-            (if (= (ptr-read-u64 rest 0) 7)
-                (if (= (nelisp_reader_p_symbol_data_p key) 1)
-                    (nl_cons_car_ptr rest)
+      ;; Doc 215: walk and return by WORD (nl_val_tag classifies a view
+      ;; and a WORD alike); an immediate key is never the marker symbol.
+      (if (= (nl_val_tag plist) 7)
+          (let* ((key (nl_cons_car_word plist))
+                 (rest (nl_cons_cdr_word plist)))
+            (if (= (nl_val_tag rest) 7)
+                (if (if (= (logand key 1) 0)
+                        (= (nelisp_reader_p_symbol_data_p key) 1) 0)
+                    (nl_cons_car_word rest)
                   (nelisp_reader_p_hash_plist_find_data
-                   (nl_cons_cdr_ptr rest)))
+                   (nl_cons_cdr_word rest)))
               0))
         0))
 
@@ -1479,14 +1482,17 @@
     ;; compares, so it has to reach the marker.  Reading it as `eql' made every
     ;; string key in a generated literal unfindable.
     (defun nelisp_reader_p_hash_plist_find_test (plist)
-      (if (= (ptr-read-u64 plist 0) 7)
-          (let* ((key (nl_cons_car_ptr plist))
-                 (rest (nl_cons_cdr_ptr plist)))
-            (if (= (ptr-read-u64 rest 0) 7)
-                (if (= (nelisp_reader_p_symbol_test_p key) 1)
-                    (nl_cons_car_ptr rest)
+      ;; Doc 215: walk and return by WORD (nl_val_tag classifies a view
+      ;; and a WORD alike); an immediate key is never the marker symbol.
+      (if (= (nl_val_tag plist) 7)
+          (let* ((key (nl_cons_car_word plist))
+                 (rest (nl_cons_cdr_word plist)))
+            (if (= (nl_val_tag rest) 7)
+                (if (if (= (logand key 1) 0)
+                        (= (nelisp_reader_p_symbol_test_p key) 1) 0)
+                    (nl_cons_car_word rest)
                   (nelisp_reader_p_hash_plist_find_test
-                   (nl_cons_cdr_ptr rest)))
+                   (nl_cons_cdr_word rest)))
               0))
         0))
 
@@ -1502,38 +1508,41 @@
     ;; below already guards `(= data 0)'; the count must too.
     (defun nelisp_reader_p_hash_pair_count (data n)
       (if (= data 0) n
-        (if (= (ptr-read-u64 data 0) 7)
-            (let* ((rest (nl_cons_cdr_ptr data)))
-              (if (= (ptr-read-u64 rest 0) 7)
+        (if (= (nl_val_tag data) 7)
+            (let* ((rest (nl_cons_cdr_word data)))
+              (if (= (nl_val_tag rest) 7)
                   (nelisp_reader_p_hash_pair_count
-                   (nl_cons_cdr_ptr rest) (+ n 1))
+                   (nl_cons_cdr_word rest) (+ n 1))
                 n))
           n)))
 
     (defun nelisp_reader_p_list_nth_ptr (node n)
-      (if (= (ptr-read-u64 node 0) 7)
+      ;; Doc 215: returns the element WORD (0 when the list is too short).
+      (if (= (nl_val_tag node) 7)
           (if (= n 0)
-              (nl_cons_car_ptr node)
-            (nelisp_reader_p_list_nth_ptr (nl_cons_cdr_ptr node) (- n 1)))
+              (nl_cons_car_word node)
+            (nelisp_reader_p_list_nth_ptr (nl_cons_cdr_word node) (- n 1)))
         0))
 
     (defun nelisp_reader_p_hash_fill_table
         (data table pair-slot newhead-slot)
-      (while (= (ptr-read-u64 data 0) 7)
-        (let* ((rest (nl_cons_cdr_ptr data)))
-          (if (= (ptr-read-u64 rest 0) 7)
+      ;; Doc 215: DATA is a WORD (see the plist finders); key and value
+      ;; WORDs go straight into the cloning constructor.
+      (while (= (nl_val_tag data) 7)
+        (let* ((rest (nl_cons_cdr_word data)))
+          (if (= (nl_val_tag rest) 7)
               (seq
                (cons-make-with-clone
-                (nl_cons_car_ptr data)
-                (nl_cons_car_ptr rest)
+                (nl_cons_car_word data)
+                (nl_cons_car_word rest)
                 pair-slot)
                (cons-make-with-clone
                 pair-slot
                 (nl_cons_cdr_ptr table)
                 newhead-slot)
                (cons-set-cdr table newhead-slot)
-               (setq data (nl_cons_cdr_ptr rest)))
-            (setq data 0))))
+               (setq data (nl_cons_cdr_word rest)))
+            (setq data 3))))
       1)
 
     (defun nelisp_reader_p_build_hash_table

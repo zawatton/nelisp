@@ -60,19 +60,18 @@
                   status)))))))
     (defun nelisp_env_makunbound_alias_signal_cycle (offender _pad)
       ;; Match the established signal stash layout used by bf_setting_constant.
-      (let ((name-bytes (alloc-bytes 32 8))
-            (nil-slot (alloc-bytes 32 8)))
+      ;; Doc 215: NAME-BYTES is the symbol-name byte buffer, not a value
+      ;; box; nil is passed to the cons constructor as the WORD 3.
+      (let ((name-bytes (alloc-bytes 32 1)))
         (ptr-write-u64 name-bytes 0 8515571774868650339)
         (ptr-write-u64 name-bytes 8 3271139874151428705)
         (ptr-write-u64 name-bytes 16 8386658473162862185)
         (ptr-write-u64 name-bytes 24 7237481)
         (nl_alloc_symbol name-bytes 27 268435480)
-        (sexp-write-nil nil-slot)
-        (nelisp_cons_construct offender nil-slot 268435512)
+        (nelisp_cons_construct offender 3 268435512)
         (ptr-write-u64 268435472 0 1)
         (atomic-fetch-add 268435544 1)
-        (dealloc-bytes name-bytes 32 8)
-        (dealloc-bytes nil-slot 32 8)
+        (dealloc-bytes name-bytes 32 1)
         1))
     (defun nelisp_env_makunbound_alias_signal_malformed (_offender _pad)
       ;; Malformed internal metadata is an infrastructure error, never a

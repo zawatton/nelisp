@@ -61,10 +61,12 @@
                            (setq status 1)
                          (if (<= (record-slot-count entry) 4)
                              (setq done 1)
-                           (setq target (record-slot-ref-ptr entry 4))
-                           (if (= (sexp-tag target) 0)
+                           ;; Doc 215: slot 4 as its WORD (nil for most
+                           ;; entries); only a Symbol (a pointer) is followed.
+                           (setq target (nl_record_slot_word entry 4))
+                           (if (= (nl_val_tag target) 0)
                                (setq done 1)
-                             (if (/= (sexp-tag target) 4)
+                             (if (/= (nl_val_tag target) 4)
                                  (setq status 1)
                                (setq scan 0)
                                (setq seen 0)

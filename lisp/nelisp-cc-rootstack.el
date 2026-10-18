@@ -715,6 +715,25 @@
     ;; The caller supplies only root-slot indices; both addresses are resolved
     ;; and authenticated before either slot is dereferenced.  No object pointer
     ;; is kept across the CAR accessor call, which may materialise an immediate.
+    ;; Doc 215: store value WORD W as a 32-byte Sexp in root slot OUTPUT.
+    ;; A pointer WORD is the child's own box (copied, as the old view copy
+    ;; did); an immediate is written as its storage form (tag 0 nil, 1 t,
+    ;; 2 fixnum) without allocating.  Returns 0 (success status).
+    (defun nl_native_store_word_v2 (output w)
+      (if (= (logand w 1) 0)
+          (seq
+           (ptr-write-u64 output 0 (ptr-read-u64 w 0))
+           (ptr-write-u64 output 8 (ptr-read-u64 w 8))
+           (ptr-write-u64 output 16 (ptr-read-u64 w 16))
+           (ptr-write-u64 output 24 (ptr-read-u64 w 24))
+           0)
+        (seq
+         (ptr-write-u64 output 0 (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))
+         (ptr-write-u64 output 8 (if (= (logand w 3) 1) (sar w 2) 0))
+         (ptr-write-u64 output 16 0)
+         (ptr-write-u64 output 24 0)
+         0)))
+
     (defun nl_native_car_v2 (env token input-index output-index)
       (let* ((input (nl_root_pin_slot_v2 env token input-index))
              (output (nl_root_pin_slot_v2 env token output-index)))
@@ -728,14 +747,11 @@
                  (ptr-write-u64 output 24 0)
                  0)
               (if (= tag 7)
-                  (let ((car-slot (extern-call nl_cons_car_ptr input)))
-                    (if (= car-slot 0) 2
-                      (seq
-                       (ptr-write-u64 output 0 (ptr-read-u64 car-slot 0))
-                       (ptr-write-u64 output 8 (ptr-read-u64 car-slot 8))
-                       (ptr-write-u64 output 16 (ptr-read-u64 car-slot 16))
-                       (ptr-write-u64 output 24 (ptr-read-u64 car-slot 24))
-                       0)))
+                  ;; Doc 215: read the car WORD and store it into the pinned
+                  ;; OUTPUT root slot directly (no materialised view box).
+                  (let ((car-word (nl_cons_car_word input)))
+                    (if (= car-word 0) 2
+                      (nl_native_store_word_v2 output car-word)))
                 1))))))
     ;; Return status: 0 success, 2 malformed request.  Resolve every input
     ;; and output slot before reading values or calling the allocating
@@ -767,14 +783,11 @@
                  (ptr-write-u64 output 24 0)
                  0)
               (if (= tag 7)
-                  (let ((cdr-slot (extern-call nl_cons_cdr_ptr input)))
-                    (if (= cdr-slot 0) 2
-                      (seq
-                       (ptr-write-u64 output 0 (ptr-read-u64 cdr-slot 0))
-                       (ptr-write-u64 output 8 (ptr-read-u64 cdr-slot 8))
-                       (ptr-write-u64 output 16 (ptr-read-u64 cdr-slot 16))
-                       (ptr-write-u64 output 24 (ptr-read-u64 cdr-slot 24))
-                       0)))
+                  ;; Doc 215: read the cdr WORD and store it into the pinned
+                  ;; OUTPUT root slot directly (no materialised view box).
+                  (let ((cdr-word (nl_cons_cdr_word input)))
+                    (if (= cdr-word 0) 2
+                      (nl_native_store_word_v2 output cdr-word)))
                 1))))))
     ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
     (defun nl_gc_mark_rootstack_walk (p end)
