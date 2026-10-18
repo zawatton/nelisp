@@ -824,6 +824,28 @@ RETURNS_TWO = re.compile(
     r"|nl_sf_defvaralias|nl_sf_defmacro|nl_apply_special\w*|nelisp_reader_\w+)$")
 
 
+def two_adapters(dump):
+    """Names F whose linked body (in DUMP) is exactly the Doc 215 adapter
+    (nl_abi_word_to_rc | nl_abi_lookup_to_rc (F_w ..) OUT).  For these the
+    legacy rc is 0 exactly when F_w answered a WORD (> 2): 0 (signal) maps
+    to rc 1 and 2 (miss / unhandled / EOF) to rc 1 or 2."""
+    ok = set()
+    for line in open(dump, encoding="utf-8"):
+        d = json.loads(line)
+        for f in d["source"][1:] if isinstance(d["source"], list) else []:
+            if (isinstance(f, list) and len(f) == 4 and f[0] == "defun" and isinstance(f[1], str)
+                    and isinstance(f[2], list) and isinstance(f[3], list) and len(f[3]) == 3
+                    and f[3][0] in ("nl_abi_word_to_rc", "nl_abi_lookup_to_rc")
+                    and isinstance(f[3][1], list) and f[3][1] and f[3][1][0] == f[1] + "_w"
+                    and isinstance(f[3][2], str) and f[3][2] in f[2]):
+                ok.add(f[1])
+    # Direct (rc, OUT) bodies with the same contract, written by hand in
+    # lisp/nelisp-cc-env-lookup-{function,value}.el: rc 0 exactly when F_w
+    # answers the value WORD; a miss or a stashed signal is rc 1.
+    return ok | {"nelisp_env_lookup_function", "nelisp_env_lkv_mirror",
+                 "nelisp_env_lkv_mirror_with_frames"}
+
+
 def repoint(root, dump, write):
     """Re-point status-testing call sites of F onto F_w where F_w exists.
 
@@ -832,8 +854,15 @@ def repoint(root, dump, write):
     O word-safe (writer, tag test, setter value, cons walk, another such
     call).  Rewrite: O's init -> 0;  (= (F .. O ..) 0) ->
     (/= (setq O (F_w .. 0 ..)) 0)  (and /= -> =).  Anything else stays on
-    the adapter and is reported with its reason."""
+    the adapter and is reported with its reason.
+
+    A callee that may answer 2 (RETURNS_TWO) is re-pointed only when its
+    linked adapter is the plain word adapter (two_adapters): the status
+    test becomes (> (setq O (F_w ..)) 2) for rc 0 and (< (setq O ..) 3)
+    for rc /= 0, so a miss / unhandled / EOF takes the failure branch as
+    the adapter's rc did."""
     eng = Engine(root, dump, list(census.FAMILIES and [f for f, _ in census.FAMILIES]))
+    two_ok = two_adapters(dump)
     params = defun_params(eng.trees)
     wmap = {}
     for f in params:
@@ -852,11 +881,12 @@ def repoint(root, dump, write):
                 continue
             fw, oi = wmap[n[0]]
             args = n[1:]
-            if RETURNS_TWO.match(str(n[0])):
+            two = bool(RETURNS_TWO.match(str(n[0])))
+            if two and str(n[0]) not in two_ok:
                 # Doc 215: these _w answer 2 for "not found / not handled /
-                # EOF", where the adapter returned rc 1 or 2; (/= w 0) would
-                # read that as success, so the site stays on the adapter.
-                report.append((cname, n[0], "F_w may return 2 (lookup, special or reader)")); continue
+                # EOF"; without the plain adapter the rc mapping is unknown,
+                # so the site stays on the adapter.
+                report.append((cname, n[0], "F_w may return 2 and F is not the plain adapter")); continue
             if oi >= len(args) or not isinstance(args[oi], Sym):
                 report.append((cname, n[0], "out argument is not a local symbol")); continue
             o = args[oi]
@@ -894,7 +924,17 @@ def repoint(root, dump, write):
                     eng.writer_edit(p, par, str(o), w[1], w[0])
             for e in eds:
                 eng.edits.add(p, *e)
-            eng.edits.add(p, parent[0].start, parent[0].end, "/=" if parent[0] == "=" else "=")
+            if two:
+                # rc 0 <=> W > 2.  Rewrite the operator and the 0 operand:
+                # (= X 0) -> (> X 2), (= 0 X) -> (< 2 X),
+                # (/= X 0) -> (< X 3), (/= 0 X) -> (> 3 X).
+                zi = 1 if (isinstance(parent[1], Num) and parent[1] == 0) else 2
+                eq = parent[0] == "="
+                op = (">" if zi == 2 else "<") if eq else ("<" if zi == 2 else ">")
+                eng.edits.add(p, parent[0].start, parent[0].end, op)
+                eng.edits.add(p, parent[zi].start, parent[zi].end, "2" if eq else "3")
+            else:
+                eng.edits.add(p, parent[0].start, parent[0].end, "/=" if parent[0] == "=" else "=")
             eng.edits.add(p, n.start, n.start, "(setq %s " % o)
             eng.edits.add(p, n[0].start, n[0].end, fw)
             eng.edits.add(p, args[oi].start, args[oi].end, "0")
