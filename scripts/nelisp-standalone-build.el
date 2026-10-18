@@ -5909,7 +5909,17 @@ REPL-facing module it feeds."
     (defun nl_gc_midform_due ()
       (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
           (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
-              (nl_gc_debt_due)
+              ;; The debt trigger stays unarmed until two sweeps have run
+              ;; (`nl_gc_debt_due').  A section entered before that, as in a
+              ;; script that starts threads right away, would then never
+              ;; collect and grow the heap without bound, so fall back to
+              ;; the growth watermark until the debt is armed.
+              (if (if (< (ptr-read-u64 (data-addr nl_gc_stats) 24) 2) 1
+                    (if (= (ptr-read-u64 (data-addr nl_gc_stats) 8) 0) 1 0))
+                  (if (< (ptr-read-u64 268436184 0)
+                         (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                      0 1)
+                (nl_gc_debt_due))
             ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on
             ;; the allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
             (if (if (< (ptr-read-u64 268436184 0)
