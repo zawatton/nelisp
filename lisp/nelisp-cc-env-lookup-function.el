@@ -56,9 +56,18 @@
           (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
               2
             (nl_record_slot_word entry 1)))))
+    ;; The (rc, OUT) form has its own body (rc 1 on a miss): it is on every
+    ;; call dispatch.  It stores the slot WORD into OUT directly
+    ;; (nl_abi_word_to_rc: an immediate or a 32-byte copy, 0), without the
+    ;; nl_abi_lookup_to_rc layer and without the old refcount-bumping clone
+    ;; of `record-slot-ref'.
     (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
-      (nl_abi_lookup_to_rc
-       (nelisp_env_lookup_function_w mirror-ptr unbound-ptr name-ptr 0) out-ptr)))
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            1
+          (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
+              1
+            (nl_abi_word_to_rc (nl_record_slot_word entry 1) out-ptr))))))
   "AOT source for Wave a-2 `Env::lookup_function' body.
 
 R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun

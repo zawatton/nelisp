@@ -190,20 +190,29 @@
 
     ;; Doc 215 word ABI: the value WORD, 2 when NAME is not found (the
     ;; legacy rc 1 without a stash), or 0 with the signal stashed.
+    ;; A plain global (no alias, no buffer-local slot) answers its slot WORD
+    ;; with no box; only the alias / buffer-local path runs the status body
+    ;; against a private box.
     (defun nelisp_env_lkv_mirror_with_frames_w
         (mirror-ptr frames-ptr name-ptr _pad frame-mode _pad1 _pad2 _pad3)
-      (let* ((out-ptr (alloc-bytes 32 8)))
-        (nl_abi_status_to_word
-         (nelisp_env_lkv_mirror_with_frames_rc
-          mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0)
-         out-ptr)))
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0) 2
+          (if (and (= (nelisp_env_alias_slot_candidate entry 0) 3)
+                   (if (> (record-slot-count entry) 5)
+                       (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
+              (nl_record_slot_word entry 0)
+            (let* ((out-ptr (alloc-bytes 32 8)))
+              (nl_abi_status_to_word
+               (nelisp_env_lkv_mirror_with_frames_rc
+                mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0)
+               out-ptr))))))
 
+    ;; (rc, OUT) form: the status body writes the caller's OUT directly
+    ;; (rc 1 on a miss or a stashed signal, as before).
     (defun nelisp_env_lkv_mirror_with_frames
         (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
-      (nl_abi_lookup_to_rc
-       (nelisp_env_lkv_mirror_with_frames_w
-        mirror-ptr frames-ptr name-ptr 0 frame-mode 0 0 0)
-       out-ptr))
+      (nelisp_env_lkv_mirror_with_frames_rc
+       mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0))
 
     ;; The status-returning body behind the word entry above (writes the
     ;; value into the private OUT-PTR box).
@@ -236,7 +245,7 @@
     (defun nelisp_env_lkv_mirror_w (mirror-ptr name-ptr _pad _pad1)
       (nelisp_env_lkv_mirror_with_frames_w mirror-ptr 0 name-ptr 0 0 0 0 0))
     (defun nelisp_env_lkv_mirror (mirror-ptr name-ptr out-ptr _pad)
-      (nl_abi_lookup_to_rc (nelisp_env_lkv_mirror_w mirror-ptr name-ptr 0 0) out-ptr))
+      (nelisp_env_lkv_mirror_with_frames_rc mirror-ptr 0 name-ptr out-ptr 0 0 0 0))
 
     ;; nelisp_env_lookup_value
     ;;

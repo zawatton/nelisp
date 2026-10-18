@@ -1945,7 +1945,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (nl_sf_defmacro . special) (nl_sf_dolist)
     (nl_sf_defvaralias_apply) (nl_n3_defvaralias_raw) (nl_n3_declared_default_raw)
     (nl_n3_alias_write) (nl_n3_default_write) (nl_n3_apply_mode)
-    (nl_apply_lambda_inner_n3) (nl_n3_apply_lambda_raw)
+    (nl_n3_apply_lambda_raw)
     (nl_n4_capture_filtered) (nl_env_capture_lexical_filtered)
     (nl_env_capture_lexical_with_filter) (nl_clx_build_symbol_filter)
     (bf_env_capture_roots) (nelisp_eval_call_with_err)
@@ -8724,8 +8724,12 @@ leave symbols unresolved at link time."
             (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
                  (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
         (nl_imm_int v)))
+    ;; The (rc, OUT) writers keep their direct stores: an adapter through
+    ;; the WORD would encode the value only for nl_sci_store_imm to decode
+    ;; it again (the bytecode VM writes its slots through these).
     (defun wf_write_int (out v)
-      (nl_abi_word_to_rc (wf_write_int_w 0 v) out))
+      (seq (ptr-write-u64 out 0 2) (ptr-write-u64 out 8 v)
+           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
     ;; The 32-byte value at SRC as a result WORD with the same sharing the
     ;; old (wf_copy32 out SRC) arms had: an immediate collapses to its word,
     ;; anything else is a shallow copy in a fresh box (never SRC itself,
@@ -8780,12 +8784,14 @@ leave symbols unresolved at link time."
     (defun wf_write_t_w (_pad)
       7)
     (defun wf_write_t (out)
-      (nl_abi_word_to_rc (wf_write_t_w 0) out))
+      (seq (ptr-write-u64 out 0 1) (ptr-write-u64 out 8 0)
+           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
     ;; Doc 215 builtin word ABI: wf_write_nil_w returns the result WORD (0 = signal stashed); wf_write_nil keeps the (rc, OUT) ABI.
     (defun wf_write_nil_w (_pad)
       3)
     (defun wf_write_nil (out)
-      (nl_abi_word_to_rc (wf_write_nil_w 0) out))
+      (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+           (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
     ;; Doc 215 builtin word ABI: wf_cons_int_w returns the result WORD (0 = signal stashed); wf_cons_int keeps the (rc, OUT) ABI.
     (defun wf_cons_int_w (v rest _pad)
       (nelisp_cons_construct_w (nl_imm_int v) rest 0))
@@ -42293,6 +42299,40 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                      (if (= st -3)
                          (nl_apply_lambda_inner_n3 captured formals body-list args-list env out)
                        (if (= st -1) 0 st))))
+                out)
+          ;; Doc 215 word forms of the two dispatchers above, written here
+          ;; rather than box-split: the closure path's word form calls
+          ;; `nl_apply_lambda_fx_w' and the interpreted body answers its WORD
+          ;; with no box (only n3 mode and the fx VM still fill one).
+          ;; (nth 2 out) is nl_n3_apply_lambda_raw: the original body.
+          (pcase (cdddr (nth 2 out))
+            ((and `((nl_abi_word_to_rc (,inner-w . ,_) out))
+                  (guard (eq inner-w 'nl_apply_lambda_inner_w))))
+            (body (error "lambda word ABI: unexpected nl_apply_lambda_inner body %S" body)))
+          (push '(defun nl_apply_lambda_inner_n3_w (captured formals body-list args-list env _pad)
+                   (if (or (= (sexp-tag captured) 0)
+                           (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0))
+                       (let* ((out (alloc-bytes 32 8)))
+                         (nl_abi_rc_to_word
+                          (nl_n3_apply_mode captured formals body-list args-list env out) out))
+                     (nl_apply_lambda_inner_w captured formals body-list args-list env 0)))
+                out)
+          (push '(defun nl_apply_lambda_fx_w (captured formals body-list args-list env _pad)
+                   (let* ((rec (if (= (sexp-tag captured) 7)
+                                   (if (= (nl_cons_car_word captured) 7)
+                                       (if (= (nl_cons_cdr_word captured) 3)
+                                           (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
+                                               (m5_fx_inner_lookup body-list env) 0) 0) 0) 0)))
+                     (if (= rec 0)
+                         (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
+                       (let* ((out (alloc-bytes 32 8)))
+                         (nl_apply_lambda_fx_done (m5_fx_apply rec args-list env out)
+                                                  captured formals body-list args-list env out 0)))))
+                out)
+          (push '(defun nl_apply_lambda_fx_done (st captured formals body-list args-list env out _pad)
+                   (if (= st -3)
+                       (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
+                     (nl_abi_rc_to_word (if (= st -1) 0 st) out)))
                 out))
          ((eq name 'nl_sf_lambda)
           (push (cons 'defun (cons 'nl_n3_lambda_raw (cddr form))) out)
@@ -44218,9 +44258,14 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (wparams (append (butlast params) '(_pad))))
             (unless (eq out 'out)
               (error "apply word ABI: %s does not end in OUT" name))
+            ;; The word form reaches the lambda dispatcher through its word
+            ;; entry (`nl_apply_lambda_fx_w', same dispatch as the legacy
+            ;; `nl_apply_lambda_inner' patch).
             (push `(defun ,wname ,wparams
                      ,(nelisp-standalone--special-tail-words
-                       (cons 'progn (nthcdr 3 form)) out words))
+                       (cons 'progn (cl-subst 'nl_apply_lambda_fx 'nl_apply_lambda_inner
+                                              (nthcdr 3 form)))
+                       out (cons 'nl_apply_lambda_fx words)))
                   result)
             (push `(defun ,name ,params
                      (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
