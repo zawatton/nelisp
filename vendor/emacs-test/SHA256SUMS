@@ -50,3 +50,4 @@ fc4195c13eba6b8548ae83313b77e54016baa42cf6d3590e24834a7e6de9a4d4  lisp/emacs-lis
 cd9110aee5e3f95ecfd6503daca3efe82c171bea262d3c74000c9a95e0cf57bf  lisp/emacs-lisp/find-func.el
 97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c  lisp/emacs-lisp/ewoc.el
 237aead93665bdd692e012d5ab6d8de1b60d010b101933f9d69813039c067ade  lisp/help-mode.el
+f2e13ecb6e59318250f70558ec7770dc7af019a8cbdae1f38442f6a52188afb9  lisp/emacs-lisp/pp.el

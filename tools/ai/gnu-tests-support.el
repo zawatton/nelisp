@@ -55,12 +55,29 @@
   (defvar lisp-mode-syntax-table emacs-lisp-mode-syntax-table)
   (provide 'lisp-mode))
 
+;; GNU's loaddefs autoload cl-print; the runtime has no loaddefs, so
+;; autoload the entry points ERT and the tests use from this tree's
+;; vendored GNU 31.1 cl-print.el (vendor/emacs-lisp-api).
+(setq load-path (append load-path
+                        (list (expand-file-name "../../vendor/emacs-lisp-api/emacs-lisp"
+                                                gnu-tests-support-root))))
+(dolist (f '(cl-prin1 cl-prin1-to-string cl-print-to-string-with-limit
+             cl-print-object))
+  (unless (fboundp f) (autoload f "cl-print")))
+
 ;; help-mode.el adds tool-bar buttons at load time; there is no tool bar in
 ;; batch.
 (unless (fboundp 'tool-bar-local-item)
   (defun tool-bar-local-item (&rest _) nil))
 (unless (fboundp 'tool-bar-local-item-from-menu)
   (defun tool-bar-local-item-from-menu (&rest _) nil))
+
+;; The bundle's `pp' is a stub that returns a string and ignores STREAM, so
+;; ERT's failure report (ert--pp-with-indentation-and-newline) inserts
+;; nothing and then fails its own cl-assert.  Load GNU 31.1 pp.el over it.
+(load (expand-file-name "../../vendor/emacs-test/lisp/emacs-lisp/pp.el"
+                        gnu-tests-support-root)
+      nil t)
 
 (require 'ert)
 (require 'ert-x)

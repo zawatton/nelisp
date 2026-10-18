@@ -72,6 +72,24 @@
                                              (ert-test-name test)))))
                        (apply listener event args))
                      interactively)))
+    ;; ERT prints a failing test's backtrace through cl-print.  That is
+    ;; diagnostic output only, and cl-print is itself under test
+    ;; (cl-print-tests), so print frames with plain `prin1' under the same
+    ;; limits instead of letting a cl-print defect hang or abort the run.
+    (fset 'backtrace-to-string
+          (lambda (&optional frames)
+            (mapconcat
+             (lambda (frame)
+               (condition-case err
+                   (let ((print-level (or print-level 5))
+                         (print-length (or print-length 10))
+                         (print-escape-newlines t))
+                     (concat "  "
+                             (prin1-to-string
+                              (cons (backtrace-frame-fun frame)
+                                    (backtrace-frame-args frame)))))
+                 (error (format "  <frame unprintable: %S>" err))))
+             frames "\n")))
     (let ((selected (seq-remove (lambda (n) (memq n skip))
                                 (reverse gnu-tests--names))))
       (when selected
