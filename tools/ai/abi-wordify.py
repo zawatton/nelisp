@@ -45,6 +45,12 @@ OBJECT_WRITERS = {"wf_fsum": -1, "wf_fdiff": -1, "wf_fprod": -1, "wf_fdivtail": 
 RETURNS_TWO = BA.RETURNS_TWO
 
 
+# Constructors whose F_w is exactly "fresh box, F into it, the box's WORD"
+# (lisp/nelisp-cc-nlstr-direct-ops.el, lisp/nelisp-cc-cons-construct.el):
+# F -> F_w with the out argument (index) replaced by 0.
+EQUIV_W = {"nl_alloc_str": 2, "nl_alloc_symbol": 2, "nelisp_cons_construct": 2}
+
+
 def plain_adapters(dump):
     ad = {}
     for line in open(dump, encoding="utf-8"):
@@ -57,6 +63,7 @@ def plain_adapters(dump):
                     and isinstance(f[3][2], str) and f[3][2] in f[2]):
                 # out index in F's params; F_w call passes 0 there
                 ad[f[1]] = f[2].index(f[3][2])
+    ad.update(EQUIV_W)
     return ad
 
 
@@ -93,6 +100,27 @@ class Conv:
                 and not mentions(args[1], v)):
             acc = "nl_cons_car_word" if args[1][0] == "nl_cons_car_ptr" else "nl_cons_cdr_word"
             ed.append((x.start, x.end, "(%s %s)" % (acc, self.src(args[1][1])))); return
+        if h == "if" and len(x) == 4 and not mentions(x[1], v):
+            self.writer(x[2], v, ed); self.writer(x[3], v, ed); return
+        if h in ("seq", "progn", "nl_seq2") and len(x) >= 2:
+            if any(mentions(e, v) for e in x[1:-1]):
+                raise Fail("writer seq prefix uses box")
+            self.writer(x[-1], v, ed); return
+        if h in ("let", "let*") and len(x) >= 3:
+            if mentions(x[1], v) or any(mentions(e, v) for e in x[2:-1]):
+                raise Fail("writer let uses box")
+            self.writer(x[-1], v, ed); return
+        if (h == "wf_copy32" and len(args) == 2 and args[0] == v and is_call(args[1])
+                and args[1][0] in ("vector-ref-ptr", "record-slot-ref-ptr") and len(args[1]) == 3
+                and not mentions(args[1], v)):
+            acc = "nl_vector_slot_word" if args[1][0] == "vector-ref-ptr" else "nl_record_slot_word"
+            ed.append((x.start, x.end, "(%s %s %s)" % (acc, self.src(args[1][1]), self.src(args[1][2])))); return
+        # A clone of a WORD into V: the WORD itself (Doc 215: a WORD may be the
+        # object's own box).  Only when the source is known to be a WORD.
+        if (h == "nl_sexp_clone_into" and len(args) == 2 and args[1] == v and is_call(args[0])
+                and not mentions(args[0], v)
+                and (str(args[0][0]).endswith("_word") or str(args[0][0]).endswith("_w"))):
+            ed.append((x.start, x.end, self.src(args[0]))); return
         if h in self.ad and not RETURNS_TWO.match(h):
             oi = self.ad[h]
             if oi < len(args) and args[oi] == v and sum(1 for a in args if mentions(a, v)) == 1:
@@ -110,7 +138,7 @@ class Conv:
             if len(x) != 4 or mentions(x[1], v):
                 raise Fail("if shape")
             self.tail(x[2], v, ed); self.tail(x[3], v, ed); return
-        if h in ("seq", "progn"):
+        if h in ("seq", "progn", "nl_seq2"):
             body = x[1:]
             if not body:
                 raise Fail("empty seq")
@@ -199,8 +227,53 @@ def main(a):
         for s, e, t in ed:
             edits.add(PATH, s, e, t)
         done[kind] += 1
+    # D: (nl_val_store_word P) under a tag test proving P holds a heap object
+    # (tag >= 3: not nil / t / fixnum), with no setq of P in between: the box
+    # is its own WORD, so the call is P.
+    def tag_test(c, p):
+        """K when C is (= (ptr-read-u64|ptr-read-u8 P 0) K) or (= (sexp-tag P) K)."""
+        if is_call(c) and c[0] == "=" and len(c) == 3:
+            l, r = c[1], c[2]
+            if isinstance(l, Num): l, r = r, l
+            if isinstance(r, Num) and is_call(l):
+                if l[0] in ("ptr-read-u64", "ptr-read-u8") and len(l) == 3 and l[1] == p and l[2] == 0:
+                    return int(r)
+                if l[0] == "sexp-tag" and len(l) == 2 and l[1] == p:
+                    return int(r)
+        return None
+    def setq_of(x, p):
+        return any(is_call(y) and y[0] == "setq" and len(y) >= 2 and y[1] == p for y, _, _ in BA.walk(x))
+    def visit(x, guards):
+        if not isinstance(x, list):
+            return
+        if is_call(x) and x[0] == "nl_val_store_word" and len(x) == 2 and isinstance(x[1], Sym):
+            p = x[1]
+            for (c, branch, node) in reversed(guards):
+                k = None; ok_branch = None
+                if is_call(c) and c[0] == "not" and len(c) == 2:
+                    k = tag_test(c[1], p); ok_branch = 3
+                elif is_call(c) and c[0] == "/=" and len(c) == 3:
+                    k = tag_test(Lst_eq(c), p); ok_branch = 3
+                else:
+                    k = tag_test(c, p); ok_branch = 2
+                if k is not None and k >= 3 and branch == ok_branch and not setq_of(node, p):
+                    edits.add(PATH, x.start, x.end, str(p)); done["D"] += 1
+                    return
+            return
+        if is_call(x) and x[0] == "if" and len(x) >= 3:
+            visit(x[1], guards)
+            for i in range(2, len(x)):
+                visit(x[i], guards + [(x[1], i, x)])
+            return
+        for y in x:
+            visit(y, guards)
+    def Lst_eq(c):
+        e = BA.Lst(["="] + list(c[1:])); e.start = c.start; e.end = c.end
+        return e
+    done["D"] = 0
+    visit(tree, [])
     new = edits.apply({PATH: text})
-    print("wordify: A %d B %d C %d; left %d" % (done["A"], done["B"], done["C"], len(left)))
+    print("wordify: A %d B %d C %d D %d; left %d" % (done["A"], done["B"], done["C"], done["D"], len(left)))
     if "--json" in a:
         json.dump(left, open(a[a.index("--json") + 1], "w"), indent=0)
     if write and PATH in new:
