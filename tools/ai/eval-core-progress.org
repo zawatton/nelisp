@@ -27,17 +27,39 @@ cmd: BENCH=fx-loop LIMIT=0.18 timeout 200 nice "$EVAL_BIN" --load test/perf/fx-b
 #+REQUIRES: EVAL_BIN
 cmd: timeout 300 "$EVAL_BIN" --load test/perf/fx-spike-check.el
 ** S2.2 A lexical defun whose body the VM covers runs on it automatically (compiled on first call, kept out of band so the GNU-visible closure shape is unchanged), with results identical to the current evaluator on a corpus of generated forms
-pending
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 1500
+#+NOTE: test/perf/fx-corpus.el generates 200 defuns (fixed-seed LCG; &optional/&rest arglists, nested
+#+NOTE: calls with valid and invalid counts, apply, fixnum overflow, catch/condition-case left to the
+#+NOTE: interpreter) and prints ~950 call results; fx-corpus-check.sh requires byte-identical output
+#+NOTE: with NELISP_FX_DISABLE=1 for seeds 1 and 7 and >= 60% of the defuns on the VM.  e0ab2ae3a:
+#+NOTE: 0 differences, covered 63/200 and 57/200 (FAIL); with &optional/&rest 138/200 and 130/200.
+#+NOTE: A perturbed VM run (one result line changed) fails it.
+cmd: test/perf/fx-corpus-check.sh
 ** S2.3 A VM-to-VM call of a 3-argument function takes at most 1 us
-pending
+#+REQUIRES: EVAL_BIN
+#+NOTE: test/perf/fx-call-bench.el: best of five call loops minus best of five empty loops, n=1e5.
+#+NOTE: e0ab2ae3a 1.32 us (16,085 Ir/call, 17 nl_alloc_bytes); arguments passed as words with a lazy
+#+NOTE: backtrace argument list and rooted per-activation scratch: 0.72 us, flat to n=1e6.
+cmd: BENCH=vm-vm LIMIT=1 timeout 300 nice "$EVAL_BIN" --load test/perf/fx-call-bench.el
 ** S2.4 An interpreter-to-VM call of a 3-argument function takes at most 3 us (boundary cost)
-pending
+#+REQUIRES: EVAL_BIN
+#+NOTE: test/perf/fx-call-bench.el interp-vm: an interpreted loop (eval) calling the VM-run function,
+#+NOTE: n=1e5 so collections are included.  e0ab2ae3a 2.85-3.29 us (20.9k Ir/call over the empty
+#+NOTE: loop); arguments evaluated into rooted slots and the VM entered without an argument list:
+#+NOTE: 2.51-2.64 us.
+cmd: BENCH=interp-vm LIMIT=3 timeout 300 nice "$EVAL_BIN" --load test/perf/fx-call-bench.el
 ** S2.5 Every test/standalone-*-check.el still passes
 #+TIMEOUT: 600
 #+REQUIRES: EVAL_BIN
 cmd: test/perf/standalone-checks.sh
 ** S2.6 End to end: eval-bench's defun-call-3 case (an interpreted loop calling a VM-run defun) takes at most 3 us, from 12.4
-pending
+#+REQUIRES: EVAL_BIN
+#+NOTE: eval-bench-net printed 0.00 for every case under the VM (a collection in one base trial made
+#+NOTE: run-base negative, clamped, and the best of three kept it); it now subtracts the best base
+#+NOTE: from the best run.  At n=20000 the best runs mostly miss collections, so this reads lower
+#+NOTE: than S2.4: e0ab2ae3a 1.14 us (already under the limit once measured), 1.24 with this lane.
+cmd: BENCH=defun-call-3 LIMIT=3 timeout 200 nice "$EVAL_BIN" --load test/perf/eval-bench.el
 
 * S3 The prelude runs on the VM
 ** S3.1 Prelude functions the VM covers are compiled at build time into the image, not on first call

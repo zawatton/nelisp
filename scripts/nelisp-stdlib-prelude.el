@@ -24972,7 +24972,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
     (if c (nelisp--fx-run (car c) (cdr c)) (eval form t))))
 
 ;; Lexical defuns on the VM.  `nelisp--fx-table' maps a closure's body list
-;; to [CODE NLOCALS NPARAMS] (or `none'); the runtime's closure application
+;; to [CODE NLOCALS MIN INDEX NAME MAX REST-INDEX] (or `none'; MAX -1 with
+;; &rest, REST-INDEX -1 without, see `nelisp--fx-arglist-shape'); the
+;; runtime's closure application
 ;; looks the body up and runs the VM when the closure captures nothing.  The
 ;; closure object itself is unchanged, so `symbol-function', `aref' and
 ;; printing see exactly what they did.  Registered when `defalias' (and so
@@ -25040,17 +25042,17 @@ Defining it as a function compiles them again.")
   (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
       (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
-        (let ((args (nth 2 fn)) (body (nthcdr 3 fn)))
-          (when (and (listp args) (cl-every #'symbolp args)
-                     (not (memq '&optional args)) (not (memq '&rest args))
-                     (not (cl-some #'nelisp--fx-special-p args))
+        (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
+               (shape (nelisp--fx-arglist-shape args)))
+          (when (and shape
+                     (not (cl-some #'nelisp--fx-special-p (car shape)))
                      (not (gethash body nelisp--fx-table)))
             (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
                    ;; Expanding here is an optimisation the user never asked
                    ;; for: macroexp's warnings (a compiler macro failing
                    ;; early in startup) must not reach the output.
                    (inhibit-message t)
-                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body) args)
+                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
                         (error (setq failed t) nil))))
               (if c (setq nelisp--fx-compiled-ok t)
                 (when (and failed (< nelisp--fx-tries 3))
@@ -25064,11 +25066,40 @@ Defining it as a function compiles them again.")
               (when (and (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
                 (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
               (puthash body (if c
-                                (prog1 (vector (car c) (cdr c) (length args)
-                                               nelisp--fx-next-index name)
+                                (prog1 (vector (car c) (cdr c) (nth 1 shape)
+                                               nelisp--fx-next-index name
+                                               (nth 2 shape) (nth 3 shape))
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table))))))))
+
+(defun nelisp--fx-arglist-shape (args)
+  "(LOCALS MIN MAX REST-INDEX) for the lambda list ARGS, or nil.
+LOCALS are the parameter names in order, the &rest one last; MAX is -1
+and REST-INDEX that local's index with &rest, else REST-INDEX is -1.
+Nil for a list the VM does not take: a non-symbol, a repeated or
+misplaced keyword, or &rest not followed by exactly one name."
+  (let ((locals nil) (min 0) (opt 0) (state 'req) (rest nil) (ok t))
+    (while (and ok args)
+      (let ((a (car args)))
+        (cond
+         ((not (and a (symbolp a) (not (eq a t)) (not (keywordp a)))) (setq ok nil))
+         ((eq a '&optional) (if (eq state 'req) (setq state 'opt) (setq ok nil)))
+         ((eq a '&rest)
+          (if (and (memq state '(req opt)) (consp (cdr args)) (null (cddr args))
+                   (symbolp (cadr args)) (cadr args)
+                   (not (memq (cadr args) '(&optional &rest t))))
+              (progn (setq rest (cadr args)) (setq args nil))
+            (setq ok nil)))
+         ((eq state 'req) (push a locals) (setq min (1+ min)))
+         (t (push a locals) (setq opt (1+ opt)))))
+      (setq args (cdr args)))
+    (when rest (push rest locals))
+    ;; A repeated name: the interpreter binds in order, so the last one
+    ;; wins, where slot resolution would take the first.
+    (when (and ok (let ((l locals)) (while (and l (not (memq (car l) (cdr l)))) (setq l (cdr l))) (null l)))
+      (list (nreverse locals) min (if rest -1 (+ min opt))
+            (if rest (+ min opt) -1)))))
 
 (defun nelisp--fx-macros-used (body)
   "Macros named in operator position anywhere in BODY (before expansion).
