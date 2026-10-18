@@ -21259,10 +21259,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (nl_n3_bind env frames name value)))
     (defun bf_mark_binding_result (rc mirror frames name)
       (if (= rc 1) (bf_mark_declared_special mirror frames name) rc))
-    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
-    (defun bf_dynamic_lookup_w (env name _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
+    (defun bf_dynamic_lookup (env name out)
       (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name))
              (local-p (if (= entry 0) 0
                         (if (> (record-slot-count entry) 5)
@@ -21274,12 +21271,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (nelisp_env_lkv_mirror_with_frames
               (+ env 0) (+ env 32) name out 1 0 0 0)
            (nl_cell_get_value cell out))
-         env out 0))
-        ) 0)
+         env out 0)))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
+    ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
+    ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `bf_dynamic_lookup'.
+    (defun bf_dynamic_lookup_w (env name _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (bf_dynamic_lookup env name out) 0)
             (nl_val_store_word out)
           (nl_abi_fail 1 0))))
-    (defun bf_dynamic_lookup (env name out)
-      (nl_abi_word_to_rc (bf_dynamic_lookup_w env name 0) out))
     (defun bf_boundp (args env out)
       ;; The dynamic lookup uses the context's env+64 unbound marker and
       ;; returns absence without stashing a signal; boundp converts it to nil.

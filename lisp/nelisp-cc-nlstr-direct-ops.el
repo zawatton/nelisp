@@ -385,13 +385,13 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= (ptr-read-u64 entry 0) 1)
             (seq (nl_symname_copy32 (+ entry 40) out 0) 1)
           0)))
-    ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_copy_out' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_copy_out_w (entry _pad)
       (let* ((out (alloc-bytes 32 8)))
         (if (/= (nl_symbol_name_copy_out entry out) 0)
             (nl_val_store_word out)
-          3)))
+          (nl_abi_fail 1 0))))
 
     (defun nl_next_symbol_identity ()
       ;; Shared with the reader and C-ABI producer. The mutation epoch is

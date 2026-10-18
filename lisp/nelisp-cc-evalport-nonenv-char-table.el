@@ -214,21 +214,21 @@
                  (nl_sexp_clone_into val out)
                  0)
           1)))
-    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
-    (defun nl_char_table_set_range_raw_w (arg from to val _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
+    (defun nl_char_table_set_range_raw (arg from to val out)
       (let* ((tag (nelisp_ptr_read_u8 arg 0)))
         (if (= tag 9)
             (seq (nl_ct_set_range (ptr-read-u64 (+ arg 8) 0) from to val)
                  (nl_sexp_clone_into val out)
                  0)
-          1))
-        ) 0)
+          1)))
+    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
+    ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
+    ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `nl_char_table_set_range_raw'.
+    (defun nl_char_table_set_range_raw_w (arg from to val _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (nl_char_table_set_range_raw arg from to val out) 0)
             (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
-    (defun nl_char_table_set_range_raw (arg from to val out)
-      (nl_abi_word_to_rc (nl_char_table_set_range_raw_w arg from to val 0) out))))
+          (nl_abi_fail 1 0))))))
   "Interval-based CharTable get/set kernel.")
 (provide (quote nelisp-cc-evalport-nonenv-char-table))
 ;;; nelisp-cc-evalport-nonenv-char-table.el ends here
