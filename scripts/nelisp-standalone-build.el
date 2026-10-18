@@ -1629,6 +1629,43 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
 separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here
 are counted under their own names.")
 
+(defun nelisp-standalone--box-dump-json (x)
+  "X as a JSON-encodable value for the Doc 215 rewrite engine.
+Symbols become strings, strings become [\"$str\", S], a dotted tail becomes
+the two elements \"$dot\" TAIL, vectors become [\"$vec\", ...]."
+  (cond
+   ((null x) "nil")
+   ((eq x t) "t")
+   ((symbolp x) (symbol-name x))
+   ((stringp x) (vector "$str" x))
+   ((numberp x) x)
+   ((vectorp x) (vconcat (vector "$vec") (mapcar #'nelisp-standalone--box-dump-json x)))
+   ((consp x)
+    (let ((out nil) (tail x))
+      (while (consp tail)
+        (push (nelisp-standalone--box-dump-json (car tail)) out)
+        (setq tail (cdr tail)))
+      (when tail
+        (push "$dot" out)
+        (push (nelisp-standalone--box-dump-json tail) out))
+      (vconcat (nreverse out))))
+   (t (format "%S" x))))
+
+(defun nelisp-standalone--box-dump-record (name source)
+  "Append unit NAME's SOURCE as one JSON line to $NELISP_BOX_DUMP, if set.
+The Doc 215 rewrite engine (tools/ai/box-rewrite.py) reads these lines;
+like the census, they show the source after patches and before inlining."
+  (let ((file (getenv "NELISP_BOX_DUMP")))
+    (when (and file (not (string= file "")))
+      (require 'json)
+      (with-temp-buffer
+        (let ((json-encoding-pretty-print nil))
+          (insert (json-encode (list (cons "unit" name)
+                                     (cons "source" (nelisp-standalone--box-dump-json source)))))
+          (insert "\n"))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region (point-min) (point-max) file t 'silent))))))
+
 (defun nelisp-standalone--box-census-record (name source)
   "Append the box-migration census of unit NAME's SOURCE to the census file.
 Only active when NELISP_BOX_CENSUS names a file.  Called for every unit
@@ -1640,6 +1677,7 @@ once per call site).  Each line is UNIT TAB DEFUN TAB IDIOM TAB COUNT, one
 per defun and idiom with a nonzero count, plus UNIT TAB DEFUN TAB defun TAB 1
 for every defun; DEFUN is `-' for code outside any defun.  A unit compiled
 twice appears twice; readers keep the last occurrence of each unit."
+  (nelisp-standalone--box-dump-record name source)
   (let ((file (getenv "NELISP_BOX_CENSUS")))
     (when (and file (not (string= file "")))
       (let ((rows nil) (fn "-") (counts nil))
