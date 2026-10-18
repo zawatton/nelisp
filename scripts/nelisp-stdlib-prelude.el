@@ -24995,6 +24995,24 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
 (defvar nelisp--fx-table (make-hash-table :test 'eq :weakness 'key))
 (defvar nelisp-fx-enabled t)
 
+(defvar nelisp--fx-env-disabled nil
+  "(ENVIRONMENT . DISABLED): NELISP_FX_DISABLE as read from ENVIRONMENT.")
+(defun nelisp--fx-active-p ()
+  "Non-nil when functions should be noted and compiled for the VM.
+NELISP_FX_DISABLE=1 turns the runtime's VM lookups off; it also turns off
+every registration and its bookkeeping here.  Read once per process: the
+driver sets `process-environment' afresh in every process, a restored
+image included, so the cached answer is keyed by that list's identity
+\(`emacs-pid' costs ~10 ms here)."
+  (and nelisp-fx-enabled
+       (progn
+         (unless (eq (car nelisp--fx-env-disabled) process-environment)
+           (let ((v (getenv "NELISP_FX_DISABLE")))
+             (setq nelisp--fx-env-disabled
+                   (cons process-environment
+                         (and v (> (length v) 0) (eq (aref v 0) ?1))))))
+         (not (cdr nelisp--fx-env-disabled)))))
+
 (defun nelisp--fx-register (name)
   "Compile NAME's closure for the VM if the VM covers it; return NAME.
 Never signals: a failure leaves NAME to the interpreter."
@@ -25018,7 +25036,7 @@ Never signals: a failure leaves NAME to the interpreter."
 (defun nelisp--fx-defer (name &optional tries)
   "Note NAME's closure for compilation on its first call; return NAME."
   (condition-case nil
-      (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
+      (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
         (let ((fn (symbol-function name)))
           (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
             (let ((body (nthcdr 3 fn)))
@@ -25095,7 +25113,7 @@ Defining it as a function compiles them again.")
             (nelisp--fx-defer w)))))))
 
 (defun nelisp--fx-register-1 (name)
-  (when (and nelisp-fx-enabled (fboundp 'nelisp--fx-run) (fboundp name))
+  (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (let ((fn (symbol-function name)))
       (when (and (consp fn) (eq (car fn) 'closure) (equal (nth 1 fn) '(t)))
         (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
@@ -25203,6 +25221,7 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
   "Names defined before the word VM's registration hooks, newest first.")
 (defvar nelisp--fx-recording nil)
 (setq nelisp--fx-recording nil)
+(unless (nelisp--fx-active-p) (setq nelisp--fx-early-names nil))
 (defun nelisp--fx-register-prelude ()
   "Compile every function defined before the VM's hooks; answer the count.
 The cold-image dump calls this just before dumping, so a `--cold-load-from'
@@ -25222,6 +25241,7 @@ boot starts with the prelude already on the VM."
           ;; Pending too: compiling another function may call N first.
           (nelisp--fx-defer n))))
     (dolist (n names) (nelisp--fx-register n))
+    (clrhash nelisp--fx-pending)
     (condition-case nil (nelisp--fx-retry-errored) (error nil))
     (nelisp--fx-count)))
 (when (fboundp 'nl-afset)
@@ -25229,7 +25249,7 @@ boot starts with the prelude already on the VM."
   (fset 'nl-afset
         (lambda (name def &rest rest)
           (prog1 (apply 'nelisp--fx-plain-afset name def rest)
-            (when (symbolp name)
+            (when (and (symbolp name) (nelisp--fx-active-p))
               (nelisp--fx-check-macro name)
               (nelisp--fx-defer name)
               (nelisp--fx-retry-waiters name)
@@ -25257,6 +25277,6 @@ boot starts with the prelude already on the VM."
   (fset 'fset
         (lambda (symbol definition)
           (prog1 (nelisp--fx-plain-fset symbol definition)
-            (when (eq (car-safe definition) 'macro)
+            (when (and (eq (car-safe definition) 'macro) (nelisp--fx-active-p))
               (nelisp--fx-check-macro symbol)
               (nelisp--fx-retry-waiters symbol))))))
