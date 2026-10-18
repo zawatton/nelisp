@@ -7114,7 +7114,7 @@ argument (reachability + in-arena bounds checks).")
         ;; so a parked worker's collection still marks the in-flight value.
         (defun nelisp_eval_call_inner_w (form_ptr env _pad)
           (let* ((out (alloc-bytes 32 8)))
-            (nl_abi_status_fail (nelisp_eval_call_inner_rc form_ptr env out) out)))
+            (nl_abi_rc_to_word (nelisp_eval_call_inner_rc form_ptr env out) out)))
         (defun nelisp_eval_call_inner_rc (form_ptr env out)
           (seq
            ;; The iterative argument walker takes its marker before the first
@@ -41256,7 +41256,7 @@ nothing."
               (if ,test
                   (let* ((,out (alloc-bytes 32 8))
                          (nl_sp_rc (progn ,@body)))
-                    (if (= nl_sp_rc 2) 2 (nl_abi_status_fail nl_sp_rc ,out)))
+                    (if (= nl_sp_rc 2) 2 (nl_abi_rc_to_word nl_sp_rc ,out)))
                 2))
            `(defun nl_apply_special (,name ,args ,env ,out)
               (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
