@@ -78,10 +78,10 @@
 
     ;; `nl_env_set_value' reads a 32-byte view: a pointer WORD is its own
     ;; box; an immediate is materialised into SCRATCH.
-    (defun nl_sf_setq_view_into (w scratch)
+    (defun nl_sf_setq_view_into (scratch w)
       (extern-call nl_val_load w scratch))
     (defun nl_sf_setq_view (w _pad)
-      (if (= (logand w 1) 0) w (nl_sf_setq_view_into w (alloc-bytes 32 8))))
+      (if (= (logand w 1) 0) w (nl_sf_setq_view_into (alloc-bytes 32 8) w)))
 
     ;; Next pair, or W (the value just assigned) at the end.  W is
     ;; referenced from the variable's cell by now, so it stays reachable.

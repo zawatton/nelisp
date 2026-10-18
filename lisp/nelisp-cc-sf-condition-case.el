@@ -95,204 +95,95 @@
 
 (defconst nelisp-cc-sf-condition-case--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_condition_case_w' answers the protected
+    ;; form's value WORD, a handler body's value WORD, or 0 with the signal
+    ;; stashed (no clause matched, or the handler failed).  S1 is the
+    ;; caller's scratch slot: the error / success datum, then the handler
+    ;; body.  Arity even; each extern-call is the first argument.
 
-    ;;--- Body walk after match (handler progn) ---
+    ;; After nl_env_pop_frame (the handler's binding frame): discard pop-rc.
+    (defun nl_sf_cc_ret (pop-rc w _p2 _p3)
+      w)
 
-    ;; After nl_env_pop_frame: discard pop-rc, return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_cc_ret (pop-rc body-rc _p2 _p3)
-      body-rc)
+    (defun nl_sf_cc_released_w (release-rc w env _pad)
+      (nl_sf_cc_ret (extern-call nl_env_pop_frame env) w 0 0))
 
-    ;; After nl_root_release: pop the handler frame (extern-call FIRST), then
-    ;; return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_cc_released (release-rc body-rc env out)
-      (nl_sf_cc_ret
-       (extern-call nl_env_pop_frame env)
-       body-rc 0 0))
+    (defun nl_sf_cc_finish_w (w root-mark env _pad)
+      (nl_sf_cc_released_w (extern-call nl_root_release env root-mark) w env 0))
 
-    ;; body-rc = result of handler body eval (0=Ok or 1=Err).
-    ;; Release the body root unconditionally (extern-call FIRST).
-    ;; Arity 4 (even).
-    (defun nl_sf_cc_finish (body-rc root-mark env out)
-      (nl_sf_cc_released
-       (extern-call nl_root_release env root-mark)
-       body-rc env out))
+    ;; The handler body is cloned into a reserved root slot (S1 is scratch)
+    ;; and run as a progn.  Its WORD crosses only the root release and the
+    ;; frame pop, neither a safepoint (Doc 215 R2).
+    (defun nl_sf_cc_body_cloned_w (clone-rc root-slot root-mark env)
+      (nl_sf_cc_finish_w (nl_sf_progn_w root-slot env 0 0) root-mark env 0))
 
-    ;; After nelisp_eval_call on one body form: rc=0 → fetch the tail
-    ;; (extern-call FIRST), then recurse.  Fetching the cdr only after eval
-    ;; avoids carrying an unrooted materialised immediate-cdr view across
-    ;; eval's possible collection; body is the rooted CONS view.
-    ;; rc!=0 → pop frame, return 1 (stash already done by eval).
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_body_step (eval-rc body root-mark env out _p6)
-      (if (= eval-rc 0)
-          (nl_sf_cc_body_walk
-           (extern-call nl_cons_cdr_word body)
-           root-mark env out 0 0)
-        (nl_sf_cc_finish 1 root-mark env out)))
+    (defun nl_sf_cc_body_slot_w (root-slot body root-mark env)
+      (nl_sf_cc_body_cloned_w (extern-call nl_sexp_clone_into body root-slot)
+                              root-slot root-mark env))
 
-    ;; car-ptr already fetched. Eval one body form into out (extern-call FIRST),
-    ;; carrying the rooted body CONS rather than a possibly materialised cdr.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_body_eval (car-ptr body root-mark env out _p6)
-      (nl_sf_cc_body_step
-       (extern-call nelisp_eval_call car-ptr env out)
-       body root-mark env out 0))
+    (defun nl_sf_cc_body_mark_w (root-mark body env _pad)
+      (nl_sf_cc_body_slot_w (extern-call nl_root_reserve env) body root-mark env))
 
-    ;; Recursive body-eval entry. body: ptr to remaining body cons list.
-    ;; If Nil (tag 0) → release root, pop frame, and return 0 (last value
-    ;; already in *out).
-    ;; Else: fetch car for eval (extern-call FIRST).
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_body_walk (body root-mark env out _p5 _p6)
-      (if (= (sexp-tag body) 0)
-          (nl_sf_cc_finish 0 root-mark env out)
-        (nl_sf_cc_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body root-mark env out 0)))
+    (defun nl_sf_cc_body_w (body env _pad _pad1)
+      (nl_sf_cc_body_mark_w (extern-call nl_root_mark env) body env 0))
 
-    ;; The stable root slot now contains the BODY Cons word.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_body_cloned (clone-rc root-slot root-mark env out _p6)
-      (nl_sf_cc_body_walk root-slot root-mark env out 0 0))
-
-    ;; root-slot was reserved as argument 0.  Clone BODY into it
-    ;; (extern-call FIRST), then enter the walk.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_body_slot (root-slot body root-mark env out _p6)
-      (nl_sf_cc_body_cloned
-       (extern-call nl_sexp_clone_into body root-slot)
-       root-slot root-mark env out 0))
-
-    ;; root-mark was captured as argument 0.  Reserve one dynamic root slot
-    ;; (extern-call FIRST) for the handler BODY Cons view.
-    ;; Arity 4 (even).
-    (defun nl_sf_cc_body_mark (root-mark body env out)
-      (nl_sf_cc_body_slot
-       (extern-call nl_root_reserve env)
-       body root-mark env out 0))
-
-    ;; Public handler-body entry.  `s1' is arena scratch, so root a stable
-    ;; clone before any handler form can collect (extern-call FIRST).
-    ;; Arity 4 (even).
-    ;; OUT is cleared first: an empty handler body must answer nil, not
-    ;; whatever the failed protected form left in the shared result slot.
-    (defun nl_sf_cc_body (body env out _pad)
-      (seq
-       (nl_cons_write_nil out)
-       (nl_sf_cc_body_mark
-        (extern-call nl_root_mark env)
-        body env out)))
-
-    ;;--- Match dispatch ---
-
-    ;; After nl_cc_match_and_bind: match-rc=0 = frame pushed, *s1 now holds
-    ;; the BODY cons list (overwritten from err).  match-rc=1 = no clause
-    ;; matched (helper re-stashed err to nelisp--last-signal-data).
-    ;; On match: walk body forms (s1 is the body cons start).
-    ;; On miss: return 1 (no frame pushed).
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_after_match (match-rc env out s1 _p5 _p6)
+    ;; A clause matched: clear the signal flag (and the backtrace snapshot)
+    ;; before the handler runs.  No match: the signal stays stashed.
+    (defun nl_sf_cc_after_match_w (match-rc env _pad s1)
       (if (= match-rc 0)
-          (nl_sf_cc_body s1 env out 0)
-        1))
-
-    ;;--- :success ---
-
-    ;; A `:success' clause runs when the protected form did NOT signal, with
-    ;; VAR bound to its value -- Emacs 26's addition.  Nothing here looked for
-    ;; one, so the clause was inert and its body never ran: the value of the
-    ;; protected form came back instead, which is what a `condition-case' with
-    ;; no handler at all answers.  Silent, and indistinguishable from a
-    ;; `:success' body that simply returned its argument.
-    ;;
-    ;; succ-rc=0 = a `:success' clause matched, the frame is pushed and *s1
-    ;; now holds its BODY (overwritten from the value).  succ-rc=1 = no such
-    ;; clause, nothing pushed, *out still holds the value.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_after_success (succ-rc env out s1 _p5 _p6)
-      (if (= succ-rc 0)
-          (nl_sf_cc_body s1 env out 0)
+          (seq (ptr-write-u64 268435472 0 0)
+               (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+               (nl_sf_cc_body_w s1 env 0 0))
         0))
 
-    ;; The value has been cloned from *out into *s1 (clone-rc discarded), so
-    ;; `nl_cc_success_and_bind' takes exactly the slot shape
-    ;; `nl_cc_match_and_bind' does: one in-out slot carrying the value in and
-    ;; the matched body out.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_try_success (clone-rc clauses-ptr var-ptr env out s1)
-      (nl_sf_cc_after_success
+    ;; No :success clause: the protected value (in the private box PV).
+    (defun nl_sf_cc_after_success_w (succ-rc env pv s1)
+      (if (= succ-rc 0)
+          (nl_sf_cc_body_w s1 env 0 0)
+        (nl_val_store_word pv)))
+
+    (defun nl_sf_cc_try_success_w (clone-rc clauses-ptr var-ptr env pv s1)
+      (nl_sf_cc_after_success_w
        (extern-call nl_cc_success_and_bind clauses-ptr s1 var-ptr env)
-       env out s1 0 0))
+       env pv s1))
 
-    ;; After nelisp_eval_call_with_err: rc=0 → look for a `:success' clause
-    ;; (extern-call FIRST is the clone of the value into the scratch slot).
-    ;; rc=1 → *s1 contains err sexp; dispatch to match helper.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_after_eval (rc clauses-ptr var-ptr env out s1)
+    (defun nl_sf_cc_after_eval_w (rc clauses-ptr var-ptr env pv s1)
       (if (= rc 0)
-          (nl_sf_cc_try_success
-           (extern-call nl_sexp_clone_into out s1)
-           clauses-ptr var-ptr env out s1)
-        (nl_sf_cc_after_match
+          (nl_sf_cc_try_success_w (extern-call nl_sexp_clone_into pv s1)
+                                  clauses-ptr var-ptr env pv s1)
+        (nl_sf_cc_after_match_w
          (extern-call nl_cc_match_and_bind clauses-ptr s1 var-ptr env)
-         env out s1 0 0)))
+         env 0 s1)))
 
-    ;; Eval the PROTECTED form via nelisp_eval_call_with_err (extern-call FIRST).
-    ;; The 4th extern arg `s1' acts as the err slot — *s1 becomes signal_data()
-    ;; sexp on rc=1, untouched on rc=0.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_dispatch (clauses-ptr var-ptr protected-ptr env out s1)
-      (nl_sf_cc_after_eval
-       (extern-call nelisp_eval_call_with_err protected-ptr env out s1)
-       clauses-ptr var-ptr env out s1))
+    ;; The protected form is evaluated through `nelisp_eval_call_with_err'
+    ;; into the private box PV (its error datum goes to S1).
+    (defun nl_sf_cc_dispatch_w (clauses-ptr var-ptr protected-ptr env pv s1)
+      (nl_sf_cc_after_eval_w
+       (extern-call nelisp_eval_call_with_err protected-ptr env pv s1)
+       clauses-ptr var-ptr env pv s1))
 
-    ;;--- Args destructuring ---
+    (defun nl_sf_cc_split_rest_w (protected-ptr cdr1 var-ptr env _pad s1)
+      (let* ((pv (alloc-bytes 32 8)))
+        (nl_sf_cc_dispatch_w (extern-call nl_cons_cdr_word cdr1)
+                             var-ptr protected-ptr env pv s1)))
 
-    ;; cdr1 = cdr(args) already fetched.  We've also got var-ptr =
-    ;; car(args).  protected-ptr = car(cdr1) is passed in as arg 0.
-    ;; Now we need clauses-ptr = cdr(cdr1) — extern-call FIRST.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_split_rest (protected-ptr cdr1 var-ptr env out s1)
-      (nl_sf_cc_dispatch
-       (extern-call nl_cons_cdr_word cdr1)
-       var-ptr protected-ptr env out s1))
+    (defun nl_sf_cc_with_var_w (var-ptr args cdr1 env _pad s1)
+      (nl_sf_cc_split_rest_w (extern-call nl_cons_car_ptr cdr1) cdr1 var-ptr env 0 s1))
 
-    ;; var-ptr fetched, cdr1 in hand.  Now fetch protected-ptr = car(cdr1)
-    ;; (extern-call FIRST), then delegate to split_rest.
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_with_var (var-ptr args cdr1 env out s1)
-      (nl_sf_cc_split_rest
-       (extern-call nl_cons_car_ptr cdr1)
-       cdr1 var-ptr env out s1))
-
-    ;; cdr1 fetched.  Check it is also a Cons (= condition-case has at least
-    ;; (VAR PROTECTED)); else return 1 (malformed args, no stash needed —
-    ;; caller's consume_stashed_error will fall through to Internal).
-    ;; On well-formed args: get var-ptr = car(args) (extern-call FIRST).
-    ;; Arity 6 (even).
-    (defun nl_sf_cc_after_cdr1 (cdr1 args env out s1 _p6)
+    (defun nl_sf_cc_after_cdr1_w (cdr1 args env _pad s1 _p6)
       (if (= (sexp-tag cdr1) 7)
-          (nl_sf_cc_with_var
-           (extern-call nl_cons_car_ptr args)
-           args cdr1 env out s1)
-        1))
+          (nl_sf_cc_with_var_w (extern-call nl_cons_car_ptr args) args cdr1 env 0 s1)
+        (nl_abi_fail 1 0)))
 
-    ;; Public entry: nl_sf_condition_case(args, env, out, s1) → i64
-    ;; args: *const Sexp = (VAR PROTECTED CLAUSE...) — must be Cons (tag 7).
-    ;; env:  *mut c_void = &mut Env.
-    ;; out:  *mut Sexp   = result slot (Nil initially from Rust thin shell).
-    ;; s1:   *mut Sexp   = err/body scratch slot (Nil initially).
-    ;; Returns: 0=Ok (result in *out), 1=Err (err stashed in env var).
-    ;; Empty args (Nil tag 0) → return 1 (malformed).
-    ;; Arity 4 (even).
-    (defun nl_sf_condition_case (args env out s1)
+    ;; `(condition-case VAR)' without a protected form fails the form.
+    (defun nl_sf_condition_case_w (args env _pad s1)
       (if (= (sexp-tag args) 7)
-          (nl_sf_cc_after_cdr1
-           (extern-call nl_cons_cdr_ptr args)
-           args env out s1 0)
-        1)))
+          (nl_sf_cc_after_cdr1_w (extern-call nl_cons_cdr_ptr args) args env 0 s1 0)
+        (nl_abi_fail 1 0)))
+
+    ;; (rc, OUT) adapter.
+    (defun nl_sf_condition_case (args env out s1)
+      (nl_abi_word_to_rc (nl_sf_condition_case_w args env 0 s1) out)))
 
   "AOT source for `nl_sf_condition_case'.
 

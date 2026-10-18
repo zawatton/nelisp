@@ -2780,6 +2780,9 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; A legacy (rc, private OUT box) as a word result where rc 1 may come
     ;; without a stash (it is a failure, never a miss): 0 after making sure
     ;; a signal is stashed.
+    ;; rc (2 = not handled) + private OUT box -> WORD, 2 passed through.
+    (defun nl_abi_rc2_to_word (rc out)
+      (if (= rc 2) 2 (nl_abi_rc_to_word rc out)))
     (defun nl_abi_status_fail (rc out)
       (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0)))
     ;; A lookup's legacy (status, private OUT box) as its word result.
@@ -28277,6 +28280,11 @@ relies on for `nelisp-cc-evalport-combiner-cons--source' and its siblings).")
     (defun nl_sf_function (_a _e _o _p) 1) (defun nl_sf_condition_case (_a _e _o _p) 1)
     (defun nl_sf_unwind_protect (_a _e _o _p) 1) (defun nl_sf_quote (_a _o) 1)
     (defun nl_sf_progn (_a _e _o _p) 1)
+    (defun nl_sf_if_w (_a _e _o _p) 0) (defun nl_sf_let_w (_a _e _o _p) 0)
+    (defun nl_sf_let_star_w (_a _e _o _p) 0) (defun nl_sf_setq_w (_a _e _o _p) 0)
+    (defun nl_sf_while_w (_a _e _o _p) 0) (defun nl_sf_lambda_w (_a _e _o _p) 0)
+    (defun nl_sf_function_w (_a _e _o _p) 0) (defun nl_sf_condition_case_w (_a _e _o _p) 0)
+    (defun nl_sf_unwind_protect_w (_a _e _o _p) 0) (defun nl_sf_progn_w (_a _e _o _p) 0)
     (defun nl_env_lookup_val (_f _e _o) 1) (defun nl_cell_get_value (_c _o) 1)
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
@@ -41230,6 +41238,47 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (if (= (nl_sp_maybe_special ,(car args)) 1) (progn ,@body) 2)))
     (_ (error "special prefilter: unexpected form %S" (car-safe form)))))
 
+(defconst nelisp-standalone--special-word-forms
+  '(nl_sf_progn nl_sf_if nl_sf_let nl_sf_let_star nl_sf_setq nl_sf_while
+    nl_sf_function nl_sf_lambda nl_sf_condition_case nl_sf_unwind_protect
+    nl_sf_catch nl_sf_throw)
+  "Special-form entries with a Doc 215 word form F_w (OUT is their third
+argument).  `nl_apply_special_w' calls F_w directly.")
+
+(defun nelisp-standalone--special-tail-words (form out)
+  "FORM, a tail of the `nl_apply_special' dispatch body answering an rc with
+the value in OUT, rewritten to answer the result WORD (2 = not special).
+Tail calls of `nelisp-standalone--special-word-forms' become F_w calls with
+OUT replaced by 0; any other tail rc form runs against a private OUT box
+\(`nl_abi_rc2_to_word').  So does any subtree that uses OUT outside a tail."
+  (cl-labels
+      ((uses-out (x) (cond ((eq x out) t)
+                           ((consp x) (or (uses-out (car x)) (uses-out (cdr x))))))
+       (wrap (x) `(let* ((,out (alloc-bytes 32 8))) (nl_abi_rc2_to_word ,x ,out)))
+       (tail (x)
+         (cond
+          ((eql x 2) 2)
+          ((and (consp x) (eq (car x) 'if))
+           (if (uses-out (nth 1 x))
+               (wrap x)
+             `(if ,(nth 1 x) ,(tail (nth 2 x)) ,(tail (nth 3 x)))))
+          ((and (consp x) (memq (car x) '(progn seq)))
+           (let ((init (butlast (cdr x))))
+             (if (cl-some #'uses-out init)
+                 (wrap x)
+               `(,(car x) ,@init ,(tail (car (last x)))))))
+          ((and (consp x) (memq (car x) '(let let*)))
+           (let ((init (butlast (cddr x))))
+             (if (or (uses-out (nth 1 x)) (cl-some #'uses-out init))
+                 (wrap x)
+               `(,(car x) ,(nth 1 x) ,@init ,(tail (car (last x)))))))
+          ((and (consp x) (memq (car x) nelisp-standalone--special-word-forms)
+                (eq (nth 3 x) out) (= (cl-count out (cdr x)) 1)
+                (not (cl-some #'uses-out (cl-remove out (cdr x)))))
+           `(,(intern (format "%s_w" (car x))) ,@(cl-substitute 0 out (cdr x))))
+          (t (wrap x)))))
+    (tail form)))
+
 (defun nelisp-standalone--special-word-abi (form)
   "Split the prefiltered `nl_apply_special' FORM into the Doc 215 word entry
 `nl_apply_special_w' (result WORD, 0 = signal stashed, 2 = not a special
@@ -41241,9 +41290,7 @@ nothing."
         (if ,test (progn . ,body) 2))
      (list `(defun nl_apply_special_w (,name ,args ,env _pad)
               (if ,test
-                  (let* ((,out (alloc-bytes 32 8))
-                         (nl_sp_rc (progn ,@body)))
-                    (if (= nl_sp_rc 2) 2 (nl_abi_rc_to_word nl_sp_rc ,out)))
+                  ,(nelisp-standalone--special-tail-words (cons 'progn body) out)
                 2))
            `(defun nl_apply_special (,name ,args ,env ,out)
               (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
