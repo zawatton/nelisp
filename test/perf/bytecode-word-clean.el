@@ -16,14 +16,21 @@
 ;; (default 0).
 
 (defvar bwcl-verbose nil)
-(defconst bwcl-allowed '(nl_bi_strptr)
-  "Symbols ending in ptr that answer raw data addresses, not box views.")
+(defconst bwcl-allowed
+  '(nl_bi_strptr bf_str_ptr nl_frame_push_sym0_ptr nl_frame_push_sym1_ptr
+    m5_concat_arg_ptr)
+  "Symbols ending in ptr that answer raw addresses, not materialized box views:
+string data pointers, the two static frame-push symbol cells, and the m5
+string builder's borrowed view of an invalid `concat' element (error
+reporting only).")
 
-(defconst bwcl-boundary-fns '(wf_bytecode_w_newbox)
+(defconst bwcl-boundary-fns '(wf_bytecode_w_newbox wf_bytecode_w_builder)
   "Named boundary helpers allowed to allocate a heap word's 32-byte box.
 A heap object's word is a pointer to its own immutable 32-byte box, so
 building a new value (a cons result, a boxed callee's heap result)
-allocates exactly one; every such site goes through these helpers.")
+allocates exactly one; every such site goes through `wf_bytecode_w_newbox'.
+`wf_bytecode_w_builder' allocates the m5 string builder header, which is
+not a value box.")
 
 (defun bwcl-count (form)
   (let ((n 0))
