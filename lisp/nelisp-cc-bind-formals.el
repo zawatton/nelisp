@@ -268,7 +268,7 @@
     ;; Arity 6 (even).
     (defun nl_bf_get_cdr (name-ptr formals args env state _p6)
       (nl_bf_dispatch
-       (extern-call nl_cons_cdr_ptr formals)
+       (extern-call nl_cons_cdr_word formals)
        name-ptr args env state 0))
 
     ;; Main loop entry.

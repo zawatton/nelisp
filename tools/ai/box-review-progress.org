@@ -1,0 +1,106 @@
+#+TITLE: Word transport, transport only (heap object layout unchanged): retire 32-byte transport boxes
+
+# Design, rooting rule and coexistence ABI: docs/design/215-word-transport-migration.org
+#
+# Reading: every runtime function passes and returns 64-bit tagged WORDs;
+# 32-byte boxes that only carry a value between functions go away.  Cons,
+# string, vector and record objects keep their layout.  wf_bytecode_* is out
+# of scope until eval/bytecode-20261018 merges; m5_fx_* / nl_fx_* belong to
+# the eval-s2s3 lane.
+#
+# Progress is the census (tools/ai/box-census.py) plus this meter.
+#
+# Env:
+#   BOX_BIN         dynamic build under test
+#   BOX_BASE_BIN    dynamic build of e0ab2ae3a
+#   BOX_STATIC_BIN  static build of the same source as BOX_BIN
+# Files written by hand after each build (never by the meter):
+#   target/boxreview/census-current.tsv  NELISP_BOX_CENSUS output of the BOX_BIN build
+#   target/boxreview/rec-current.json    box-callgrind.py record "$BOX_BIN"
+#   target/boxreview/rec-base.json       box-callgrind.py record "$BOX_BASE_BIN",
+#                                        recorded in the same batch as rec-current
+#
+# Baselines (GC-normalised windows, recorded together 2026-10-18):
+#   base e0ab2ae3a  re 26422 allocs 47.34M Ir/match; call 89.9 / 166.8k; loop 21.0 / 54.4k
+#   census baseline (31e5395ce + census hook, 114 units, 2786 defuns): 1977 debt
+#   sites; stage-1 families gc 3, binders 89, regexp 123, evaluator 1198;
+#   cons accessors in stage 1: 337.
+# Instruction counts move with wall-clock-dependent polling under valgrind,
+# so instruction criteria compare two records made in the same batch.
+
+* S1 Measurement, census and rules
+
+** S1.1 The allocation recorder and the census tool parse and print usage
+cmd: python3 -m py_compile test/perf/box-callgrind.py tools/ai/box-census.py && python3 test/perf/box-callgrind.py 2>&1 | grep -q 'box-callgrind.py record' && python3 tools/ai/box-census.py 2>&1 | grep -q 'box-census.py summary'
+
+** S1.2 The baseline census is recorded unchanged
+evidence: target/boxreview/census-baseline.tsv sha256=8a6b471a1921dfcd8cfec177cc2dfbc0c805a2a9a9d5ba893c5d373859ec3d35
+
+** S1.3 The design doc states the rooting rule and the coexistence ABI
+cmd: grep -q '^\* Rooting rule' docs/design/215-word-transport-migration.org && grep -q '^\* Coexistence ABI' docs/design/215-word-transport-migration.org && grep -q 'R2 (worker-reachable code)' docs/design/215-word-transport-migration.org
+
+** S1.4 The base record belongs to the base binary
+#+REQUIRES: BOX_BASE_BIN
+cmd: python3 test/perf/box-callgrind.py check "$BOX_BASE_BIN" target/boxreview/rec-base.json --max re.alloc=27000 --max call.alloc=95 --max loop.alloc=22
+
+** S1.5 End to end: the current census covers every linked function of BOX_BIN
+#+REQUIRES: BOX_BIN
+cmd: test "$(awk -F'\t' '$3=="defun"' target/boxreview/census-current.tsv | wc -l)" -ge "$(nm "$BOX_BIN" | grep -c ' [Tt] nl_\| [Tt] nelisp_\| [Tt] wf_\| [Tt] bf_\| [Tt] m5_')"
+
+* S2 Playbook family: cons accessors in the stage-1 families
+
+** S2.1 No nl_cons_car_ptr / nl_cons_cdr_ptr left in the stage-1 families
+cmd: python3 tools/ai/box-census.py check target/boxreview/census-current.tsv --family stage1 --idiom nl_cons_car_ptr --idiom nl_cons_cdr_ptr --max 0
+
+** S2.2 Every standalone check passes or is known-red (includes prn-string-escape)
+#+REQUIRES: BOX_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$BOX_BIN" test/perf/standalone-checks.sh
+
+** S2.3 The word-VM spike check and the shallow-binding check pass
+#+REQUIRES: BOX_BIN
+#+TIMEOUT: 600
+cmd: timeout 280 "$BOX_BIN" --load test/perf/fx-spike-check.el >/dev/null 2>&1 && timeout 280 "$BOX_BIN" --load test/standalone-shallow-binding-check.el >/dev/null 2>&1
+
+** S2.4 The four Doc 199 thread smokes pass on the static build
+#+REQUIRES: BOX_STATIC_BIN
+#+TIMEOUT: 600
+cmd: for f in tools/nelisp-thread-allocating-standalone-smoke.el tools/nelisp-thread-mirror-guard-smoke.el tools/nelisp-thread-percpu-roots-smoke.el tools/nelisp-thread-standalone-smoke.el; do timeout 140 "$BOX_STATIC_BIN" --load "$f" >/dev/null 2>&1 || exit 1; done
+
+** S2.5 End to end: the regexp benchmark runs and a match allocates at most 19000 (base 26422)
+#+REQUIRES: BOX_BIN
+#+TIMEOUT: 300
+cmd: timeout 280 "$BOX_BIN" --load test/perf/shallow-binding-bench.el | grep -q '^SB-BENCH regex' && python3 test/perf/box-callgrind.py check "$BOX_BIN" target/boxreview/rec-current.json --max re.alloc=19000
+
+* S3 Stage 1: hot paths at census 0 (evaluator, binders, regexp support, GC)
+
+** S3.1 GC family census is 0
+cmd: python3 tools/ai/box-census.py check target/boxreview/census-current.tsv --family gc --max 0
+
+** S3.2 Binder family census is 0
+cmd: python3 tools/ai/box-census.py check target/boxreview/census-current.tsv --family binders --max 0
+
+** S3.3 Regexp-support family census is 0
+cmd: python3 tools/ai/box-census.py check target/boxreview/census-current.tsv --family regexp --max 0
+
+** S3.4 Evaluator family census is 0
+cmd: python3 tools/ai/box-census.py check target/boxreview/census-current.tsv --family evaluator --max 0
+
+** S3.5 Every standalone check passes or is known-red
+#+REQUIRES: BOX_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$BOX_BIN" test/perf/standalone-checks.sh
+
+** S3.6 The four Doc 199 thread smokes pass on the static build
+#+REQUIRES: BOX_STATIC_BIN
+#+TIMEOUT: 600
+cmd: for f in tools/nelisp-thread-allocating-standalone-smoke.el tools/nelisp-thread-mirror-guard-smoke.el tools/nelisp-thread-percpu-roots-smoke.el tools/nelisp-thread-standalone-smoke.el; do timeout 140 "$BOX_STATIC_BIN" --load "$f" >/dev/null 2>&1 || exit 1; done
+
+** S3.7 Instructions per iteration are at least 5% below the base on every workload (same batch)
+#+REQUIRES: BOX_BIN
+cmd: python3 -c "import json,sys; a=json.load(open('target/boxreview/rec-base.json')); b=json.load(open('target/boxreview/rec-current.json')); sys.exit(0 if all(b[k]<=0.95*a[k] for k in ('re.instr','call.instr','loop.instr')) else 1)"
+
+** S3.8 End to end: allocations per iteration at most re 8000, call 30, loop 4
+#+REQUIRES: BOX_BIN
+#+TIMEOUT: 300
+cmd: timeout 280 "$BOX_BIN" --load test/perf/shallow-binding-bench.el | grep -q '^SB-BENCH regex' && python3 test/perf/box-callgrind.py check "$BOX_BIN" target/boxreview/rec-current.json --max re.alloc=8000 --max call.alloc=30 --max loop.alloc=4

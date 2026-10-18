@@ -243,7 +243,7 @@
           0
         (nelisp_frame_stack_find_descend
          (record-slot-ref-ptr frames-ptr 0)
-         (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+         (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
          name-ptr)))
 
     ;; ============================================================
@@ -331,7 +331,7 @@
             (if (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
                 1
               (nl_capture_filter_contains
-               (extern-call nl_cons_cdr_ptr filter-ptr)
+               (extern-call nl_cons_cdr_word filter-ptr)
                name-ptr)))
         0))
 
@@ -397,7 +397,7 @@
 
     (defun nelisp_frame_name_count (names)
       (if (= (sexp-tag names) 7)
-          (+ 1 (nelisp_frame_name_count (nl_cons_cdr_ptr names))) 0))
+          (+ 1 (nelisp_frame_name_count (nl_cons_cdr_word names))) 0))
 
     (defun nelisp_frame_declaration_scope_p (frame)
       ;; Empty and dynamic-only lets do not establish a lexical environment.
@@ -426,7 +426,7 @@
 
     (defun nelisp_frame_local_declare (frames name)
       (nelisp_frame_local_declare_walk (record-slot-ref-ptr frames 0)
-       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nelisp_frame_local_special_walk (backing i name)
       (if (< i 0) 0
@@ -438,15 +438,15 @@
 
     (defun nelisp_frame_local_special_p (frames name)
       (nelisp_frame_local_special_walk (record-slot-ref-ptr frames 0)
-       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nl_capture_local_names (names out)
       ;; Bare names carry local declarations, distinct from (NAME . CELL).
       ;; Preserve all declarations, including names bound inside lambda bodies
       ;; that a free-variable filter would otherwise omit.
       (if (= (sexp-tag names) 7)
-          (seq (cons-make-with-clone (nl_cons_car_ptr names) out out)
-               (nl_capture_local_names (nl_cons_cdr_ptr names) out))
+          (seq (cons-make-with-clone (nl_cons_car_word names) out out)
+               (nl_capture_local_names (nl_cons_cdr_word names) out))
         1))
 
     (defun nl_capture_local_declarations (frame out)
@@ -454,7 +454,7 @@
         (if (= names 0) 1 (nl_capture_local_names names out))))
 
     (defun nelisp_frame_scope_mark (frames-ptr)
-      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))))
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)))
         (if (> depth 0)
             (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames-ptr 0)
                                          (- depth 1))))
@@ -528,7 +528,7 @@
     (defun nl_capture_walk_filter_symbols (frame-ptr filter-ptr pair-slot out)
       (if (= (sexp-tag filter-ptr) 7)
           (let* ((sym-ptr (extern-call nl_cons_car_ptr filter-ptr))
-                 (rest-ptr (extern-call nl_cons_cdr_ptr filter-ptr))
+                 (rest-ptr (extern-call nl_cons_cdr_word filter-ptr))
                  (cell-ptr (if (= (nelisp_frame_binding_dynamic_p frame-ptr sym-ptr) 1)
                                0
                              (nelisp_frame_stack_find_in_frame frame-ptr sym-ptr))))
@@ -563,16 +563,16 @@
       (if (= cell-ptr 0)
           1
         (if (= (sexp-tag cell-ptr) 7)
-            (let* ((pair-view (extern-call nl_cons_car_ptr cell-ptr))
+            (let* ((pair-view (extern-call nl_cons_car_word cell-ptr))
                    (name-ptr (extern-call nl_cons_car_ptr pair-view))
-                   (cell-view (extern-call nl_cons_cdr_ptr pair-view)))
+                   (cell-view (extern-call nl_cons_cdr_word pair-view)))
               (and (if (if (= (nelisp_frame_binding_dynamic_p frame-ptr name-ptr) 1)
                            0
                          (nl_capture_name_allowed filtered filter-ptr name-ptr))
                        (nl_capture_emit_one name-ptr cell-view pair-slot out)
                      1)
                    (nl_capture_walk_bucket
-                    (extern-call nl_cons_cdr_ptr cell-ptr)
+                    (extern-call nl_cons_cdr_word cell-ptr)
                     pair-slot out filtered filter-ptr frame-ptr)))
           1)))
 

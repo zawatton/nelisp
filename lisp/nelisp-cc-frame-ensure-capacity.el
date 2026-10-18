@@ -109,7 +109,7 @@
             (record-slot-ref-ptr frames-ptr 0)
             scratch-slot
             0
-            (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)))
+            (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2))
            (record-slot-set frames-ptr 0 scratch-slot)
            new-cap))
     (defun nelisp_frame_stack_ensure_capacity_initial (cap)

@@ -15,7 +15,7 @@
 ;; Algorithm (= literal transcription of the Rust body):
 ;;
 ;;   1. Read DEPTH from Env::frames_record slot 1 via
-;;      `(sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))'.
+;;      `(sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)'.
 ;;      If 0 (= no active lexical frame): go to mirror path (step 3).
 ;;
 ;;   2. Frame path (DEPTH > 0):
@@ -177,7 +177,7 @@
     ;; No extern-call in this defun ✓.
     (defun nelisp_env_bind_local
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
-      (if (= (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 0)
+      (if (= (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 0)
           (nelisp_env_bl_mirror mirror-ptr name-ptr scratch-ptr 0)
         (nelisp_env_bl_frame frames-ptr name-ptr val-ptr scratch-ptr))))
   "AOT source for Wave b `Env::bind_local' body.

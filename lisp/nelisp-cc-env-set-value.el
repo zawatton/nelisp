@@ -126,7 +126,7 @@
           (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
             (if (and (= candidate 3)
                      (if (> (record-slot-count entry) 5)
-                         (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1))
+                         (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
                 (if (= scratch-ptr 0)
                     (nelisp_env_setv_mirror_lazy
                      mirror-ptr name-ptr val-ptr unbound-ptr)
@@ -181,7 +181,7 @@
           (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
                  (local-p (if (= entry 0) 0
                             (if (> (record-slot-count entry) 5)
-                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                                (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                  (cell-ptr (if (= local-p 1)
                                (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
                              (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
@@ -250,7 +250,7 @@
           (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
                  (local-p (if (= entry 0) 0
                             (if (> (record-slot-count entry) 5)
-                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                                (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                  (cell-ptr (if (= local-p 1)
                                (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
                              (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))

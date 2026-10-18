@@ -48,12 +48,13 @@
      ;;     materialise via `nl_val_load(word, box)' (one box per call ->
      ;;     no shared-scratch clobber under list-walk recursion where the
      ;;     cdr-ptr result is held across the recursive descent).
+     (if (= (logand arg 1) 1) 0
      (if (= (sexp-tag arg) 7)
          (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 8)))
            (if (= (logand word 1) 0)
                word
              (extern-call nl_val_load word (alloc-bytes 32 8))))
-       0))
+       0)))
   "AOT source for `nl_cons_cdr_ptr' (Doc 147 Phase 3 materialiser).
 
 Returns a 32B-slot VIEW of the cons CDR when arg is Sexp::Cons (tag 7),

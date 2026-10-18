@@ -88,7 +88,7 @@
     (defun nl_bf_pc_args_step (cur ac req _pad)
       (if (= (sexp-tag cur) 7)
           ;; Cons: advance through the Doc 147 cdr view, increment count.
-          (nl_bf_pc_args_step (nl_cons_cdr_ptr cur) (+ ac 1) req 0)
+          (nl_bf_pc_args_step (nl_cons_cdr_word cur) (+ ac 1) req 0)
         ;; Nil or other: done counting args.
         (nl_bf_pc_pack ac req 0 0)))
 
@@ -99,7 +99,7 @@
     (defun nl_bf_pc_req_dispatch (tag cur req args)
       (if (= tag 0)
           ;; Normal required formal: advance through the Doc 147 cdr view.
-          (nl_bf_pc_req_step (nl_cons_cdr_ptr cur) (+ req 1) args 0)
+          (nl_bf_pc_req_step (nl_cons_cdr_word cur) (+ req 1) args 0)
         ;; &optional, &rest, or non-sym: done counting required.
         (nl_bf_pc_args_step args 0 req 0)))
 

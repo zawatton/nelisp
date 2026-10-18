@@ -128,7 +128,7 @@
     (defun nl_sf_cc_body_step (eval-rc body root-mark env out _p6)
       (if (= eval-rc 0)
           (nl_sf_cc_body_walk
-           (extern-call nl_cons_cdr_ptr body)
+           (extern-call nl_cons_cdr_word body)
            root-mark env out 0 0)
         (nl_sf_cc_finish 1 root-mark env out)))
 
@@ -256,7 +256,7 @@
     ;; Arity 6 (even).
     (defun nl_sf_cc_split_rest (protected-ptr cdr1 var-ptr env out s1)
       (nl_sf_cc_dispatch
-       (extern-call nl_cons_cdr_ptr cdr1)
+       (extern-call nl_cons_cdr_word cdr1)
        var-ptr protected-ptr env out s1))
 
     ;; var-ptr fetched, cdr1 in hand.  Now fetch protected-ptr = car(cdr1)

@@ -1185,7 +1185,7 @@
         -1))
 
     (defun nelisp_reader_p_bool_vector_prefix_p (str-ptr cursor-slot)
-      (let* ((cursor (sexp-int-unwrap cursor-slot)))
+      (let* ((cursor (nl_word_payload cursor-slot)))
         (if (< cursor (str-len str-ptr))
             (nelisp_reader_p_is_digit (str-byte-at str-ptr cursor))
           0)))
@@ -1466,8 +1466,8 @@
     (defun nelisp_reader_p_hash_plist_find_data (plist)
       (if (= (ptr-read-u64 plist 0) 7)
           (let* ((key (nl_cons_car_ptr plist))
-                 (rest (nl_cons_cdr_ptr plist)))
-            (if (= (ptr-read-u64 rest 0) 7)
+                 (rest (nl_cons_cdr_word plist)))
+            (if (= (nl_word_tag64 rest) 7)
                 (if (= (nelisp_reader_p_symbol_data_p key) 1)
                     (nl_cons_car_ptr rest)
                   (nelisp_reader_p_hash_plist_find_data
@@ -1481,8 +1481,8 @@
     (defun nelisp_reader_p_hash_plist_find_test (plist)
       (if (= (ptr-read-u64 plist 0) 7)
           (let* ((key (nl_cons_car_ptr plist))
-                 (rest (nl_cons_cdr_ptr plist)))
-            (if (= (ptr-read-u64 rest 0) 7)
+                 (rest (nl_cons_cdr_word plist)))
+            (if (= (nl_word_tag64 rest) 7)
                 (if (= (nelisp_reader_p_symbol_test_p key) 1)
                     (nl_cons_car_ptr rest)
                   (nelisp_reader_p_hash_plist_find_test
@@ -1503,8 +1503,8 @@
     (defun nelisp_reader_p_hash_pair_count (data n)
       (if (= data 0) n
         (if (= (ptr-read-u64 data 0) 7)
-            (let* ((rest (nl_cons_cdr_ptr data)))
-              (if (= (ptr-read-u64 rest 0) 7)
+            (let* ((rest (nl_cons_cdr_word data)))
+              (if (= (nl_word_tag64 rest) 7)
                   (nelisp_reader_p_hash_pair_count
                    (nl_cons_cdr_ptr rest) (+ n 1))
                 n))
@@ -1520,16 +1520,16 @@
     (defun nelisp_reader_p_hash_fill_table
         (data table pair-slot newhead-slot)
       (while (= (ptr-read-u64 data 0) 7)
-        (let* ((rest (nl_cons_cdr_ptr data)))
-          (if (= (ptr-read-u64 rest 0) 7)
+        (let* ((rest (nl_cons_cdr_word data)))
+          (if (= (nl_word_tag64 rest) 7)
               (seq
                (cons-make-with-clone
-                (nl_cons_car_ptr data)
-                (nl_cons_car_ptr rest)
+                (nl_cons_car_word data)
+                (nl_cons_car_word rest)
                 pair-slot)
                (cons-make-with-clone
                 pair-slot
-                (nl_cons_cdr_ptr table)
+                (nl_cons_cdr_word table)
                 newhead-slot)
                (cons-set-cdr table newhead-slot)
                (setq data (nl_cons_cdr_ptr rest)))
@@ -1570,7 +1570,7 @@
                 ;; allocated here would name bytes with the same scratch
                 ;; lifetime; the parsed one points into the source buffer,
                 ;; which is what every other symbol here already does.
-                (vector-slot-set head 0 (nl_cons_car_ptr body))
+                (vector-slot-set head 0 (nl_cons_car_word body))
                 (sexp-int-make cnt (nelisp_reader_p_hash_pair_count data 0))
                 (vector-slot-set head 1 cnt)
                 ;; TEST is metadata: `wf_key_eq' compares structurally either
@@ -1612,7 +1612,7 @@
             1
           (if (= kind 7)
               (and (record-slot-set result-slot idx
-                                    (nl_cons_car_ptr slots))
+                                    (nl_cons_car_word slots))
                    (nelisp_reader_p_record_fill
                     (nl_cons_cdr_ptr slots) (+ idx 1) result-slot))
             0))))
@@ -1694,7 +1694,7 @@
       (if (= (cons-null-p cons-handle) 1)
           1
         (and (vector-slot-set vec-handle i
-                              (extern-call nl_cons_car_ptr cons-handle))
+                              (extern-call nl_cons_car_word cons-handle))
              (nelisp_reader_p_fill_vec
               (extern-call nl_cons_cdr_ptr cons-handle)
               vec-handle (+ i 1) slot-pool depth 0))))

@@ -71,6 +71,18 @@
     ;; wrapper (which would re-hash).  2 hashes → 1 per call on hit;
     ;; semantics identical (= `record-slot-ref' uses the same refcount-
     ;; safe `nl_sexp_clone_into' as the wrapper).
+    ;; Box migration: the Sexp tag of record slot K of REC, read from the
+    ;; slot's own tagged WORD.  `(sexp-tag (record-slot-ref-ptr REC K))'
+    ;; gives the same answer but materialises a fresh 32-byte box whenever
+    ;; the slot holds an immediate (nil, t, a fixnum) -- and the symbol-entry
+    ;; slots 4 (alias target) and 5 (buffer-local redirect) are nil for
+    ;; almost every variable.  Tags: 0 nil, 1 t, 2 fixnum, else the box's tag.
+    (defun nelisp_env_entry_slot_tag (rec k)
+      (let ((w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 rec 8) 32) (* k 8)) 0)))
+        (if (= (logand w 1) 0)
+            (sexp-tag w)
+          (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))))
+
     (defun nelisp_env_alias_slot_candidate (entry-ptr _pad)
       ;; Allocation-free classification for ordinary value reads/writes.
       ;; 0=real alias, 1=malformed, 3=nonalias or legacy four-slot entry.
@@ -78,9 +90,9 @@
           1
         (if (<= (record-slot-count entry-ptr) 4)
             3
-          (let ((target-ptr (record-slot-ref-ptr entry-ptr 4)))
-            (if (= (sexp-tag target-ptr) 0) 3
-              (if (= (sexp-tag target-ptr) 4) 0 1))))))
+          (let ((tg (nelisp_env_entry_slot_tag entry-ptr 4)))
+            (if (= tg 0) 3
+              (if (= tg 4) 0 1))))))
 
     (defun nelisp_env_alias_canonicalize
         (mirror-ptr entry-ptr name-ptr result-address-ptr)
@@ -93,10 +105,10 @@
           1
         (if (<= (record-slot-count entry-ptr) 4)
             3
-          (let ((target-ptr (record-slot-ref-ptr entry-ptr 4)))
-            (if (= (sexp-tag target-ptr) 0)
+          (let ((target-tag (nelisp_env_entry_slot_tag entry-ptr 4)))
+            (if (= target-tag 0)
                 3
-              (if (/= (sexp-tag target-ptr) 4)
+              (if (/= target-tag 4)
                   1
                 (let ((env-tag (alloc-bytes 32 8))
                       (table-tag (alloc-bytes 32 8))
@@ -153,7 +165,10 @@
         (if (or (= status 0) (= status 3))
             (let* ((canonical (ptr-read-u64 address 0))
                    (entry (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
-              (if (and (/= entry 0) (> (record-slot-count entry) 5))
+              ;; Only a Vector slot 5 is a redirect; test its WORD first so
+              ;; the usual nil slot is not boxed just to be rejected.
+              (if (and (/= entry 0) (> (record-slot-count entry) 5)
+                       (= (nelisp_env_entry_slot_tag entry 5) 8))
                   (let ((redirect (record-slot-ref-ptr entry 5)))
                     (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
                         (let ((buffer (alloc-bytes 32 8))
@@ -162,10 +177,10 @@
                           (if (= (nelisp_env_lookup_value
                                   mirror-ptr frames-ptr (vector-ref-ptr redirect 0) buffer) 0)
                               (while (and (= (sexp-tag locals) 7) (= found 0))
-                                (let* ((pair (nl_cons_car_ptr locals))
-                                       (key (nl_cons_car_ptr pair)))
+                                (let* ((pair (nl_cons_car_word locals))
+                                       (key (nl_cons_car_word pair)))
                                   (if (and (= (sexp-tag key) (sexp-tag buffer))
-                                           (= (ptr-read-u64 key 8) (ptr-read-u64 buffer 8)))
+                                           (= (nl_word_payload key) (ptr-read-u64 buffer 8)))
                                       (seq (ptr-write-u64 address 0 (nl_cons_cdr_ptr pair))
                                            (setq found 1))
                                     (setq locals (nl_cons_cdr_ptr locals))))) 0)
@@ -179,7 +194,7 @@
         (if (= entry 0) 1
           (if (and (= (nelisp_env_alias_slot_candidate entry 0) 3)
                    (if (> (record-slot-count entry) 5)
-                       (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1))
+                       (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
               (and (record-slot-ref entry 0 out-ptr) 0)
           (let ((address (alloc-bytes 8 8)) (status 1))
             (setq status (nelisp_env_variable_canonicalize
@@ -217,7 +232,7 @@
       (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
              (local-p (if (= entry 0) 0
                         (if (> (record-slot-count entry) 5)
-                            (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                            (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
              ;; Lexical cells shadow locals. A default dynamic binding does
              ;; not shadow an existing local cell in another buffer.
              (cell-ptr (if (= local-p 1)

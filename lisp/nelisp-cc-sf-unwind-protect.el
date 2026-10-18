@@ -182,7 +182,7 @@
       (if (= (sexp-tag cleanup) 0)
           body-rc
         (nl_sf_uw_got_cdr
-         (extern-call nl_cons_cdr_ptr cleanup)
+         (extern-call nl_cons_cdr_word cleanup)
          cleanup body-rc env out 0)))
 
     ;; Bridge arity-4 → arity-6 cleanup entry.
@@ -199,7 +199,7 @@
     ;; Arity 4 (even): body-rc, args, env, out.
     (defun nl_sf_uw_after_body (body-rc args env out)
       (nl_sf_uw_with_cleanup
-       (extern-call nl_cons_cdr_ptr args)
+       (extern-call nl_cons_cdr_word args)
        body-rc env out))
 
     ;; car = nl_cons_car_ptr(args) already fetched as first arg.

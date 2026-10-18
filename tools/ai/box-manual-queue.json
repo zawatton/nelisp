@@ -1,0 +1,5362 @@
+[
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_globals_raw",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nl_apply_write_nil; ptr-write-u64",
+  "site": "[\"const_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_globals_raw",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"sym_ptr\", [\"nl_cons_car_ptr\", \"rest1\"]]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defconst",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defconst\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_definer_lookup",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_definer_lookup\", 7809648991760967012, 7561577, 11, \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defmacro",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defmacro\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defun",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defun\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defvar",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defvar\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n3_special_unchecked",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defvaralias",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defvaralias\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nl_n4_apply_raw",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_flat_builtin_frame",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_apply_flat_builtin_frame\", \"func_ptr\", [\"-\", 0, \"args_list_ptr\"], \"env\", \"out\"]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "generated (build-time copy, see scripts/nelisp-standalone-build.el)",
+  "defun": "nlf_t91_old_stf_finish",
+  "family": "other",
+  "idiom": "out:nl_lem_compute",
+  "class": "R4",
+  "reason": "out box is caller parameter slot",
+  "site": "[\"nl_lem_compute\", \"mant_i64\", \"net_exp\", \"neg\", \"slot\"]"
+ },
+ {
+  "unit": "sf-bf-args-nth-ptr.o",
+  "file": "lisp/nelisp-cc-bf-args-nth-ptr.el",
+  "defun": "nl_bf_args_nth_step",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"remaining\", 0], [\"nl_cons_car_ptr\", \"cur\"], [\"nl_bf_args_nth_step\", [\"nl_con"
+ },
+ {
+  "unit": "sf-env-lookup-value.o",
+  "file": "lisp/nelisp-cc-env-lookup-value.el",
+  "defun": "nelisp_env_alias_canonicalize",
+  "family": "evaluator",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"table-ptr\", [\"record-slot-ref-ptr\", \"mirror-ptr\", 0]]"
+ },
+ {
+  "unit": "sf-env-lookup-value.o",
+  "file": "lisp/nelisp-cc-env-lookup-value.el",
+  "defun": "nelisp_env_variable_canonicalize",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", \"address\", 0, [\"nl_cons_cdr_ptr\", \"pair\"]]"
+ },
+ {
+  "unit": "sf-env-lookup-value.o",
+  "file": "lisp/nelisp-cc-env-lookup-value.el",
+  "defun": "nelisp_env_variable_canonicalize",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"locals\", [\"nl_cons_cdr_ptr\", \"locals\"]]"
+ },
+ {
+  "unit": "sf-env-lookup-value.o",
+  "file": "lisp/nelisp-cc-env-lookup-value.el",
+  "defun": "nelisp_env_variable_canonicalize",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"locals\", [\"vector-ref-ptr\", \"redirect\", 1]]"
+ },
+ {
+  "unit": "sf-env-makunbound-alias.o",
+  "file": "lisp/nelisp-cc-env-makunbound-alias.el",
+  "defun": "nelisp_env_makunbound_alias_signal_cycle",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "dealloc-bytes; nl_alloc_symbol; ptr-write-u64",
+  "site": "[\"name-bytes\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-env-makunbound-alias.o",
+  "file": "lisp/nelisp-cc-env-makunbound-alias.el",
+  "defun": "nelisp_env_makunbound_alias_signal_cycle",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"name-bytes\", 27, 268435480]"
+ },
+ {
+  "unit": "sf-env-makunbound-alias.o",
+  "file": "lisp/nelisp-cc-env-makunbound-alias.el",
+  "defun": "nelisp_env_makunbound_alias_signal_malformed",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"name-bytes\", 5, 268435480]"
+ },
+ {
+  "unit": "sf-env-set-value2-epoch.o",
+  "file": "lisp/nelisp-cc-env-set-value.el",
+  "defun": "nelisp_env_setv_alias_or_mirror",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_variable_canonicalize",
+  "class": "R4",
+  "reason": "out box is caller parameter mirror-ptr",
+  "site": "[\"nelisp_env_variable_canonicalize\", \"mirror-ptr\", \"frames-ptr\", \"entry\", \"name-ptr\", \"can"
+ },
+ {
+  "unit": "aot-builtin-calln.o",
+  "file": "lisp/nelisp-cc-evalport-aot-builtin-calln.el",
+  "defun": "nelisp_aot_builtin_calln",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"nil_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "aot-builtin-calln.o",
+  "file": "lisp/nelisp-cc-evalport-aot-builtin-calln.el",
+  "defun": "nelisp_aot_builtin_calln",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nelisp_apply_function; ptr-write-u64",
+  "site": "[\"args_list\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "bootstrap.o",
+  "file": "lisp/nelisp-cc-evalport-bootstrap.el",
+  "defun": "nl_bootstrap_make_mirror",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter unbound_out",
+  "site": "[\"nl_alloc_symbol\", \"ubuf\", 22, \"unbound_out\"]"
+ },
+ {
+  "unit": "bootstrap.o",
+  "file": "lisp/nelisp-cc-evalport-bootstrap.el",
+  "defun": "nl_install_one",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"nil_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_bind_local",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"vec_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_builtin",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_do_bind_local",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_apply_do_bind_local\", \"args_list_ptr\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_builtin",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_do_fset",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_apply_do_fset\", \"args_list_ptr\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_do_funcall",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"args_list_ptr\"], 7], [\"nl_cons_cdr_ptr\", \"args_list_ptr\"], \"arg"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_frame_pop",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nelisp_frame_pop; ptr-write-u64",
+  "site": "[\"scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_list_last_cdr",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"cdr_ptr\"], 7], [\"nl_apply_list_last_cdr\", \"cdr_ptr\"], [\"nl_cons"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_list_nth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"list_ptr\"], 7], [\"nl_cons_car_ptr\", \"list_ptr\"], 0]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-apply.el",
+  "defun": "nl_apply_stash_wta",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"vec_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "arglist.o",
+  "file": "lisp/nelisp-cc-evalport-combiner-arglist.el",
+  "defun": "nl_eval_arg_list_drive",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nl_eval_arg_list_copy32; ptr-write-u64",
+  "site": "[\"durable-node\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-bind-trace.el",
+  "defun": "nl_bf_err_arity",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"int_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-bind.el",
+  "defun": "nl_bf_bind_opt_walk",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"idx\", 0], [\"nl_cons_car_ptr\", \"cons_ptr\"], [\"nl_bf_bind_opt_walk\", [\"nl_cons"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-bind.el",
+  "defun": "nl_bf_bind_optional",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nl_bf_bind_sym; ptr-write-u64",
+  "site": "[\"nil_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-bind.el",
+  "defun": "nl_env_build_scratch",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"s\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "env-leaves-frame.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-frame.el",
+  "defun": "nl_push_and_bind",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nelisp_frame_pop; ptr-write-u64",
+  "site": "[\"pop_scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "env-leaves-frame.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-frame.el",
+  "defun": "nl_push_and_bind",
+  "family": "binders",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"frame\", [\"vector-ref-ptr\", [\"record-slot-ref-ptr\", \"frames_ptr\", 0], [\"-\", [\"sar\", [\"nel"
+ },
+ {
+  "unit": "env-leaves-frame.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-frame.el",
+  "defun": "nl_push_and_bind",
+  "family": "binders",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", [\"vector-ref-ptr\", [\"record-slot-ref-ptr\", \"frames_ptr\", 0], [\"-\", [\"sar"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_cc_clause_walk",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"cb_car_ptr\", [\"nl_cons_car_ptr\", \"cc_car_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_cc_match_and_bind",
+  "family": "other",
+  "idiom": "out:nl_cc_clause_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter err_inout",
+  "site": "[\"nl_cc_clause_walk\", \"clauses\", \"err_clone\", \"actual_tag_ptr\", \"var\", \"env\", \"err_inout\"]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_cc_success_and_bind",
+  "family": "other",
+  "idiom": "out:nl_cc_success_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter value_inout",
+  "site": "[\"nl_cc_success_walk\", \"clauses\", \"value_inout\", \"var\", \"env\", \"value_inout\"]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_bind_walk",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"pair_ptr\", [\"nl_cons_car_ptr\", \"pairs_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_bind_walk",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"name_int_ptr\", [\"nl_cons_car_ptr\", \"pair_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_bind_walk",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"val_int_ptr\", [\"nl_cons_cdr_ptr\", \"pair_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_collect_nil_slot",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64; value used as seq operand",
+  "site": "[\"nil_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_collect_with_slot",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "value used as seq operand",
+  "site": "[\"node_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_let_star_walk",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"b_ptr\", [\"nl_cons_car_ptr\", \"bindings_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_logic_build_scratch",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"s\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "lisp/nelisp-cc-evalport-env-leaves-logic.el",
+  "defun": "nl_logic_pop_frame",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; nelisp_frame_pop; ptr-write-u64",
+  "site": "[\"scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "chartable-map.o",
+  "file": "lisp/nelisp-cc-evalport-nonenv-char-table-map.el",
+  "defun": "nl_ct_map_run_end",
+  "family": "other",
+  "idiom": "out:nl_char_table_get_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter probe",
+  "site": "[\"nl_char_table_get_raw\", \"table\", \"boundary\", \"probe\"]"
+ },
+ {
+  "unit": "chartable-getset.o",
+  "file": "lisp/nelisp-cc-evalport-nonenv-char-table.el",
+  "defun": "nl_ct_copy_entries",
+  "family": "other",
+  "idiom": "out:nl_ct_copy_u64s",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"src_ptr\", \"entry_off\"]",
+  "site": "[\"nl_ct_copy_u64s\", [\"+\", \"src_ptr\", \"entry_off\"], [\"+\", \"dst_ptr\", \"entry_off\"], 0, 6]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nl_stf_finish",
+  "family": "other",
+  "idiom": "out:nl_lem_compute",
+  "class": "R4",
+  "reason": "out box is caller parameter slot",
+  "site": "[\"nl_lem_compute\", \"mant_i64\", \"net_exp\", \"neg\", \"slot\"]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nl_stf_finish",
+  "family": "other",
+  "idiom": "out:nlf_exact_fallback",
+  "class": "R4",
+  "reason": "out box is caller parameter slot",
+  "site": "[\"nlf_exact_fallback\", \"mant_i64\", \"net_exp\", \"neg\", \"slot\"]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nlf_big_div53",
+  "family": "other",
+  "idiom": "out:nlf_big_cmp",
+  "class": "R4",
+  "reason": "out box is caller parameter rem",
+  "site": "[\"nlf_big_cmp\", \"rem\", \"n\", \"den\", \"n\"]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nlf_t91_div_int",
+  "family": "other",
+  "idiom": "out:nlf_big_cmp",
+  "class": "R4",
+  "reason": "out box is caller parameter a",
+  "site": "[\"nlf_big_cmp\", \"a\", \"cap\", \"tmp\", \"tl\"]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nlf_t91_parse",
+  "family": "other",
+  "idiom": "out:nlf_exp_sat",
+  "class": "R4",
+  "reason": "out box is caller parameter bp",
+  "site": "[\"nlf_exp_sat\", \"bp\", \"k\", \"len\", \"es\", 0]"
+ },
+ {
+  "unit": "str-to-float.o",
+  "file": "lisp/nelisp-cc-evalport-str-to-float.el",
+  "defun": "nlf_t91_parse",
+  "family": "other",
+  "idiom": "out:nlf_t91_all_digits",
+  "class": "R4",
+  "reason": "out box is caller parameter bp",
+  "site": "[\"nlf_t91_all_digits\", \"bp\", \"k\", \"len\", 0]"
+ },
+ {
+  "unit": "sf-frame-stack-find.o",
+  "file": "lisp/nelisp-cc-frame-stack-find.el",
+  "defun": "nelisp_frame_local_names",
+  "family": "binders",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\">\", [\"record-slot-count\", \"frame\"], 3], [\"record-slot-ref-ptr\", \"frame\", 3], 0]"
+ },
+ {
+  "unit": "sf-frame-stack-find.o",
+  "file": "lisp/nelisp-cc-frame-stack-find.el",
+  "defun": "nelisp_frame_stack_find",
+  "family": "binders",
+  "idiom": "out:nelisp_frame_stack_find_descend",
+  "class": "R4",
+  "reason": "out box is caller parameter name-ptr",
+  "site": "[\"nelisp_frame_stack_find_descend\", [\"record-slot-ref-ptr\", \"frames-ptr\", 0], [\"-\", [\"sar\""
+ },
+ {
+  "unit": "sf-frame-stack-find.o",
+  "file": "lisp/nelisp-cc-frame-stack-find.el",
+  "defun": "nelisp_frame_stack_find_kind",
+  "family": "binders",
+  "idiom": "out:nelisp_frame_stack_find_kind_descend",
+  "class": "R4",
+  "reason": "out box is caller parameter name-ptr",
+  "site": "[\"nelisp_frame_stack_find_kind_descend\", [\"record-slot-ref-ptr\", \"frames-ptr\", 0], [\"-\", ["
+ },
+ {
+  "unit": "sf-frame-stack-find.o",
+  "file": "lisp/nelisp-cc-frame-stack-find.el",
+  "defun": "nl_capture_walk_bucket",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "raw",
+  "reason": "nl_capture_emit_one; ptr-read-u64",
+  "site": "[\"cell-view\", [\"extern-call\", \"nl_cons_cdr_ptr\", \"pair-view\"]]"
+ },
+ {
+  "unit": "sf-frame-stack-find.o",
+  "file": "lisp/nelisp-cc-frame-stack-find.el",
+  "defun": "nl_capture_walk_frame",
+  "family": "other",
+  "idiom": "out:nl_capture_walk_filter_symbols",
+  "class": "R4",
+  "reason": "out box is caller parameter frame-ptr",
+  "site": "[\"nl_capture_walk_filter_symbols\", \"frame-ptr\", \"filter-ptr\", \"pair-slot\", \"out\"]"
+ },
+ {
+  "unit": "mirror-alias-install.o",
+  "file": "lisp/nelisp-cc-mirror-alias-install.el",
+  "defun": "nelisp_mirror_alias_install",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"next\", [\"record-slot-ref-ptr\", \"entry\", 4]]"
+ },
+ {
+  "unit": "mirror-alias-resolve.o",
+  "file": "lisp/nelisp-cc-mirror-alias-resolve.el",
+  "defun": "nelisp_mirror_alias_resolve_borrowed",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"target\", [\"record-slot-ref-ptr\", \"entry\", 4]]"
+ },
+ {
+  "unit": "mirror-alias-stage.o",
+  "file": "lisp/nelisp-cc-mirror-alias-stage.el",
+  "defun": "nelisp_mirror_alias_stage_prepare_pair",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "R2",
+  "reason": "nelisp_symbol_key_equal",
+  "site": "[\"extern-call\", \"nelisp_symbol_key_equal\", [\"record-slot-ref-ptr\", \"entry-a-root\", 4], \"ke"
+ },
+ {
+  "unit": "mirror-alias-stage.o",
+  "file": "lisp/nelisp-cc-mirror-alias-stage.el",
+  "defun": "nelisp_mirror_alias_stage_prepare_role",
+  "family": "regexp",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "cons-make; dealloc-bytes",
+  "site": "[\"nil-slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "mirror-alias-stage.o",
+  "file": "lisp/nelisp-cc-mirror-alias-stage.el",
+  "defun": "nelisp_mirror_alias_stage_prepare_role",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"wf_copy32\", \"table-root\", [\"record-slot-ref-ptr\", \"base\", 0]]"
+ },
+ {
+  "unit": "mirror-alias-stage.o",
+  "file": "lisp/nelisp-cc-mirror-alias-stage.el",
+  "defun": "nelisp_mirror_alias_stage_prepare_role",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"wf_copy32\", \"buckets-root\", [\"record-slot-ref-ptr\", \"table-root\", 1]]"
+ },
+ {
+  "unit": "mirror-alias-stage.o",
+  "file": "lisp/nelisp-cc-mirror-alias-stage.el",
+  "defun": "nelisp_mirror_alias_stage_prepare_role",
+  "family": "regexp",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"wf_copy32\", \"old-head-root\", [\"vector-ref-ptr\", \"buckets-root\", \"idx\"]]"
+ },
+ {
+  "unit": "mirror-lookup.o",
+  "file": "lisp/nelisp-cc-mirror-lookup-entry.el",
+  "defun": "nelisp_mirror_lookup_entry",
+  "family": "regexp",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"ht-rec-ptr\", [\"record-slot-ref-ptr\", \"mirror-ptr\", 0]]"
+ },
+ {
+  "unit": "mirror-lookup.o",
+  "file": "lisp/nelisp-cc-mirror-lookup-entry.el",
+  "defun": "nelisp_mirror_walk_bucket",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"extern-call\", \"nelisp_symbol_key_equal\", [\"extern-call\", \"nl_cons_car_ptr\","
+ },
+ {
+  "unit": "reader-lexer.o",
+  "file": "lisp/nelisp-cc-reader-lexer.el",
+  "defun": "nelisp_reader_classify_atom",
+  "family": "other",
+  "idiom": "out:nelisp_reader_classify_step",
+  "class": "R4",
+  "reason": "out box is caller parameter str-ptr",
+  "site": "[\"nelisp_reader_classify_step\", \"str-ptr\", \"start\", \"end\", 0]"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_hash_fill_table",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"data\", [\"nl_cons_cdr_ptr\", \"rest\"]]"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_hash_plist_find_data",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"nelisp_reader_p_symbol_data_p\", \"key\"], 1], [\"nl_cons_car_ptr\", \"rest\"], [\""
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_hash_plist_find_test",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"nelisp_reader_p_symbol_test_p\", \"key\"], 1], [\"nl_cons_car_ptr\", \"rest\"], [\""
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_lex_one",
+  "family": "other",
+  "idiom": "out:nelisp_reader_lex_one",
+  "class": "R4",
+  "reason": "out box is caller parameter cursor-slot",
+  "site": "[\"extern-call\", \"nelisp_reader_lex_one\", \"str-ptr\", [\"sexp-int-unwrap\", \"cursor-slot\"], \"p"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_list_nth_ptr",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"n\", 0], [\"nl_cons_car_ptr\", \"node\"], [\"nelisp_reader_p_list_nth_ptr\", [\"nl_c"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_parse_vector",
+  "family": "other",
+  "idiom": "out:nelisp_reader_p_fill_vec",
+  "class": "R4",
+  "reason": "out box is caller parameter slot-pool",
+  "site": "[\"nelisp_reader_p_fill_vec\", [\"nelisp_reader_p_slot\", \"slot-pool\", [\"nelisp_reader_p_car_i"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_parse_vector",
+  "family": "other",
+  "idiom": "out:nelisp_reader_p_fill_vec",
+  "class": "R4",
+  "reason": "out box is caller parameter depth",
+  "site": "[\"nelisp_reader_p_fill_vec\", [\"nelisp_reader_p_slot\", \"slot-pool\", [\"nelisp_reader_p_car_i"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_stash_excessive_nesting",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag-buf\", 22, 268435480]"
+ },
+ {
+  "unit": "reader-parser.o",
+  "file": "lisp/nelisp-cc-reader-parser.el",
+  "defun": "nelisp_reader_p_stash_raw_byte_unrepresentable",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag-buf\", 31, 268435480]"
+ },
+ {
+  "unit": "rootstack.o",
+  "file": "lisp/nelisp-cc-rootstack.el",
+  "defun": "nl_native_car_v2",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "raw",
+  "reason": "ptr-read-u64",
+  "site": "[\"car-slot\", [\"extern-call\", \"nl_cons_car_ptr\", \"input\"]]"
+ },
+ {
+  "unit": "rootstack.o",
+  "file": "lisp/nelisp-cc-rootstack.el",
+  "defun": "nl_native_cdr_v2",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "raw",
+  "reason": "ptr-read-u64",
+  "site": "[\"cdr-slot\", [\"extern-call\", \"nl_cons_cdr_ptr\", \"input\"]]"
+ },
+ {
+  "unit": "rootstack.o",
+  "file": "lisp/nelisp-cc-rootstack.el",
+  "defun": "nl_thread_mirror_mutation_signal_at",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"extern-call\", \"nl_alloc_symbol\", \"tag-buf\", 29, 268435480]"
+ },
+ {
+  "unit": "clone.o",
+  "file": "lisp/nelisp-cc-sexp-clone-into.el",
+  "defun": "nl_sci_dispatch",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter dst",
+  "site": "[\"nl_alloc_str\", [\"ptr-read-u64\", \"src\", 16], [\"ptr-read-u64\", \"src\", 24], \"dst\"]"
+ },
+ {
+  "unit": "clone.o",
+  "file": "lisp/nelisp-cc-sexp-clone-into.el",
+  "defun": "nl_sci_dispatch",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter dst",
+  "site": "[\"nl_alloc_symbol\", [\"ptr-read-u64\", \"src\", 16], [\"ptr-read-u64\", \"src\", 24], \"dst\"]"
+ },
+ {
+  "unit": "sf-lambda.o",
+  "file": "lisp/nelisp-cc-sf-lambda.el",
+  "defun": "nl_sf_lambda_captured",
+  "family": "evaluator",
+  "idiom": "out:nl_cons_prepend_clone",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"extern-call\", \"nl_cons_prepend_clone\", \"out\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "sf-lambda.o",
+  "file": "lisp/nelisp-cc-sf-lambda.el",
+  "defun": "nl_sf_lambda_with_sym",
+  "family": "evaluator",
+  "idiom": "out:nl_cons_prepend_clone",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"extern-call\", \"nl_cons_prepend_clone\", \"s1\", \"out\", \"out\"]"
+ },
+ {
+  "unit": "sf-progn.o",
+  "file": "lisp/nelisp-cc-sf-progn.el",
+  "defun": "nl_sf_progn_after",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"tail\", [\"extern-call\", \"nl_cons_cdr_ptr\", \"cur\"]]"
+ },
+ {
+  "unit": "sf-uwp.o",
+  "file": "lisp/nelisp-cc-sf-unwind-protect.el",
+  "defun": "nl_sf_uw_got_car",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_uw_after_body",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_uw_after_body\", [\"extern-call\", \"nelisp_eval_call\", \"car\", \"env\", \"out\"], \"args\", "
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_after_load_function_symbol",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nl_alloc_symbol; ptr-write-u64",
+  "site": "[\"buf\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_aref_checked",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_get_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_get_raw\", \"arr\", \"idx\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_arena_boot_load_verify",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64; ptr-write-u8",
+  "site": "[\"rootslot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_arena_value_survival",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64; ptr-write-u8",
+  "site": "[\"rootslot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_args_out_of_range",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_args_out_of_range",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 17, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_args_out_of_range3",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 17, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_args_out_of_range_byte",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 17, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_arith_error",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 11, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_aset_checked",
+  "family": "evaluator",
+  "idiom": "out:bf_aset_bool_vector",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_aset_bool_vector\", \"arr\", \"idx\", [\"wf_arg_ptr\", \"args\", 1], \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_aset_checked",
+  "family": "evaluator",
+  "idiom": "out:bf_aset_unibyte_string",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_aset_unibyte_string\", \"arr\", \"idx\", [\"wf_arg_ptr\", \"args\", 1], \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_aset_checked",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_set_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_set_raw\", \"arr\", \"idx\", \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_aset_multibyte_string",
+  "family": "evaluator",
+  "idiom": "out:bf_aset_string_write",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_aset_string_write\", \"arr\", \"byte-idx\", \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_bind_frame_silent",
+  "family": "binders",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "raw",
+  "reason": "ptr-read-u64; record-slot-set",
+  "site": "[\"frame\", [\"vector-ref-ptr\", [\"record-slot-ref-ptr\", \"frames\", 0], [\"-\", [\"sar\", [\"nelisp_"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_char_table_range",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_get_local_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_get_local_raw\", \"ct\", [\"ptr-read-u64\", \"fromp\", 8], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_char_table_range",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_get_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_get_raw\", \"ct\", [\"ptr-read-u64\", \"range\", 8], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_closure_env_key",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"ptr-read-u64\", \"entry\", 0], 7], [\"nl_cons_car_ptr\", \"entry\"], \"entry\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_copy_string_tag",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_alloc_str\", [\"bf_str_ptr\", \"sx\"], [\"bf_str_len\", \"sx\"], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_ct_subtable_lookup",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"level-p\", [\"vector-ref-ptr\", \"tab\", 0]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_ct_subtable_lookup",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"min-p\", [\"vector-ref-ptr\", \"tab\", 1]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_ct_top_lookup",
+  "family": "evaluator",
+  "idiom": "out:bf_ct_top_lookup_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter table",
+  "site": "[\"bf_ct_top_lookup_walk\", \"table\", \"ch\", \"out\", 3, [\"vector-len\", \"table\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_cyclic_function",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 27, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_dynamic_lookup",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lkv_mirror_with_frames",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lkv_mirror_with_frames\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"name\", \"out\", 1,"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_dynamic_lookup",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lkv_mirror_with_frames",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lkv_mirror_with_frames\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"name\", \"out\", 1,"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_dynamic_lookup",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lkv_mirror_with_frames",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nelisp_env_lkv_mirror_with_frames\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"name\", \"out\", 1,"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_dynamic_lookup",
+  "family": "evaluator",
+  "idiom": "out:nl_cell_get_value",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_cell_get_value\", \"cell\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_elt_checked",
+  "family": "evaluator",
+  "idiom": "out:bf_ct_top_lookup",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_ct_top_lookup\", \"seqp\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 8], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_elt_checked",
+  "family": "evaluator",
+  "idiom": "out:bf_elt_list_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_elt_list_walk\", \"seqp\", [\"ptr-read-u64\", [\"wf_arg_ptr\", \"args\", 1], 8], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_error",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"ebuf\", 5, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_eval_source_string_inner",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_eval_source_string_inner",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_eval_source_string_inner",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"bsym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_features_get",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_features_get",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_first_bad_byte",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"nl_cons_car_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_first_non_integer",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"nl_cons_car_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_first_non_integer_or_bignum",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"nl_cons_car_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_fx_special_bump",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"name\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_garbage_collect",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_stats",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_stats\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_intern_table_symbols",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "aliased by setq; wf_copy32",
+  "site": "[\"acc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_intern_table_symbols",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"next\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_invalid_byte_code_object",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag\", 5, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_length_list",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"cur\", [\"nl_cons_cdr_ptr\", \"cur\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_path_get",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_path_get",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_readable",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_readable",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_readable",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"bsym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_with_lfn",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"old\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_load_with_lfn",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"old\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_make_native_subr",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"address-slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_make_rooted_subr",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "R2",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"vector-len\", \"d\"], 10], [\"vector-ref-ptr\", \"d\", 9], 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_n2_direct_arity",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "sexp-name-eq",
+  "site": "[\"head\", [\"nl_cons_car_ptr\", \"func\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_n2_direct_arity",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "sexp-name-eq",
+  "site": "[\"name_ptr\", [\"nl_cons_car_ptr\", [\"nl_cons_cdr_ptr\", \"func\"]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_nthcdr_walk",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"p\", [\"nl_cons_cdr_ptr\", \"p\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_plist_get_eq",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"cur\", [\"nl_cons_cdr_ptr\", \"rest\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_plist_member_walk",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"c\", [\"nl_cons_cdr_ptr\", \"cd\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_plist_next_pair",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"rest\", [\"nl_cons_cdr_ptr\", \"p\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_plist_next_pair",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"ptr-read-u64\", \"rest\", 0], 7], [\"nl_cons_cdr_ptr\", \"rest\"], \"rest\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_raw_byte_unrepresentable",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 31, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_all_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_all_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "cons-make-with-clone; ptr-write-u64",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_all_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64; wf_copy32",
+  "site": "[\"head\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_all_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "cons-set-cdr; ptr-write-u64",
+  "site": "[\"tail\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_all_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "cons-make-with-clone; ptr-write-u64",
+  "site": "[\"nil-slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_load_file_name",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_load_file_name",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_one_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nelisp_reader_parse_one_with_load_file_name; ptr-write-u64",
+  "site": "[\"view\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_one_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nelisp_reader_parse_one_with_load_file_name; ptr-write-u64",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_one_from_string_native",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "cons-make-with-clone; nelisp_reader_parse_one_with_load_file_name; ptr-write-u64",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_read_syntax_error",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"buf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_require",
+  "family": "evaluator",
+  "idiom": "out:bf_require_after_load",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_require_after_load\", [\"bf_require_load_file\", \"file\", \"env\", \"out\"], \"feature\", \"noer"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_require",
+  "family": "evaluator",
+  "idiom": "out:bf_require_after_load",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_require_after_load\", [\"bf_require_load_file\", \"found\", \"env\", \"out\"], \"feature\", \"noe"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_require_file_missing",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"buf\", 12, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_set_char_table_range",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_set_range_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_set_range_raw\", \"ct\", 0, 4194303, \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_set_char_table_range",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_set_range_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_set_range_raw\", \"ct\", [\"ptr-read-u64\", \"range\", 8], [\"ptr-read-u64\", \"rang"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_set_char_table_range",
+  "family": "evaluator",
+  "idiom": "out:nl_char_table_set_range_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_char_table_set_range_raw\", \"ct\", \"from\", \"to\", \"val\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_setting_constant",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 16, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_signal",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", [\"ptr-read-u64\", \"sym\", 16], [\"ptr-read-u64\", \"sym\", 24], 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_signal_bignum_division_unsupported",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 34, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_signal_circular_list",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tagbuf\", 13, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_signal_memory_full",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 11, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_signal_overflow_error",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"sbuf\", 14, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_special_registry",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nl_env_set_value; ptr-write-u64",
+  "site": "[\"name\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_special_registry",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "nl_env_set_value; value used as if operand",
+  "site": "[\"table\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_special_registry",
+  "family": "evaluator",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"entry\", 0], [\"if\", [\"=\", \"create\", 0], 0, [\"let*\", [[\"table\", [\"alloc-bytes\""
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_str_lt",
+  "family": "evaluator",
+  "idiom": "out:bf_str_lt_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter a",
+  "site": "[\"bf_str_lt_bytes\", \"a\", \"b\", 0, [\"m5_strlen\", \"a\"], [\"m5_strlen\", \"b\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_str_lt",
+  "family": "evaluator",
+  "idiom": "out:bf_str_lt_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter b",
+  "site": "[\"bf_str_lt_bytes\", \"a\", \"b\", 0, [\"m5_strlen\", \"a\"], [\"m5_strlen\", \"b\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_subr_arity_name",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"registry\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_subr_arity_name",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"symbol\", \"registry\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_subr_arity_name",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"symbol\", \"registry\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_subr_arity_name",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"name\", [\"nl_cons_cdr_ptr\", \"entry\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_subr_arity_name",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"cursor\", [\"nl_cons_cdr_ptr\", \"cursor\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_thread_spawn",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"box\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_number_of_args",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 25, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_number_of_args_bool_vector",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 25, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_number_of_args_bool_vector_p",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 25, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_number_of_args_make_char_table",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 25, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_arrayp",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_char_table_p",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_consp",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_hash_table",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_listp",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_named",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_number_or_marker",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_sequencep",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_stringp",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "bf_wrong_type_symbolp",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_bootstrap_make_mirror; nl_cold_overwrite_globals; nl_install_one; nl_sexp_clone_into",
+  "site": "[\"globals\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_bootstrap_make_mirror; nl_sexp_clone_into",
+  "site": "[\"frames\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_bootstrap_make_mirror; nl_sexp_clone_into",
+  "site": "[\"unbound\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_eval_source_all",
+  "site": "[\"builtin_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_eval_source_all; sexp-write-str-lit",
+  "site": "[\"src\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_eval_source_all",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_eval_source_all",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_eval_source_all",
+  "site": "[\"out\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"argv_list\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"argv_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"environ_list\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"environ_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"dd_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_cli_compute_invocation; nl_env_set_value",
+  "site": "[\"dd_value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"noninteractive_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"noninteractive_value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"invname_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"invname_value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"invdir_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"invdir_value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"cla_sym\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_env_set_value",
+  "site": "[\"cla_value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "bf_require_file_missing",
+  "site": "[\"path-str\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "driver",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_cli_stash_source_too_large",
+  "site": "[\"path-str\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_concat_arg_kind",
+  "family": "other",
+  "idiom": "out:m5_vec_bad_char",
+  "class": "R4",
+  "reason": "out box is caller parameter a",
+  "site": "[\"m5_vec_bad_char\", \"a\", 0, [\"vector-len\", \"a\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_concat_arg_ptr",
+  "family": "other",
+  "idiom": "out:m5_vec_bad_char",
+  "class": "R4",
+  "reason": "out box is caller parameter a",
+  "site": "[\"m5_vec_bad_char\", \"a\", 0, [\"vector-len\", \"a\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_concat_first_bad",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"nl_cons_car_ptr\", \"cur\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_elem_bad_char",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"nl_cons_car_ptr\", \"node\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_list_len",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"p\", [\"nl_cons_cdr_ptr\", \"p\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_prin1_closure",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"ip\", 1], [\"nl_cons_cdr_ptr\", \"b1\"], \"b1\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "m5_vec_bad_char",
+  "family": "other",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"a\", [\"vector-ref-ptr\", \"vec\", \"i\"]]"
+ },
+ {
+  "unit": "aot-builtin-call1.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_aot_builtin_call1",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"nil_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fsum",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fsum",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fdiff",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fdiff",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fprod; wf_int_fbits",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fprod; wf_int_fbits",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_elem_fbits; wf_fdivtail",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fdivtail; wf_int_fbits",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_elem_fbits; wf_fdivtail",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32; wf_fdivtail; wf_int_fbits",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_sexp_write_float; wf_copy32",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_sexp_write_float; wf_copy32",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_sexp_write_float; wf_copy32",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "nl_sexp_write_float; wf_copy32",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_concat_walk; m5_finish_string; m5_make_builder",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_finish_string; m5_fmt_loop; m5_make_builder",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_bitop_fold",
+  "site": "[\"seed\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_bitop_fold",
+  "site": "[\"seed\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_bitop_fold",
+  "site": "[\"seed\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "bf_str_or_name",
+  "site": "[\"sa\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "bf_str_or_name",
+  "site": "[\"sb\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "bf_str_or_name",
+  "site": "[\"sa\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "bf_str_or_name",
+  "site": "[\"sb\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_finish_string; m5_make_builder; m5_push_str_bytes",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "value used as if operand",
+  "site": "[\"nilbox\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "mut-str-finalize; mut-str-make-empty; nl_u8_repeat",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_prin1; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "mut-str-finalize; mut-str-make-empty; nl_u8_encode",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_sha256; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_push_bignum; m5_push_dec; m5_push_float; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_fmt_float_body; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_fmt_float_body",
+  "site": "[\"sc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_json; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_sha_hexword; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "m5_sha256_ptr; mut-str-finalize; mut-str-make-empty",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "mut-str-finalize; mut-str-make-empty; mut-str-push-byte",
+  "site": "[\"ms\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_alloc_check_report",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_alloc_check_report\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_boot_load_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_boot_load_verify\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_dump_copy_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_dump_copy_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_dump_image_stream",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_dump_image_stream\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_dump_image_to_file",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_dump_image_to_file\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_dump_table_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_dump_table_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_force_grow_smoke",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_force_grow_smoke\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_image_root_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_image_root_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_load_image_from_file",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_load_image_from_file\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_load_relocate_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_load_relocate_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_load_split_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_load_split_verify\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_mark_reach_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_mark_reach_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_stats",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_stats\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_swizzle_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_swizzle_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_value_survival",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_value_survival\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_arena_walk_verify",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_arena_walk_verify\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_bool_vector_p",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_bool_vector_p\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_byte_code_function_p",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_byte_code_function_p\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_car",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_car\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_cdr",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_cdr\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_char_table_extra_slot",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_char_table_extra_slot\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_char_table_p",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_char_table_p\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_char_table_subtype",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_char_table_subtype\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_clear_string_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_clear_string_bytes\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_debug_switch",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_debug_switch\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_debug_switch",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_debug_switch\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_declare_local_value",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_declare_local_value\", \"env\", [\"wf_arg_ptr\", \"args\", 0], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_env_capture_roots",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_env_capture_roots\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_eq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_eq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_equal",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_equal\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_fboundp",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_fboundp\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_featurep",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_featurep\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_fork_spawn",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_fork_spawn\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_gc_pressure",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_gc_pressure\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_intern",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_intern\", \"a\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_intern_table_symbols",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_intern_table_symbols\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_make_native_subr",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_make_native_subr\", \"args\", \"out\", \"env\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_map_char_table",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_map_char_table\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_nthcdr",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_nthcdr\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_plist_get_eq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_plist_get_eq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_plist_member_eq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_plist_member_eq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_pool_root_coverage",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_pool_root_coverage\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_read_all_from_string_native",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_read_all_from_string_native\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_record_expand",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_record_expand\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_recordp",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_recordp\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_rooted_subr_arity",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_rooted_subr_arity\", \"value\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_set",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_set\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_set_char_table_extra_slot",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_set_char_table_extra_slot\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_size_census",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_size_census\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_special_form_p_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter env",
+  "site": "[\"bf_special_form_p_walk\", [\"wf_arg_ptr\", \"args\", 0], \"env\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_symbol_function",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_symbol_function\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_thread_join",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_thread_join\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:bf_thread_spawn",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_thread_spawn\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"wbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_process_call_process",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_process_call_process\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_process_close_stdin",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_process_close_stdin\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_process_read_output",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_process_read_output\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_process_write",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_process_write\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_ptr_write_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_ptr_write_bytes\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_read_stdin_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_read_stdin_bytes\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_readdir_scan_raw",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_readdir_scan_raw\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_slen",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_slen\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_str_count_nl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_str_count_nl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_str_filter_prefix_lines",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_str_filter_prefix_lines\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_str_kv_line",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_str_kv_line\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_str_line_start",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_str_line_start\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_lstat_buf",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_lstat_buf\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_mount",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_mount\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_path",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_path\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_path2",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_path2\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_path_int",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_path_int\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_pivot_root",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_pivot_root\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_readdir_names",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_readdir_names\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_readlink",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_readlink\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_stat_buf",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_stat_buf\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_stat_field",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_stat_field\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_statx_buf",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_statx_buf\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_unshare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_unshare\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_syscall_utimes",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_syscall_utimes\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_write_file",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_write_file\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_write_file_t",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_write_file_t\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_write_stderr_line",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_write_stderr_line\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_bi_write_stdout_bytes",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_write_stdout_bytes\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_cell_get_value",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_cell_get_value\", [\"wf_arg_ptr\", \"args\", 0], \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_ht_make",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_ht_make\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_ht_make",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_ht_make\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_ht_maphash",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_ht_maphash\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_ht_rem",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_ht_rem\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_reader_native_result_ref",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_reader_native_result_ref\", [\"wf_argval\", \"args\", 0], [\"wf_argval\", \"args\", 1], [\"wf_a"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_accept_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_accept_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_close_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_close_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_connect_error_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_connect_error_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_connect_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_connect_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_listen_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_listen_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_poll_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_poll_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_socket_send_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_socket_send_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_atomic_add_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_atomic_add_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_atomic_read_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_atomic_read_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_gc_inhibit_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_gc_inhibit_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_join_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_join_impl\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_shared_alloc_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_shared_alloc_impl\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:nl_thread_spawn_impl",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_thread_spawn_impl\", \"args\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_assoc",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_assoc\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_assq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_assq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_bitop_fold",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_bitop_fold\", 0, \"args\", \"seed\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_bitop_fold",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_bitop_fold\", 1, \"args\", \"seed\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_bitop_fold",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_bitop_fold\", 2, \"args\", \"seed\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_butlast",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_butlast\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_bytecode_error",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_bytecode_error\", 255, 0, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_float_time",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_float_time\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_float_time",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_float_time\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_float_time",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_float_time\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_ft_convert",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_ft_convert\", \"tm\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_last",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_last\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_member",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_member\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_memq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_memq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_nth",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_nth\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_nthcdr",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_nthcdr\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 0, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 1, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 2, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 5, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 3, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_numeric_marker_compare",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_numeric_marker_compare\", \"args\", \"env\", 4, \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "out:wf_rassoc",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_rassoc\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "nl_applyfn_unsupported; sexp-name-eq",
+  "site": "[\"name_ptr\", [\"nl_cons_car_ptr\", [\"nl_cons_cdr_ptr\", \"func_ptr\"]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "nl_sp_eq_lit",
+  "site": "[\"nl_sp_eq_lit\", [\"nl_cons_car_ptr\", \"obj\"], 7, 31078196194145634, 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_ft_convert",
+  "site": "[\"tm\", [\"nl_cons_car_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_apply_function",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"wf_copy32\", \"out\", [\"vector-ref-ptr\", \"vp\", 0]]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_eval_call_inner",
+  "family": "evaluator",
+  "idiom": "out:nl_eval_inner",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_eval_inner\", \"form_ptr\", \"env\", \"out\", 0]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_eval_call_inner",
+  "family": "evaluator",
+  "idiom": "out:nl_eval_inner",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_eval_inner\", \"form_ptr\", \"env\", \"out\", 0]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nelisp_eval_call_stash_excessive_lisp_nesting",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag_buf\", 22, 268435480]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_do_apply_after_resolve",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "R2",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"args_list_ptr\"], 7], [\"nl_cons_cdr_ptr\", \"args_list_ptr\"], \"arg"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_do_apply_append",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_list_append",
+  "class": "R4",
+  "reason": "out box is caller parameter spliced_slot",
+  "site": "[\"nl_apply_list_append\", \"prefix_slot\", \"last_ptr\", \"spliced_slot\"]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_do_eval",
+  "family": "evaluator",
+  "idiom": "out:nl_n3_eval_fast",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_n3_eval_fast\", [\"nl_apply_list_nth\", \"args_list_ptr\", 0], \"env\", \"out\"]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_do_globals_op",
+  "family": "evaluator",
+  "idiom": "out:nl_n3_globals_mode",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_n3_globals_mode\", \"args_list_ptr\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_list_append",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"cdr_ptr\", [\"nl_cons_cdr_ptr\", \"head_ptr\"]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_native_subr",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_rooted_subr",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_apply_rooted_subr\", \"func_ptr\", \"args_list_ptr\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_rooted_subr_frame",
+  "family": "evaluator",
+  "idiom": "out:nl_apply_list_append",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"base\", [\"*\", [\"+\", \"i\", 1], 32]]",
+  "site": "[\"nl_apply_list_append\", \"args\", \"base\", [\"+\", \"base\", [\"*\", [\"+\", \"i\", 1], 32]]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_rooted_subr_frame",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"args\", [\"nl_cons_cdr_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_rooted_subr_frame",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"vector-len\", \"d\"], 10], [\"vector-ref-ptr\", \"d\", 9], 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defconst",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defconst\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_definer_lookup",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_definer_lookup\", 7809648991760967012, 7561577, 11, \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defmacro",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defmacro\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defun",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defun\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defvar",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defvar\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_apply_special",
+  "family": "evaluator",
+  "idiom": "out:nl_sf_defvaralias",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_sf_defvaralias\", \"args_ptr\", \"env_ptr\", \"out\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_applyfn_unsupported",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"unsup-tagbuf\", 28, 268435480]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bf_bind_rest_copy_spine",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nl_sexp_clone_into; ptr-write-u64",
+  "site": "[\"durable-node\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "reader-fileio.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bi_process_start_process",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"arglst\", [\"nl_cons_cdr_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "reader-fileio.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bi_read_file_maybe_raw",
+  "family": "other",
+  "idiom": "out:nl_bi_read_file",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_bi_read_file\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "reader-fileio.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bi_rf_withfd",
+  "family": "other",
+  "idiom": "out:nl_bi_rf_read_rest",
+  "class": "R4",
+  "reason": "out box is caller parameter fd",
+  "site": "[\"nl_bi_rf_read_rest\", \"fd\", \"buf\", \"n\", \"out\"]"
+ },
+ {
+  "unit": "reader-fileio.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bi_syscall_utimes",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nl_os_utimes_path; ptr-write-u64",
+  "site": "[\"buf\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_add_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter a_count",
+  "site": "[\"nl_bignum_add_loop\", \"a_ptr\", \"a_count\", \"b_ptr\", \"b_count\", \"out_ptr\", 0, \"n\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_add_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter b_count",
+  "site": "[\"nl_bignum_add_loop\", \"a_ptr\", \"a_count\", \"b_ptr\", \"b_count\", \"out_ptr\", 0, \"n\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_sub_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter a_count",
+  "site": "[\"nl_bignum_sub_loop\", \"a_ptr\", \"a_count\", \"b_ptr\", \"b_count\", \"out_ptr\", 0, \"a_count\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_sub_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter b_count",
+  "site": "[\"nl_bignum_sub_loop\", \"a_ptr\", \"a_count\", \"b_ptr\", \"b_count\", \"out_ptr\", 0, \"a_count\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_sub_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter b_count",
+  "site": "[\"nl_bignum_sub_loop\", \"b_ptr\", \"b_count\", \"a_ptr\", \"a_count\", \"out_ptr\", 0, \"b_count\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_add_raw",
+  "family": "other",
+  "idiom": "out:nl_bignum_sub_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter a_count",
+  "site": "[\"nl_bignum_sub_loop\", \"b_ptr\", \"b_count\", \"a_ptr\", \"a_count\", \"out_ptr\", 0, \"b_count\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_dec_mag",
+  "family": "other",
+  "idiom": "out:nl_bignum_sub_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter mag_count",
+  "site": "[\"nl_bignum_sub_loop\", \"mag_ptr\", \"mag_count\", \"one\", 1, \"out_ptr\", 0, \"mag_count\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_finish",
+  "family": "other",
+  "idiom": "out:nl_bignum_write_int",
+  "class": "R4",
+  "reason": "out box is caller parameter result_slot",
+  "site": "[\"nl_bignum_write_int\", \"limb_ptr\", \"limb_count\", \"sign\", \"result_slot\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bignum_mag_mul",
+  "family": "other",
+  "idiom": "out:nl_bignum_mul_row",
+  "class": "R4",
+  "reason": "out box is caller parameter a_ptr",
+  "site": "[\"nl_bignum_mul_row\", \"a_ptr\", \"i\", [\"ptr-read-u32\", \"a_ptr\", [\"*\", \"i\", 4]], \"b_ptr\", \"b_"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_bt_frame_name_ptr",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"ptr-read-u8\", \"form_ptr\", 0], 7], [\"nl_cons_car_ptr\", \"form_ptr\"], \"form_pt"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_run_eval",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_alloc_str\", \"expr_ptr\", \"expr_len\", \"src\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_run_funcall",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_alloc_str\", \"fbuf\", \"off3\", \"src\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_run_load",
+  "family": "other",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"ctx\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"ctx\", 0], [\"+\", \"ctx\", 32], \"lfn_sym\", \"lfn_old\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_run_load",
+  "family": "other",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"ctx\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"ctx\", 0], [\"+\", \"ctx\", 32], \"lfn_sym\", \"lfn_old\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_run_load",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_alloc_str\", \"fbuf\", \"n\", \"src\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_sequence",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_alloc_str\", \"fbuf\", \"n\", \"src\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_action_sequence",
+  "family": "other",
+  "idiom": "out:nl_cli_action_loop",
+  "class": "R4",
+  "reason": "out box is caller parameter sp0",
+  "site": "[\"nl_cli_action_loop\", \"sp0\", \"argc\", \"eff_idx\", \"dd_value\", \"fbuf\", \"src\", \"cursor\", \"res"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_eval_expr_check",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"cursor\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_eval_expr_check",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"result\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_ldir_apply",
+  "family": "other",
+  "idiom": "out:nl_alloc_str",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_alloc_str\", \"fbuf\", \"off3\", \"src\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cli_stash_source_too_large",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag-buf\", 21, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_closure_after_doc",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"nl_closure_doc_p\", \"body\"], 1], [\"nl_cons_cdr_ptr\", \"body\"], \"body\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_closure_doc_value",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"e\", [\"nl_cons_car_ptr\", \"body\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_closure_doc_value",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"arg\", [\"nl_cons_car_ptr\", [\"nl_cons_cdr_ptr\", \"e\"]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_closure_doc_value",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"ptr-read-u64\", \"arg\", 0], 7], [\"nl_cons_car_ptr\", [\"nl_cons_cdr_ptr\", \"arg\""
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_cons_macro_apply_eval",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"macrofn_ptr\", [\"nl_cons_cdr_ptr\", \"func_ptr\"]]"
+ },
+ {
+  "unit": "reader-catch-throw.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ct_arg_error_name",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter symbol_slot",
+  "site": "[\"nl_alloc_symbol\", \"buffer\", 5, \"symbol_slot\"]"
+ },
+ {
+  "unit": "reader-catch-throw.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ct_arg_error_name",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter symbol_slot",
+  "site": "[\"nl_alloc_symbol\", \"buffer\", [\"if\", [\"=\", \"kind\", 0], 25, 19], \"symbol_slot\"]"
+ },
+ {
+  "unit": "reader-catch-throw.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ct_no_catch_publish",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter error_slot",
+  "site": "[\"nl_alloc_symbol\", \"name_buf\", 8, \"error_slot\"]"
+ },
+ {
+  "unit": "env-leaves-simple.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_env_lookup_val",
+  "family": "other",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nelisp_env_lookup_value\", \"mirror_ptr\", \"frames_ptr\", \"name_ptr\", \"out\"]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_env_stash_signal",
+  "family": "other",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "+",
+  "site": "[\"tag_ptr\", [\"nl_cons_car_ptr\", \"signal_slot\"]]"
+ },
+ {
+  "unit": "sf-env-set-value-bind-rest-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_env_stash_signal",
+  "family": "other",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "+",
+  "site": "[\"val_ptr\", [\"nl_cons_cdr_ptr\", \"signal_slot\"]]"
+ },
+ {
+  "unit": "reader-eval-source.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_eval_source_print_bare_abort",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; m5_prin1; ptr-write-u64",
+  "site": "[\"rc-slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "reader-eval-source.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_eval_source_print_error",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; m5_prin1; ptr-write-u64",
+  "site": "[\"loc-num-slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_count",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"node\", [\"nl_cons_cdr_ptr\", \"node\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_find",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"entry_ptr\", [\"nl_cons_car_ptr\", \"node\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_find",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"key_slot\", [\"nl_cons_car_ptr\", \"entry_ptr\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_find",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"node\", [\"nl_cons_cdr_ptr\", \"node\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_make",
+  "family": "regexp",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"cnt\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_ht_rehash_list_into",
+  "family": "regexp",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "aliased by setq",
+  "site": "[\"setq\", \"node\", [\"nl_cons_cdr_ptr\", \"node\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_let_parse_name",
+  "family": "binders",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"car_ptr\", [\"nl_cons_car_ptr\", \"b_ptr\"]]"
+ },
+ {
+  "unit": "sf-let-setup.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_let_setup",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "R3",
+  "reason": "nelisp_frame_push_direct",
+  "site": "[\"push_scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-apply-fix.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_lookup_fn_autoload_load",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"res\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_mc_write_chunks",
+  "family": "other",
+  "idiom": "out:nl_fa_write_all",
+  "class": "R4",
+  "reason": "out box is [\"+\", [\"ptr-read-u64\", \"chunk\", 0], 1024",
+  "site": "[\"nl_fa_write_all\", \"fd\", [\"+\", [\"ptr-read-u64\", \"chunk\", 0], 1024], [\"bf_arena_chunk_used"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n3_eval_fast",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "sexp-name-eq",
+  "site": "[\"name\", [\"nl_cons_car_ptr\", \"form\"]]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n3_eval_fast",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "sexp-name-eq",
+  "site": "[\"sexp-name-eq\", [\"nl_cons_car_ptr\", \"fn\"], [\"$str\", \"builtin\"]]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n3_pop",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "raw",
+  "reason": "ptr-read-u64",
+  "site": "[\"frame\", [\"vector-ref-ptr\", [\"record-slot-ref-ptr\", \"frames\", 0], [\"-\", \"depth\", 1]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n3_set_dynamic_raw",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_setv_alias_or_mirror",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_setv_alias_or_mirror\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"sym\", \"val\", 0, [\""
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_apply_name",
+  "family": "evaluator",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"function\"], 18], [\"record-slot-ref-ptr\", \"function\", 0], [\"if\","
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_frame_op",
+  "family": "evaluator",
+  "idiom": "out:nl_n4_locals",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_n4_locals\", \"env\", \"index\", \"out\"]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_frame_op",
+  "family": "evaluator",
+  "idiom": "out:nl_n4_snapshot",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"nl_n4_snapshot\", \"env\", \"out\"]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_locals",
+  "family": "evaluator",
+  "idiom": "out:nl_n4_local_bucket",
+  "class": "R4",
+  "reason": "out box is caller parameter env",
+  "site": "[\"nl_n4_local_bucket\", [\"vector-ref-ptr\", \"buckets\", \"j\"], \"result\", \"env\"]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_locals",
+  "family": "evaluator",
+  "idiom": "ptr:record-slot-ref-ptr",
+  "class": "R2",
+  "reason": "",
+  "site": "[\"backing\", [\"record-slot-ref-ptr\", [\"+\", \"frame\", 64], 0]]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_pop_names_raw",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lkv_mirror",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lkv_mirror\", [\"+\", \"env\", 0], \"sym\", \"value\", 0]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_n4_pop_names_raw",
+  "family": "evaluator",
+  "idiom": "out:nelisp_env_lkv_mirror",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lkv_mirror\", [\"+\", \"env\", 0], \"sym\", \"current\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_frame_v2",
+  "family": "evaluator",
+  "idiom": "out:wf_bytecode_copy",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"wf_bytecode_copy\", 268435480, \"saved-tag\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_frame_v2",
+  "family": "evaluator",
+  "idiom": "out:wf_bytecode_copy",
+  "class": "R4",
+  "reason": "out box is fixed address 268435512",
+  "site": "[\"wf_bytecode_copy\", 268435512, \"saved-value\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_frame_v2",
+  "family": "evaluator",
+  "idiom": "out:wf_bytecode_copy",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"output\", 64]",
+  "site": "[\"wf_bytecode_copy\", [\"+\", \"output\", 64], [\"+\", \"arena\", 24]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_frame_v2",
+  "family": "evaluator",
+  "idiom": "out:wf_bytecode_copy",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"output\", 96]",
+  "site": "[\"wf_bytecode_copy\", [\"+\", \"output\", 96], [\"+\", \"arena\", 56]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_handlers_cross",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_bytecode_copy",
+  "site": "[\"wf_bytecode_copy\", \"entry\", [\"nl_cons_car_ptr\", [\"vector-ref-ptr\", \"state\", 4]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_handlers_cross",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "R2",
+  "reason": "bf_eq2",
+  "site": "[\"bf_eq2\", [\"vector-ref-ptr\", \"entry\", 4], [\"vector-ref-ptr\", \"state\", 3]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_handlers_cross",
+  "family": "evaluator",
+  "idiom": "ptr:vector-ref-ptr",
+  "class": "R2",
+  "reason": "bf_eq2",
+  "site": "[\"bf_eq2\", [\"vector-ref-ptr\", \"entry\", 4], [\"vector-ref-ptr\", \"state\", 3]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_handlers_pop",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_bytecode_copy",
+  "site": "[\"wf_bytecode_copy\", \"entry\", [\"nl_cons_car_ptr\", [\"vector-ref-ptr\", \"state\", 4]]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_native_handlers_pop",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "R2",
+  "reason": "wf_bytecode_copy",
+  "site": "[\"wf_bytecode_copy\", \"tail\", [\"nl_cons_cdr_ptr\", [\"vector-ref-ptr\", \"state\", 4]]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_os_environ_init",
+  "family": "other",
+  "idiom": "out:nl_posix_environ_walk",
+  "class": "R4",
+  "reason": "out box is caller parameter sp",
+  "site": "[\"nl_posix_environ_walk\", \"sp\", [\"+\", [\"logand\", [\"ptr-read-u64\", \"sp\", 0], 4294967295], 2"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_os_sigpipe",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64; syscall-direct",
+  "site": "[\"action\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_positioned_flag",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"bytes\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_positioned_flag",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "nelisp_env_lookup_value; ptr-write-u64",
+  "site": "[\"name\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_positioned_flag",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "ptr-read-u8",
+  "site": "[\"value\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_positioned_flag",
+  "family": "other",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"name\", \"value\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_positioned_flag",
+  "family": "other",
+  "idiom": "out:nelisp_env_lookup_value",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 32]",
+  "site": "[\"nelisp_env_lookup_value\", [\"+\", \"env\", 0], [\"+\", \"env\", 32], \"name\", \"value\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_posix_env_pair",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "value used as seq operand",
+  "site": "[\"cell\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_read_int_or_bignum",
+  "family": "other",
+  "idiom": "out:nl_bignum_write_int",
+  "class": "R4",
+  "reason": "out box is caller parameter result_slot",
+  "site": "[\"nl_bignum_write_int\", \"scratch\", \"count\", \"neg\", \"result_slot\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_repl_loop",
+  "family": "other",
+  "idiom": "out:nl_repl_make_source",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_repl_make_source\", \"linebuf\", \"n\", \"fbuf\", \"src\", \"print_p\"]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_repl_loop",
+  "family": "other",
+  "idiom": "out:nl_repl_pump_source",
+  "class": "R4",
+  "reason": "out box is caller parameter src",
+  "site": "[\"nl_repl_pump_source\", \"fbuf\", \"src\"]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sb_bind_plain",
+  "family": "binders",
+  "idiom": "alloc32",
+  "class": "raw",
+  "reason": "+; ptr-write-u64",
+  "site": "[\"rec\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "shim.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sb_bind_plain",
+  "family": "binders",
+  "idiom": "out:nelisp_env_lkv_mirror",
+  "class": "R4",
+  "reason": "out box is [\"+\", \"env\", 0]",
+  "site": "[\"nelisp_env_lkv_mirror\", [\"+\", \"env\", 0], \"sym\", \"old\", 0]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_definer_body",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"tail_ptr\", [\"nl_cons_cdr_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_definer_body",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"sexp-tag\", \"tail_ptr\"], 7], [\"nl_cons_cdr_ptr\", \"tail_ptr\"], \"tail_ptr\"]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_defmacro",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_defun",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "sf-lambda.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_lambda",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is caller parameter s1",
+  "site": "[\"nl_alloc_symbol\", \"buf\", 6, \"s1\"]"
+ },
+ {
+  "unit": "combiner-cons-mxcache.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_sf_prog2",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"scratch\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_socket_build_sockaddr",
+  "family": "other",
+  "idiom": "out:nl_ipv4_parse_dotted",
+  "class": "R4",
+  "reason": "out box is caller parameter host_ptr",
+  "site": "[\"nl_ipv4_parse_dotted\", \"host_ptr\", \"host_len\", [\"+\", \"out_buf\", 4]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_socket_signal_error",
+  "family": "other",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tagbuf\", 19, 268435480]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_thread_private_env_make",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "worker",
+  "reason": "nl_thread_private_frames_init",
+  "site": "[\"type_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_thread_private_env_make",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "worker",
+  "reason": "nl_thread_private_frames_init",
+  "site": "[\"backing_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "driver.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_thread_private_env_make",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "worker",
+  "reason": "nl_thread_private_frames_init",
+  "site": "[\"depth_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "nl_thread_run",
+  "family": "other",
+  "idiom": "alloc32",
+  "class": "worker",
+  "reason": "nelisp_eval_call",
+  "site": "[\"out_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_append_prepend",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "value used as seq operand",
+  "site": "[\"out_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_append_walk",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", [\"nl_val_tag\", [\"nl_cons_cdr_word\", \"cur\"]], 7], [\"wf_append_prepend\", [\"nl_c"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_arg_ptr",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"n\", 0], [\"nl_cons_car_ptr\", \"args\"], [\"wf_arg_ptr\", [\"nl_cons_cdr_ptr\", \"arg"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_assoc_fast",
+  "family": "evaluator",
+  "idiom": "out:wf_assoc",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"wf_assoc\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_butlast",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"len_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_butlast_collect",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "value used as seq operand",
+  "site": "[\"out_slot\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_first_non_number",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"if\", [\"=\", [\"logand\", \"w\", 1], 0], [\"let*\", [[\"tg\", [\"ptr-read-u64\", \"w\", 0]]], ["
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_first_non_number_or_bignum",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"if\", [\"=\", [\"logand\", \"w\", 1], 0], [\"let*\", [[\"tg\", [\"ptr-read-u64\", \"w\", 0]]], ["
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_ft_convert",
+  "family": "evaluator",
+  "idiom": "out:wf_ft_ints_ok",
+  "class": "R4",
+  "reason": "out box is caller parameter p",
+  "site": "[\"wf_ft_ints_ok\", \"p\", 4]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_ft_nth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "unknown",
+  "reason": "value used as if operand",
+  "site": "[\"if\", [\"=\", \"n\", 0], [\"nl_cons_car_ptr\", \"list_ptr\"], [\"wf_ft_nth\", [\"nl_cons_cdr_ptr\", \""
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_key_eq_depth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", [\"+\", \"stack\", [\"*\", \"sp\", 16]], 0, [\"nl_cons_car_ptr\", \"a\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_key_eq_depth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", [\"+\", [\"+\", \"stack\", [\"*\", \"sp\", 16]], 8], 0, [\"nl_cons_car_ptr\", \"b\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_key_eq_depth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", [\"+\", \"stack\", [\"*\", \"sp\", 16]], 0, [\"nl_cons_cdr_ptr\", \"a\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_key_eq_depth",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "raw",
+  "reason": "ptr-write-u64",
+  "site": "[\"ptr-write-u64\", [\"+\", [\"+\", \"stack\", [\"*\", \"sp\", 16]], 8], 0, [\"nl_cons_cdr_ptr\", \"b\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_mapcar",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_mapcar_reverse_copy",
+  "site": "[\"nilbuf\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_mapcar_step",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"new_acc\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_mapcar_step",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"elt\", [\"nl_cons_car_ptr\", \"rest_slot\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_mapcar_step",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "R2",
+  "reason": "wf_copy32",
+  "site": "[\"nxt\", [\"nl_cons_cdr_ptr\", \"rest_slot\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_detached_marker",
+  "family": "evaluator",
+  "idiom": "alloc32",
+  "class": "unknown",
+  "reason": "",
+  "site": "[\"out\", [\"alloc-bytes\", 32, 8]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_detached_marker",
+  "family": "evaluator",
+  "idiom": "out:nl_alloc_symbol",
+  "class": "R4",
+  "reason": "out box is fixed address 268435480",
+  "site": "[\"nl_alloc_symbol\", \"tag\", 5, 268435480]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_marker_compare",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_numeric_marker_value",
+  "site": "[\"wf_numeric_marker_value\", [\"nl_cons_car_ptr\", \"args\"], \"a\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_marker_compare",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_numeric_marker_value",
+  "site": "[\"wf_numeric_marker_value\", [\"nl_cons_car_ptr\", \"rest\"], \"b\", 0]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_marker_compare",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "R2",
+  "reason": "wf_numeric_marker_compare",
+  "site": "[\"rest\", [\"nl_cons_cdr_ptr\", \"args\"]]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_marker_copy",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_car_ptr",
+  "class": "R2",
+  "reason": "wf_numeric_marker_value",
+  "site": "[\"wf_numeric_marker_value\", [\"nl_cons_car_ptr\", \"args\"], \"value\", 1]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_numeric_marker_copy",
+  "family": "evaluator",
+  "idiom": "ptr:nl_cons_cdr_ptr",
+  "class": "R2",
+  "reason": "wf_numeric_marker_copy",
+  "site": "[\"wf_numeric_marker_copy\", [\"nl_cons_cdr_ptr\", \"args\"], \"env\", \"tail\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_plist_get_dispatch",
+  "family": "evaluator",
+  "idiom": "out:bf_plist_get_eq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_plist_get_eq\", \"args\", \"out\"]"
+ },
+ {
+  "unit": "applyfn-reader.o",
+  "file": "scripts/nelisp-standalone-build.el",
+  "defun": "wf_plist_get_dispatch",
+  "family": "evaluator",
+  "idiom": "out:bf_plist_get_eq",
+  "class": "R4",
+  "reason": "out box is caller parameter out",
+  "site": "[\"bf_plist_get_eq\", \"args\", \"out\"]"
+ }
+]

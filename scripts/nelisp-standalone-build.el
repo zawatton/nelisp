@@ -1620,8 +1620,113 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
                    (hash-table-count cands) count)
           out)))))
 
+(defconst nelisp-standalone--box-census-idioms
+  '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
+    nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
+    wf_copy32 nl_root_reserve nl_val_store_word nl_sci_store_imm)
+  "Call heads counted by the box-migration census (see
+`nelisp-standalone--box-census-record').  `(alloc-bytes 32 8)' is counted
+separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here
+are counted under their own names.")
+
+(defun nelisp-standalone--box-dump-json (x)
+  "X as a JSON-encodable value for the Doc 215 rewrite engine.
+Symbols become strings, strings become [\"$str\", S], a dotted tail becomes
+the two elements \"$dot\" TAIL, vectors become [\"$vec\", ...]."
+  (cond
+   ((null x) "nil")
+   ((eq x t) "t")
+   ((symbolp x) (symbol-name x))
+   ((stringp x) (vector "$str" x))
+   ((numberp x) x)
+   ((vectorp x) (vconcat (vector "$vec") (mapcar #'nelisp-standalone--box-dump-json x)))
+   ((consp x)
+    (let ((out nil) (tail x))
+      (while (consp tail)
+        (push (nelisp-standalone--box-dump-json (car tail)) out)
+        (setq tail (cdr tail)))
+      (when tail
+        (push "$dot" out)
+        (push (nelisp-standalone--box-dump-json tail) out))
+      (vconcat (nreverse out))))
+   (t (format "%S" x))))
+
+(defun nelisp-standalone--box-dump-record (name source)
+  "Append unit NAME's SOURCE as one JSON line to $NELISP_BOX_DUMP, if set.
+The Doc 215 rewrite engine (tools/ai/box-rewrite.py) reads these lines;
+like the census, they show the source after patches and before inlining."
+  (let ((file (getenv "NELISP_BOX_DUMP")))
+    (when (and file (not (string= file "")))
+      (require 'json)
+      (with-temp-buffer
+        (let ((json-encoding-pretty-print nil))
+          (insert (json-encode (list (cons "unit" name)
+                                     (cons "source" (nelisp-standalone--box-dump-json source)))))
+          (insert "\n"))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region (point-min) (point-max) file t 'silent))))))
+
+(defun nelisp-standalone--box-census-record (name source)
+  "Append the box-migration census of unit NAME's SOURCE to the census file.
+Only active when NELISP_BOX_CENSUS names a file.  Called for every unit
+compiled by `nelisp-standalone--compile-to-unit' and for every cache hit in
+`nelisp-standalone--cached-unit', so a build sees each unit it links.
+SOURCE is the unit source as the cache key sees it: after every source
+patch, before the inliner (an inlined helper body would otherwise be counted
+once per call site).  Each line is UNIT TAB DEFUN TAB IDIOM TAB COUNT, one
+per defun and idiom with a nonzero count, plus UNIT TAB DEFUN TAB defun TAB 1
+for every defun; DEFUN is `-' for code outside any defun.  A unit compiled
+twice appears twice; readers keep the last occurrence of each unit."
+  (nelisp-standalone--box-dump-record name source)
+  (let ((file (getenv "NELISP_BOX_CENSUS")))
+    (when (and file (not (string= file "")))
+      (let ((rows nil) (fn "-") (counts nil))
+        (cl-labels
+            ((bump (k) (let ((c (assq k counts)))
+                         (if c (setcdr c (1+ (cdr c))) (push (cons k 1) counts))))
+             (flush ()
+               (dolist (c counts) (push (list fn (car c) (cdr c)) rows))
+               (setq counts nil))
+             (head (sym)
+               (when (and (symbolp sym)
+                          (or (memq sym nelisp-standalone--box-census-idioms)
+                              (string-suffix-p "_clone_into" (symbol-name sym))))
+                 (bump sym)))
+             (walk (x)
+               (when (consp x)
+                 (cond
+                  ((eq (car x) 'quote) nil)
+                  ((and (eq (car x) 'defun) (symbolp (car-safe (cdr x))))
+                   (let ((outer fn) (outer-counts counts))
+                     (setq fn (symbol-name (cadr x)) counts nil)
+                     (push (list fn 'defun 1) rows)
+                     (dolist (f (cddr x)) (walk f))
+                     (flush)
+                     (setq fn outer counts outer-counts)))
+                  (t
+                   (when (and (eq (car x) 'alloc-bytes)
+                              (equal (cdr-safe x) '(32 8)))
+                     (bump 'alloc-bytes-32-8))
+                   (if (eq (car x) 'extern-call)
+                       (head (car-safe (cdr x)))
+                     (head (car x)))
+                   ;; Walk proper and dotted lists alike.
+                   (let ((tail (cdr x)))
+                     (while (consp tail)
+                       (walk (car tail))
+                       (setq tail (cdr tail)))))))))
+          (walk source)
+          (flush))
+        (with-temp-buffer
+          (dolist (r (nreverse rows))
+            (insert (format "%s\t%s\t%s\t%d\n" name (nth 0 r) (nth 1 r) (nth 2 r))))
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region (point-min) (point-max) file t 'silent)))))))
+
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
+  (nelisp-standalone--box-census-record
+   (nelisp-standalone--target-object-name name) source)
   (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
          ;; (the reader applyfn's deep right-nested if-chain, plus the
          ;; `nl-ffi-call' extern sub-chain) nests far enough to blow the default
@@ -1846,6 +1951,8 @@ directory tracks the tree rather than accumulating every key ever built."
          (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir)))
     (if (file-exists-p cache)
         (progn
+          ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
+          (nelisp-standalone--box-census-record name source)
           (when nelisp-standalone--build-trace-path
             (cl-incf nelisp-standalone--build-trace-hits))
           (nelisp-standalone--build-trace-phase "cache-decode"
@@ -2585,10 +2692,44 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; Int with (sar w 2); a pointer WORD is the 32-byte child box itself.
     ;; 0 (never a valid WORD) when the container has the wrong type, like
     ;; the *_ptr accessors.
+    ;; Doc 215: ARG may itself be a WORD; an immediate is never a cons.
     (defun nl_cons_car_word (arg)
-      (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 0) 0))
+      (if (= (logand arg 1) 1) 0
+        (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 0) 0)))
     (defun nl_cons_cdr_word (arg)
-      (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 8) 0))
+      (if (= (logand arg 1) 1) 0
+        (if (= (ptr-read-u64 arg 0) 7) (ptr-read-u64 (ptr-read-u64 arg 8) 8) 0)))
+    ;; Doc 215 word-transport helpers used by tools/ai/box-apply.py.
+    ;; (ptr-read-u64 VIEW 0) of a materialised view: the full tag word.
+    (defun nl_word_tag64 (w)
+      (if (= (logand w 1) 1)
+          (if (= (logand w 3) 1) 2 (if (= w 3) 0 1))
+        (ptr-read-u64 w 0)))
+    ;; What (ptr-read-u64 VIEW 8) read from a materialised view: a fixnum's
+    ;; value, 0 for nil and t, else the box's payload word.
+    (defun nl_word_payload (w)
+      (if (= (logand w 1) 1)
+          (if (= (logand w 3) 1) (sar w 2) 0)
+        (ptr-read-u64 w 8)))
+    ;; A 32-byte Sexp slot or view as a WORD, cloning a heap value into a
+    ;; fresh box exactly as nl_sexp_clone_into into a caller box did.
+    (defun nl_val_to_word (src)
+      (if (= (logand src 1) 1) src
+        (let ((tg (ptr-read-u8 src 0)))
+          (if (= tg 2) (nl_imm_int (ptr-read-u64 src 8))
+            (if (= tg 0) 3
+              (if (= tg 1) 7
+                (let ((b (alloc-bytes 32 8)))
+                  (seq (nl_sexp_clone_into src b) b))))))))
+    ;; A container slot WORD as the value record-slot-ref / vector-ref
+    ;; produced: immediates as they are, a heap value cloned into a fresh box.
+    (defun nl_word_clone (w)
+      (if (= (logand w 1) 1) w
+        (let ((b (alloc-bytes 32 8)))
+          (seq (nl_sexp_clone_into w b) b))))
+    (defun nl_w_vector_make (n _pad)
+      (let ((b (alloc-bytes 32 8)))
+        (seq (vector-make n b) b)))
     (defun nl_vector_slot_word (sexp-ptr idx)
       (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
@@ -7997,7 +8138,7 @@ leave symbols unresolved at link time."
       (let* ((buf (alloc-bytes 8 1)))
         (seq (ptr-write-u64 buf 0 u64) (wf_sym_eq name_ptr buf len))))
     (defun wf_arg_ptr (args n)
-      (if (= n 0) (nl_cons_car_ptr args) (wf_arg_ptr (nl_cons_cdr_ptr args) (- n 1))))
+      (if (= n 0) (nl_cons_car_ptr args) (wf_arg_ptr (nl_cons_cdr_word args) (- n 1))))
     ;; Emacs type-checks every argument to an arithmetic operator and signals
     ;; `number-or-marker-p' for the first one that is not a number.  Nothing
     ;; here did, so a non-number was read through `wf_argval' as whatever
@@ -8007,10 +8148,14 @@ leave symbols unresolved at link time."
     ;; failure: it propagates silently through every later calculation.
     (defun wf_first_non_number (args)
       (if (= (sexp-tag args) 7)
-          (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
-            (if (if (= tg 2) 1 (if (= tg 3) 1 0))
-                (wf_first_non_number (nl_cons_cdr_ptr args))
-              a))
+          (let* ((w (nl_cons_car_word args)))
+            (if (if (= (logand w 1) 0)
+                    (let* ((tg (ptr-read-u64 w 0))) (if (= tg 2) 1 (if (= tg 3) 1 0)))
+                  (if (= (logand w 3) 1) 1 0))
+                (let* ((d (nl_cons_cdr_word args)))
+                  (if (= (logand d 1) 1) 0 (wf_first_non_number d)))
+              ;; Only the error path needs a view of the offending value.
+              (nl_cons_car_ptr args)))
         0))
     ;; Doc 190 Phase A/B: a BIGNUM-AWARE variant of `wf_first_non_number',
     ;; used ONLY by `+'/`-'/`*''s own dispatch entries below (NOT by `/',
@@ -8026,10 +8171,14 @@ leave symbols unresolved at link time."
     ;; own comment.)
     (defun wf_first_non_number_or_bignum (args)
       (if (= (sexp-tag args) 7)
-          (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
-            (if (if (= tg 2) 1 (if (= tg 3) 1 (if (= tg 13) 1 0)))
-                (wf_first_non_number_or_bignum (nl_cons_cdr_ptr args))
-              a))
+          (let* ((w (nl_cons_car_word args)))
+            (if (if (= (logand w 1) 0)
+                    (let* ((tg (ptr-read-u64 w 0))) (if (= tg 2) 1 (if (= tg 3) 1 (if (= tg 13) 1 0))))
+                  (if (= (logand w 3) 1) 1 0))
+                (let* ((d (nl_cons_cdr_word args)))
+                  (if (= (logand d 1) 1) 0 (wf_first_non_number_or_bignum d)))
+              ;; Only the error path needs a view of the offending value.
+              (nl_cons_car_ptr args)))
         0))
     ;; R2, Minimal native surface clauses 1 and 5: recognize the existing
     ;; marker record and pass its integer position to the existing arithmetic
@@ -8041,10 +8190,14 @@ leave symbols unresolved at link time."
               (sexp-name-eq (ptr-read-u64 p 8) "nelisp-marker")
             0)
         0))
+    ;; Walked by WORD: a fixnum argument or the nil terminator is never a
+    ;; marker, and the materialising accessors boxed each of them.
     (defun wf_numeric_has_marker (args)
       (if (= (sexp-tag args) 7)
-          (if (= (wf_numeric_marker_p (nl_cons_car_ptr args)) 1) 1
-            (wf_numeric_has_marker (nl_cons_cdr_ptr args)))
+          (let* ((a (nl_cons_car_word args)))
+            (if (if (= (logand a 1) 1) 0 (wf_numeric_marker_p a)) 1
+              (let* ((d (nl_cons_cdr_word args)))
+                (if (= (logand d 1) 1) 0 (wf_numeric_has_marker d)))))
         0))
     (defun wf_numeric_detached_marker ()
       (let* ((buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
@@ -8324,6 +8477,10 @@ leave symbols unresolved at link time."
     ;; only reaches this after that check).  When this DOES report "more",
     ;; the caller's own `nl_cons_cdr_ptr' call right after costs nothing
     ;; extra: it re-reads the same pointer word and returns it directly.
+    ;; 1 when both WORDs are fixnums.  A fixnum WORD is (n<<2)|1, so two of
+    ;; them order exactly as their values do and compare without boxing.
+    (defun wf_fix2_p (a b)
+      (if (= (logand a 3) 1) (if (= (logand b 3) 1) 1 0) 0))
     (defun wf_cdr_has_more (args)
       (let* ((word (ptr-read-u64 (ptr-read-u64 args 8) 8)))
         (if (= (logand word 1) 0)
@@ -8338,9 +8495,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_lt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (< (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_lt rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8349,9 +8508,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_gt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (> (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_gt rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8360,9 +8521,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_le (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (<= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_le rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8371,9 +8534,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_ge (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (>= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_ge rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8382,9 +8547,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_eq (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_eq rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -9379,8 +9546,13 @@ leave symbols unresolved at link time."
     ;; promoted paths write their final answer through the SAME choke
     ;; point (`wf_write_int' / `nl_bignum_finish', which itself demotes
     ;; back to a fixnum when the magnitude re-fits -- Doc 190 §2).
+    ;; LIST_PTR is a Cons view or a cdr WORD (an immediate ends the list).
+    ;; A fixnum element is read from its WORD; only a boxed one gets a view.
     (defun wf_sum (list_ptr acc out)
+      (if (= (logand list_ptr 1) 1) (wf_write_int out acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
+        (if (= (logand (nl_cons_car_word list_ptr) 3) 1)
+          (wf_sum_fix list_ptr acc (sar (nl_cons_car_word list_ptr) 2) out)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
                 (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9391,7 +9563,9 @@ leave symbols unresolved at link time."
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_add_raw asign abuf acount e_sign e_ptr e_count rbuf sign_slot)))
                   (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-              (let* ((v (ptr-read-u64 car_ptr 8)))
+              (wf_sum_fix list_ptr acc (ptr-read-u64 car_ptr 8) out))))
+        (wf_write_int out acc))))
+    (defun wf_sum_fix (list_ptr acc v out)
                 (if (or (and (> v 0) (> acc (- 2305843009213693951 v)))
                         (and (< v 0) (< acc (- -2305843009213693952 v))))
                     (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9402,8 +9576,7 @@ leave symbols unresolved at link time."
                            (sign_slot (alloc-bytes 8 8))
                            (rcount (nl_bignum_add_raw asign abuf acount esign ebuf ecount rbuf sign_slot)))
                       (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-                  (wf_sum (nl_cons_cdr_ptr list_ptr) (+ acc v) out)))))
-        (wf_write_int out acc)))
+                  (wf_sum (nl_cons_cdr_word list_ptr) (+ acc v) out)))
     ;; Doc 190 Phase B: BIGNUM-MODE continuation of `wf_sum''s fold, entered
     ;; once ACC has been promoted.  ACC is carried as (ACC_SIGN, ACC_PTR,
     ;; ACC_COUNT) from here on; the base case (list exhausted) demotes back
@@ -9493,11 +9666,11 @@ leave symbols unresolved at link time."
     (defun wf_quot (list_ptr acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (wf_quot (nl_cons_cdr_ptr list_ptr)
-                   (/ acc (ptr-read-u64 (nl_cons_car_ptr list_ptr) 8)))
+                   (/ acc (nl_word_payload (nl_cons_car_word list_ptr))))
         acc))
     (defun wf_zero_divisor (list_ptr)
       (if (= (ptr-read-u64 list_ptr 0) 7)
-          (if (= (ptr-read-u64 (nl_cons_car_ptr list_ptr) 8) 0)
+          (if (= (nl_word_payload (nl_cons_car_word list_ptr)) 0)
               1
             (wf_zero_divisor (nl_cons_cdr_ptr list_ptr)))
         0))
@@ -10009,7 +10182,7 @@ leave symbols unresolved at link time."
       (if (= (sexp-tag args) 7)
           (let* ((a (nl_cons_car_ptr args)))
             (if (= (ptr-read-u64 a 0) 2)
-                (bf_first_non_integer (nl_cons_cdr_ptr args))
+                (bf_first_non_integer (nl_cons_cdr_word args))
               a))
         0))
     (defun bf_wrong_type_number_or_marker (offender)
@@ -11633,9 +11806,9 @@ eval applyfn.")
                 entry_ptr))
           (nl_ht_find data_ptr key_ptr mode))))
     (defun nl_ht_get_default (args out)
-      (let* ((rest1 (nl_cons_cdr_ptr args))
-             (rest2 (nl_cons_cdr_ptr rest1)))
-        (if (= (ptr-read-u64 rest2 0) 7)
+      (let* ((rest1 (nl_cons_cdr_word args))
+             (rest2 (nl_cons_cdr_word rest1)))
+        (if (= (nl_word_tag64 rest2) 7)
             (nl_ht_copy32 out (nl_cons_car_ptr rest2))
           (wf_write_nil out))))
     ;; Iterative, and an empty bucket (the Nil word 3 in the vector's data
@@ -11677,7 +11850,7 @@ eval applyfn.")
         (seq
          (while (= (ptr-read-u64 node 0) 7)
            (seq
-            (nl_ht_rehash_entry_into (nl_cons_car_ptr node) new_vec mode)
+            (nl_ht_rehash_entry_into (nl_cons_car_word node) new_vec mode)
             (setq node (nl_cons_cdr_ptr node))))
          0)))
     (defun nl_ht_rehash_vec_into (old_vec i n new_vec mode)
@@ -12141,9 +12314,9 @@ eval applyfn.")
     (defun wf_butlast_collect (p i keep nilslot)
       (if (>= i keep)
           nilslot
-        (let* ((rest_slot (wf_butlast_collect (nl_cons_cdr_ptr p) (+ i 1) keep nilslot))
+        (let* ((rest_slot (wf_butlast_collect (nl_cons_cdr_word p) (+ i 1) keep nilslot))
                (out_slot (alloc-bytes 32 8)))
-          (seq (nelisp_cons_construct (nl_cons_car_ptr p) rest_slot out_slot) out_slot))))
+          (seq (nelisp_cons_construct (nl_cons_car_word p) rest_slot out_slot) out_slot))))
     ;; N_STATE folds "was N given, and what is it" into one native int,
     ;; every arm built from only `if'/`=' (no stored `not' result, to
     ;; stay inside patterns already proven elsewhere in this table):
@@ -12214,7 +12387,7 @@ eval applyfn.")
       (if (= (nl_val_tag (nl_cons_cdr_word cur)) 7)
           (let* ((tg (nl_val_tag (nl_cons_car_word cur))))
             (if (if (= tg 0) 1 (if (= tg 7) 1 0))
-                (wf_append_fast_p (nl_cons_cdr_ptr cur))
+                (wf_append_fast_p (nl_cons_cdr_word cur))
               0))
         1))
     ;; `bf_wrong_type_listp' (like every `bf_wrong_type_*' helper) returns
@@ -12237,13 +12410,13 @@ eval applyfn.")
               (if (= rest_slot 1)
                   1
                 (let* ((out_slot (alloc-bytes 32 8)))
-                  (seq (nelisp_cons_construct (nl_cons_car_ptr s) rest_slot out_slot) out_slot))))
+                  (seq (nelisp_cons_construct (nl_cons_car_word s) rest_slot out_slot) out_slot))))
           (if (= (ptr-read-u64 s 0) 0)
               tail_slot
             (bf_wrong_type_listp s)))))
     (defun wf_append_walk (cur)
       (if (= (nl_val_tag (nl_cons_cdr_word cur)) 7)
-          (wf_append_prepend (nl_cons_car_ptr cur) (wf_append_walk (nl_cons_cdr_ptr cur)))
+          (wf_append_prepend (nl_cons_car_ptr cur) (wf_append_walk (nl_cons_cdr_word cur)))
         (nl_cons_car_ptr cur)))
     ;; The delegate call resolves the target symbol itself, via
     ;; `nelisp_env_lookup_function', THEN calls `nl_apply_function' with
@@ -12360,7 +12533,7 @@ eval applyfn.")
     (defun wf_mapcar_reverse_copy (p acc)
       (if (= (ptr-read-u64 p 0) 7)
           (let* ((c (alloc-bytes 32 8)))
-            (seq (nelisp_cons_construct (nl_cons_car_ptr p) acc c)
+            (seq (nelisp_cons_construct (nl_cons_car_word p) acc c)
                  (wf_mapcar_reverse_copy (nl_cons_cdr_ptr p) c)))
         acc))
     (defun wf_mapcar_step (rest_slot acc_slot fn_slot env)
@@ -13529,7 +13702,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (wf_bytecode_copy self function) (wf_bytecode_copy saved-state state)
                         (wf_write_int action-slot action) (wf_write_nil operands)
                         (wf_bytecode_copy mirror (+ env 0))
-                        (wf_write_int depth (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
+                        (wf_write_int depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
                         (wf_write_nil cell)
                         (wf_bytecode_copy frames (+ env 32))
                         (if (= action 0) (wf_write_int cell ticket)
@@ -13560,13 +13733,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (wf_bytecode_copy event (vector-ref-ptr state 3))
                               (while (= (sexp-tag event) 7)
                                 (seq
-                                 (if (/= (sexp-tag (nl_cons_car_ptr event)) 7)
+                                 (if (/= (sexp-tag (nl_cons_car_word event)) 7)
                                      (setq binding-count (+ binding-count 1)) 0)
                                  (setq event-count (+ event-count 1))
                                  (wf_bytecode_copy event (nl_cons_cdr_ptr event))))
                               (if (and (= (sexp-tag function) 7)
                                        (= (bf_eq2 function (vector-ref-ptr state 0)) 1)
-                                       (= (sexp-tag (nl_cons_car_ptr function)) 4)
+                                       (= (sexp-tag (nl_cons_car_word function)) 4)
                                        (= (symbol-name-eq (nl_cons_car_ptr function) "closure") 1)
                                        (= (sexp-tag event) 0)
                                        (/= (sexp-tag (vector-ref-ptr state 1)) 0)
@@ -13693,7 +13866,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (if (= action 0) (wf_bytecode_copy state result)
                             (if (and (= action 1) (= direct 0))
                                 (seq
-                                 (wf_write_int scratch (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
+                                 (wf_write_int scratch (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
                                  (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)
                                  (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
                                  (record-slot-set (+ env 32) 1 scratch))
@@ -13710,7 +13883,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (vector-slot-set state 3 scratch)
                                    (if (= (sexp-tag event) 7)
                                        (seq
-                                        (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_ptr event)))
+                                        (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_word event)))
                                         (setq saved-kind (ptr-read-u64 268435472 0))
                                         (wf_bytecode_copy saved-tag 268435480)
                                         (wf_bytecode_copy saved-value 268435512)
@@ -13725,7 +13898,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                  (ptr-write-u64 268435472 0 saved-kind))
                                           (setq rc 1)))
                                      (seq
-                                      (wf_write_int scratch (- (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)) 1))
+                                      (wf_write_int scratch (- (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2) 1))
                                       (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) cell)
                                       (record-slot-set (+ env 32) 1 scratch)))
                                    (setq i (- i 1))))
@@ -16024,7 +16197,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           0)))
     (defun m5_char_list_ascii_p (node)
       (if (= (ptr-read-u64 node 0) 7)
-          (if (< (ptr-read-u64 (nl_cons_car_ptr node) 8) 128)
+          (if (< (nl_word_payload (nl_cons_car_word node)) 128)
               (m5_char_list_ascii_p (nl_cons_cdr_ptr node))
             0)
         1))
@@ -16743,8 +16916,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((tag (ptr-read-u64 node 0)))
         (if (= tag 0) 1
           (if (= tag 7)
-              (let* ((el (nl_cons_car_ptr node)))
-                (if (= (ptr-read-u64 el 0) 7)
+              (let* ((el (nl_cons_car_word node)))
+                (if (= (nl_word_tag64 el) 7)
                     (if (= (m5_json_is_keyword (nl_cons_car_ptr el)) 1) 0
                       (m5_json_alist_p (nl_cons_cdr_ptr node)))
                   0))
@@ -16756,7 +16929,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_json_object_plist (ms node first)
       (if (= (ptr-read-u64 node 0) 7)
           (let* ((key (nl_cons_car_ptr node))
-                 (rest (nl_cons_cdr_ptr node))
+                 (rest (nl_cons_cdr_word node))
                  (val (nl_cons_car_ptr rest)))
             (seq
              (if (= first 1) 0 (mut-str-push-byte ms 44))
@@ -16767,7 +16940,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         0))
     (defun m5_json_object_alist (ms node first)
       (if (= (ptr-read-u64 node 0) 7)
-          (let* ((el (nl_cons_car_ptr node))
+          (let* ((el (nl_cons_car_word node))
                  (key (nl_cons_car_ptr el))
                  (val (nl_cons_cdr_ptr el)))
             (seq
@@ -16950,7 +17123,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (mut-str-push-byte ms 115) (mut-str-push-byte ms 117)
            (mut-str-push-byte ms 98) (mut-str-push-byte ms 114)
            (mut-str-push-byte ms 32)
-           (m5_push_str ms (nl_cons_car_ptr (nl_cons_cdr_ptr vptr)))
+           (m5_push_str ms (nl_cons_car_ptr (nl_cons_cdr_word vptr)))
            (mut-str-push-byte ms 62) 1))
     ;; GNU Emacs 31 interpreted-function slots over this runtime's
     ;; `(closure ENV ARGS . BODY)' list.  GNU's `function' (eval.c
@@ -16968,8 +17141,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((h (nl_cons_car_ptr c)))
             (if (= (ptr-read-u64 h 0) 4)
                 (if (= (symbol-eq h 'closure) 1)
-                    (let* ((d1 (nl_cons_cdr_ptr c)))
-                      (if (= (ptr-read-u64 d1 0) 7)
+                    (let* ((d1 (nl_cons_cdr_word c)))
+                      (if (= (nl_word_tag64 d1) 7)
                           (if (= (nl_val_tag (nl_cons_cdr_word d1)) 7) 1 0)
                         0))
                   0)
@@ -16984,12 +17157,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun nl_closure_docmark_p (p)
       (if (= (ptr-read-u64 p 0) 7)
           (let* ((h (nl_cons_car_ptr p))
-                 (d (nl_cons_cdr_ptr p)))
+                 (d (nl_cons_cdr_word p)))
             (if (= (ptr-read-u64 h 0) 4)
                 (if (= (symbol-eq h ':documentation) 1)
-                    (if (= (ptr-read-u64 d 0) 7)
-                        (let* ((arg (nl_cons_car_ptr d)))
-                          (if (= (ptr-read-u64 arg 0) 7)
+                    (if (= (nl_word_tag64 d) 7)
+                        (let* ((arg (nl_cons_car_word d)))
+                          (if (= (nl_word_tag64 arg) 7)
                               (let* ((qh (nl_cons_car_ptr arg))
                                      (qd (nl_cons_cdr_word arg)))
                                 (if (= (ptr-read-u64 qh 0) 4)
@@ -17014,15 +17187,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun nl_closure_doc_value (body)
       (let* ((e (nl_cons_car_ptr body)))
         (if (= (nl_closure_docmark_p e) 1)
-            (let* ((arg (nl_cons_car_ptr (nl_cons_cdr_ptr e))))
+            (let* ((arg (nl_cons_car_ptr (nl_cons_cdr_word e))))
               (if (= (ptr-read-u64 arg 0) 7)
-                  (nl_cons_car_ptr (nl_cons_cdr_ptr arg))
+                  (nl_cons_car_ptr (nl_cons_cdr_word arg))
                 arg))
           e)))
     (defun nl_closure_iform_p (body)
       (if (= (ptr-read-u64 body 0) 7)
-          (let* ((a (nl_cons_car_ptr body)))
-            (if (= (ptr-read-u64 a 0) 7)
+          (let* ((a (nl_cons_car_word body)))
+            (if (= (nl_word_tag64 a) 7)
                 (let* ((ah (nl_cons_car_ptr a)))
                   (if (= (ptr-read-u64 ah 0) 4)
                       (if (= (symbol-eq ah 'interactive) 1) 1 0)
@@ -17034,7 +17207,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (nl_closure_doc_p body) 1) (nl_cons_cdr_ptr body) body))
     ;; The closure's BODY list (cdr of ARGS' cons).
     (defun nl_closure_body (c)
-      (nl_cons_cdr_ptr (nl_cons_cdr_ptr (nl_cons_cdr_ptr c))))
+      (nl_cons_cdr_ptr (nl_cons_cdr_word (nl_cons_cdr_word c))))
     (defun nl_closure_length (c)
       (let* ((b0 (nl_closure_body c)))
         (if (= (nl_closure_iform_p (nl_closure_after_doc b0)) 1)
@@ -17046,9 +17219,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= elt-t 1) (m5_push_lit_t ms) (m5_push_lit_nil ms))
            (mut-str-push-byte ms 41) 1))
     (defun m5_prin1_closure (ms vptr)
-      (let* ((d1 (nl_cons_cdr_ptr vptr))
+      (let* ((d1 (nl_cons_cdr_word vptr))
              (env (nl_cons_car_ptr d1))
-             (d2 (nl_cons_cdr_ptr d1))
+             (d2 (nl_cons_cdr_word d1))
              (argl (nl_cons_car_ptr d2))
              (b0 (nl_cons_cdr_ptr d2))
              (dp (nl_closure_doc_p b0))
@@ -17072,10 +17245,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (m5_prin1 ms (nl_closure_doc_value b0))
                       (m5_push_lit_nil ms))
                     (if (= ip 1)
-                        (let* ((ifcdr (nl_cons_cdr_ptr (nl_cons_car_ptr b1))))
+                        (let* ((ifcdr (nl_cons_cdr_word (nl_cons_car_word b1))))
                           (seq (mut-str-push-byte ms 32)
-                               (if (= (ptr-read-u64 ifcdr 0) 7)
-                                   (if (= (ptr-read-u64 (nl_cons_cdr_ptr ifcdr) 0) 7)
+                               (if (= (nl_word_tag64 ifcdr) 7)
+                                   (if (= (nl_word_tag64 (nl_cons_cdr_word ifcdr)) 7)
                                        (seq (mut-str-push-byte ms 91)
                                             (m5_prin1 ms (nl_cons_car_ptr ifcdr))
                                             (mut-str-push-byte ms 32)
@@ -17096,8 +17269,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (mut-str-push-byte ms 93) 1))
     (defun m5_prin1_ht_chain (ms node first)
       (if (= (ptr-read-u64 node 0) 7)
-          (let* ((pair (nl_cons_car_ptr node)))
-            (if (= (ptr-read-u64 pair 0) 7)
+          (let* ((pair (nl_cons_car_word node)))
+            (if (= (nl_word_tag64 pair) 7)
                 (seq (if (= first 1) 0 (mut-str-push-byte ms 32))
                      (m5_prin1 ms (nl_cons_car_ptr pair))
                      (mut-str-push-byte ms 32)
@@ -17140,8 +17313,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= (bf_marker_vec_is h 7089075026832613736 25964 10) 1)
             (m5_prin1_hashtable ms vptr)
           (if (= (ptr-read-u64 h 0) 4)
-              (let* ((d1 (nl_cons_cdr_ptr vptr)))
-                (if (= (ptr-read-u64 d1 0) 7)
+              (let* ((d1 (nl_cons_cdr_word vptr)))
+                (if (= (nl_word_tag64 d1) 7)
                     (if (= (m5_sym_is h 31078196194145634 0 7) 1)
                         (m5_prin1_subr ms vptr)
                       (if (= (m5_sym_is h 28554821421198435 0 7) 1)
@@ -18279,7 +18452,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; "(97 98)" and "[97 98]" -- a string, so no error, just the wrong text.
     (defun m5_concat_chars_list (ms cur)
       (if (= (ptr-read-u64 cur 0) 7)
-          (seq (m5_push_char ms (ptr-read-u64 (nl_cons_car_ptr cur) 8))
+          (seq (m5_push_char ms (nl_word_payload (nl_cons_car_word cur)))
                (m5_concat_chars_list ms (nl_cons_cdr_ptr cur)))
         1))
     (defun m5_concat_chars_vec (ms v i n)
@@ -18408,34 +18581,34 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (m5_fmt_loop ms fmt (+ i 2) n argp))
                     (if (= d 100)
                         (seq (m5_push_dec ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                             (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                             (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                       (if (= d 120)
                           (seq (m5_push_hex ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                               (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                               (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                         (if (= d 102)
                             (seq (m5_emit_value ms (m5_fmt_argptr argp))
-                                 (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                 (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                           (if (= d 103)
                               (seq (m5_emit_value ms (m5_fmt_argptr argp))
-                                   (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                   (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                             (if (= d 115)
                             (seq (m5_emit_formatted_value ms (m5_fmt_argptr argp))
-                                 (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                 (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                               (if (= d 83)
                                   (seq (m5_emit_value ms (m5_fmt_argptr argp))
-                                       (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                       (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                 (if (= d 105)
                                     (seq (m5_push_dec ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                                         (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                         (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                   (if (= d 88)
                                       (seq (m5_push_hex_up ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                                           (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                           (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                     (if (= d 111)
                                         (seq (m5_push_oct ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                                             (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                             (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                       (if (= d 99)
                                           (seq (m5_push_char ms (ptr-read-u64 (m5_fmt_argptr argp) 8))
-                                               (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
+                                               (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                         (seq (mut-str-push-byte ms 37)
                                              (mut-str-push-byte ms d)
                                              (m5_fmt_loop ms fmt (+ i 2) n argp)))))))))))))))
@@ -18761,7 +18934,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         acc))
     (defun bf_record_fill (rec i node)
       (if (= (ptr-read-u64 node 0) 7)
-          (seq (record-slot-set rec i (nl_cons_car_ptr node))
+          (seq (record-slot-set rec i (nl_cons_car_word node))
                (bf_record_fill rec (+ i 1) (nl_cons_cdr_ptr node)))
         0))
     (defun bf_record (args out)
@@ -18828,20 +19001,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (seq (bf_byte_code_name name)
                  (bf_wrong_number_of_args name (if (< count 0) 0 count)))
           (let* ((arglist (nl_cons_car_ptr args))
-                 (rest1 (nl_cons_cdr_ptr args))
-                 (code (nl_cons_car_ptr rest1))
-                 (rest2 (nl_cons_cdr_ptr rest1))
-                 (constants (nl_cons_car_ptr rest2))
-                 (rest3 (nl_cons_cdr_ptr rest2))
-                 (depth (nl_cons_car_ptr rest3))
-                 (code-tag (ptr-read-u64 code 0))
-                 (constants-tag (ptr-read-u64 constants 0))
-                 (depth-tag (ptr-read-u64 depth 0)))
+                 (rest1 (nl_cons_cdr_word args))
+                 (code (nl_cons_car_word rest1))
+                 (rest2 (nl_cons_cdr_word rest1))
+                 (constants (nl_cons_car_word rest2))
+                 (rest3 (nl_cons_cdr_word rest2))
+                 (depth (nl_cons_car_word rest3))
+                 (code-tag (nl_word_tag64 code))
+                 (constants-tag (nl_word_tag64 constants))
+                 (depth-tag (nl_word_tag64 depth)))
             (if (if (or (= code-tag 5) (= code-tag 14) (= code-tag 15)) 0 1)
                 (bf_wrong_type_stringp code)
               (if (= constants-tag 8)
                   (if (= depth-tag 2)
-                      (if (< (ptr-read-u64 depth 8) 0)
+                      (if (< (nl_word_payload depth) 0)
                           (bf_invalid_byte_code_object out)
                         (seq (record-make arglist count out)
                              (bf_record_fill out 0 args)
@@ -19098,8 +19271,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_make_char_table (args out)
       (if (= (ptr-read-u64 args 0) 7)
           (let* ((subtype (nl_cons_car_ptr args))
-                 (rest (nl_cons_cdr_ptr args)))
-            (if (= (ptr-read-u64 rest 0) 7)
+                 (rest (nl_cons_cdr_word args)))
+            (if (= (nl_word_tag64 rest) 7)
                 (nl_char_table_alloc subtype (nl_cons_car_ptr rest) out)
               (let* ((nilbuf (alloc-bytes 32 8)))
                 (seq (wf_write_nil nilbuf)
@@ -19341,7 +19514,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; vector &rest -> Vector(tag8) from the arg list.
     (defun bf_vec_fill (vec i node)
       (if (= (ptr-read-u64 node 0) 7)
-          (seq (vector-slot-set vec i (nl_cons_car_ptr node))
+          (seq (vector-slot-set vec i (nl_cons_car_word node))
                (bf_vec_fill vec (+ i 1) (nl_cons_cdr_ptr node)))
         0))
     (defun bf_vec_count (node acc)
@@ -19359,7 +19532,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_unibyte_fill (ms node)
       (if (= (ptr-read-u64 node 0) 7)
           (seq (mut-str-push-byte ms
-                                  (logand (ptr-read-u64 (nl_cons_car_ptr node) 8)
+                                  (logand (nl_word_payload (nl_cons_car_word node))
                                           255))
                (bf_unibyte_fill ms (nl_cons_cdr_ptr node)))
         0))
@@ -19514,8 +19687,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (n (nl_closure_length c)))
         (if (if (< idx 0) 1 (if (< idx n) 0 1))
             (bf_args_out_of_range c idxp)
-          (let* ((d1 (nl_cons_cdr_ptr c))
-                 (d2 (nl_cons_cdr_ptr d1))
+          (let* ((d1 (nl_cons_cdr_word c))
+                 (d2 (nl_cons_cdr_word d1))
                  (b0 (nl_cons_cdr_ptr d2))
                  (b1 (nl_closure_after_doc b0)))
             (cond
@@ -19536,7 +19709,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (seq (wf_copy32 out (nl_closure_doc_value b0)) 0)
                 (seq (wf_write_nil out) 0)))
              (t (bf_closure_iform_value
-                 (nl_cons_cdr_ptr (nl_cons_car_ptr b1)) out)))))))
+                 (nl_cons_cdr_ptr (nl_cons_car_word b1)) out)))))))
     ;; Slot 2 of a closure with captured bindings, as GNU lays out a lexical
     ;; environment: innermost binding first, each variable once.  This
     ;; runtime captures outer frames first and keeps a shadowed outer
@@ -19569,7 +19742,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (seq (if (= (ptr-read-u64 box 0) 11)
                                 (nl_cell_get_value box val)
                               (wf_copy32 val box))
-                            (nelisp_cons_construct (nl_cons_car_ptr entry) val pair)
+                            (nelisp_cons_construct (nl_cons_car_word entry) val pair)
                             (nelisp_cons_construct pair acc cell)))
                    (nelisp_cons_construct entry acc cell))
                  (bf_closure_env_view_rev rest cell out)))))
@@ -19602,7 +19775,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (seq (if (= (ptr-read-u64 box 0) 11)
                               (nl_cell_get_value box val)
                             (wf_copy32 val box))
-                          (nelisp_cons_construct (nl_cons_car_ptr entry) val pair)
+                          (nelisp_cons_construct (nl_cons_car_word entry) val pair)
                           (nelisp_cons_construct pair tail out)
                           0))
                  (seq (nelisp_cons_construct entry tail out) 0)))))
@@ -19629,8 +19802,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_closure_iform_value (ifcdr out)
       (if (= (ptr-read-u64 ifcdr 0) 7)
           (if (= (nl_val_tag (nl_cons_cdr_word ifcdr)) 7)
-              (let* ((spec (nl_cons_car_ptr ifcdr))
-                     (modes (nl_cons_cdr_ptr ifcdr)))
+              (let* ((spec (nl_cons_car_word ifcdr))
+                     (modes (nl_cons_cdr_word ifcdr)))
                 (seq (vector-make 2 out)
                      (vector-slot-set out 0 spec)
                      (vector-slot-set out 1 modes)
@@ -20048,7 +20221,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (msg (alloc-bytes 32 8))
                     (nil-slot (alloc-bytes 32 8)))
                (seq (mut-str-make-empty ms 32)
-                    (m5_fmt_loop ms fmt 0 (m5_strlen fmt) (nl_cons_cdr_ptr args))
+                    (m5_fmt_loop ms fmt 0 (m5_strlen fmt) (nl_cons_cdr_word args))
                     (mut-str-finalize ms msg)
                     (wf_write_nil nil-slot)
                     (nelisp_cons_construct msg nil-slot 268435512)))
@@ -20346,7 +20519,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       a
                     (if (> v 255)
                         a
-                      (bf_first_bad_byte (nl_cons_cdr_ptr args)))))
+                      (bf_first_bad_byte (nl_cons_cdr_word args)))))
               a))
         0))
     (defun bf_args_out_of_range_byte (offender)
@@ -20393,7 +20566,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= nn 0)
                 (bf_wrong_type_int_or_marker bad)
               (bf_wrong_type_number_or_marker nn)))
-        (bf_wrong_type_int_or_marker (nl_cons_car_ptr args))))
+        (bf_wrong_type_int_or_marker (nl_cons_car_word args))))
     ;; Doc 190 Phase C: bignum-aware sibling of `bf_first_non_integer',
     ;; used ONLY by `logand'/`logior'/`logxor''s dispatch entries once
     ;; their all-fixnum fast-path gate (still plain `bf_first_non_
@@ -20404,7 +20577,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (sexp-tag args) 7)
           (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
             (if (if (= tg 2) 1 (if (= tg 13) 1 0))
-                (bf_first_non_integer_or_bignum (nl_cons_cdr_ptr args))
+                (bf_first_non_integer_or_bignum (nl_cons_cdr_word args))
               a))
         0))
     ;; Bignum-aware sibling of `bf_int_arg_error', same position-dependent
@@ -20422,7 +20595,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= nn 0)
                   (bf_wrong_type_int_or_marker bad)
                 (bf_wrong_type_number_or_marker nn)))
-          (bf_wrong_type_int_or_marker (nl_cons_car_ptr args)))))
+          (bf_wrong_type_int_or_marker (nl_cons_car_word args)))))
     (defun bf_wrong_type_symbolp (offender)
       (let* ((wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
@@ -20735,13 +20908,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_mark_declared_special (mirror frames name)
       ;; Called only when installing a new local cell.  Captured lexical
       ;; cells are installed separately and retain their original kind.
-      (if (> (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 0)
+      (if (> (sar (nelisp_frame_slot_raw_word frames 1) 2) 0)
           (if (or (/= (logand (ptr-read-u64 (+ mirror 112) 0) 2097152) 0)
                   (= (bf_declared_special_p mirror name) 1)
                   (= (nelisp_frame_local_special_p frames name) 1))
               (let* ((frame (vector-ref-ptr
                              (record-slot-ref-ptr frames 0)
-                             (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1))))
+                             (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
                 (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
                   (let* ((names (alloc-bytes 32 8)))
                     (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
@@ -20757,7 +20930,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; globals and dynamic mode do. Ignoring caller/captured local markers
       ;; both preserves formal shadowing and avoids a caller-frame walk.
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                     (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (table (ptr-read-u64 frame 24)))
         ;; A formal binds dynamically only in dynamic-binding mode: under
         ;; lexical-binding GNU 31.1 binds a parameter named after a special
@@ -20781,7 +20954,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name))
              (local-p (if (= entry 0) 0
                         (if (> (record-slot-count entry) 5)
-                            (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                            (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
              (cell (if (= local-p 1) 0
                      (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
         (nl_env_lookup_val_done
@@ -21151,7 +21324,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym))
                (local-p (if (= entry 0) 0
                           (if (> (record-slot-count entry) 5)
-                              (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                              (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                (cell (if (= local-p 1) 0
                        (nelisp_frame_stack_find_kind (+ env 32) sym 1 0))))
           (seq (wf_dirty)
@@ -22241,8 +22414,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq
          (while (= stop 0)
            (if (= (ptr-read-u64 cur 0) 7)
-               (let* ((rest (nl_cons_cdr_ptr cur)))
-                 (if (= (ptr-read-u64 rest 0) 7)
+               (let* ((rest (nl_cons_cdr_word cur)))
+                 (if (= (nl_word_tag64 rest) 7)
                      (if (= (bf_eq2 (nl_cons_car_ptr cur) key) 1)
                          (seq (wf_copy32 out (nl_cons_car_ptr rest))
                               (setq found 1) (setq stop 1))
@@ -22276,10 +22449,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= (ptr-read-u64 c 0) 7)
                  (if (= (bf_eq2 (nl_cons_car_ptr c) key) 1)
                      (seq (setq result c) (setq stop 1))
-                   (let* ((cd (nl_cons_cdr_ptr c)))
-                     (if (= (ptr-read-u64 cd 0) 0)
+                   (let* ((cd (nl_cons_cdr_word c)))
+                     (if (= (nl_word_tag64 cd) 0)
                          (setq stop 1)
-                       (if (= (ptr-read-u64 cd 0) 7)
+                       (if (= (nl_word_tag64 cd) 7)
                            (seq
                             (setq c (nl_cons_cdr_ptr cd))
                             (setq tick (- 1 tick))
@@ -22407,7 +22580,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (seq
               (setq cursor registry)
               (while (and (= done 0) (= (sexp-tag cursor) 7))
-                (let* ((entry (nl_cons_car_ptr cursor)))
+                (let* ((entry (nl_cons_car_word cursor)))
                   (if (= (bf_eq2 key (nl_cons_car_ptr entry)) 1)
                       (seq (setq name (nl_cons_cdr_ptr entry)) (setq done 1))
                     (setq cursor (nl_cons_cdr_ptr cursor))))))
@@ -22492,13 +22665,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; and=-1) so (logior)=0 (logand)=-1 (logior X)=X all match host.
     (defun wf_logior_fold (lp acc)
       (if (= (ptr-read-u64 lp 0) 7)
-          (wf_logior_fold (nl_cons_cdr_ptr lp) (logior acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+          (wf_logior_fold (nl_cons_cdr_ptr lp) (logior acc (nl_word_payload (nl_cons_car_word lp)))) acc))
     (defun wf_logand_fold (lp acc)
       (if (= (ptr-read-u64 lp 0) 7)
-          (wf_logand_fold (nl_cons_cdr_ptr lp) (logand acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+          (wf_logand_fold (nl_cons_cdr_ptr lp) (logand acc (nl_word_payload (nl_cons_car_word lp)))) acc))
     (defun wf_logxor_fold (lp acc)
       (if (= (ptr-read-u64 lp 0) 7)
-          (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+          (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (nl_word_payload (nl_cons_car_word lp)))) acc))
     ;; --- Doc 190 Phase C: bitwise (`logand'/`logior'/`logxor'/`lognot')
     ;; and `ash' accept a Bignum (tag 13) operand -----------------------
     ;; Emacs bitwise ops treat every integer as an INFINITE-PRECISION
@@ -25914,7 +26087,7 @@ Other targets return nil, preserving their generated process source exactly."
 	    (defun nl_bi_argval_or_zero (lst n)
 	      (if (= (ptr-read-u64 lst 0) 7)
 	          (if (= n 0)
-	              (ptr-read-u64 (nl_cons_car_ptr lst) 8)
+	              (nl_word_payload (nl_cons_car_word lst))
 	            (nl_bi_argval_or_zero (nl_cons_cdr_ptr lst) (- n 1)))
 	        0))
 	    (defun nl_bi_portable_syscall_nr (sx)
@@ -26091,9 +26264,9 @@ Other targets return nil, preserving their generated process source exactly."
              (nl_os_close_dir fd)
              (nl_seq2 (nl_alloc_str sbuf slen out) 0))))))
     (defun nl_bi_syscall_readdir_names (args out)
-      (let* ((rest (nl_cons_cdr_ptr args))
+      (let* ((rest (nl_cons_cdr_word args))
              (nul-separated
-              (if (= (ptr-read-u64 rest 0) 7)
+              (if (= (nl_word_tag64 rest) 7)
                   (if (= (nl_val_tag (nl_cons_car_word rest)) 0) 0 1)
                 0)))
         (nl_bi_syscall_readdir_buffer
@@ -26149,10 +26322,10 @@ Other targets return nil, preserving their generated process source exactly."
             (setq idx (+ idx 1))))
          0)))
     (defun nl_bi_readdir_scan_raw (args out)
-      (let* ((rest1 (nl_cons_cdr_ptr args))
-             (rest2 (nl_cons_cdr_ptr rest1))
+      (let* ((rest1 (nl_cons_cdr_word args))
+             (rest2 (nl_cons_cdr_word rest1))
              (nul-separated
-              (if (= (ptr-read-u64 rest2 0) 7)
+              (if (= (nl_word_tag64 rest2) 7)
                   (if (= (nl_val_tag (nl_cons_car_word rest2)) 0) 0 1)
                 0)))
         (nl_readdir_scan_raw
@@ -26447,7 +26620,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
        env out tag_slot val_slot))
     (defun nl_ct_throw_got_tag_form (tag_form args env out tag_slot val_slot)
       (nl_ct_throw_got_cdr1
-       (extern-call nl_cons_cdr_ptr args)
+       (extern-call nl_cons_cdr_word args)
        tag_form env out tag_slot val_slot))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
@@ -26539,7 +26712,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     (defun nl_ct_catch_body_step (rc body tag_slot env out eqres_slot)
       (if (= rc 0)
           (nl_ct_catch_body
-           (extern-call nl_cons_cdr_ptr body) tag_slot env out eqres_slot 0)
+           (extern-call nl_cons_cdr_word body) tag_slot env out eqres_slot 0)
         (nl_ct_catch_caught rc tag_slot env out eqres_slot 0)))
     (defun nl_ct_catch_body_eval (car body tag_slot env out eqres_slot)
       (nl_ct_catch_body_step
@@ -26565,7 +26738,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
        body tag_slot env out eqres_slot))
     (defun nl_ct_catch_got_tag_form (tag_form args env out tag_slot eqres_slot)
       (nl_ct_catch_got_body
-       (extern-call nl_cons_cdr_ptr args)
+       (extern-call nl_cons_cdr_word args)
        tag_form env out tag_slot eqres_slot))
     ;; TAG_SLOT holds the evaluated catch tag for the whole body evaluation, so
     ;; it has to be a GC root.  As an `alloc-bytes' scratch a collection inside
@@ -26654,7 +26827,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
     ;; nil and `(symbol-function 'a)' showed `(closure nil nil)'.
     (defun nl_sf_decl_strip_body (body_ptr)
       (if (= (sexp-tag body_ptr) 7)
-          (let* ((head_ptr (nl_cons_car_ptr body_ptr))
+          (let* ((head_ptr (nl_cons_car_word body_ptr))
                  (rest_ptr (nl_cons_cdr_ptr body_ptr)))
             (if (or (= (sexp-tag head_ptr) 5)
                     (= (sexp-tag head_ptr) 14))
@@ -26665,7 +26838,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                   (nl_sf_decl_strip_body rest_ptr)
                 body_ptr)))
         body_ptr))
-    (defun nl_sf_decl_normalize_tail (tail_ptr out)
+    (defun nl_sf_decl_normalize_tail (tail_ptr out) (let ((out__w 0)) (seq
       (if (= (sexp-tag tail_ptr) 7)
           (let* ((args_ptr (nl_cons_car_ptr tail_ptr))
                  (body_ptr (nl_cons_cdr_ptr tail_ptr))
@@ -26675,8 +26848,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
             (seq
              (nl_sexp_clone_into args_ptr args_clone)
              (nl_sexp_clone_into stripped_body_ptr body_clone)
-             (nelisp_cons_construct args_clone body_clone out)))
-        (nl_sexp_clone_into tail_ptr out)))
+             (setq out__w (nelisp_cons_construct args_clone body_clone (alloc-bytes 32 8)))))
+        (setq out__w (nl_val_to_word tail_ptr))) out__w)))
     ;; GNU semantics for `declare' and for a redefined definer.  The native
     ;; `defun' / `defmacro' arms below run before the evaluator consults the
     ;; function cell, and used to strip every `declare' clause.  So a
@@ -26697,8 +26870,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
     ;; Otherwise it answers 0 and the native fast path runs as before.
     (defun nl_sf_decl_has_declare (body_ptr)
       (if (= (sexp-tag body_ptr) 7)
-          (let* ((head_ptr (nl_cons_car_ptr body_ptr))
-                 (rest_ptr (nl_cons_cdr_ptr body_ptr)))
+          (let* ((head_ptr (nl_cons_car_word body_ptr))
+                 (rest_ptr (nl_cons_cdr_word body_ptr)))
             (if (= (nl_sf_decl_is_declare_form head_ptr) 1)
                 1
               (if (or (= (sexp-tag head_ptr) 5)
@@ -26767,7 +26940,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                 (lbuf (alloc-bytes 8 1))
                 (lambda_sym (alloc-bytes 32 8))
                 (name_clone (alloc-bytes 32 8))
-                (tail_clone (alloc-bytes 32 8))
+                (tail_clone 0)
                 (nil1 (alloc-bytes 32 8))
                 (nil2 (alloc-bytes 32 8))
                 (lam_form (alloc-bytes 32 8))
@@ -26785,7 +26958,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
             (ptr-write-u64 lbuf 0 107083775959404) (nl_alloc_symbol lbuf 6 lambda_sym)
             ;; clone the borrowed NAME and (ARGS BODY...) tail
             (nl_sexp_clone_into name_ptr name_clone)
-            (nl_sf_decl_normalize_tail tail_ptr tail_clone)
+            (setq tail_clone (nl_sf_decl_normalize_tail tail_ptr 0))
             (nl_cons_write_nil nil1)
             (nl_cons_write_nil nil2)
             ;; (lambda . (ARGS BODY...))
@@ -26834,7 +27007,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      ;; this now does the same.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (rest_ptr (nl_cons_cdr_ptr args)))
+                (rest_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest_ptr) 7)
                (if (or (or (= (sexp-tag name_ptr) 4) (= (sexp-tag name_ptr) 16))
                        (or (= (sexp-tag name_ptr) 0) (= (sexp-tag name_ptr) 1)))
@@ -26872,7 +27045,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      ;; exactly when NAME was unbound, never otherwise.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (rest_ptr (nl_cons_cdr_ptr args)))
+                (rest_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest_ptr) 7)
                (let* ((declaration_rc (bf_declare_special env name_ptr)))
                  (if (= declaration_rc 0)
@@ -26925,10 +27098,10 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      ;; Route definitions through the Lisp helper so explicit autoload loads
      ;; can log defalias/defun history while raw fset remains untracked.
      (if (= (sexp-tag args) 7)
-         (let* ((nf_ptr (nl_cons_car_ptr args))
-                (rest_ptr (nl_cons_cdr_ptr args)))
+         (let* ((nf_ptr (nl_cons_car_word args))
+                (rest_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest_ptr) 7)
-               (let* ((df_ptr (nl_cons_car_ptr rest_ptr))
+               (let* ((df_ptr (nl_cons_car_word rest_ptr))
                       (pbuf (alloc-bytes 8 1)) (helper_sym (alloc-bytes 32 8))
                       (nil_ptr (alloc-bytes 32 8))
                       (args_tail (alloc-bytes 32 8))
@@ -27076,7 +27249,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
       ;; docstring third arg is accepted" contract.
       (if (= (sexp-tag args) 7)
           (let* ((alias-form (nl_cons_car_ptr args))
-                 (rest1 (nl_cons_cdr_ptr args)))
+                 (rest1 (nl_cons_cdr_word args)))
             (if (= (sexp-tag rest1) 7)
                 (let* ((base-form (nl_cons_car_ptr rest1))
                        (alias-slot (alloc-bytes 32 8))
@@ -27116,7 +27289,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                       (qbuf1 (alloc-bytes 8 1)) (quote_sym1 (alloc-bytes 32 8))
                       (qbuf2 (alloc-bytes 8 1)) (quote_sym2 (alloc-bytes 32 8))
                       (name_clone (alloc-bytes 32 8))
-                      (tail2_clone (alloc-bytes 32 8))
+                      (tail2_clone 0)
                       (niln1 (alloc-bytes 32 8)) (niln2 (alloc-bytes 32 8))
                       (niln3 (alloc-bytes 32 8)) (niln4 (alloc-bytes 32 8))
                       (lambda_form (alloc-bytes 32 8))
@@ -27135,7 +27308,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (ptr-write-u64 qbuf1 0 435745158513)   (nl_alloc_symbol qbuf1 5 quote_sym1)
                   (ptr-write-u64 qbuf2 0 435745158513)   (nl_alloc_symbol qbuf2 5 quote_sym2)
                   (nl_sexp_clone_into name_ptr name_clone)
-                  (nl_sf_decl_normalize_tail tail2_ptr tail2_clone)
+                  (setq tail2_clone (nl_sf_decl_normalize_tail tail2_ptr 0))
                   (nl_cons_write_nil niln1) (nl_cons_write_nil niln2)
                   (nl_cons_write_nil niln3) (nl_cons_write_nil niln4)
                   ;; (lambda ARGLIST BODY...)
@@ -27217,7 +27390,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      ;; of swallowing it and reporting the form as nil.
      (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
        (if (= rc 0)
-           (let* ((more (nl_cons_cdr_ptr rest)))
+           (let* ((more (nl_cons_cdr_word rest)))
              (if (= (sexp-tag more) 7)
                  (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
                0))
@@ -27237,7 +27410,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
        (if (= rc 0)
            (if (= (ptr-read-u64 out 0) 0)
-               (let* ((more (nl_cons_cdr_ptr rest)))
+               (let* ((more (nl_cons_cdr_word rest)))
                  (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0))
              0)
          rc))))
@@ -27252,8 +27425,8 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 ;; (progn) value, or TEST's value when BODY is empty.  No match -> nil.
 (defconst nelisp-standalone--sf-cond-walk
   '(defun nl_sf_cond_walk (clauses env out _pad)
-     (let* ((clause (nl_cons_car_ptr clauses))
-            (more (nl_cons_cdr_ptr clauses)))
+     (let* ((clause (nl_cons_car_word clauses))
+            (more (nl_cons_cdr_word clauses)))
        (if (= (sexp-tag clause) 7)
            ;; Propagate an error raised while evaluating a clause TEST (rc /= 0)
            ;; rather than treating the errored test as a non-match.
@@ -27313,7 +27486,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      ;; (prog2 FORM1 FORM2 BODY...) -> value of FORM2.
      ;; Propagate an error from FORM1, FORM2 or BODY (rc /= 0).
      (if (= (sexp-tag args) 7)
-         (let* ((rest (nl_cons_cdr_ptr args)))
+         (let* ((rest (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest) 7)
                (let* ((scratch (alloc-bytes 32 8)) (scratch2 (alloc-bytes 32 8)))
                  (let* ((rc1 (nelisp_eval_call (nl_cons_car_ptr args) env scratch)))
@@ -27380,13 +27553,13 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 (defconst nelisp-standalone--sf-dolist
   '(defun nl_sf_dolist (args env out cache_key)
      (if (= (sexp-tag args) 7)
-         (let* ((spec (nl_cons_car_ptr args))
+         (let* ((spec (nl_cons_car_word args))
                 (body_ptr (nl_cons_cdr_ptr args)))
            (if (= (sexp-tag spec) 7)
                (let* ((var_ptr (nl_cons_car_ptr spec))
-                      (spec_cdr (nl_cons_cdr_ptr spec))
+                      (spec_cdr (nl_cons_cdr_word spec))
                       (list_ptr (nl_cons_car_ptr spec_cdr))
-                      (spec_cddr (nl_cons_cdr_ptr spec_cdr))
+                      (spec_cddr (nl_cons_cdr_word spec_cdr))
                       (tail_identity (nl_next_symbol_identity))
                       (pbuf (alloc-bytes 8 1)) (progn_sym (alloc-bytes 32 8))
                       (lbuf (alloc-bytes 8 1)) (let_sym (alloc-bytes 32 8))
@@ -28741,8 +28914,8 @@ manifests use.")
       (:start (nelisp-standalone--target-start-unit))
       ;; driver is form-dependent and tiny: always recompiled, never cached.
       (:driver (let* ((name (nelisp-standalone--target-object-name "driver.o"))
-                      (u (nelisp-standalone--compile-to-unit name
-                                                            (nelisp-standalone--driver-source))))
+                      (src (nelisp-standalone--driver-source))
+                      (u (nelisp-standalone--compile-to-unit name src)))
                  (push name nelisp-standalone--recompiled) u))
       (:glue (nelisp-standalone--cached-unit
               name
@@ -40099,15 +40272,15 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (let* ((sym-ptr (nl_cons_car_ptr filter-ptr)))
             (if (= (nelisp_symbol_key_equal sym-ptr name-ptr) 1)
                 1
-              (nl_clx_filter_contains (nl_cons_cdr_ptr filter-ptr) name-ptr)))
+              (nl_clx_filter_contains (nl_cons_cdr_word filter-ptr) name-ptr)))
         0))
     (defun nl_clx_symbol_filter_walk_raw (node-ptr out)
       (let* ((tag (sexp-tag node-ptr)))
         (if (or (= tag 4) (= tag 16))
             (seq (cons-make-with-clone node-ptr out out) 0)
           (if (= tag 7)
-              (let* ((car-ptr (nl_cons_car_ptr node-ptr))
-                     (cdr-ptr (nl_cons_cdr_ptr node-ptr)))
+              (let* ((car-ptr (nl_cons_car_word node-ptr))
+                     (cdr-ptr (nl_cons_cdr_word node-ptr)))
                 (seq
                  (nl_clx_symbol_filter_walk_raw car-ptr out)
                  (nl_clx_symbol_filter_walk_raw cdr-ptr out)))
@@ -40148,7 +40321,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          0)))
     (defun nl_env_capture_lexical_with_filter (env filter-ptr filtered out)
       (let* ((frames_ptr (+ env 32))
-             (depth (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1))))
+             (depth (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2)))
         (seq
          (nl_clx_write_nil out)
          (if (= depth 0)
@@ -40338,7 +40511,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                    (= (sexp-tag pair_ptr) 15))
                                (nelisp_frame_local_declare_one
                                 (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                                 (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1))
+                                 (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))
                                 pair_ptr) 0))
                          (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
                     0)))
@@ -40372,7 +40545,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (if (= (sexp-tag alist) 7)
           (let* ((pair (nl_cons_car_ptr alist)))
             (seq
-             (nl_n3_eval_bind_pairs (nl_cons_cdr_ptr alist) frames)
+             (nl_n3_eval_bind_pairs (nl_cons_cdr_word alist) frames)
              (if (= (sexp-tag pair) 7)
                  (let* ((cell (alloc-bytes 128 8)))
                    (seq (if (= (nl_val_tag (nl_cons_cdr_word pair)) 11)
@@ -40384,7 +40557,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                (if (or (= (sexp-tag pair) 4) (= (sexp-tag pair) 16))
                    (nelisp_frame_local_declare_one
                     (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                     (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)) pair)
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)) pair)
                  0))))
         0))
     (defun nl_n3_eval_finish (rc env saved-mode root-mark)
@@ -40399,7 +40572,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (if (= (sexp-tag args) 7)
           (let* ((value (nl_cons_car_word args)) (tag (nl_val_tag value)))
             (if (or (= tag 4) (= tag 16) (= tag 7)) 0
-              (nl_n3_eval_literal_args (nl_cons_cdr_ptr args))))
+              (nl_n3_eval_literal_args (nl_cons_cdr_word args))))
         (if (= (sexp-tag args) 0) 1 0)))
     (defun nl_n3_eval_fast (form env out)
       (let* ((tag (sexp-tag form)))
@@ -40593,7 +40766,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                       (nelisp_env_setv_mirror_lazy (+ env 0) sym current (+ env 64))
                     (cell-set-value outer current))
                   (setq status 1))))
-             (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))
+             (nl_n3_pop_names env (nl_cons_cdr_word names) depth status)))
         status))
     (defun nl_n3_pop_names (env names depth status)
       (if (and (= (sexp-tag names) 7)
@@ -40605,11 +40778,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
             ;; restore itself happens in `nelisp_frame_pop'.
             (let* ((e (nl_cons_car_ptr names)))
               (seq (nl_n3_notify env (vector-ref-ptr e 0) (vector-ref-ptr e 1) 3)
-                   (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))
+                   (nl_n3_pop_names env (nl_cons_cdr_word names) depth status)))
           (nl_n4_pop_names_raw env names depth status))))
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
-             (depth (sexp-int-unwrap (record-slot-ref-ptr frames 1)))
+             (depth (sar (nelisp_frame_slot_raw_word frames 1) 2))
              (status 0) (scratch (alloc-bytes 32 8)))
         (seq
          (if (> depth 0)
@@ -40734,7 +40907,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  '(seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                         (nl_frame_push_sym1_ptr) push_scratch)
                        (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                                      (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1))))
+                                      (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))))
                          (seq (ptr-write-u64 frame 16 13109)
                               (ptr-write-u64 frame 24 (bf_special_registry env 0)))))
                  '(nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
@@ -40743,7 +40916,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   '(let* ((n3-bind-rc (nl_bind_formals_impl formals_ptr args_list_ptr env 0)))
                      (seq (ptr-write-u64
                            (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                            (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1)) 24 0)
+                            (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1)) 24 0)
                           n3-bind-rc))
                   '(nl_bind_formals_impl formals_ptr args_list_ptr env 0)
                   form :test #'equal) :test #'equal) out))
@@ -41038,7 +41211,7 @@ match a special-form name tested in FORM."
         (nl_sexp_clone_into src_ptr cur)
         (while (= (sexp-tag cur) 7)
           (seq
-           (nelisp_cons_construct (nl_cons_car_ptr cur) nil_slot node_slot)
+           (nelisp_cons_construct (nl_cons_car_word cur) nil_slot node_slot)
            (let* ((durable-node (alloc-bytes 32 8)))
              (seq
               (nl_sexp_clone_into node_slot durable-node)
@@ -42182,23 +42355,23 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (nl_cons_root_finish env mark 0))))
     (defun nl_n4_local_bucket (bucket out env)
       (if (= (sexp-tag bucket) 7)
-          (let* ((pair (nl_cons_car_ptr bucket)) (value (alloc-bytes 32 8))
+          (let* ((pair (nl_cons_car_word bucket)) (value (alloc-bytes 32 8))
                  (entry (alloc-bytes 32 8)))
             (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
-                 (nelisp_cons_construct (nl_cons_car_ptr pair) value entry)
+                 (nelisp_cons_construct (nl_cons_car_word pair) value entry)
                  (nelisp_cons_construct entry out out)
-                 (nl_n4_local_bucket (nl_cons_cdr_ptr bucket) out env)))
+                 (nl_n4_local_bucket (nl_cons_cdr_word bucket) out env)))
         0))
     (defun nl_n4_local_history (names out)
       (if (= (sexp-tag names) 7)
-          (let* ((pair (nl_cons_car_ptr names)))
+          (let* ((pair (nl_cons_car_word names)))
             (seq
              (if (= (sexp-tag pair) 7)
                  (let* ((value (alloc-bytes 32 8)) (entry (alloc-bytes 32 8)))
                    (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
-                        (nelisp_cons_construct (nl_cons_car_ptr pair) value entry)
+                        (nelisp_cons_construct (nl_cons_car_word pair) value entry)
                         (nelisp_cons_construct entry out out))) 0)
-             (nl_n4_local_history (nl_cons_cdr_ptr names) out))) 0))
+             (nl_n4_local_history (nl_cons_cdr_word names) out))) 0))
     (defun nl_n4_locals (env index out)
       (let* ((state (nl_n4_state env))
              (frame (nl_n4_record state index))
@@ -42225,8 +42398,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (nl_cons_root_finish env mark 0))))
     (defun nl_n4_reverse (list out)
       (if (= (sexp-tag list) 7)
-          (seq (nelisp_cons_construct (nl_cons_car_ptr list) out out)
-               (nl_n4_reverse (nl_cons_cdr_ptr list) out)) 0))
+          (seq (nelisp_cons_construct (nl_cons_car_word list) out out)
+               (nl_n4_reverse (nl_cons_cdr_word list) out)) 0))
     (defun nl_n4_eval_finish (rc env saved flags mark)
       (seq (nl_sexp_clone_into saved (+ env 32))
            (ptr-write-u64 env 112 flags)
@@ -42299,7 +42472,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                     (= (sexp-name-eq name "backtrace") 1)
                     (= (sexp-name-eq name "backtrace-frame") 1)
                     (= (sexp-name-eq name "backtrace-frames") 1))
-                1 (nl_n4_reflection_filter_p (nl_cons_cdr_ptr filter)))) 0))
+                1 (nl_n4_reflection_filter_p (nl_cons_cdr_word filter)))) 0))
     (defun nl_n4_capture_filtered (env filter out)
       ;; Reflection needs variables the body does not mention. Keep the
       ;; existing filtered closure ABI for ordinary and OClosure consumers;
@@ -42307,7 +42480,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (nl_env_capture_lexical_with_filter env filter
         (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) out))
     (defun nl_n4_captured_lexical_p (frames name)
-      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames 1))))
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
         (if (< depth 2) 0
           (let* ((captured (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 2))))
             (if (= (nelisp_frame_scope_boundary_p captured) 1)
@@ -42335,7 +42508,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
           (if (> (record-slot-count entry) 5)
-              (if (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1 0)
+              (if (= (nelisp_env_entry_slot_tag entry 5) 0) 1 0)
             1))))
     ;; NAME and VALUE may be scratch views a lookup reuses, so they are
     ;; copied before anything else runs.  No root-stack slot is reserved
@@ -42360,9 +42533,13 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (seq (nl_vector_set_slot box 0 sym) (nl_vector_set_slot box 1 old)
                 (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
                 (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)))
+         ;; The depth and the frame's name list are read as raw WORDs: the
+         ;; depth is always a fixnum and the list starts as nil, and the
+         ;; materialising readers boxed both on every binding.  The cons
+         ;; constructor stores an immediate cdr WORD as it is.
          (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                         (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1))))
-           (seq (nelisp_cons_construct rec (record-slot-ref-ptr frame 1) cell)
+                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
+           (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
          (nl_sb_set env sym val)
          (wf_dirty)
@@ -42389,19 +42566,29 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                         (if (= (logand names 1) 1) 0
                           (nl_sb_restore_list (- frames 32) names))))))))))))
     ;; Write the mirror value slot in place when the entry exists.
+    ;; VAL may be an immediate WORD (from `nl_sb_restore_list'); the
+    ;; record setter stores one directly, and the rare no-entry path gets a
+    ;; materialised view since the lazy installer reads a 32-byte Sexp.
     (defun nl_sb_set (env sym val)
       (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
         (if (= entry 0)
-            (nelisp_env_setv_mirror_lazy (+ env 0) sym val (+ env 64))
+            (nelisp_env_setv_mirror_lazy (+ env 0) sym
+              (if (= (logand val 1) 1) (nl_val_load val (alloc-bytes 32 8)) val)
+              (+ env 64))
           (seq (record-slot-set entry 0 val) 0))))
+    ;; NAMES is the frame's name list as a WORD (pointer or immediate nil);
+    ;; walking it by WORD keeps the nil terminator and a saved immediate
+    ;; value from being boxed on every restore.
     (defun nl_sb_restore_list (env names)
-      (if (/= (sexp-tag names) 7) 0
-        (let* ((e (nl_cons_car_ptr names)))
-          (seq
-           (if (= (sexp-tag e) 8)
-               (nl_sb_set env (vector-ref-ptr e 0) (vector-ref-ptr e 1))
-             0)
-           (nl_sb_restore_list env (nl_cons_cdr_ptr names))))))
+      (if (= (logand names 1) 1) 0
+        (if (/= (sexp-tag names) 7) 0
+          (let* ((e (nl_cons_car_word names)))
+            (seq
+             (if (= (logand e 1) 1) 0
+               (if (= (sexp-tag e) 8)
+                   (nl_sb_set env (vector-ref-ptr e 0) (nl_vector_slot_word e 1))
+                 0))
+             (nl_sb_restore_list env (nl_cons_cdr_word names)))))))
     (defun nl_n4_bind_declared (env frames name value)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
@@ -42414,7 +42601,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (nl_n4_bind_declared_deep env frames name value)))
     (defun nl_n4_bind_declared_deep (env frames name value)
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                      (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
+                      (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (old (nelisp_frame_stack_find_in_frame frame name)))
         (if (and (/= old 0) (= (nelisp_frame_binding_dynamic_p frame name) 1))
             (let* ((history (alloc-bytes 32 8)) (names (alloc-bytes 32 8)))
@@ -42425,7 +42612,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
           (seq (nl_bind_frame_fast frames name value)
                (bf_mark_declared_special env frames name)))))
     (defun nl_n4_pop_repeat (env names depth status)
-      (let* ((pair (nl_cons_car_ptr names)) (sym (nl_cons_car_ptr pair))
+      (let* ((pair (nl_cons_car_word names)) (sym (nl_cons_car_ptr pair))
              (old (nl_cons_cdr_ptr pair)) (value (alloc-bytes 32 8)))
         (seq
          (nl_cell_get_value old value)
@@ -42435,7 +42622,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (let* ((current (nelisp_frame_stack_find_kind (+ env 32) sym 1 0)))
              (seq (nl_cell_get_value current value)
                   (nl_n3_cell_set old value) (setq status 1))))
-         (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))))
+         (nl_n3_pop_names env (nl_cons_cdr_word names) depth status)))))
   "N4b activation roots and frame access; public selection/policy stays Lisp.")
 
 (defun nelisp-standalone--patch-n4-eval (source)
