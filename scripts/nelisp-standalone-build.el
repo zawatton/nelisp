@@ -7994,10 +7994,14 @@ leave symbols unresolved at link time."
     ;; failure: it propagates silently through every later calculation.
     (defun wf_first_non_number (args)
       (if (= (sexp-tag args) 7)
-          (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
-            (if (if (= tg 2) 1 (if (= tg 3) 1 0))
-                (wf_first_non_number (nl_cons_cdr_ptr args))
-              a))
+          (let* ((w (nl_cons_car_word args)))
+            (if (if (= (logand w 1) 0)
+                    (let* ((tg (ptr-read-u64 w 0))) (if (= tg 2) 1 (if (= tg 3) 1 0)))
+                  (if (= (logand w 3) 1) 1 0))
+                (let* ((d (nl_cons_cdr_word args)))
+                  (if (= (logand d 1) 1) 0 (wf_first_non_number d)))
+              ;; Only the error path needs a view of the offending value.
+              (nl_cons_car_ptr args)))
         0))
     ;; Doc 190 Phase A/B: a BIGNUM-AWARE variant of `wf_first_non_number',
     ;; used ONLY by `+'/`-'/`*''s own dispatch entries below (NOT by `/',
@@ -8013,10 +8017,14 @@ leave symbols unresolved at link time."
     ;; own comment.)
     (defun wf_first_non_number_or_bignum (args)
       (if (= (sexp-tag args) 7)
-          (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
-            (if (if (= tg 2) 1 (if (= tg 3) 1 (if (= tg 13) 1 0)))
-                (wf_first_non_number_or_bignum (nl_cons_cdr_ptr args))
-              a))
+          (let* ((w (nl_cons_car_word args)))
+            (if (if (= (logand w 1) 0)
+                    (let* ((tg (ptr-read-u64 w 0))) (if (= tg 2) 1 (if (= tg 3) 1 (if (= tg 13) 1 0))))
+                  (if (= (logand w 3) 1) 1 0))
+                (let* ((d (nl_cons_cdr_word args)))
+                  (if (= (logand d 1) 1) 0 (wf_first_non_number_or_bignum d)))
+              ;; Only the error path needs a view of the offending value.
+              (nl_cons_car_ptr args)))
         0))
     ;; R2, Minimal native surface clauses 1 and 5: recognize the existing
     ;; marker record and pass its integer position to the existing arithmetic
@@ -8028,10 +8036,14 @@ leave symbols unresolved at link time."
               (sexp-name-eq (ptr-read-u64 p 8) "nelisp-marker")
             0)
         0))
+    ;; Walked by WORD: a fixnum argument or the nil terminator is never a
+    ;; marker, and the materialising accessors boxed each of them.
     (defun wf_numeric_has_marker (args)
       (if (= (sexp-tag args) 7)
-          (if (= (wf_numeric_marker_p (nl_cons_car_ptr args)) 1) 1
-            (wf_numeric_has_marker (nl_cons_cdr_ptr args)))
+          (let* ((a (nl_cons_car_word args)))
+            (if (if (= (logand a 1) 1) 0 (wf_numeric_marker_p a)) 1
+              (let* ((d (nl_cons_cdr_word args)))
+                (if (= (logand d 1) 1) 0 (wf_numeric_has_marker d)))))
         0))
     (defun wf_numeric_detached_marker ()
       (let* ((buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
@@ -8311,6 +8323,10 @@ leave symbols unresolved at link time."
     ;; only reaches this after that check).  When this DOES report "more",
     ;; the caller's own `nl_cons_cdr_ptr' call right after costs nothing
     ;; extra: it re-reads the same pointer word and returns it directly.
+    ;; 1 when both WORDs are fixnums.  A fixnum WORD is (n<<2)|1, so two of
+    ;; them order exactly as their values do and compare without boxing.
+    (defun wf_fix2_p (a b)
+      (if (= (logand a 3) 1) (if (= (logand b 3) 1) 1 0) 0))
     (defun wf_cdr_has_more (args)
       (let* ((word (ptr-read-u64 (ptr-read-u64 args 8) 8)))
         (if (= (logand word 1) 0)
@@ -8325,9 +8341,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_lt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (< (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_lt rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8336,9 +8354,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_gt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (> (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_gt rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8347,9 +8367,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_le (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (<= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_le rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8358,9 +8380,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_ge (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (>= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_ge rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -8369,9 +8393,11 @@ leave symbols unresolved at link time."
     (defun wf_chain_eq (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))
+            (if (= (wf_fix2_p (nl_cons_car_word args) (nl_cons_car_word rest)) 1)
+                (if (= (nl_cons_car_word args) (nl_cons_car_word rest)) (wf_chain_eq rest) 0)
+              (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                (if (= (wf_num_pairp a b) 0) 2
+                  (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0)))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -9366,8 +9392,13 @@ leave symbols unresolved at link time."
     ;; promoted paths write their final answer through the SAME choke
     ;; point (`wf_write_int' / `nl_bignum_finish', which itself demotes
     ;; back to a fixnum when the magnitude re-fits -- Doc 190 §2).
+    ;; LIST_PTR is a Cons view or a cdr WORD (an immediate ends the list).
+    ;; A fixnum element is read from its WORD; only a boxed one gets a view.
     (defun wf_sum (list_ptr acc out)
+      (if (= (logand list_ptr 1) 1) (wf_write_int out acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
+        (if (= (logand (nl_cons_car_word list_ptr) 3) 1)
+          (wf_sum_fix list_ptr acc (sar (nl_cons_car_word list_ptr) 2) out)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)))
             (if (= (ptr-read-u64 car_ptr 0) 13)
                 (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9378,7 +9409,9 @@ leave symbols unresolved at link time."
                        (sign_slot (alloc-bytes 8 8))
                        (rcount (nl_bignum_add_raw asign abuf acount e_sign e_ptr e_count rbuf sign_slot)))
                   (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-              (let* ((v (ptr-read-u64 car_ptr 8)))
+              (wf_sum_fix list_ptr acc (ptr-read-u64 car_ptr 8) out))))
+        (wf_write_int out acc))))
+    (defun wf_sum_fix (list_ptr acc v out)
                 (if (or (and (> v 0) (> acc (- 2305843009213693951 v)))
                         (and (< v 0) (< acc (- -2305843009213693952 v))))
                     (let* ((abuf (alloc-bytes 8 4)) (asign (nl_bignum_int_limbs acc abuf))
@@ -9389,8 +9422,7 @@ leave symbols unresolved at link time."
                            (sign_slot (alloc-bytes 8 8))
                            (rcount (nl_bignum_add_raw asign abuf acount esign ebuf ecount rbuf sign_slot)))
                       (wf_sum_big (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 sign_slot 0) rbuf rcount out))
-                  (wf_sum (nl_cons_cdr_ptr list_ptr) (+ acc v) out)))))
-        (wf_write_int out acc)))
+                  (wf_sum (nl_cons_cdr_word list_ptr) (+ acc v) out)))
     ;; Doc 190 Phase B: BIGNUM-MODE continuation of `wf_sum''s fold, entered
     ;; once ACC has been promoted.  ACC is carried as (ACC_SIGN, ACC_PTR,
     ;; ACC_COUNT) from here on; the base case (list exhausted) demotes back
@@ -13526,7 +13558,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (wf_bytecode_copy self function) (wf_bytecode_copy saved-state state)
                         (wf_write_int action-slot action) (wf_write_nil operands)
                         (wf_bytecode_copy mirror (+ env 0))
-                        (wf_write_int depth (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
+                        (wf_write_int depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
                         (wf_write_nil cell)
                         (wf_bytecode_copy frames (+ env 32))
                         (if (= action 0) (wf_write_int cell ticket)
@@ -13690,7 +13722,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (if (= action 0) (wf_bytecode_copy state result)
                             (if (and (= action 1) (= direct 0))
                                 (seq
-                                 (wf_write_int scratch (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
+                                 (wf_write_int scratch (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
                                  (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)
                                  (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
                                  (record-slot-set (+ env 32) 1 scratch))
@@ -13722,7 +13754,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                  (ptr-write-u64 268435472 0 saved-kind))
                                           (setq rc 1)))
                                      (seq
-                                      (wf_write_int scratch (- (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)) 1))
+                                      (wf_write_int scratch (- (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2) 1))
                                       (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) cell)
                                       (record-slot-set (+ env 32) 1 scratch)))
                                    (setq i (- i 1))))
@@ -13859,7 +13891,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          offset))
                    -2))))))))
     (defun wf_bytecode_current_frame (frames)
-      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames 1))))
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
         (if (> depth 0)
             (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 1))
           0)))
@@ -14049,7 +14081,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (wf_bytecode_copy event (nl_cons_car_ptr unwinds))
                (wf_bytecode_copy tail-slot (nl_cons_cdr_ptr unwinds))
                (wf_bytecode_copy unwinds tail-slot)
-               (setq kind (sexp-int-unwrap (nl_cons_car_ptr event)))
+               (setq kind (let* ((kw (nl_cons_car_word event)))
+                            (if (= (logand kw 1) 1) (sar kw 2) (ptr-read-u64 kw 8))))
                (wf_bytecode_copy payload
                                  (nl_cons_car_ptr (nl_cons_cdr_ptr event)))
                (if (= kind 0)
@@ -14721,12 +14754,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_arglist_shape (formals state required maximum)
       ;; Return counts packed with a private, wider layout:
       ;; required[0..15], maximum[16..31], rest[32].
+      ;; FORMALS is a view or, past the head, the cdr WORD: an immediate
+      ;; nil ends the list and any other immediate is malformed.
+      (if (= (logand formals 1) 1)
+          (if (= formals 3) (+ required (* maximum 65536)) -1)
       (let* ((tag (ptr-read-u64 formals 0)))
         (if (= tag 0)
             (+ required (* maximum 65536))
           (if (= tag 7)
               (let* ((name (nl_cons_car_ptr formals))
-                     (tail (nl_cons_cdr_ptr formals))
+                     (tail (nl_cons_cdr_word formals))
                      (name-tag (ptr-read-u64 name 0)))
                 (if (= name-tag 4)
                     (if (= (wf_bytecode_optional_marker_p name) 1)
@@ -14734,11 +14771,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (wf_bytecode_arglist_shape tail 1 required maximum)
                           -1)
                       (if (= (wf_bytecode_rest_marker_p name) 1)
-                          (if (= (ptr-read-u64 tail 0) 7)
+                          (if (if (= (logand tail 1) 1) 0 (= (ptr-read-u64 tail 0) 7))
                               (let* ((rest-name (nl_cons_car_ptr tail))
-                                     (after-rest (nl_cons_cdr_ptr tail)))
+                                     (after-rest (nl_cons_cdr_word tail)))
                                 (if (and (= (ptr-read-u64 rest-name 0) 4)
-                                         (= (ptr-read-u64 after-rest 0) 0)
+                                         (if (= (logand after-rest 1) 1)
+                                             (= after-rest 3)
+                                           (= (ptr-read-u64 after-rest 0) 0))
                                          (= (wf_bytecode_optional_marker_p rest-name) 0)
                                          (= (wf_bytecode_rest_marker_p rest-name) 0))
                                     (+ required (* maximum 65536) 4294967296)
@@ -14755,7 +14794,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                          (+ maximum 1)))
                           -1)))
                   -1))
-            -1))))
+            -1)))))
     (defun wf_bytecode_copy_arg_tail (env source out)
       ;; &rest receives a fresh list spine, while its elements retain
       ;; their original identities as in funcall_lambda.
@@ -14993,16 +15032,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; consume the caller's rooted frame without a temporary argument list.
       (if (or (/= (sexp-tag func) 17) (< (record-slot-count func) 4))
           2
-        (let* ((descriptor (record-slot-ref-ptr func 0)))
-          (if (/= (sexp-tag descriptor) 2)
-              (if (or (= (sexp-tag descriptor) 0) (= (sexp-tag descriptor) 7))
-                  (wf_bytecode_dynamic_function_frame func descriptor frame argc env out)
-                2)
+        ;; The argument descriptor of a lexical function is a fixnum; read
+        ;; it from the slot WORD rather than boxing it on every call.
+        (let* ((dw (nelisp_frame_slot_raw_word func 0)))
+          (if (= (logand dw 3) 1)
+              (wf_bytecode_function_frame_lex func frame argc env out (sar dw 2))
+            (let* ((descriptor (record-slot-ref-ptr func 0)))
+              (if (/= (sexp-tag descriptor) 2)
+                  (if (or (= (sexp-tag descriptor) 0) (= (sexp-tag descriptor) 7))
+                      (wf_bytecode_dynamic_function_frame func descriptor frame argc env out)
+                    2)
+                (wf_bytecode_function_frame_lex func frame argc env out
+                                                (ptr-read-u64 descriptor 8))))))))
+    (defun wf_bytecode_function_frame_lex (func frame argc env out template)
             (let* ((jit-status (wf_bytecode_try_jit_frame func 0 argc env out frame)))
               (if (= jit-status 1) 0
                 (if (= jit-status 2) 1
-                  (let* ((template (ptr-read-u64 descriptor 8))
-                         (mandatory (logand template 127))
+                  (let* ((mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
                     (if (or (< template 0) (> maxargs 127))
@@ -15014,7 +15060,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (record-slot-ref-ptr func 1)
                          (record-slot-ref-ptr func 2)
                          (record-slot-ref-ptr func 3)
-                         env out 0 argc maxargs rest frame)))))))))))
+                         env out 0 argc maxargs rest frame))))))))
     (defun wf_bytecode_function (func args env out)
       (let* ((argc (bf_byte_code_arg_count args 0))
              (descriptor (record-slot-ref-ptr func 0))
@@ -20322,13 +20368,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_mark_declared_special (mirror frames name)
       ;; Called only when installing a new local cell.  Captured lexical
       ;; cells are installed separately and retain their original kind.
-      (if (> (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 0)
+      (if (> (sar (nelisp_frame_slot_raw_word frames 1) 2) 0)
           (if (or (/= (logand (ptr-read-u64 (+ mirror 112) 0) 2097152) 0)
                   (= (bf_declared_special_p mirror name) 1)
                   (= (nelisp_frame_local_special_p frames name) 1))
               (let* ((frame (vector-ref-ptr
                              (record-slot-ref-ptr frames 0)
-                             (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1))))
+                             (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
                 (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
                   (let* ((names (alloc-bytes 32 8)))
                     (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
@@ -20344,7 +20390,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; globals and dynamic mode do. Ignoring caller/captured local markers
       ;; both preserves formal shadowing and avoids a caller-frame walk.
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                     (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (table (ptr-read-u64 frame 24)))
         ;; A formal binds dynamically only in dynamic-binding mode: under
         ;; lexical-binding GNU 31.1 binds a parameter named after a special
@@ -20368,7 +20414,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name))
              (local-p (if (= entry 0) 0
                         (if (> (record-slot-count entry) 5)
-                            (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                            (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
              (cell (if (= local-p 1) 0
                      (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
         (nl_env_lookup_val_done
@@ -20738,7 +20784,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym))
                (local-p (if (= entry 0) 0
                           (if (> (record-slot-count entry) 5)
-                              (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                              (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                (cell (if (= local-p 1) 0
                        (nelisp_frame_stack_find_kind (+ env 32) sym 1 0))))
           (seq (wf_dirty)
@@ -39728,7 +39774,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          0)))
     (defun nl_env_capture_lexical_with_filter (env filter-ptr filtered out)
       (let* ((frames_ptr (+ env 32))
-             (depth (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1))))
+             (depth (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2)))
         (seq
          (nl_clx_write_nil out)
          (if (= depth 0)
@@ -39918,7 +39964,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                    (= (sexp-tag pair_ptr) 15))
                                (nelisp_frame_local_declare_one
                                 (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                                 (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1))
+                                 (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))
                                 pair_ptr) 0))
                          (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
                     0)))
@@ -39964,7 +40010,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                (if (or (= (sexp-tag pair) 4) (= (sexp-tag pair) 16))
                    (nelisp_frame_local_declare_one
                     (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                     (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)) pair)
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)) pair)
                  0))))
         0))
     (defun nl_n3_eval_finish (rc env saved-mode root-mark)
@@ -40189,7 +40235,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (nl_n4_pop_names_raw env names depth status))))
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
-             (depth (sexp-int-unwrap (record-slot-ref-ptr frames 1)))
+             (depth (sar (nelisp_frame_slot_raw_word frames 1) 2))
              (status 0) (scratch (alloc-bytes 32 8)))
         (seq
          (if (> depth 0)
@@ -40314,7 +40360,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  '(seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                         (nl_frame_push_sym1_ptr) push_scratch)
                        (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                                      (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1))))
+                                      (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))))
                          (seq (ptr-write-u64 frame 16 13109)
                               (ptr-write-u64 frame 24 (bf_special_registry env 0)))))
                  '(nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
@@ -40323,7 +40369,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   '(let* ((n3-bind-rc (nl_bind_formals_impl formals_ptr args_list_ptr env 0)))
                      (seq (ptr-write-u64
                            (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
-                            (- (sexp-int-unwrap (record-slot-ref-ptr frames_ptr 1)) 1)) 24 0)
+                            (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1)) 24 0)
                           n3-bind-rc))
                   '(nl_bind_formals_impl formals_ptr args_list_ptr env 0)
                   form :test #'equal) :test #'equal) out))
@@ -41841,7 +41887,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (nl_env_capture_lexical_with_filter env filter
         (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) out))
     (defun nl_n4_captured_lexical_p (frames name)
-      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames 1))))
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
         (if (< depth 2) 0
           (let* ((captured (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 2))))
             (if (= (nelisp_frame_scope_boundary_p captured) 1)
@@ -41869,7 +41915,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
           (if (> (record-slot-count entry) 5)
-              (if (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1 0)
+              (if (= (nelisp_env_entry_slot_tag entry 5) 0) 1 0)
             1))))
     ;; NAME and VALUE may be scratch views a lookup reuses, so they are
     ;; copied before anything else runs.  No root-stack slot is reserved
@@ -41894,9 +41940,13 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (seq (nl_vector_set_slot box 0 sym) (nl_vector_set_slot box 1 old)
                 (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
                 (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)))
+         ;; The depth and the frame's name list are read as raw WORDs: the
+         ;; depth is always a fixnum and the list starts as nil, and the
+         ;; materialising readers boxed both on every binding.  The cons
+         ;; constructor stores an immediate cdr WORD as it is.
          (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                         (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1))))
-           (seq (nelisp_cons_construct rec (record-slot-ref-ptr frame 1) cell)
+                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
+           (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
          (nl_sb_set env sym val)
          (wf_dirty)
@@ -41923,19 +41973,29 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                         (if (= (logand names 1) 1) 0
                           (nl_sb_restore_list (- frames 32) names))))))))))))
     ;; Write the mirror value slot in place when the entry exists.
+    ;; VAL may be an immediate WORD (from `nl_sb_restore_list'); the
+    ;; record setter stores one directly, and the rare no-entry path gets a
+    ;; materialised view since the lazy installer reads a 32-byte Sexp.
     (defun nl_sb_set (env sym val)
       (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
         (if (= entry 0)
-            (nelisp_env_setv_mirror_lazy (+ env 0) sym val (+ env 64))
+            (nelisp_env_setv_mirror_lazy (+ env 0) sym
+              (if (= (logand val 1) 1) (nl_val_load val (alloc-bytes 32 8)) val)
+              (+ env 64))
           (seq (record-slot-set entry 0 val) 0))))
+    ;; NAMES is the frame's name list as a WORD (pointer or immediate nil);
+    ;; walking it by WORD keeps the nil terminator and a saved immediate
+    ;; value from being boxed on every restore.
     (defun nl_sb_restore_list (env names)
-      (if (/= (sexp-tag names) 7) 0
-        (let* ((e (nl_cons_car_ptr names)))
-          (seq
-           (if (= (sexp-tag e) 8)
-               (nl_sb_set env (vector-ref-ptr e 0) (vector-ref-ptr e 1))
-             0)
-           (nl_sb_restore_list env (nl_cons_cdr_ptr names))))))
+      (if (= (logand names 1) 1) 0
+        (if (/= (sexp-tag names) 7) 0
+          (let* ((e (nl_cons_car_word names)))
+            (seq
+             (if (= (logand e 1) 1) 0
+               (if (= (sexp-tag e) 8)
+                   (nl_sb_set env (vector-ref-ptr e 0) (nl_vector_slot_word e 1))
+                 0))
+             (nl_sb_restore_list env (nl_cons_cdr_word names)))))))
     (defun nl_n4_bind_declared (env frames name value)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
@@ -41948,7 +42008,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (nl_n4_bind_declared_deep env frames name value)))
     (defun nl_n4_bind_declared_deep (env frames name value)
       (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
-                      (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
+                      (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (old (nelisp_frame_stack_find_in_frame frame name)))
         (if (and (/= old 0) (= (nelisp_frame_binding_dynamic_p frame name) 1))
             (let* ((history (alloc-bytes 32 8)) (names (alloc-bytes 32 8)))

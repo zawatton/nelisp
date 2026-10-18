@@ -108,6 +108,17 @@
       (ptr-read-u64
        (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
        0))
+    ;; Raw tagged WORD of slot IDX of the bucket Vector view VEC-PTR
+    ;; (payload box at +8, slot data pointer at box+8).
+    (defun nelisp_frame_bind_bucket_word (vec-ptr idx)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 vec-ptr 8) 8) (* idx 8))
+       0))
+    ;; The bucket head as a walkable view: a pointer WORD is the head
+    ;; Cons box itself; an immediate WORD (nil) is 0, the walk's miss.
+    (defun nelisp_frame_bind_bucket_view (vec-ptr idx)
+      (let ((w (nelisp_frame_bind_bucket_word vec-ptr idx)))
+        (if (= (logand w 1) 1) 0 w)))
     (defun nelisp_frame_bind_walk_update (bucket-view name-ptr cell-ptr _pad)
       ;; Tail-recursive walk over a bucket's cons chain looking for an
       ;; existing (KEY . CELL) pair whose KEY matches NAME-PTR.
@@ -183,9 +194,12 @@
       ;; refcount-safe alternative to building the outer cell with
       ;; raw `cons-make' byte copies — see the `nelisp_frame_bind_
       ;; prepend' docstring for the discipline analysis.
+      ;; The bucket head is passed as its raw WORD: an empty bucket holds
+      ;; nil, which `vector-ref-ptr' boxed afresh, and the cdr setter
+      ;; stores an immediate WORD as it is.
       (and (cons-set-car scratch-outer-slot scratch-pair-slot)
            (cons-set-cdr scratch-outer-slot
-                         (vector-ref-ptr buckets-ptr idx))
+                         (nelisp_frame_bind_bucket_word buckets-ptr idx))
            (vector-slot-set buckets-ptr idx scratch-outer-slot)))
     (defun nelisp_frame_bind_prepend
         (ht-ptr name-ptr cell-ptr
@@ -262,9 +276,11 @@
       ;; cheap to recompute and the AOT grammar lacks let-binding
       ;; for pointer values across calls anyway.
       (if (= (nelisp_frame_bind_walk_update
-              ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
-              ;; (`vector-ref-ptr'), NOT the raw `sexp-payload-ptr' box.
-              (vector-ref-ptr
+              ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW, NOT
+              ;; the raw `sexp-payload-ptr' box.  Box migration: an
+              ;; immediate head (nil: empty bucket) seeds 0 instead of a
+              ;; freshly boxed nil; the walk answers both as a miss.
+              (nelisp_frame_bind_bucket_view
                (record-slot-ref-ptr ht-ptr 1)
                (logand
                 (extern-call nelisp_fnv1a name-ptr)

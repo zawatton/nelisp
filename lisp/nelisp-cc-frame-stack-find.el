@@ -243,7 +243,7 @@
           0
         (nelisp_frame_stack_find_descend
          (record-slot-ref-ptr frames-ptr 0)
-         (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+         (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
          name-ptr)))
 
     ;; ============================================================
@@ -426,7 +426,7 @@
 
     (defun nelisp_frame_local_declare (frames name)
       (nelisp_frame_local_declare_walk (record-slot-ref-ptr frames 0)
-       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nelisp_frame_local_special_walk (backing i name)
       (if (< i 0) 0
@@ -438,7 +438,7 @@
 
     (defun nelisp_frame_local_special_p (frames name)
       (nelisp_frame_local_special_walk (record-slot-ref-ptr frames 0)
-       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nl_capture_local_names (names out)
       ;; Bare names carry local declarations, distinct from (NAME . CELL).
@@ -454,7 +454,7 @@
         (if (= names 0) 1 (nl_capture_local_names names out))))
 
     (defun nelisp_frame_scope_mark (frames-ptr)
-      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))))
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)))
         (if (> depth 0)
             (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames-ptr 0)
                                          (- depth 1))))

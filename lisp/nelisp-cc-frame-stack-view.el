@@ -49,7 +49,7 @@
      ;; bootstrap installs already meets the precondition; callers
      ;; that may see `Sexp::Nil' route through Rust until the §111.E
      ;; cumulative ship rewires the dispatcher.
-     (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)))
+     (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2))
   "AOT source for Doc 111 §111.E #19 `frame_stack_view' depth read.")
 
 (provide 'nelisp-cc-frame-stack-view)
