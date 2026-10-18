@@ -7582,7 +7582,7 @@ argument (reachability + in-arena bounds checks).")
     ;; name itself dispatches on arg count/TESTFN-nil-ness first (see
     ;; `wf_assoc_dispatch', fast-list-helpers) rather than being wired
     ;; straight to `wf_assoc' the way `rassoc' below is.
-    ((:lit "assoc")  . (wf_assoc_dispatch args env out))
+    ((:lit "assoc")  :word . (wf_assoc_dispatch_w args env 0))
     ((:lit "rassoc")  :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 0) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 7) 1 0))
                             (let* ((w (wf_rassoc_w args 0)))
                               (if (= w 3)
@@ -7597,19 +7597,19 @@ argument (reachability + in-arena bounds checks).")
     ;; the shadow-vs-delegate rationale and the edge-case handling each
     ;; of these needs (a Bignum count, an improper tail, a non-fixnum
     ;; N, a genuine TESTFN/PREDICATE, a non-cons SEQ).
-    ((:lit "nth")        . (wf_nth args out))
-    ((:lit "nthcdr")     . (wf_nthcdr args out))
-    ((:lit "last")       . (wf_last args out))
-    ((:lit "butlast")    . (wf_butlast args out))
-    ((:lit "append")     . (wf_append args env out))
-    ((:lit "plist-get")  . (wf_plist_get_dispatch args env out))
-    ((:lit "mapcar")     . (wf_mapcar args env out))
+    ((:lit "nth")        :word . (wf_nth_w args 0))
+    ((:lit "nthcdr")     :word . (wf_nthcdr_w args 0))
+    ((:lit "last")       :word . (wf_last_w args 0))
+    ((:lit "butlast")    :word . (wf_butlast_w args 0))
+    ((:lit "append")     :word . (wf_append_w args env 0))
+    ((:lit "plist-get")  :word . (wf_plist_get_dispatch_w args env 0))
+    ((:lit "mapcar")     :word . (wf_mapcar_w args env 0))
     ;; --- M4 hash tables (cons-alist v1) ---
     ;; The raw constructor, under a private name so the prelude can wrap it
     ;; with Emacs's argument-list validation and still reach the native
     ;; representation.  `make-hash-table' itself is the prelude's defun.
-    ((:lit "make-hash-table")  . (nl_ht_make out))
-    ((:lit "nelisp--hash-table-make-raw") . (nl_ht_make out))
+    ((:lit "make-hash-table")  :word . (nl_ht_make_w 0))
+    ((:lit "nelisp--hash-table-make-raw") :word . (nl_ht_make_w 0))
     ;; The equal-only `assoc' under a private name, so the prelude can add
     ;; the TESTFN argument -- which the native arm ignored, silently using
     ;; `equal' for a caller who asked for something else.
@@ -7621,8 +7621,8 @@ argument (reachability + in-arena bounds checks).")
                                     3)
                                 w))
                           (nl_abi_fail (bf_wrong_type_listp (wf_arg_ptr args 1)) 0)))
-    ((:lit "nelisp--plist-get-eq") . (bf_plist_get_eq args out))
-    ((:lit "nelisp--plist-member-eq") . (bf_plist_member_eq args out))
+    ((:lit "nelisp--plist-get-eq") :word . (bf_plist_get_eq_w args 0))
+    ((:lit "nelisp--plist-member-eq") :word . (bf_plist_member_eq_w args 0))
     ;; Private fixture for the opaque byte-code object storage tests. This
     ;; clones a RecordBox-backed value and changes only its public tag.
     ((:lit "nelisp--byte-code-wrap-test") :word .
@@ -7664,11 +7664,11 @@ argument (reachability + in-arena bounds checks).")
                                    (if (= (bf_hash_table_p_raw h) 1)
                                        (wf_write_int_w 0 (nl_ht_count_table (nl_ht_data_slot h)))
                                      (nl_abi_fail (bf_wrong_type_hash_table h) 0))))
-    ((:lit "maphash")          . (nl_ht_maphash args out))
+    ((:lit "maphash")          :word . (nl_ht_maphash_w args 0))
     ;; --- M5 strings + format ---
-    ((:lit "length")           . (bf_length_checked (wf_arg_ptr args 0) out))
+    ((:lit "length")           :word . (bf_length_checked_w (wf_arg_ptr args 0) 0))
     ;; Doc 161: byte-level access + count for byte-IO (length is now chars).
-    ((:lit "string-byte")      . (wf_write_int out
+    ((:lit "string-byte")      :word . (wf_write_int_w 0
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
     ((:lit "string-bytes")     :word . (let* ((s (wf_arg_ptr args 0))
@@ -7729,7 +7729,7 @@ argument (reachability + in-arena bounds checks).")
                                         (m5_byte_at (wf_arg_ptr args 0) 0)
                                       (nl_u8_decode (wf_arg_ptr args 0) 0))))
                           (nl_abi_fail (bf_wrong_type_stringp (wf_arg_ptr args 0)) 0)))
-    ((:lit "string-to-number") . (wf_write_int out (m5_s2n (wf_arg_ptr args 0))))
+    ((:lit "string-to-number") :word . (wf_write_int_w 0 (m5_s2n (wf_arg_ptr args 0))))
     ;; Doc 190 Phase A: accepts tag 13 (Bignum) too, via `m5_push_bignum'.
     ((:lit "number-to-string") :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13) 1 0)))
                             (let* ((arg (wf_arg_ptr args 0)))
@@ -7975,32 +7975,32 @@ argument (reachability + in-arena bounds checks).")
                                         (if (< idx 0)
                                             3
                                           (wf_write_int_w 0 idx))))
-    ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
-    ((:lit "nelisp--gc-pressure") . (bf_gc_pressure out))
-    ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
-    ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
-    ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
-    ((:lit "nelisp--pool-root-coverage") . (bf_pool_root_coverage out))
-    ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
-    ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
-    ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
-    ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
-    ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
-    ((:lit "nelisp--arena-dump-image-stream") . (bf_arena_dump_image_stream args out))
-    ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
+    ((:lit "nelisp--arena-stats") :word . (bf_arena_stats_w 0))
+    ((:lit "nelisp--gc-pressure") :word . (bf_gc_pressure_w 0))
+    ((:lit "nelisp--arena-walk-verify") :word . (bf_arena_walk_verify_w 0))
+    ((:lit "nelisp--arena-dump-copy-verify") :word . (bf_arena_dump_copy_verify_w 0))
+    ((:lit "nelisp--arena-mark-reach-verify") :word . (bf_arena_mark_reach_verify_w 0))
+    ((:lit "nelisp--pool-root-coverage") :word . (bf_pool_root_coverage_w 0))
+    ((:lit "nelisp--arena-swizzle-verify") :word . (bf_arena_swizzle_verify_w 0))
+    ((:lit "nelisp--arena-load-relocate-verify") :word . (bf_arena_load_relocate_verify_w 0))
+    ((:lit "nelisp--arena-image-root-verify") :word . (bf_arena_image_root_verify_w 0))
+    ((:lit "nelisp--arena-dump-table-verify") :word . (bf_arena_dump_table_verify_w 0))
+    ((:lit "nelisp--arena-dump-image-to-file") :word . (bf_arena_dump_image_to_file_w args 0))
+    ((:lit "nelisp--arena-dump-image-stream") :word . (bf_arena_dump_image_stream_w args 0))
+    ((:lit "nelisp--arena-load-image-from-file") :word . (bf_arena_load_image_from_file_w args 0))
     ((:lit "nelisp--env-capture-roots") . (bf_env_capture_roots out))
-    ((:lit "nelisp--record-expand") . (bf_record_expand args out))
-    ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
-    ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
-    ((:lit "nelisp--arena-value-survival") . (bf_arena_value_survival args out))
-    ((:lit "garbage-collect") . (bf_garbage_collect func_ptr args env out))
-    ((:lit "nelisp--debug-switch") . (bf_debug_switch args out))
+    ((:lit "nelisp--record-expand") :word . (bf_record_expand_w args 0))
+    ((:lit "nelisp--arena-boot-load-verify") :word . (bf_arena_boot_load_verify_w args 0))
+    ((:lit "nelisp--arena-load-split-verify") :word . (bf_arena_load_split_verify_w args 0))
+    ((:lit "nelisp--arena-value-survival") :word . (bf_arena_value_survival_w args 0))
+    ((:lit "garbage-collect") :word . (bf_garbage_collect_w func_ptr args env 0))
+    ((:lit "nelisp--debug-switch") :word . (bf_debug_switch_w args 0))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
-    ((:lit "nelisp--gc-diag") . (bf_debug_switch args out))
-    ((:lit "nelisp--arena-force-grow-smoke") . (bf_arena_force_grow_smoke out))
-    ((:lit "nelisp--size-census") . (bf_size_census out))
+    ((:lit "nelisp--gc-diag") :word . (bf_debug_switch_w args 0))
+    ((:lit "nelisp--arena-force-grow-smoke") :word . (bf_arena_force_grow_smoke_w 0))
+    ((:lit "nelisp--size-census") :word . (bf_size_census_w 0))
     ;; Doc 170 Stage 2: checked-allocator counters + leak scan.
-    ((:lit "nelisp--alloc-check-report") . (bf_alloc_check_report out))
+    ((:lit "nelisp--alloc-check-report") :word . (bf_alloc_check_report_w 0))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  :word . (nl_bi_write_file_w args 0))
     ((:u8 "rdf")  :word . (nl_bi_read_file_maybe_raw_w args 0))
@@ -8018,7 +8018,7 @@ argument (reachability + in-arena bounds checks).")
     ;; ptr-write-u64).  Returns the raw kernel rc; -38 (ENOSYS stub) on
     ;; targets without a wired sleep.  Replaces interpreted callers
     ;; hardcoding (syscall-direct 35 ...) which is io_setup on arm64.
-    ((:lit "nl-nanosleep") . (wf_write_int out (nl_os_nanosleep (wf_argval args 0))))
+    ((:lit "nl-nanosleep") :word . (wf_write_int_w 0 (nl_os_nanosleep (wf_argval args 0))))
     ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
     ;; nelisp--exit-process CODE: terminate NOW (exit_group / ExitProcess).
     ;; `exit' below is the status-only sibling the driver's top-level loop is
@@ -24061,36 +24061,36 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
 ;; All are (:lit ...) because every name is matched by the full-length
 ;; `sexp-name-eq' op (some are <=8 bytes but :lit is always correct).
 (defconst nelisp-standalone--process-posix-dispatch-arms
-  '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
-    ((:lit "nelisp-process-start") . (nl_bi_process_start_process args out))
-    ((:lit "nelisp-process-start-process") . (nl_bi_process_start_process args out))
+  '(((:lit "nelisp-process-call-process") :word . (nl_bi_process_call_process_w args 0))
+    ((:lit "nelisp-process-start") :word . (nl_bi_process_start_process_w args 0))
+    ((:lit "nelisp-process-start-process") :word . (nl_bi_process_start_process_w args 0))
     ((:lit "nelisp-process-object-p") :word . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) 7 3))
-    ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
-    ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
-    ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_status_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-exit-status") . (wf_write_int out (nl_bi_process_exit_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-read-output") . (nl_bi_process_read_output args out))
-    ((:lit "nelisp-process-write") . (nl_bi_process_write args out))
-    ((:lit "nelisp-process-close-stdin") . (nl_bi_process_close_stdin args out))
-    ((:lit "nelisp-process-poll") . (nl_bi_process_poll args out))
-    ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_wait_object (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-async-ready-p") :word . (wf_write_t_w 0))
+    ((:lit "nelisp-process-pid") :word . (wf_write_int_w 0 (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
+    ((:lit "nelisp-process-status") :word . (wf_write_int_w 0 (nl_bi_process_status_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-exit-status") :word . (wf_write_int_w 0 (nl_bi_process_exit_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-read-output") :word . (nl_bi_process_read_output_w args 0))
+    ((:lit "nelisp-process-write") :word . (nl_bi_process_write_w args 0))
+    ((:lit "nelisp-process-close-stdin") :word . (nl_bi_process_close_stdin_w args 0))
+    ((:lit "nelisp-process-poll") :word . (nl_bi_process_poll_w args 0))
+    ((:lit "nelisp-process-wait") :word . (wf_write_int_w 0 (nl_bi_process_wait_object (wf_arg_ptr args 0))))
     ((:lit "nelisp-process-delete") :word . (seq (nl_bi_process_delete_object (wf_arg_ptr args 0)) 3)))
   "The pre-existing process arms, unchanged for every POSIX target.")
 
 (defconst nelisp-standalone--process-windows-real-arms
-  '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
+  '(((:lit "nelisp-process-call-process") :word . (nl_bi_process_call_process_w args 0))
     ((:lit "nelisp-process-start") . (nl_bi_process_windows_start args out))
     ((:lit "nelisp-process-start-process") . (nl_bi_process_windows_start args out))
     ((:lit "nelisp-process-object-p") :word . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) 7 3))
-    ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
-    ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
-    ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_windows_status_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-exit-status") . (wf_write_int out (nl_bi_process_windows_exit_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-async-ready-p") :word . (wf_write_t_w 0))
+    ((:lit "nelisp-process-pid") :word . (wf_write_int_w 0 (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
+    ((:lit "nelisp-process-status") :word . (wf_write_int_w 0 (nl_bi_process_windows_status_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-exit-status") :word . (wf_write_int_w 0 (nl_bi_process_windows_exit_code (wf_arg_ptr args 0))))
     ((:lit "nelisp-process-read-output") . (nl_bi_process_windows_read_output args out))
     ((:lit "nelisp-process-write") . (nl_bi_process_windows_write args out))
     ((:lit "nelisp-process-close-stdin") . (nl_bi_process_windows_close_stdin args out))
     ((:lit "nelisp-process-poll") . (nl_bi_process_windows_poll args out))
-    ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_windows_wait_object (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-wait") :word . (wf_write_int_w 0 (nl_bi_process_windows_wait_object (wf_arg_ptr args 0))))
     ((:lit "nelisp-process-delete") :word . (seq (nl_bi_process_windows_delete_object (wf_arg_ptr args 0)) 3)))
   "Complete async-process lifecycle arms for windows-x86_64.")
 
@@ -24343,7 +24343,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; Doc 201 §6.17: `sxhash-eq' hashes what `eq' compares -- identity --
     ;; so two equal-content strings hash apart as they do in Emacs, while
     ;; `(eq a b)' still implies equal hashes (`bf_identity_hash').
-    ((:lit "sxhash-eq") . (wf_write_int out (bf_identity_hash (wf_arg_ptr args 0))))
+    ((:lit "sxhash-eq") :word . (wf_write_int_w 0 (bf_identity_hash (wf_arg_ptr args 0))))
     ((:lit "vectorp")  :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 8) 7 3))
     ((:lit "listp")    :word . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
                            (if (= tg 7) 7 (if (= tg 0) 7 3))))
@@ -24362,7 +24362,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; checked here, matching `m5_s2n''s own convention for the same
     ;; reason.
     ((:lit "nl--read-int") :word . (nl_read_int_or_bignum_w (wf_arg_ptr args 0) 0))
-    ((:lit "nl--nthcdr") . (bf_nthcdr args out))
+    ((:lit "nl--nthcdr") :word . (bf_nthcdr_w args 0))
     ;; Same reader-only contract as `nl--read-int': ARG0 is a string, checked
     ;; by the one prelude caller (`string-to-number', after
     ;; `nelisp--check-string').  Answers t when the string is a bare
@@ -24432,24 +24432,24 @@ into that constant unconditionally is what broke every aarch64 build."
                                        (bf_wrong_type_fixnump dp))
                                    (bf_wrong_type_arrayp vp))
                                (bf_wrong_type_stringp cp))))
-    ((:lit "set")      . (bf_set args env out))
-    ((:lit "makunbound") . (bf_makunbound args env out))
+    ((:lit "set")      :word . (bf_set_w args env 0))
+    ((:lit "makunbound") :word . (bf_makunbound_w args env 0))
     ((:lit "symbol-value") :word . (if (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) 1
                                    (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 2
                                      (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 1) 2 0)))
                             (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) (if (= (bf_keyword_raw (wf_arg_ptr args 0)) 1) (nl_g4arm_copy_w 0 (wf_arg_ptr args 0)) (bf_symbol_value_w args env 0)) (nl_g4arm_copy_w 0 (wf_arg_ptr args 0)))
                           (nl_abi_fail (bf_wrong_type_symbolp (wf_arg_ptr args 0)) 0)))
-    ((:lit "fboundp")  . (bf_fboundp args env out))
-    ((:lit "symbol-function") . (bf_symbol_function args env out))
-    ((:lit "boundp")   . (bf_boundp args env out))
+    ((:lit "fboundp")  :word . (bf_fboundp_w args env 0))
+    ((:lit "symbol-function") :word . (bf_symbol_function_w args env 0))
+    ((:lit "boundp")   :word . (bf_boundp_w args env 0))
     ((:lit "nelisp--declare-local-special")
-     . (bf_declare_local_value env (wf_arg_ptr args 0) out))
+     :word . (bf_declare_local_value_w env (wf_arg_ptr args 0) 0))
     ((:lit "featurep") :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) 1
                                  (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 1
                                    (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 1) 1 0)))
                             (bf_featurep_w args env 0)
                           (nl_abi_fail (bf_wrong_type_symbolp (wf_arg_ptr args 0)) 0)))
-    ((:lit "require")  . (bf_require args env out))
+    ((:lit "require")  :word . (bf_require_w args env 0))
     ;; --- symbol ops ---
     ;; symbol-name: a Symbol (tag 4) already has the str layout (ptr@16/len@24);
     ;; produce a Str (tag 5) sharing those bytes via nl_alloc_str.
@@ -24519,21 +24519,21 @@ into that constant unconditionally is what broke every aarch64 build."
                                      (bf_intern_soft_w a 0)
                                    (if (= tg 16) 3
                                      (nl_abi_fail (bf_wrong_type_stringp a) 0)))))))
-    ((:lit "make-symbol") . (bf_make_symbol (wf_arg_ptr args 0) out))
+    ((:lit "make-symbol") :word . (bf_make_symbol_w (wf_arg_ptr args 0) 0))
     ;; nelisp--intern-lookup: probe-only counterpart of `intern' (Doc 163
     ;; Phase C).  `bf_intern_soft' already returns 0 on both the hit and
     ;; miss arms (see its definition above), so no `(seq ... 0)' wrapper is
     ;; needed here (unlike `intern', whose `bf_intern' returns a non-zero
     ;; slot pointer).  Backs the elisp `intern-soft' (lisp/nelisp-stdlib-misc.el).
-    ((:lit "nelisp--intern-lookup") . (bf_intern_soft (wf_arg_ptr args 0) out))
+    ((:lit "nelisp--intern-lookup") :word . (bf_intern_soft_w (wf_arg_ptr args 0) 0))
     ;; nelisp--intern-table-symbols: list of every interned symbol (see
     ;; `bf_intern_table_symbols'); backs the library's global `mapatoms'.
-    ((:lit "nelisp--intern-table-symbols") . (bf_intern_table_symbols out))
+    ((:lit "nelisp--intern-table-symbols") :word . (bf_intern_table_symbols_w 0))
     ;; nelisp--format-simple TEMPLATE ARGS: the finished string when the
     ;; native formatter is known to agree with the prelude `format' layer
     ;; for this call, else nil (see `bf_format_simple').  Called by the
     ;; prelude `format' before its interpreted field-width/type-check layer.
-    ((:lit "nelisp--format-simple") . (bf_format_simple (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    ((:lit "nelisp--format-simple") :word . (bf_format_simple_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
     ;; A BYTE is 0..255.  Anything else was taken modulo 256 and became a
     ;; different character: (unibyte-string 300) answered "," rather than
     ;; signalling, so a caller building a byte string from computed values
@@ -24545,15 +24545,15 @@ into that constant unconditionally is what broke every aarch64 build."
                                   (nl_abi_fail (bf_args_out_of_range_byte bad) 0)
                                 (nl_abi_fail (bf_wrong_type_integerp bad) 0)))))
     ;; --- vector ops ---
-    ((:lit "make-vector") . (bf_make_vector args out))
-    ((:lit "vector")      . (bf_vector args out))
-    ((:lit "make-bool-vector") . (bf_make_bool_vector args out))
-    ((:lit "bool-vector")      . (bf_bool_vector args out))
-    ((:lit "bool-vector-p")    . (bf_bool_vector_p args out))
-    ((:lit "record")      . (bf_record args out))
-    ((:lit "nelisp--native-subr-create") . (bf_make_native_subr args out env))
+    ((:lit "make-vector") :word . (bf_make_vector_w args 0))
+    ((:lit "vector")      :word . (bf_vector_w args 0))
+    ((:lit "make-bool-vector") :word . (bf_make_bool_vector_w args 0))
+    ((:lit "bool-vector")      :word . (bf_bool_vector_w args 0))
+    ((:lit "bool-vector-p")    :word . (bf_bool_vector_p_w args 0))
+    ((:lit "record")      :word . (bf_record_w args 0))
+    ((:lit "nelisp--native-subr-create") :word . (bf_make_native_subr_w args 0 env))
     ((:lit "nelisp--native-subr-live-count")
-     . (wf_write_int out
+     :word . (wf_write_int_w 0
                      (nl_native_subr_module_live_count
                       (wf_argval args 0))))
     ((:lit "nelisp--native-subr-arity")
@@ -24578,35 +24578,35 @@ into that constant unconditionally is what broke every aarch64 build."
                   (if (= slots 9)
                       (wf_write_int out 5)
                     (wf_write_nil out))))))))))
-    ((:lit "make-record") . (bf_make_record args out))
-    ((:lit "make-byte-code") . (bf_make_byte_code args out))
-    ((:lit "fetch-bytecode") . (wf_write_nil out))
-    ((:lit "recordp")     . (bf_recordp args out))
-    ((:lit "byte-code-function-p") . (bf_byte_code_function_p args out))
-    ((:lit "aref")        . (bf_aref_nemacs_bridge args env out))
-    ((:lit "elt")         . (bf_elt args out))
-    ((:lit "aset")        . (bf_aset_nemacs_bridge args env out))
-    ((:lit "nelisp--raw-aref") . (bf_aref args out))
-    ((:lit "nelisp--raw-aset") . (bf_aset args out))
-    ((:lit "nelisp--char-table-vector-bridge-p") . (wf_write_t out))
+    ((:lit "make-record") :word . (bf_make_record_w args 0))
+    ((:lit "make-byte-code") :word . (bf_make_byte_code_w args 0))
+    ((:lit "fetch-bytecode") :word . (wf_write_nil_w 0))
+    ((:lit "recordp")     :word . (bf_recordp_w args 0))
+    ((:lit "byte-code-function-p") :word . (bf_byte_code_function_p_w args 0))
+    ((:lit "aref")        :word . (bf_aref_nemacs_bridge_w args env 0))
+    ((:lit "elt")         :word . (bf_elt_w args 0))
+    ((:lit "aset")        :word . (bf_aset_nemacs_bridge_w args env 0))
+    ((:lit "nelisp--raw-aref") :word . (bf_aref_w args 0))
+    ((:lit "nelisp--raw-aset") :word . (bf_aset_w args 0))
+    ((:lit "nelisp--char-table-vector-bridge-p") :word . (wf_write_t_w 0))
     ;; --- char-table ops (Doc 186 P0/P1/P2) ---
-    ((:lit "char-table-p")           . (bf_char_table_p args out))
-    ((:lit "make-char-table")        . (bf_make_char_table args out))
-    ((:lit "char-table-subtype")     . (bf_char_table_subtype args out))
-    ((:lit "char-table-parent")      . (bf_char_table_parent args out))
-    ((:lit "set-char-table-parent")  . (bf_set_char_table_parent args out))
-    ((:lit "char-table-extra-slot")  . (bf_char_table_extra_slot args out))
-    ((:lit "set-char-table-extra-slot") . (bf_set_char_table_extra_slot args out))
-    ((:lit "char-table-range")       . (bf_char_table_range args out))
-    ((:lit "set-char-table-range")   . (bf_set_char_table_range args out))
-    ((:lit "map-char-table")         . (bf_map_char_table args env out))
+    ((:lit "char-table-p")           :word . (bf_char_table_p_w args 0))
+    ((:lit "make-char-table")        :word . (bf_make_char_table_w args 0))
+    ((:lit "char-table-subtype")     :word . (bf_char_table_subtype_w args 0))
+    ((:lit "char-table-parent")      :word . (bf_char_table_parent_w args 0))
+    ((:lit "set-char-table-parent")  :word . (bf_set_char_table_parent_w args 0))
+    ((:lit "char-table-extra-slot")  :word . (bf_char_table_extra_slot_w args 0))
+    ((:lit "set-char-table-extra-slot") :word . (bf_set_char_table_extra_slot_w args 0))
+    ((:lit "char-table-range")       :word . (bf_char_table_range_w args 0))
+    ((:lit "set-char-table-range")   :word . (bf_set_char_table_range_w args 0))
+    ((:lit "map-char-table")         :word . (bf_map_char_table_w args env 0))
     ;; --- signal / error (non-crashing stub; condition-case trapping deferred) ---
-    ((:lit "signal")      . (bf_signal args out))
-    ((:lit "error")       . (bf_error args out))
+    ((:lit "signal")      :word . (bf_signal_w args 0))
+    ((:lit "error")       :word . (bf_error_w args 0))
     ;; equal (member/assoc use it).  eq is REPLACED (not appended) in the table.
-    ((:lit "nelisp--clear-string-bytes") . (bf_clear_string_bytes args env out))
-    ((:lit "nelisp--equal-leaf") . (bf_equal args out))
-    ((:lit "equal")       . (bf_n2_call_lisp_equal args env out))
+    ((:lit "nelisp--clear-string-bytes") :word . (bf_clear_string_bytes_w args env 0))
+    ((:lit "nelisp--equal-leaf") :word . (bf_equal_w args 0))
+    ((:lit "equal")       :word . (bf_n2_call_lisp_equal_w args env 0))
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
     ;; Installs V (possibly a box) into a PRE-EXISTING cons -> persistent escape
     ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
@@ -24621,33 +24621,33 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; load FILE &optional ...: reader-only absolute-path file load.  The
     ;; optional args are ignored for now; callers in nelisp-emacs pass absolute
     ;; paths and use a post-load proof form to verify the file actually ran.
-    ((:lit "load")        . (bf_load args env out))
-    ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
+    ((:lit "load")        :word . (bf_load_w args env 0))
+    ((:lit "nelisp--eval-source-string") :word . (bf_eval_source_string_w args env 0))
     ((:lit "nelisp--syscall-read-file") :word . (nl_bi_read_file_maybe_raw_w args 0))
-    ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
-    ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
-    ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
-    ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
-    ((:lit "nelisp--syscall-stat-field") . (nl_bi_syscall_stat_field args out))
-    ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
-    ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
-    ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
-    ((:lit "nelisp--syscall-readdir-names") . (nl_bi_syscall_readdir_names args out))
-    ((:lit "nelisp--readdir-scan-raw") . (nl_bi_readdir_scan_raw args out))
-    ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
-    ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
-    ((:lit "nelisp--syscall-unshare") . (nl_bi_syscall_unshare args out))
-    ((:lit "nelisp--syscall-mount") . (nl_bi_syscall_mount args out))
-    ((:lit "nelisp--syscall-pivot-root") . (nl_bi_syscall_pivot_root args out))
-    ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
-    ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
-    ((:lit "nelisp--read-all-from-string-native") . (bf_read_all_from_string_native args env out))
-    ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
+    ((:lit "nl-write-file") :word . (nl_bi_write_file_t_w args 0))
+    ((:lit "nelisp--syscall-path") :word . (nl_bi_syscall_path_w args 0))
+    ((:lit "nelisp--syscall-path2") :word . (nl_bi_syscall_path2_w args 0))
+    ((:lit "nelisp--syscall-path-int") :word . (nl_bi_syscall_path_int_w args 0))
+    ((:lit "nelisp--syscall-stat-field") :word . (nl_bi_syscall_stat_field_w args 0))
+    ((:lit "nelisp--syscall-stat-buf") :word . (nl_bi_syscall_stat_buf_w args 0))
+    ((:lit "nelisp--syscall-lstat-buf") :word . (nl_bi_syscall_lstat_buf_w args 0))
+    ((:lit "nelisp--syscall-readlink") :word . (nl_bi_syscall_readlink_w args 0))
+    ((:lit "nelisp--syscall-readdir-names") :word . (nl_bi_syscall_readdir_names_w args 0))
+    ((:lit "nelisp--readdir-scan-raw") :word . (nl_bi_readdir_scan_raw_w args 0))
+    ((:lit "nelisp--syscall-utimes") :word . (nl_bi_syscall_utimes_w args 0))
+    ((:lit "nelisp--syscall-statx-buf") :word . (nl_bi_syscall_statx_buf_w args 0))
+    ((:lit "nelisp--syscall-unshare") :word . (nl_bi_syscall_unshare_w args 0))
+    ((:lit "nelisp--syscall-mount") :word . (nl_bi_syscall_mount_w args 0))
+    ((:lit "nelisp--syscall-pivot-root") :word . (nl_bi_syscall_pivot_root_w args 0))
+    ((:lit "nelisp--write-stdout-bytes") :word . (nl_bi_write_stdout_bytes_w args 0))
+    ((:lit "nelisp--write-stderr-line") :word . (nl_bi_write_stderr_line_w args 0))
+    ((:lit "nelisp--read-all-from-string-native") :word . (bf_read_all_from_string_native_w args env 0))
+    ((:lit "read-stdin-bytes") :word . (nl_bi_read_stdin_bytes_w args 0))
     ;; nl-current-unix-time: epoch seconds via the linux-x86_64 time(2)
     ;; syscall (__NR_time=201, NULL arg).  Lets interpreted code (e.g.
     ;; nelisp-emacs `float-time'/`current-time' polyfills) read wall-clock
     ;; time without process-exiting on an undispatched builtin.
-    ((:lit "nl-current-unix-time") . (wf_write_int out (syscall-direct 201 0 0 0 0 0 0)))
+    ((:lit "nl-current-unix-time") :word . (wf_write_int_w 0 (syscall-direct 201 0 0 0 0 0 0)))
     ;; float-time: gettimeofday + f64 done entirely in the hand-asm
     ;; nl_os_float_time extern (so the AOT never emits a syscall<->f64 sequence,
     ;; which aborts).  Dispatched here in bf-arms (where :lit works) via the
@@ -24751,11 +24751,11 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; internal-only dispatch channel.  `nelisp--syscall' (the finding this
     ;; change actually fixes) is unaffected: it was never in this table at
     ;; all, so it only ever reached the unknown-builtin default.
-    ((:lit "syscall-direct") . (wf_write_int out (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
-    ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "ptr-read-u8") . (wf_write_int out (ptr-read-u8 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "syscall-direct") :word . (wf_write_int_w 0 (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
+    ((:lit "atomic-fetch-add") :word . (wf_write_int_w 0 (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-read-u8") :word . (wf_write_int_w 0 (ptr-read-u8 (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-write-u8") :word . (seq (ptr-write-u8 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int_w 0 0)))
-    ((:lit "ptr-read-u32") . (wf_write_int out (ptr-read-u32 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-read-u32") :word . (wf_write_int_w 0 (ptr-read-u32 (wf_argval args 0) (wf_argval args 1))))
     ;; Read raw IEEE-754 limbs from a canonical Float Sexp without numeric
     ;; conversion, preserving signed zero and NaN payload bits exactly.
     ((:lit "nelisp--float-word-half") :word .
@@ -24777,19 +24777,19 @@ into that constant unconditionally is what broke every aarch64 build."
                (nl_abi_fail (bf_wrong_type_floatp value-ptr) 0)))
          (nl_abi_fail (bf_wrong_number_of_args name_ptr builtin_argc) 0))))
     ((:lit "ptr-write-u32") :word . (seq (ptr-write-u32 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int_w 0 0)))
-    ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-read-u64") :word . (wf_write_int_w 0 (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-write-u64") :word . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int_w 0 0)))
-    ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "alloc-bytes") :word . (wf_write_int_w 0 (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
     ;; Bulk byte transfer between raw memory and Lisp strings (Doc 138,
     ;; SQLite arm): the native counterparts of an interpreted per-byte
     ;; `ptr-read-u8' / `ptr-write-u8' walk.
-    ((:lit "ptr-read-bytes") . (nl_bi_ptr_read_bytes args out))
-    ((:lit "ptr-write-bytes") . (nl_bi_ptr_write_bytes args out))
-    ((:lit "garbage-collect") . (bf_garbage_collect func_ptr args env out))
+    ((:lit "ptr-read-bytes") :word . (nl_bi_ptr_read_bytes_w args 0))
+    ((:lit "ptr-write-bytes") :word . (nl_bi_ptr_write_bytes_w args 0))
+    ((:lit "garbage-collect") :word . (bf_garbage_collect_w func_ptr args env 0))
     )
    nelisp-standalone--process-posix-dispatch-arms
    '(
-    ((:lit "nelisp-portable-syscall") . (wf_write_int out (nl_bi_portable_syscall args)))
+    ((:lit "nelisp-portable-syscall") :word . (wf_write_int_w 0 (nl_bi_portable_syscall args)))
     ;; ptr-call: forward FFI indirect call.  (ptr-call ADDR a0 a1 a2 a3 a4 a5)
     ;; -> calls the i64 code pointer ADDR with 6 i64 args (SysV ABI), returns
     ;; rax as i64.  The shared fixed-arity contract registers exactly 7 total
@@ -24797,18 +24797,18 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; wrong-number-of-arguments check before this arm reads any operand slot.
     ;; Same `call-ptr' grammar op the compiler emits, so no new Rust.  Callers
     ;; pad unused trailing native arguments with 0.
-    ((:lit "ptr-call") . (wf_write_int out (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
-    ((:lit "thread-spawn") . (bf_thread_spawn args env out))
-    ((:lit "nelisp-spin-until") . (bf_thread_join args env out))
-    ((:lit "fork-spawn") . (bf_fork_spawn args env out))
+    ((:lit "ptr-call") :word . (wf_write_int_w 0 (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
+    ((:lit "thread-spawn") :word . (bf_thread_spawn_w args env 0))
+    ((:lit "nelisp-spin-until") :word . (bf_thread_join_w args env 0))
+    ((:lit "fork-spawn") :word . (bf_fork_spawn_w args env 0))
     ;; nelisp--target-os-code / nelisp--target-arch-code: per-target
     ;; COMPILE-TIME constants -- see `nl_target_os_code'/`nl_target_arch_code'
     ;; in `nelisp-standalone--reader-os-source-forms'.  Back `system-type'/
     ;; `system-configuration' in scripts/nelisp-stdlib-prelude.el, which used
     ;; to hardcode `gnu/linux'/"x86_64-pc-linux-gnu" for every target
     ;; including Windows.
-    ((:lit "nelisp--target-os-code") . (wf_write_int out (nl_target_os_code)))
-    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code)))))
+    ((:lit "nelisp--target-os-code") :word . (wf_write_int_w 0 (nl_target_os_code)))
+    ((:lit "nelisp--target-arch-code") :word . (wf_write_int_w 0 (nl_target_arch_code)))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
 ash/logand/logior/logxor/lognot + string<.  `ptr-call-typed' is NOT here: its
@@ -25419,7 +25419,7 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
     (lambda (entry)
       (cond
        ((equal (car entry) '(:lit "length"))
-        '((:lit "length") . (bf_length_checked (wf_arg_ptr args 0) out)))
+        '((:lit "length") :word . (bf_length_checked_w (wf_arg_ptr args 0) 0)))
        ((equal (car entry) '(:u8 "eq"))
         '((:u8 "eq") :word . (bf_eq_w args 0)))
        ((equal (car entry) '(:u8 "car"))
