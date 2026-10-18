@@ -14417,7 +14417,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (seq (wf_bytecode_w_load out prev) 0)
            (if (= state 2)
                (wf_bytecode_circular_list env value)
-             (bf_wrong_type_listp value))))))
+             (seq (bf_wrong_type_listp value) 1))))))
     (defun wf_bytecode_nreverse_vector (env value)
       ;; Swap the element words in place.
       (let* ((data (ptr-read-u64 (ptr-read-u64 value 8) 8))
@@ -14606,11 +14606,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_copy_arg_tail (env source out)
       ;; &rest receives a fresh list spine, while its elements retain
       ;; their original identities as in funcall_lambda.  RESULT roots the
-      ;; spine built so far; TAIL is its last cell.
+      ;; spine built so far; TAIL is its last cell.  SOURCE is a word.
       (let* ((mark (nl_root_mark env))
              (result (nl_root_reserve env))
              (tmp (nl_root_reserve env))
-             (cursor (wf_bytecode_w_peek source))
+             (cursor source)
              (tail 0) (cell 0))
         (seq (wf_write_nil result)
              (while (= (wf_bytecode_w_consp cursor) 1)
