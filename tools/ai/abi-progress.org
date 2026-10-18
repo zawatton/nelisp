@@ -118,5 +118,5 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
 ** S6.3 End to end: boot and regex-load instruction counts <= the baseline's (callgrind)
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
-#+TIMEOUT: 1500
+#+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"
