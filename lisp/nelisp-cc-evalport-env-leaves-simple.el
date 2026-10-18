@@ -41,11 +41,17 @@
 (defconst nelisp-cc-evalport-env-leaves-simple--source
   '(seq
     (defun nl_env_lookup_val (name_ptr env out)
-      (let ((mirror_ptr (+ env 0))
-            (frames_ptr (+ env 32)))
-        (nl_env_lookup_val_done
-         (nelisp_env_lookup_value mirror_ptr frames_ptr name_ptr out)
-         env out 0)))
+      (nl_abi_lookup_to_rc (nl_env_lookup_val_w name_ptr env 0) out))
+    ;; Doc 215 word ABI: the value WORD; 2 when NAME is unbound (not found,
+    ;; or an entry holding only the env+64 unbound marker); 0 on a signal.
+    (defun nl_env_lookup_val_w (name_ptr env _pad)
+      (nl_env_lookup_val_w_done
+       (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
+       env 0 0))
+    (defun nl_env_lookup_val_w_done (w env _pad _pad1)
+      (if (= (logand w 1) 1) w
+        (if (< w 8) w
+          (if (= (symbol-eq w (+ env 64)) 1) 2 w))))
     ;; An entry can exist solely for its function cell.  Its value is still
     ;; unbound; never expose that internal marker as a successful lookup.
     ;; Consume the lookup result as a helper argument so it cannot be lost

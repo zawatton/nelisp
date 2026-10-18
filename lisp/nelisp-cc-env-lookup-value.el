@@ -188,7 +188,26 @@
               0)
           status)))
 
+    ;; Doc 215 word ABI: the value WORD, 2 when NAME is not found (the
+    ;; legacy rc 1 without a stash), or 0 with the signal stashed.
+    (defun nelisp_env_lkv_mirror_with_frames_w
+        (mirror-ptr frames-ptr name-ptr _pad frame-mode _pad1 _pad2 _pad3)
+      (let* ((out-ptr (alloc-bytes 32 8)))
+        (nl_abi_status_to_word
+         (nelisp_env_lkv_mirror_with_frames_rc
+          mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0)
+         out-ptr)))
+
     (defun nelisp_env_lkv_mirror_with_frames
+        (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
+      (nl_abi_lookup_to_rc
+       (nelisp_env_lkv_mirror_with_frames_w
+        mirror-ptr frames-ptr name-ptr 0 frame-mode 0 0 0)
+       out-ptr))
+
+    ;; The status-returning body behind the word entry above (writes the
+    ;; value into the private OUT-PTR box).
+    (defun nelisp_env_lkv_mirror_with_frames_rc
         (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0) 1
@@ -214,8 +233,10 @@
 
     ;; Preserve the established four-argument global-mirror ABI. It cannot
     ;; inspect frames, so frame-aware callers use the eight-argument entry.
+    (defun nelisp_env_lkv_mirror_w (mirror-ptr name-ptr _pad _pad1)
+      (nelisp_env_lkv_mirror_with_frames_w mirror-ptr 0 name-ptr 0 0 0 0 0))
     (defun nelisp_env_lkv_mirror (mirror-ptr name-ptr out-ptr _pad)
-      (nelisp_env_lkv_mirror_with_frames mirror-ptr 0 name-ptr out-ptr 0 0 0 0))
+      (nl_abi_lookup_to_rc (nelisp_env_lkv_mirror_w mirror-ptr name-ptr 0 0) out-ptr))
 
     ;; nelisp_env_lookup_value
     ;;
@@ -229,6 +250,11 @@
     ;; once for the cell-hit dispatch).  On frame-hit: 1 hash instead
     ;; of 2.  On frame-miss + mirror-hit: 2 hashes instead of 3.
     (defun nelisp_env_lookup_value (mirror-ptr frames-ptr name-ptr out-ptr)
+      (nl_abi_lookup_to_rc
+       (nelisp_env_lookup_value_w mirror-ptr frames-ptr name-ptr 0) out-ptr))
+
+    ;; Doc 215 word ABI: the value WORD, 2 when not found, 0 on a signal.
+    (defun nelisp_env_lookup_value_w (mirror-ptr frames-ptr name-ptr _pad)
       (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
              (local-p (if (= entry 0) 0
                         (if (> (record-slot-count entry) 5)
@@ -240,10 +266,13 @@
                          (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
         (if (= cell-ptr 0)
             ;; Frame miss: check mirror.
-            (nelisp_env_lkv_mirror_with_frames
-             mirror-ptr frames-ptr name-ptr out-ptr 0 0 0 0)
-          ;; Frame hit: read cell value (refcount-safe).
-          (extern-call nl_cell_get_value cell-ptr out-ptr)))))
+            (nelisp_env_lkv_mirror_with_frames_w
+             mirror-ptr frames-ptr name-ptr 0 0 0 0 0)
+          ;; Frame hit: read cell value (refcount-safe) into a private box.
+          (nelisp_env_lookup_value_cell cell-ptr (alloc-bytes 32 8))))))
+
+    (defun nelisp_env_lookup_value_cell (cell-ptr out-ptr)
+      (nl_abi_rc_to_word (extern-call nl_cell_get_value cell-ptr out-ptr) out-ptr))
   "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:

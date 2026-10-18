@@ -212,7 +212,13 @@ eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
   =(error "nelisp: word ABI failure without a stashed signal")=, so a bare
   0 can never surface later as a garbage error.  Write
   =(nl_abi_fail (bf_wrong_type_listp a) 0)=, never =(seq ... 0)=.
-- 2 ("not handled") is produced only by =nl_apply_special_w=.
+- 2 = not found / unhandled (lookups and special dispatch only).  The env
+  lookups (=nelisp_env_lookup_value_w=, =nelisp_env_lkv_mirror(_with_frames)_w=,
+  =nl_env_lookup_val_w=, =nelisp_env_lookup_function_w=) answer 2 where the
+  legacy ABI returned rc 1 without a stash (unbound / no entry; for
+  =nl_env_lookup_val_w= also an entry holding only the env+64 unbound
+  marker); their adapters map 2 back to rc 1 (=nl_abi_lookup_to_rc=).
+- 2 ("not handled") is otherwise produced only by =nl_apply_special_w=.
   =nl_abi_word_to_rc= hands 2 through as rc 2, so the =nl_apply_special=
   adapter keeps its contract.  Every other consumer of =nl_apply_special_w=
   tests =(= w 2)= before using W; no other =_w= function may return 2.

@@ -2769,6 +2769,17 @@ directory tracks the tree rather than accumulating every key ever built."
                (ptr-write-u64 out 16 (ptr-read-u64 w 16))
                (ptr-write-u64 out 24 (ptr-read-u64 w 24))
                0)))))
+    ;; Lookup producers answer 2 for "not found" (rc 1 without a stash in
+    ;; the legacy ABI).  Their adapters map 2 back to rc 1.
+    (defun nl_abi_lookup_to_rc (w out)
+      (if (= w 2) 1 (nl_abi_word_to_rc w out)))
+    ;; A lookup's legacy status RC (non-zero) as a word result: 0 when the
+    ;; failure stashed a signal, 2 ("not found") when it did not.
+    (defun nl_abi_miss (_rc _pad)
+      (if (= (ptr-read-u64 268435472 0) 1) 0 2))
+    ;; A lookup's legacy (status, private OUT box) as its word result.
+    (defun nl_abi_status_to_word (rc out)
+      (if (= rc 0) (nl_val_store_word out) (nl_abi_miss rc 0)))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -7073,7 +7084,13 @@ argument (reachability + in-arena bounds checks).")
             (nelisp_frame_pop frames_ptr scratch_slot)))
         (defun nelisp_eval_call_root_done (rc env)
           (seq (nl_env_pop_frame env) rc))
+        ;; Doc 215 word ABI: the value WORD, or 0 with the signal stashed.
+        ;; `nelisp_eval_call' keeps the (rc, OUT) ABI as the adapter.
         (defun nelisp_eval_call (form_ptr env out)
+          (nl_abi_word_to_rc (nelisp_eval_call_w form_ptr env 0) out))
+        (defun nelisp_eval_call_inner (form_ptr env out)
+          (nl_abi_word_to_rc (nelisp_eval_call_inner_w form_ptr env 0) out))
+        (defun nelisp_eval_call_w (form_ptr env _pad)
           ;; A top-level form still needs a lexical declaration context.
           ;; Nested calls use their existing frames; the temporary root is
           ;; removed on both success and error at this evaluator boundary.
@@ -7084,9 +7101,16 @@ argument (reachability + in-arena bounds checks).")
                               (ptr-read-u64 (ptr-read-u64 env 40) 32) 8) 2) 0))
               (seq (nelisp_frame_scope_push (+ env 32))
                    (nelisp_eval_call_root_done
-                    (nelisp_eval_call_inner form_ptr env out) env))
-            (nelisp_eval_call_inner form_ptr env out)))
-        (defun nelisp_eval_call_inner (form_ptr env out)
+                    (nelisp_eval_call_inner_w form_ptr env 0) env))
+            (nelisp_eval_call_inner_w form_ptr env 0)))
+        ;; Word entry of the evaluator boundary.  Until `nl_eval_inner' has a
+        ;; word form, the result goes through a private OUT box; that box is
+        ;; what `nl_gc_eval_ctx_push' records as the context's result root,
+        ;; so a parked worker's collection still marks the in-flight value.
+        (defun nelisp_eval_call_inner_w (form_ptr env _pad)
+          (let* ((out (alloc-bytes 32 8)))
+            (nl_abi_rc_to_word (nelisp_eval_call_inner_rc form_ptr env out) out)))
+        (defun nelisp_eval_call_inner_rc (form_ptr env out)
           (seq
            ;; The iterative argument walker takes its marker before the first
            ;; reserve.  Arm the process root stack at the public evaluator
@@ -41204,6 +41228,25 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (if (= (nl_sp_maybe_special ,(car args)) 1) (progn ,@body) 2)))
     (_ (error "special prefilter: unexpected form %S" (car-safe form)))))
 
+(defun nelisp-standalone--special-word-abi (form)
+  "Split the prefiltered `nl_apply_special' FORM into the Doc 215 word entry
+`nl_apply_special_w' (result WORD, 0 = signal stashed, 2 = not a special
+form) and the (rc, OUT) adapter `nl_apply_special'.  The prefilter's quick
+2 stays outside the private OUT box, so a non-special head allocates
+nothing."
+  (pcase form
+    (`(defun nl_apply_special (,name ,args ,env ,out)
+        (if ,test (progn . ,body) 2))
+     (list `(defun nl_apply_special_w (,name ,args ,env _pad)
+              (if ,test
+                  (let* ((,out (alloc-bytes 32 8))
+                         (nl_sp_rc (progn ,@body)))
+                    (if (= nl_sp_rc 2) 2 (nl_abi_rc_to_word nl_sp_rc ,out)))
+                2))
+           `(defun nl_apply_special (,name ,args ,env ,out)
+              (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
+    (_ (error "special word ABI: unexpected form %S" (car-safe form)))))
+
 (defun nelisp-standalone--special-prefilter-helper (form)
   "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
 match a special-form name tested in FORM."
@@ -41258,7 +41301,9 @@ match a special-form name tested in FORM."
                              (walk (nth 3 tree)))
                      (cons (walk (car tree)) (walk (cdr tree)))))))
             (let ((walked (walk form)))
-              (push (nelisp-standalone--special-prefilter walked) out)
+              (dolist (def (nelisp-standalone--special-word-abi
+                            (nelisp-standalone--special-prefilter walked)))
+                (push def out))
               (push (nelisp-standalone--special-prefilter-helper walked) out)))
           (dolist (helper (nelisp-standalone--n3-special-name-helper)) (push helper out)))
          ((eq name 'nl_eval_inner_cons_after_lookup)
@@ -42141,7 +42186,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (let ((pending (list form)))
       (while pending
         (let ((node (pop pending)))
-          (cond ((eq node 'nl_apply_function) (throw 'found t))
+          (cond ((memq node '(nl_apply_function nl_apply_function_w)) (throw 'found t))
                 ((consp node)
                  (push (cdr node) pending)
                  (push (car node) pending))))))))
@@ -42773,9 +42818,19 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (cond
          ((eq name 'nl_apply_function)
           (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result)
+          ;; Doc 215 word ABI: `nl_apply_function_w' answers the result
+          ;; WORD (0 = signal stashed); `nl_apply_function' is the adapter.
+          ;; The applied body still writes a private OUT box until the
+          ;; combiner chain has word forms.
+          (push '(defun nl_apply_function_w (func_ptr args_list_ptr env _pad)
+                   (let* ((out (alloc-bytes 32 8)))
+                     (nl_abi_rc_to_word
+                      (nl_n4_named_apply (nl_n4_apply_name func_ptr)
+                       func_ptr args_list_ptr env out)
+                      out))) result)
           (push '(defun nl_apply_function (func_ptr args_list_ptr env out)
-                   (nl_n4_named_apply (nl_n4_apply_name func_ptr)
-                    func_ptr args_list_ptr env out)) result))
+                   (nl_abi_word_to_rc
+                    (nl_apply_function_w func_ptr args_list_ptr env 0) out)) result))
          ((eq name 'nl_apply_native_subr)
           (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result))
          ((eq name 'nl_apply_do_funcall)
