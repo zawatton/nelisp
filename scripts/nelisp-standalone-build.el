@@ -27492,92 +27492,79 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (nl_sp_eq_lit name_ptr 2 29295 0)))
 
 (defconst nelisp-standalone--sf-when
-  '(defun nl_sf_when (args env out _pad)
+  '(defun nl_sf_when_w (args env _pad _pad1)
+     ;; Doc 215 word ABI: the body's value WORD, nil 3, or 0 (signal).
+     ;; nl_eval_is_truthy answers 1 / 0 / -1 (signalled).
      (if (= (sexp-tag args) 7)
-         ;; nl_eval_is_truthy returns 1 (truthy) / 0 (nil) / -1 (error).  The
-         ;; error case must propagate (return 1 to nl_apply_special) instead of
-         ;; being mistaken for nil.
          (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
            (if (= tv 1)
-               (nl_sf_progn (nl_cons_cdr_ptr args) env out 0)
-             (if (= tv 0) (seq (nl_cons_write_nil out) 0) 1)))
-       (seq (nl_cons_write_nil out) 0))))
+               (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0)
+             (if (= tv 0) 3 0)))
+       3)))
 
 (defconst nelisp-standalone--sf-unless
-  '(defun nl_sf_unless (args env out _pad)
+  '(defun nl_sf_unless_w (args env _pad _pad1)
      (if (= (sexp-tag args) 7)
          (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
            (if (= tv 1)
-               (seq (nl_cons_write_nil out) 0)
-             (if (= tv 0) (nl_sf_progn (nl_cons_cdr_ptr args) env out 0) 1)))
-       (seq (nl_cons_write_nil out) 0))))
+               3
+             (if (= tv 0) (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0) 0)))
+       3)))
 
 ;; (and A B ...) -> evaluate each in order into OUT; short-circuit on nil
 ;; (OUT keeps that nil); otherwise OUT holds the last value.  (and) -> t.
 (defconst nelisp-standalone--sf-and-walk
-  '(defun nl_sf_and_walk (rest env out _pad)
-     ;; Propagate an error raised while evaluating a conjunct (rc /= 0) instead
-     ;; of swallowing it and reporting the form as nil.
-     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-       (if (= rc 0)
-           (let* ((more (nl_cons_cdr_word rest)))
-             (if (= (sexp-tag more) 7)
-                 (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
-               0))
-         rc))))
+  '(defun nl_sf_and_walk_w (rest env _pad _pad1)
+     ;; A signal in a conjunct propagates (0); nil short-circuits.
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+       (if (= w 0)
+           0
+         (let* ((more (nl_cons_cdr_word rest)))
+           (if (= (sexp-tag more) 7)
+               (if (= (nl_val_tag w) 0) w (nl_sf_and_walk_w more env 0 0))
+             w))))))
 
 (defconst nelisp-standalone--sf-and
-  '(defun nl_sf_and (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_and_walk args env out 0)
-       (seq (nl_cons_write_t out) 0))))
+  '(defun nl_sf_and_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_and_walk_w args env 0 0) 7)))
 
 ;; (or A B ...) -> first truthy value into OUT; else nil.  (or) -> nil.
 (defconst nelisp-standalone--sf-or-walk
-  '(defun nl_sf_or_walk (rest env out _pad)
-     ;; Propagate an error raised while evaluating a disjunct (rc /= 0) instead
-     ;; of swallowing it and reporting the form as nil.
-     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-       (if (= rc 0)
-           (if (= (ptr-read-u64 out 0) 0)
-               (let* ((more (nl_cons_cdr_word rest)))
-                 (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0))
-             0)
-         rc))))
+  '(defun nl_sf_or_walk_w (rest env _pad _pad1)
+     ;; A signal in a disjunct propagates (0); the first non-nil value wins.
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+       (if (= w 0)
+           0
+         (if (= (nl_val_tag w) 0)
+             (let* ((more (nl_cons_cdr_word rest)))
+               (if (= (sexp-tag more) 7) (nl_sf_or_walk_w more env 0 0) w))
+           w)))))
 
 (defconst nelisp-standalone--sf-or
-  '(defun nl_sf_or (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_or_walk args env out 0)
-       (seq (nl_cons_write_nil out) 0))))
+  '(defun nl_sf_or_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_or_walk_w args env 0 0) 3)))
 
 ;; (cond (TEST BODY...) ...) -> first clause whose TEST is truthy; its BODY
 ;; (progn) value, or TEST's value when BODY is empty.  No match -> nil.
 (defconst nelisp-standalone--sf-cond-walk
-  '(defun nl_sf_cond_walk (clauses env out _pad)
+  '(defun nl_sf_cond_walk_w (clauses env _pad _pad1)
+     ;; First clause whose TEST is non-nil: its BODY (progn) value, or the
+     ;; TEST value when BODY is empty.  A signal in a TEST propagates.
      (let* ((clause (nl_cons_car_word clauses))
             (more (nl_cons_cdr_word clauses)))
        (if (= (sexp-tag clause) 7)
-           ;; Propagate an error raised while evaluating a clause TEST (rc /= 0)
-           ;; rather than treating the errored test as a non-match.
-           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr clause) env out)))
-             (if (= rc 0)
-                 (if (= (ptr-read-u64 out 0) 0)
-                     (if (= (sexp-tag more) 7)
-                         (nl_sf_cond_walk more env out 0)
-                       (seq (nl_cons_write_nil out) 0))
-                   (let* ((body (nl_cons_cdr_ptr clause)))
-                     (if (= (sexp-tag body) 7) (nl_sf_progn body env out 0) 0)))
-               rc))
-         (if (= (sexp-tag more) 7)
-             (nl_sf_cond_walk more env out 0)
-           (seq (nl_cons_write_nil out) 0))))))
+           (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr clause) env 0)))
+             (if (= w 0)
+                 0
+               (if (= (nl_val_tag w) 0)
+                   (if (= (sexp-tag more) 7) (nl_sf_cond_walk_w more env 0 0) 3)
+                 (let* ((body (nl_cons_cdr_ptr clause)))
+                   (if (= (sexp-tag body) 7) (nl_sf_progn_w body env 0 0) w)))))
+         (if (= (sexp-tag more) 7) (nl_sf_cond_walk_w more env 0 0) 3)))))
 
 (defconst nelisp-standalone--sf-cond
-  '(defun nl_sf_cond (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_cond_walk args env out 0)
-       (seq (nl_cons_write_nil out) 0))))
+  '(defun nl_sf_cond_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_cond_walk_w args env 0 0) 3)))
 
 ;; prog1/prog2 (direct eval) + dolist (synthesise its expansion and evaluate
 ;; it).  `dotimes' is the prelude macro, as in GNU: the old special form
@@ -27600,34 +27587,51 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (nl_sp_eq_lit name_ptr 6 128039038775140 0)))
 
 (defconst nelisp-standalone--sf-prog1
-  '(defun nl_sf_prog1 (args env out _pad)
-     ;; (prog1 FIRST BODY...) -> value of FIRST; BODY evaluated for effect.
-     ;; Propagate an error from FIRST or BODY (rc /= 0) rather than masking it.
+  '(defun nl_sf_prog1_w (args env _pad _pad1)
+     ;; Doc 215 word ABI.  FIRST's value must survive BODY (R2): it is
+     ;; evaluated into a root slot reserved under a root mark, and a copy is
+     ;; answered after BODY, before the mark is released.
      (if (= (sexp-tag args) 7)
-         (let* ((scratch (alloc-bytes 32 8)))
-           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env out)))
-             (if (= rc 0)
-                 (nl_sf_progn (nl_cons_cdr_ptr args) env scratch 0)
-               rc)))
-       (seq (nl_cons_write_nil out) 0))))
+         (nl_sf_prog1_marked_w args env (nl_root_mark env) 0)
+       3)))
+
+(defconst nelisp-standalone--sf-prog1-helpers
+  '((defun nl_sf_prog_release_w (w env mark _pad)
+      (seq (nl_root_release env mark) w))
+    (defun nl_sf_prog_copy_w (box vslot)
+      (seq (ptr-write-u64 box 0 (ptr-read-u64 vslot 0))
+           (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
+           (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
+           (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
+           (nl_val_store_word box)))
+    (defun nl_sf_prog_body_w (body env vslot _pad)
+      (if (= (nl_sf_progn_w body env 0 0) 0)
+          0
+        (nl_sf_prog_copy_w (alloc-bytes 32 8) vslot)))
+    (defun nl_sf_prog1_slot_w (args env mark vslot)
+      (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env vslot)))
+        (nl_sf_prog_release_w
+         (if (= rc 0) (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0) (nl_abi_fail rc 0))
+         env mark 0)))
+    (defun nl_sf_prog1_marked_w (args env mark _pad)
+      (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
+  "prog1's rooted value slot (Doc 215 R2).")
+
+(defun nelisp-standalone--sf-word-adapter (name)
+  "The (rc, OUT) adapter (defun NAME (args env out _pad) ...) over NAME_w."
+  `(defun ,name (args env out _pad)
+     (nl_abi_word_to_rc (,(intern (format "%s_w" name)) args env 0 0) out)))
 
 (defconst nelisp-standalone--sf-prog2
-  '(defun nl_sf_prog2 (args env out _pad)
-     ;; (prog2 FORM1 FORM2 BODY...) -> value of FORM2.
-     ;; Propagate an error from FORM1, FORM2 or BODY (rc /= 0).
+  '(defun nl_sf_prog2_w (args env _pad _pad1)
+     ;; (prog2 FORM1 FORM2 BODY...) = FORM1, then (prog1 FORM2 BODY...).
      (if (= (sexp-tag args) 7)
          (let* ((rest (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest) 7)
-               (let* ((scratch (alloc-bytes 32 8)) (scratch2 (alloc-bytes 32 8)))
-                 (let* ((rc1 (nelisp_eval_call (nl_cons_car_ptr args) env scratch)))
-                   (if (= rc1 0)
-                       (let* ((rc2 (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-                         (if (= rc2 0)
-                             (nl_sf_progn (nl_cons_cdr_ptr rest) env scratch2 0)
-                           rc2))
-                     rc1)))
-             (seq (nl_cons_write_nil out) 0)))
-       (seq (nl_cons_write_nil out) 0))))
+               (let* ((w1 (nelisp_eval_call_w (nl_cons_car_ptr args) env 0)))
+                 (if (= w1 0) 0 (nl_sf_prog1_w rest env 0 0)))
+             3))
+       3)))
 
 ;; (dolist (VAR LIST [RESULT]) BODY...) -> mirror GNU's own subr.el expansion
 ;; (vendor/staged-emacs-lisp/subr.el, confirmed byte-identical on host
@@ -27870,18 +27874,27 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
                 (push nelisp-standalone--sp-eq-and out)
                 (push nelisp-standalone--sp-eq-or out)
                 (push nelisp-standalone--sf-when out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_when) out)
                 (push nelisp-standalone--sf-unless out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_unless) out)
                 (push nelisp-standalone--sf-and-walk out)
                 (push nelisp-standalone--sf-and out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_and) out)
                 (push nelisp-standalone--sf-or-walk out)
                 (push nelisp-standalone--sf-or out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_or) out)
                 (push nelisp-standalone--sf-cond-walk out)
                 (push nelisp-standalone--sf-cond out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_cond) out)
                 (push nelisp-standalone--sp-eq-prog1 out)
                 (push nelisp-standalone--sp-eq-prog2 out)
                 (push nelisp-standalone--sp-eq-dolist out)
+                (dolist (helper nelisp-standalone--sf-prog1-helpers)
+                  (push helper out))
                 (push nelisp-standalone--sf-prog1 out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_prog1) out)
                 (push nelisp-standalone--sf-prog2 out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_prog2) out)
                 (push nelisp-standalone--sf-dolist out)
                 (setq inserted t))
               (push (nelisp-standalone--patch-apply-special form) out))
@@ -41241,7 +41254,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 (defconst nelisp-standalone--special-word-forms
   '(nl_sf_progn nl_sf_if nl_sf_let nl_sf_let_star nl_sf_setq nl_sf_while
     nl_sf_function nl_sf_lambda nl_sf_condition_case nl_sf_unwind_protect
-    nl_sf_catch nl_sf_throw)
+    nl_sf_catch nl_sf_throw nl_sf_when nl_sf_unless nl_sf_and nl_sf_or nl_sf_cond
+    nl_sf_prog1 nl_sf_prog2)
   "Special-form entries with a Doc 215 word form F_w (OUT is their third
 argument).  `nl_apply_special_w' calls F_w directly.")
 
