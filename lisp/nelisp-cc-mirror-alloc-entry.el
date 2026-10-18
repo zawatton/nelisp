@@ -45,7 +45,7 @@
 
 (defconst nelisp-cc-mirror-alloc-entry--source
   '(defun nelisp_mirror_alloc_entry
-       (tag-sym-ptr value-ptr function-ptr plist-ptr constant-ptr result-slot)
+       (tag-sym-ptr value-ptr function-ptr plist-ptr constant-ptr dst)
      ;; tag-sym-ptr:  *const Sexp pointing at `Sexp::Symbol("symbol-entry")'
      ;;               (= the type-tag for the freshly-allocated record;
      ;;               the Rust safe wrapper materialises this Sexp on the
@@ -54,7 +54,7 @@
      ;; function-ptr: *const Sexp — slot 1 (= the function cell).
      ;; plist-ptr:    *const Sexp — slot 2 (= the property list).
      ;; constant-ptr: *const Sexp — slot 3 (= Sexp::T / Sexp::Nil flag).
-     ;; result-slot:  *mut Sexp, caller-owned Sexp::Nil — receives the
+     ;; dst:  *mut Sexp, caller-owned Sexp::Nil — receives the
      ;;               freshly-allocated `Sexp::Record(NlRecordRef)' of
      ;;               the symbol-entry record.
      ;;
@@ -72,12 +72,12 @@
      (and
       ;; Step 1: allocate fresh symbol-entry record with 5 slots. The
       ;; record allocator nil-fills slot 4 without changing this ABI.
-      (record-make tag-sym-ptr 5 result-slot)
+      (record-make tag-sym-ptr 5 dst)
       ;; Step 2-5: refcount-safely install each slot.
-      (record-slot-set result-slot 0 value-ptr)
-      (record-slot-set result-slot 1 function-ptr)
-      (record-slot-set result-slot 2 plist-ptr)
-      (record-slot-set result-slot 3 constant-ptr)))
+      (record-slot-set dst 0 value-ptr)
+      (record-slot-set dst 1 function-ptr)
+      (record-slot-set dst 2 plist-ptr)
+      (record-slot-set dst 3 constant-ptr)))
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh five-slot `symbol-entry' Record via `record-make'
