@@ -177,19 +177,22 @@
            (ptr-write-u64 box 24 1)
            box))
 
+    (defun nl_bv_write_sexp_w (_pad box)
+      (let ((r (alloc-bytes 32 8)))
+        (seq (ptr-write-u8 r 0 10)
+             (ptr-write-u64 r 8 box)
+             r)))
+
     (defun nl_bv_write_sexp (result-slot box)
-      (and (ptr-write-u8 result-slot 0 10)
-           (ptr-write-u64 result-slot 8 box)
-           result-slot))
+      (seq (nl_abi_word_to_rc (nl_bv_write_sexp_w 0 box) result-slot) result-slot))
 
     ;; ---------------------------------------------------------------
     ;; `make-bool-vector'/`bool-vector' path: fill-by-INIT-BIT.
     ;; ---------------------------------------------------------------
 
-    (defun nl_alloc_bool_vector_with_data
-        (result-slot box data n bytelen full rem init-bit)
-      (nl_bv_write_sexp
-       result-slot
+    (defun nl_alloc_bool_vector_with_data_w (_pad box data n bytelen full rem init-bit)
+      (nl_bv_write_sexp_w
+       0
        (nl_bv_write_box
         box
         (if (= init-bit 0)
@@ -197,18 +200,27 @@
           (nl_bv_fill_one data 0 full bytelen rem))
         bytelen n)))
 
-    (defun nl_alloc_bool_vector_pos (n init-bit result-slot bytelen full rem)
-      (nl_alloc_bool_vector_with_data
-       result-slot (alloc-bytes 32 8)
+    (defun nl_alloc_bool_vector_with_data (result-slot box data n bytelen full rem init-bit)
+      (seq (nl_abi_word_to_rc (nl_alloc_bool_vector_with_data_w 0 box data n bytelen full rem init-bit) result-slot) result-slot))
+
+    (defun nl_alloc_bool_vector_pos_w (n init-bit _pad bytelen full rem)
+      (nl_alloc_bool_vector_with_data_w
+       0 (alloc-bytes 32 8)
        (alloc-bytes (if (= bytelen 0) 1 bytelen) 1)
        n bytelen full rem init-bit))
 
+    (defun nl_alloc_bool_vector_pos (n init-bit result-slot bytelen full rem)
+      (seq (nl_abi_word_to_rc (nl_alloc_bool_vector_pos_w n init-bit 0 bytelen full rem) result-slot) result-slot))
+
     ;; Public entry.  N is a validated non-negative bit count; INIT-BIT is
     ;; 0 or 1 (any non-zero VAL is normalised to 1 by the caller).
-    (defun nl_alloc_bool_vector (n init-bit result-slot)
-      (nl_alloc_bool_vector_pos
-       n init-bit result-slot
+    (defun nl_alloc_bool_vector_w (n init-bit _pad)
+      (nl_alloc_bool_vector_pos_w
+       n init-bit 0
        (nl_bv_bytelen n) (nl_bv_full_bytes n) (nl_bv_rem_bits n)))
+
+    (defun nl_alloc_bool_vector (n init-bit result-slot)
+      (seq (nl_abi_word_to_rc (nl_alloc_bool_vector_w n init-bit 0) result-slot) result-slot))
 
     ;; ---------------------------------------------------------------
     ;; `#&N"BYTES"' reader-literal path: copy-from-SRC + trailing mask.
