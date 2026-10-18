@@ -150,11 +150,11 @@
           1)
         data))
 
-    (defun nl_bv_copy_loop (src dst i bytelen)
+    (defun nl_bv_copy_loop (src to i bytelen)
       (let ((k i))
         (while (< k bytelen)
-          (and (ptr-write-u8 dst k (ptr-read-u8 src k)) (setq k (+ k 1))))
-        dst))
+          (and (ptr-write-u8 to k (ptr-read-u8 src k)) (setq k (+ k 1))))
+        to))
 
     ;; Zero the unused high bits of the last byte after a raw copy (the
     ;; from-bytes path's source data may carry garbage there -- a literal

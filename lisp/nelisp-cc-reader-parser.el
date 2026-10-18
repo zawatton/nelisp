@@ -1285,11 +1285,11 @@
     ;; Slots at DEPTH: head = list under construction (Nil until the first
     ;; element), spare = last cons, cdr = scratch cons, car = element.
     ;; The public entry points keep their historical (even) arities.
-    (defun nelisp_reader_p_copy32 (dst src)
-      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
-           (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
-           (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
+    (defun nelisp_reader_p_copy32 (to src)
+      (seq (ptr-write-u64 to 0 (ptr-read-u64 src 0))
+           (ptr-write-u64 to 8 (ptr-read-u64 src 8))
+           (ptr-write-u64 to 16 (ptr-read-u64 src 16))
+           (ptr-write-u64 to 24 (ptr-read-u64 src 24))
            0))
 
     (defun nelisp_reader_p_seq_link (head tail node _pad)

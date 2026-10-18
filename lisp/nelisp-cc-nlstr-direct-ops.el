@@ -248,10 +248,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; traced explicitly by the collector. Entry layout (80 bytes): state,
     ;; key-kind, key, byte-length, hash, name-Sexp, last-mark-epoch.
     ;; Key-kind 1 is an interned/tag-4 name buffer; 2 is a tag-16 identity.
-    (defun nl_symname_copy32 (src dst off)
+    (defun nl_symname_copy32 (src to off)
       (if (>= off 32) 1
-        (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
-             (nl_symname_copy32 src dst (+ off 8)))))
+        (seq (ptr-write-u64 to off (ptr-read-u64 src off))
+             (nl_symname_copy32 src to (+ off 8)))))
     (defun nl_symname_copy80 (src dst off)
       (if (>= off 80) 1
         (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
