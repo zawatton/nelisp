@@ -1,0 +1,15 @@
+Bytecode word interpreter baseline (tools/ai/bytecode-word-progress.org)
+commit: e0ab2ae3a
+binary: dynamic build, sha256 dc4e123b1602cd90b3dca5a3cf626a28f6d879c77f86d1fdc7c1090b34aaa546
+host: linux-x86_64, GNU Emacs 31.1 for the corpus
+
+BENCH=loop  test/perf/bytecode-bench.el: BYTECODE-BENCH loop 0.1431
+BENCH=call  test/perf/bytecode-bench.el: BYTECODE-BENCH call 1.745
+BENCH=regex test/perf/bytecode-bench.el: BYTECODE-BENCH regex 4220
+test/standalone-bytecode-word-check.el: BYTECODE-WORD PASS 145/145 cases match GNU 31.1
+test/perf/shallow-binding-bench.el regex line (handoff): 4,838.7 us; coordinator handoff
+  numbers on the same commit: loop 0.163 s, bytecode call 2.37 us (word-VM
+  caller, total per iteration).
+Note: the call bench measures one iteration of a word-VM defun loop calling a
+3-argument bytecode function (call plus loop step).
+test/perf/bytecode-word-clean.el: BYTECODE-WORD-CLEAN total 138 in 79 wf_bytecode functions (max 0) FAIL
