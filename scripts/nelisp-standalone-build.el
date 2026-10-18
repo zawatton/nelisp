@@ -12391,12 +12391,20 @@ eval applyfn.")
                 (if (< (sar nw 2) 0) 0 (if (> (sar nw 2) 127) 0 1))
               0)
             (wf_bytecode_nth_reached_tail_walk lw (sar nw 2) out)
-          (if (= (wf_nthcdr args out) 0)
-              (let* ((tg (ptr-read-u64 out 0)))
-                (if (= tg 7)
-                    (seq (wf_bytecode_w_load out (nl_cons_car_word out)) 0)
-                  (if (= tg 0) 0 (bf_wrong_type_listp out))))
-            1))))
+          (if (= (logand nw 3) 1)
+              ;; A fixnum index outside the fast range: the nthcdr word walk.
+              (let* ((cw (bf_nthcdr_walk_w (sar nw 2) lw 0)))
+                (if (= cw 0) 1
+                  (if (= (wf_bytecode_w_consp cw) 1)
+                      (seq (wf_bytecode_w_load out (nl_cons_car_word cw)) 0)
+                    (if (= cw 3) (seq (wf_write_nil out) 0)
+                      (bf_wrong_type_listp (wf_bytecode_w_view cw out))))))
+            (if (= (wf_nthcdr args out) 0)
+                (let* ((tg (ptr-read-u64 out 0)))
+                  (if (= tg 7)
+                      (seq (wf_bytecode_w_load out (nl_cons_car_word out)) 0)
+                    (if (= tg 0) 0 (bf_wrong_type_listp out))))
+              1)))))
     ;; --- last / butlast -----------------------------------------------
     ;; `safe-length' (tolerant: stops at the first non-cons, never
     ;; signals) is what `last' uses; `length' (strict: signals on an
@@ -13044,9 +13052,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; Use the same evaluator boundary as the generic native gateway.
          ;; Core symbol-cell operations (FSET and SYMBOL-FUNCTION, including
          ;; nil/t) are not fully represented by the reader-only dispatcher.
-         (let* ((rc (nl_apply_function func-slot arglist env call-result)))
-           (if (= rc 0)
-               (seq (wf_bytecode_w_store mem first call-result)
+         (let* ((rw (nl_apply_function_w func-slot arglist env 0)))
+           (if (/= rw 0)
+               (seq (wf_bytecode_w_store mem first rw)
                     (nl_root_release env mark)
                     0)
              (seq (nl_root_release env mark) 1))))))
@@ -13369,6 +13377,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (arglist (+ roots (* (+ argc 1) 32)))
                    (result (+ roots (* (+ argc 2) 32)))
                    (function-cell (+ roots (* (+ argc 3) 32)))
+                   (w 0)
                    (i 0))
              (seq
            ;; These adjacent slots are visible to the precise root scanner.
@@ -13396,7 +13405,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           ;; never a Lisp value: its published header is argc,
                           ;; with the owned contiguous arguments just before it.
                           (seq (wf_write_int arglist argc)
-                               (nl_apply_function function-cell (- 0 arglist) env result))
+                               (setq w (nl_apply_function_w function-cell (- 0 arglist) env 0))
+                               (if (= w 0) 1 0))
                         (seq (wf_bytecode_build_args roots 1 argc arglist)
                         (if (= builtin-throw 1)
                           (if (= argc 2)
@@ -13404,9 +13414,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (bf_wrong_number_of_args function argc))
                         ;; A rebound function cell follows ordinary call
                         ;; semantics, including its own arity checks.
-                        (nl_apply_function function arglist env result))))))
+                        (seq (setq w (nl_apply_function_w function arglist env 0))
+                             (if (= w 0) 1 0)))))))
              (seq
-              (if (= rc 0) (wf_bytecode_copy out-slot result) 0)
+              (if (and (= rc 0) (/= w 0)) (wf_bytecode_w_load out-slot w) 0)
               (nl_root_release env mark)
               rc))))))))
     (defun wf_bytecode_call_interpreted_gateway (env function-slot slots arg-first argc out-slot)
@@ -13474,7 +13485,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (bf_wrong_number_of_args function argc))
                         ;; A rebound function cell follows ordinary call
                         ;; semantics, including its own arity checks.
-                        (nl_apply_function function arglist env result)))))))))
+                        (let ((aw (nl_apply_function_w function arglist env 0)))
+                          (if (= aw 0) 1
+                            (seq (wf_bytecode_w_load result aw) 0)))))))))))
              (seq
               (if (= rc 0) (wf_bytecode_copy out-slot result) 0)
               (nl_root_release env mark)
@@ -14277,14 +14290,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 268435472 0 0)
          (if (= is-function 1)
              (if (= (sexp-tag cleanup) 4)
-                 (setq rc (nl_apply_function function-cell args env result))
-               (setq rc (nl_apply_function cleanup args env result)))
+                 (setq rc (if (= (nl_apply_function_w function-cell args env 0) 0) 1 0))
+               (setq rc (if (= (nl_apply_function_w cleanup args env 0) 0) 1 0)))
            (seq
             (wf_bytecode_copy cursor cleanup)
             (while (and (= rc 0) (= (ptr-read-u64 cursor 0) 7))
               (seq
                (wf_bytecode_w_load form (nl_cons_car_word cursor))
-               (setq rc (nelisp_eval_call form env result))
+               (setq rc (if (= (nelisp_eval_call_w form env 0) 0) 1 0))
                (wf_bytecode_w_load cursor (nl_cons_cdr_word cursor))))))
          ;; A normally returning cleanup preserves the pending exit.  An
          ;; exit raised by the cleanup remains in the shared stash and wins.
@@ -15128,7 +15141,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                       (wf_write_nil arglist)
                                       (nelisp_cons_construct func arglist tail))))
                                  (setq call-result result)
-                                 (setq rc (nl_apply_function fn-slot tail env result)))
+                                 (setq rc (let ((aw (nl_apply_function_w fn-slot tail env 0)))
+                                            (if (= aw 0) 1
+                                              (seq (wf_bytecode_w_load result aw) 0)))))
                               0)
                              (if (/= rc 0)
                                  (setq status 2)
@@ -17677,10 +17692,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (> n 2305843009213693951) -1
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
     (defun m5_fx_word_out (w out)
-      (if (= w 3) (seq (wf_write_nil out) 0)
-        (if (= w 7) (seq (wf_write_t out) 0)
-          (if (= (m5_fx_int_p w) 1) (seq (wf_write_int out (sar w 2)) 0)
-            (seq (nl_sexp_clone_into w out) 0)))))
+      (nl_abi_word_to_rc w out))
     ;; Apply the function named by symbol word SYM to the ARGC words ending at
     ;; STK[SP-1].  Answers the result as a word in *RESW, or a non-zero rc
     ;; with the signal stashed.  FSLOT and OSLOT are the running activation's
@@ -17710,11 +17722,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; value is copied into a fresh box: the apply path still answers through
     ;; an out slot, and OSLOT is reused by the next call-out (Doc 215 shim).
     (defun m5_fx_take (oslot resw)
-      (let* ((w (nl_val_store_word oslot)))
-        (if (= w oslot)
-            (let* ((box (alloc-bytes 32 8)))
-              (seq (wf_copy32 box oslot) (ptr-write-u64 resw 0 box) 0))
-          (seq (ptr-write-u64 resw 0 w) 0))))
+      (seq (ptr-write-u64 resw 0 (m5_fx_slot_word oslot 0)) 0))
     ;; A fresh list of the ARGC words ending at STK[SP-1], as a WORD (nil 3).
     ;; Each cons holds the word itself: an immediate is not boxed, and a heap
     ;; word (a durable 32-byte box, as every VM word is) is shared rather than
@@ -17912,7 +17920,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (while (if (= rc 0) (if (= (logand cur 1) 0) (= (ptr-read-u64 cur 0) 7) 0) 0)
            (seq (setq w (ptr-read-u64 (ptr-read-u64 cur 8) 0))
                 (if (< (nl_val_tag w) 4) (nl_sexp_clone_into w (+ base (* k 32)))
-                  (setq rc (nelisp_eval_call w env (+ base (* k 32)))))
+                  (let ((ew (nelisp_eval_call_w w env 0)))
+                    (if (= ew 0) (setq rc 1)
+                      (if (= (logand ew 1) 0) (wf_copy32 (+ base (* k 32)) ew)
+                        (nl_sci_store_imm ew (+ base (* k 32)))))))
                 (setq k (+ k 1))
                 (setq cur (ptr-read-u64 (ptr-read-u64 cur 8) 8))))
          rc)))
@@ -17944,8 +17955,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (setq k (- k 1)))))
          lst)))
     ;; The value in SLOT as a durable word: a heap value is copied into a
-    ;; fresh box, since its producer (`nelisp_eval_call') still answers
-    ;; through a slot (Doc 215 shim).
+    ;; fresh box, since SLOT is a reused rooted slot, not the object's box.
     (defun m5_fx_slot_word (slot _pad)
       (let* ((w (nl_val_store_word slot)))
         (if (= w slot)
