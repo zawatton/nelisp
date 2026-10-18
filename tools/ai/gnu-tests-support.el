@@ -74,10 +74,15 @@
 
 ;; The bundle's `pp' is a stub that returns a string and ignores STREAM, so
 ;; ERT's failure report (ert--pp-with-indentation-and-newline) inserts
-;; nothing and then fails its own cl-assert.  Load GNU 31.1 pp.el over it.
-(load (expand-file-name "../../vendor/emacs-test/lisp/emacs-lisp/pp.el"
-                        gnu-tests-support-root)
-      nil t)
+;; nothing and then fails its own cl-assert.  Load GNU 31.1 pp.el over it,
+;; with the runtime's own `load': the bundle's loader signals
+;; (wrong-type-argument listp "#'") in emacs-load--macro-alias-form-p on it.
+(defvar gnu-tests--runtime-load nil
+  "The runtime's `load', saved before the bundle replaced it.")
+(funcall (or gnu-tests--runtime-load #'load)
+         (expand-file-name "../../vendor/emacs-test/lisp/emacs-lisp/pp.el"
+                           gnu-tests-support-root)
+         nil t)
 
 (require 'ert)
 (require 'ert-x)

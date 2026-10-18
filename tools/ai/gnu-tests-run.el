@@ -90,6 +90,18 @@
                                     (backtrace-frame-args frame)))))
                  (error (format "  <frame unprintable: %S>" err))))
              frames "\n")))
+    ;; Likewise the condition of a failing test is printed with `pp', which
+    ;; needs lisp-mode's indentation machinery; fall back to `prin1' plus
+    ;; the newline ERT asserts, if pp signals.
+    (let ((orig-pp (symbol-function 'ert--pp-with-indentation-and-newline)))
+      (fset 'ert--pp-with-indentation-and-newline
+            (lambda (object)
+              (let ((start (point)))
+                (condition-case nil
+                    (funcall orig-pp object)
+                  (error
+                   (delete-region start (point-max))
+                   (insert (prin1-to-string object) "\n")))))))
     (let ((selected (seq-remove (lambda (n) (memq n skip))
                                 (reverse gnu-tests--names))))
       (when selected

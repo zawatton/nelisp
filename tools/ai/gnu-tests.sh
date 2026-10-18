@@ -215,6 +215,7 @@ def image(b, e):
     saved = ' '.join("(cons (quote %s) (symbol-function (quote %s)))" % (n, n)
                      for n in ('cl-loop', 'nelisp-cl-macros--loop-build'))
     form = ('(progn (setq gnu-tests--runtime-definitions (list ' + saved + ')) '
+            '(setq gnu-tests--runtime-load (symbol-function (quote load))) '
             '(load %s nil t) (load %s nil t) '
             '(if (fboundp (quote nemacs-main--prepare-image-heap)) (nemacs-main--prepare-image-heap) (garbage-collect)) '
             '(unless (> (nelisp--arena-dump-image-stream %s) 0) (error "gnu-tests: heap dump failed")) '
