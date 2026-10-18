@@ -72,92 +72,39 @@
 
 (defconst nelisp-cc-sf-let--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_let_w' answers the body's value WORD (nil
+    ;; 3 for an empty body), or 0 with the signal stashed.  The body is a
+    ;; progn (`nl_sf_let_body_w'); the frame is popped after it on success
+    ;; and on error alike.  The WORD crosses only `nl_env_pop_frame', which
+    ;; has no safepoint (Doc 215 R2).  Arity 4; extern-call first.
 
-    ;; After nl_env_pop_frame: discard pop-rc, return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_ret (pop-rc body-rc _p2 _p3)
-      body-rc)
+    ;; After nl_env_pop_frame: a failed pop (-1) fails the form.
+    (defun nl_sf_let_ret_w (pop-rc w _p2 _p3)
+      (if (= pop-rc -1) (nl_abi_fail 1 0) w))
 
-    ;; body-rc = result of body eval (0=Ok or 1=Err).
-    ;; Pop frame unconditionally (extern-call FIRST ✓), then return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_finish (body-rc env out _pad)
-      (nl_sf_let_ret
-       (extern-call nl_env_pop_frame env)
-       body-rc 0 0))
+    (defun nl_sf_let_finish_w (w env _pad _pad1)
+      (nl_sf_let_ret_w (extern-call nl_env_pop_frame env) w 0 0))
 
-    ;; After nelisp_eval_call on one body form: check rc, advance list.
-    ;; eval-rc=0 → fetch cdr(body) (extern-call FIRST ✓), then recurse.
-    ;; Fetching the cdr only after eval avoids carrying an unrooted
-    ;; materialised immediate-cdr view across eval's possible collection;
-    ;; body is the real CONS box and is already kept alive by the form.
-    ;; eval-rc!=0 → finish with error (pop frame).
-    ;; Arity 4 (even).
-    (defun nl_sf_let_body_step (eval-rc body env out)
-      (if (= eval-rc 0)
-          (nl_sf_let_body
-           (extern-call nl_cons_cdr_word body)
-           env out 0)
-        (nl_sf_let_finish 1 env out 0)))
+    (defun nl_sf_let_body_w (body env _pad _pad1)
+      (nl_sf_let_finish_w (nl_sf_progn_w body env 0 0) env 0 0))
 
-    ;; car-ptr = nl_cons_car_ptr(body) already fetched as first arg.
-    ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
-    ;; rather than a possibly materialised cdr view.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_body_eval (car-ptr body env out)
-      (nl_sf_let_body_step
-       (extern-call nelisp_eval_call car-ptr env out)
-       body env out))
-
-    ;; Recursive body-eval entry.
-    ;; body: remaining forms cons list.
-    ;; If Nil → all forms done, pop frame + return 0.
-    ;; Else: fetch car(body) FIRST ✓.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_body (body env out _pad)
-      (if (= (sexp-tag body) 0)
-          (nl_sf_let_finish 0 env out 0)
-        (nl_sf_let_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body env out)))
-
-    ;; setup-rc = result of nl_let_setup (0=Ok, 1=Err).
-    ;; If error → return 1 (no frame pushed, no pop needed).
-    ;; Else get body = cdr(args) (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_let_setup_done (setup-rc args env out)
+    (defun nl_sf_let_setup_done_w (setup-rc args env _pad)
       (if (= setup-rc 0)
-          ;; OUT is cleared first: an empty body must answer nil, not the
-          ;; previous sibling form's value left in the shared result slot.
-          (seq
-           (nl_cons_write_nil out)
-           (nl_sf_let_body
-            (extern-call nl_cons_cdr_word args)
-            env out 0))
-        1))
+          (nl_sf_let_body_w (extern-call nl_cons_cdr_word args) env 0 0)
+        (nl_abi_fail setup-rc 0)))
 
-    ;; bindings = car(args) already fetched as first arg.
-    ;; Call nl_let_setup(bindings, env, 0/*parallel*/) FIRST ✓.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_got_bindings (bindings args env out)
-      (nl_sf_let_setup_done
-       (extern-call nl_let_setup bindings env 0)
-       args env out))
+    (defun nl_sf_let_got_bindings_w (bindings args env _pad)
+      (nl_sf_let_setup_done_w (extern-call nl_let_setup bindings env 0) args env 0))
 
-    ;; Public entry: nl_sf_let(args, env, out, _pad) → i64
-    ;; args: *const Sexp = (BINDINGS BODY...) arg list.
-    ;; env:  *mut c_void = &mut Env.
-    ;; out:  *mut Sexp   = result slot.
-    ;; _pad: unused alignment pad (arity 4 = even).
-    ;; Returns: 0=Ok (result in *out), 1=Err.
-    ;; Empty args (Nil) → error (let requires bindings list).
-    ;; Else: get bindings = car(args) FIRST ✓.
-    (defun nl_sf_let (args env out _pad)
+    ;; `(let)' with no binding list fails the form.
+    (defun nl_sf_let_w (args env _pad _pad1)
       (if (= (sexp-tag args) 0)
-          1
-        (nl_sf_let_got_bindings
-         (extern-call nl_cons_car_ptr args)
-         args env out))))
+          (nl_abi_fail 1 0)
+        (nl_sf_let_got_bindings_w (extern-call nl_cons_car_ptr args) args env 0)))
+
+    ;; (rc, OUT) adapter.
+    (defun nl_sf_let (args env out _pad)
+      (nl_abi_word_to_rc (nl_sf_let_w args env 0 0) out)))
 
   "AOT source for `nl_sf_let' (eval/special_forms.rs sf_let → elisp).
 

@@ -2777,6 +2777,11 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; failure stashed a signal, 2 ("not found") when it did not.
     (defun nl_abi_miss (_rc _pad)
       (if (= (ptr-read-u64 268435472 0) 1) 0 2))
+    ;; A legacy (rc, private OUT box) as a word result where rc 1 may come
+    ;; without a stash (it is a failure, never a miss): 0 after making sure
+    ;; a signal is stashed.
+    (defun nl_abi_status_fail (rc out)
+      (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0)))
     ;; A lookup's legacy (status, private OUT box) as its word result.
     (defun nl_abi_status_to_word (rc out)
       (if (= rc 0) (nl_val_store_word out) (nl_abi_miss rc 0)))
@@ -7109,7 +7114,7 @@ argument (reachability + in-arena bounds checks).")
         ;; so a parked worker's collection still marks the in-flight value.
         (defun nelisp_eval_call_inner_w (form_ptr env _pad)
           (let* ((out (alloc-bytes 32 8)))
-            (nl_abi_rc_to_word (nelisp_eval_call_inner_rc form_ptr env out) out)))
+            (nl_abi_status_fail (nelisp_eval_call_inner_rc form_ptr env out) out)))
         (defun nelisp_eval_call_inner_rc (form_ptr env out)
           (seq
            ;; The iterative argument walker takes its marker before the first
@@ -41028,7 +41033,17 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                 out))
          ((eq name 'nl_sf_lambda)
           (push (cons 'defun (cons 'nl_n3_lambda_raw (cddr form))) out)
-          (push `(defun nl_sf_lambda (args env out s1)
+          ;; Doc 215 word ABI: the closure is built in a fresh box that IS
+          ;; the result object, so `nl_sf_lambda_w' answers that box's WORD;
+          ;; `nl_sf_lambda' is the (rc, OUT) adapter.
+          (push '(defun nl_sf_lambda_w (args env _pad s1)
+                   (let* ((out (alloc-bytes 32 8)))
+                     (nl_abi_status_fail (nl_sf_lambda_build args env out s1) out)))
+                out)
+          (push '(defun nl_sf_lambda (args env out s1)
+                   (nl_abi_word_to_rc (nl_sf_lambda_w args env 0 s1) out))
+                out)
+          (push `(defun nl_sf_lambda_build (args env out s1)
                    (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                        (seq ,@(cdddr form))
                      (seq (let* ((buf (alloc-bytes 8 1))) (seq (ptr-write-u64 buf 0 107083775959404) (nl_alloc_symbol buf 6 s1)))
@@ -41241,7 +41256,7 @@ nothing."
               (if ,test
                   (let* ((,out (alloc-bytes 32 8))
                          (nl_sp_rc (progn ,@body)))
-                    (if (= nl_sp_rc 2) 2 (nl_abi_rc_to_word nl_sp_rc ,out)))
+                    (if (= nl_sp_rc 2) 2 (nl_abi_status_fail nl_sp_rc ,out)))
                 2))
            `(defun nl_apply_special (,name ,args ,env ,out)
               (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
