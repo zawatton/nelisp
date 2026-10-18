@@ -177,7 +177,7 @@
                                  (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
                   (and (cons-set-cdr pair-view cell-ptr) 1)
                 (nelisp_frame_bind_walk_update
-                 (extern-call nl_cons_cdr_ptr bucket-view) name-ptr cell-ptr 0)))
+                 (extern-call nl_cons_cdr_word bucket-view) name-ptr cell-ptr 0)))
           0)))
     (defun nelisp_frame_bind_install
         (buckets-ptr idx scratch-pair-slot scratch-outer-slot)

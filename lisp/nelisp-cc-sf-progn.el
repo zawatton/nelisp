@@ -61,7 +61,7 @@
       (if (= eval-rc 0)
           ;; Fetch the tail after eval (extern-call FIRST arg) and recurse.
           (nl_sf_progn_step
-           (extern-call nl_cons_cdr_ptr cdr)
+           (extern-call nl_cons_cdr_word cdr)
            env out 0)
         ;; Propagate error.
         1))

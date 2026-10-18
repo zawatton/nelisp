@@ -92,7 +92,7 @@
     (defun nl_sf_let_star_body_step (eval-rc body env out)
       (if (= eval-rc 0)
           (nl_sf_let_star_body
-           (extern-call nl_cons_cdr_ptr body)
+           (extern-call nl_cons_cdr_word body)
            env out 0)
         (nl_sf_let_star_finish 1 env out 0)))
 
@@ -124,7 +124,7 @@
     (defun nl_sf_let_star_setup_done (setup-rc args env out)
       (if (= setup-rc 0)
           (nl_sf_let_star_body
-           (extern-call nl_cons_cdr_ptr args)
+           (extern-call nl_cons_cdr_word args)
            env out 0)
         1))
 
@@ -150,8 +150,8 @@
     ;; Take cdr only after setup: an immediate cdr view must not cross eval.
     (defun nl_sf_let_star_next (rc bindings args env out _pad)
       (if (= rc 0)
-          (if (= (sexp-tag (nl_cons_cdr_ptr bindings)) 0)
-              (nl_sf_let_star_body (nl_cons_cdr_ptr args) env out 0)
+          (if (= (sexp-tag (nl_cons_cdr_word bindings)) 0)
+              (nl_sf_let_star_body (nl_cons_cdr_word args) env out 0)
             (nl_sf_let_star_finish
              (nl_sf_let_star_got_bindings (nl_cons_cdr_ptr bindings) args env out)
              env out 0))
@@ -163,7 +163,7 @@
     (defun nl_sf_let_star_got_bindings (bindings args env out)
       (if (= (sexp-tag bindings) 7)
           (nl_sf_let_star_next
-           (nl_sf_let_star_one (nl_cons_car_ptr bindings) env)
+           (nl_sf_let_star_one (nl_cons_car_word bindings) env)
            bindings args env out 0)
         (nl_sf_let_star_setup_done
          (extern-call nl_let_setup bindings env 1)

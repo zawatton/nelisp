@@ -96,7 +96,7 @@
     (defun nl_sf_let_body_step (eval-rc body env out)
       (if (= eval-rc 0)
           (nl_sf_let_body
-           (extern-call nl_cons_cdr_ptr body)
+           (extern-call nl_cons_cdr_word body)
            env out 0)
         (nl_sf_let_finish 1 env out 0)))
 
@@ -132,7 +132,7 @@
           (seq
            (nl_cons_write_nil out)
            (nl_sf_let_body
-            (extern-call nl_cons_cdr_ptr args)
+            (extern-call nl_cons_cdr_word args)
             env out 0))
         1))
 

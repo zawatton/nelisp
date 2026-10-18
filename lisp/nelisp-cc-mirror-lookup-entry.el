@@ -77,12 +77,12 @@
       (if (= cell-ptr 0)
           0
         (if (= (sexp-tag cell-ptr) 7)
-            (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
+            (let ((pair-view (extern-call nl_cons_car_word cell-ptr)))
               (if (= (extern-call nelisp_symbol_key_equal
                                  (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
                   (extern-call nl_cons_cdr_ptr pair-view)
                 (nelisp_mirror_walk_bucket
-                 (extern-call nl_cons_cdr_ptr cell-ptr)
+                 (extern-call nl_cons_cdr_word cell-ptr)
                  sym-ptr)))
           0)))
     (defun nelisp_mirror_lookup_entry_valid_key (sym-ptr)

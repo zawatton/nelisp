@@ -48,12 +48,13 @@
      ;;     (the Phase 0 keystone).  A fresh box PER immediate call kills
      ;;     the SCRATCH-LIFETIME HAZARD for consumers holding two+ accessor
      ;;     results live (list walks / bucket walks / equal2 recursion).
+     (if (= (logand arg 1) 1) 0
      (if (= (sexp-tag arg) 7)
          (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 0)))
            (if (= (logand word 1) 0)
                word
              (extern-call nl_val_load word (alloc-bytes 32 8))))
-       0))
+       0)))
   "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
 
 Returns a 32B-slot VIEW of the cons CAR when arg is Sexp::Cons (tag 7),

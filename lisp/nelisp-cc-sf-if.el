@@ -76,7 +76,7 @@
     (defun nl_sf_if_else_rc (rc els env out)
       (if (= rc 0)
           (nl_sf_if_else
-           (extern-call nl_cons_cdr_ptr els)
+           (extern-call nl_cons_cdr_word els)
            env out 0)
         1))
 
@@ -127,7 +127,7 @@
             (seq
              (nl_cons_write_nil out)
              (nl_sf_if_else
-              (extern-call nl_cons_cdr_ptr cdr)
+              (extern-call nl_cons_cdr_word cdr)
               env out 0))
           ;; Test is truthy: eval then = car of cdr.
           (nl_sf_if_then_eval

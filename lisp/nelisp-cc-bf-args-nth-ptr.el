@@ -91,7 +91,7 @@
       (if (= (sexp-tag cur) 7)
           (if (= remaining 0)
               (nl_cons_car_ptr cur)
-            (nl_bf_args_nth_step (nl_cons_cdr_ptr cur) (- remaining 1)))
+            (nl_bf_args_nth_step (nl_cons_cdr_word cur) (- remaining 1)))
         0))
 
     ;; nl_bf_args_nth_ptr — public entry point.

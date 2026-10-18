@@ -177,10 +177,10 @@
                           (if (= (nelisp_env_lookup_value
                                   mirror-ptr frames-ptr (vector-ref-ptr redirect 0) buffer) 0)
                               (while (and (= (sexp-tag locals) 7) (= found 0))
-                                (let* ((pair (nl_cons_car_ptr locals))
-                                       (key (nl_cons_car_ptr pair)))
+                                (let* ((pair (nl_cons_car_word locals))
+                                       (key (nl_cons_car_word pair)))
                                   (if (and (= (sexp-tag key) (sexp-tag buffer))
-                                           (= (ptr-read-u64 key 8) (ptr-read-u64 buffer 8)))
+                                           (= (nl_word_payload key) (ptr-read-u64 buffer 8)))
                                       (seq (ptr-write-u64 address 0 (nl_cons_cdr_ptr pair))
                                            (setq found 1))
                                     (setq locals (nl_cons_cdr_ptr locals))))) 0)
