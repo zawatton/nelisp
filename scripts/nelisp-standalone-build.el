@@ -13377,7 +13377,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (arglist (+ roots (* (+ argc 1) 32)))
                    (result (+ roots (* (+ argc 2) 32)))
                    (function-cell (+ roots (* (+ argc 3) 32)))
-                   (w 0)
                    (i 0))
              (seq
            ;; These adjacent slots are visible to the precise root scanner.
@@ -13405,8 +13404,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           ;; never a Lisp value: its published header is argc,
                           ;; with the owned contiguous arguments just before it.
                           (seq (wf_write_int arglist argc)
-                               (setq w (nl_apply_function_w function-cell (- 0 arglist) env 0))
-                               (if (= w 0) 1 0))
+                               (nl_apply_function function-cell (- 0 arglist) env result))
                         (seq (wf_bytecode_build_args roots 1 argc arglist)
                         (if (= builtin-throw 1)
                           (if (= argc 2)
@@ -13414,10 +13412,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (bf_wrong_number_of_args function argc))
                         ;; A rebound function cell follows ordinary call
                         ;; semantics, including its own arity checks.
-                        (seq (setq w (nl_apply_function_w function arglist env 0))
-                             (if (= w 0) 1 0)))))))
+                        (nl_apply_function function arglist env result))))))
              (seq
-              (if (and (= rc 0) (/= w 0)) (wf_bytecode_w_load out-slot w) 0)
+              (if (= rc 0) (wf_bytecode_copy out-slot result) 0)
               (nl_root_release env mark)
               rc))))))))
     (defun wf_bytecode_call_interpreted_gateway (env function-slot slots arg-first argc out-slot)
