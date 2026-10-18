@@ -6511,10 +6511,10 @@ REPL-facing module it feeds."
                  (if (= (ptr-read-u64 (data-addr nl_gc_diag) 56) 1) 0
                    (if (= (nl_gc_pool_cap) 0) 0
                      (nl_gc_mark_pool pool (nl_gc_pool_cap_of pool)))))))
-    (defun nl_gc_mark_recorded_frame (env result out pool src cursor bsym)
+    (defun nl_gc_mark_recorded_frame (env result flight pool src cursor bsym)
       (nl_seq2 (nl_gc_mark_recorded_env env)
        (nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form / subform
-        (nl_seq2 (nl_gc_mark_recorded_slot out)   ; in-flight / last result
+        (nl_seq2 (nl_gc_mark_recorded_slot flight)   ; in-flight / last result
          (nl_seq2 (nl_gc_mark_recorded_pool pool)
           (nl_seq2 (nl_gc_mark_recorded_slot src)
            (nl_seq2 (nl_gc_mark_recorded_slot cursor)
@@ -8609,9 +8609,9 @@ leave symbols unresolved at link time."
         ;; nothing to be wrong about, and checking anyway made a
         ;; single-argument call signal where Emacs succeeds.
         1))
-    (defun wf_copy32 (dst src)
-      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 dst 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
+    (defun wf_copy32 (dst_ptr src)
+      (seq (ptr-write-u64 dst_ptr 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst_ptr 8 (ptr-read-u64 src 8))
+           (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)) 0))
     (defun wf_write_int (out v)
       (seq (ptr-write-u64 out 0 2) (ptr-write-u64 out 8 v)
            (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
@@ -9466,29 +9466,29 @@ leave symbols unresolved at link time."
     ;; A_PTR/B_PTR may be shorter than N (the missing high limbs read as 0)
     ;; -- this is what lets a 2-limb fixnum-derived operand add against an
     ;; arbitrarily-long Bignum without first re-padding it.
-    (defun nl_bignum_add_loop (a_ptr a_count b_ptr b_count out_ptr i n carry)
+    (defun nl_bignum_add_loop (a_ptr a_count b_ptr b_count obuf_ptr i n carry)
       (if (>= i n) carry
         (let* ((av (if (< i a_count) (ptr-read-u32 a_ptr (* i 4)) 0))
                (bv (if (< i b_count) (ptr-read-u32 b_ptr (* i 4)) 0))
                (sum (+ (+ av bv) carry)))
-          (seq (ptr-write-u32 out_ptr (* i 4) (logand sum 4294967295))
-               (nl_bignum_add_loop a_ptr a_count b_ptr b_count out_ptr (+ i 1) n (shr sum 32))))))
+          (seq (ptr-write-u32 obuf_ptr (* i 4) (logand sum 4294967295))
+               (nl_bignum_add_loop a_ptr a_count b_ptr b_count obuf_ptr (+ i 1) n (shr sum 32))))))
     ;; Ripple-borrow magnitude subtract, LSB-first, N limbs -- caller MUST
     ;; ensure the true magnitude of (A limbs) >= (B limbs) over [0,N), or
     ;; the result is the two's-complement-in-limbs wraparound, not a
     ;; negative magnitude (this file has no signed-limb representation --
     ;; the CALLER picks the larger-magnitude operand as A first, via
     ;; `nl_bignum_mag_cmp').
-    (defun nl_bignum_sub_loop (a_ptr a_count b_ptr b_count out_ptr i n borrow)
+    (defun nl_bignum_sub_loop (a_ptr a_count b_ptr b_count obuf_ptr i n borrow)
       (if (>= i n) borrow
         (let* ((av (if (< i a_count) (ptr-read-u32 a_ptr (* i 4)) 0))
                (bv (if (< i b_count) (ptr-read-u32 b_ptr (* i 4)) 0))
                (diff (- (- av bv) borrow)))
           (if (< diff 0)
-              (seq (ptr-write-u32 out_ptr (* i 4) (logand (+ diff 4294967296) 4294967295))
-                   (nl_bignum_sub_loop a_ptr a_count b_ptr b_count out_ptr (+ i 1) n 1))
-            (seq (ptr-write-u32 out_ptr (* i 4) (logand diff 4294967295))
-                 (nl_bignum_sub_loop a_ptr a_count b_ptr b_count out_ptr (+ i 1) n 0))))))
+              (seq (ptr-write-u32 obuf_ptr (* i 4) (logand (+ diff 4294967296) 4294967295))
+                   (nl_bignum_sub_loop a_ptr a_count b_ptr b_count obuf_ptr (+ i 1) n 1))
+            (seq (ptr-write-u32 obuf_ptr (* i 4) (logand diff 4294967295))
+                 (nl_bignum_sub_loop a_ptr a_count b_ptr b_count obuf_ptr (+ i 1) n 0))))))
     ;; Signed magnitude add: A+B when same sign, else the sign-correct
     ;; magnitude subtract of the larger from the smaller (`nl_bignum_mag_
     ;; cmp', Phase A's own comparison primitive, picks which).  Writes the
@@ -9503,22 +9503,22 @@ leave symbols unresolved at link time."
     ;; result (no separate zero special-case needed): `nl_bignum_finish'
     ;; demotes any zero-magnitude result to plain Int 0 regardless of the
     ;; sign this function reports for it.
-    (defun nl_bignum_add_raw (a_sign a_ptr a_count b_sign b_ptr b_count out_ptr sign_slot)
+    (defun nl_bignum_add_raw (a_sign a_ptr a_count b_sign b_ptr b_count obuf_ptr sign_slot)
       (if (= a_sign b_sign)
           (let* ((n (nl_bignum_addsub_bound a_count b_count)))
-            (seq (nl_bignum_add_loop a_ptr a_count b_ptr b_count out_ptr 0 n 0)
+            (seq (nl_bignum_add_loop a_ptr a_count b_ptr b_count obuf_ptr 0 n 0)
                  (ptr-write-u64 sign_slot 0 a_sign)
-                 (nl_bignum_canon_count out_ptr n)))
+                 (nl_bignum_canon_count obuf_ptr n)))
         (if (>= (nl_bignum_mag_cmp a_ptr a_count b_ptr b_count) 0)
-            (seq (nl_bignum_sub_loop a_ptr a_count b_ptr b_count out_ptr 0 a_count 0)
+            (seq (nl_bignum_sub_loop a_ptr a_count b_ptr b_count obuf_ptr 0 a_count 0)
                  (ptr-write-u64 sign_slot 0 a_sign)
-                 (nl_bignum_canon_count out_ptr a_count))
-          (seq (nl_bignum_sub_loop b_ptr b_count a_ptr a_count out_ptr 0 b_count 0)
+                 (nl_bignum_canon_count obuf_ptr a_count))
+          (seq (nl_bignum_sub_loop b_ptr b_count a_ptr a_count obuf_ptr 0 b_count 0)
                (ptr-write-u64 sign_slot 0 b_sign)
-               (nl_bignum_canon_count out_ptr b_count)))))
+               (nl_bignum_canon_count obuf_ptr b_count)))))
     ;; A - B = A + (-B): flip B's sign and reuse `nl_bignum_add_raw'.
-    (defun nl_bignum_sub_raw (a_sign a_ptr a_count b_sign b_ptr b_count out_ptr sign_slot)
-      (nl_bignum_add_raw a_sign a_ptr a_count (- 1 b_sign) b_ptr b_count out_ptr sign_slot))
+    (defun nl_bignum_sub_raw (a_sign a_ptr a_count b_sign b_ptr b_count obuf_ptr sign_slot)
+      (nl_bignum_add_raw a_sign a_ptr a_count (- 1 b_sign) b_ptr b_count obuf_ptr sign_slot))
     ;; Schoolbook magnitude multiply into OUT_PTR (caller-sized,
     ;; `(a_count+b_count)' limbs -- the standard bignum-multiply upper
     ;; bound; `nl_bignum_mul_raw' below zero-fills it first).  `nl_bignum_
@@ -9534,35 +9534,35 @@ leave symbols unresolved at link time."
     ;; tiny loop counters and the <2^32 carry, never on the near-2^64
     ;; intermediate itself -- same reasoning `nl_bignum_divmod10_loop''s
     ;; own comment already applies to its CUR value.
-    (defun nl_bignum_mul_carry_prop (out_ptr idx carry)
+    (defun nl_bignum_mul_carry_prop (obuf_ptr idx carry)
       (if (= carry 0) 0
-        (let* ((cur (ptr-read-u32 out_ptr (* idx 4))) (sum (+ cur carry)))
-          (seq (ptr-write-u32 out_ptr (* idx 4) (logand sum 4294967295))
-               (nl_bignum_mul_carry_prop out_ptr (+ idx 1) (shr sum 32))))))
-    (defun nl_bignum_mul_row (a_ptr i av b_ptr b_count out_ptr j carry)
+        (let* ((cur (ptr-read-u32 obuf_ptr (* idx 4))) (sum (+ cur carry)))
+          (seq (ptr-write-u32 obuf_ptr (* idx 4) (logand sum 4294967295))
+               (nl_bignum_mul_carry_prop obuf_ptr (+ idx 1) (shr sum 32))))))
+    (defun nl_bignum_mul_row (a_ptr i av b_ptr b_count obuf_ptr j carry)
       (if (>= j b_count)
-          (nl_bignum_mul_carry_prop out_ptr (+ i b_count) carry)
+          (nl_bignum_mul_carry_prop obuf_ptr (+ i b_count) carry)
         (let* ((bv (ptr-read-u32 b_ptr (* j 4)))
                (idx (+ i j))
-               (cur (ptr-read-u32 out_ptr (* idx 4)))
+               (cur (ptr-read-u32 obuf_ptr (* idx 4)))
                (sum (+ (+ cur (* av bv)) carry)))
-          (seq (ptr-write-u32 out_ptr (* idx 4) (logand sum 4294967295))
-               (nl_bignum_mul_row a_ptr i av b_ptr b_count out_ptr (+ j 1) (shr sum 32))))))
-    (defun nl_bignum_mag_mul (a_ptr a_count b_ptr b_count out_ptr i)
+          (seq (ptr-write-u32 obuf_ptr (* idx 4) (logand sum 4294967295))
+               (nl_bignum_mul_row a_ptr i av b_ptr b_count obuf_ptr (+ j 1) (shr sum 32))))))
+    (defun nl_bignum_mag_mul (a_ptr a_count b_ptr b_count obuf_ptr i)
       (if (>= i a_count) 0
-        (seq (nl_bignum_mul_row a_ptr i (ptr-read-u32 a_ptr (* i 4)) b_ptr b_count out_ptr 0 0)
-             (nl_bignum_mag_mul a_ptr a_count b_ptr b_count out_ptr (+ i 1)))))
+        (seq (nl_bignum_mul_row a_ptr i (ptr-read-u32 a_ptr (* i 4)) b_ptr b_count obuf_ptr 0 0)
+             (nl_bignum_mag_mul a_ptr a_count b_ptr b_count obuf_ptr (+ i 1)))))
     ;; Signed multiply: magnitude via `nl_bignum_mag_mul' (schoolbook,
     ;; Doc 190 §3 Phase B's own stated default -- "most real-world bignum
     ;; operands ... are a handful of limbs past the fixnum boundary, not
     ;; cryptographic-scale, so schoolbook's O(n^2) is the right complexity/
     ;; cost trade for a first ship"), sign = XOR of the operand signs.
-    (defun nl_bignum_mul_raw (a_sign a_ptr a_count b_sign b_ptr b_count out_ptr sign_slot)
+    (defun nl_bignum_mul_raw (a_sign a_ptr a_count b_sign b_ptr b_count obuf_ptr sign_slot)
       (let* ((n (+ a_count b_count)))
-        (seq (nl_alloc_zero_fill out_ptr 0 (* n 4))
-             (nl_bignum_mag_mul a_ptr a_count b_ptr b_count out_ptr 0)
+        (seq (nl_alloc_zero_fill obuf_ptr 0 (* n 4))
+             (nl_bignum_mag_mul a_ptr a_count b_ptr b_count obuf_ptr 0)
              (ptr-write-u64 sign_slot 0 (if (= a_sign b_sign) 0 1))
-             (nl_bignum_canon_count out_ptr n))))
+             (nl_bignum_canon_count obuf_ptr n))))
     ;; Doc 187 §3.1: overflow check inline in the fold -- detection is
     ;; UNCHANGED from Doc 187 (see the MEASURED note below); Doc 190 Phase
     ;; B (2026-08-23) changed what happens once overflow is detected: the
@@ -9883,10 +9883,10 @@ leave symbols unresolved at link time."
     ;; first-19-entry dispatch subset (`nelisp-standalone--applyfn-
     ;; dispatch-table-baked') -- do not pull a reader-only helper into
     ;; the baked link set.
-    (defun nl_bignum_divsmall_copy (src dst n)
+    (defun nl_bignum_divsmall_copy (src dst_ptr n)
       (if (= n 0) 0
-        (seq (ptr-write-u32 dst 0 (ptr-read-u32 src 0))
-             (nl_bignum_divsmall_copy (+ src 4) (+ dst 4) (- n 1)))))
+        (seq (ptr-write-u32 dst_ptr 0 (ptr-read-u32 src 0))
+             (nl_bignum_divsmall_copy (+ src 4) (+ dst_ptr 4) (- n 1)))))
     ;; Signal `nelisp-bignum-division-unsupported' (data nil, matching
     ;; `bf_signal_overflow_error''s own shape) for a Bignum -- or too-
     ;; large-for-the-bound-above -- divisor.  Packed bytes independently
@@ -10147,11 +10147,11 @@ leave symbols unresolved at link time."
                             1)
                         1))))
               1)))))
-    (defun bf_sig_copy32 (dst src)
-      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
-           (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
-           (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
+    (defun bf_sig_copy32 (dst_ptr src)
+      (seq (ptr-write-u64 dst_ptr 0 (ptr-read-u64 src 0))
+           (ptr-write-u64 dst_ptr 8 (ptr-read-u64 src 8))
+           (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16))
+           (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)) 0))
     ;; bf_arith_error / bf_wrong_type_number_or_marker /
     ;; bf_wrong_type_int_or_marker / bf_first_non_integer: the
     ;; mod/percent/arithmetic/comparison arms of
@@ -10243,8 +10243,8 @@ leave symbols unresolved at link time."
     ;; wf_word_store_out: write W into the caller's 32-byte result slot OUT
     ;; with no scratch box: copy a pointed-to box, or store an immediate
     ;; in place.
-    (defun wf_word_store_out (out w)
-      (if (= (logand w 1) 0) (wf_copy32 out w) (extern-call nl_val_load w out)))
+    (defun wf_word_store_out (dst_ptr w)
+      (if (= (logand w 1) 0) (wf_copy32 dst_ptr w) (extern-call nl_val_load w dst_ptr)))
     ;; The car of W as a view, or 0 when W is not a cons (the contract of
     ;; nl_cons_car_ptr, which also accepted a nil view).
     (defun wf_word_car_view (w)
@@ -12815,9 +12815,9 @@ above this defconst for the shadow-vs-delegate rationale.")
     ;; Copy N limbs SRC -> DST (used to get a disposable working copy
     ;; before the destructive divide-by-10 pass below -- printing must
     ;; not mutate the bignum it is printing).
-    (defun nl_bignum_copy_limbs (src dst n)
+    (defun nl_bignum_copy_limbs (src dst_ptr n)
       (let* ((i 0))
-        (seq (while (< i n) (seq (ptr-write-u32 dst (* i 4) (ptr-read-u32 src (* i 4)))
+        (seq (while (< i n) (seq (ptr-write-u32 dst_ptr (* i 4) (ptr-read-u32 src (* i 4)))
                                   (setq i (+ i 1))))
              0)))
     ;; Divide the LIMB_COUNT-limb array at LIMB_PTR by 10 IN PLACE,
@@ -16325,9 +16325,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= unibyte 1)
           (nl_alloc_unibyte_mut_str cap slot)
         (mut-str-make-empty slot cap)))
-    (defun m5_copy_str_bytes (src dst src-i dst-i i n)
+    (defun m5_copy_str_bytes (src dst_ptr src-i dst-i i n)
       (while (< i n)
-        (seq (ptr-write-u8 dst (+ dst-i i) (ptr-read-u8 src (+ src-i i)))
+        (seq (ptr-write-u8 dst_ptr (+ dst-i i) (ptr-read-u8 src (+ src-i i)))
              (setq i (+ i 1))))
       1)
     (defun m5_push_str_bytes_slow (ms src_ptr i n)
@@ -16574,16 +16574,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (< v 10) (seq (ptr-write-u8 out off (+ 48 v)) (+ off 1))
         (let* ((noff (m5_declead (/ v 10) out off)))
           (seq (ptr-write-u8 out noff (+ 48 (mod v 10))) (+ noff 1)))))
-    (defun m5_dec9 (v out off)             ; v as exactly 9 digits at out+off
+    (defun m5_dec9 (v obuf off)             ; v as exactly 9 digits at obuf+off
       (let* ((i 8))
         (seq (while (>= i 0)
-               (seq (ptr-write-u8 out (+ off i) (+ 48 (mod v 10)))
+               (seq (ptr-write-u8 obuf (+ off i) (+ 48 (mod v 10)))
                     (setq v (/ v 10)) (setq i (- i 1))))
              (+ off 9))))
-    (defun m5_bn_digits (bn len out)       ; MSB-first decimal of bn, return count
-      (let* ((n (m5_declead (ptr-read-u64 bn (shl (- len 1) 3)) out 0)) (i (- len 2)))
+    (defun m5_bn_digits (bn len obuf)       ; MSB-first decimal of bn, return count
+      (let* ((n (m5_declead (ptr-read-u64 bn (shl (- len 1) 3)) obuf 0)) (i (- len 2)))
         (seq (while (>= i 0)
-               (seq (setq n (m5_dec9 (ptr-read-u64 bn (shl i 3)) out n)) (setq i (- i 1))))
+               (seq (setq n (m5_dec9 (ptr-read-u64 bn (shl i 3)) obuf n)) (setq i (- i 1))))
              n)))
     (defun m5_bn_mant (fb)                 ; M for value = M*2^be
       (let* ((ef (logand (sar fb 52) 2047)) (frac (logand fb (- (shl 1 52) 1))))
@@ -16595,11 +16595,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((m (m5_bn_mant fb)) (be (m5_bn_be fb)) (len (m5_bn_init bn m)))
         (if (>= be 0) (m5_bn_digits bn (m5_bn_mul2pow bn len be) dbuf)
           (m5_bn_digits bn (m5_bn_mul5pow bn len (- 0 be)) dbuf))))
-    (defun m5_copy_digits (src so n dst dof)
+    (defun m5_copy_digits (src so n dst_ptr dof)
       (let* ((i 0)) (seq (while (< i n)
-                           (seq (ptr-write-u8 dst (+ dof i) (ptr-read-u8 src (+ so i))) (setq i (+ i 1)))) 0)))
-    (defun m5_fill_zeros (dst off n)
-      (let* ((i 0)) (seq (while (< i n) (seq (ptr-write-u8 dst (+ off i) 48) (setq i (+ i 1)))) 0)))
+                           (seq (ptr-write-u8 dst_ptr (+ dof i) (ptr-read-u8 src (+ so i))) (setq i (+ i 1)))) 0)))
+    (defun m5_fill_zeros (dst_ptr off n)
+      (let* ((i 0)) (seq (while (< i n) (seq (ptr-write-u8 dst_ptr (+ off i) 48) (setq i (+ i 1)))) 0)))
     (defun m5_digits_nonzero (buf i n)     ; any ASCII digit != '0' in [i,n)?
       (if (>= i n) 0 (if (= (ptr-read-u8 buf i) 48) (m5_digits_nonzero buf (+ i 1) n) 1)))
     (defun m5_inc_digits (dbuf keep rbuf)  ; rbuf = dbuf[0..keep)+1, return keep or keep+1
@@ -22843,17 +22843,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; is always >= 1), so this never borrows past the array.  Reuses
     ;; Phase B's own `nl_bignum_sub_loop' with a 1-limb constant-1 array
     ;; as the subtrahend, rather than a new dedicated decrement loop.
-    (defun nl_bignum_dec_mag (mag_ptr mag_count out_ptr)
+    (defun nl_bignum_dec_mag (mag_ptr mag_count obuf_ptr)
       (let* ((one (alloc-bytes 4 4)))
         (seq (ptr-write-u32 one 0 1)
-             (nl_bignum_sub_loop mag_ptr mag_count one 1 out_ptr 0 mag_count 0))))
+             (nl_bignum_sub_loop mag_ptr mag_count one 1 obuf_ptr 0 mag_count 0))))
     ;; Two's-complement digit I (0-indexed, LSB-first) of a NON-NEGATIVE
     ;; operand's infinite extension, materialized for I in [0,N): the
     ;; magnitude's own limbs, zero beyond MAG_COUNT.
-    (defun nl_bignum_twos_fill_pos (mag_ptr mag_count out_ptr i n)
+    (defun nl_bignum_twos_fill_pos (mag_ptr mag_count obuf_ptr i n)
       (if (>= i n) 0
-        (seq (ptr-write-u32 out_ptr (* i 4) (if (< i mag_count) (ptr-read-u32 mag_ptr (* i 4)) 0))
-             (nl_bignum_twos_fill_pos mag_ptr mag_count out_ptr (+ i 1) n))))
+        (seq (ptr-write-u32 obuf_ptr (* i 4) (if (< i mag_count) (ptr-read-u32 mag_ptr (* i 4)) 0))
+             (nl_bignum_twos_fill_pos mag_ptr mag_count obuf_ptr (+ i 1) n))))
     ;; Two's-complement digit I of a NEGATIVE operand's infinite
     ;; extension, materialized for I in [0,N): `~(M-1)[i]', DEC_PTR
     ;; already holding (M-1)'s limbs (`nl_bignum_dec_mag' above); beyond
@@ -22861,11 +22861,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; extend with 1s forever" -- verified against the identity's own
     ;; small-case derivation (M=1: dec=[0], digit0 = ~0 = all-ones =
     ;; -1's own infinite bit pattern, correct).
-    (defun nl_bignum_twos_fill_neg (dec_ptr dec_count out_ptr i n)
+    (defun nl_bignum_twos_fill_neg (dec_ptr dec_count obuf_ptr i n)
       (if (>= i n) 0
-        (seq (ptr-write-u32 out_ptr (* i 4)
+        (seq (ptr-write-u32 obuf_ptr (* i 4)
                (logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (* i 4)) 0) 4294967295))
-             (nl_bignum_twos_fill_neg dec_ptr dec_count out_ptr (+ i 1) n))))
+             (nl_bignum_twos_fill_neg dec_ptr dec_count obuf_ptr (+ i 1) n))))
     ;; Elementwise combine of two N-limb two's-complement windows TA/TB
     ;; into R, by OPCODE (0 and, 1 or, 2 xor) -- shared by all three
     ;; bitwise ops rather than three near-duplicate loops, since this DSL
@@ -22880,10 +22880,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; negative RESULT's magnitude below, via ~R + 1 -- NOT bit-inversion
     ;; itself, unlike a carry-propagating negate, has no cross-limb
     ;; dependency, so a plain elementwise loop is correct).
-    (defun nl_bignum_not_loop (src dst i n)
+    (defun nl_bignum_not_loop (src dst_ptr i n)
       (if (>= i n) 0
-        (seq (ptr-write-u32 dst (* i 4) (logxor (ptr-read-u32 src (* i 4)) 4294967295))
-             (nl_bignum_not_loop src dst (+ i 1) n))))
+        (seq (ptr-write-u32 dst_ptr (* i 4) (logxor (ptr-read-u32 src (* i 4)) 4294967295))
+             (nl_bignum_not_loop src dst_ptr (+ i 1) n))))
     ;; Convert a combined N-limb two's-complement window R, with inferred
     ;; extension bit EXTR (0 = the window represents a non-negative
     ;; value, 4294967295 = negative), back to sign+magnitude and write
@@ -22999,17 +22999,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; whole limbs of zero padding, then an intra-limb bit shift with a
     ;; carry rippled up one limb at a time, plus one extra headroom limb
     ;; past the source for the final carry-out.
-    (defun nl_bignum_shl_zero_pad (out_ptr i limbshift)
+    (defun nl_bignum_shl_zero_pad (obuf_ptr i limbshift)
       (if (>= i limbshift) 0
-        (seq (ptr-write-u32 out_ptr (* i 4) 0)
-             (nl_bignum_shl_zero_pad out_ptr (+ i 1) limbshift))))
-    (defun nl_bignum_shl_bits_loop (mag_ptr mag_count out_ptr i limbshift bitshift carry)
+        (seq (ptr-write-u32 obuf_ptr (* i 4) 0)
+             (nl_bignum_shl_zero_pad obuf_ptr (+ i 1) limbshift))))
+    (defun nl_bignum_shl_bits_loop (mag_ptr mag_count obuf_ptr i limbshift bitshift carry)
       (if (> i mag_count) 0
         (let* ((v (if (< i mag_count) (ptr-read-u32 mag_ptr (* i 4)) 0))
                (lo (logand (logior (shl v bitshift) carry) 4294967295))
                (nextcarry (if (= bitshift 0) 0 (shr v (- 32 bitshift)))))
-          (seq (ptr-write-u32 out_ptr (* (+ i limbshift) 4) lo)
-               (nl_bignum_shl_bits_loop mag_ptr mag_count out_ptr (+ i 1) limbshift bitshift nextcarry)))))
+          (seq (ptr-write-u32 obuf_ptr (* (+ i limbshift) 4) lo)
+               (nl_bignum_shl_bits_loop mag_ptr mag_count obuf_ptr (+ i 1) limbshift bitshift nextcarry)))))
     (defun nl_bignum_ash_left (sign mag_ptr mag_count c out)
       (let* ((limbshift (/ c 32)) (bitshift (mod c 32))
              (outcount (+ (+ mag_count limbshift) 1))
@@ -23040,15 +23040,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (>= limbshift mag_count) 0
             (if (= bitshift 0) 0
               (if (> (logand (ptr-read-u32 mag_ptr (* limbshift 4)) (- (shl 1 bitshift) 1)) 0) 1 0))))))
-    (defun nl_bignum_shr_bits_loop (mag_ptr mag_count out_ptr i limbshift bitshift n)
+    (defun nl_bignum_shr_bits_loop (mag_ptr mag_count obuf_ptr i limbshift bitshift n)
       (if (>= i n) 0
         (let* ((lo (ptr-read-u32 mag_ptr (* (+ i limbshift) 4)))
                (hiidx (+ (+ i limbshift) 1))
                (hi (if (< hiidx mag_count) (ptr-read-u32 mag_ptr (* hiidx 4)) 0))
                (v (if (= bitshift 0) lo
                     (logand (logior (shr lo bitshift) (shl hi (- 32 bitshift))) 4294967295))))
-          (seq (ptr-write-u32 out_ptr (* i 4) v)
-               (nl_bignum_shr_bits_loop mag_ptr mag_count out_ptr (+ i 1) limbshift bitshift n)))))
+          (seq (ptr-write-u32 obuf_ptr (* i 4) v)
+               (nl_bignum_shr_bits_loop mag_ptr mag_count obuf_ptr (+ i 1) limbshift bitshift n)))))
     (defun nl_bignum_ash_right (sign mag_ptr mag_count k out)
       (let* ((limbshift (/ k 32)) (bitshift (mod k 32))
              (n (if (> mag_count limbshift) (- mag_count limbshift) 0)))
@@ -24839,10 +24839,10 @@ extern arms in dynamic builds."
          nelisp-standalone--applyfn-bf-helpers
          (nelisp-standalone--special-form-p-helper)
          nelisp-standalone--applyfn-fast-list-helpers
-         '((defun nl_reader_native_pin_copy (src dst)
-             (if (= dst 0)
+         '((defun nl_reader_native_pin_copy (src dst_ptr)
+             (if (= dst_ptr 0)
                  0
-               (seq (nl_sexp_clone_into src dst) dst)))
+               (seq (nl_sexp_clone_into src dst_ptr) dst_ptr)))
            (defun nl_reader_native_pin_eq_slots (slot-a slot-b)
              (wf_raw_eq slot-a slot-b))
            (defun nl_reader_native_result_ref_error (args)
