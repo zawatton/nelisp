@@ -46,29 +46,19 @@
 ;;; Code:
 
 (defconst nelisp-cc-env-lookup-function--source
-  '(defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
-     ;; Main entry: check mirror for the function entry; return 1 on
-     ;; miss or fill out-ptr with the function Sexp on hit (= 0).
-     ;;
-     ;; R11a CSE-hoist: the previous two-defun CPS shape called
-     ;; `nelisp_mirror_lookup_entry' for the existence check and then
-     ;; `nelisp_mirror_lookup_function' on hit (= 2 FNV-1a hashes).
-     ;; The hoisted shape calls `nelisp_mirror_lookup_entry' once via
-     ;; `let' (= let-rt frame slot) and reads slot 1 directly via
-     ;; `record-slot-ref' — bypassing the `nelisp_mirror_lookup_function'
-     ;; wrapper since we already hold the entry pointer.  `record-slot-
-     ;; ref' delegates to `nl_sexp_clone_into' (refcount-safe, same
-     ;; semantics as the previous wrapper).
-     ;;
-     ;; Arity 4 (even) ✓.  `(extern-call nelisp_mirror_lookup_entry ...)'
-     ;; is arg 0 of the let-binding (= itself the value-form of let-rt,
-     ;; satisfying the "extern-call as arg 0" alignment rule).
-     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
-       (if (= entry 0)
-           1
-         (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
-             1
-           (and (record-slot-ref entry 1 out-ptr) 0)))))
+  '(seq
+    ;; Doc 215 word ABI: the function-cell WORD (the slot's own child), 2
+    ;; when the entry is missing or holds the unbound marker.
+    (defun nelisp_env_lookup_function_w (mirror-ptr unbound-ptr name-ptr _pad)
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            2
+          (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
+              2
+            (nl_record_slot_word entry 1)))))
+    (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
+      (nl_abi_lookup_to_rc
+       (nelisp_env_lookup_function_w mirror-ptr unbound-ptr name-ptr 0) out-ptr)))
   "AOT source for Wave a-2 `Env::lookup_function' body.
 
 R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun

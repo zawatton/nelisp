@@ -68,65 +68,24 @@
 
 (defconst nelisp-cc-sf-let-star--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_let_star_w' answers the body's value WORD
+    ;; (nil 3 for an empty body), or 0 with the signal stashed.  Each
+    ;; binding pushes a frame; the innermost body pops its own and every
+    ;; recursive caller pops exactly its own, on success and on error.
 
-    ;; After nl_env_pop_frame: discard pop-rc, return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_ret (pop-rc body-rc _p2 _p3)
-      body-rc)
+    (defun nl_sf_let_star_ret_w (pop-rc w _p2 _p3)
+      (if (= pop-rc -1) (nl_abi_fail 1 0) w))
 
-    ;; body-rc = result of body eval (0=Ok or 1=Err).
-    ;; Pop frame unconditionally (extern-call FIRST ✓), then return body-rc.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_finish (body-rc env out _pad)
-      (nl_sf_let_star_ret
-       (extern-call nl_env_pop_frame env)
-       body-rc 0 0))
+    (defun nl_sf_let_star_finish_w (w env _pad _pad1)
+      (nl_sf_let_star_ret_w (extern-call nl_env_pop_frame env) w 0 0))
 
-    ;; After nelisp_eval_call on one body form: check rc, then advance list.
-    ;; eval-rc=0 → fetch cdr(body) (extern-call FIRST ✓), then recurse.
-    ;; Fetching the cdr only after eval avoids carrying an unrooted
-    ;; materialised immediate-cdr view across eval's possible collection;
-    ;; body is the real CONS box and is already kept alive by the form.
-    ;; eval-rc!=0 → finish with error (pop frame).
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_body_step (eval-rc body env out)
-      (if (= eval-rc 0)
-          (nl_sf_let_star_body
-           (extern-call nl_cons_cdr_word body)
-           env out 0)
-        (nl_sf_let_star_finish 1 env out 0)))
+    (defun nl_sf_let_star_body_w (body env _pad _pad1)
+      (nl_sf_let_star_finish_w (nl_sf_progn_w body env 0 0) env 0 0))
 
-    ;; car-ptr = nl_cons_car_ptr(body) already fetched as first arg.
-    ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
-    ;; rather than a possibly materialised cdr view.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_body_eval (car-ptr body env out)
-      (nl_sf_let_star_body_step
-       (extern-call nelisp_eval_call car-ptr env out)
-       body env out))
-
-    ;; Recursive body-eval entry.
-    ;; body: remaining forms cons list.
-    ;; If Nil → all forms done, pop frame + return 0.
-    ;; Else: fetch car(body) FIRST ✓.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_body (body env out _pad)
-      (if (= (sexp-tag body) 0)
-          (nl_sf_let_star_finish 0 env out 0)
-        (nl_sf_let_star_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body env out)))
-
-    ;; setup-rc = result of nl_let_setup (0=Ok, 1=Err).
-    ;; If error → return 1 (no frame pushed, no pop needed).
-    ;; Else get body = cdr(args) (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_let_star_setup_done (setup-rc args env out)
+    (defun nl_sf_let_star_setup_done_w (setup-rc args env _pad)
       (if (= setup-rc 0)
-          (nl_sf_let_star_body
-           (extern-call nl_cons_cdr_word args)
-           env out 0)
-        1))
+          (nl_sf_let_star_body_w (extern-call nl_cons_cdr_word args) env 0 0)
+        (nl_abi_fail setup-rc 0)))
 
     (defun nl_sf_let_star_one_done (rc env mark _pad)
       (seq (nl_root_release env mark) rc))
@@ -145,45 +104,36 @@
     (defun nl_sf_let_star_one (binding env)
       (nl_sf_let_star_one_marked binding env (nl_root_mark env) 0))
 
-    ;; The innermost body pops its own frame.  Each recursive caller pops
-    ;; exactly its frame, including initializer errors and nonlocal exits.
     ;; Take cdr only after setup: an immediate cdr view must not cross eval.
-    (defun nl_sf_let_star_next (rc bindings args env out _pad)
+    (defun nl_sf_let_star_next_w (rc bindings args env _pad _pad1)
       (if (= rc 0)
           (if (= (sexp-tag (nl_cons_cdr_word bindings)) 0)
-              (nl_sf_let_star_body (nl_cons_cdr_word args) env out 0)
-            (nl_sf_let_star_finish
-             (nl_sf_let_star_got_bindings (nl_cons_cdr_ptr bindings) args env out)
-             env out 0))
-        1))
+              (nl_sf_let_star_body_w (nl_cons_cdr_word args) env 0 0)
+            (nl_sf_let_star_finish_w
+             (nl_sf_let_star_got_bindings_w (nl_cons_cdr_ptr bindings) args env 0)
+             env 0 0))
+        (nl_abi_fail rc 0)))
 
-    ;; Preserve the original empty/invalid-list handling.  A rooted singleton
-    ;; reuses the existing binding parser without keeping a temporary unrooted
-    ;; cons alive across initializer evaluation and possible collection.
-    (defun nl_sf_let_star_got_bindings (bindings args env out)
+    ;; A rooted singleton reuses the binding parser without keeping a
+    ;; temporary unrooted cons alive across initializer evaluation.
+    (defun nl_sf_let_star_got_bindings_w (bindings args env _pad)
       (if (= (sexp-tag bindings) 7)
-          (nl_sf_let_star_next
+          (nl_sf_let_star_next_w
            (nl_sf_let_star_one (nl_cons_car_word bindings) env)
-           bindings args env out 0)
-        (nl_sf_let_star_setup_done
+           bindings args env 0 0)
+        (nl_sf_let_star_setup_done_w
          (extern-call nl_let_setup bindings env 1)
-         args env out)))
+         args env 0)))
 
-    ;; Public entry: nl_sf_let_star(args, env, out, _pad) → i64
-    ;; args: *const Sexp = (BINDINGS BODY...) arg list.
-    ;; env:  *mut c_void = &mut Env.
-    ;; out:  *mut Sexp   = result slot.
-    ;; _pad: unused alignment pad (arity 4 = even).
-    ;; Returns: 0=Ok (result in *out), 1=Err.
-    ;; Empty args (Nil) → error (let* requires bindings list).
-    ;; Else: get bindings = car(args) FIRST ✓.
+    ;; `(let*)' with no binding list fails the form.
+    (defun nl_sf_let_star_w (args env _pad _pad1)
+      (if (= (sexp-tag args) 0)
+          (nl_abi_fail 1 0)
+        (nl_sf_let_star_got_bindings_w (extern-call nl_cons_car_ptr args) args env 0)))
+
+    ;; (rc, OUT) adapter.
     (defun nl_sf_let_star (args env out _pad)
-      (seq (nl_cons_write_nil out)
-       (if (= (sexp-tag args) 0)
-          1
-        (nl_sf_let_star_got_bindings
-         (extern-call nl_cons_car_ptr args)
-         args env out)))))
+      (nl_abi_word_to_rc (nl_sf_let_star_w args env 0 0) out)))
 
   "AOT source for `nl_sf_let_star' (eval/special_forms.rs sf_let_star → elisp).
 

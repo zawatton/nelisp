@@ -57,60 +57,36 @@
 
 (defconst nelisp-cc-sf-function--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_function_w' answers the closure WORD for
+    ;; #'(lambda ...), the form's own WORD otherwise, or 0 with the signal
+    ;; stashed.  FORM comes from `nl_cons_car_ptr' and may be a view of an
+    ;; immediate, so it goes through `nl_val_store_word' (Doc 215 R4).
+    ;; S1 is the caller's scratch slot for the lambda builder.
+    (defun nl_sf_function_do_lambda_w (lambda-args env _pad s1)
+      (extern-call nl_sf_lambda_w lambda-args env 0 s1))
 
-    ;; is-lambda = 1: get cdr(form) = (formals body...) and call nl_sf_lambda.
-    ;; is-lambda = 0: clone form into out (return it as-is).
-    ;; extern-call nl_cons_cdr_ptr is at arg position 0 ✓.
-    ;; extern-call nl_sexp_clone_into is first item in and ✓.
-    ;; Arity 6 (even).
-    (defun nl_sf_function_check_lambda (is-lambda form env out s1 _pad)
+    (defun nl_sf_function_check_lambda_w (is-lambda form env _pad s1 _pad1)
       (if (= is-lambda 1)
-          (nl_sf_function_do_lambda
-           (extern-call nl_cons_cdr_ptr form)   ; (formals body...) — FIRST ✓
-           env out s1)
-        (and (extern-call nl_sexp_clone_into form out) 0)))
+          (nl_sf_function_do_lambda_w (extern-call nl_cons_cdr_ptr form) env 0 s1)
+        (nl_val_store_word form)))
 
-    ;; car = nl_cons_car_ptr(form) already fetched as first arg.
-    ;; Now check nl_symbol_is_lambda(car) — extern-call FIRST ✓.
-    ;; Arity 6 (even).
-    (defun nl_sf_function_got_car (car form env out s1 _pad)
-      (nl_sf_function_check_lambda
-       (extern-call nl_symbol_is_lambda car)    ; is-lambda — FIRST ✓
-       form env out s1 0))
+    (defun nl_sf_function_got_car_w (car form env _pad s1 _pad1)
+      (nl_sf_function_check_lambda_w (extern-call nl_symbol_is_lambda car) form env 0 s1 0))
 
-    ;; form-ptr = nl_cons_car_ptr(args) already fetched as first arg.
-    ;; If form is Cons (tag 7): get car(form) — extern-call FIRST ✓.
-    ;; Else: form is not Cons — clone it into out and return 0.
-    ;; Arity 6 (even).
-    (defun nl_sf_function_got_form (form args env out s1 _pad)
+    (defun nl_sf_function_got_form_w (form args env _pad s1 _pad1)
       (if (= (sexp-tag form) 7)
-          (nl_sf_function_got_car
-           (extern-call nl_cons_car_ptr form)   ; car-of-form — FIRST ✓
-           form env out s1 0)
-        (and (extern-call nl_sexp_clone_into form out) 0)))
+          (nl_sf_function_got_car_w (extern-call nl_cons_car_ptr form) form env 0 s1 0)
+        (nl_val_store_word form)))
 
-    ;; Call nl_sf_lambda with lambda-args = cdr(form) = (formals body...).
-    ;; nl_sf_lambda is an extern "C" symbol in the same linked binary
-    ;; (defined in nelisp-cc-sf-lambda.el, exported as nl_sf_lambda).
-    ;; extern-call is the sole body expression — rsp ≡ 0 ✓.
-    ;; Arity 4 (even).
-    (defun nl_sf_function_do_lambda (lambda-args env out s1)
-      (extern-call nl_sf_lambda lambda-args env out s1))
-
-    ;; Public entry: nl_sf_function(args, env, out, s1) → i64
-    ;; args: *const Sexp = (FORM) — must be Cons (tag 7).
-    ;; env:  *mut c_void = current lexical environment (passed to sf_lambda).
-    ;; out:  *mut Sexp   = result slot.
-    ;; s1:   *mut Sexp   = scratch slot (forwarded to nl_sf_lambda).
-    ;; Returns 0 on success, 1 on error (args not Cons).
-    ;; Arity 4 (even): body-entry rsp ≡ 0 mod 16 ✓.
-    ;; extern-call nl_cons_car_ptr is at arg position 0 ✓.
-    (defun nl_sf_function (args env out s1)
+    ;; `(function)' with no argument fails the form.
+    (defun nl_sf_function_w (args env _pad s1)
       (if (= (sexp-tag args) 7)
-          (nl_sf_function_got_form
-           (extern-call nl_cons_car_ptr args)   ; form-ptr — FIRST ✓
-           args env out s1 0)
-        1)))
+          (nl_sf_function_got_form_w (extern-call nl_cons_car_ptr args) args env 0 s1 0)
+        (nl_abi_fail 1 0)))
+
+    ;; (rc, OUT) adapter.
+    (defun nl_sf_function (args env out s1)
+      (nl_abi_word_to_rc (nl_sf_function_w args env 0 s1) out)))
 
   "AOT source for `nl_sf_function' (eval/special_forms.rs sf_function → elisp).
 

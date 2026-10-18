@@ -64,106 +64,35 @@
 
 (defconst nelisp-cc-sf-if--source
   '(seq
+    ;; Doc 215 word ABI.  `nl_sf_if_w' answers the chosen branch's value
+    ;; WORD (nil 3 for an empty else), or 0 with the signal stashed.
+    ;; Same CPS chain as before: each extern-call is the first argument,
+    ;; arity 4 (even).
+    (defun nl_sf_if_then_w (form env _pad _pad1)
+      (extern-call nelisp_eval_call_w form env 0))
 
-    ;;--- Else-branch helpers (progn-like sequential eval) ---
-
-    ;; After eval of one else-form: check rc, then fetch cdr (extern-call FIRST
-    ;; ✓) and recurse.  Fetching the cdr only after eval avoids carrying an
-    ;; unrooted materialised immediate-cdr view across eval's possible
-    ;; collection; els is the real CONS box and is already kept alive by the
-    ;; enclosing form.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_else_rc (rc els env out)
-      (if (= rc 0)
-          (nl_sf_if_else
-           (extern-call nl_cons_cdr_word els)
-           env out 0)
-        1))
-
-    ;; Eval car via nelisp_eval_call (extern-call FIRST ✓), carrying the
-    ;; rooted else-list CONS rather than a possibly materialised cdr view.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_else_eval (car els env out)
-      (nl_sf_if_else_rc
-       (extern-call nelisp_eval_call car env out)
-       els env out))
-
-    ;; Walk else-list as progn.
-    ;; If Nil → return 0 (OUT was cleared to nil by `nl_sf_if_branch');
-    ;; else fetch car first (FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_if_else (els env out _pad)
-      (if (= (sexp-tag els) 0)
-          0
-        (nl_sf_if_else_eval
-         (extern-call nl_cons_car_ptr els)
-         els env out)))
-
-    ;;--- Then-branch helper ---
-
-    ;; Eval the THEN form directly.  nelisp_eval_call returns 0=Ok/1=Err
-    ;; which matches our ABI, so we return it directly.
-    ;; Body: single extern-call with 0 items on stack ✓.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_then_eval (form env out _pad)
-      (extern-call nelisp_eval_call form env out))
-
-    ;;--- Branch dispatch ---
-
-    ;; Dispatch on truthy (result of nl_eval_is_truthy).
-    ;; cdr = cdr of args = (THEN ELSE...) cons.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_branch (truthy cdr env out)
+    ;; TRUTHY: 1 true, 0 false, -1 the test signalled (already stashed).
+    ;; The else list is a progn; it is read after the test, from the real
+    ;; (THEN ELSE...) cons, so no materialised view lives across eval.
+    (defun nl_sf_if_branch_w (truthy cdr env _pad)
       (if (= truthy -1)
-          ;; Test eval errored.
-          1
+          0
         (if (= truthy 0)
-            ;; Test is nil/false: eval else-list = cdr of cdr.  OUT is
-            ;; cleared first: an empty else-list must answer nil, and OUT is
-            ;; not guaranteed to start nil -- callers reuse one result slot
-            ;; across sibling forms, so `(list (list 1) (if nil 2))' answered
-            ;; ((1) (1)) and a body ending in `(if nil X)' returned the
-            ;; previous form's value.
-            (seq
-             (nl_cons_write_nil out)
-             (nl_sf_if_else
-              (extern-call nl_cons_cdr_word cdr)
-              env out 0))
-          ;; Test is truthy: eval then = car of cdr.
-          (nl_sf_if_then_eval
-           (extern-call nl_cons_car_ptr cdr)
-           env out 0))))
+            (nl_sf_progn_w (extern-call nl_cons_cdr_word cdr) env 0 0)
+          (nl_sf_if_then_w (extern-call nl_cons_car_ptr cdr) env 0 0))))
 
-    ;;--- Preamble (thread args CPS-style) ---
+    (defun nl_sf_if_test_w (test-ptr cdr env _pad)
+      (nl_sf_if_branch_w (extern-call nl_eval_is_truthy test-ptr env) cdr env 0))
 
-    ;; truthy is already computed; pass it with cdr to branch.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_truthy (truthy cdr env out)
-      (nl_sf_if_branch truthy cdr env out))
+    (defun nl_sf_if_cdr_w (cdr args env _pad)
+      (nl_sf_if_test_w (extern-call nl_cons_car_ptr args) cdr env 0))
 
-    ;; test-ptr = car(args) already fetched as first arg.
-    ;; Compute truthy = nl_eval_is_truthy(test-ptr, env) (FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_if_test_ptr (test-ptr cdr env out)
-      (nl_sf_if_truthy
-       (extern-call nl_eval_is_truthy test-ptr env)
-       cdr env out))
+    (defun nl_sf_if_w (args env _pad _pad1)
+      (nl_sf_if_cdr_w (extern-call nl_cons_cdr_ptr args) args env 0))
 
-    ;; cdr = nl_cons_cdr_ptr(args) already fetched as first arg.
-    ;; Get test-ptr = nl_cons_car_ptr(args) (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_if_cdr (cdr args env out)
-      (nl_sf_if_test_ptr
-       (extern-call nl_cons_car_ptr args)
-       cdr env out))
-
-    ;; Public entry: nl_sf_if(args, env, out, _pad) → i64
-    ;; Get cdr-of-args first (extern-call FIRST ✓).
-    ;; Arity 4 (even): no prologue sub rsp → no double-sub misalignment.
+    ;; (rc, OUT) adapter.
     (defun nl_sf_if (args env out _pad)
-      (nl_sf_if_cdr
-       (extern-call nl_cons_cdr_ptr args)
-       args env out)))
+      (nl_abi_word_to_rc (nl_sf_if_w args env 0 0) out)))
 
   "AOT source for `nl_sf_if' (eval/special_forms.rs sf_if → elisp).
 

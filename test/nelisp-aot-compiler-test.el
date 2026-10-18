@@ -4529,7 +4529,8 @@ units that load and then read uninitialised stack."
              nelisp-cc-evalport-aot-builtin-calln--max-args))
   ;; And the provider really declares that many, not merely name the
   ;; number: the parameter list is what the ABI depends on.
-  (let ((params (nth 2 nelisp-cc-evalport-aot-builtin-calln--source)))
+  (let ((params (nth 1 (assq 'nelisp_aot_builtin_calln
+                             (mapcar #'cdr (cdr nelisp-cc-evalport-aot-builtin-calln--source))))))
     (should (equal (seq-take params 6)
                    '(mirror frames name argc out scratch)))
     (should (= (- (length params) 6)

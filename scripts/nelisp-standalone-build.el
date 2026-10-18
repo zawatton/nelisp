@@ -1725,6 +1725,7 @@ twice appears twice; readers keep the last occurrence of each unit."
 
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
+  (setq source (nelisp-standalone--abi-box-split-source source))
   (nelisp-standalone--box-census-record
    (nelisp-standalone--target-object-name name) source)
   (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
@@ -1923,6 +1924,79 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                        nelisp-standalone--inline-max-nodes)
                                (prin1-to-string source)))))
 
+;; Doc 215 builtin word ABI, private-box coexistence for build-script defuns
+;; whose OUT is the object they construct or a value they compute through
+;; still-legacy callees (definers, capture builders, rooted subrs, ...).
+;; Each listed defun F (in whatever unit, after all its patches) becomes
+;;   F_w  -- same parameters, OUT renamed _pad; allocates the box, runs the
+;;           old body against it and answers the box's WORD (the box is the
+;;           result object; 0 = failure), and
+;;   F    -- the (rc, OUT) adapter.
+;; KIND `status' marks a lookup whose rc 1 without a stash is a miss: F_w
+;; answers 2 there (nl_abi_status_to_word) and F maps 2 back to rc 1.
+;; KIND `special' marks a special form that may answer rc 2 ("not handled
+;; here", e.g. a definer with a `declare' left to the Lisp macro): F_w
+;; passes 2 through (nl_abi_rc2_to_word).
+;; Only build-script / build-generated defuns are listed; lisp/ units are
+;; converted in their source.
+(defconst nelisp-standalone--abi-box-split
+  '((nl_sf_defun . special) (nl_sf_defvar . special) (nl_sf_defconst . special)
+    (nl_sf_defalias . special) (nl_sf_defvaralias . special)
+    (nl_sf_defmacro . special) (nl_sf_dolist)
+    (nl_sf_defvaralias_apply) (nl_n3_defvaralias_raw) (nl_n3_declared_default_raw)
+    (nl_n3_alias_write) (nl_n3_default_write) (nl_n3_apply_mode)
+    (nl_apply_lambda_inner_n3) (nl_n3_apply_lambda_raw)
+    (nl_n4_capture_filtered) (nl_env_capture_lexical_filtered)
+    (nl_env_capture_lexical_with_filter) (nl_clx_build_symbol_filter)
+    (bf_env_capture_roots) (nelisp_eval_call_with_err)
+    (nl_apply_flat_builtin_frame) (nl_apply_rooted_subr) (nl_apply_rooted_subr_frame)
+    (nl_apply_list_append)
+    (nl_lookup_fn_autoload . status) (nl_lookup_fn_autoload_load . status)
+    (nl_sf_definer_lookup . status))
+  "Defuns split into a private-box F_w and an (rc, OUT) adapter F.")
+
+(defun nelisp-standalone--abi-out-param-p (p)
+  (memq p '(out out_ptr out-ptr result_slot result-slot out_slot)))
+
+(defun nelisp-standalone--abi-box-split-defun (form kind)
+  "FORM (defun F PARAMS . BODY) as (F_w ADAPTER); see `nelisp-standalone--abi-box-split'."
+  (let* ((name (nth 1 form)) (params (nth 2 form)) (body (nthcdr 3 form))
+         (out (or (cl-find-if #'nelisp-standalone--abi-out-param-p params)
+                  (error "abi box split: %s has no OUT parameter" name)))
+         (wname (intern (format "%s_w" name)))
+         (wparams (mapcar (lambda (p) (cond ((eq p out) '_pad)
+                                            ((eq p '_pad) '_pad1)
+                                            (t p)))
+                          params))
+         (cargs (mapcar (lambda (p) (if (eq p out) 0 p)) params)))
+    (list `(defun ,wname ,wparams
+             (let* ((,out (alloc-bytes 32 8)))
+               (,(pcase kind ('status 'nl_abi_status_to_word)
+                         ('special 'nl_abi_rc2_to_word)
+                         (_ 'nl_abi_rc_to_word))
+                (progn ,@body) ,out)))
+          `(defun ,name ,params
+             (,(if (eq kind 'status) 'nl_abi_lookup_to_rc 'nl_abi_word_to_rc)
+              (,wname ,@cargs) ,out)))))
+
+(defun nelisp-standalone--abi-box-split-source (source)
+  "SOURCE with every `nelisp-standalone--abi-box-split' defun split.
+Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
+  (if (not (and (consp source) (eq (car source) 'seq)))
+      source
+    (let ((have (delq nil (mapcar (lambda (f) (and (eq (car-safe f) 'defun) (cadr f)))
+                                  (cdr source)))))
+      (cons 'seq
+            (apply #'append
+                   (mapcar
+                    (lambda (f)
+                      (let ((e (and (eq (car-safe f) 'defun)
+                                    (assq (cadr f) nelisp-standalone--abi-box-split))))
+                        (if (and e (not (memq (intern (format "%s_w" (cadr f))) have)))
+                            (nelisp-standalone--abi-box-split-defun f (cdr e))
+                          (list f))))
+                    (cdr source)))))))
+
 (defun nelisp-standalone--cached-unit (name source &rest _ignored)
   "Return the link-unit for NAME, compiling SOURCE only on a content miss.
 
@@ -1943,7 +2017,8 @@ commit; they carry the old dependency lists, which are now inert.
 
 Stale entries for the same NAME are removed on a miss, so the cache
 directory tracks the tree rather than accumulating every key ever built."
-  (let* ((name (nelisp-standalone--target-object-name name))
+  (let* ((source (nelisp-standalone--abi-box-split-source source))
+         (name (nelisp-standalone--target-object-name name))
          (nelisp-standalone--build-trace-unit name)
          (cache-dir (nelisp-standalone--target-cache-dir))
          (key (nelisp-standalone--build-trace-phase "cache-key"
@@ -2769,6 +2844,25 @@ directory tracks the tree rather than accumulating every key ever built."
                (ptr-write-u64 out 16 (ptr-read-u64 w 16))
                (ptr-write-u64 out 24 (ptr-read-u64 w 24))
                0)))))
+    ;; Lookup producers answer 2 for "not found" (rc 1 without a stash in
+    ;; the legacy ABI).  Their adapters map 2 back to rc 1.
+    (defun nl_abi_lookup_to_rc (w out)
+      (if (= w 2) 1 (nl_abi_word_to_rc w out)))
+    ;; A lookup's legacy status RC (non-zero) as a word result: 0 when the
+    ;; failure stashed a signal, 2 ("not found") when it did not.
+    (defun nl_abi_miss (_rc _pad)
+      (if (= (ptr-read-u64 268435472 0) 1) 0 2))
+    ;; A legacy (rc, private OUT box) as a word result where rc 1 may come
+    ;; without a stash (it is a failure, never a miss): 0 after making sure
+    ;; a signal is stashed.
+    ;; rc (2 = not handled) + private OUT box -> WORD, 2 passed through.
+    (defun nl_abi_rc2_to_word (rc out)
+      (if (= rc 2) 2 (nl_abi_rc_to_word rc out)))
+    (defun nl_abi_status_fail (rc out)
+      (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0)))
+    ;; A lookup's legacy (status, private OUT box) as its word result.
+    (defun nl_abi_status_to_word (rc out)
+      (if (= rc 0) (nl_val_store_word out) (nl_abi_miss rc 0)))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -6812,18 +6906,20 @@ argument (reachability + in-arena bounds checks).")
     ;; all recorded frames, so native evaluator continuations no longer depend
     ;; on the conservative stack scan.
     (defun nl_gc_ctx_max_depth () 1024)
-    (defun nl_gc_ctx_store (base env result out pool src cursor bsym)
+    ;; RESULT_ROOT (+16) is a slot the caller keeps its in-flight result in,
+    ;; recorded so the collector marks it; it is an input, not an output.
+    (defun nl_gc_ctx_store (base env result result_root pool src cursor bsym)
       (seq (ptr-write-u64 base 0 env) (ptr-write-u64 base 8 result)
-           (ptr-write-u64 base 16 out) (ptr-write-u64 base 24 pool)
+           (ptr-write-u64 base 16 result_root) (ptr-write-u64 base 24 pool)
            (ptr-write-u64 base 32 src) (ptr-write-u64 base 40 cursor)
            (ptr-write-u64 base 48 bsym) 0))
-    (defun nl_gc_ctx_push (env result out pool src cursor bsym)
+    (defun nl_gc_ctx_push (env result result_root pool src cursor bsym)
       (if (< (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) (nl_gc_ctx_max_depth))
           (nl_seq2
            (nl_gc_ctx_store
             (+ (data-addr nl_gc_loop_ctx)
                (+ 64 (* (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 56)))
-            env result out pool src cursor bsym)
+            env result result_root pool src cursor bsym)
            (nl_seq2
             (ptr-write-u64 (data-addr nl_gc_loop_ctx) 0
                            (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1))
@@ -7022,11 +7118,12 @@ argument (reachability + in-arena bounds checks).")
         ;; the pop exactly as conditional as the push it is undoing.  See
         ;; `nelisp-standalone--reader-frame-stack-pop-desync-smoke' for the
         ;; against-the-bug proof (RED before this fix, GREEN after).
-        (defun nelisp_eval_call_recorded_done (rc form_ptr env out rec_cur rec_cur_addr pushed)
+        ;; W is the result WORD (0 = signal): the backtrace capture sees rc 1.
+        (defun nelisp_eval_call_recorded_done_w (w form_ptr env _pad rec_cur rec_cur_addr pushed)
           (seq (nl_thread_park_safepoint env)
-               (nl_bt_maybe_capture rc)
+               (nl_bt_maybe_capture (if (= w 0) 1 0))
                (if (= pushed 1) (nl_gc_ctx_pop) 0)
-               (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) rc)))
+               (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) w)))
         (defun nelisp_eval_call_stash_excessive_lisp_nesting (_env rec_max)
           (let* ((tag_buf (alloc-bytes 24 1)))
             (seq
@@ -7073,7 +7170,13 @@ argument (reachability + in-arena bounds checks).")
             (nelisp_frame_pop frames_ptr scratch_slot)))
         (defun nelisp_eval_call_root_done (rc env)
           (seq (nl_env_pop_frame env) rc))
+        ;; Doc 215 word ABI: the value WORD, or 0 with the signal stashed.
+        ;; `nelisp_eval_call' keeps the (rc, OUT) ABI as the adapter.
         (defun nelisp_eval_call (form_ptr env out)
+          (nl_abi_word_to_rc (nelisp_eval_call_w form_ptr env 0) out))
+        (defun nelisp_eval_call_inner (form_ptr env out)
+          (nl_abi_word_to_rc (nelisp_eval_call_inner_w form_ptr env 0) out))
+        (defun nelisp_eval_call_w (form_ptr env _pad)
           ;; A top-level form still needs a lexical declaration context.
           ;; Nested calls use their existing frames; the temporary root is
           ;; removed on both success and error at this evaluator boundary.
@@ -7084,36 +7187,47 @@ argument (reachability + in-arena bounds checks).")
                               (ptr-read-u64 (ptr-read-u64 env 40) 32) 8) 2) 0))
               (seq (nelisp_frame_scope_push (+ env 32))
                    (nelisp_eval_call_root_done
-                    (nelisp_eval_call_inner form_ptr env out) env))
-            (nelisp_eval_call_inner form_ptr env out)))
-        (defun nelisp_eval_call_inner (form_ptr env out)
+                    (nelisp_eval_call_inner_w form_ptr env 0) env))
+            (nelisp_eval_call_inner_w form_ptr env 0)))
+        ;; Word entry of the evaluator boundary.  Until `nl_eval_inner' has a
+        ;; word form, the result goes through a private OUT box; that box is
+        ;; what `nl_gc_eval_ctx_push' records as the context's result root,
+        ;; so a parked worker's collection still marks the in-flight value.
+        ;; Word entry of the evaluator boundary.  The context frame records no
+        ;; OUT box any more: the result WORD is written into the frame's
+        ;; result-root slot (+16) before the exit safepoint, so a parked
+        ;; worker's collection still keeps it (Doc 215 R2); an immediate
+        ;; needs no root.
+        (defun nelisp_eval_call_inner_w (form_ptr env _pad)
           (seq
-           ;; The iterative argument walker takes its marker before the first
-           ;; reserve.  Arm the process root stack at the public evaluator
-           ;; boundary so a fresh standalone context never treats marker 0 as
-           ;; a writable slot.
            (nl_rootstack_init)
-           ;; Doc 199 Tier 3b: every ordinary evaluator recursion boundary is
-           ;; a worker park safepoint.  FORM_PTR/ENV/OUT are parameters, not
-           ;; runtime let-bound values surviving the call.  Main-thread envs
-           ;; are absent from the worker registry, so the normal path is a
-           ;; count-zero lookup and return.  A single non-recursing native
-           ;; builtin can still be unparkable; the collector's bounded wait
-           ;; records that case and skips collection.
+           ;; Doc 199 Tier 3b: every evaluator recursion boundary is a worker
+           ;; park safepoint.
            (nl_thread_park_safepoint env)
            (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
              (let* ((rec_cur (ptr-read-u64 rec_cur_addr 0)) (rec_max (ptr-read-u64 rec_max_addr 0)))
                (if (>= rec_cur rec_max)
-                   (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
+                   (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
                    (if (= (nl_gc_frame_record_armed_p) 1)
-                       (let* ((pushed (nl_gc_eval_ctx_push env form_ptr out 0)))
-                        (nelisp_eval_call_recorded_done
-                         (nl_eval_inner form_ptr env out 0)
-                         form_ptr env out rec_cur rec_cur_addr pushed))
+                       (let* ((pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
+                        (nelisp_eval_call_recorded_done_w
+                         (nelisp_eval_call_record_result
+                          (nl_eval_inner_w form_ptr env 0 0) pushed)
+                         form_ptr env 0 rec_cur rec_cur_addr pushed))
                      (nelisp_eval_call_done
-                     (nl_eval_inner form_ptr env out 0)
-                      env rec_cur rec_cur_addr))))))))))
+                      (nl_eval_inner_w form_ptr env 0 0)
+                      env rec_cur rec_cur_addr))))))))
+        (defun nelisp_eval_call_record_result (w pushed)
+          (seq (if (= pushed 1)
+                   (if (= (logand w 1) 0)
+                       (ptr-write-u64
+                        (+ (data-addr nl_gc_loop_ctx)
+                           (+ 64 (* (- (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1) 56)))
+                        16 w)
+                     0)
+                 0)
+               w))))
 
 (defun nelisp-standalone--name-u64 (s)
   "Pack STRING S (<=8 ASCII bytes) little-endian into a u64 for symbol-name match."
@@ -8249,8 +8363,10 @@ leave symbols unresolved at link time."
     ;; when the THROW flag (268435472) is clear this stashes
     ;; (error "nelisp: word ABI failure without a stashed signal") first.
     (defun nl_abi_fail (_rc _pad)
-      (if (= (ptr-read-u64 268435472 0) 1) 0
-        (seq (nl_abi_stash_unstashed) 0)))
+      ;; Any in-flight state counts as stashed: 1 = signal, 2 = throw.
+      (if (= (ptr-read-u64 268435472 0) 0)
+          (seq (nl_abi_stash_unstashed) 0)
+        0))
     (defun nl_abi_stash_unstashed ()
       (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
@@ -20266,7 +20382,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; link time -- masked until the gc-ctx/flat-arena fixes let the linker
     ;; reach this far.  `bf_signal'/`bf_error' below (their own dispatch
     ;; arms sit past the baked-19 cutoff) still call it, now cross-unit.
-    (defun bf_signal (args out)
+    ;; Doc 215 word ABI: `signal' only stashes and answers 0.
+    (defun bf_signal_w (args _pad)
       (let* ((sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
@@ -20274,7 +20391,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (bf_sig_copy32 268435512 data)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
-         1)))
+         0)))
+    (defun bf_signal (args out)
+      (nl_abi_word_to_rc (bf_signal_w args 0) out))
     ;; Emacs's `error' FORMATS: (error "msg %d" 1) raises (error "msg 1"), a
     ;; one-element data list holding the finished text.  This raised
     ;; (error "msg %d" 1) instead -- format string and arguments still
@@ -26609,17 +26728,17 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_ct_active_finish 0 (nl_ct_head_slot env) (ptr-read-u64 node 8)))
     (defun nl_ct_active_finish (rc head_slot previous)
       (seq (ptr-write-u64 head_slot 0 previous) rc))
-    (defun nl_ct_active_prepare (body tag_slot env out head_slot node)
+    (defun nl_ct_active_prepare_w (body tag_slot env _pad head_slot node)
       (seq
        (sexp-int-make node (ptr-read-u64 head_slot 0))
        (ptr-write-u64 node 16 tag_slot)
        (ptr-write-u64 head_slot 0 node)
        (nl_ct_active_finish
-        (nl_ct_catch_body body tag_slot env out 0 0)
+        (nl_ct_catch_body_w body tag_slot env 0 0 0)
         head_slot (ptr-read-u64 node 8))))
-    (defun nl_ct_active_body (body tag_slot env out)
-      (nl_ct_active_prepare body tag_slot env out
-                            (nl_ct_head_slot env) (nl_root_reserve env)))
+    (defun nl_ct_active_body_w (body tag_slot env _pad)
+      (nl_ct_active_prepare_w body tag_slot env 0
+                              (nl_ct_head_slot env) (nl_root_reserve env)))
     (defun nl_ct_no_catch_publish (env data error_slot name_buf)
       (seq
        (ptr-write-u64 name_buf 0 7521983764263432046)
@@ -26679,21 +26798,22 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                             marker (nl_root_reserve env)))
     (defun nl_ct_arg_error (env datum name_word kind)
       (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
-    (defun nl_ct_args_done (count args env out mode)
+    ;; Doc 215 word ABI: catch / throw answer the result WORD (0 = signal
+    ;; or throw in flight).  `throw' never returns a value.
+    (defun nl_ct_args_done_w (count args env _pad mode)
       (if (= mode 0)
           (if (= count 2)
-              (nl_sf_throw_mark args env out (nl_root_mark env))
-            (nl_ct_arg_error env count 512970877044 0))
+              (nl_sf_throw_mark_w args env 0 (nl_root_mark env))
+            (nl_abi_fail (nl_ct_arg_error env count 512970877044 0) 0))
         (if (> count 0)
-            (nl_sf_catch_mark args env out (nl_root_mark env))
-          (nl_ct_arg_error env count 448345170275 0))))
-    (defun nl_ct_args_check (tail count args env out mode)
+            (nl_sf_catch_mark_w args env 0 (nl_root_mark env))
+          (nl_abi_fail (nl_ct_arg_error env count 448345170275 0) 0))))
+    (defun nl_ct_args_check_w (tail count args env _pad mode)
       (if (= (sexp-tag tail) 0)
-          (nl_ct_args_done count args env out mode)
+          (nl_ct_args_done_w count args env 0 mode)
         (if (= (sexp-tag tail) 7)
-            (nl_ct_args_check (nl_cons_cdr_ptr tail) (+ count 1)
-                              args env out mode)
-          (nl_ct_arg_error env tail 482990057836 1))))
+            (nl_ct_args_check_w (nl_cons_cdr_ptr tail) (+ count 1) args env 0 mode)
+          (nl_abi_fail (nl_ct_arg_error env tail 482990057836 1) 0))))
     ;;================= THROW =================
     (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
       (if (= rc 0)
@@ -26714,41 +26834,42 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            (atomic-fetch-add 268435544 1)
            1))
         1))
-    (defun nl_ct_throw_after_tag (rc val_form env out tag_slot val_slot)
+    (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
       (if (= rc 0)
           (nl_ct_throw_after_val
            (extern-call nelisp_eval_call val_form env val_slot)
            val_slot tag_slot env)
         1))
-    (defun nl_ct_throw_eval_tag (tag_form val_form env out tag_slot val_slot)
+    (defun nl_ct_throw_eval_tag (tag_form val_form env _pad tag_slot val_slot)
       (nl_ct_throw_after_tag
        (extern-call nelisp_eval_call tag_form env tag_slot)
-       val_form env out tag_slot val_slot))
-    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env out tag_slot val_slot)
+       val_form env 0 tag_slot val_slot))
+    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env _pad tag_slot val_slot)
       (nl_ct_throw_eval_tag
        tag_form
        (extern-call nl_cons_car_ptr cdr1)
-       env out tag_slot val_slot))
-    (defun nl_ct_throw_got_tag_form (tag_form args env out tag_slot val_slot)
+       env 0 tag_slot val_slot))
+    (defun nl_ct_throw_got_tag_form (tag_form args env _pad tag_slot val_slot)
       (nl_ct_throw_got_cdr1
        (extern-call nl_cons_cdr_word args)
-       tag_form env out tag_slot val_slot))
+       tag_form env 0 tag_slot val_slot))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
     ;; back blanked, `nl_ct_copy32' stashed a nil tag, and the throw missed its
     ;; own `catch': `(catch 'tg (throw 'tg (f)))' answered `no-catch: (0 7)'.
     ;; Rooted for the whole of `nl_sf_throw'; VAL_SLOT is written by the eval
     ;; and read immediately after, so it needs no root of its own.
-    (defun nl_sf_throw_run (args env out tag_slot val_slot root_mark)
-      (nl_ct_root_finish
-       env root_mark
-       (nl_ct_throw_got_tag_form
-        (nl_cons_car_ptr args) args env out tag_slot val_slot)))
-    (defun nl_sf_throw_mark (args env out root_mark)
-      (nl_sf_throw_run args env out (nl_root_reserve env)
-                       (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_throw_run_w (args env _pad tag_slot val_slot root_mark)
+      (nl_ct_root_finish env root_mark
+                         (nl_abi_fail (nl_ct_throw_got_tag_form (nl_cons_car_ptr args)
+                                                                args env 0 tag_slot val_slot)
+                                      0)))
+    (defun nl_sf_throw_mark_w (args env _pad root_mark)
+      (nl_sf_throw_run_w args env 0 (nl_root_reserve env) (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_throw_w (args env _pad _pad1)
+      (nl_ct_args_check_w args 0 args env 0 0))
     (defun nl_sf_throw (args env out _pad)
-      (nl_ct_args_check args 0 args env out 0))
+      (nl_abi_word_to_rc (nl_sf_throw_w args env 0 0) out))
     ;;================= CATCH =================
     ;; Generic `eq' tag-match helper.  `nl_ct_catch_check_tag' used to reuse
     ;; `nelisp_eq_symbol' for the tag comparison, but that primitive
@@ -26799,76 +26920,59 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                           (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0)
                         (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))))
         0))
-    (defun nl_ct_catch_on_match (eqres tag_slot env out _p4 _p5)
-      (if (= eqres 1)
-          (seq (nl_ct_copy32 out 268435512 0 0)
-               (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-               0)
-        1))
-    (defun nl_ct_catch_check_tag (tag_slot env out eqres_slot _p4 _p5)
-      (nl_ct_catch_on_match
-       (nl_ct_tag_eq 268435480 tag_slot)
-       tag_slot env out 0 0))
-    (defun nl_ct_catch_caught (_rc tag_slot env out eqres_slot _p5)
-      ;; Flag value 2 = `throw' (1 = signal/error).  `catch' only intercepts
-      ;; throws; a signal (flag==1) re-propagates so the right condition-case
-      ;; traps it.
+    ;; The thrown value is copied out of the stash into a fresh box before the
+    ;; flag is cleared (the stash is reused by the next signal); no safepoint
+    ;; lies between here and the return.
+    (defun nl_ct_caught_word (box _pad)
+      (seq (nl_ct_copy32 box 268435512 0 0)
+           (ptr-write-u64 268435472 0 0)
+           (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+           (nl_val_store_word box)))
+    (defun nl_ct_catch_on_match_w (eqres _p1 _p2 _p3)
+      (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
+    (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
       (if (= (ptr-read-u64 268435472 0) 2)
-          (nl_ct_catch_check_tag tag_slot env out eqres_slot 0 0)
-        1))
+          (nl_ct_catch_on_match_w (nl_ct_tag_eq 268435480 tag_slot) 0 0 0)
+        0))
     ;; The body list's cdr is taken AFTER the body form's own eval, not before:
     ;; a one-form body ends in Nil, `nl_cons_cdr_ptr' materialises an unrooted
     ;; view for it, and a collection inside the body frees that view under the
     ;; walker.  Same shape as the nine walkers closed earlier on this branch.
-    (defun nl_ct_catch_body_step (rc body tag_slot env out eqres_slot)
-      (if (= rc 0)
-          (nl_ct_catch_body
-           (extern-call nl_cons_cdr_word body) tag_slot env out eqres_slot 0)
-        (nl_ct_catch_caught rc tag_slot env out eqres_slot 0)))
-    (defun nl_ct_catch_body_eval (car body tag_slot env out eqres_slot)
-      (nl_ct_catch_body_step
-       (extern-call nelisp_eval_call car env out)
-       body tag_slot env out eqres_slot))
-    (defun nl_ct_catch_body (body tag_slot env out eqres_slot _p5)
-      (if (= (sexp-tag body) 0)
-          0
-        (nl_ct_catch_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body tag_slot env out eqres_slot)))
-    (defun nl_ct_catch_after_tag (rc body tag_slot env out eqres_slot)
-      (if (= rc 0)
-          ;; OUT is cleared first: an empty catch body must answer nil, not
-          ;; the previous sibling form's value in the shared result slot.
-          (seq
-           (nl_cons_write_nil out)
-           (nl_ct_active_body body tag_slot env out))
-        1))
-    (defun nl_ct_catch_got_body (body tag_form env out tag_slot eqres_slot)
-      (nl_ct_catch_after_tag
-       (extern-call nelisp_eval_call tag_form env tag_slot)
-       body tag_slot env out eqres_slot))
-    (defun nl_ct_catch_got_tag_form (tag_form args env out tag_slot eqres_slot)
-      (nl_ct_catch_got_body
-       (extern-call nl_cons_cdr_word args)
-       tag_form env out tag_slot eqres_slot))
+    ;; The body is a progn; a signal or throw out of it is checked against
+    ;; this catch's tag.
+    (defun nl_ct_catch_result_w (w tag_slot env _pad)
+      (if (= w 0) (nl_ct_catch_caught_w tag_slot env 0 0) w))
+    (defun nl_ct_catch_body_w (body tag_slot env _pad _p4 _p5)
+      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tag_slot env 0))
+    (defun nl_ct_catch_after_tag_w (rc body tag_slot env _pad eqres_slot)
+      (if (= rc 0) (nl_ct_active_body_w body tag_slot env 0) (nl_abi_fail rc 0)))
+    ;; The tag is evaluated into its reserved root slot (it must survive the
+    ;; body), through the legacy adapter.
+    (defun nl_ct_catch_got_body_w (body tag_form env _pad tag_slot eqres_slot)
+      (nl_ct_catch_after_tag_w (extern-call nelisp_eval_call tag_form env tag_slot)
+                               body tag_slot env 0 eqres_slot))
+    (defun nl_ct_catch_got_tag_form_w (tag_form args env _pad tag_slot eqres_slot)
+      (nl_ct_catch_got_body_w (extern-call nl_cons_cdr_word args)
+                              tag_form env 0 tag_slot eqres_slot))
     ;; TAG_SLOT holds the evaluated catch tag for the whole body evaluation, so
     ;; it has to be a GC root.  As an `alloc-bytes' scratch a collection inside
     ;; the body freed it, `nl_ct_tag_eq' then compared a `throw' against a
     ;; blanked slot and answered no-match, and the throw escaped its own
     ;; `catch' as `no-catch' -- no crash, just a wrong answer.
-    (defun nl_sf_catch_run (args env out tag_slot eqres_slot root_mark)
-      (nl_ct_root_finish
-       env root_mark
-       (nl_ct_catch_got_tag_form
-        (nl_cons_car_ptr args) args env out tag_slot eqres_slot)))
+    (defun nl_sf_catch_run_w (args env _pad tag_slot eqres_slot root_mark)
+      (nl_ct_root_finish env root_mark
+                         (nl_ct_catch_got_tag_form_w (nl_cons_car_ptr args)
+                                                     args env 0 tag_slot eqres_slot)))
     (defun nl_ct_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
-    (defun nl_sf_catch_slots (args env out root_mark tag_slot)
-      (nl_sf_catch_run args env out tag_slot (alloc-bytes 32 8) root_mark))
-    (defun nl_sf_catch_mark (args env out root_mark)
-      (nl_sf_catch_slots args env out root_mark (nl_root_reserve env)))
+    (defun nl_sf_catch_slots_w (args env _pad root_mark tag_slot)
+      (nl_sf_catch_run_w args env 0 tag_slot (alloc-bytes 32 8) root_mark))
+    (defun nl_sf_catch_mark_w (args env _pad root_mark)
+      (nl_sf_catch_slots_w args env 0 root_mark (nl_root_reserve env)))
+    (defun nl_sf_catch_w (args env _pad _pad1)
+      (nl_ct_args_check_w args 0 args env 0 1))
     (defun nl_sf_catch (args env out _pad)
-      (nl_ct_args_check args 0 args env out 1)))
+      (nl_abi_word_to_rc (nl_sf_catch_w args env 0 0) out)))
   "M6 catch/throw special-form impls.  nl_sf_catch/nl_sf_throw are dispatched
 from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 
@@ -26949,7 +27053,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                   (nl_sf_decl_strip_body rest_ptr)
                 body_ptr)))
         body_ptr))
-    (defun nl_sf_decl_normalize_tail (tail_ptr out) (let ((out__w 0)) (seq
+    ;; Answers the normalized tail WORD; the second parameter is unused.
+    (defun nl_sf_decl_normalize_tail (tail_ptr _pad) (let ((out__w 0)) (seq
       (if (= (sexp-tag tail_ptr) 7)
           (let* ((args_ptr (nl_cons_car_ptr tail_ptr))
                  (body_ptr (nl_cons_cdr_ptr tail_ptr))
@@ -27473,92 +27578,79 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (nl_sp_eq_lit name_ptr 2 29295 0)))
 
 (defconst nelisp-standalone--sf-when
-  '(defun nl_sf_when (args env out _pad)
+  '(defun nl_sf_when_w (args env _pad _pad1)
+     ;; Doc 215 word ABI: the body's value WORD, nil 3, or 0 (signal).
+     ;; nl_eval_is_truthy answers 1 / 0 / -1 (signalled).
      (if (= (sexp-tag args) 7)
-         ;; nl_eval_is_truthy returns 1 (truthy) / 0 (nil) / -1 (error).  The
-         ;; error case must propagate (return 1 to nl_apply_special) instead of
-         ;; being mistaken for nil.
          (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
            (if (= tv 1)
-               (nl_sf_progn (nl_cons_cdr_ptr args) env out 0)
-             (if (= tv 0) (seq (nl_cons_write_nil out) 0) 1)))
-       (seq (nl_cons_write_nil out) 0))))
+               (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0)
+             (if (= tv 0) 3 0)))
+       3)))
 
 (defconst nelisp-standalone--sf-unless
-  '(defun nl_sf_unless (args env out _pad)
+  '(defun nl_sf_unless_w (args env _pad _pad1)
      (if (= (sexp-tag args) 7)
          (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
            (if (= tv 1)
-               (seq (nl_cons_write_nil out) 0)
-             (if (= tv 0) (nl_sf_progn (nl_cons_cdr_ptr args) env out 0) 1)))
-       (seq (nl_cons_write_nil out) 0))))
+               3
+             (if (= tv 0) (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0) 0)))
+       3)))
 
 ;; (and A B ...) -> evaluate each in order into OUT; short-circuit on nil
 ;; (OUT keeps that nil); otherwise OUT holds the last value.  (and) -> t.
 (defconst nelisp-standalone--sf-and-walk
-  '(defun nl_sf_and_walk (rest env out _pad)
-     ;; Propagate an error raised while evaluating a conjunct (rc /= 0) instead
-     ;; of swallowing it and reporting the form as nil.
-     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-       (if (= rc 0)
-           (let* ((more (nl_cons_cdr_word rest)))
-             (if (= (sexp-tag more) 7)
-                 (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
-               0))
-         rc))))
+  '(defun nl_sf_and_walk_w (rest env _pad _pad1)
+     ;; A signal in a conjunct propagates (0); nil short-circuits.
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+       (if (= w 0)
+           0
+         (let* ((more (nl_cons_cdr_word rest)))
+           (if (= (sexp-tag more) 7)
+               (if (= (nl_val_tag w) 0) w (nl_sf_and_walk_w more env 0 0))
+             w))))))
 
 (defconst nelisp-standalone--sf-and
-  '(defun nl_sf_and (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_and_walk args env out 0)
-       (seq (nl_cons_write_t out) 0))))
+  '(defun nl_sf_and_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_and_walk_w args env 0 0) 7)))
 
 ;; (or A B ...) -> first truthy value into OUT; else nil.  (or) -> nil.
 (defconst nelisp-standalone--sf-or-walk
-  '(defun nl_sf_or_walk (rest env out _pad)
-     ;; Propagate an error raised while evaluating a disjunct (rc /= 0) instead
-     ;; of swallowing it and reporting the form as nil.
-     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-       (if (= rc 0)
-           (if (= (ptr-read-u64 out 0) 0)
-               (let* ((more (nl_cons_cdr_word rest)))
-                 (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0))
-             0)
-         rc))))
+  '(defun nl_sf_or_walk_w (rest env _pad _pad1)
+     ;; A signal in a disjunct propagates (0); the first non-nil value wins.
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+       (if (= w 0)
+           0
+         (if (= (nl_val_tag w) 0)
+             (let* ((more (nl_cons_cdr_word rest)))
+               (if (= (sexp-tag more) 7) (nl_sf_or_walk_w more env 0 0) w))
+           w)))))
 
 (defconst nelisp-standalone--sf-or
-  '(defun nl_sf_or (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_or_walk args env out 0)
-       (seq (nl_cons_write_nil out) 0))))
+  '(defun nl_sf_or_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_or_walk_w args env 0 0) 3)))
 
 ;; (cond (TEST BODY...) ...) -> first clause whose TEST is truthy; its BODY
 ;; (progn) value, or TEST's value when BODY is empty.  No match -> nil.
 (defconst nelisp-standalone--sf-cond-walk
-  '(defun nl_sf_cond_walk (clauses env out _pad)
+  '(defun nl_sf_cond_walk_w (clauses env _pad _pad1)
+     ;; First clause whose TEST is non-nil: its BODY (progn) value, or the
+     ;; TEST value when BODY is empty.  A signal in a TEST propagates.
      (let* ((clause (nl_cons_car_word clauses))
             (more (nl_cons_cdr_word clauses)))
        (if (= (sexp-tag clause) 7)
-           ;; Propagate an error raised while evaluating a clause TEST (rc /= 0)
-           ;; rather than treating the errored test as a non-match.
-           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr clause) env out)))
-             (if (= rc 0)
-                 (if (= (ptr-read-u64 out 0) 0)
-                     (if (= (sexp-tag more) 7)
-                         (nl_sf_cond_walk more env out 0)
-                       (seq (nl_cons_write_nil out) 0))
-                   (let* ((body (nl_cons_cdr_ptr clause)))
-                     (if (= (sexp-tag body) 7) (nl_sf_progn body env out 0) 0)))
-               rc))
-         (if (= (sexp-tag more) 7)
-             (nl_sf_cond_walk more env out 0)
-           (seq (nl_cons_write_nil out) 0))))))
+           (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr clause) env 0)))
+             (if (= w 0)
+                 0
+               (if (= (nl_val_tag w) 0)
+                   (if (= (sexp-tag more) 7) (nl_sf_cond_walk_w more env 0 0) 3)
+                 (let* ((body (nl_cons_cdr_ptr clause)))
+                   (if (= (sexp-tag body) 7) (nl_sf_progn_w body env 0 0) w)))))
+         (if (= (sexp-tag more) 7) (nl_sf_cond_walk_w more env 0 0) 3)))))
 
 (defconst nelisp-standalone--sf-cond
-  '(defun nl_sf_cond (args env out _pad)
-     (if (= (sexp-tag args) 7)
-         (nl_sf_cond_walk args env out 0)
-       (seq (nl_cons_write_nil out) 0))))
+  '(defun nl_sf_cond_w (args env _pad _pad1)
+     (if (= (sexp-tag args) 7) (nl_sf_cond_walk_w args env 0 0) 3)))
 
 ;; prog1/prog2 (direct eval) + dolist (synthesise its expansion and evaluate
 ;; it).  `dotimes' is the prelude macro, as in GNU: the old special form
@@ -27581,34 +27673,51 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (nl_sp_eq_lit name_ptr 6 128039038775140 0)))
 
 (defconst nelisp-standalone--sf-prog1
-  '(defun nl_sf_prog1 (args env out _pad)
-     ;; (prog1 FIRST BODY...) -> value of FIRST; BODY evaluated for effect.
-     ;; Propagate an error from FIRST or BODY (rc /= 0) rather than masking it.
+  '(defun nl_sf_prog1_w (args env _pad _pad1)
+     ;; Doc 215 word ABI.  FIRST's value must survive BODY (R2): it is
+     ;; evaluated into a root slot reserved under a root mark, and a copy is
+     ;; answered after BODY, before the mark is released.
      (if (= (sexp-tag args) 7)
-         (let* ((scratch (alloc-bytes 32 8)))
-           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env out)))
-             (if (= rc 0)
-                 (nl_sf_progn (nl_cons_cdr_ptr args) env scratch 0)
-               rc)))
-       (seq (nl_cons_write_nil out) 0))))
+         (nl_sf_prog1_marked_w args env (nl_root_mark env) 0)
+       3)))
+
+(defconst nelisp-standalone--sf-prog1-helpers
+  '((defun nl_sf_prog_release_w (w env mark _pad)
+      (seq (nl_root_release env mark) w))
+    (defun nl_sf_prog_copy_w (box vslot)
+      (seq (ptr-write-u64 box 0 (ptr-read-u64 vslot 0))
+           (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
+           (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
+           (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
+           (nl_val_store_word box)))
+    (defun nl_sf_prog_body_w (body env vslot _pad)
+      (if (= (nl_sf_progn_w body env 0 0) 0)
+          0
+        (nl_sf_prog_copy_w (alloc-bytes 32 8) vslot)))
+    (defun nl_sf_prog1_slot_w (args env mark vslot)
+      (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env vslot)))
+        (nl_sf_prog_release_w
+         (if (= rc 0) (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0) (nl_abi_fail rc 0))
+         env mark 0)))
+    (defun nl_sf_prog1_marked_w (args env mark _pad)
+      (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
+  "prog1's rooted value slot (Doc 215 R2).")
+
+(defun nelisp-standalone--sf-word-adapter (name)
+  "The (rc, OUT) adapter (defun NAME (args env out _pad) ...) over NAME_w."
+  `(defun ,name (args env out _pad)
+     (nl_abi_word_to_rc (,(intern (format "%s_w" name)) args env 0 0) out)))
 
 (defconst nelisp-standalone--sf-prog2
-  '(defun nl_sf_prog2 (args env out _pad)
-     ;; (prog2 FORM1 FORM2 BODY...) -> value of FORM2.
-     ;; Propagate an error from FORM1, FORM2 or BODY (rc /= 0).
+  '(defun nl_sf_prog2_w (args env _pad _pad1)
+     ;; (prog2 FORM1 FORM2 BODY...) = FORM1, then (prog1 FORM2 BODY...).
      (if (= (sexp-tag args) 7)
          (let* ((rest (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest) 7)
-               (let* ((scratch (alloc-bytes 32 8)) (scratch2 (alloc-bytes 32 8)))
-                 (let* ((rc1 (nelisp_eval_call (nl_cons_car_ptr args) env scratch)))
-                   (if (= rc1 0)
-                       (let* ((rc2 (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
-                         (if (= rc2 0)
-                             (nl_sf_progn (nl_cons_cdr_ptr rest) env scratch2 0)
-                           rc2))
-                     rc1)))
-             (seq (nl_cons_write_nil out) 0)))
-       (seq (nl_cons_write_nil out) 0))))
+               (let* ((w1 (nelisp_eval_call_w (nl_cons_car_ptr args) env 0)))
+                 (if (= w1 0) 0 (nl_sf_prog1_w rest env 0 0)))
+             3))
+       3)))
 
 ;; (dolist (VAR LIST [RESULT]) BODY...) -> mirror GNU's own subr.el expansion
 ;; (vendor/staged-emacs-lisp/subr.el, confirmed byte-identical on host
@@ -27851,18 +27960,27 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
                 (push nelisp-standalone--sp-eq-and out)
                 (push nelisp-standalone--sp-eq-or out)
                 (push nelisp-standalone--sf-when out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_when) out)
                 (push nelisp-standalone--sf-unless out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_unless) out)
                 (push nelisp-standalone--sf-and-walk out)
                 (push nelisp-standalone--sf-and out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_and) out)
                 (push nelisp-standalone--sf-or-walk out)
                 (push nelisp-standalone--sf-or out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_or) out)
                 (push nelisp-standalone--sf-cond-walk out)
                 (push nelisp-standalone--sf-cond out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_cond) out)
                 (push nelisp-standalone--sp-eq-prog1 out)
                 (push nelisp-standalone--sp-eq-prog2 out)
                 (push nelisp-standalone--sp-eq-dolist out)
+                (dolist (helper nelisp-standalone--sf-prog1-helpers)
+                  (push helper out))
                 (push nelisp-standalone--sf-prog1 out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_prog1) out)
                 (push nelisp-standalone--sf-prog2 out)
+                (push (nelisp-standalone--sf-word-adapter 'nl_sf_prog2) out)
                 (push nelisp-standalone--sf-dolist out)
                 (setq inserted t))
               (push (nelisp-standalone--patch-apply-special form) out))
@@ -28261,6 +28379,16 @@ relies on for `nelisp-cc-evalport-combiner-cons--source' and its siblings).")
     (defun nl_sf_function (_a _e _o _p) 1) (defun nl_sf_condition_case (_a _e _o _p) 1)
     (defun nl_sf_unwind_protect (_a _e _o _p) 1) (defun nl_sf_quote (_a _o) 1)
     (defun nl_sf_progn (_a _e _o _p) 1)
+    (defun nl_sf_if_w (_a _e _o _p) 0) (defun nl_sf_let_w (_a _e _o _p) 0)
+    (defun nl_sf_let_star_w (_a _e _o _p) 0) (defun nl_sf_setq_w (_a _e _o _p) 0)
+    (defun nl_sf_while_w (_a _e _o _p) 0) (defun nl_sf_lambda_w (_a _e _o _p) 0)
+    (defun nl_sf_function_w (_a _e _o _p) 0) (defun nl_sf_condition_case_w (_a _e _o _p) 0)
+    (defun nl_sf_unwind_protect_w (_a _e _o _p) 0) (defun nl_sf_progn_w (_a _e _o _p) 0)
+    ;; The shared shim's evaluator boundary calls `nl_eval_inner_w'; this
+    ;; build links the unpatched eval-inner unit, so adapt it here.
+    (defun nl_eval_inner_w (form env _pad _pad1)
+      (let* ((out (alloc-bytes 32 8)))
+        (nl_abi_rc_to_word (nl_eval_inner form env out 0) out)))
     (defun nl_env_lookup_val (_f _e _o) 1) (defun nl_cell_get_value (_c _o) 1)
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
@@ -40632,7 +40760,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   (bf_mark_binding_result (seq ,@(cdddr form))
                                           mirror-ptr frames-ptr name-ptr)))
               ((memq (cadr form) '(nelisp_env_set_value nelisp_env_set_value_lazy
-                                  nelisp_env_lookup_value))
+                                  nelisp_env_lookup_value nelisp_env_lookup_value_w))
                (replace-lookup form))
               (t form)))
            (if (eq (car source) 'seq) (cdr source) (list source)))))
@@ -41004,7 +41132,17 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                 out))
          ((eq name 'nl_sf_lambda)
           (push (cons 'defun (cons 'nl_n3_lambda_raw (cddr form))) out)
-          (push `(defun nl_sf_lambda (args env out s1)
+          ;; Doc 215 word ABI: the closure is built in a fresh box that IS
+          ;; the result object, so `nl_sf_lambda_w' answers that box's WORD;
+          ;; `nl_sf_lambda' is the (rc, OUT) adapter.
+          (push '(defun nl_sf_lambda_w (args env _pad s1)
+                   (let* ((out (alloc-bytes 32 8)))
+                     (nl_abi_status_fail (nl_sf_lambda_build args env out s1) out)))
+                out)
+          (push '(defun nl_sf_lambda (args env out s1)
+                   (nl_abi_word_to_rc (nl_sf_lambda_w args env 0 s1) out))
+                out)
+          (push `(defun nl_sf_lambda_build (args env out s1)
                    (if (= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                        (seq ,@(cdddr form))
                      (seq (let* ((buf (alloc-bytes 8 1))) (seq (ptr-write-u64 buf 0 107083775959404) (nl_alloc_symbol buf 6 s1)))
@@ -41144,25 +41282,32 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         ;; Cloning/image transport already preserves all four view words.
         (if (= (sexp-tag object) 7)
             (if (= (ptr-read-u64 object 16) 13108) 1 0) 0))
-      (defun nl_n3_special_cell (name_ptr args_ptr env_ptr out)
+      ;; Doc 215 word ABI: result WORD, 0 = signal, 2 = not special.
+      (defun nl_n3_special_cell_w (name_ptr args_ptr env_ptr _pad)
         (let* ((entry (nelisp_mirror_lookup_entry (+ env_ptr 0) name_ptr)))
-          (if (= entry 0) (nl_n3_special_unchecked name_ptr args_ptr env_ptr out)
+          (if (= entry 0) (nl_n3_special_unchecked_w name_ptr args_ptr env_ptr 0)
             (let* ((fn (record-slot-ref-ptr entry 1)))
               (if (= (nl_n3_special_object fn) 1)
-                  (nl_n3_special_call fn args_ptr env_ptr out)
+                  (nl_n3_special_call_w fn args_ptr env_ptr 0)
                 2)))))
-      (defun nl_n3_special_call (object args env out)
+      (defun nl_n3_special_cell (name_ptr args_ptr env_ptr out)
+        (nl_abi_word_to_rc (nl_n3_special_cell_w name_ptr args_ptr env_ptr 0) out))
+      ;; Result WORD or 0 (never 2: an unhandled name falls back to the
+      ;; cell's implementation).
+      (defun nl_n3_special_call_w (object args env _pad)
         (let* ((name (nl_apply_list_nth object 1))
-               (status (if (= (sexp-name-eq name "interactive") 1)
-                           (seq (wf_write_nil out) 0)
-                         (nl_n3_special_unchecked name args env out))))
-          (if (= status 2)
+               (w (if (= (sexp-name-eq name "interactive") 1)
+                      3
+                    (nl_n3_special_unchecked_w name args env 0))))
+          (if (= w 2)
               (let* ((impl (nl_apply_list_nth object 2)))
-                (if (= impl 0) (nl_apply_stash_invalid_function env object)
+                (if (= impl 0) (nl_abi_fail (nl_apply_stash_invalid_function env object) 0)
                   (if (= (nl_cons_is_macro impl) 1)
-                      (nl_cons_macro_apply_eval object impl args env out)
-                    (nl_apply_function impl args env out))))
-            status)))
+                      (nl_cons_macro_apply_eval_w object impl args env 0)
+                    (nl_apply_function_w impl args env 0))))
+            w)))
+      (defun nl_n3_special_call (object args env out)
+        (nl_abi_word_to_rc (nl_n3_special_call_w object args env 0) out))
       (defun bf_special_form_p_walk (sym env depth)
         (if (> depth 64) 0
           (if (= (nl_n3_special_object sym) 1) 1
@@ -41204,6 +41349,66 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (if (= (nl_sp_maybe_special ,(car args)) 1) (progn ,@body) 2)))
     (_ (error "special prefilter: unexpected form %S" (car-safe form)))))
 
+(defconst nelisp-standalone--special-word-forms
+  '(nl_sf_progn nl_sf_if nl_sf_let nl_sf_let_star nl_sf_setq nl_sf_while
+    nl_sf_function nl_sf_lambda nl_sf_condition_case nl_sf_unwind_protect
+    nl_sf_catch nl_sf_throw nl_sf_when nl_sf_unless nl_sf_and nl_sf_or nl_sf_cond
+    nl_sf_prog1 nl_sf_prog2 nl_n3_special_cell nl_n3_special_call
+    nl_sf_defun nl_sf_defvar nl_sf_defconst nl_sf_defalias nl_sf_defvaralias
+    nl_sf_defmacro)
+  "Entries with a Doc 215 word form F_w taking 0 in OUT's position.  `nl_apply_special_w' calls F_w directly.")
+
+(defun nelisp-standalone--special-tail-words (form out &optional word-forms)
+  "FORM, a tail of the `nl_apply_special' dispatch body answering an rc with
+the value in OUT, rewritten to answer the result WORD (2 = not special).
+Tail calls of `nelisp-standalone--special-word-forms' become F_w calls with
+OUT replaced by 0; any other tail rc form runs against a private OUT box
+\(`nl_abi_rc2_to_word').  So does any subtree that uses OUT outside a tail."
+  (cl-labels
+      ((uses-out (x) (cond ((eq x out) t)
+                           ((consp x) (or (uses-out (car x)) (uses-out (cdr x))))))
+       (wrap (x) `(let* ((,out (alloc-bytes 32 8))) (nl_abi_rc2_to_word ,x ,out)))
+       (tail (x)
+         (cond
+          ((eql x 2) 2)
+          ((and (consp x) (eq (car x) 'if))
+           (if (uses-out (nth 1 x))
+               (wrap x)
+             `(if ,(nth 1 x) ,(tail (nth 2 x)) ,(tail (nth 3 x)))))
+          ((and (consp x) (memq (car x) '(progn seq)))
+           (let ((init (butlast (cdr x))))
+             (if (cl-some #'uses-out init)
+                 (wrap x)
+               `(,(car x) ,@init ,(tail (car (last x)))))))
+          ((and (consp x) (memq (car x) '(let let*)))
+           (let ((init (butlast (cddr x))))
+             (if (or (uses-out (nth 1 x)) (cl-some #'uses-out init))
+                 (wrap x)
+               `(,(car x) ,(nth 1 x) ,@init ,(tail (car (last x)))))))
+          ((and (consp x) (memq (car x) (or word-forms nelisp-standalone--special-word-forms))
+                (= (cl-count out (cdr x)) 1)
+                (not (cl-some #'uses-out (cl-remove out (cdr x)))))
+           `(,(intern (format "%s_w" (car x))) ,@(cl-substitute 0 out (cdr x))))
+          (t (wrap x)))))
+    (tail form)))
+
+(defun nelisp-standalone--special-word-abi (form)
+  "Split the prefiltered `nl_apply_special' FORM into the Doc 215 word entry
+`nl_apply_special_w' (result WORD, 0 = signal stashed, 2 = not a special
+form) and the (rc, OUT) adapter `nl_apply_special'.  The prefilter's quick
+2 stays outside the private OUT box, so a non-special head allocates
+nothing."
+  (pcase form
+    (`(defun nl_apply_special (,name ,args ,env ,out)
+        (if ,test (progn . ,body) 2))
+     (list `(defun nl_apply_special_w (,name ,args ,env _pad)
+              (if ,test
+                  ,(nelisp-standalone--special-tail-words (cons 'progn body) out)
+                2))
+           `(defun nl_apply_special (,name ,args ,env ,out)
+              (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
+    (_ (error "special word ABI: unexpected form %S" (car-safe form)))))
+
 (defun nelisp-standalone--special-prefilter-helper (form)
   "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
 match a special-form name tested in FORM."
@@ -41227,6 +41432,12 @@ match a special-form name tested in FORM."
         (cond
          ((eq name 'nl_apply_special)
           (push (cons 'defun (cons 'nl_n3_special_unchecked (cddr form))) out)
+          (let ((params (nth 2 form)))
+            (push `(defun nl_n3_special_unchecked_w
+                       (,(nth 0 params) ,(nth 1 params) ,(nth 2 params) _pad)
+                     ,(nelisp-standalone--special-tail-words
+                       (cons 'progn (nthcdr 3 form)) (nth 3 params)))
+                  out))
           (cl-labels
               ((walk (tree)
                  (if (not (consp tree)) tree
@@ -41258,7 +41469,9 @@ match a special-form name tested in FORM."
                              (walk (nth 3 tree)))
                      (cons (walk (car tree)) (walk (cdr tree)))))))
             (let ((walked (walk form)))
-              (push (nelisp-standalone--special-prefilter walked) out)
+              (dolist (def (nelisp-standalone--special-word-abi
+                            (nelisp-standalone--special-prefilter walked)))
+                (push def out))
               (push (nelisp-standalone--special-prefilter-helper walked) out)))
           (dolist (helper (nelisp-standalone--n3-special-name-helper)) (push helper out)))
          ((eq name 'nl_eval_inner_cons_after_lookup)
@@ -42141,7 +42354,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (let ((pending (list form)))
       (while pending
         (let ((node (pop pending)))
-          (cond ((eq node 'nl_apply_function) (throw 'found t))
+          (cond ((memq node '(nl_apply_function nl_apply_function_w)) (throw 'found t))
                 ((consp node)
                  (push (cdr node) pending)
                  (push (car node) pending))))))))
@@ -42373,13 +42586,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                    (m5_fx_word_list addr n n 0)))))))
     (defun nl_n4_store_args (frame w)
       (if (= w 3) (wf_write_nil (+ frame 32)) (wf_copy32 (+ frame 32) w)))
-    (defun nl_n4_exit_debug (env out)
+    (defun nl_n4_exit_debug_w (w env)
+      ;; Debug-on-exit: call (debugger 'exit VALUE); its answer is the value.
       (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
              (fn (nl_root_reserve env)) (args (nl_root_reserve env))
              (value (nl_root_reserve env)) (tag (nl_root_reserve env))
              (buf (alloc-bytes 8 1)))
         (seq
-         (nl_sexp_clone_into out value)
+         (nl_abi_word_to_rc w value)
          (ptr-write-u64 buf 0 8243108387020236132) ; debugger
          (nl_alloc_symbol buf 8 name)
          (ptr-write-u64 buf 0 1953069157) ; exit
@@ -42389,16 +42603,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (nelisp_cons_construct tag args args)
          (nl_cons_root_finish env mark
           (if (= (bf_dynamic_lookup env name fn) 0)
-              (nl_apply_function fn args env out) 1)))))
+              (nl_apply_function_w fn args env 0)
+            (nl_abi_fail 1 0))))))
+    ;; Doc 215 word ABI: W is the activation's result WORD (0 = signal).
+    (defun nl_n4_finish_w (w env _pad frame)
+      (if (= frame 0) w
+        (let* ((state (ptr-read-u64 env 176))
+               (r (if (and (/= w 0) (/= (ptr-read-u64 frame 120) 0))
+                      (nl_n4_exit_debug_w w env)
+                    w)))
+          (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) r))))
+    ;; (rc, OUT) form for the fx VM's activations: OUT holds the value.
+    (defun nl_n4_finish_rc (rc r out _pad)
+      (if (= r 0) (if (= rc 0) 1 rc) (nl_abi_word_to_rc r out)))
     (defun nl_n4_finish (rc env out frame)
-      (if (= frame 0) rc
-        (let* ((state (ptr-read-u64 env 176)))
-          (seq
-           (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
-               (setq rc (nl_n4_exit_debug env out)) 0)
-           (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1))
-           rc))))
-    (defun nl_n4_direct_apply (function args env out)
+      (nl_n4_finish_rc rc
+                       (nl_n4_finish_w (if (= rc 0) (nl_val_store_word out) 0) env 0 frame)
+                       out 0))
+    (defun nl_n4_direct_apply_w (function args env _pad)
       ;; The cons evaluator already owns the activation. Keep its original
       ;; operator (including aliases), and replace forms only after evaluation.
       (let* ((state (ptr-read-u64 env 176))
@@ -42406,16 +42628,20 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (seq (wf_copy32 (+ frame 32) args)
              (ptr-write-u64 frame 152 0)
              (ptr-write-u64 frame 112 1)
-             (nl_n4_apply_raw function args env out))))
+             (nl_n4_apply_raw_w function args env 0))))
+    (defun nl_n4_direct_apply (function args env out)
+      (nl_abi_word_to_rc (nl_n4_direct_apply_w function args env 0) out))
     (defun nl_n4_apply_name (function)
       (if (= (sexp-tag function) 18) (let* ((nw (nl_record_slot_word function 0))) (if (= (logand nw 1) 0) nw (record-slot-ref-ptr function 0)))
         (if (= (sexp-tag function) 7)
             (if (= (let* ((fw (nl_cons_car_word function))) (if (= (logand fw 1) 1) 0 (sexp-name-eq fw "builtin"))) 1)
                 (nl_apply_list_nth function 1) function)
           function)))
-    (defun nl_n4_named_apply (name function args env out)
+    (defun nl_n4_named_apply_w (name function args env _pad)
       (let* ((frame (nl_n4_push env name args 1)))
-        (nl_n4_finish (nl_n4_apply_raw function args env out) env out frame)))
+        (nl_n4_finish_w (nl_n4_apply_raw_w function args env 0) env 0 frame)))
+    (defun nl_n4_named_apply (name function args env out)
+      (nl_abi_word_to_rc (nl_n4_named_apply_w name function args env 0) out))
     (defun nl_n4_mark_env (env)
       (if (= (ptr-read-u64 env 176) 0) 0
         (let* ((state (ptr-read-u64 env 176)) (i 0))
@@ -42773,9 +42999,16 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (cond
          ((eq name 'nl_apply_function)
           (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result)
+          ;; Doc 215 word ABI: `nl_apply_function_w' answers the result
+          ;; WORD (0 = signal stashed); `nl_apply_function' is the adapter.
+          ;; The applied body still writes a private OUT box until the
+          ;; combiner chain has word forms.
+          (push '(defun nl_apply_function_w (func_ptr args_list_ptr env _pad)
+                   (nl_n4_named_apply_w (nl_n4_apply_name func_ptr)
+                    func_ptr args_list_ptr env 0)) result)
           (push '(defun nl_apply_function (func_ptr args_list_ptr env out)
-                   (nl_n4_named_apply (nl_n4_apply_name func_ptr)
-                    func_ptr args_list_ptr env out)) result))
+                   (nl_abi_word_to_rc
+                    (nl_apply_function_w func_ptr args_list_ptr env 0) out)) result))
          ((eq name 'nl_apply_native_subr)
           (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result))
          ((eq name 'nl_apply_do_funcall)
@@ -42785,7 +43018,38 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                    '(nl_apply_function func_slot spliced_slot env out)
                                    form :test #'equal) :test #'equal) result))
          (t (push form result)))))
-    (cons 'seq (nreverse result))))
+    (cons 'seq (nelisp-standalone--apply-word-forms (nreverse result)))))
+
+(defconst nelisp-standalone--apply-word-names
+  '(nl_n4_apply_raw nl_apply_closure_or_lambda nl_apply_builtin nl_apply_native_subr)
+  "Combiner-apply defuns given a Doc 215 word form by
+`nelisp-standalone--apply-word-forms' (their last parameter is OUT).")
+
+(defun nelisp-standalone--apply-word-forms (forms)
+  "FORMS (the final combiner-apply defuns) with each of
+`nelisp-standalone--apply-word-names' split into F_w, whose tail calls of
+the same set and of `nelisp_apply_function' become word calls (other
+tails run against a private box), and the (rc, OUT) adapter F."
+  (let ((words (cons 'nelisp_apply_function nelisp-standalone--apply-word-names))
+        result)
+    (dolist (form forms)
+      (if (and (eq (car-safe form) 'defun)
+               (memq (cadr form) nelisp-standalone--apply-word-names))
+          (let* ((name (cadr form)) (params (nth 2 form))
+                 (out (car (last params)))
+                 (wname (intern (format "%s_w" name)))
+                 (wparams (append (butlast params) '(_pad))))
+            (unless (eq out 'out)
+              (error "apply word ABI: %s does not end in OUT" name))
+            (push `(defun ,wname ,wparams
+                     ,(nelisp-standalone--special-tail-words
+                       (cons 'progn (nthcdr 3 form)) out words))
+                  result)
+            (push `(defun ,name ,params
+                     (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
+                  result))
+        (push form result)))
+    (nreverse result)))
 
 ;; Preserve the original lowered evaluator body as the executable reference.
 (setq nelisp-standalone--n4-source
@@ -42794,6 +43058,164 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                      (cddr nelisp-standalone--mxcache-ei-cons-tail))))))
 (setq nelisp-standalone--shim-source
       (append nelisp-standalone--shim-source (cdr nelisp-standalone--n4-source)))
+
+;; Doc 215 builtin word ABI: the evaluator's cons path and `nl_eval_inner'
+;; answer the result WORD (0 = signal stashed).  These are appended as the
+;; LAST step of the combiner-cons / eval-inner unit patches, after every
+;; name-matching patch above has run on the legacy chain; the legacy chain
+;; defuns listed in the drop lists are then removed and the old entry names
+;; become (rc, OUT) adapters.  Root marks, reservations and release points
+;; are those of the legacy chain (Doc 215 R3: nothing is reserved inside a
+;; binder; func/args slots stay rooted across argument evaluation).
+(defconst nelisp-standalone--combiner-cons-word-drop
+  '(nl_eval_inner_cons nl_eval_inner_cons_symbol_dispatch
+    nl_eval_inner_cons_symbol_mark nl_eval_inner_cons_symbol_slot
+    nl_eval_inner_cons_after_lookup nl_eval_inner_cons_alias
+    nl_eval_inner_cons_eval_args nl_eval_inner_cons_after_args
+    nl_eval_inner_cons_callable_mark nl_eval_inner_cons_callable_slot
+    nl_eval_inner_cons_after_head_eval nl_cons_macro_apply_eval)
+  "Legacy combiner-cons defuns replaced by `nelisp-standalone--combiner-cons-word'.")
+
+(defconst nelisp-standalone--combiner-cons-word
+  '((defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
+      (if (= (sexp-tag head_ptr) 4)
+          (if (= (nl_sp_eq_dolist head_ptr) 1)
+              (nl_eic_dolist_w tail_ptr env form_ptr 0)
+            (nl_eic_symbol_dispatch_w
+             (nl_apply_special_w head_ptr tail_ptr env 0)
+             form_ptr head_ptr tail_ptr env))
+        (if (= (sexp-tag head_ptr) 16)
+            (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
+          (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env)))))
+    (defun nl_eval_inner_cons (form_ptr head_ptr tail_ptr env out)
+      (nl_abi_word_to_rc (nl_eval_inner_cons_w form_ptr head_ptr tail_ptr env 0) out))
+    ;; `dolist' answers through its private-box word form.
+    (defun nl_eic_dolist_w (tail_ptr env form_ptr _pad)
+      (nl_sf_dolist_w tail_ptr env 0 form_ptr))
+    ;; W from `nl_apply_special_w': 2 = not a special form -> function call.
+    (defun nl_eic_symbol_dispatch_w (w form_ptr head_ptr tail_ptr env)
+      (if (= w 2)
+          (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
+        w))
+    (defun nl_eic_symbol_w (form_ptr head_ptr tail_ptr env root_mark)
+      (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark
+                            (nl_root_reserve env)))
+    ;; The function cell goes into the reserved root slot FUNC_SLOT (it must
+    ;; outlive argument evaluation) through the legacy lookup.
+    (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark func_slot)
+      (nl_eic_after_lookup_w
+       (nl_lookup_fn_autoload (+ env 0) (+ env 64) head_ptr func_slot)
+       form_ptr head_ptr tail_ptr env root_mark func_slot))
+    (defun nl_eic_after_lookup_w (rc_lu form_ptr head_ptr tail_ptr env root_mark func_slot)
+      (nl_cons_root_finish
+       env root_mark
+       (if (= rc_lu 0)
+           (if (= (logior (logxor (sexp-tag func_slot) 7)
+                          (logxor (ptr-read-u64 func_slot 16) 13108)) 0)
+               (nl_n3_special_call_w func_slot tail_ptr env 0)
+             (if (= (sexp-tag func_slot) 0)
+                 (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
+               (if (= (sexp-tag func_slot) 4)
+                   (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
+                                   tail_ptr env func_slot head_ptr 0)
+                 (if (= (nl_cons_is_macro func_slot) 1)
+                     (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
+                   (nl_eic_eval_args_w tail_ptr env func_slot
+                                       (nl_root_reserve env) head_ptr)))))
+         (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0))))
+    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name _pad)
+      (if (= w 2)
+          (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
+        w))
+    ;; The fx VM answers -3 when it does not take the call; otherwise its
+    ;; rc with the value in BOX.
+    (defun nl_eic_eval_args_w (tail_ptr env func_slot args_slot call_name)
+      (let* ((box (alloc-bytes 32 8))
+             (st (m5_fx_interp_call func_slot tail_ptr env box args_slot)))
+        (if (= st -3)
+            (nl_eic_after_args_w (nl_eval_arg_list tail_ptr env args_slot)
+                                 env func_slot args_slot call_name)
+          (nl_abi_rc_to_word st box))))
+    (defun nl_eic_after_args_w (rc_args env func_slot args_slot call_name)
+      (if (= rc_args 0)
+          (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
+              (nl_n4_direct_apply_w func_slot args_slot env 0)
+            (nl_abi_fail 1 0))
+        (nl_abi_fail rc_args 0)))
+    (defun nl_eic_callable_w (head_ptr tail_ptr env root_mark)
+      (nl_eic_callable_slot_w head_ptr tail_ptr env root_mark (nl_root_reserve env)))
+    ;; A non-symbol head is evaluated into the rooted FUNC_SLOT.
+    (defun nl_eic_callable_slot_w (head_ptr tail_ptr env root_mark func_slot)
+      (nl_cons_root_finish
+       env root_mark
+       (if (= (nelisp_eval_call head_ptr env func_slot) 0)
+           (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) 0)
+         (nl_abi_fail 1 0))))
+    ;; Expand, cache the expansion against FORM_PTR, evaluate it.
+    (defun nl_cons_macro_apply_eval_w (form_ptr func_ptr tail_ptr env _pad)
+      (let* ((macrofn_ptr (let* ((mw (nl_cons_cdr_word func_ptr)))
+                            (if (= (logand mw 1) 0) mw (nl_cons_cdr_ptr func_ptr))))
+             (exp_slot (alloc-bytes 32 8)))
+        (if (= (nl_apply_function macrofn_ptr tail_ptr env exp_slot) 0)
+            (seq (nl_mxcache_store form_ptr exp_slot)
+                 (nelisp_eval_call_w exp_slot env 0))
+          (nl_abi_fail 1 0))))
+    (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
+      (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
+  "Word forms of the combiner-cons evaluator chain (Doc 215).")
+
+(defun nelisp-standalone--patch-combiner-cons-word (src)
+  "SRC with the legacy evaluator chain replaced by its Doc 215 word forms."
+  (cons (car src)
+        (append (cl-remove-if
+                 (lambda (form)
+                   (and (eq (car-safe form) 'defun)
+                        (memq (cadr form) nelisp-standalone--combiner-cons-word-drop)))
+                 (cdr src))
+                nelisp-standalone--combiner-cons-word)))
+
+(defconst nelisp-standalone--eval-inner-word
+  '((defun nl_eval_inner_w (form env _pad _pad1)
+      ;; Self-evaluating FORM is answered as its own WORD; a view of an
+      ;; immediate becomes the immediate (Doc 215 R4).
+      (cond
+       ((= (nl_kw_is_keyword form) 1) (nl_val_store_word form))
+       ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
+        (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
+       ((= (sexp-tag form) 7)
+        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_ptr form) form env 0))
+       ((= (sexp-tag form) 11) (nl_ei_cell_w (alloc-bytes 32 8) form))
+       (t (nl_val_store_word form))))
+    (defun nl_eval_inner (form env out _pad)
+      (nl_abi_word_to_rc (nl_eval_inner_w form env 0 0) out))
+    ;; W from `nl_env_lookup_val_w': 2 = unbound -> void-variable.
+    (defun nl_ei_var_w (w form env _pad)
+      (if (= w 2) (nl_abi_fail (nl_stash_void_variable env form) 0) w))
+    (defun nl_ei_cell_w (box form)
+      (nl_abi_rc_to_word (extern-call nl_cell_get_value form box) box))
+    (defun nl_ei_cons_dispatch_w (car-ptr form env _pad)
+      (nl_ei_cons_tail_w (extern-call nl_cons_cdr_ptr form) car-ptr form env 0))
+    (defun nl_ei_cons_eval_w (cdr-ptr car-ptr form env)
+      (let* ((cached (extern-call nl_mxcache_lookup form)))
+        (if (= cached 0)
+            (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
+          (nelisp_eval_call_w cached env 0))))
+    (defun nl_ei_cons_tail_w (cdr-ptr car-ptr form env _pad)
+      (let* ((n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
+        (nl_n4_finish_w (nl_ei_cons_eval_w cdr-ptr car-ptr form env)
+                        env 0 n4-frame))))
+  "Word forms of `nl_eval_inner' and its cons dispatch (Doc 215).")
+
+(defun nelisp-standalone--patch-eval-inner-word (src)
+  "SRC with `nl_eval_inner' and its cons dispatch replaced by word forms."
+  (cons (car src)
+        (append (cl-remove-if
+                 (lambda (form)
+                   (and (eq (car-safe form) 'defun)
+                        (memq (cadr form) '(nl_eval_inner nl_ei_cons_dispatch
+                                            nl_ei_cons_tail))))
+                 (cdr src))
+                nelisp-standalone--eval-inner-word)))
 
 (defun nelisp-standalone--reader-units ()
   "Build the ORDERED reader-path unit list (start first, arena last).
@@ -42869,10 +43291,11 @@ genuine general interpreter for the 11 special forms + installed builtins."
                        (require 'nelisp-cc-eval-inner)
                        (nelisp-standalone--cached-unit
                         "eval-inner-mxcache.o"
+                        (nelisp-standalone--patch-eval-inner-word
                         (nelisp-standalone--patch-n4-eval
                         (nelisp-standalone--patch-eval-inner-mxcache
                          (nelisp-standalone--patch-eval-inner
-                          (symbol-value 'nelisp-cc-eval-inner--source))))
+                          (symbol-value 'nelisp-cc-eval-inner--source)))))
                         (list nelisp-standalone--this-file (locate-library "nelisp-cc-eval-inner")))))
          ;; M6 catch/throw dispatch + void-function miss fix, PLUS
          ;; perf/macroexpansion-cache's `nl_cons_macro_apply_eval'/
@@ -42882,11 +43305,12 @@ genuine general interpreter for the 11 special forms + installed builtins."
                           (require 'nelisp-cc-evalport-combiner-cons)
                           (nelisp-standalone--cached-unit
                            "combiner-cons-mxcache.o"
+                           (nelisp-standalone--patch-combiner-cons-word
                            (nelisp-standalone--patch-n4-cons
                            (nelisp-standalone--patch-autoload-lookups
                             (nelisp-standalone--patch-combiner-cons-mxcache
                              (nelisp-standalone--patch-combiner-cons-full
-                              (symbol-value 'nelisp-cc-evalport-combiner-cons--source)))))
+                              (symbol-value 'nelisp-cc-evalport-combiner-cons--source))))))
                            (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-cons")))))
          ;; M3: do_fset rc-fix patched combiner-apply.
          (combiner (progn

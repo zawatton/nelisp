@@ -102,8 +102,10 @@ pointers dereferences them."
     form))
 
 (defconst nelisp-cc-evalport-aot-builtin-calln--source
-  `(defun nelisp_aot_builtin_calln
-       (mirror frames name argc out scratch
+  `(seq
+    ;; Doc 215 word ABI: the call's result WORD, 0 with the signal stashed.
+    (defun nelisp_aot_builtin_calln_w
+       (mirror frames name argc _pad scratch
                ,@(nelisp-cc-evalport-aot-builtin-calln--arg-syms))
      (let* ((nil_slot (alloc-bytes 32 8))
             (builtin_sym (alloc-bytes 32 8))
@@ -126,8 +128,17 @@ pointers dereferences them."
         ,(nelisp-cc-evalport-aot-builtin-calln--dispatch)
         (nelisp_cons_construct name nil_slot inner)
         (nelisp_cons_construct builtin_sym inner func)
-        (nelisp_apply_function func args_list frames out)
-        out)))
+        (nelisp_apply_function_w func args_list frames 0))))
+    ;; The AOT-emitted caller's ABI: fills OUT and returns OUT.
+    (defun nelisp_aot_builtin_calln
+       (mirror frames name argc out scratch
+               ,@(nelisp-cc-evalport-aot-builtin-calln--arg-syms))
+     (seq (nl_abi_word_to_rc
+           (nelisp_aot_builtin_calln_w
+            mirror frames name argc 0 scratch
+            ,@(nelisp-cc-evalport-aot-builtin-calln--arg-syms))
+           out)
+          out)))
   "AOT source for the native `nelisp_aot_builtin_calln' provider.")
 
 (provide 'nelisp-cc-evalport-aot-builtin-calln)
