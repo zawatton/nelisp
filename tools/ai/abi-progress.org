@@ -6,6 +6,8 @@
 #   ABI_DUMP        NELISP_BOX_DUMP output of the dynamic build under test
 #   ABI_BIN         that dynamic binary
 #   ABI_STATIC_BIN  static build of the same source
+#   ABI_CENSUS      NELISP_BOX_CENSUS output (census.tsv) of a dynamic build of the same source
+#   ABI_BASE_BIN    the eval/core baseline binary (441166d9d) the merge gate compares against
 # The dump and binaries are produced by hand (about 3 minutes per build):
 #   NELISP_BOX_DUMP=$PWD/target/abi/dump.jsonl NELISP_READER_DYNAMIC=1 \
 #   NELISP_STANDALONE_READER_OUTPUT=target/abi/nelisp-dynamic ... -f nelisp-standalone-build-reader
@@ -80,10 +82,36 @@ cmd: test -x "$ABI_BIN" && timeout 60 "$ABI_BIN" --eval '(princ 42)' | grep -q 4
 cmd: test -x "$ABI_STATIC_BIN" && timeout 60 "$ABI_STATIC_BIN" --eval '(princ 42)' | grep -q 42
 
 ** S5.3 Every standalone check passes or is known-red (prn-string-escape included)
-pending
+#+REQUIRES: ABI_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$ABI_BIN" sh test/perf/standalone-checks.sh 2>&1 | grep -q '^STANDALONE-CHECKS PASS'
 
 ** S5.4 fx-spike-check and the shallow-binding check pass
-pending
+#+REQUIRES: ABI_BIN
+#+TIMEOUT: 600
+cmd: timeout 600 "$ABI_BIN" --load test/perf/fx-spike-check.el 2>&1 | grep -q 'FX-SPIKE failures=0 PASS' && timeout 600 "$ABI_BIN" --load test/standalone-shallow-binding-check.el 2>&1 | grep -q 'SHALLOW-BINDING failures=0 PASS'
 
 ** S5.5 End to end: the four Doc 199 thread smokes pass on the static build
-pending
+#+REQUIRES: ABI_STATIC_BIN
+#+TIMEOUT: 600
+cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do timeout 600 "$ABI_STATIC_BIN" --load tools/nelisp-thread-$n-smoke.el 2>&1 | grep -q "^nelisp-thread-$n-smoke: PASS" || exit 1; done
+
+* S6 Merge gate into eval/core (no regression against the 441166d9d baseline)
+
+# Added 2026-10-19 by the integrator after the first integrated build measured
+# boot 3.56 s vs 3.34 s, regex 759 vs 705 us and census 1824 vs 1669.
+# tools/ai/abi-merge-gate.sh runs the comparisons; perf alternates with the
+# baseline on the same machine and judges the candidate's medians.
+
+** S6.1 Box census TOTAL is below the baseline's 1669
+#+REQUIRES: ABI_CENSUS
+cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1669
+
+** S6.2 No nl_val_store_word left in any census family (1824-total build: 221; evaluator 129, other 83, regexp 9)
+#+REQUIRES: ABI_CENSUS
+cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
+
+** S6.3 End to end: boot median <= 3.34 s and regex median <= 705 us, alternating with the baseline
+#+REQUIRES: ABI_BIN,ABI_BASE_BIN
+#+TIMEOUT: 600
+cmd: tools/ai/abi-merge-gate.sh perf "$ABI_BIN" "$ABI_BASE_BIN"
