@@ -332,6 +332,23 @@
     (defun nelisp_frame_bind_in_frame
         (frame-ptr name-ptr cell-ptr
                    scratch-pair-slot scratch-outer-slot scratch-count-slot)
+      ;; A chain shared with a closure environment (view word +16 = 13110,
+      ;; `nelisp_frame_try_share_chain') is copied into a table first, so
+      ;; the closure's pairs are never written.
+      (if (= (ptr-read-u64 frame-ptr 16) 13110)
+          (and (nelisp_frame_bind_migrate
+                frame-ptr (nelisp_frame_bind_slot_raw_word frame-ptr 0))
+               (ptr-write-u64 frame-ptr 16 0)
+               (nelisp_frame_bind_in_ht
+                (record-slot-ref-ptr frame-ptr 0)
+                name-ptr cell-ptr
+                scratch-pair-slot scratch-outer-slot scratch-count-slot))
+        (nelisp_frame_bind_in_frame_1
+         frame-ptr name-ptr cell-ptr
+         scratch-pair-slot scratch-outer-slot scratch-count-slot)))
+    (defun nelisp_frame_bind_in_frame_1
+        (frame-ptr name-ptr cell-ptr
+                   scratch-pair-slot scratch-outer-slot scratch-count-slot)
       (if (= (nelisp_frame_bind_word_tag_p
               (nelisp_frame_bind_slot_raw_word frame-ptr 0) 12)
              1)
@@ -410,18 +427,27 @@
              (record-slot-set frame-ptr 0 ht-slot)
              1)))
     ;; Insert every (NAME . CELL) of CHAIN into the table HT-PTR, keeping
-    ;; each cell (closures that captured it still share it).
+    ;; each cell (closures that captured it still share it).  The tail goes
+    ;; in first and a repeated name updates in place, so the first binding
+    ;; of a name in CHAIN wins, as in lookup.  Bare declarations are
+    ;; skipped (a shared closure environment can hold them).
     (defun nelisp_frame_bind_rehash (ht-ptr chain)
       (if (= (nelisp_frame_bind_word_tag_p chain 7) 0)
           1
+        (and (nelisp_frame_bind_rehash
+              ht-ptr (extern-call nl_cons_cdr_word chain))
+             (nelisp_frame_bind_rehash_one
+              ht-ptr (extern-call nl_cons_car_word chain)))))
+    (defun nelisp_frame_bind_rehash_one (ht-ptr pair)
+      (if (= (nelisp_frame_bind_word_tag_p pair 7) 0)
+          1
         (let* ((blk (alloc-bytes 96 8)))
-          (and (nelisp_frame_bind_prepend
+          (and (nelisp_frame_bind_in_ht
                 ht-ptr
-                (extern-call nl_cons_car_ptr (extern-call nl_cons_car_ptr chain))
-                (extern-call nl_cons_cdr_ptr (extern-call nl_cons_car_ptr chain))
+                (extern-call nl_cons_car_ptr pair)
+                (extern-call nl_cons_cdr_ptr pair)
                 blk (+ blk 32) (+ blk 64))
-               (nelisp_frame_bind_rehash
-                ht-ptr (extern-call nl_cons_cdr_word chain)))))))
+               1)))))
   "AOT source for Doc 111 §111.E #23 / Doc 115 §115.5
 `frame_bind_rust_direct'.
 
