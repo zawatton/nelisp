@@ -119,7 +119,7 @@
        (nl_write_nil_slot tail_slot)
        (nl_eval_arg_list_status status_slot 0)
        (nl_eval_arg_list_copy32 state_slot cur_ptr)
-       (while (= (nl_val_store_word status_slot) 1)
+       (while (= (ptr-read-u64 (+ status_slot 8) 0) 0)
          (if (= (sexp-tag state_slot) 7)
              (let* ((car-word (nl_eval_arg_list_car_word state_slot)))
                (seq
@@ -141,7 +141,7 @@
                 ;; allocation.  Then make a distinct durable wrapper for the
                 ;; list: linking NODE directly would alias every appended
                 ;; element to the same reusable root slot.
-                (if (= (nl_val_store_word status_slot) 1)
+                (if (= (ptr-read-u64 (+ status_slot 8) 0) 0)
                     (seq
                      (nelisp_cons_construct eval_slot nil_slot node_slot)
                      (let* ((durable-node (alloc-bytes 32 8)))
@@ -168,7 +168,7 @@
            (nl_eval_arg_list_status status_slot 1)))
        ;; Proper and historical dotted-tail termination both return the head;
        ;; an evaluator failure returns an error after releasing the roots.
-       (if (= (nl_val_store_word status_slot) 5)
+       (if (= (ptr-read-u64 (+ status_slot 8) 0) 1)
            (seq
             (nl_eval_arg_list_copy32 acc_slot head_slot)
             (nl_root_release env_ptr root_mark)

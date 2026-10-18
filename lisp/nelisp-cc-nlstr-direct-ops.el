@@ -394,7 +394,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_copy_out_w (entry _pad)
       (let* ((out (alloc-bytes 32 8)))
         (if (/= (nl_symbol_name_copy_out entry out) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
 
     (defun nl_next_symbol_identity ()
@@ -417,7 +417,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_uninterned_symbol_write_w (bytes-ptr n identity _pad char-buf)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_uninterned_symbol_write bytes-ptr n identity result-slot char-buf) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
     (defun nl_alloc_uninterned_symbol (bytes-ptr n identity result-slot)
       (if (> identity 0)
@@ -588,7 +588,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_alloc_symbol_plain_named_w (name-slot n _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_symbol_plain_named name-slot n result-slot) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
     (defun nl_intern_finish_named (slot n name-slot result-slot)
       (if (= slot 0)
@@ -604,7 +604,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_finish_named_w (slot n name-slot _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_intern_finish_named slot n name-slot result-slot) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
     ;; NAME-SLOT is a borrowed, caller-rooted string Sexp for the whole call.
     ;; Re-read its byte pointer after any allocating fallback. Existing
@@ -638,7 +638,9 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_alloc_symbol_named_w (bytes-ptr len name-slot _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_symbol_named bytes-ptr len name-slot result-slot) 0)
-            (nl_val_store_word result-slot)
+            ;; "nil" and "t" are the canonical immediates; every other name is a heap symbol.
+            (if (= (nl_name_is_nil bytes-ptr len) 1) 3
+              (if (= (nl_name_is_t bytes-ptr len) 1) 7 result-slot))
           (nl_abi_fail 1 0))))
 
     ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
@@ -655,7 +657,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_alloc_uninterned_symbol_named_w (bytes-ptr n identity name-slot _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_alloc_uninterned_symbol_named bytes-ptr n identity name-slot result-slot) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           (nl_abi_fail 1 0))))
 
     ;; Return the canonical original name Sexp for a symbol, lazily creating
@@ -683,7 +685,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_value_w (env symbol-slot _pad)
       (let* ((out (alloc-bytes 32 8)))
         (if (/= (nl_symbol_name_value env symbol-slot out) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
 
     (defun nl_symbol_name_value_create (env symbol-slot out)
@@ -716,7 +718,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_value_create_w (env symbol-slot _pad)
       (let* ((out (alloc-bytes 32 8)))
         (if (/= (nl_symbol_name_value_create env symbol-slot out) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
 
     (defun nl_symbol_name_immediate (env tag out)
@@ -746,7 +748,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_immediate_w (env tag _pad)
       (let* ((out (alloc-bytes 32 8)))
         (if (/= (nl_symbol_name_immediate env tag out) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
 
     ;; ---- symbol-name LOOKUP WITHOUT INSERT (Doc 163 Phase C) ----
@@ -783,7 +785,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_lookup_finish_w (slot n _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_intern_lookup_finish slot n result-slot) 0)
-            (nl_val_store_word result-slot)
+            result-slot
           3)))
 
     ;; Probe-only counterpart of `nl_alloc_symbol_pos'.  "nil"/"t" short-
@@ -815,7 +817,9 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_lookup_pos_w (bytes-ptr n _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_intern_lookup_pos bytes-ptr n result-slot) 0)
-            (nl_val_store_word result-slot)
+            ;; "nil" and "t" hit as the canonical immediates.
+            (if (= (nl_name_is_nil bytes-ptr n) 1) 3
+              (if (= (nl_name_is_t bytes-ptr n) 1) 7 result-slot))
           3)))
 
     ;; Public entry: nl_intern_lookup(bytes_ptr, len, result_slot).
@@ -834,7 +838,9 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_lookup_w (bytes-ptr len _pad)
       (let* ((result-slot (alloc-bytes 32 8)))
         (if (/= (nl_intern_lookup bytes-ptr len result-slot) 0)
-            (nl_val_store_word result-slot)
+            ;; "nil" and "t" hit as the canonical immediates.
+            (if (= (nl_name_is_nil bytes-ptr len) 1) 3
+              (if (= (nl_name_is_t bytes-ptr len) 1) 7 result-slot))
           3)))
 
     ;; Internal read-only cursor used by native diagnostics and future

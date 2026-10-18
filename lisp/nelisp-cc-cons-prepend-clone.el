@@ -71,7 +71,7 @@
     (defun nl_cons_prepend_clone_w (car-ptr cdr-ptr _pad _pad1)
       (let* ((box (alloc-bytes 32 8)))
         (seq (cons-make-with-clone car-ptr cdr-ptr box)
-             (nl_val_store_word box))))
+             box)))
     (defun nl_cons_prepend_clone (car-ptr cdr-ptr out)
       (nl_abi_word_to_rc (nl_cons_prepend_clone_w car-ptr cdr-ptr 0 0) out)))
   "AOT source for `nl_cons_prepend_clone' (special_forms.rs → elisp).

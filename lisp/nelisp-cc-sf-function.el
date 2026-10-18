@@ -60,7 +60,7 @@
     ;; Doc 215 word ABI.  `nl_sf_function_w' answers the closure WORD for
     ;; #'(lambda ...), the form's own WORD otherwise, or 0 with the signal
     ;; stashed.  FORM comes from `nl_cons_car_ptr' and may be a view of an
-    ;; immediate, so it goes through `nl_val_store_word' (Doc 215 R4).
+    ;; immediate, so its tag is mapped to a WORD inline (Doc 215 R4).
     ;; S1 is the caller's scratch slot for the lambda builder.
     (defun nl_sf_function_do_lambda_w (lambda-args env _pad s1)
       (extern-call nl_sf_lambda_w lambda-args env 0 s1))
@@ -68,7 +68,7 @@
     (defun nl_sf_function_check_lambda_w (is-lambda form env _pad s1 _pad1)
       (if (= is-lambda 1)
           (nl_sf_function_do_lambda_w (extern-call nl_cons_cdr_ptr form) env 0 s1)
-        (nl_val_store_word form)))
+        (let* ((tg (ptr-read-u8 form 0))) (if (= tg 2) (+ (* (ptr-read-u64 form 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 form))))))
 
     (defun nl_sf_function_got_car_w (car form env _pad s1 _pad1)
       (nl_sf_function_check_lambda_w (extern-call nl_symbol_is_lambda car) form env 0 s1 0))
@@ -76,7 +76,7 @@
     (defun nl_sf_function_got_form_w (form args env _pad s1 _pad1)
       (if (= (sexp-tag form) 7)
           (nl_sf_function_got_car_w (extern-call nl_cons_car_ptr form) form env 0 s1 0)
-        (nl_val_store_word form)))
+        (let* ((tg (ptr-read-u8 form 0))) (if (= tg 2) (+ (* (ptr-read-u64 form 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 form))))))
 
     ;; `(function)' with no argument fails the form.
     (defun nl_sf_function_w (args env _pad s1)

@@ -140,7 +140,7 @@
     (defun nl_sf_cc_after_success_w (succ-rc env pv s1)
       (if (= succ-rc 0)
           (nl_sf_cc_body_w s1 env 0 0)
-        (nl_val_store_word pv)))
+        (let* ((tg (ptr-read-u8 pv 0))) (if (= tg 2) (+ (* (ptr-read-u64 pv 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 pv))))))
 
     (defun nl_sf_cc_try_success_w (clone-rc clauses-ptr var-ptr env pv s1)
       (nl_sf_cc_after_success_w
