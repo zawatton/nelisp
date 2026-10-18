@@ -1,0 +1,75 @@
+#+TITLE: NeLisp GNU-bytecode interpreter on 64-bit words
+#+NOTE: Objective (coordinator, 2026-10-18): the native GNU-bytecode
+#+NOTE: interpreter (wf_bytecode_* in scripts/nelisp-standalone-build.el)
+#+NOTE: keeps its operand stack and locals as 64-bit WORDs in a GC-traced
+#+NOTE: vector frame, as the word VM (m5_fx_run_body) does: immediates are
+#+NOTE: never boxed, heap objects are pointer words, common opcodes have word
+#+NOTE: fast paths, GNU semantics are unchanged.  User decision (relayed
+#+NOTE: 2026-10-18): all runtime transport moves from 32-byte boxes to words;
+#+NOTE: the interpreter must hold no (alloc-bytes 32 8) scratch and call no
+#+NOTE: box-view materializer; nl_val_store_word / nl_sci_store_imm only at
+#+NOTE: boundaries with still-boxed callees.
+#+NOTE: Baseline at e0ab2ae3a (tools/ai/bytecode-word-baseline.txt): loop of
+#+NOTE: 1e6 0.143 s, bytecode call 1.75 us per caller-loop iteration (handoff
+#+NOTE: measured 2.37 us), regexp match 4,220 us, corpus 145/145, audit 138.
+#+NOTE: EVAL_BIN is a dynamic build of this tree; STATIC_BIN the static
+#+NOTE: build (same command without NELISP_READER_DYNAMIC).  Benches run one
+#+NOTE: at a time on a quiet machine.
+
+* S1 Measurement and corpus
+** S1.1 Baseline numbers for the benches, corpus and audit are recorded on e0ab2ae3a
+evidence: tools/ai/bytecode-word-baseline.txt sha256=111b19799c172b65c9acb3b3640540ef9e301ed36b591900b60d1404ad3e2098
+** S1.2 The corpus fixture is GNU 31.1 output of the corpus source and generator (regenerating it changes nothing)
+#+TIMEOUT: 120
+cmd: mkdir -p target && BWC_OUT=target/bytecode-word-corpus.eld.regen emacs --batch -Q -l test/bytecode-word-corpus-gen.el >/dev/null 2>&1 && cmp -s test/bytecode-word-corpus.eld target/bytecode-word-corpus.eld.regen
+** S1.3 The equality corpus answers like GNU Emacs on the runtime under test
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: timeout 300 "$EVAL_BIN" --load test/standalone-bytecode-word-check.el
+** S1.4 End to end: every standalone check passes (known-red list only)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: EVAL_BIN="$EVAL_BIN" timeout 600 test/perf/standalone-checks.sh
+
+* S2 Word frame: operand stack and locals are words
+** S2.1 The interpreter holds no 32-byte scratch box and calls no box-view materializer (audit total 0; was 138)
+#+NOTE: A heap word is a pointer to its own 32-byte box, so creating a new
+#+NOTE: heap value allocates one; that is the value, not scratch.  Such sites
+#+NOTE: are confined to the helpers in `bwcl-boundary-fns' (audit allowlist,
+#+NOTE: by function name), each named in the commit that adds it.
+#+TIMEOUT: 120
+cmd: emacs --batch -Q -l test/perf/bytecode-word-clean.el
+** S2.2 A regexp match (GNU bytecode regexp engine) takes at most 2,000 us (was 4,220)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 200
+cmd: BENCH=regex LIMIT=2000 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el
+** S2.3 Bytecode printer paths still print as before
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 300
+cmd: CASES=test/fixtures/prn-string-escape-cases.eld timeout 300 "$EVAL_BIN" --load test/standalone-prn-string-escape-check.el
+** S2.4 Dynamic binding semantics and the word VM spike check still pass
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 400
+cmd: timeout 300 "$EVAL_BIN" --load test/standalone-shallow-binding-check.el && timeout 300 "$EVAL_BIN" --load test/perf/fx-spike-check.el
+** S2.5 End to end: corpus matches GNU and every standalone check passes on the word frame
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: timeout 300 "$EVAL_BIN" --load test/standalone-bytecode-word-check.el && EVAL_BIN="$EVAL_BIN" timeout 600 test/perf/standalone-checks.sh
+
+* S3 Word fast paths
+** S3.1 A bytecode loop of 1e6 iterations takes at most 0.04 s (was 0.143)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 200
+cmd: BENCH=loop LIMIT=0.04 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el
+** S3.2 A 3-argument bytecode call costs at most 1 us per caller-loop iteration (was 1.75)
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 200
+cmd: BENCH=call LIMIT=1 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el
+** S3.3 Doc 199 worker smokes pass on the static build
+#+REQUIRES: STATIC_BIN
+#+TIMEOUT: 600
+cmd: for f in tools/nelisp-thread-standalone-smoke.el tools/nelisp-thread-allocating-standalone-smoke.el tools/nelisp-thread-percpu-roots-smoke.el tools/nelisp-thread-mirror-guard-smoke.el; do timeout 140 "$STATIC_BIN" --load "$f" >/dev/null 2>&1 || exit 1; done
+** S3.4 End to end: corpus, all standalone checks, regexp 2,000 us, loop 0.04 s and call 1 us together on one binary
+#+REQUIRES: EVAL_BIN
+#+TIMEOUT: 600
+cmd: timeout 300 "$EVAL_BIN" --load test/standalone-bytecode-word-check.el && EVAL_BIN="$EVAL_BIN" timeout 600 test/perf/standalone-checks.sh && BENCH=regex LIMIT=2000 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el && BENCH=loop LIMIT=0.04 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el && BENCH=call LIMIT=1 timeout 200 nice "$EVAL_BIN" --load test/perf/bytecode-bench.el
