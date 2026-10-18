@@ -23912,10 +23912,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; (e.g. `(/ (nl-unix-time-usec) 1000000.0)') is then done in a SEPARATE
     ;; builtin dispatch across an eval-loop boundary, sidestepping the
     ;; syscall<->f64 codegen abort.  Lets `float-time' be a pure-elisp polyfill.
-    ((:lit "nl-unix-time-usec") . (let* ((buf (alloc-bytes 16 8)))
+    ((:lit "nl-unix-time-usec") :word . (let* ((buf (alloc-bytes 16 8)))
                                     (seq (syscall-direct 96 buf 0 0 0 0 0)
-                                         (wf_write_int out
-                                           (+ (* (ptr-read-u64 buf 0) 1000000)
+                                         (nl_g4arm_int_w 0 (+ (* (ptr-read-u64 buf 0) 1000000)
                                               (ptr-read-u64 buf 8))))))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ;; Doc 190 Phase C: `ash' accepts a Bignum (tag 13) N -- always via
