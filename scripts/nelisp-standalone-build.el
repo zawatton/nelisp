@@ -11537,9 +11537,10 @@ eval applyfn.")
 ;; M4 hash-table helpers (cons-alist v1).  Reader-only: wf_key_eq uses symbol-eq
 ;; / str-eq grammar ops that lower to extern calls present only in the reader.
 (defconst nelisp-standalone--applyfn-ht-helpers
-  '((defun nl_ht_copy32 (dst src)
-      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 dst 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
+  '((defun nl_ht_copy32_w (_pad src)
+      (nl_val_store_word src))
+    (defun nl_ht_copy32 (dst src)
+      (nl_abi_word_to_rc (nl_ht_copy32_w 0 src) dst))
     (defun wf_key_eq_depth (ka kb depth)
       ;; Iterative, bounded `equal'-style key comparison for hash lookup.
       ;; When the comparison exceeds the cap, return not-equal: a lookup
@@ -11885,12 +11886,14 @@ eval applyfn.")
                       (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)))
                 entry_ptr))
           (nl_ht_find data_ptr key_ptr mode))))
-    (defun nl_ht_get_default (args out)
+    (defun nl_ht_get_default_w (args _pad)
       (let* ((rest1 (nl_cons_cdr_word args))
              (rest2 (nl_cons_cdr_word rest1)))
         (if (= (nl_word_tag64 rest2) 7)
-            (nl_ht_copy32 out (nl_cons_car_ptr rest2))
-          (wf_write_nil out))))
+            (nl_cons_car_word rest2)
+          3)))
+    (defun nl_ht_get_default (args out)
+      (nl_abi_word_to_rc (nl_ht_get_default_w args 0) out))
     ;; Iterative, and an empty bucket (the Nil word 3 in the vector's data
     ;; buffer, box@+8, data@box+8) is skipped without boxing it: the
     ;; recursive walk took a native frame and a boxed slot per bucket, 2048
@@ -11972,36 +11975,37 @@ eval applyfn.")
     ;; nothing could print one as `#s(hash-table)' because nothing could tell
     ;; one from an ordinary pair.  It is a two-slot vector now: slot 0 names
     ;; the type, slot 1 is the count.
-    (defun nl_ht_write_marker_sym (out)
-      (let* ((buf (alloc-bytes 16 1)))
+    (defun nl_ht_write_marker_sym_w (_pad)
+      (let* ((buf (alloc-bytes 16 1)) (out (alloc-bytes 32 8)))
         (seq (ptr-write-u64 buf 0 7089075026832613736)
              (ptr-write-u64 (+ buf 8) 0 25964)
-             (nl_alloc_symbol buf 10 out))))
+             (nl_alloc_symbol buf 10 out)
+             out)))
+    (defun nl_ht_write_marker_sym (out)
+      (nl_abi_word_to_rc (nl_ht_write_marker_sym_w 0) out))
+    (defun nl_ht_write_eql_sym_w (_pad)
+      (let* ((buf (alloc-bytes 8 1)) (out (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 7106917) (nl_alloc_symbol buf 3 out) out)))
     (defun nl_ht_write_eql_sym (out)
-      (let* ((buf (alloc-bytes 8 1)))
-        (seq (ptr-write-u64 buf 0 7106917) (nl_alloc_symbol buf 3 out))))
-    (defun nl_ht_make (out)
+      (nl_abi_word_to_rc (nl_ht_write_eql_sym_w 0) out))
+    (defun nl_ht_make_w (_pad)
       (let* ((marker (alloc-bytes 32 8)) (buckets (alloc-bytes 32 8))
-             (sym (alloc-bytes 32 8)) (cnt (alloc-bytes 32 8)))
+             (sym (alloc-bytes 32 8)) (cnt (alloc-bytes 32 8))
+             (out (alloc-bytes 32 8)))
         (seq
          (vector-make 3 marker)
-         (nl_ht_write_marker_sym sym)
-         (vector-slot-set marker 0 sym)
+         (vector-slot-set marker 0 (nl_ht_write_marker_sym_w 0))
          (ptr-write-u64 cnt 0 2) (ptr-write-u64 cnt 8 0)
          (ptr-write-u64 cnt 16 0) (ptr-write-u64 cnt 24 0)
          (vector-slot-set marker 1 cnt)
-         ;; Slot 2 records the requested :test.  `make-hash-table' in the
-         ;; prelude writes it; the default is `eql', as in Emacs.
-         (nl_ht_write_eql_sym sym)
-         (vector-slot-set marker 2 sym)
-         ;; Tables start with 8 buckets and `nl_ht_maybe_grow' doubles them
-         ;; once the count passes twice the bucket count.  A fixed 2048 made
-         ;; every table 16 KiB of bucket words for the collector to scan and
-         ;; the elisp `maphash' to walk: `buffer-list' over a small buffer
-         ;; registry cost 43-87 ms.
+         ;; Slot 2 records the requested :test (default `eql').
+         (vector-slot-set marker 2 (nl_ht_write_eql_sym_w 0))
+         ;; 8 buckets; `nl_ht_maybe_grow' doubles them past twice the count.
          (vector-make 8 buckets)
          (nelisp_cons_construct marker buckets out)
-         0)))
+         out)))
+    (defun nl_ht_make (out)
+      (nl_abi_word_to_rc (nl_ht_make_w 0) out))
     ;; Identity stamp of an eq/eql table.  The prelude's tables carry an
     ;; 8-slot marker (type, count, test, capacity, weakness, budget, stamp
     ;; generation, stamp address); slots 6 and 7 hold the compaction
@@ -12061,31 +12065,27 @@ eval applyfn.")
            (let* ((mode (nl_ht_test_mode table)))
              (nl_ht_find_table_h (nl_ht_data_slot table) key_ptr mode
                                  (nl_ht_hash_mode table mode)))))
+    (defun nl_ht_put_w (args _pad)
+      (nl_ht_put_values_w (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+                          (wf_arg_ptr args 2) 0))
     (defun nl_ht_put (args out)
-      (nl_ht_put_values (wf_arg_ptr args 0) (wf_arg_ptr args 1)
-                        (wf_arg_ptr args 2) out))
-    (defun nl_ht_put_values (key_ptr val_ptr table_ptr out)
+      (nl_abi_word_to_rc (nl_ht_put_w args 0) out))
+    (defun nl_ht_put_values_w (key_ptr val_ptr table_ptr _pad)
       (seq (nl_ht_identity_sync table_ptr)
-           (nl_ht_put_values_synced key_ptr val_ptr table_ptr out)))
-    (defun nl_ht_put_values_synced (key_ptr val_ptr table_ptr out)
+           (nl_ht_put_values_synced_w key_ptr val_ptr table_ptr 0)))
+    (defun nl_ht_put_values (key_ptr val_ptr table_ptr out)
+      (nl_abi_word_to_rc (nl_ht_put_values_w key_ptr val_ptr table_ptr 0) out))
+    (defun nl_ht_put_values_synced_w (key_ptr val_ptr table_ptr _pad)
         (if (= table_ptr 0)
-            (wf_write_nil out)
+            3
           (if (= (ptr-read-u64 table_ptr 0) 7)
               (let* ((data_slot (nl_ht_data_slot table_ptr))
                      (entry_ptr (nl_ht_find_table_h
                                  data_slot key_ptr (nl_ht_test_mode table_ptr)
                                  (nl_ht_hash_mode table_ptr (nl_ht_test_mode table_ptr)))))
                 (if (= entry_ptr 0)
-                    ;; An EMPTY table's cdr is nil, and nil is an immediate:
-                    ;; `nl_cons_cdr_ptr' hands back a FRESH 32B view of it,
-                    ;; not the cons's own slot.  The alist branch below
-                    ;; writes the new head into that view and the table
-                    ;; never changes -- (puthash k v '#s(hash-table test
-                    ;; equal)) answered v and stored nothing, count stayed
-                    ;; 0 (measured 2026-09-06 on 5f9138e51; every reader
-                    ;; literal Emacs 30 writes for an empty table has this
-                    ;; shape, savehist restores them by the dozen).  Go
-                    ;; through the cons mutator, as for a 0 data slot.
+                    ;; An EMPTY table's cdr is nil, an immediate: go through
+                    ;; the cons mutator rather than writing a scratch view.
                     (if (if (= data_slot 0) 1 (= (ptr-read-u64 data_slot 0) 0))
                         (let* ((nil_s (alloc-bytes 32 8))
                                (pair_s (alloc-bytes 32 8))
@@ -12096,8 +12096,7 @@ eval applyfn.")
                            (nelisp_cons_construct pair_s nil_s newhead_s)
                            (cons-set-cdr table_ptr newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
-                           (nl_ht_copy32 out val_ptr)
-                           0))
+                           (nl_val_store_word val_ptr)))
                       (if (= (ptr-read-u64 data_slot 0) 8)
                           (let* ((idx (nl_ht_bucket_index data_slot key_ptr
                                                           (nl_ht_hash_mode table_ptr
@@ -12111,31 +12110,28 @@ eval applyfn.")
                              (vector-slot-set data_slot idx newhead_s)
                              (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
                              (nl_ht_maybe_grow table_ptr data_slot (nl_ht_meta_count table_ptr))
-                             (nl_ht_copy32 out val_ptr)
-                             0))
+                             (nl_val_store_word val_ptr)))
                         (let* ((pair_s (alloc-bytes 32 8)) (newhead_s (alloc-bytes 32 8)))
                           (seq
                            (nelisp_cons_construct key_ptr val_ptr pair_s)
                            (nelisp_cons_construct pair_s data_slot newhead_s)
                            (nl_ht_copy32 data_slot newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
-                           (nl_ht_copy32 out val_ptr)
-                           0))))
-                  ;; Overwrite an existing KEY through the cons mutator, the
-                  ;; way `setcdr' does.  `nl_cons_cdr_ptr' materialises a
-                  ;; FRESH 32B box when the cdr holds an immediate, so writing
-                  ;; the new value into that view updated a scratch copy and
-                  ;; the table kept the old value -- silently, since the entry
-                  ;; was found and the count stayed correct.
+                           (nl_val_store_word val_ptr)))))
+                  ;; Overwrite an existing KEY through the cons mutator, as
+                  ;; `setcdr' does (a cdr view of an immediate is scratch).
                   (seq
                    (cons-set-cdr entry_ptr val_ptr)
-                   (nl_ht_copy32 out val_ptr)
-                   0)))
-            (wf_write_nil out))))
-    (defun nl_ht_get (args out)
+                   (nl_val_store_word val_ptr))))
+            3)))
+    (defun nl_ht_put_values_synced (key_ptr val_ptr table_ptr out)
+      (nl_abi_word_to_rc (nl_ht_put_values_synced_w key_ptr val_ptr table_ptr 0) out))
+    (defun nl_ht_get_w (args _pad)
       (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
-           (nl_ht_get_synced args out)))
-    (defun nl_ht_get_synced (args out)
+           (nl_ht_get_synced_w args 0)))
+    (defun nl_ht_get (args out)
+      (nl_abi_word_to_rc (nl_ht_get_w args 0) out))
+    (defun nl_ht_get_synced_w (args _pad)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
              (data_slot (if (= table_ptr 0) 0
                           (if (= (ptr-read-u64 table_ptr 0) 7)
@@ -12146,14 +12142,17 @@ eval applyfn.")
                           (nl_ht_find_table_h data_slot key_ptr mode
                                               (nl_ht_hash_mode table_ptr mode)))))
         (if (= entry_ptr 0)
-            (nl_ht_get_default args out)
-          (nl_ht_copy32 out (nl_cons_cdr_ptr entry_ptr)))))
-    (defun nl_ht_rem (args out)
+            (nl_ht_get_default_w args 0)
+          (nl_cons_cdr_word entry_ptr))))
+    (defun nl_ht_get_synced (args out)
+      (nl_abi_word_to_rc (nl_ht_get_synced_w args 0) out))
+    (defun nl_ht_rem_w (args _pad)
       (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
-           (nl_ht_rem_synced args out)))
-    (defun nl_ht_rem_synced (args out)
-      (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
-             (rebuilt (alloc-bytes 32 8)))
+           (nl_ht_rem_synced_w args 0)))
+    (defun nl_ht_rem (args out)
+      (nl_abi_word_to_rc (nl_ht_rem_w args 0) out))
+    (defun nl_ht_rem_synced_w (args _pad)
+      (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1)))
         (seq
          (if (= table_ptr 0)
              0
@@ -12166,10 +12165,7 @@ eval applyfn.")
                           (entry_ptr (nl_ht_find_table_h data_slot key_ptr mode hmode)))
                      (seq
                       ;; Rebuild only the bucket that holds KEY when its hash
-                      ;; places it (an identity table, or a stable content
-                      ;; hash), and nothing on a miss.  Rebuilding every
-                      ;; bucket's chain per call made `remhash' O(buckets)
-                      ;; with an allocation per node.
+                      ;; places it, and nothing on a miss.
                       (if (= (ptr-read-u64 data_slot 0) 8)
                           (if (= entry_ptr 0)
                               0
@@ -12181,15 +12177,15 @@ eval applyfn.")
                                 (let* ((idx (nl_ht_bucket_index data_slot key_ptr hmode)))
                                   (nl_ht_rem_vec data_slot key_ptr idx (+ idx 1) mode))
                               (nl_ht_rem_vec data_slot key_ptr 0 (vector-len data_slot) mode)))
-                        (seq
-                         (nl_ht_rem_walk data_slot key_ptr rebuilt mode)
-                         (nl_ht_copy32 data_slot rebuilt)))
+                        (nl_abi_word_to_rc (nl_ht_rem_walk_w data_slot key_ptr 0 mode)
+                                           data_slot))
                       (if (= entry_ptr 0)
                           0
                         (nl_ht_meta_set_count table_ptr (- (nl_ht_meta_count table_ptr) 1)))))))
              0))
-         (wf_write_nil out)
-         0)))
+         3)))
+    (defun nl_ht_rem_synced (args out)
+      (nl_abi_word_to_rc (nl_ht_rem_synced_w args 0) out))
     (defun nl_ht_rem_vec (vec key_ptr i n mode)
       (if (>= i n)
           0
@@ -12198,23 +12194,27 @@ eval applyfn.")
            (nl_ht_rem_walk (vector-ref-ptr vec i) key_ptr rebuilt mode)
            (vector-slot-set vec i rebuilt)
            (nl_ht_rem_vec vec key_ptr (+ i 1) n mode)))))
-    (defun nl_ht_rem_walk (node_ptr key_ptr out_slot mode)
+    (defun nl_ht_rem_walk_w (node_ptr key_ptr _pad mode)
       (if (= (ptr-read-u64 node_ptr 0) 7)
           (let* ((entry_ptr (nl_cons_car_ptr node_ptr))
                  (key_slot (nl_cons_car_ptr entry_ptr)))
             (if (= (nl_ht_key_match key_slot key_ptr mode) 1)
-                (nl_ht_copy32 out_slot (nl_cons_cdr_ptr node_ptr))
-              (let* ((rest_s (alloc-bytes 32 8)) (entry_s (alloc-bytes 32 8)))
+                (nl_cons_cdr_word node_ptr)
+              (let* ((rest_w (nl_ht_rem_walk_w (nl_cons_cdr_ptr node_ptr) key_ptr 0 mode))
+                     (out_s (alloc-bytes 32 8)))
                 (seq
-                 (nl_ht_rem_walk (nl_cons_cdr_ptr node_ptr) key_ptr rest_s mode)
-                 (nl_ht_copy32 entry_s entry_ptr)
-                 (nelisp_cons_construct entry_s rest_s out_slot)
-                 0))))
-        (wf_write_nil out_slot)))
+                 (nelisp_cons_construct entry_ptr rest_w out_s)
+                 out_s))))
+        3))
+    (defun nl_ht_rem_walk (node_ptr key_ptr out_slot mode)
+      (nl_abi_word_to_rc (nl_ht_rem_walk_w node_ptr key_ptr 0 mode) out_slot))
     ;; maphash ships as a no-op here; the real iteration is the pure-elisp
     ;; `maphash' in nelisp-stdlib-prelude.el (walks the bucket-vector repr +
     ;; funcall), which overrides this stub.
-    (defun nl_ht_maphash (args out) (seq (wf_write_nil out) 0)))
+    (defun nl_ht_maphash_w (args _pad)
+      3)
+    (defun nl_ht_maphash (args out)
+      (nl_abi_word_to_rc (nl_ht_maphash_w args 0) out)))
   "M4 hash-table helpers (reader-only).")
 
 (defconst nelisp-standalone--applyfn-search-helpers
