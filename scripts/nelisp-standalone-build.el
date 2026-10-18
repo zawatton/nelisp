@@ -1725,6 +1725,7 @@ twice appears twice; readers keep the last occurrence of each unit."
 
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
+  (setq source (nelisp-standalone--abi-box-split-source source))
   (nelisp-standalone--box-census-record
    (nelisp-standalone--target-object-name name) source)
   (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
@@ -1923,6 +1924,79 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                        nelisp-standalone--inline-max-nodes)
                                (prin1-to-string source)))))
 
+;; Doc 215 builtin word ABI, private-box coexistence for build-script defuns
+;; whose OUT is the object they construct or a value they compute through
+;; still-legacy callees (definers, capture builders, rooted subrs, ...).
+;; Each listed defun F (in whatever unit, after all its patches) becomes
+;;   F_w  -- same parameters, OUT renamed _pad; allocates the box, runs the
+;;           old body against it and answers the box's WORD (the box is the
+;;           result object; 0 = failure), and
+;;   F    -- the (rc, OUT) adapter.
+;; KIND `status' marks a lookup whose rc 1 without a stash is a miss: F_w
+;; answers 2 there (nl_abi_status_to_word) and F maps 2 back to rc 1.
+;; KIND `special' marks a special form that may answer rc 2 ("not handled
+;; here", e.g. a definer with a `declare' left to the Lisp macro): F_w
+;; passes 2 through (nl_abi_rc2_to_word).
+;; Only build-script / build-generated defuns are listed; lisp/ units are
+;; converted in their source.
+(defconst nelisp-standalone--abi-box-split
+  '((nl_sf_defun . special) (nl_sf_defvar . special) (nl_sf_defconst . special)
+    (nl_sf_defalias . special) (nl_sf_defvaralias . special)
+    (nl_sf_defmacro . special) (nl_sf_dolist)
+    (nl_sf_defvaralias_apply) (nl_n3_defvaralias_raw) (nl_n3_declared_default_raw)
+    (nl_n3_alias_write) (nl_n3_default_write) (nl_n3_apply_mode)
+    (nl_apply_lambda_inner_n3) (nl_n3_apply_lambda_raw)
+    (nl_n4_capture_filtered) (nl_env_capture_lexical_filtered)
+    (nl_env_capture_lexical_with_filter) (nl_clx_build_symbol_filter)
+    (bf_env_capture_roots) (nelisp_eval_call_with_err)
+    (nl_apply_flat_builtin_frame) (nl_apply_rooted_subr) (nl_apply_rooted_subr_frame)
+    (nl_apply_list_append)
+    (nl_lookup_fn_autoload . status) (nl_lookup_fn_autoload_load . status)
+    (nl_sf_definer_lookup . status))
+  "Defuns split into a private-box F_w and an (rc, OUT) adapter F.")
+
+(defun nelisp-standalone--abi-out-param-p (p)
+  (memq p '(out out_ptr out-ptr result_slot result-slot out_slot)))
+
+(defun nelisp-standalone--abi-box-split-defun (form kind)
+  "FORM (defun F PARAMS . BODY) as (F_w ADAPTER); see `nelisp-standalone--abi-box-split'."
+  (let* ((name (nth 1 form)) (params (nth 2 form)) (body (nthcdr 3 form))
+         (out (or (cl-find-if #'nelisp-standalone--abi-out-param-p params)
+                  (error "abi box split: %s has no OUT parameter" name)))
+         (wname (intern (format "%s_w" name)))
+         (wparams (mapcar (lambda (p) (cond ((eq p out) '_pad)
+                                            ((eq p '_pad) '_pad1)
+                                            (t p)))
+                          params))
+         (cargs (mapcar (lambda (p) (if (eq p out) 0 p)) params)))
+    (list `(defun ,wname ,wparams
+             (let* ((,out (alloc-bytes 32 8)))
+               (,(pcase kind ('status 'nl_abi_status_to_word)
+                         ('special 'nl_abi_rc2_to_word)
+                         (_ 'nl_abi_rc_to_word))
+                (progn ,@body) ,out)))
+          `(defun ,name ,params
+             (,(if (eq kind 'status) 'nl_abi_lookup_to_rc 'nl_abi_word_to_rc)
+              (,wname ,@cargs) ,out)))))
+
+(defun nelisp-standalone--abi-box-split-source (source)
+  "SOURCE with every `nelisp-standalone--abi-box-split' defun split.
+Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
+  (if (not (and (consp source) (eq (car source) 'seq)))
+      source
+    (let ((have (delq nil (mapcar (lambda (f) (and (eq (car-safe f) 'defun) (cadr f)))
+                                  (cdr source)))))
+      (cons 'seq
+            (apply #'append
+                   (mapcar
+                    (lambda (f)
+                      (let ((e (and (eq (car-safe f) 'defun)
+                                    (assq (cadr f) nelisp-standalone--abi-box-split))))
+                        (if (and e (not (memq (intern (format "%s_w" (cadr f))) have)))
+                            (nelisp-standalone--abi-box-split-defun f (cdr e))
+                          (list f))))
+                    (cdr source)))))))
+
 (defun nelisp-standalone--cached-unit (name source &rest _ignored)
   "Return the link-unit for NAME, compiling SOURCE only on a content miss.
 
@@ -1943,7 +2017,8 @@ commit; they carry the old dependency lists, which are now inert.
 
 Stale entries for the same NAME are removed on a miss, so the cache
 directory tracks the tree rather than accumulating every key ever built."
-  (let* ((name (nelisp-standalone--target-object-name name))
+  (let* ((source (nelisp-standalone--abi-box-split-source source))
+         (name (nelisp-standalone--target-object-name name))
          (nelisp-standalone--build-trace-unit name)
          (cache-dir (nelisp-standalone--target-cache-dir))
          (key (nelisp-standalone--build-trace-phase "cache-key"
@@ -6831,18 +6906,20 @@ argument (reachability + in-arena bounds checks).")
     ;; all recorded frames, so native evaluator continuations no longer depend
     ;; on the conservative stack scan.
     (defun nl_gc_ctx_max_depth () 1024)
-    (defun nl_gc_ctx_store (base env result out pool src cursor bsym)
+    ;; RESULT_ROOT (+16) is a slot the caller keeps its in-flight result in,
+    ;; recorded so the collector marks it; it is an input, not an output.
+    (defun nl_gc_ctx_store (base env result result_root pool src cursor bsym)
       (seq (ptr-write-u64 base 0 env) (ptr-write-u64 base 8 result)
-           (ptr-write-u64 base 16 out) (ptr-write-u64 base 24 pool)
+           (ptr-write-u64 base 16 result_root) (ptr-write-u64 base 24 pool)
            (ptr-write-u64 base 32 src) (ptr-write-u64 base 40 cursor)
            (ptr-write-u64 base 48 bsym) 0))
-    (defun nl_gc_ctx_push (env result out pool src cursor bsym)
+    (defun nl_gc_ctx_push (env result result_root pool src cursor bsym)
       (if (< (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) (nl_gc_ctx_max_depth))
           (nl_seq2
            (nl_gc_ctx_store
             (+ (data-addr nl_gc_loop_ctx)
                (+ 64 (* (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 56)))
-            env result out pool src cursor bsym)
+            env result result_root pool src cursor bsym)
            (nl_seq2
             (ptr-write-u64 (data-addr nl_gc_loop_ctx) 0
                            (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) 1))
@@ -20305,7 +20382,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; link time -- masked until the gc-ctx/flat-arena fixes let the linker
     ;; reach this far.  `bf_signal'/`bf_error' below (their own dispatch
     ;; arms sit past the baked-19 cutoff) still call it, now cross-unit.
-    (defun bf_signal (args out)
+    ;; Doc 215 word ABI: `signal' only stashes and answers 0.
+    (defun bf_signal_w (args _pad)
       (let* ((sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
@@ -20313,7 +20391,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (bf_sig_copy32 268435512 data)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
-         1)))
+         0)))
+    (defun bf_signal (args out)
+      (nl_abi_word_to_rc (bf_signal_w args 0) out))
     ;; Emacs's `error' FORMATS: (error "msg %d" 1) raises (error "msg 1"), a
     ;; one-element data list holding the finished text.  This raised
     ;; (error "msg %d" 1) instead -- format string and arguments still
@@ -26973,7 +27053,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                   (nl_sf_decl_strip_body rest_ptr)
                 body_ptr)))
         body_ptr))
-    (defun nl_sf_decl_normalize_tail (tail_ptr out) (let ((out__w 0)) (seq
+    ;; Answers the normalized tail WORD; the second parameter is unused.
+    (defun nl_sf_decl_normalize_tail (tail_ptr _pad) (let ((out__w 0)) (seq
       (if (= (sexp-tag tail_ptr) 7)
           (let* ((args_ptr (nl_cons_car_ptr tail_ptr))
                  (body_ptr (nl_cons_cdr_ptr tail_ptr))
@@ -41272,7 +41353,9 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   '(nl_sf_progn nl_sf_if nl_sf_let nl_sf_let_star nl_sf_setq nl_sf_while
     nl_sf_function nl_sf_lambda nl_sf_condition_case nl_sf_unwind_protect
     nl_sf_catch nl_sf_throw nl_sf_when nl_sf_unless nl_sf_and nl_sf_or nl_sf_cond
-    nl_sf_prog1 nl_sf_prog2 nl_n3_special_cell nl_n3_special_call)
+    nl_sf_prog1 nl_sf_prog2 nl_n3_special_cell nl_n3_special_call
+    nl_sf_defun nl_sf_defvar nl_sf_defconst nl_sf_defalias nl_sf_defvaralias
+    nl_sf_defmacro)
   "Entries with a Doc 215 word form F_w taking 0 in OUT's position.  `nl_apply_special_w' calls F_w directly.")
 
 (defun nelisp-standalone--special-tail-words (form out &optional word-forms)
@@ -43006,10 +43089,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
           (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env)))))
     (defun nl_eval_inner_cons (form_ptr head_ptr tail_ptr env out)
       (nl_abi_word_to_rc (nl_eval_inner_cons_w form_ptr head_ptr tail_ptr env 0) out))
-    ;; `dolist' is still an (rc, OUT) form: it runs against a private box.
+    ;; `dolist' answers through its private-box word form.
     (defun nl_eic_dolist_w (tail_ptr env form_ptr _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (nl_abi_rc_to_word (nl_sf_dolist tail_ptr env out form_ptr) out)))
+      (nl_sf_dolist_w tail_ptr env 0 form_ptr))
     ;; W from `nl_apply_special_w': 2 = not a special form -> function call.
     (defun nl_eic_symbol_dispatch_w (w form_ptr head_ptr tail_ptr env)
       (if (= w 2)
