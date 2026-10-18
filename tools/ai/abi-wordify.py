@@ -148,6 +148,10 @@ class Conv:
                     raise Fail("seq prefix uses box")
                 self.writer(body[-2], v, ed)
                 ed.append((body[-2].end, last.end, ""))      # drop the trailing 0
+                if h == "nl_seq2":
+                    # nl_seq2 is a 2-argument function, not a special form:
+                    # with its 0 gone it must become a seq.
+                    ed.append((x[0].start, x[0].end, "seq"))
                 return
             if any(mentions(e, v) for e in body[:-1]):
                 raise Fail("seq prefix uses box")

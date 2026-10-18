@@ -4531,7 +4531,7 @@ REPL-facing module it feeds."
       (let* ((state (data-addr nl_symbol_name_state))
              (base (ptr-read-u64 state 0)) (cap (ptr-read-u64 state 8))
              (i 0))
-        (nl_seq2
+        (seq
          (if (= base 0) 0
            (while (< i cap)
              (let* ((entry (+ base (* i 80))))
@@ -26028,7 +26028,7 @@ extern arms in dynamic builds."
                  (setq ls (+ i 1)))
               0)
             (setq i (+ i 1))))
-         (nl_seq2 (nl_alloc_str_w buf w 0))))
+         (seq (nl_alloc_str_w buf w 0))))
         ))
     ;; str-line-start STRING POS -> offset of the first char of POS's line
     ;; (i.e. one past the previous \n), POS clamped to [0, len].  Companion to
@@ -26070,8 +26070,8 @@ extern arms in dynamic builds."
              (buf (alloc-bytes limit 1))
              (n (nl_os_read_stdin buf limit)))
         (if (< n 1)
-            (nl_seq2 3)
-          (nl_seq2 (nl_alloc_str_w buf n 0))))
+            (seq 3)
+          (seq (nl_alloc_str_w buf n 0))))
         ))
     ;; TTY raw/input support for standalone interactive -nw.
     ;; Fixed slots live after the existing reader/GC globals in the first
@@ -26367,9 +26367,9 @@ POSIX-style child-fd setup step (see
 	                   (buf (alloc-bytes limit 1))
 	                   (n (nl_os_read_file_handle fd buf limit)))
 	              (if (< n 1)
-	                  (nl_seq2 3)
-	                (nl_seq2 (nl_alloc_str_w buf n 0))))
-	          (nl_seq2 3)))
+	                  (seq 3)
+	                (seq (nl_alloc_str_w buf n 0))))
+	          (seq 3)))
         ))
 	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_bi_process_write_w (args _pad)
@@ -26381,8 +26381,8 @@ POSIX-style child-fd setup step (see
 	                   (n (nl_os_write_file_handle
 	                       fd (nl_bi_strptr str) (nl_bi_strlen str))))
 	              ;; N5: Lisp owns GNU error/status policy; retain raw -errno.
-	              (nl_seq2 (wf_write_int_w 0 n)))
-	          (nl_seq2 3)))
+	              (seq (wf_write_int_w 0 n)))
+	          (seq 3)))
         ))
 	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_bi_process_close_stdin_w (args _pad)
@@ -27236,7 +27236,7 @@ Other targets return nil, preserving their generated process source exactly."
              (n (nl_os_readlink_path cpath buf 4096)))
         (if (< n 0)
             3
-          (nl_seq2 (nl_alloc_str_w buf n 0))))
+          (seq (nl_alloc_str_w buf n 0))))
         ))
     ;; Directory enumeration's primitive boundary stays flat and allocation
     ;; free while getdents64 is live.  SEP remains newline for existing
@@ -27284,7 +27284,7 @@ Other targets return nil, preserving their generated process source exactly."
                                (setq pos (+ pos reclen))))))))
                   0)))
              (nl_os_close_dir fd)
-             (nl_seq2 (nl_alloc_str_w sbuf slen 0))))))
+             (seq (nl_alloc_str_w sbuf slen 0))))))
         ))
     (defun nl_bi_syscall_readdir_buffer (path_sx sep out)
       (nl_abi_word_to_rc (nl_bi_syscall_readdir_buffer_w path_sx sep 0) out))
