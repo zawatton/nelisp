@@ -1120,26 +1120,91 @@ cross-unit call) before the freed payload is poisoned."
     ;; bills the debt, carves WANT off the run's head and zeroes the payload;
     ;; this does the same writes in the same order without the call chain.
     ;; Every other case, the exact-fit run included, takes the full path.
+    ;;
+    ;; prim lane (2026-10-19): the steady-state case -- the size's exact-fit
+    ;; bucket is NOT empty -- also skips the chain.  Measured on an
+    ;; interpreted (funcall f i) loop: 44 allocations per iteration, ~810
+    ;; instructions each, nearly all of them `nl_freelist_take' ->
+    ;; `nl_freelist_bucket_pop' call overhead.  `nl_alloc_pop_fast' repeats
+    ;; bucket_pop's integrity checks (in arena, 8-aligned, mark FREE, BT ==
+    ;; WANT) in the same order; any failure answers 0 and the request takes
+    ;; the full path, which re-reads the same head and records the trip
+    ;; exactly as before.  On success it does the full path's writes: debt,
+    ;; unlink, occupancy-mask sync, mark 0, zero the payload.
     (defun nl_alloc_bytes (size align)
       (let* ((p8 (logand (+ size 7) -8))
              (want (+ 8 (if (< p8 8) 8 p8)))
-             (r (ptr-read-u64 (data-addr nl_gc_diag) 48)))
-        (if (if (> want 472) 0
-              (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
-                  (if (= (ptr-read-u64 (data-addr nl_alloc_diag) 0) 0)
-                      (if (= (ptr-read-u64 268435624 0) 1) 0
-                        (if (< want (ptr-read-u64 268435656 0)) 0
-                          (if (= (ptr-read-u64 (+ 268435696 (- want 16)) 0) 0)
-                              (if (= (logand (ptr-read-u64 (data-addr nl_freelist_small_mask) 0)
-                                             (shl 1 (/ (- want 16) 8)))
-                                     0)
-                                  (if (= (ptr-read-u64 268435632 0) 0) 0
-                                    (if (= r 0) 0
-                                      (if (< (logand (ptr-read-u64 r 0) 4294967288) (+ want 16)) 0 1)))
-                                0)
-                            0)))
-                    0)
-                0))
+             (gate (if (> want 472) 0
+                     (if (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+                         (if (= (ptr-read-u64 (data-addr nl_alloc_diag) 0) 0)
+                             (if (= (ptr-read-u64 268435624 0) 1) 0
+                               (if (< want (ptr-read-u64 268435656 0)) 0 1))
+                           0)
+                       0))))
+        (if (= gate 0) (nl_alloc_bytes_slow size align)
+          (if (= (ptr-read-u64 (+ 268435696 (- want 16)) 0) 0)
+              (nl_alloc_bytes_run size align want)
+            (let* ((popped (nl_alloc_pop_fast want)))
+              (if (= popped 0) (nl_alloc_bytes_slow size align) popped))))))
+    (defun nl_alloc_bytes_slow (size align)
+      (nl_alloc_check_stamp
+       (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))
+    ;; In-arena test for a free-list head: the first two arms of
+    ;; `nl_gc_in_arena' (chunk 0 and the current chunk), else the full walk.
+    (defun nl_alloc_pop_in_arena (cur)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (tail (ptr-read-u64 268436168 0)))
+        (if (and (> head 0)
+                 (>= cur (ptr-read-u64 head 24))
+                 (< cur (+ (ptr-read-u64 head 0) (ptr-read-u64 268435456 0))))
+            1
+          (if (and (> tail 0) (not (= tail head))
+                   (>= cur (ptr-read-u64 tail 24))
+                   (< cur (+ (ptr-read-u64 tail 0) (ptr-read-u64 tail 16))))
+              1
+            (nl_gc_in_arena cur)))))
+    (defun nl_alloc_pop_fast (want)
+      (let* ((head (+ 268435696 (- want 16)))
+             (cur (ptr-read-u64 head 0)))
+        (if (= cur 0) 0
+          (if (= (nl_alloc_pop_in_arena cur) 0) 0
+            (if (= (logand cur 7) 0)
+                (let* ((hw (ptr-read-u64 (- cur 8) 0)))
+                  (if (= (logand hw 7) 2)
+                      (if (= (logand hw 4294967288) want)
+                          (let* ((next (ptr-read-u64 cur 0))
+                                 (mask (ptr-read-u64 (data-addr nl_freelist_small_mask) 0))
+                                 (bit (shl 1 (/ (- want 16) 8)))
+                                 (o 0))
+                            (seq
+                             (ptr-write-u64 (data-addr nl_gc_stats) 0
+                                            (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
+                             (ptr-write-u64 head 0 next)
+                             (ptr-write-u64 (data-addr nl_freelist_small_mask) 0
+                                            (if (= next 0)
+                                                (if (= (logand mask bit) 0) mask (- mask bit))
+                                              (logior mask bit)))
+                             (ptr-write-u64 (- cur 8) 0 (logand hw 4294967288))
+                             (while (< o (- want 8))
+                               (ptr-write-u64 (+ cur o) 0 0)
+                               (setq o (+ o 8)))
+                             cur))
+                        0)
+                    0))
+              0)))))
+    ;; The pre-existing body of `nl_alloc_bytes': the bucket-empty run fast
+    ;; path, else the full checked path.  WANT is the caller's BLOCK_TOTAL.
+    ;; Bucket-empty case of `nl_alloc_bytes' (caller checked the gate and
+    ;; the empty head): the original run-carving fast path.
+    (defun nl_alloc_bytes_run (size align want)
+      (let* ((r (ptr-read-u64 (data-addr nl_gc_diag) 48)))
+        (if (if (= (logand (ptr-read-u64 (data-addr nl_freelist_small_mask) 0)
+                           (shl 1 (/ (- want 16) 8)))
+                   0)
+                (if (= (ptr-read-u64 268435632 0) 0) 0
+                  (if (= r 0) 0
+                    (if (< (logand (ptr-read-u64 r 0) 4294967288) (+ want 16)) 0 1)))
+              0)
             (let* ((bt (logand (ptr-read-u64 r 0) 4294967288))
                    (obj (+ r 8))
                    (o 0))
@@ -1153,8 +1218,7 @@ cross-unit call) before the freed payload is poisoned."
                  (ptr-write-u64 (+ obj o) 0 0)
                  (setq o (+ o 8)))
                obj))
-          (nl_alloc_check_stamp
-           (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))))
+          (nl_alloc_bytes_slow size align))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
     ;; BEFORE poison-on-free overwrites the suffix).  Armed only via
     ;; the boot env probe, so every freed block carries a guard; the
