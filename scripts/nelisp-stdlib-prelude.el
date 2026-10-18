@@ -26301,6 +26301,8 @@ Defining it as a function compiles them again.")
           (when (and shape
                      (not (cl-some #'nelisp--fx-special-p (car shape)))
                      (not (gethash body nelisp--fx-table)))
+            (if (nelisp--fx-hopeless-p body)
+                (puthash body 'none nelisp--fx-table)
             (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
                    ;; Expanding here is an optimisation the user never asked
                    ;; for: macroexp's warnings (a compiler macro failing
@@ -26327,7 +26329,35 @@ Defining it as a function compiles them again.")
                                                (nth 2 shape) (nth 3 shape))
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
-                       nelisp--fx-table))))))))
+                       nelisp--fx-table)))))))))
+
+(defconst nelisp--fx-hopeless-heads
+  '(lambda condition-case unwind-protect catch save-excursion
+    save-restriction save-current-buffer)
+  "Forms `nelisp--fx-compile' never covers and no common macro removes.")
+
+(defun nelisp--fx-hopeless-p (body)
+  "Non-nil when BODY, before macro expansion, already contains a form the
+VM never covers (`nelisp--fx-hopeless-heads'; #'(lambda ...) is found
+through its `lambda').  A form is any cons in the body, so a variable
+named like one of the heads, bound as (NAME VALUE), also counts: such a
+body only stays with the interpreter.
+Compiling such a body ends in `none' after `macroexpand-all' of all of it,
+which at boot is most of a failed first-call compilation's cost.  Quoted
+and backquoted data is not searched, so a template mentioning `lambda'
+still compiles."
+  (let ((todo (list body)) (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (when (consp x)
+          (let ((head (car x)))
+            (cond
+             ((memq head '(quote \`)) nil)
+             ((memq head nelisp--fx-hopeless-heads) (setq found t))
+             (t (while (consp x)
+                  (when (consp (car x)) (push (car x) todo))
+                  (setq x (cdr x)))))))))
+    found))
 
 (defun nelisp--fx-arglist-shape (args)
   "(LOCALS MIN MAX REST-INDEX) for the lambda list ARGS, or nil.
