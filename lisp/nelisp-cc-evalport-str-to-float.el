@@ -100,11 +100,11 @@
                    (nlf_big_pow5 p n (- k 1))
                  (seq (ptr-write-u32 p (* n 4) carry)
                       (nlf_big_pow5 p (+ n 1) (- k 1)))))))
-         (defun nlf_big_shift_copy_words (src sn dst words i)
+         (defun nlf_big_shift_copy_words (src sn to words i)
            (if (= i sn) 0
-             (seq (ptr-write-u32 dst (* (+ i words) 4)
+             (seq (ptr-write-u32 to (* (+ i words) 4)
                                  (ptr-read-u32 src (* i 4)))
-                  (nlf_big_shift_copy_words src sn dst words (+ i 1)))))
+                  (nlf_big_shift_copy_words src sn to words (+ i 1)))))
          (defun nlf_big_shift_bits (p i n bits carry)
            (if (= i n) carry
              (let* ((v (+ (shl (ptr-read-u32 p (* i 4)) bits) carry)))
@@ -233,22 +233,22 @@
 
 (setq nelisp-cc-evalport-str-to-float--source
       (append nelisp-cc-evalport-str-to-float--source
-              '((defun nlf_t91_copy (src sn dst cap)
-                  (seq (nlf_big_zero dst 0 cap)
-                       (nlf_t91_copy_words src sn dst 0)
-                       (nlf_big_trim dst cap)))
-                (defun nlf_t91_copy_words (src sn dst i)
+              '((defun nlf_t91_copy (src sn to cap)
+                  (seq (nlf_big_zero to 0 cap)
+                       (nlf_t91_copy_words src sn to 0)
+                       (nlf_big_trim to cap)))
+                (defun nlf_t91_copy_words (src sn to i)
                   (if (= i sn) 0
-                    (seq (ptr-write-u32 dst (* i 4)
+                    (seq (ptr-write-u32 to (* i 4)
                                          (ptr-read-u32 src (* i 4)))
-                         (nlf_t91_copy_words src sn dst (+ i 1)))))
-                (defun nlf_t91_shift_copy (src sn dst cap shift)
+                         (nlf_t91_copy_words src sn to (+ i 1)))))
+                (defun nlf_t91_shift_copy (src sn to cap shift)
                   (let* ((words (/ shift 32)) (bits (mod shift 32)))
-                    (seq (nlf_big_zero dst 0 cap)
-                         (nlf_big_shift_copy_words src sn dst words 0)
+                    (seq (nlf_big_zero to 0 cap)
+                         (nlf_big_shift_copy_words src sn to words 0)
                          (if (= bits 0) 0
-                           (nlf_big_shift_bits dst words cap bits 0))
-                         (nlf_big_trim dst cap))))
+                           (nlf_big_shift_bits to words cap bits 0))
+                         (nlf_big_trim to cap))))
                 ;; Compare N*2^SHIFT with D without changing either operand.
                 (defun nlf_t91_cmp_scaled (n nl d dl a b cap shift)
                   (if (>= shift 0)
