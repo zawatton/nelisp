@@ -7856,8 +7856,18 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
       (dolist (s slot-names)
         (let ((kw (intern (format ":%s" s)))
               (def (nth i slot-defaults)))
-          (push (list 'nelisp-cl-macros--struct-arg
-                      (list 'quote kw) args-sym def)
+          ;; GNU evaluates a slot's default form only when the keyword
+          ;; is absent (e.g. ert.el's `(body (cl-assert nil))').  A
+          ;; constant default can still go through the helper.
+          (push (if (or (consp def)
+                        (and (symbolp def) def (not (eq def t))
+                             (not (keywordp def))))
+                    (let ((cell (make-symbol "cell")))
+                      (list 'let (list (list cell (list 'memq (list 'quote kw)
+                                                       args-sym)))
+                            (list 'if cell (list 'car (list 'cdr cell)) def)))
+                  (list 'nelisp-cl-macros--struct-arg
+                        (list 'quote kw) args-sym def))
                 slot-arg-forms))
         (setq i (1+ i)))
       (setq slot-arg-forms (nreverse slot-arg-forms))
