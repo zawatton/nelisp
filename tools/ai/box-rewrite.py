@@ -56,13 +56,14 @@ WRITERS = {
     "nl_alloc_symbol_plain": 2, "nl_alloc_symbol_named": 3, "nl_alloc_symbol_plain_named": 2,
 }
 # setter/constructor -> argument indexes that take a VALUE (word-aware)
+# Only consumers that reach nl_val_clone_into (which stores an immediate WORD
+# as it is).  wf_copy32, nl_sexp_clone_into, cons-make and cell-make copy or
+# read a 32-byte Sexp and are NOT word-aware: a WORD there needs the shim.
 SRC = {
     "record-slot-set": (2,), "vector-slot-set": (2,), "nl_record_set_slot": (2,),
     "nl_vector_set_slot": (2,), "nl_consbox_set_car": (1,), "nl_consbox_set_cdr": (1,),
     "cons-set-car": (1,), "cons-set-cdr": (1,), "nelisp_cons_construct": (0, 1),
-    "cons-make": (0, 1), "cons-make-with-clone": (0, 1), "nl_val_clone_into": (0,),
-    "nl_sexp_clone_into": (0,), "wf_copy32": (1,), "nl_alloc_cell": (0,),
-    "nl_alloc_cell_init": (1,), "cell-make": (0,),
+    "nl_val_clone_into": (0,), "nl_alloc_cell": (0,), "nl_alloc_cell_init": (1,),
 }
 # accessor -> index of its container argument
 WALK = {
@@ -258,6 +259,84 @@ def sites(defuns, convertible):
         yield from out
 
 
+def r4_sites(defuns, convertible):
+    """R4: a call that passes a NON-local box into a convertible out position
+    (a caller parameter, a fixed address, (+ env N), data-addr): converting the
+    callee to return a WORD would stop updating a box someone else reads."""
+    out = []
+    for n, d in defuns.items():
+        params = set(d["params"])
+        def visit(x):
+            if not is_call(x) or x[0] in SPECIAL:
+                return
+            h, args = call_args(x)
+            for pos, a in enumerate(args):
+                if (h, pos) in convertible or WRITERS.get(h) == pos:
+                    why = None
+                    if isinstance(a, str) and a in params:
+                        # Forwarding the caller's own convertible out is the
+                        # chain the fixpoint already accepted, not R4.
+                        if (n, d["params"].index(a)) not in convertible:
+                            why = "out box is caller parameter %s" % a
+                    elif isinstance(a, int) and a >= 268435456:
+                        why = "out box is fixed address %d" % a
+                    elif is_call(a) and a[0] in ("+", "data-addr"):
+                        why = "out box is %s" % json.dumps(a)[:40]
+                    if why and (h, pos) in convertible:
+                        out.append((n, "out:" + h, "manual", ["R4", why], json.dumps(x)[:90]))
+            for y in x[1:]:
+                visit(y)
+        for b in d["body"]:
+            visit(b)
+    return out
+
+
+def source_index(root):
+    """defun name -> source file (first textual definition)."""
+    idx = {}
+    files = [os.path.join(root, "scripts", "nelisp-standalone-build.el")]
+    for d in ("lisp", "scripts", "src"):
+        dd = os.path.join(root, d)
+        files += sorted(os.path.join(dd, f) for f in os.listdir(dd) if f.endswith(".el"))
+    pat = re.compile(r"\(defun ([A-Za-z0-9_]+)[\s(]")
+    for f in files:
+        for m in pat.finditer(open(f, encoding="utf-8").read()):
+            idx.setdefault(m.group(1), os.path.relpath(f, root))
+    return idx
+
+
+def manual_queue(path, root, out_path):
+    defuns = load(path)
+    conv, _ = out_params(defuns)
+    word_in_params(defuns, conv)
+    src = source_index(root)
+    q = []
+    rows = [r for r in sites(defuns, conv) if r[2] == "manual"] + r4_sites(defuns, conv)
+    for fn, idiom, cls, why, ex in rows:
+        fam = family(fn)
+        if fam in ("bytecode", "vm-call"):
+            continue
+        if why and why[0] in ("R2", "R3", "R4", "worker"):
+            c = why[0]
+        elif any(w.startswith("ptr-") for w in why):
+            c = "raw"
+        else:
+            c = "unknown"
+        q.append({"unit": defuns[fn]["unit"], "file": src.get(fn, "generated (build-time copy, see scripts/nelisp-standalone-build.el)"), "defun": fn,
+                  "family": fam, "idiom": idiom, "class": c,
+                  "reason": "; ".join(w for w in why if w not in ("R2", "R3", "R4", "worker"))[:120],
+                  "site": ex})
+    q.sort(key=lambda e: (e["file"], e["defun"], e["idiom"]))
+    with open(out_path, "w") as f:
+        json.dump(q, f, indent=1)
+    by = {}
+    for e in q:
+        by[(e["family"], e["class"])] = by.get((e["family"], e["class"]), 0) + 1
+    print("manual queue: %d sites -> %s" % (len(q), out_path))
+    for k, v in sorted(by.items()):
+        print("  %-10s %-8s %d" % (k[0], k[1], v))
+
+
 def classify(kinds):
     ks = {k for k, _ in kinds}
     if not kinds:
@@ -314,7 +393,10 @@ def report(path, nex, json_out):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if len(a) >= 2 and a[0] == "report":
+    if len(a) >= 3 and a[0] == "queue":
+        root = a[a.index("--root") + 1] if "--root" in a else "."
+        manual_queue(a[1], root, a[2])
+    elif len(a) >= 2 and a[0] == "report":
         nex = int(a[a.index("--examples") + 1]) if "--examples" in a else 0
         jo = a[a.index("--json") + 1] if "--json" in a else None
         report(a[1], nex, jo)

@@ -112,3 +112,16 @@ Evaluator, VM call path (coordinated with eval-s2s3), regexp support,
 GC, binders.  After stage 1: report allocations and instructions per
 iteration before and after (=test/perf/box-callgrind.py=) and stop for an
 S1.3 startup re-measure.
+
+* Mechanical rewrite (short note; full section after the conversion)
+
+=tools/ai/box-rewrite.py= reads the unit-source dump (NELISP_BOX_DUMP), runs
+two call-graph fixpoints (convertible out-parameters; parameters that
+already accept a WORD) and classifies each transport site as mechanical,
+shim-only or manual.  Apply mode edits the SOURCE files with token-level
+edits (head symbol swaps, dropped offset arguments), never a build-time
+transform, so the census measures the source people read.  The manual
+queue (=queue= mode, committed as tools/ai/box-manual-queue.json) lists
+sites needing judgment: R2/R3 (root-stack reservations), R4 (a non-local
+box passed into a convertible out position), worker-only code, raw memory
+access, and unknown uses.  wf_bytecode_* and m5_fx_*/nl_fx_* are excluded.
