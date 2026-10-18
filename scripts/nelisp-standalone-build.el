@@ -24936,12 +24936,20 @@ extern arms in dynamic builds."
       (if (< fd 0) fd
         (let* ((wr (nl_os_write_file_handle fd ptr len)))
           (nl_seq2 (nl_os_close_handle fd) wr))))
-    (defun nl_bi_write_file (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_write_file_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0)) (cont_sx (wf_arg_ptr args 1)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
                (fd (nl_os_open_write_truncate cpath)))
           (wf_write_int out
-            (nl_bi_wf_withfd fd (nl_bi_strptr cont_sx) (nl_bi_strlen cont_sx))))))
+            (nl_bi_wf_withfd fd (nl_bi_strptr cont_sx) (nl_bi_strlen cont_sx)))))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_write_file (args out)
+      (nl_abi_word_to_rc (nl_bi_write_file_w args 0) out))
     (defun wf_copy32_strnil (out)
       (nl_alloc_str (alloc-bytes 1 1) 0 out))
     ;; Two-phase read (2026-06-10): rdf used to alloc-bytes a FIXED 8 MiB
@@ -25041,22 +25049,41 @@ extern arms in dynamic builds."
     ;; Source loaders still use nl_bi_read_file's default text result.
     ;; string-as-unibyte cannot recover arbitrary bytes from a text tag:
     ;; C0/C1 are internal byte8 escapes and consume the next file byte.
-    (defun nl_bi_read_file_maybe_raw (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_read_file_maybe_raw_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (seq (nl_bi_read_file args out)
            (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
                (if (/= (sexp-tag (wf_arg_ptr args 1)) 0)
                    (if (= (sexp-tag out) 5) (ptr-write-u8 out 0 14) 0)
                  0)
              0)
-           0))
+           0)
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_read_file_maybe_raw (args out)
+      (nl_abi_word_to_rc (nl_bi_read_file_maybe_raw_w args 0) out))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_slen_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
+      (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
     (defun nl_bi_slen (args out)
-      (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0))))
+      (nl_abi_word_to_rc (nl_bi_slen_w args 0) out))
     ;; str-count-nl STRING END -> number of \n bytes in STRING[0, min(END,len)).
     ;; Native byte loop so callers (e.g. the nemacs GUI bridge modeline) can
     ;; derive a cursor line number from a large buffer string without an
     ;; interpreted per-char walk (which allocates per iteration and cannot be
     ;; GC'd until the enclosing top-level form returns).
-    (defun nl_bi_str_count_nl (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_str_count_nl_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((sx (wf_arg_ptr args 0))
              (end (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (ptr (nl_bi_strptr sx))
@@ -25069,7 +25096,12 @@ extern arms in dynamic builds."
            (seq
             (if (= (ptr-read-u8 ptr i) 10) (setq acc (+ acc 1)) 0)
             (setq i (+ i 1))))
-         (wf_write_int out acc))))
+         (wf_write_int out acc)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_str_count_nl (args out)
+      (nl_abi_word_to_rc (nl_bi_str_count_nl_w args 0) out))
     ;; ptr-read-bytes ADDR N -> a unibyte string of the N bytes at ADDR.
     ;; ptr-write-bytes ADDR STRING -> copy STRING's bytes to ADDR (a
     ;; multibyte string's internal UTF-8, a unibyte string's raw bytes),
@@ -25124,7 +25156,10 @@ extern arms in dynamic builds."
                   (setq i (+ i 1))))
                ok))
           0)))
-    (defun nl_bi_str_kv_line (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_str_kv_line_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((src (wf_arg_ptr args 0))
              (key (wf_arg_ptr args 1))
              (sptr (nl_bi_strptr src))
@@ -25150,7 +25185,12 @@ extern arms in dynamic builds."
                  (setq ls (+ i 1)))
               0)
             (setq i (+ i 1))))
-         (if (= res 0) (nl_seq2 (wf_copy32_strnil out) 0) 0))))
+         (if (= res 0) (nl_seq2 (wf_copy32_strnil out) 0) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_str_kv_line (args out)
+      (nl_abi_word_to_rc (nl_bi_str_kv_line_w args 0) out))
     ;; str-filter-prefix-lines SOURCE PREFIX -> the (non-empty) lines of
     ;; SOURCE that start with PREFIX, each newline-terminated, concatenated.
     ;; Native scan for the nemacs minibuffer completion-candidates refresh:
@@ -25167,7 +25207,10 @@ extern arms in dynamic builds."
                 (setq ok 0))
               (setq i (+ i 1))))
            ok))))
-    (defun nl_bi_str_filter_prefix_lines (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_str_filter_prefix_lines_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((src (wf_arg_ptr args 0))
              (pre (wf_arg_ptr args 1))
              (sptr (nl_bi_strptr src))
@@ -25199,11 +25242,19 @@ extern arms in dynamic builds."
                  (setq ls (+ i 1)))
               0)
             (setq i (+ i 1))))
-         (nl_seq2 (nl_alloc_str buf w out) 0))))
+         (nl_seq2 (nl_alloc_str buf w out) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_str_filter_prefix_lines (args out)
+      (nl_abi_word_to_rc (nl_bi_str_filter_prefix_lines_w args 0) out))
     ;; str-line-start STRING POS -> offset of the first char of POS's line
     ;; (i.e. one past the previous \n), POS clamped to [0, len].  Companion to
     ;; str-count-nl: line = 1 + (str-count-nl S POS), column = POS - line-start.
-    (defun nl_bi_str_line_start (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_str_line_start_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((sx (wf_arg_ptr args 0))
              (pos (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (ptr (nl_bi_strptr sx))
@@ -25215,26 +25266,47 @@ extern arms in dynamic builds."
            (if (= (ptr-read-u8 ptr (- i 1)) 10)
                (setq done 1)
              (setq i (- i 1))))
-         (wf_write_int out i))))
-    (defun nl_bi_write_stdout_bytes (args out)
+         (wf_write_int out i)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_str_line_start (args out)
+      (nl_abi_word_to_rc (nl_bi_str_line_start_w args 0) out))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_write_stdout_bytes_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((sx (wf_arg_ptr args 0)))
         (seq
          (nl_os_write_stdout (nl_bi_strptr sx) (nl_bi_strlen sx))
          (wf_write_nil out)
-         0)))
+         0))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_write_stdout_bytes (args out)
+      (nl_abi_word_to_rc (nl_bi_write_stdout_bytes_w args 0) out))
     ;; read-stdin-bytes LIMIT: interpreter-side dispatch, symmetric with
     ;; nl_bi_write_stdout_bytes.  Self-contained (no Rust shim): allocate a
     ;; LIMIT-byte arena buffer, issue one read(0,...) via nl_os_read_stdin,
     ;; and wrap the bytes into a Sexp::Str via nl_alloc_str.  n<1 (EOF=0 or
     ;; err<0) returns nil so callers' `(while (setq c (read-stdin-bytes N)))'
     ;; slurp loops terminate at EOF (matches nelisp--cli-slurp-stdin).
-    (defun nl_bi_read_stdin_bytes (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_read_stdin_bytes_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((limit (wf_argval args 0))
              (buf (alloc-bytes limit 1))
              (n (nl_os_read_stdin buf limit)))
         (if (< n 1)
             (nl_seq2 (wf_write_nil out) 0)
-          (nl_seq2 (nl_alloc_str buf n out) 0))))
+          (nl_seq2 (nl_alloc_str buf n out) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_read_stdin_bytes (args out)
+      (nl_abi_word_to_rc (nl_bi_read_stdin_bytes_w args 0) out))
     ;; TTY raw/input support for standalone interactive -nw.
     ;; Fixed slots live after the existing reader/GC globals in the first
     ;; low-memory page.  Slot values are pointers/integers, not Sexp cells.
@@ -25462,7 +25534,10 @@ POSIX-style child-fd setup step (see
 	                0)
 	            0)
 	        0))
-	    (defun nl_bi_process_make_object (pid outfd infd out)
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_make_object_w (pid outfd infd _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
 	      (seq
 	       (vector-make 6 out)
 	       (nl_bi_process_set_int out 0 1886547811)
@@ -25473,7 +25548,12 @@ POSIX-style child-fd setup step (see
 	       (nl_bi_process_set_int out 4 -1)
 	       ;; stdin fd owned by the parent side; -1 after EOF/close.
 	       (nl_bi_process_set_int out 5 infd)
-	       0))
+	       0)
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_make_object (pid outfd infd out)
+      (nl_abi_word_to_rc (nl_bi_process_make_object_w pid outfd infd 0) out))
 	    (defun nl_bi_process_mark_exit (proc code)
 	      (seq
 	       (nl_bi_process_set_int proc 4 code)
@@ -25511,7 +25591,10 @@ POSIX-style child-fd setup step (see
 	              (nl_bi_process_refresh proc 0)
 	            (nl_bi_process_get_int proc 4))
 	        -1))
-	    (defun nl_bi_process_read_output (args out)
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_read_output_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
 	      (let* ((proc (wf_arg_ptr args 0))
 	             (limit (wf_argval args 1)))
 	        (if (= (nl_bi_process_object_p_raw proc) 1)
@@ -25521,8 +25604,16 @@ POSIX-style child-fd setup step (see
 	              (if (< n 1)
 	                  (nl_seq2 (wf_write_nil out) 0)
 	                (nl_seq2 (nl_alloc_str buf n out) 0)))
-	          (nl_seq2 (wf_write_nil out) 0))))
-	    (defun nl_bi_process_write (args out)
+	          (nl_seq2 (wf_write_nil out) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_read_output (args out)
+      (nl_abi_word_to_rc (nl_bi_process_read_output_w args 0) out))
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_write_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
 	      (let* ((proc (wf_arg_ptr args 0))
 	             (str (wf_arg_ptr args 1)))
 	        (if (= (nl_bi_process_object_p_raw proc) 1)
@@ -25531,8 +25622,16 @@ POSIX-style child-fd setup step (see
 	                       fd (nl_bi_strptr str) (nl_bi_strlen str))))
 	              ;; N5: Lisp owns GNU error/status policy; retain raw -errno.
 	              (nl_seq2 (wf_write_int out n) 0))
-	          (nl_seq2 (wf_write_nil out) 0))))
-	    (defun nl_bi_process_close_stdin (args out)
+	          (nl_seq2 (wf_write_nil out) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_write (args out)
+      (nl_abi_word_to_rc (nl_bi_process_write_w args 0) out))
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_close_stdin_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
 	      (let* ((proc (wf_arg_ptr args 0)))
 	        (if (= (nl_bi_process_object_p_raw proc) 1)
 	            (let* ((fd (nl_bi_process_get_int proc 5)))
@@ -25540,8 +25639,16 @@ POSIX-style child-fd setup step (see
 	               (if (>= fd 0) (nl_os_close_handle fd) 0)
 	               (nl_bi_process_set_int proc 5 -1)
 	               (wf_write_t out)))
-	          (wf_write_nil out))))
-	    (defun nl_bi_process_poll_one (proc out)
+	          (wf_write_nil out)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_close_stdin (args out)
+      (nl_abi_word_to_rc (nl_bi_process_close_stdin_w args 0) out))
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_poll_one_w (proc _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
 	      (let* ((fd (nl_bi_process_get_int proc 2))
 	             (ready (if (>= fd 0) (nl_os_process_poll_readable fd) 0))
 	             (status (nl_bi_process_status_code proc))
@@ -25557,9 +25664,22 @@ POSIX-style child-fd setup step (see
 	         (vector-slot-set out 1 v1)
 	         (wf_write_int v2 exitcode)
 	         (vector-slot-set out 2 v2)
-	         0)))
-	    (defun nl_bi_process_poll (args out)
-	      (nl_bi_process_poll_one (wf_arg_ptr args 0) out))
+	         0))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_poll_one (proc out)
+      (nl_abi_word_to_rc (nl_bi_process_poll_one_w proc 0) out))
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_process_poll_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
+	      (nl_bi_process_poll_one (wf_arg_ptr args 0) out)
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_process_poll (args out)
+      (nl_abi_word_to_rc (nl_bi_process_poll_w args 0) out))
 	    (defun nl_bi_process_delete_object (proc)
 	      (if (= (nl_bi_process_object_p_raw proc) 1)
 	          (let* ((status (nl_bi_process_get_int proc 3))
@@ -26227,7 +26347,10 @@ Other targets return nil, preserving their generated process source exactly."
 	                          (nl_bi_argval_or_zero args 4)
 	                          (nl_bi_argval_or_zero args 5)
 	                          (nl_bi_argval_or_zero args 6)))))
-	    (defun nl_bi_write_stderr_line (args out)
+	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_write_stderr_line_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((sx (wf_arg_ptr args 0))
              (nl (alloc-bytes 1 1)))
         (seq
@@ -26235,7 +26358,12 @@ Other targets return nil, preserving their generated process source exactly."
          (ptr-write-u8 nl 0 10)
          (nl_os_write_stderr nl 1)
          (wf_write_nil out)
-         0)))
+         0))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_write_stderr_line (args out)
+      (nl_abi_word_to_rc (nl_bi_write_stderr_line_w args 0) out))
     ;; nelisp--syscall-path NR PATH: generic path-string syscall.  Marshals
     ;; PATH to a NUL-terminated C string (nl_bi_make_cpath), then issues
     ;; syscall NR with the path pointer in rdi and the remaining arg registers
@@ -26243,50 +26371,85 @@ Other targets return nil, preserving their generated process source exactly."
     ;; one-path syscalls.  Returns the raw kernel result (0 = success,
     ;; negative = -errno) as an Int Sexp.  Pure elisp: same helpers as the
     ;; nl-write-file impl plus the `syscall-direct' grammar op (no new Rust).
-    (defun nl_bi_syscall_path (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_path_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((nr (wf_argval args 0))
              (path_sx (wf_arg_ptr args 1))
              (cpath (nl_bi_make_cpath path_sx))
              (rc (nl_os_syscall_path nr cpath)))
-        (wf_write_int out rc)))
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_path (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_path_w args 0) out))
     ;; nelisp--syscall-path2 NR PATH1 PATH2: two-path-string syscall.  Marshals
     ;; PATH1/PATH2 to two NUL-terminated C strings (separate arena buffers via
     ;; nl_bi_make_cpath), then issues syscall NR with cpath1 in rdi and cpath2 in
     ;; rsi (remaining registers zeroed) -- enough for rename(82) / link(86) /
     ;; symlink(88) and similar two-path syscalls.  Returns the raw kernel result
     ;; (0 = success, negative = -errno) as an Int Sexp.  Pure elisp, no new Rust.
-    (defun nl_bi_syscall_path2 (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_path2_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((nr (wf_argval args 0))
              (p1_sx (wf_arg_ptr args 1))
              (p2_sx (wf_arg_ptr args 2))
              (cpath1 (nl_bi_make_cpath p1_sx))
              (cpath2 (nl_bi_make_cpath p2_sx))
              (rc (nl_os_syscall_path2 nr cpath1 cpath2)))
-        (wf_write_int out rc)))
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_path2 (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_path2_w args 0) out))
     ;; nelisp--syscall-path-int NR PATH INT: one-path + one-integer syscall.
     ;; Marshals PATH to a NUL-terminated C string (nl_bi_make_cpath), then
     ;; issues syscall NR with cpath in rdi and INT in rsi (remaining registers
     ;; zeroed) -- enough for access(21, path, mode) / chmod(90, path, mode) /
     ;; truncate(76, path, len) and similar path+scalar syscalls.  Returns the
     ;; raw kernel result (0 = success, negative = -errno).  Pure elisp, no Rust.
-    (defun nl_bi_syscall_path_int (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_path_int_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (nl_bi_syscall_path_int_slots
-       (wf_arg_ptr args 0) (wf_arg_ptr args 1) (wf_arg_ptr args 2) out))
+       (wf_arg_ptr args 0) (wf_arg_ptr args 1) (wf_arg_ptr args 2) out)
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_path_int (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_path_int_w args 0) out))
     ;; Clause 3 raw OS access: same implementation, two argument front ends.
     ;; The flat evaluator frame owns and publishes all three full Sexp slots.
-    (defun nl_bi_syscall_path_int_slots (nr_sx path_sx int_sx out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_path_int_slots_w (nr_sx path_sx int_sx _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((nr (ptr-read-u64 nr_sx 8))
              (iarg (ptr-read-u64 int_sx 8))
              (cpath (nl_bi_make_cpath path_sx))
              (rc (nl_os_syscall_path_int nr cpath iarg)))
-        (wf_write_int out rc)))
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_path_int_slots (nr_sx path_sx int_sx out)
+      (nl_abi_word_to_rc (nl_bi_syscall_path_int_slots_w nr_sx path_sx int_sx 0) out))
     ;; nelisp--syscall-stat-field PATH OFFSET: stat(2) PATH into a 144-byte
     ;; struct stat buffer, then return the u64 at byte OFFSET (little-endian).
     ;; Returns the negative kernel errno when stat fails.  The substrate masks
     ;; sub-8-byte fields itself.  Linux x86_64 struct stat offsets: st_dev 0,
     ;; st_ino 8, st_nlink 16, st_mode 24, st_uid 28, st_gid 32, st_size 48,
     ;; st_atime 72, st_mtime 88, st_ctime 104.  Pure elisp, no new Rust.
-    (defun nl_bi_syscall_stat_field (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_stat_field_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (offset (wf_argval args 1))
              (cpath (nl_bi_make_cpath path_sx))
@@ -26294,41 +26457,70 @@ Other targets return nil, preserving their generated process source exactly."
              (rc (nl_os_stat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
-          (wf_write_int out (ptr-read-u64 buf offset)))))
+          (wf_write_int out (ptr-read-u64 buf offset))))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_stat_field (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_stat_field_w args 0) out))
     ;; nelisp--syscall-stat-buf PATH: stat(2) PATH into a fresh 144-byte struct
     ;; stat buffer and return that buffer's pointer (a positive address), or the
     ;; negative kernel errno on failure.  The caller reads individual fields
     ;; with ptr-read-u64 -- ONE stat for the whole struct (vs one per field).
-    (defun nl_bi_syscall_stat_buf (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_stat_buf_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 144 8))
              (rc (nl_os_stat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
-          (wf_write_int out buf))))
+          (wf_write_int out buf)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_stat_buf (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_stat_buf_w args 0) out))
     ;; nelisp--syscall-lstat-buf PATH: like stat-buf but lstat(2) (syscall 6) --
     ;; does NOT follow symlinks, so file-attributes can report the link itself.
-    (defun nl_bi_syscall_lstat_buf (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_lstat_buf_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 144 8))
              (rc (nl_os_lstat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
-          (wf_write_int out buf))))
+          (wf_write_int out buf)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_lstat_buf (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_lstat_buf_w args 0) out))
     ;; nelisp--syscall-readlink PATH: readlink(2) (syscall 89) -- return the
     ;; symbolic-link target as a string, or nil when PATH is not a symlink (or
     ;; on any error).  readlink does not NUL-terminate, so the returned length
     ;; bounds the string.
-    (defun nl_bi_syscall_readlink (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_readlink_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 4096 1))
              (n (nl_os_readlink_path cpath buf 4096)))
         (if (< n 0)
             (wf_write_nil out)
-          (nl_seq2 (nl_alloc_str buf n out) 0))))
+          (nl_seq2 (nl_alloc_str buf n out) 0)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_readlink (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_readlink_w args 0) out))
     ;; Directory enumeration's primitive boundary stays flat and allocation
     ;; free while getdents64 is live.  SEP remains newline for existing
     ;; callers and is NUL for directory operations that opt into the
@@ -26336,7 +26528,10 @@ Other targets return nil, preserving their generated process source exactly."
     ;; dirent64 layout: d_ino@0 d_off@8 d_reclen(u16)@16 d_type(u8)@18
     ;; d_name@19 (NUL-terminated).  Output is clipped at 65535 bytes.
     ;; Pure elisp, no new Rust.
-    (defun nl_bi_syscall_readdir_buffer (path_sx sep out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_readdir_buffer_w (path_sx sep _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((cpath (nl_bi_make_cpath path_sx))
              (fd (nl_os_open_dir cpath)))
         (if (< fd 0)
@@ -26373,15 +26568,28 @@ Other targets return nil, preserving their generated process source exactly."
                                (setq pos (+ pos reclen))))))))
                   0)))
              (nl_os_close_dir fd)
-             (nl_seq2 (nl_alloc_str sbuf slen out) 0))))))
-    (defun nl_bi_syscall_readdir_names (args out)
+             (nl_seq2 (nl_alloc_str sbuf slen out) 0)))))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_readdir_buffer (path_sx sep out)
+      (nl_abi_word_to_rc (nl_bi_syscall_readdir_buffer_w path_sx sep 0) out))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_readdir_names_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((rest (nl_cons_cdr_word args))
              (nul-separated
               (if (= (nl_word_tag64 rest) 7)
                   (if (= (nl_val_tag (nl_cons_car_word rest)) 0) 0 1)
                 0)))
         (nl_bi_syscall_readdir_buffer
-         (wf_arg_ptr args 0) (if (= nul-separated 1) 0 10) out)))
+         (wf_arg_ptr args 0) (if (= nul-separated 1) 0 10) out))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_readdir_names (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_readdir_names_w args 0) out))
     ;; Decode one flat readdir buffer natively.  Build the list tail-forward
     ;; while scanning byte offsets so there is neither an interpreted `aref'
     ;; per byte nor a reversal pass.  `nl_alloc_str' copies exact UTF-8 byte
@@ -26394,7 +26602,10 @@ Other targets return nil, preserving their generated process source exactly."
                 (if (= (ptr-read-u8 ptr (+ start 1)) 46) 1 0)
               0)
           0)))
-    (defun nl_readdir_scan_raw (raw sep skip-dotdot out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_readdir_scan_raw_w (raw sep skip-dotdot _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((ptr (bf_str_ptr raw))
              (len (bf_str_len raw))
              (idx 0)
@@ -26431,8 +26642,16 @@ Other targets return nil, preserving their generated process source exactly."
                    (setq start (+ idx 1))))
               0)
             (setq idx (+ idx 1))))
-         0)))
-    (defun nl_bi_readdir_scan_raw (args out)
+         0))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_readdir_scan_raw (raw sep skip-dotdot out)
+      (nl_abi_word_to_rc (nl_readdir_scan_raw_w raw sep skip-dotdot 0) out))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_readdir_scan_raw_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((rest1 (nl_cons_cdr_word args))
              (rest2 (nl_cons_cdr_word rest1))
              (nul-separated
@@ -26443,12 +26662,20 @@ Other targets return nil, preserving their generated process source exactly."
          (wf_arg_ptr args 0)
          (if (= nul-separated 1) 0 10)
          (ptr-read-u64 (wf_arg_ptr args 1) 0)
-         out)))
+         out))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_readdir_scan_raw (args out)
+      (nl_abi_word_to_rc (nl_bi_readdir_scan_raw_w args 0) out))
     ;; nelisp--syscall-utimes PATH ATIME MTIME: utimes(2) (syscall 235) -- set
     ;; the access + modification times to ATIME / MTIME (seconds; usec = 0).
     ;; Builds a struct timeval[2] {atime.sec, atime.usec, mtime.sec, mtime.usec}
     ;; and returns the raw kernel rc (0 = success, negative = -errno).
-    (defun nl_bi_syscall_utimes (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_utimes_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (atime (wf_argval args 1))
              (mtime (wf_argval args 2))
@@ -26459,14 +26686,22 @@ Other targets return nil, preserving their generated process source exactly."
          (ptr-write-u64 buf 8 0)
          (ptr-write-u64 buf 16 mtime)
          (ptr-write-u64 buf 24 0)
-         (wf_write_int out (nl_os_utimes_path cpath buf)))))
+         (wf_write_int out (nl_os_utimes_path cpath buf))))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_utimes (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_utimes_w args 0) out))
     ;; nelisp--syscall-statx-buf PATH FLAGS: statx(2) (syscall 332) into a
     ;; 256-byte struct statx buffer; return its pointer (positive) or the
     ;; negative kernel errno.  dirfd = AT_FDCWD (-100), mask = STATX_BASIC_STATS
     ;; | STATX_BTIME (0xfff).  FLAGS = AT_SYMLINK_NOFOLLOW (0x100) for an
     ;; lstat-like probe, 0 to follow.  Exposes birth time (stx_btime @80/@88)
     ;; that struct stat lacks; caller reads fields with ptr-read-u64.
-    (defun nl_bi_syscall_statx_buf (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_statx_buf_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (flags (wf_argval args 1))
              (cpath (nl_bi_make_cpath path_sx))
@@ -26474,7 +26709,12 @@ Other targets return nil, preserving their generated process source exactly."
              (rc (nl_os_statx_path cpath flags buf)))
         (if (< rc 0)
             (wf_write_int out rc)
-          (wf_write_int out buf))))
+          (wf_write_int out buf)))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_statx_buf (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_statx_buf_w args 0) out))
     ;; nelisp--syscall-unshare FLAGS: unshare(2) (syscall 272) -- detach the
     ;; calling thread's namespaces named in FLAGS (CLONE_NEWUSER 0x10000000,
     ;; CLONE_NEWNS 0x20000, CLONE_NEWNET 0x40000000, CLONE_NEWPID 0x20000000,
@@ -26483,10 +26723,18 @@ Other targets return nil, preserving their generated process source exactly."
     ;; elisp via the `syscall-direct' AOT op (raw `syscall' instruction, NR=272,
     ;; NO libc -- the standalone binary does not link libc; same mechanism the
     ;; nl_os_* file-I/O bodies use).  raw-ns sandbox substrate (nelix design 32).
-    (defun nl_bi_syscall_unshare (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_unshare_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((flags (wf_argval args 0))
              (rc (syscall-direct 272 flags 0 0 0 0 0)))
-        (wf_write_int out rc)))
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_unshare (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_unshare_w args 0) out))
     ;; nelisp--syscall-mount SOURCE TARGET FSTYPE FLAGS DATA: mount(2) (syscall
     ;; 165).  String args become plain NUL-terminated cstrings via
     ;; nl_bi_make_cpath (which does NOT path-normalise -- copies bytes + NUL, so
@@ -26494,23 +26742,42 @@ Other targets return nil, preserving their generated process source exactly."
     ;; (MS_BIND 4096, MS_REC 16384, MS_RDONLY 1, MS_PRIVATE 262144, MS_REMOUNT
     ;; 32, ...).  Returns 0 or negative kernel errno.  Raw syscall, NO libc.
     ;; raw-ns FS-closure substrate (nelix design 32 v2).
-    (defun nl_bi_syscall_mount (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_mount_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((src (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (tgt (nl_bi_make_cpath (wf_arg_ptr args 1)))
              (fst (nl_bi_make_cpath (wf_arg_ptr args 2)))
              (flags (wf_argval args 3))
              (data (nl_bi_make_cpath (wf_arg_ptr args 4)))
              (rc (syscall-direct 165 src tgt fst flags data 0)))
-        (wf_write_int out rc)))
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_mount (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_mount_w args 0) out))
     ;; nelisp--syscall-pivot-root NEW_ROOT PUT_OLD: pivot_root(2) (syscall 155).
     ;; Moves the process root to NEW_ROOT, stacking the old root at PUT_OLD
     ;; (must be under NEW_ROOT).  Returns 0 or negative kernel errno.
-    (defun nl_bi_syscall_pivot_root (args out)
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_syscall_pivot_root_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((new (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (old (nl_bi_make_cpath (wf_arg_ptr args 1)))
              (rc (syscall-direct 155 new old 0 0 0 0)))
-        (wf_write_int out rc)))
-    (defun nl_bi_write_file_t (args out)
+        (wf_write_int out rc))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_syscall_pivot_root (args out)
+      (nl_abi_word_to_rc (nl_bi_syscall_pivot_root_w args 0) out))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun nl_bi_write_file_t_w (args _pad)
+      (let* ((out (alloc-bytes 32 8)))
+        (if (= (seq
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
              (cpath (nl_bi_make_cpath path_sx))
@@ -26521,7 +26788,12 @@ Other targets return nil, preserving their generated process source exactly."
                                              (nl_bi_strlen cont_sx))))
             (seq
              (nl_os_close_handle fd)
-             (if (< wr 0) (wf_write_nil out) (wf_write_t out))))))))
+             (if (< wr 0) (wf_write_nil out) (wf_write_t out))))))
+        ) 0)
+            (nl_val_store_word out)
+          (nl_abi_fail 1 0))))
+    (defun nl_bi_write_file_t (args out)
+      (nl_abi_word_to_rc (nl_bi_write_file_t_w args 0) out)))
   "M7 file-I/O builtin impls (wrf/rdf/slen), part 3 of 3 -- `nl_bi_name_ptr'
 onward.  See `nelisp-standalone--fileio-source' for how the three parts plus
 the per-target process forms are assembled.  Uses `nl_seq2' (arena unit),
