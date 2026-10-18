@@ -133,8 +133,10 @@ access, and unknown uses.  wf_bytecode_* and m5_fx_*/nl_fx_* are excluded.
 - A converted builtin or producer =F_w= takes WORD / view arguments and
   returns the result WORD.  0 means "failed, signal stashed" (THROW flag
   @268435472, TAG @268435480, VAL @268435512, as every rc=1 path already
-  does).  2 means "not handled" and is used only by =nl_apply_special_w=
-  (the special-form dispatcher's old rc 2).  Neither 0 nor 2 is a WORD: a
+  does).  2 means "not found / not handled / end of input" and is used
+  only by the env lookups, =nl_apply_special_w= (the special-form
+  dispatcher's old rc 2) and the reader's =nelisp_reader_*_w= (EOF), as
+  listed below.  Neither 0 nor 2 is a WORD: a
   fixnum is odd, nil 3, t 7, a box pointer is >= 4096 and 8-aligned.
 - Arity is kept even: a function that loses its OUT parameter takes a
   trailing =_pad= instead (callers pass 0).
@@ -212,7 +214,7 @@ eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
   =(error "nelisp: word ABI failure without a stashed signal")=, so a bare
   0 can never surface later as a garbage error.  Write
   =(nl_abi_fail (bf_wrong_type_listp a) 0)=, never =(seq ... 0)=.
-- 2 = not found / unhandled (lookups and special dispatch only).  The env
+- 2 = not found / unhandled / EOF (lookups, special dispatch, reader).  The env
   lookups (=nelisp_env_lookup_value_w=, =nelisp_env_lkv_mirror(_with_frames)_w=,
   =nl_env_lookup_val_w=, =nelisp_env_lookup_function_w=) answer 2 where the
   legacy ABI returned rc 1 without a stash (unbound / no entry; for
@@ -220,12 +222,17 @@ eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
   marker), =nl_env_lookup_val_done_w= and =nelisp_mirror_lookup_value_w=
   (no entry; its adapter still writes nil); their adapters map 2 back to
   the legacy answer (=nl_abi_lookup_to_rc=: rc 1).  The reader (G3) uses 2
-  for end of input the same way.  A miss never goes through =nl_abi_fail=:
+  for end of input the same way: a =nelisp_reader_*_w= answers the value
+  WORD, 2 at EOF, or 0 after stashing =invalid-read-syntax= (a generic
+  error when the legacy path left the signal to its caller), and every
+  consumer tests =(= w 2)= before using W.  A miss never goes through =nl_abi_fail=:
   that would stash a generic error and leave the THROW flag set.
-- 2 ("not handled") is otherwise produced only by =nl_apply_special_w=.
+- Apart from those lookups and the reader, 2 ("not handled") is produced
+  only by =nl_apply_special_w=.
   =nl_abi_word_to_rc= hands 2 through as rc 2, so the =nl_apply_special=
   adapter keeps its contract.  Every other consumer of =nl_apply_special_w=
-  tests =(= w 2)= before using W; no other =_w= function may return 2.
+  tests =(= w 2)= before using W; no =_w= function outside these three
+  families may return 2.
 - =F_w= keeps F's parameter list with the OUT parameter renamed to a
   =_pad= at the same position (callers pass 0).  The integration tools
   rely on this.

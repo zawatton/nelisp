@@ -21,7 +21,7 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
         raise ValueError("Constructor operation root policy differs")
     digest = prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root)
     # Measured 291: C-core owners plus P3.4 allocator-mask and native-to-OS helpers.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=296, evaluator_boundary="nl_apply_function")
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=296, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",

@@ -71,7 +71,11 @@ def verify_manifest(manifest, metadata, directory, data_owner, source_root):
 
 def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=128, evaluator_boundary=None):
     """Reject unresolved edges; this source certificate grants no runtime capability."""
-    if evaluator_boundary not in (None, "nl_apply_function"):
+    # The evaluator boundary is the combiner entry, in its rc form or its
+    # Doc 215 word form; a tuple names both (each record is marked).
+    boundaries = ((evaluator_boundary,) if isinstance(evaluator_boundary, str)
+                  else tuple(evaluator_boundary or ()))
+    if not set(boundaries) <= {"nl_apply_function", "nl_apply_function_w"}:
         raise ValueError("Unknown evaluator boundary")
     if max_functions not in (128, 192, 200, 272, 280, 288, 296):
         raise ValueError("Unknown direct helper count policy")
@@ -152,14 +156,14 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
             if target not in owners and target not in os_imports:
                 raise ValueError("Unresolved direct control flow: " + name)
             direct.append(dict(offset=position, mnemonic=instruction.mnemonic, target=target))
-            if name != evaluator_boundary and target not in os_imports:
+            if name not in boundaries and target not in os_imports:
                 pending.append(target)
         if decoded != size:
             raise ValueError("Incomplete prelink instruction decoding")
         records.append(dict(name=name, unit=owner["unit"], unit_offset=start, size=size,
                             normalized_sha256=hashlib.sha256(normalized).hexdigest(),
                             direct=direct, indirect=[],
-                            **({"evaluator_boundary": True} if name == evaluator_boundary else {})))
+                            **({"evaluator_boundary": True} if name in boundaries else {})))
         seen.add(name)
         total += size
     result = dict(domain="nelisp-rooted-prelink-text-v1", roots=list(roots), records=records,

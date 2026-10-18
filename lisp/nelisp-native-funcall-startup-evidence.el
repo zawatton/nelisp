@@ -70,7 +70,7 @@ policies remain unchanged. All boundary bytes and relocations are verified."
                                      (member (cdr (assq 'target edge))
                                              (plist-get nelisp-native-compiler-runtime-proof--expected :os-imports))))
                                         (plist-get record :direct))))
-             '(or (equal (plist-get record :name) "nl_apply_function")
+             '(or (member (plist-get record :name) '("nl_apply_function" "nl_apply_function_w"))
                   (cl-every (lambda (edge) (or (member (cdr (assq 'target edge)) names)
                                      (member (cdr (assq 'target edge))
                                              (plist-get nelisp-native-compiler-f1-runtime-proof--expected :os-imports))))
