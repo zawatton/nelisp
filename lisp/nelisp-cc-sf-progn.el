@@ -77,8 +77,12 @@
 
     (defun nl_sf_progn_after (eval-rc cur env out)
       (if (= eval-rc 0)
-          (let ((tail (extern-call nl_cons_cdr_ptr cur)))
-            (if (= (sexp-tag tail) 0) 0 tail))
+          ;; Doc 215: read the cdr WORD; only a non-nil immediate (dotted
+          ;; tail) still needs the materialised view.
+          (let ((tail (ptr-read-u64 (ptr-read-u64 cur 8) 8)))
+            (if (= (logand tail 1) 1)
+                (if (= tail 3) 0 (extern-call nl_cons_cdr_ptr cur))
+              (if (= (sexp-tag tail) 0) 0 tail)))
         -1))
 
     ;; Recursive step.  cdr is the remaining tail cons list.

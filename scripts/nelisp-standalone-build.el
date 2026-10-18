@@ -6883,7 +6883,7 @@ argument (reachability + in-arena bounds checks).")
       (if (= form_ptr 0)
           (let* ((nilslot (alloc-bytes 32 8)))
             (nl_seq2 (wf_write_nil nilslot) nilslot))
-        (if (= (ptr-read-u8 form_ptr 0) 7) (nl_cons_car_ptr form_ptr) form_ptr)))
+        (if (= (ptr-read-u8 form_ptr 0) 7) (let* ((cw (nl_cons_car_word form_ptr))) (if (= (logand cw 1) 0) cw (nl_cons_car_ptr form_ptr))) form_ptr)))
     (defun nl_bt_print_frame (i form_ptr)
       (let* ((idx_slot (alloc-bytes 32 8))
              (idx_ms (alloc-bytes 32 8)) (idx_repr (alloc-bytes 32 8))
@@ -25026,7 +25026,10 @@ POSIX-style child-fd setup step (see
 	        0))
 	    (defun nl_bi_process_start_process (args out)
 	      (let* ((program_sx (wf_arg_ptr args 0))
-	             (arglst (nl_cons_cdr_ptr args))
+	             (arglst (if (= (ptr-read-u64 args 0) 7)
+	                         (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 8)))
+	                           (if (= (logand aw 1) 0) aw (nl_cons_cdr_ptr args)))
+	                       0))
 	             (pipev (alloc-bytes 8 4))
 	             (inpipev (alloc-bytes 8 4))
 	             (envp (alloc-bytes 8 8))
@@ -26473,10 +26476,10 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
               2)))))
     ;; BODY of (NAME ARGS . BODY), or the non-cons tail itself.
     (defun nl_sf_definer_body (args)
-      (let* ((tail_ptr (nl_cons_cdr_ptr args)))
-        (if (= (sexp-tag tail_ptr) 7)
-            (nl_cons_cdr_ptr tail_ptr)
-          tail_ptr))))
+      (let* ((tw (nl_cons_cdr_word args)))
+        (if (= (logand tw 1) 0)
+            (if (= (sexp-tag tw) 7) (nl_cons_cdr_ptr tw) tw)
+          (nl_cons_cdr_ptr args)))))
   "Top-level helper defuns for native `defun' / `defmacro' body normalization.")
 
 (defconst nelisp-standalone--sf-defun
@@ -27334,7 +27337,7 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
 (defconst nelisp-standalone--macro-cache-apply-eval
   '(defun nl_cons_macro_apply_eval (box_ptr func_ptr tail_ptr env out)
      ;; GNU Emacs stores the callable macro expander directly in the cdr.
-     (let* ((macrofn_ptr (nl_cons_cdr_ptr func_ptr))
+     (let* ((macrofn_ptr (let* ((mw (nl_cons_cdr_word func_ptr))) (if (= (logand mw 1) 0) mw (nl_cons_cdr_ptr func_ptr))))
             (exp_slot (alloc-bytes 32 8))
             (env_ptr env))
        (let* ((rc_mac (nl_apply_function macrofn_ptr tail_ptr env_ptr exp_slot)))
@@ -27496,7 +27499,7 @@ never sees it), which blocked the anvil-pkg ERT suite at its first test."
 ;; ===================================================================
 (defconst nelisp-standalone--mxcache-macro-apply-eval
   '(defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
-     (let* ((macrofn_ptr (nl_cons_cdr_ptr func_ptr))
+     (let* ((macrofn_ptr (let* ((mw (nl_cons_cdr_word func_ptr))) (if (= (logand mw 1) 0) mw (nl_cons_cdr_ptr func_ptr))))
             (exp_slot (alloc-bytes 32 8)) (env_ptr env))
        (let* ((rc_mac
                (nl_apply_function macrofn_ptr tail_ptr env_ptr exp_slot)))
@@ -40124,18 +40127,19 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (let* ((tag (sexp-tag form)))
         (if (or (= tag 4) (= tag 16)) 2
           (if (= tag 7)
-              (let* ((name (nl_cons_car_ptr form)))
-                (if (or (= (sexp-name-eq name "+") 1)
+              (let* ((name (nl_cons_car_word form)))
+                (if (if (= (logand name 1) 1) 0
+                      (or (= (sexp-name-eq name "+") 1)
                         (= (sexp-name-eq name "-") 1)
                         (= (sexp-name-eq name "*") 1)
-                        (= (sexp-name-eq name "/") 1))
+                        (= (sexp-name-eq name "/") 1)))
                     (let* ((args (nl_cons_cdr_ptr form)))
                       (if (= (nl_n3_eval_literal_args args) 1)
                           (let* ((mark (nl_root_mark env)) (fn (nl_root_reserve env)))
                             (let* ((rc
                                     (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name fn) 0)
                                         (if (and (= (sexp-tag fn) 7)
-                                                 (= (sexp-name-eq (nl_cons_car_ptr fn) "builtin") 1)
+                                                 (= (let* ((fw (nl_cons_car_word fn))) (if (= (logand fw 1) 1) 0 (sexp-name-eq fw "builtin"))) 1)
                                                  (= (symbol-eq (nl_apply_list_nth fn 1) name) 1))
                                             (nl_apply_function fn args env out) 2)
                                       2)))
@@ -40332,7 +40336,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (status 0) (scratch (alloc-bytes 32 8)))
         (seq
          (if (> depth 0)
-             (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 1))))
+             (let* ((frame (nl_vector_slot_word (record-slot-ref-ptr frames 0) (- depth 1))))
                (if (= (ptr-read-u64 frame 16) 13109) 0
                  (setq status (nl_n3_pop_names env (record-slot-ref-ptr frame 1) depth 0))))
            0)
@@ -40790,22 +40794,29 @@ match a special-form name tested in FORM."
 (defconst nelisp-standalone--reader-env-stash-signal-fixed
   '(defun nl_env_stash_signal (env signal_slot)
      (let* ((name_sym_slot (alloc-bytes 32 8))
-            (tag_ptr (nl_cons_car_ptr signal_slot))
-            (val_ptr (nl_cons_cdr_ptr signal_slot)))
+            (tag_w (nl_cons_car_word signal_slot))
+            (val_w (nl_cons_cdr_word signal_slot)))
        (seq
         (nl_env_stash_write_name_sym name_sym_slot)
         (nl_env_set_value env name_sym_slot signal_slot)
         ;; Formal-binding errors used to write only nelisp--last-signal-data
         ;; in the Env.  Top-level standalone reporting reads the M6 arena
         ;; stash, so mirror the same (TAG . VAL) signal there as well.
-        (ptr-write-u64 268435480 0 (ptr-read-u64 tag_ptr 0))
-        (ptr-write-u64 (+ 268435480 8) 0 (ptr-read-u64 (+ tag_ptr 8) 0))
-        (ptr-write-u64 (+ 268435480 16) 0 (ptr-read-u64 (+ tag_ptr 16) 0))
-        (ptr-write-u64 (+ 268435480 24) 0 (ptr-read-u64 (+ tag_ptr 24) 0))
-        (ptr-write-u64 268435512 0 (ptr-read-u64 val_ptr 0))
-        (ptr-write-u64 (+ 268435512 8) 0 (ptr-read-u64 (+ val_ptr 8) 0))
-        (ptr-write-u64 (+ 268435512 16) 0 (ptr-read-u64 (+ val_ptr 16) 0))
-        (ptr-write-u64 (+ 268435512 24) 0 (ptr-read-u64 (+ val_ptr 24) 0))
+        ;; Doc 215: an immediate WORD is written straight into the stash.
+        (if (= (logand tag_w 1) 1)
+            (extern-call nl_sci_store_imm tag_w 268435480)
+          (seq
+           (ptr-write-u64 268435480 0 (ptr-read-u64 tag_w 0))
+           (ptr-write-u64 (+ 268435480 8) 0 (ptr-read-u64 (+ tag_w 8) 0))
+           (ptr-write-u64 (+ 268435480 16) 0 (ptr-read-u64 (+ tag_w 16) 0))
+           (ptr-write-u64 (+ 268435480 24) 0 (ptr-read-u64 (+ tag_w 24) 0))))
+        (if (= (logand val_w 1) 1)
+            (extern-call nl_sci_store_imm val_w 268435512)
+          (seq
+           (ptr-write-u64 268435512 0 (ptr-read-u64 val_w 0))
+           (ptr-write-u64 (+ 268435512 8) 0 (ptr-read-u64 (+ val_w 8) 0))
+           (ptr-write-u64 (+ 268435512 16) 0 (ptr-read-u64 (+ val_w 16) 0))
+           (ptr-write-u64 (+ 268435512 24) 0 (ptr-read-u64 (+ val_w 24) 0))))
         (ptr-write-u64 268435472 0 1)
         (atomic-fetch-add 268435544 1)
         1)))
@@ -41787,9 +41798,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (ptr-write-u64 frame 112 1)
              (nl_n4_apply_raw function args env out))))
     (defun nl_n4_apply_name (function)
-      (if (= (sexp-tag function) 18) (record-slot-ref-ptr function 0)
+      (if (= (sexp-tag function) 18) (let* ((nw (nl_record_slot_word function 0))) (if (= (logand nw 1) 0) nw (record-slot-ref-ptr function 0)))
         (if (= (sexp-tag function) 7)
-            (if (= (sexp-name-eq (nl_cons_car_ptr function) "builtin") 1)
+            (if (= (let* ((fw (nl_cons_car_word function))) (if (= (logand fw 1) 1) 0 (sexp-name-eq fw "builtin"))) 1)
                 (nl_apply_list_nth function 1) function)
           function)))
     (defun nl_n4_named_apply (name function args env out)
@@ -41879,7 +41890,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (end (if (< (+ index 1) (ptr-read-u64 state 0))
                       (ptr-read-u64 (nl_n4_record state (+ index 1)) 96)
                     (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2)))
-             (backing (record-slot-ref-ptr (+ frame 64) 0))
+             (backing (nl_record_slot_word (+ frame 64) 0))
              (mark (nl_root_mark env)) (result (nl_root_reserve env))
              (i (- end 1)))
         (seq
