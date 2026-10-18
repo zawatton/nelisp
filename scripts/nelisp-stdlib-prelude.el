@@ -23171,17 +23171,25 @@ vector), so the plain `(consp x) 'cons)' branch below already caught
 them before this fix and had to be pre-empted, not merely supplemented
 -- and a record's `consp' is nil, so it fell all the way to the final
 `(t 'cons)' default with nothing catching it earlier either.  The
-record branch returns `(aref x 0)' unconditionally, matching Emacs
-31.1's own `Ftype_of' exactly (verified: `(type-of (record 'foo 1))'
--> `foo', and `(type-of (record 42 1))' -> `42' -- Emacs does not
-special-case a non-symbol first slot, it always returns it verbatim).
+record branch returns `(aref x 0)', matching Emacs 31.1's own
+`Ftype_of' (verified: `(type-of (record 'foo 1))' -> `foo', and
+`(type-of (record 42 1))' -> `42' -- a non-symbol first slot is
+returned verbatim), except that a first slot which is itself a record
+of more than one slot -- a class object -- yields that record's slot 1,
+the class name (`(type-of (record (record 'cls 'myname) 1))' ->
+`myname', `(type-of (record (record 'cls) 1))' -> `#s(cls)').
+Records are tested first: `recordp' is native from the start, nothing
+earlier in the chain answers t for a record, and record types are what
+struct predicates ask about most.
 `cl-type-of' does not exist in this runtime (verified: `fboundp' is
 nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
+     ((recordp x)
+      (let ((ty (aref x 0)))
+        (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))
      ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
-     ((and (fboundp 'recordp) (recordp x)) (aref x 0))
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.
      ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
