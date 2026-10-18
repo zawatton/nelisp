@@ -74,11 +74,10 @@
         (if (or (extern-call nl_sexp_clone_into (ptr-read-u64 nlcell-ptr 0) out) 1)
             0
           0)))
-    ;; Doc 215 builtin word ABI: nl_cell_get_value_w returns the result WORD; nl_cell_get_value keeps the direct slot-writing form (hot leaf).
+    ;; Doc 215 builtin word ABI: the cell's value WORD itself (an immediate, or the
+    ;; child box): no slot, no clone.  nl_cell_get_value keeps the cloning (rc, OUT) form.
     (defun nl_cell_get_value_w (cell-ptr _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (nl_cell_get_value cell-ptr s)
-             (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s))))))))
+      (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 0)))
   "AOT source for the `nl_cell_get_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
