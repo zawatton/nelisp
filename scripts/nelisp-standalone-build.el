@@ -5653,7 +5653,7 @@ REPL-facing module it feeds."
     ;; of the root surface for the mirror, not just an ordinary record child.
     (defun nl_gc_mark_mirror_buckets (mirror)
       (if (= (sexp-tag mirror) 12)
-          (let* ((ht (record-slot-ref-ptr mirror 0)))
+          (let* ((ht (nl_record_slot_word mirror 0)))
             (if (= (sexp-tag ht) 12)
                 (nl_gc_mark_slot (record-slot-ref-ptr ht 1))
               0))
@@ -7525,7 +7525,7 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) (nl_val_store_word b)))
+                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
                             (wf_sum_w args 1 0)))
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))) 0)))
                       (seq (nl_root_release env mark) w))
@@ -7533,7 +7533,7 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) (nl_val_store_word b)))
+                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
                             (wf_sum_w args 1 0)))
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))))
     ((:u8 "1-") :word . (if (= (wf_numeric_has_marker args) 1)
@@ -7545,7 +7545,7 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) (nl_val_store_word b)))
+                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
                             (let* ((mark (nl_root_mark env))
                                    (one (nl_root_reserve env))
                                    (nil-slot (nl_root_reserve env))
@@ -7563,7 +7563,7 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) (nl_val_store_word b)))
+                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
                             (let* ((mark (nl_root_mark env))
                                    (one (nl_root_reserve env))
                                    (nil-slot (nl_root_reserve env))
@@ -10513,15 +10513,13 @@ leave symbols unresolved at link time."
     ;; marker, so it is type-checked by tag and stored into OUT directly.
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_word_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value_word keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_value_word_w (w _pad check)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
+      (seq
 
-      (if (= (logand w 1) 0) (wf_numeric_marker_value w out check)
+      (if (= (logand w 1) 0) (wf_numeric_marker_value_w w 0 check)
         (if (and (= check 1) (= (wf_num_tag_ok (nl_val_tag w)) 0))
-            (bf_wrong_type_number_or_marker (wf_word_view w))
-          (seq (wf_word_store_out out w) 0)))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+            (nl_abi_rc_nil (bf_wrong_type_number_or_marker (wf_word_view w)) 0)
+          (seq w)))
+))
     (defun wf_numeric_marker_value_word (w out check)
       (nl_abi_word_to_rc (wf_numeric_marker_value_word_w w 0 check) out))
     (defun bf_wrong_type_int_or_marker (offender)
@@ -11006,15 +11004,14 @@ leave symbols unresolved at link time."
     ;; INSTALL, Doc 156 sec 3, is the separate next increment).
     ;; Doc 215 builtin word ABI: bf_arena_value_survival_w returns the result WORD (0 = signal stashed).
     (defun bf_arena_value_survival_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
+      (seq
 
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (qsym (wf_arg_ptr args 1))
              (hdr (alloc-bytes 64 8))
              (fd (nl_os_open_read cpath)))
         (if (< fd 0)
-            (seq (wf_write_nil out) 0)
+            (seq 3)
           (seq
            (nl_fa_read_all fd hdr 64 0)
            (let* ((slen (ptr-read-u64 hdr 8))
@@ -11047,11 +11044,9 @@ leave symbols unresolved at link time."
               ;; is linked into the reader, so compose here.
               (let* ((entry (nelisp_mirror_lookup_entry rootslot qsym)))
                 (if (= entry 0)
-                    (wf_write_nil out)
-                  (record-slot-ref entry 0 out)))
-              0)))))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+                    3
+                  (nl_record_slot_word entry 0))))))))
+))
     ;; The rest of the flat-arena in-memory swizzle machinery, moved from
     ;; `nelisp-standalone--applyfn-core-helpers': it calls `nl_gc_mark_block'/
     ;; `nl_gc_in_arena'/`nl_gc_pool_cap' (directly or transitively), which
@@ -21547,7 +21542,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; declaration markers do not classify formal parameters in GNU;
       ;; globals and dynamic mode do. Ignoring caller/captured local markers
       ;; both preserves formal shadowing and avoids a caller-frame walk.
-      (let* ((frame (nl_vector_slot_word (record-slot-ref-ptr frames 0)
+      (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0)
                      (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
         ;; A formal binds dynamically only in dynamic-binding mode: under
         ;; lexical-binding GNU 31.1 binds a parameter named after a special
@@ -21559,7 +21554,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (nl_bind_frame_fast frames name value)
                (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
                  (let* ((names (alloc-bytes 32 8)))
-                   (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
+                   (seq (cons-make-with-clone name (nl_record_slot_word frame 1) names)
                         (record-slot-set frame 1 names) (wf_dirty) 1)))))
           (seq (nl_bind_frame_fast frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
@@ -41815,7 +41810,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (let* ((sym (nl_cons_car_ptr names))
                  (frames (+ env 32))
                  (outer (nelisp_frame_stack_find_kind_descend
-                         (record-slot-ref-ptr frames 0) (- depth 2) sym 1))
+                         (nl_record_slot_word frames 0) (- depth 2) sym 1))
                  (value (alloc-bytes 32 8)))
             (seq
              (if (= outer 0) (nelisp_env_lkv_mirror (+ env 0) sym value 0)
@@ -43766,7 +43761,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          ;; depth is always a fixnum and the list starts as nil, and the
          ;; materialising readers boxed both on every binding.  The cons
          ;; constructor stores an immediate cdr WORD as it is.
-         (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
+         (let* ((frame (vector-ref-ptr (nl_record_slot_word frames 0)
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
            (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
@@ -43829,13 +43824,13 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (nl_n4_bind_declared_deep env frames name value))
         (nl_n4_bind_declared_deep env frames name value)))
     (defun nl_n4_bind_declared_deep (env frames name value)
-      (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
+      (let* ((frame (vector-ref-ptr (nl_record_slot_word frames 0)
                       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (old (nelisp_frame_stack_find_in_frame frame name)))
         (if (and (/= old 0) (= (nelisp_frame_binding_dynamic_p frame name) 1))
             (let* ((history (alloc-bytes 32 8)) (names (alloc-bytes 32 8)))
               (seq (nelisp_cons_construct name old history)
-                   (nelisp_cons_construct history (record-slot-ref-ptr frame 1) names)
+                   (nelisp_cons_construct history (nl_record_slot_word frame 1) names)
                    (record-slot-set frame 1 names)
                    (nl_bind_frame_fast frames name value) 1))
           (seq (nl_bind_frame_fast frames name value)

@@ -87,7 +87,7 @@
         (seq
          (while (< k n)
            (seq
-            (vector-slot-set dst k (vector-ref-ptr src k))
+            (vector-slot-set dst k (nl_vector_slot_word src k))
             (setq k (+ k 1))))
          1)))
     (defun nelisp_frame_stack_ensure_capacity_grow
@@ -106,7 +106,7 @@
       ;; instead of the OLD one.
       (and (vector-make new-cap scratch-slot)
            (nelisp_frame_stack_ensure_capacity_copy
-            (record-slot-ref-ptr frames-ptr 0)
+            (nl_record_slot_word frames-ptr 0)
             scratch-slot
             0
             (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2))

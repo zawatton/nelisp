@@ -250,7 +250,7 @@
       (if (= (nelisp_frame_stack_find_valid_key name-ptr) 0)
           0
         (nelisp_frame_stack_find_descend
-         (record-slot-ref-ptr frames-ptr 0)
+         (nl_record_slot_word frames-ptr 0)
          (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
          name-ptr)))
 
@@ -415,13 +415,13 @@
       (if (= (nelisp_frame_scope_boundary_p frame) 1) 1
         (> (nelisp_frame_cell_count frame)
            (if (> (record-slot-count frame) 1)
-               (nelisp_frame_name_count (record-slot-ref-ptr frame 1)) 0))))
+               (nelisp_frame_name_count (nl_record_slot_word frame 1)) 0))))
 
     ;; Bindings in FRAME's cell table, either shape.
     (defun nelisp_frame_cell_count (frame)
       (let* ((w (nelisp_frame_slot_raw_word frame 0)))
         (if (= (nelisp_frame_stack_find_word_tag_p w 12) 1)
-            (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+            (nl_word_payload (nl_record_slot_word (nl_record_slot_word frame 0) 2))
           (nelisp_frame_chain_length w 0))))
 
     (defun nelisp_frame_chain_length (w n)
@@ -445,7 +445,7 @@
         (if (= (nelisp_frame_chain_shareable alist 0) 0)
             0
           (let* ((frame (vector-ref-ptr
-                         (record-slot-ref-ptr frames 0)
+                         (nl_record_slot_word frames 0)
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
             (seq (record-slot-set frame 0 alist)
                  (ptr-write-u64 frame 16 13110)
@@ -492,7 +492,7 @@
                          (= (sexp-tag p) 15))
                      (nelisp_frame_local_declare_one
                       (vector-ref-ptr
-                       (record-slot-ref-ptr frames 0)
+                       (nl_record_slot_word frames 0)
                        (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
                       p)
                    0))
@@ -517,7 +517,7 @@
             (nelisp_frame_local_declare_walk backing (- i 1) name)))))
 
     (defun nelisp_frame_local_declare (frames name)
-      (nelisp_frame_local_declare_walk (record-slot-ref-ptr frames 0)
+      (nelisp_frame_local_declare_walk (nl_record_slot_word frames 0)
        (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nelisp_frame_local_special_walk (backing i name)
@@ -529,7 +529,7 @@
               (nelisp_frame_local_special_walk backing (- i 1) name))))))
 
     (defun nelisp_frame_local_special_p (frames name)
-      (nelisp_frame_local_special_walk (record-slot-ref-ptr frames 0)
+      (nelisp_frame_local_special_walk (nl_record_slot_word frames 0)
        (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
     (defun nl_capture_local_names (names out)
@@ -549,7 +549,7 @@
     (defun nelisp_frame_scope_mark (frames-ptr)
       (let* ((depth (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)))
         (if (> depth 0)
-            (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames-ptr 0)
+            (let* ((frame (vector-ref-ptr (nl_record_slot_word frames-ptr 0)
                                          (- depth 1))))
               (if (> (record-slot-count frame) 2)
                   ;; Immediate slot reads can be materialized scratch views.
@@ -601,7 +601,7 @@
         (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
             0
           (nelisp_frame_stack_find_kind_descend
-           (record-slot-ref-ptr frames-ptr 0)
+           (nl_record_slot_word frames-ptr 0)
            (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
            name-ptr dynamic))))
 

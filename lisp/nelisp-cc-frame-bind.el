@@ -321,7 +321,7 @@
             0
           (nelisp_frame_bind_in_frame
            (vector-ref-ptr
-            (record-slot-ref-ptr frames-ptr 0)
+            (nl_record_slot_word frames-ptr 0)
             (- depth 1))
            name-ptr cell-ptr
            scratch-pair-slot scratch-outer-slot scratch-count-slot))))
@@ -445,7 +445,7 @@
           (and (nelisp_frame_bind_in_ht
                 ht-ptr
                 (extern-call nl_cons_car_ptr pair)
-                (extern-call nl_cons_cdr_ptr pair)
+                (extern-call nl_cons_cdr_word pair)
                 blk (+ blk 32) (+ blk 64))
                1)))))
   "AOT source for Doc 111 §111.E #23 / Doc 115 §115.5

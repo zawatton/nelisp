@@ -95,6 +95,11 @@ class Conv:
             ed.append((x.start, x.end, "3" if h == "wf_write_nil" else "7")); return
         if h == "wf_write_int" and len(args) == 2 and args[0] == v and not mentions(args[1], v):
             ed.append((x.start, x.end, "(wf_write_int_w 0 %s)" % self.src(args[1]))); return
+        if h == "wf_word_store_out" and len(args) == 2 and args[0] == v and not mentions(args[1], v):
+            ed.append((x.start, x.end, self.src(args[1]))); return
+        if h == "record-slot-ref" and len(args) == 3 and args[2] == v and not mentions(args[:2], v):
+            ed.append((x.start, x.end, "(nl_record_slot_word %s %s)" %
+                       (self.src(args[0]), self.src(args[1])))); return
         if (h == "wf_copy32" and len(args) == 2 and args[0] == v and is_call(args[1])
                 and args[1][0] in ("nl_cons_car_ptr", "nl_cons_cdr_ptr") and len(args[1]) == 2
                 and not mentions(args[1], v)):
@@ -211,7 +216,7 @@ def main(a):
         elif (is_call(body) and body[0] == "seq" and len(body) == 3 and is_store(body[2], v)
               and is_call(body[1]) and str(body[1][0]) in OBJECT_WRITERS):
             w = body[1]; pos = OBJECT_WRITERS[str(w[0])]
-            if w[pos if pos >= 0 else len(w) - 1] == v or (pos == -1 and w[-1] == v):
+            if w[pos + 1 if pos >= 0 else len(w) - 1] == v:
                 edits.add(PATH, body[2].start, body[2].end, str(v)); done["C"] += 1
             else:
                 left.append((n.start, "C writer arg"))
