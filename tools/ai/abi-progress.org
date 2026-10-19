@@ -169,6 +169,11 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Callback/precise-root checkpoint: TOTAL1404; S6.2 28 (15direct+9reverse+4inline).
+# Callback40 + value mutation, actual parked-worker3 red on b93edbd90 / green
+# on callback3, control/saved/environment, batteries/Anvil/arity and static42
+# pass. Boot/regex/files -2.837%/-2.440%/-3.142%, GC6/6, regex17/[17,16,16,16],
+# files8/8. First build rejected a source change; only callback3 is accepted.
 # Control/symbol checkpoint: TOTAL1405; S6.2 30 (17direct+9reverse+4inline).
 # Control29 with GNU + cached-dolist mutation, marker input4/8 and marker8,
 # saved/capture, batteries/Anvil/arity, static42 + worker nil/t intern2 pass.

@@ -8477,7 +8477,7 @@ leave symbols unresolved at link time."
             (seq (wf_word_store_out holder_root holder)
                  (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
                    (if (= tail_word 0) 0
-                     (nelisp_cons_construct_w (nl_cons_car_word holder) tail_word 0)))))))
+                     (nelisp_cons_construct_w (nl_cons_car_word holder_root) tail_word 0)))))))
     args))
     (defun wf_numeric_marker_copy (args env out)
       (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
@@ -11566,39 +11566,35 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
           (nl_abi_fail (bf_wrong_number_of_args func argc) 0))))
     ;; Doc 215 builtin word ABI: bf_garbage_collect_snapshot_w returns the result WORD (0 = signal stashed).
     (defun bf_garbage_collect_snapshot_w (env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
-
-      (let* ((st (data-addr nl_gc_typed_state))
-             (mark (nl_root_mark env)) (snapshot (nl_root_reserve env))
-             (argv (nl_root_reserve env)) (tmp (nl_root_reserve env)) (i 0))
-        (seq
-         (while (< i 80) (ptr-write-u64 st i 0) (setq i (+ i 8)))
-         (ptr-write-u64 st 0 1)
-         (nl_gc_collect_from_recorded_roots 0)
-         (nl_gc_explicit_rearm)
-         (nl_gc_typed_interns tmp)
-         (ptr-write-u64 st 0 (if (= (ptr-read-u64 st 0) 3) 3 0))
-         (if (= (ptr-read-u64 st 0) 3)
-             (seq (if (= (ptr-read-u64 st 8) 0) 0
-                      (nl_os_free_chunk (ptr-read-u64 st 8)
-                                        (* (ptr-read-u64 st 16) 32)))
-                  (ptr-write-u64 st 0 0) (nl_root_release env mark)
-                  (bf_signal_memory_full))
-           (seq
-            (vector-make 6 snapshot)
-            (setq i 0)
-            (while (< i 6)
-              (wf_write_int tmp (ptr-read-u64 st (+ 32 (* i 8))))
-              (vector-slot-set snapshot i tmp) (setq i (+ i 1)))
-            (if (= (ptr-read-u64 st 8) 0) 0
-              (nl_os_free_chunk (ptr-read-u64 st 8) (* (ptr-read-u64 st 16) 32)))
-            (ptr-write-u64 st 8 0) (ptr-write-u64 st 16 0)
-            (wf_write_nil tmp) (nelisp_cons_construct snapshot tmp argv)
-            (let ((rc (bf_n2_call_lisp_gc argv env out)))
-              (nl_root_release env mark) rc)))))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+  (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
+         (args-root (nl_root_reserve env)) (scratch-root (nl_root_reserve env)) (i 0))
+    (seq
+     (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
+     (ptr-write-u64 state 0 1)
+     (nl_gc_collect_from_recorded_roots 0)
+     (nl_gc_explicit_rearm)
+     (nl_gc_typed_interns scratch-root)
+     (ptr-write-u64 state 0 (if (= (ptr-read-u64 state 0) 3) 3 0))
+     (if (= (ptr-read-u64 state 0) 3)
+         (seq (if (= (ptr-read-u64 state 8) 0) 0
+                (nl_os_free_chunk (ptr-read-u64 state 8) (* (ptr-read-u64 state 16) 32)))
+              (ptr-write-u64 state 0 0) (nl_root_release env mark)
+              (nl_abi_fail (bf_signal_memory_full) 0))
+       (let* ((snapshot-word (nl_w_vector_make 6 0))
+              (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
+         (seq
+          ;; The argument cons roots the vector's actual WORD header.
+          (wf_word_store_out args-root args-word)
+          (setq i 0)
+          (while (< i 6)
+            (vector-slot-set (nl_cons_car_word args-root) i
+                             (wf_write_int_w 0 (ptr-read-u64 state (+ 32 (* i 8)))))
+            (setq i (+ i 1)))
+          (if (= (ptr-read-u64 state 8) 0) 0
+            (nl_os_free_chunk (ptr-read-u64 state 8) (* (ptr-read-u64 state 16) 32)))
+          (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
+          (let* ((word (bf_n2_call_lisp_gc_w args-root env 0)))
+            (seq (nl_root_release env mark) word))))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
@@ -25195,46 +25191,36 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
 
 
 (defun nelisp-standalone--n2-lisp-delegates ()
-  "Narrow evaluator bridges; GNU policy and row construction live in Lisp.
-`bf_n2_call_lisp_equal' also gets a word-ABI variant (Doc 215)."
+  "Evaluator callback bridges with direct WORD results."
   (mapcan
    (lambda (entry)
-     (let* ((name (string-as-unibyte (cdr entry)))
-            (writes nil))
+     (let* ((name (string-as-unibyte (cdr entry))) (writes nil)
+            (word-name (intern (format "%s_w" (car entry)))))
        (dotimes (i (length name))
          (push `(ptr-write-u8 buf ,i ,(aref name i)) writes))
        (setq writes (nreverse writes))
-       (if (eq (car entry) 'bf_n2_call_lisp_equal)
-           (list
-            `(defun bf_n2_call_lisp_equal_w (args env _pad)
-               (let* ((mark (nl_root_mark env))
-                      (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
-                      (buf (alloc-bytes ,(length name) 1))
-                      (out (alloc-bytes 32 8)))
-                 (seq ,@writes
-                      (nl_alloc_symbol buf ,(length name) sym)
-                      (let ((rc (if (if (= (nelisp_env_lookup_function
-                                            (+ env 0) (+ env 64) sym fn) 0)
-                                        (/= (sexp-tag fn) 0) 0)
-                                    (nl_apply_function fn args env out)
-                                  (bf_equal args out))))
-                        (nl_root_release env mark)
-                        (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0))))))
-            `(defun bf_n2_call_lisp_equal (args env out)
-               (nl_abi_word_to_rc (bf_n2_call_lisp_equal_w args env 0) out)))
-         (list
-          `(defun ,(car entry) (args env out)
-             (let* ((mark (nl_root_mark env))
-                    (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
-                    (buf (alloc-bytes ,(length name) 1)))
-               (seq ,@writes
-                    (nl_alloc_symbol buf ,(length name) sym)
-                    (let ((rc (if (if (= (nelisp_env_lookup_function
-                                          (+ env 0) (+ env 64) sym fn) 0)
-                                      (/= (sexp-tag fn) 0) 0)
-                                  (nl_apply_function fn args env out)
-                                (nl_cons_stash_void_function env sym))))
-                      (nl_root_release env mark) rc))))))))
+       (list
+        `(defun ,word-name (args env _pad)
+           (let* ((mark (nl_root_mark env))
+                  (symbol-root (nl_root_reserve env))
+                  (function-root (nl_root_reserve env))
+                  (buf (alloc-bytes ,(length name) 1)))
+             (seq ,@writes
+                  (let* ((symbol-word (nl_alloc_symbol_w buf ,(length name) 0)))
+                    (seq (wf_word_store_out symbol-root symbol-word)
+                         (let* ((function-word (nelisp_env_lookup_function_w
+                                                (+ env 0) (+ env 64) symbol-word 0))
+                                (word
+                                 (if (and (/= function-word 0) (/= function-word 2)
+                                          (/= function-word 3))
+                                     (seq (wf_word_store_out function-root function-word)
+                                          (nl_apply_function_w function-root args env 0))
+                                   ,(if (eq (car entry) 'bf_n2_call_lisp_equal)
+                                        '(bf_equal_w args 0)
+                                      '(nl_abi_fail (nl_cons_stash_void_function env symbol-word) 0)))))
+                           (seq (nl_root_release env mark) word)))))))
+        `(defun ,(car entry) (args env out)
+           (nl_abi_word_to_rc (,word-name args env 0) out)))))
    '((bf_n2_call_lisp_gc . "nelisp--gc-statistics")
      (bf_n2_call_lisp_equal . "nelisp--equal-reference"))))
 
@@ -28093,7 +28079,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (if (= word 0) 0
        (let* ((holder (nelisp_cons_construct_w word 3 0)))
          (seq (wf_word_store_out vslot holder)
-              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env holder 0))))
+              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0))))
      env mark 0)))
     (defun nl_sf_prog1_marked_w (args env mark _pad)
       (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))

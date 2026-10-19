@@ -107,6 +107,14 @@ Rule:
   it cannot be clobbered by a later lookup the way a shared scratch view
   can.  An argument that is still a scratch view (from unconverted code)
   must be converted to a WORD at the call boundary, before any lookup.
+- R6. A root slot containing a copied Sexp header traces its payload and
+  child WORDs, not the original header allocation. After a safepoint, read
+  the root view or a canonical WORD stored inside its rooted container.
+  Do not keep using the original holder header merely because a copy of
+  that header is rooted. The parked-worker prog1/prog2 check fails with
+  =parked prog1 value lost= on =b93edbd90='s static build and passes after
+  switching the reads to the root slots. It verifies two registered workers,
+  an actual parked mark/sweep, and unchanged missed-collect diagnostics.
 - R5.  If compaction is ever re-enabled, R1 still holds for the main
   thread because any conservative pin vetoes compaction; R2 code would need
   forwarding, which is why the parked collector never compacts.
@@ -411,6 +419,23 @@ S6.2 30 (17 direct + 9 reverse + 4 inline). Boot/regex/files means are
 regex baseline is 17 in every layout, candidate is 17/16/16/16. All outputs
 agree and all collector instructions are included. The final whitespace
 cleanup preserves every build-script form; a body mutation is rejected.
+
+Equal and GC callback bridges now retain their evaluation WORD through root
+cleanup. The apply gateway receives the rooted physical function view, so
+invalid immediate function cells preserve their original conditions. The GC
+argument cons roots the actual snapshot vector WORD; callback dispatch uses
+the stable root view. Prog1 and recursive numeric-marker copying similarly
+resume through the root slots instead of the original holder headers.
+Callback40 agrees with baseline (all value classes, nested GC, missing/nil
+callbacks, t/zero/negative invalid cells and exact conditions). Returning nil
+in place of a callback value fails. The parked-worker regression is red on
+the preceding lane build and green after the fix. Control/saved/environment,
+batteries/Anvil/arity and static42 pass. TOTAL1404; S6.2 28 (15 direct + 9
+reverse + 4 inline). Boot/regex/files means are -2.837%/-2.440%/-3.142%;
+GC6/6, regex17/[17,16,16,16], files8/8, all outputs identical. Only the
+completed =round3-callback3= builds are the accepted checkpoint; the first
+build was correctly rejected after an in-flight source change, and callback2
+was superseded by the precise-root correction.
 
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
