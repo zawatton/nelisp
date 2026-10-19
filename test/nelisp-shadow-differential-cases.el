@@ -45,6 +45,11 @@
 ;;; Code:
 
 (list
+ ;; Argument WORD reads retain immediate tags and negative integer payloads.
+ (mapcar (lambda (value)
+           (list (car (list value)) (cdr (cons 'head value))
+                 (nth 0 (list value))))
+         '(nil t -8 0 1000 "word"))
  ;; Reader word producers retain immediate, heap, and quoted leaf values.
  (mapcar #'read '("17" "-9" "2305843009213693952" "nil" "t"
                   "word" "\"text\"" "?A" "#xFF" "1.5" "'(1 . t)"))

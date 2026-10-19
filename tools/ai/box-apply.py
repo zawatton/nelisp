@@ -23,6 +23,8 @@ Two rewrites, both restricted to defuns whose family is in --families
      (ptr-read-u64 V 8)    -> (nl_word_payload W)
    Bound locals are rewritten only when every use qualifies and the name is
    not rebound inside the scope.
+   The same proof covers vector/record view slots and wf_arg_ptr argument
+   views; wf_arg_word returns the argument list's own WORD.
 
 2. Out parameters.  A callee F with a parameter P that is only ever the
    destination of a known writer (or forwarded into another converted out
@@ -138,7 +140,8 @@ CONS_PTR = {"nl_cons_car_ptr": "nl_cons_car_word", "nl_cons_cdr_ptr": "nl_cons_c
 CONS_PTR.update({"record-slot-ref-ptr": "nl_record_slot_word",
                  "vector-ref-ptr": "nl_vector_slot_word",
                  "nl_record_slot_ptr": "nl_record_slot_word",
-                 "nl_vector_slot_ptr": "nl_vector_slot_word"})
+                 "nl_vector_slot_ptr": "nl_vector_slot_word",
+                 "wf_arg_ptr": "wf_arg_word"})
 CONS_ACC = set(CONS_PTR) | set(CONS_PTR.values())
 SRC = {"record-slot-set": (2,), "vector-slot-set": (2,), "nl_record_set_slot": (2,),
        "nl_vector_set_slot": (2,), "nl_consbox_set_car": (1,), "nl_consbox_set_cdr": (1,),
