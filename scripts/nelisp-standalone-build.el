@@ -2995,7 +2995,7 @@ directory tracks the tree rather than accumulating every key ever built."
       ;; It is already a heap WORD; never pass an immediate storage view.
       (if (= rc 0) object (nl_abi_fail rc 0)))
     ;; A lookup's legacy (status, private OUT box) as its word result.
-    
+
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -4551,7 +4551,7 @@ REPL-facing module it feeds."
                        (if (= (ptr-read-u8 dw 0) 7)
                            ;; cdr child is a cons -> continue the spine
                            (nl_seq2 (setq sp dw) (setq go 1))
-                         (nl_gc_mark_slot dw)))))))))) 
+                         (nl_gc_mark_slot dw))))))))))
          0)))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
@@ -8151,10 +8151,8 @@ argument (reachability + in-arena bounds checks).")
                     (mut-str-finalize sb sb) sb)))
            3)))
 ;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
-    ((:lit "nelisp--fx-run")
-     . (let* ((st (m5_fx_run (wf_arg_ptr args 0) (wf_argval args 1) env out 0 0 0 0)))
-         (if (= st -1) 0
-           (if (= st -2) (bf_wrong_type_arrayp (wf_arg_ptr args 0)) st))))
+    ((:lit "nelisp--fx-run") :word
+     . (m5_fx_run_w (wf_arg_ptr args 0) (wf_argval args 1) env 0 0 0 0 0))
     ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
     ((:lit "nelisp--string-search-chars")
      :word . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
@@ -8561,9 +8559,7 @@ leave symbols unresolved at link time."
     (if (and (= check 1) (= (wf_num_tag_ok (nl_val_tag word)) 0))
         (nl_abi_fail (bf_wrong_type_number_or_marker (wf_word_view word)) 0)
       word)))
-    (defun wf_numeric_marker_value (value out check)
-  ;; Explicit legacy input boundary: VALUE is a physical 32-byte Sexp.
-  (nl_abi_word_to_rc (wf_numeric_marker_value_w (nl_val_store_word value) 0 check) out))
+
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_copy_w (args env _pad)
   (if (= (nl_val_tag args) 7)
@@ -18228,11 +18224,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (< argc 0) 2
               (let* ((code (m5_fx_arity_code rec argc)))
                 (if (< code 0) 2
-                  (let* ((out (alloc-bytes 32 8)))
-                    (m5_fx_interp_word
-                     (m5_fx_interp_run rec fn tail env out argc code scratch) out)))))))))
-    (defun m5_fx_interp_word (st out)
-      (if (= st -3) 2 (nl_abi_rc_to_word st out)))
+                  (m5_fx_interp_run_w rec fn tail env argc code scratch))))))))
+
     ;; The length of the proper list TAIL (a Sexp slot), or -1.
     (defun m5_fx_form_count (tail _pad)
       (let* ((n 0) (cur tail) (done 0))
@@ -18243,6 +18236,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq (setq n (+ n 1)) (setq cur (ptr-read-u64 (ptr-read-u64 cur 8) 8)))
                (setq done (if (= (ptr-read-u64 cur 0) 0) 1 2)))))
          (if (= done 1) (if (> n 255) -1 n) -1))))
+    (defun m5_fx_interp_run_w (rec fn tail env argc code scratch)
+      (let* ((base (m5_fx_root_block env argc)))
+        (if (and (= base 0) (> argc 0)) 2
+          (let* ((rc (m5_fx_eval_forms tail env base 0)))
+            (if (/= rc 0) 0
+              (seq
+               (m5_fx_frame_lazy env base argc 0)
+               (let* ((word (m5_fx_run_w (nl_vector_slot_word rec 0)
+                              (sar (nl_vector_slot_word rec 1) 2)
+                              env 0 0 code (if (= argc 0) 0 (+ base 1)) 0)))
+                 (if (= word 2)
+                     (nl_n4_direct_apply_w fn
+                      (m5_fx_list_slot (m5_fx_slot_list base argc) scratch) env 0)
+                   word))))))))
     (defun m5_fx_interp_run (rec fn tail env out argc code scratch)
       (let* ((base (m5_fx_root_block env argc)))
         (if (if (= base 0) (> argc 0) 0) -3
@@ -18362,6 +18369,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; The NPARAMS arguments come from the list ARGS, or, when ARGW is not 0,
     ;; from the NPARAMS words at ARGW.  The value goes to the Sexp slot OUT,
     ;; or, when WOUT is not 0, as a word to *WOUT.
+    ;; The existing VM writes a canonical WORD into WOUT. Keep that result
+    ;; in a rooted vector: an unrooted scratch buffer can be reused by a
+    ;; collection in the callee. No collection follows the final root read.
+    (defun m5_fx_run_w (code nlocals env _pad args nparams argw _unused)
+      (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env)))
+        (if (= result 0) (seq (nl_root_release env mark) (nl_abi_fail (wf_bytecode_root_exhausted) 0))
+          (seq
+           (vector-make 1 result)
+           (let* ((status (m5_fx_run code nlocals env 0 args nparams argw
+                           (ptr-read-u64 (ptr-read-u64 result 8) 8)))
+                  (word (if (= status -1) (nl_vector_slot_word result 0)
+                          (if (= status -3) 2
+                            (if (= status -2) (nl_abi_fail (bf_wrong_type_arrayp code) 0) 0)))))
+             (seq (nl_root_release env mark) word))))))
     (defun m5_fx_run (code nlocals env out args nparams argw wout)
       (let* ((rec (ptr-read-u64 (+ env 96) 0)) (rec_max (ptr-read-u64 (+ env 104) 0)))
         (if (>= (+ rec 2) rec_max)
@@ -18557,6 +18578,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (m5_fx_rec_or_first body env 0 0)))))
     ;; Run REC = [CODE NLOCALS NPARAMS] on ARGS (a list).  -3: wrong arity,
     ;; left to the interpreter so it signals as usual.
+    (defun m5_fx_apply_w (rec args env _pad)
+      (let* ((n 0) (a args) (code 0))
+        (seq
+         ;; Retain the legacy raw-zero empty list and iterative arity walk.
+         (while (if (= a 0) 0 (if (= (logand a 1) 1) 0 (= (ptr-read-u64 a 0) 7)))
+           (seq (setq n (+ n 1)) (setq a (nl_cons_cdr_word a))))
+         (setq code (m5_fx_arity_code rec n))
+         (if (< code 0) 2
+           (m5_fx_run_w (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+                        env 0 args code 0 0)))))
     (defun m5_fx_apply (rec args env out)
       (let* ((n 0) (a args) (code 0))
         (seq
@@ -41764,15 +41795,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                    (let* ((rec (nl_apply_lambda_fx_rec captured body-list env 0)))
                      (if (= rec 0)
                          (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
-                       (let* ((out (alloc-bytes 32 8)))
-                         (nl_apply_lambda_fx_done (m5_fx_apply rec args-list env out)
-                                                  captured formals body-list args-list env out 0)))))
+                       (let* ((word (m5_fx_apply_w rec args-list env 0)))
+                         (if (= word 2)
+                             (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
+                           word)))))
                 out)
-          (push '(defun nl_apply_lambda_fx_done (st captured formals body-list args-list env out _pad)
-                   (if (= st -3)
-                       (nl_apply_lambda_inner_n3_w captured formals body-list args-list env 0)
-                     (nl_abi_rc_to_word (if (= st -1) 0 st) out)))
-                out))
+)
          ((eq name 'nl_sf_lambda)
           (push (cons 'defun (cons 'nl_n3_lambda_raw (cddr form))) out)
           ;; Doc 215 word ABI: the closure is built in a fresh box that IS

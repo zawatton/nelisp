@@ -622,3 +622,16 @@ against GNU Emacs 31.1, with the existing optional Lisp thread providers
 loaded for its thread cases. The pre-fix binary crashes; the repaired one
 runs the corpus. Globals/function-cell122 and legacy finish18 also pass.
 The final verifier runs this parity check and requires its completion marker.
+
+** Round 4 VM result words
+
+The WORD VM already has an optional canonical result address. Its builtin,
+interpreted-call and lexical-lambda entries now use that result directly,
+retained in a rooted vector through VM collection and root release. The
+argument roots and lazy activation snapshot remain unchanged. The unused
+physical numeric-marker entry and two obsolete result decoders are removed.
+The five-producer guard fails with nine findings on the preceding dump and
+passes on the new dump. Bytecode145, FX call-shape/spike, GNU N4 40,
+44 GC/result cases (with actual VM coverage), callback40, apply66 and the
+baseline/Anvil batteries pass. TOTAL1408; S6.2 17 (11 direct, 3 reverse,
+3 inline). The final verifier includes the GC/result corpus.

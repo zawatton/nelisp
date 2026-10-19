@@ -7,7 +7,7 @@
 #   ABI_BIN         that dynamic binary
 #   ABI_STATIC_BIN  static build of the same source
 #   ABI_CENSUS      NELISP_BOX_CENSUS output (census.tsv) of a dynamic build of the same source
-#   ABI_BASE_BIN    the eval/core baseline binary (9ad3c5588) the merge gate compares against
+#   ABI_BASE_BIN    the eval/core baseline binary (80902e27f) the merge gate compares against
 # The dump and binaries are produced by hand (about 3 minutes per build):
 #   NELISP_BOX_DUMP=$PWD/target/abi/dump.jsonl NELISP_READER_DYNAMIC=1 \
 #   NELISP_STANDALONE_READER_OUTPUT=target/abi/nelisp-dynamic ... -f nelisp-standalone-build-reader
@@ -177,6 +177,11 @@ cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1681
 # Round 4 N4/globals: TOTAL1411; S6.2 remains21. GNU40 activation corpus
 # passes, including alist frames and repeated/outer shallow values. Prior
 # lane crashes. Globals122, finish18, batteries/Anvil/arity pass.
+# Round 4 VM-result checkpoint: TOTAL1408; S6.2 17 (11direct+3reverse+3inline).
+# Canonical VM results remain in a rooted vector; physical argument roots
+# and lazy activation records retain their original representation.
+# Bytecode145, FX shape/spike, GNU40, result44, callback40, apply66,
+# batteries/Anvil/arity pass; the five-producer source guard is red9/green0.
 # Apply/eval checkpoint: TOTAL1397; S6.2 21 (12direct+6reverse+3inline).
 # Apply66 baseline/GNU, prefix mutant, six-call source guard red/green,
 # FFI46, capture/definer/constructor/autoload/callback/environment, tail8,

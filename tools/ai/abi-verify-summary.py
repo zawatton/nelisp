@@ -22,8 +22,8 @@ def verify(directory):
 
     summary = read("summary.txt")
     statuses = re.findall(r"^[abcd] .*?\brc=(\d+)", summary, re.M)
-    require(len(statuses) == 16 and all(s == "0" for s in statuses),
-            "16 successful commands")
+    require(len(statuses) == 17 and all(s == "0" for s in statuses),
+            "17 successful commands")
     require("STANDALONE-CHECKS PASS" in read("a-standalone-checks.log"), "battery completion")
     markers = {
         "standalone-shallow-binding-check": r"SHALLOW-BINDING failures=0 PASS",
@@ -33,6 +33,7 @@ def verify(directory):
         "fx-spike-check": r"FX-SPIKE failures=0 PASS",
         "standalone-prn-string-escape-check": r"PRN-ESC cases=[1-9][0-9]* bad=0 PASS",
         "standalone-bytecode-word-check": r"BYTECODE-WORD PASS 145/145 cases match GNU",
+        "standalone-abi-fx-result-word-check": r"ABI-FX-RESULT checked=44 PASS",
         "standalone-fx-call-shape-check": r"FX-CALL-SHAPE failures=0 PASS",
     }
     for name, marker in markers.items():

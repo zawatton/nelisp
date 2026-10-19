@@ -10,7 +10,7 @@ EVAL_BIN=$D sh test/perf/standalone-checks.sh > $V/a-standalone-checks.log 2>&1
 echo "a rc=$? FAIL=$(grep -c 'STANDALONE-CHECK FAIL' $V/a-standalone-checks.log) known-red=$(grep -c 'known-red' $V/a-standalone-checks.log) last: $(tail -1 $V/a-standalone-checks.log) $(date +%T)" >> $R
 grep 'STANDALONE-CHECK FAIL\|known-red' $V/a-standalone-checks.log | sed 's/^/a   /' >> $R
 # b
-for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el; do
+for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el test/standalone-abi-fx-result-word-check.el; do
   lg=$V/b-$(basename $f .el).log
   timeout 600 nice -n 10 $D --load $f > $lg 2>&1; rc=$?
   echo "b $f rc=$rc last: $(tail -1 $lg | cut -c1-150)" >> $R
