@@ -1,0 +1,186 @@
+;;; standalone-printer-load-check.el --- Closure printing and load events -*- lexical-binding: t; -*-
+;; Run unchanged with GNU Emacs 31.1 or a standalone reader.
+(defvar printer-load-count 0)
+(defvar printer-load-bad 0)
+(defvar printer-load-events nil)
+(defvar printer-load-file nil)
+(defun printer-load-check (name got want)
+  (setq printer-load-count (1+ printer-load-count))
+  (unless (equal got want)
+    (setq printer-load-bad (1+ printer-load-bad))
+    (princ (format "FAIL %s got=%S want=%S\n" name got want))))
+(defun printer-load-output (entry object)
+  (with-temp-buffer
+    (cond ((eq entry 'prin1) (prin1 object (current-buffer)))
+          ((eq entry 'print) (print object (current-buffer))))
+    (buffer-string)))
+(defun printer-load-case (name object circle want)
+  (let ((print-circle circle) (print-length nil) (print-level nil))
+    (printer-load-check (concat name "/string") (prin1-to-string object) want)
+    (printer-load-check (concat name "/format") (format "%S" object) want)
+    (printer-load-check (concat name "/prin1")
+                        (printer-load-output 'prin1 object) want)
+    (printer-load-check (concat name "/print")
+                        (printer-load-output 'print object) (concat "\n" want "\n"))
+    ;; Exercise the native stdout path as well; the GNU comparison captures
+    ;; these complete lines, in addition to the stream assertions above.
+    (princ (concat name "/stdout: ")) (prin1 object t) (terpri)
+    (princ (concat name "/print-stdout:")) (print object t)))
+
+(let ((self (eval '(let ((f nil)) (setq f (lambda () f)) f) t))
+      (ring (eval '(let ((ring (list nil)))
+                     (setcar ring (lambda () ring)) ring) t))
+      (shared (eval '(let ((x (list 'shared)))
+                       (list (lambda () x) (lambda () x))) t)))
+  (printer-load-case "self/circle" self t "#1=#[nil (f) ((f . #1#))]")
+  (printer-load-case "self/plain" self nil "#[nil (f) ((f . #0))]")
+  (printer-load-case "list/circle" ring t "#1=(#[nil (ring) ((ring . #1#))])")
+  (printer-load-case "list/plain" ring nil "(#[nil (ring) ((ring #1))])")
+  (printer-load-case "shared/circle" shared t
+                     "(#[nil (x) (#1=(x shared))] #[nil (x) (#1#)])")
+  (printer-load-case "shared/plain" shared nil
+                     "(#[nil (x) ((x shared))] #[nil (x) ((x shared))])"))
+;; GNU eagerly expands `when' in interpreted closures; NeLisp retains it.
+;; Both spellings must still label the captured self-reference identically.
+(let ((f nil))
+  (setq f (lambda (file) (when (equal file "x") (remove-hook 'after-load-functions f))))
+  (dolist (circle '(t nil))
+   (let* ((print-circle circle) (text (prin1-to-string f))
+          (prefix (if circle "#1=" ""))
+          (reference (if circle "#1#" "#0")))
+    (printer-load-check
+     "reported-repro"
+     (or (equal text (concat prefix "#[(file) ((when (equal file \"x\") (remove-hook 'after-load-functions f))) ((f . " reference "))]"))
+         (equal text (concat prefix "#[(file) ((if (equal file \"x\") (progn (remove-hook 'after-load-functions f)))) ((f . " reference "))]"))) t)
+    (printer-load-check "reported-repro/format" (format "%S" f) text)
+    (printer-load-check "reported-repro/prin1" (printer-load-output 'prin1 f) text)
+    (printer-load-check "reported-repro/print" (printer-load-output 'print f)
+                        (concat "\n" text "\n")))))
+;; Ordinary cycles and shared tails must retain their normal reader syntax.
+(let ((v (vector nil)) (tail (list 'tail)))
+  (aset v 0 v)
+  (printer-load-case "vector/circle" v t "#1=[#1#]")
+  (printer-load-case "vector/plain" v nil "[#0]")
+  (printer-load-case "tail/circle" (list tail tail) t "(#1=(tail) #1#)"))
+(let ((outer (eval '(let ((x 'outer))
+                      (list (lambda () x) (let ((x 'inner)) (lambda () x)))) t)))
+  (printer-load-case "shadow/circle" outer t
+                     "(#[nil (x) ((x . outer))] #[nil (x) ((x . inner))])")
+  (printer-load-case "shadow/plain" outer nil
+                     "(#[nil (x) ((x . outer))] #[nil (x) ((x . inner))])"))
+(dolist (circle '(t nil))
+  (let* ((print-circle circle)
+         (f (make-interpreted-closure nil '(list x y) '((x . 1) (y . 1))))
+         (text (prin1-to-string f)))
+    ;; GNU stores caller ENV order; NeLisp projects capture order. Neither
+    ;; representation may merge distinct bindings that have equal values.
+    (printer-load-check "plain-env-x" (and (string-match-p "(x \\. 1)" text) t) t)
+    (printer-load-check "plain-env-y" (and (string-match-p "(y \\. 1)" text) t) t)))
+(let ((a (list 'a)) (b (list 'b)))
+  (printer-load-case "label-order" (list a b b a) t "(#2=(a) #1=(b) #1# #2#)"))
+(let ((v (vector)))
+  (printer-load-case "empty-vector" (list v v) t "([] [])"))
+(printer-load-case "builtin-symbol" '(a builtin) t "(a builtin)")
+(let ((x (list 'a 'b 'c)))
+  (setcdr (last x) (cdr x))
+  (printer-load-case "interior-tail/plain" x nil "(a b c b . #2)"))
+(let ((x (list 'a)))
+  (setcdr x x)
+  (printer-load-case "nested-tail/plain" (list x) nil "((a . #0))"))
+(let ((x (list nil)))
+  (setcar x x)
+  (printer-load-case "quote/plain" (list 'quote x) nil "'(#0)"))
+(let ((x (list 'quote nil)))
+  (setcar (cdr x) x)
+  (printer-load-case "quote/circle" x t "#1='#1#"))
+(printer-load-case "record/circle" (record 'printer-load-record 'value) t
+                   "#s(printer-load-record value)")
+(let ((print-circle t) (print-length 2))
+  (printer-load-check "long-prepass" (prin1-to-string (make-list 10000 0)) "(0 0 ...)"))
+(let* ((nelisp--prn-call-cache (make-vector 4096 nil))
+       (print-circle nil) (object (list 'memo)) (found nil))
+  (prin1-to-string object)
+  (when (fboundp 'nelisp--prn-object)
+    (dotimes (i (length nelisp--prn-call-cache))
+      (when (aref nelisp--prn-call-cache i) (setq found t))))
+  (printer-load-check "caller-memo" (or (not (fboundp 'nelisp--prn-object)) found) t))
+
+(defun printer-load-note (event)
+  (setq printer-load-events
+        (append printer-load-events
+                (list (list event (and (assoc printer-load-file load-history) t))))))
+(defun printer-load-hook (file)
+  (when (equal file printer-load-file) (printer-load-note 'hook)))
+(defun printer-load-history-count ()
+  (let ((count 0))
+    (dolist (entry load-history)
+      (when (equal (car entry) printer-load-file) (setq count (1+ count))))
+    count))
+(let* ((dir (make-temp-file "printer-load-" t))
+       (file (expand-file-name "printer-load-fixture.el" dir))
+       (printer-load-file file)
+       (after-load-functions nil) (after-load-alist nil)
+       (load-history nil))
+  (unwind-protect
+      (progn
+        (with-temp-file file
+          (insert ";;; -*- lexical-binding: t; -*-\n(printer-load-note 'body)\n"
+                  "(provide 'printer-load-fixture)\n"
+                  "(printer-load-note 'after-provide)\n"))
+        (eval-after-load file '(printer-load-note 'file-form))
+        (eval-after-load 'printer-load-fixture '(printer-load-note 'feature-form))
+        (add-hook 'after-load-functions #'printer-load-hook)
+        (let ((printer-load-events nil))
+          (printer-load-check "load-result" (load file nil t) t)
+          (printer-load-check "load-order" printer-load-events
+                              '((body nil) (after-provide nil) (file-form t)
+                                (hook t) (feature-form t)))
+          (printer-load-check "load-history-once" (printer-load-history-count) 1))
+        ;; The second bare load must still produce exactly one completion.
+        (let ((printer-load-events nil))
+          (load file nil t)
+          (printer-load-check "reload-order" printer-load-events
+                              '((body t) (after-provide t) (file-form t)
+                                (hook t) (feature-form t)))
+          (printer-load-check "reload-history-once" (printer-load-history-count) 1))
+        (setq features (delq 'printer-load-fixture features) load-history nil)
+        (let ((printer-load-events nil))
+          (printer-load-check "require-result" (require 'printer-load-fixture file)
+                              'printer-load-fixture)
+          (printer-load-check "require-order" printer-load-events
+                              '((body nil) (after-provide nil) (file-form t)
+                                (hook t) (feature-form t)))
+          (printer-load-check "require-cached" (require 'printer-load-fixture file)
+                              'printer-load-fixture)
+          (printer-load-check "require-history-once" (printer-load-history-count) 1)
+          (printer-load-check "require-no-repeat" (length printer-load-events) 5)))
+    (setq features (delq 'printer-load-fixture features))
+    (delete-directory dir t)))
+;; This genuine module takes the baked core-bytecode branch on standalone;
+;; GNU loads its source. Both must publish history before one completion.
+(let* ((printer-load-file (expand-file-name "lisp/nelisp-eln-abi.el"))
+       (printer-load-events nil) (after-load-functions nil)
+       (after-load-alist nil) (load-history nil))
+  (printer-load-check "core-bytecode-route"
+                      (or (not (fboundp 'nelisp--core-bytecode-entry))
+                          (and (nelisp--core-bytecode-entry printer-load-file) t)) t)
+  (eval-after-load printer-load-file '(printer-load-note 'file-form))
+  (add-hook 'after-load-functions #'printer-load-hook)
+  (load printer-load-file nil t)
+  (printer-load-check "core-bytecode-order" printer-load-events
+                      '((file-form t) (hook t)))
+  (printer-load-check "core-bytecode-history" (printer-load-history-count) 1))
+(let* ((printer-load-file (expand-file-name "vendor/emacs-lisp/emacs-lisp/byte-opt.el"))
+       (printer-load-events nil) (after-load-functions nil)
+       (after-load-alist nil) (load-history nil))
+  (printer-load-check "vendor-bytecode-route"
+                      (or (not (fboundp 'nelisp--vendor-bytecode-pieces))
+                          (and (nelisp--vendor-bytecode-pieces printer-load-file) t)) t)
+  (eval-after-load printer-load-file '(printer-load-note 'file-form))
+  (add-hook 'after-load-functions #'printer-load-hook)
+  (load printer-load-file nil t)
+  (printer-load-check "vendor-bytecode-order" printer-load-events
+                      '((file-form t) (hook t)))
+  (printer-load-check "vendor-bytecode-history" (printer-load-history-count) 1))
+(princ (format "PRINTER-LOAD cases=%d failures=%d\n" printer-load-count printer-load-bad))
+(kill-emacs (if (= printer-load-bad 0) 0 1))
