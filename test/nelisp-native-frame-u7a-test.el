@@ -2,7 +2,6 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
-(require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 (require 'nelisp-native-frame-v2)
 (require 'nelisp-native-gccjit)
 (load "support/native-frame-u7a-fixtures.el" nil t t)
@@ -16,15 +15,6 @@
   (make-byte-code 0 (apply #'unibyte-string
                           (append (apply #'append (make-list n '(192 24)))
                                   (list (+ 40 n) 193 135))) [u7a-special result] 1))
-(defun u7a-unresolved-phi-p (form)
-  "Return non-nil when emitted FORM still contains a planner phi selector."
-  (and (consp form)
-       (or (and (eq (car form) :phi)
-                (consp (cdr form))
-                (integerp (cadr form))
-                (null (cddr form)))
-           (u7a-unresolved-phi-p (car form))
-           (u7a-unresolved-phi-p (cdr form)))))
 (ert-deftest u7a/valid-structural-unbind-fixtures-shared-contract ()
   (skip-unless (equal emacs-version "31.1"))
   (dotimes (i 5)
@@ -83,81 +73,12 @@
 
 (ert-deftest u7a/bare-variable-access-admitted-without-unbind-prefix ()
   (skip-unless (equal emacs-version "31.1"))
-  (dolist (row '((get frame-varref) (set frame-varset)))
-    (let* ((input (nelisp-bytecode-compiler-input-build
-                   (native-frame-u7a-bare-function (car row))))
-           (plan (nelisp-bytecode-native-rooted-cfg-plan input))
-           (operations (cl-loop for block in (plist-get plan :blocks)
-                                append (plist-get block :operations)))
-           (providers (mapcar (lambda (entry) (plist-get entry :primitive))
-                              (plist-get plan :primitive-initializers)))
-           (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                     plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)))
+  (dolist (bytes '((8 135) (192 16 192 135)))
+    (let* ((fn (make-byte-code 0 (apply #'unibyte-string bytes) [u7a-special] 16))
+           (plan (nelisp-bytecode-native-rooted-cfg-plan
+                  (nelisp-bytecode-compiler-input-build fn))))
       (should (eq (plist-get plan :status) 'complete))
-      (should-not (plist-get plan :banked))
-      (should-not (plist-get plan :frame-descriptor))
-      (should-not (plist-get plan :frame-state-root))
-      (should (cl-find (cadr row) operations :key (lambda (op) (plist-get op :opcode))))
-      (should (memq 'symbol-value providers))
-      (should (memq 'set providers))
-      (should (equal (plist-get plan :gateway-imports)
-                     '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))
-      (should (eq (plist-get emitted :status) 'complete))
-      (should-not (member "nl_native_frame_v2" (plist-get emitted :gateway-imports)))
-      (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p
-               (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
-                input plan emitted))))))
-
-(ert-deftest u7a/bare-variable-diamond-and-constant-set-stay-f1-only ()
-  (skip-unless (equal emacs-version "31.1"))
-  (dolist (kind '(rich constant-set))
-    (let* ((input (nelisp-bytecode-compiler-input-build
-                   (native-frame-u7a-bare-function kind)))
-           (plan (nelisp-bytecode-native-rooted-cfg-plan input))
-           (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                     plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
-           (providers (mapcar (lambda (entry) (plist-get entry :primitive))
-                              (plist-get plan :primitive-initializers))))
-      (should (eq (plist-get plan :status) 'complete))
-      (should-not (plist-get plan :frame-descriptor))
-      (should-not (plist-get plan :frame-state-root))
-      (should (memq 'symbol-value providers))
-      (should (memq 'set providers))
-      (should (member "nl_native_funcall_v2" (plist-get plan :gateway-imports)))
-      (should-not (member "nl_native_frame_v2" (plist-get plan :gateway-imports)))
-      (should (eq (plist-get emitted :status) 'complete))
-      (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p
-               (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
-                input plan emitted))))))
-
-(ert-deftest u7a/bare-variable-raw-diamond-resolves-branch-phis ()
-  (skip-unless (equal emacs-version "31.1"))
-  (let* ((input (nelisp-bytecode-compiler-input-build
-                 (native-frame-u7a-bare-function 'rich)))
-         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
-         (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                   plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)))
-    (should (eq (plist-get emitted :status) 'complete))
-    (should-not (u7a-unresolved-phi-p (plist-get emitted :form)))))
-
-(ert-deftest u7a/raw-cfg-branch-resolves-phi-condition ()
-  (let* ((phi-set (make-hash-table :test #'eq))
-         (context (list :cyclic t :phi-vars '((2 . u7a_branch_phi))
-                        :phi-var-set phi-set :failure nil))
-         (block '(:start 86
-                  :successors ((:kind taken :target 90)
-                               (:kind fallthrough :target 99))))
-         (operation '(:input-roots ((:phi 2)) :taken-if nil))
-         emitted)
-    (puthash 'u7a_branch_phi t phi-set)
-    (cl-letf (((symbol-function
-                'nelisp-bytecode-native-rooted-cfg-shared-emit--to)
-               (lambda (_context _from target _stop _path) target)))
-      (setq emitted
-            (nelisp-bytecode-native-rooted-cfg-shared-emit--branch
-             context block operation nil nil)))
-    (should-not (u7a-unresolved-phi-p emitted))
-    (should (eq (nth 4 (cadr (car (cadr emitted)))) 'u7a_branch_phi))))
+      (should (plist-get plan :frame-descriptor)))))
 
 (ert-deftest u7a/safe-list-access-admitted-through-shared-funcall-bridge ()
   (skip-unless (equal emacs-version "31.1"))

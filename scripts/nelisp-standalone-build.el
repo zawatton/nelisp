@@ -13105,26 +13105,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; resolved callable, rather than assuming that a symbol still names its
     ;; original builtin. No allocation or callback separates inspection from
     ;; the calculation; every uncertain shape retains ordinary APPLY.
-    (defun wf_bytecode_builtin_named (function expected)
-      ;; Recognize only the exact proper-list token `(builtin NAME)'.  Native
-      ;; F1 functions freeze these tokens in their constant roots; symbols and
-      ;; rebound function cells continue through the ordinary call gateway.
-      (if (/= (sexp-tag function) 7) 0
-        (let* ((data (ptr-read-u64 function 8))
-               (head (ptr-read-u64 data 0)) (tail (ptr-read-u64 data 8)))
-          (if (or (<= head 4096) (/= (logand head 1) 0)
-                  (<= tail 4096) (/= (logand tail 1) 0)) 0
-            (if (or (/= (sexp-tag head) 4) (/= (sexp-tag tail) 7)
-                    (/= (symbol-name-eq head "builtin") 1)) 0
-              (let* ((tail-data (ptr-read-u64 tail 8))
-                     (name (ptr-read-u64 tail-data 0)))
-                (if (or (/= (ptr-read-u64 tail-data 8) 3)
-                        (<= name 4096) (/= (logand name 1) 0)) 0
-                  (if (/= (sexp-tag name) 4) 0
-                    (if (= expected 1)
-                        (symbol-name-eq name "symbol-value")
-                      (if (= expected 2)
-                          (symbol-name-eq name "set") 0))))))))))
     (defun wf_bytecode_builtin_difference (function args argc result)
       ;; Existing evaluator/tagged arithmetic (clauses 2/5). Inspect the live
       ;; resolved callable, rather than assuming that a symbol still names its
@@ -13532,34 +13512,36 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (and (> n 0) (>= f a) (< f (+ a n)))
                 (and (> n 0) (< a (+ r 4)) (> (+ a n) r)))
             2
-          (let* ((last-fixed (if (> f (+ r 3)) f (+ r 3)))
-                 (last-index (if (and (> n 0) (> (- (+ a n) 1) last-fixed))
-                                 (- (+ a n) 1) last-fixed))
-                 (last (nl_root_pin_slot_v2 env ticket last-index)))
-            ;; A v2 frame is one contiguous published slot range.  Pinning its
-            ;; highest used index authenticates every derived address below it.
-            (if (or (= last 0) (/= last (+ marker (* last-index 32)))) 2
-              (let* ((function (+ marker (* f 32)))
-                     (result (+ marker (* r 32)))
-                     (kind (+ result 32))
-                     (tag (+ result 64))
-                     (value (+ result 96)))
-              (let ((rc (if (and (= n 1)
-                                 (= (wf_bytecode_builtin_named
-                                     function 1) 1))
-                            (bf_symbol_value_slot
-                             (+ marker (* a 32)) env result)
-                          (if (and (= n 2)
-                                   (= (wf_bytecode_builtin_named
-                                       function 2) 1))
-                              (bf_set_slots
-                               (+ marker (* a 32))
-                               (+ marker (* (+ a 1) 32)) env result)
-                            (wf_bytecode_call_gateway
-                             env function marker a n result)))))
-                ;; A nested call must restore the same ticket, link, marker,
-                ;; and sufficient extent before any result or exit publication.
-                (if (/= last (nl_root_pin_slot_v2 env ticket last-index)) 2
+          (let* ((function (nl_root_pin_slot_v2 env ticket f))
+                 (result (nl_root_pin_slot_v2 env ticket r))
+                 (kind (nl_root_pin_slot_v2 env ticket (+ r 1)))
+                 (tag (nl_root_pin_slot_v2 env ticket (+ r 2)))
+                 (value (nl_root_pin_slot_v2 env ticket (+ r 3)))
+                 (i 0) (valid 1))
+            (if (or (/= function (+ marker (* f 32)))
+                    (/= result (+ marker (* r 32)))
+                    (/= kind (+ result 32)) (/= tag (+ result 64))
+                    (/= value (+ result 96))) (setq valid 0) 0)
+            (while (and (= valid 1) (< i n))
+              (if (/= (nl_root_pin_slot_v2 env ticket (+ a i))
+                      (+ marker (* (+ a i) 32)))
+                  (setq valid 0) (setq i (+ i 1))))
+            (if (= valid 0) 2
+              (let ((rc (wf_bytecode_call_gateway env function marker a n result)))
+                ;; A nested call must restore the exact parent ticket/slots.
+                (setq i 0)
+                (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
+                        (/= function (nl_root_pin_slot_v2 env ticket f))
+                        (/= result (nl_root_pin_slot_v2 env ticket r))
+                        (/= kind (nl_root_pin_slot_v2 env ticket (+ r 1)))
+                        (/= tag (nl_root_pin_slot_v2 env ticket (+ r 2)))
+                        (/= value (nl_root_pin_slot_v2 env ticket (+ r 3))))
+                    (setq valid 0) 0)
+                (while (and (= valid 1) (< i n))
+                  (if (/= (nl_root_pin_slot_v2 env ticket (+ a i))
+                          (+ marker (* (+ a i) 32)))
+                      (setq valid 0) (setq i (+ i 1))))
+                (if (= valid 0) 2
                   (if (= rc 0)
                       (seq (wf_write_nil kind) (wf_write_nil tag)
                            (wf_write_nil value) 0)
@@ -13573,7 +13555,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (ptr-write-u64 arena 16 0)
                                    (+ 1024 (+ r 1)))
                             2))
-                      2))))))))))
+                      2)))))))))
     (defun nl_native_poll_v2 (env ticket f a n r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
@@ -15998,17 +15980,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((= base 16)
                       (if (if (< operand 0) 1 (if (< operand nconst) 0 1))
                           (seq (setq bad-op raw) (setq done 2))
-                        (let* ((symbol (ptr-read-u64 (+ cdata (* operand 8)) 0)))
-                          ;; Nil and t are immediate WORDs, not Sexp pointers.
-                          ;; Reject them before the pointer-based mirror path.
-                          (if (or (= symbol 3) (= symbol 7))
-                              (seq (bf_setting_constant (wf_bytecode_w_view symbol bx))
-                                   (setq done 4))
-                            (if (= (bf_set_dynamic_value
-                                    env symbol
-                                    (wf_bytecode_w_view (ptr-read-u64 top 0) bx)) 0)
-                                (setq sp (- sp 1))
-                              (setq done 4))))))
+                        (if (= (bf_set_dynamic_value
+                                env (ptr-read-u64 (+ cdata (* operand 8)) 0)
+                                (wf_bytecode_w_view (ptr-read-u64 top 0) bx)) 0)
+                            (setq sp (- sp 1))
+                          (setq done 4))))
                      ((= base 74)
                       (let* ((w (ptr-read-u64 top 0))
                              (tag (wf_bytecode_w_tag w)))
@@ -21512,8 +21488,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((rc (bf_declare_special env sym)))
               (if (= rc 0) (bf_set_defvar_value env sym val out 2) rc)))
         (bf_setting_constant sym)))
-    (defun bf_set_slots (sym val env out)
-      (let* ((tag (sexp-tag sym)))
+    (defun bf_set (args env out)
+      (let* ((sym (wf_arg_ptr args 0))
+             (val (wf_arg_ptr args 1)) (tag (sexp-tag sym)))
         ;; Nil/t reject assignments; a keyword accepts only its own value.
         ;; Preserve Bset's canonical setting-constant condition and datum.
         (if (or (= tag 0) (= tag 1))
@@ -21526,8 +21503,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (let* ((rc (bf_set_dynamic_value env sym val)))
                   (if (= rc 0) (seq (wf_copy32 out val) 0) rc)))
             (bf_wrong_type_symbolp sym)))))
-    (defun bf_set (args env out)
-      (bf_set_slots (wf_arg_ptr args 0) (wf_arg_ptr args 1) env out))
     (defun bf_makunbound (args env out)
       (let* ((sym (wf_arg_ptr args 0)) (tag (sexp-tag sym)))
         (if (or (= tag 0) (= tag 1))
@@ -21568,19 +21543,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; signalled `void-variable' properly, through `nl_ei_var_done'; this
     ;; is the same two lines, so the two ways of reading a variable now
     ;; fail the same way.
-    (defun bf_symbol_value_slot (sym env out)
-      (let* ((tag (sexp-tag sym)))
-        (if (or (= tag 0) (= tag 1))
-            (seq (wf_copy32 out sym) 0)
-          (if (or (= tag 4) (= tag 16))
-              (if (= (bf_keyword_raw sym) 1)
-                  (seq (wf_copy32 out sym) 0)
-                ;; Share the unbound-marker check, but exclude lexical cells.
-                (let* ((rc (bf_dynamic_lookup env sym out)))
-                  (if (= rc 0) 0 (nl_stash_void_variable env sym))))
-            (bf_wrong_type_symbolp sym)))))
     (defun bf_symbol_value (args env out)
-      (bf_symbol_value_slot (wf_arg_ptr args 0) env out))
+      (let* ((sym (wf_arg_ptr args 0))
+             ;; Share the unbound-marker check, but exclude lexical cells.
+             (rc (bf_dynamic_lookup env sym out)))
+        (if (= rc 0) 0 (nl_stash_void_variable env sym))))
     ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
     ;; reader, and evaluate it in the caller's ENV.  This intentionally mirrors
@@ -23587,7 +23554,11 @@ into that constant unconditionally is what broke every aarch64 build."
                                (bf_wrong_type_stringp cp))))
     ((:lit "set")      . (bf_set args env out))
     ((:lit "makunbound") . (bf_makunbound args env out))
-    ((:lit "symbol-value") . (bf_symbol_value args env out))
+    ((:lit "symbol-value") . (if (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) 1
+                                   (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 2
+                                     (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 1) 2 0)))
+                            (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) (if (= (bf_keyword_raw (wf_arg_ptr args 0)) 1) (seq (wf_copy32 out (wf_arg_ptr args 0)) 0) (bf_symbol_value args env out)) (seq (wf_copy32 out (wf_arg_ptr args 0)) 0))
+                          (bf_wrong_type_symbolp (wf_arg_ptr args 0))))
     ((:lit "fboundp")  . (bf_fboundp args env out))
     ((:lit "symbol-function") . (bf_symbol_function args env out))
     ((:lit "boundp")   . (bf_boundp args env out))

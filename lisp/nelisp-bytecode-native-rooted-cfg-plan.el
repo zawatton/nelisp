@@ -161,8 +161,7 @@
     ((or 'cdr 'cdr-safe) "nl_native_cdr_v2")
     ('cons "nl_native_cons_v2")
     ('add "nl_native_add_v2")
-    ((or 'primitive-call 'list-build 'funcall 'switch 'frame-varref 'frame-varset)
-     "nl_native_funcall_v2")))
+    ((or 'primitive-call 'list-build 'funcall 'switch) "nl_native_funcall_v2")))
 
 (defun nelisp-bytecode-native-rooted-cfg--unsupported (reason)
   (list :status 'unsupported :reason reason))
@@ -298,26 +297,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (switch-p (cl-some (lambda (b)
                               (cl-some (lambda (i) (eq (plist-get i :kind) 'switch))
                                        (append (plist-get b :instructions) nil))) blocks))
-         (variable-p
-          (cl-some (lambda (b)
-                     (cl-some (lambda (i) (memq (plist-get i :kind)
-                                                   '(variable-ref variable-set)))
-                              (append (plist-get b :instructions) nil)))
-                   blocks))
-         ;; Plain variable access already crosses the authenticated F1 bridge,
-         ;; which observes the caller's live environment and propagates its
-         ;; exact exit.  Only operations that create or own unwind state need
-         ;; the heavier frame activation and physical root banks.
-         (frame-p
-          (or handler-p
-              (cl-some (lambda (b)
-                         (cl-some (lambda (i)
-                                    (or (memq (plist-get i :kind)
-                                              '(dynamic-bind dynamic-unbind
-                                                frame-save frame-cleanup))
-                                        (memq (plist-get i :opcode) '(144 145))))
-                                  (append (plist-get b :instructions) nil)))
-                       blocks)))
+         (frame-p (or handler-p (cl-some (lambda (b)
+                             (cl-some (lambda (i) (or (memq (plist-get i :kind)
+                                                       '(dynamic-bind dynamic-unbind variable-ref variable-set frame-save frame-cleanup))
+                                                   (memq (plist-get i :opcode) '(144 145))))
+                                      (append (plist-get b :instructions) nil))) blocks)))
          (banked (or cyclic switch-p frame-p))
          (frame-state-root nil) (frame-staging-roots nil) (frame-result-root nil)
          (frame-enter-roots nil)
@@ -338,7 +322,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (root-next 0) (phi-next 0) (states nil)
          (phis nil) (planned-blocks nil) (returns nil) (failure nil)
          (arithmetic-p nil) (exit-root-base nil) (call1-layout nil)
-         (f1-p (or banked variable-p
+         (f1-p (or banked
                    (cl-some (lambda (block)
                               (cl-some (lambda (instruction)
                                          (memq (plist-get instruction :opcode)
@@ -428,7 +412,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
     (when f1-p
       ;; Preserve F1's established root layout; add only used family values.
       ;; This avoids reserving eleven hidden roots in every existing caller.
-      (let ((names (if variable-p '(car cdr cons symbol-value set) '(car cdr cons))))
+      (let ((names (if frame-p '(car cdr cons symbol-value set) '(car cdr cons))))
         (dolist (block blocks)
           (dolist (instruction (append (plist-get block :instructions) nil))
             (let ((primitive (nelisp-native-funcall-v2-primitive
@@ -594,9 +578,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                 (unless output-root (setq failure "constant has no protected root")))
                ((memq kind '(handler-catch handler-condition handler-pop))
                 (setq op kind))
-               ((or (and frame-p
-                         (memq kind '(dynamic-bind dynamic-unbind frame-save frame-cleanup)))
-                    (and variable-p (memq kind '(variable-ref variable-set))))
+               ((and frame-p (memq kind '(dynamic-bind dynamic-unbind variable-ref variable-set frame-save frame-cleanup)))
                 (setq op (pcase kind ('dynamic-bind 'frame-specbind) ('dynamic-unbind 'frame-unbind)
                                 ('variable-ref 'frame-varref) ('variable-set 'frame-varset)
                                 ('frame-save 'frame-save) ('frame-cleanup 'frame-cleanup)))
@@ -720,7 +702,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                                                     'symbol-value 'set) primitive-roots))
                                                       :staging-roots (number-sequence root-next
                                                                                      (+ root-next (length arguments) -1)))))
-                        (setq staging-size (max staging-size (length arguments))))))
+                        (if banked (setq staging-size (max staging-size (length arguments)))
+                          (setq root-next (+ root-next (length arguments)))))))
                   (when (eq op 'switch)
                     (let* ((targets (delete-dups (mapcar (lambda (edge) (plist-get edge :target))
                                                        (append (plist-get block :successors) nil))))
@@ -732,7 +715,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                     :argument-roots (append inputs (list target-root))
                                                     :argument-count 3
                                                     :staging-roots (number-sequence root-next (+ root-next 2)))))
-                      (setq staging-size (max staging-size 3))))
+                      (if banked (setq staging-size (max staging-size 3))
+                        (setq root-next (+ root-next 3)))))
                   (when (memq op '(primitive-call list-build funcall))
                     (let* ((primitive (and (or (= opcode 116) (memq op '(primitive-call list-build)))
                                            (nelisp-native-funcall-v2-primitive opcode)))
@@ -752,7 +736,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                           :argument-roots arguments :argument-count count
                                           :staging-roots (number-sequence root-next (+ root-next staged-count -1))
                                           :provider 'nl_native_funcall_v2)))
-                      (setq staging-size (max staging-size staged-count))
+                      (if banked (setq staging-size (max staging-size staged-count))
+                        (setq root-next (+ root-next staged-count)))
                       (when (memq opcode '(144 145))
                         (plist-put operation :legacy-binding-root root-next)
                         (push (cons (if (= opcode 144) 'standard-output 1) root-next) immediate-roots)
@@ -825,7 +810,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                    (mapcar #'cdr (cl-remove-if-not
                                   (lambda (pair) (= (car pair) (plist-get block :start)))
                                   (plist-get topology :poll-edges))))))
-    (when (and f1-p (> staging-size 0))
+    (when (and banked (> staging-size 0))
       ;; Call staging has no lifetime beyond its operation. Keep it separate
       ;; from every live SSA value and initializer, and share it across calls.
       (dolist (block planned-blocks)
@@ -871,21 +856,10 @@ phis at joins.  It refuses before any backend or artifact side effect."
                            (cl-loop for block in planned-blocks append
                                     (cl-remove-if-not
                                      (lambda (op) (memq (plist-get op :opcode)
-                                                       '(car cdr cons add car-safe cdr-safe
-                                                         primitive-call list-build funcall
-                                                         frame-varref frame-varset)))
+                                                       '(car cdr cons add car-safe cdr-safe primitive-call list-build funcall)))
                                      (plist-get block :operations)))))
                   #'string<))
            (gateway-imports (if banked (sort (delete-dups (append gateway-imports (list "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))) #'string<) gateway-imports))
-           ;; Unbanked variable calls still stage arguments and publish their
-           ;; result through authenticated root slots around the F1 bridge.
-           (gateway-imports (if variable-p
-                                (sort (delete-dups
-                                       (append gateway-imports
-                                               (list "nl_native_funcall_v2"
-                                                     "nl_root_pin_slot_v2")))
-                                      #'string<)
-                              gateway-imports))
            (gateway-imports (if frame-p
                                 (sort (delete-dups (append gateway-imports (list "nl_native_frame_v2"))) #'string<)
                               gateway-imports))

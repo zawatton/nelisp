@@ -37,7 +37,7 @@ CORE_NAMES = (
 )
 EVIDENCE_NAMES = (
     "parity", "parity_gnu", "native", "ert_focused", "ert_mvp",
-    "ert_text_core", "core11", "mcp_json", "abi_ir", "bvm_guard",
+    "ert_text_core", "core11", "mcp_json", "abi_ir",
 )
 
 
@@ -245,12 +245,6 @@ def validate_abi(path):
     require(len(aggregates) == 1, "ABI Ir: missing unique aggregate PASS")
 
 
-def validate_bvm(path):
-    lines = [line for line in path.read_text(errors="replace").splitlines() if line]
-    require(lines == ["standalone-bytecode-varset-constant-smoke: PASS"],
-            "BVM guard: missing exact PASS output")
-
-
 def artifact_paths(dynamic, static):
     rows = {}
     for label, binary in (("dynamic", dynamic), ("static", static)):
@@ -270,7 +264,6 @@ def validate_inputs(paths, focused_count):
     validate_ert(paths["ert_text_core"], 27, "text-core ERT")
     validate_core(paths["core11"])
     validate_abi(paths["abi_ir"])
-    validate_bvm(paths["bvm_guard"])
 
 
 def record(args):
@@ -418,7 +411,6 @@ def add_evidence_arguments(parser):
     parser.add_argument("--core11", required=True, type=Path)
     parser.add_argument("--mcp-json", dest="mcp_json", required=True, type=Path)
     parser.add_argument("--abi-ir", dest="abi_ir", required=True, type=Path)
-    parser.add_argument("--bvm-guard", dest="bvm_guard", required=True, type=Path)
 
 
 def main():

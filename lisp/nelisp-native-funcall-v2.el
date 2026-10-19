@@ -355,57 +355,11 @@ larger fixnums use the existing exact numeric operation, never wrapped math."
                                (<= fast_value 2305843009213693951))))
                  ,store ,fallback)))))))
 
-(defun nelisp-native-funcall-v2-aref-form (inputs output success fallback)
-  "Lower ordinary vector AREF while retaining FALLBACK for every other case.
-The three root slots are authenticated before access.  Length-seven vectors
-remain on the evaluator path because the standalone uses that representation
-for its sparse char-table bridge."
-  `(let* ((aref_array (extern-call nl_root_pin_slot_v2 env ticket ,(car inputs) 0 0 0))
-          (aref_index (extern-call nl_root_pin_slot_v2 env ticket ,(cadr inputs) 0 0 0))
-          (aref_output (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
-     (if (or (= aref_array 0) (or (= aref_index 0) (= aref_output 0))) 2
-       (let* ((aref_array_tag (ptr-read-u64 aref_array 0))
-              (aref_index_tag (ptr-read-u64 aref_index 0))
-              (aref_index_value (ptr-read-u64 aref_index 8))
-              (aref_box (if (= aref_array_tag 8)
-                            (ptr-read-u64 aref_array 8) 0))
-              (aref_length (if (= aref_array_tag 8)
-                               (ptr-read-u64 aref_box 16) 0)))
-         (if (and (= aref_array_tag 8)
-                  (and (/= aref_length 7)
-                       (and (= aref_index_tag 2)
-                            (and (>= aref_index_value 0)
-                                 (< aref_index_value aref_length)))))
-             (let* ((aref_data (ptr-read-u64 aref_box 8))
-                    ;; Read before writing OUTPUT: its root may alias an input.
-                    (aref_word (ptr-read-u64
-                                (+ aref_data (* aref_index_value 8)) 0)))
-               (if (= (logand aref_word 1) 0)
-                   (progn
-                     (ptr-write-u64 aref_output 0 (ptr-read-u64 aref_word 0))
-                     (ptr-write-u64 aref_output 8 (ptr-read-u64 aref_word 8))
-                     (ptr-write-u64 aref_output 16 (ptr-read-u64 aref_word 16))
-                     (ptr-write-u64 aref_output 24 (ptr-read-u64 aref_word 24))
-                     ,success)
-                 (progn
-                   (ptr-write-u64 aref_output 0
-                                  (if (= (logand aref_word 3) 1) 2
-                                    (if (= aref_word 3) 0 1)))
-                   (ptr-write-u64 aref_output 8
-                                  (if (= (logand aref_word 3) 1)
-                                      (sar aref_word 2) 0))
-                   (ptr-write-u64 aref_output 16 0)
-                   (ptr-write-u64 aref_output 24 0)
-                   ,success)))
-           ,fallback)))))
-
 (defun nelisp-native-funcall-v2-value-form (opcode inputs output success fallback)
   "Lower frozen VM predicates on tagged values, with the genuine fallback.
 This is general compiler lowering, not a new evaluator primitive. EQ's
 symbol and special boxed/string cases use the existing runtime implementation."
-  (if (= opcode 72)
-      (nelisp-native-funcall-v2-aref-form inputs output success fallback)
-    (if (not (memq opcode '(57 58 59 60 61 63 167 168))) fallback
+  (if (not (memq opcode '(57 58 59 60 61 63 167 168))) fallback
     (let* ((binary (= opcode 61))
            (test (pcase opcode
                    (57 '(or (= value_tag 0) (or (= value_tag 1) (or (= value_tag 4) (= value_tag 16)))))
@@ -438,7 +392,7 @@ symbol and special boxed/string cases use the existing runtime implementation."
                  (progn (ptr-write-u64 value_out 0 (if ,test 1 0))
                         (ptr-write-u64 value_out 8 0) (ptr-write-u64 value_out 16 0)
                         (ptr-write-u64 value_out 24 0) ,success)
-               ,fallback))))))))
+               ,fallback)))))))
 
 (defun nelisp-native-funcall-v2-emit (operation function inputs continuation &optional copy-plan)
   "Stage canonical operands with one shared continuation for fast/slow paths."

@@ -12,9 +12,9 @@ cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json -
 ** S1.3 Literal, anchored capture/suffix and prefix scanning fast paths preserve groups
 cmd: TMPDIR="$PWD/target/tmp" emacs -Q --batch -L lisp -l test/nelisp-regexp-diff-test.el -l test/nelisp-regex-replacement-test.el -f ert-run-tests-batch-and-exit
 
-** S1.4 Every probe pattern costs at most 200 us per match
-#+NOTE: Revised the brief's provisional 20 us to 200 us after S1: the old engine consumed 60.55/61.09/71.41% for the anchored patterns; the general VM/evaluator boundaries and capture construction remain after selecting finite plans. V5 fresh-process, warm-up/GC, three-sample median is 78-147 us; the fixed S1.2 cache limit stays 2 us. Timings retain post-operation GC separately; ABI Ir includes all GC.
-cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion match --limit 200
+** S1.4 Every literal, anchored and suffix-alternation probe costs at most 20 us
+#+NOTE: 2026-10-20: restored the provisional fast-path target from the unsupported 200 us relaxation to 20 us, as required by the resume brief. No probe uses the general engine, so no relaxed general-engine limit is claimed.
+cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion match --limit 20
 
 ** S1.5 GNU parity, regex suites, eleven eval/core groups, 40 MCP tools and ABI Ir
 cmd: python3 tools/ai/regex-speed-verify.py check target/regex-speed/final-manifest.json
