@@ -1,0 +1,39 @@
+#+TITLE: Plain globals and call floor at GNU cost
+#+NOTE: 2026-10-20. Base 692dc8a09. Ir is the gate; microseconds are informational. Four ABI_LAYOUT_PAD layouts: 0,700,1400,2100. Includes GC and the existing slot-4 alias redirect check. No alias implementation belongs to this lane.
+#+NOTE: 2026-10-20 STOPPED before runtime implementation: the freshly built base differs from GNU 31.1 in interpreter 6/19, VM 4/19 (four core functions verified on VM), and bytecode 3/19. setq nil/t loses setting-constant data in the interpreter; keyword self-assignment, buffer-local default preservation, and variable watchers also differ. Minimal fresh-symbol reproduction excludes cross-case contamination. No provisional threshold was revised.
+#+NOTE: Blocker evidence target/prim-globals/blocker.json sha256=965db6d74bf51a6fc1a98a2b87c451e906b14ea8195a21249f5da245957239c7. No runtime/build/prelude hunks changed; the existing slot-4 alias redirect checkpoint is retained. S1/S3/S4 costs were deliberately not paid after the COMMON.md stopping condition fired.
+#+NOTE: The check tier was attempted with local writable TMPDIR/XDG_CACHE_HOME. Unmodified baseline files fail compile and parens (33 findings/1158 files). Interrupted during generated-source-parse after the semantic stopping condition; no final-verification receipt is claimed.
+
+* S1 Baseline diagnosis
+** S1.1 Profile each operation in interpreter, VM and bytecode on the base
+cmd: python3 tools/ai/prim-globals-check.py check baseline-profile
+** S1.2 Isolate the globals contribution to the reference WIP load regression
+cmd: python3 tools/ai/prim-globals-check.py check wip-load
+** S1.3 End-to-end baseline uses a measured binary from 692dc8a09 and GNU 31.1
+cmd: python3 tools/ai/prim-globals-check.py check baseline
+
+* S2 GNU semantics
+** S2.1 Interpreter matches GNU values, error symbols and error data
+cmd: python3 tools/ai/prim-globals-check.py check parity-interpreter
+** S2.2 VM matches GNU values, error symbols and error data
+cmd: python3 tools/ai/prim-globals-check.py check parity-vm
+** S2.3 End-to-end bytecode and both source modes match GNU, including watchers
+cmd: python3 tools/ai/prim-globals-check.py check parity-all
+
+* S3 Primitive instruction cost
+** S3.1 Global setq averages at most 3x GNU Ir in each mode
+cmd: python3 tools/ai/prim-globals-check.py check setq
+** S3.2 Symbol-value averages at most 3x GNU Ir in each mode
+cmd: python3 tools/ai/prim-globals-check.py check symbol-value
+** S3.3 End-to-end all operations and modes measured, including the ungated funcall floor
+cmd: python3 tools/ai/prim-globals-check.py check measurements
+
+* S4 Integrated verification
+** S4.1 Box census S6.2 stays zero and total does not exceed the measured base
+cmd: python3 tools/ai/prim-globals-check.py check census
+** S4.2 Five-file load averages no more Ir than base over four layouts
+cmd: python3 tools/ai/prim-globals-check.py check load
+** S4.3 Anvil MCP reports exactly 40 tools
+cmd: python3 tools/ai/prim-globals-check.py check anvil
+** S4.4 End-to-end dynamic/static final verification and standalone checks pass
+cmd: python3 tools/ai/prim-globals-check.py check final
