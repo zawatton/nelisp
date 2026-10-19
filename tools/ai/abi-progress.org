@@ -169,6 +169,12 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# FFI checkpoint: TOTAL1410; S6.2 34 (20direct+10reverse+4inline).
+# Real shared-library typed32/fixed/rooted46, expected-value mutation,
+# pin identity/GC/cleanup + v2 copy/ticket, static FFI refusal, batteries/
+# Anvil/arity and static42 pass. Boot/regex/files -2.829%/-2.740%/-3.052%,
+# GC6/6,17/16,8/8, outputs identical. Scalar constructor memory-full on base
+# remains a known limitation; the rooted constructor succeeds.
 # Owned-value checkpoint: TOTAL1418; S6.2 41 (20direct+17reverse+4inline).
 # Owned110/marker8, public67 and twelve printed GNU numeric/append results,
 # skipped-write mutation, consumer/capture/cleanup, batteries/Anvil/arity and

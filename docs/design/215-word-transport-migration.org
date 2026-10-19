@@ -384,6 +384,20 @@ inline). Three batteries, Anvil, arity, consumer/capture/cleanup and static42
 pass. Four-layout boot/regex/files means are -3.024%/-2.853%/-3.258%, with GC
 base/candidate 6/6, 17/16 and 8/8, including all collector instructions.
 
+FFI generators now emit integer WORD writers and owned float objects;
+both fixed-name dispatch and all 32 typed-pointer signatures have direct
+WORD arms. Native pin-copy/equality/reference bridges use the same direct
+convention. Rooted subr arity builds its cons WORD instead of filling a
+private result view. Census TOTAL1410; S6.2 34 (20 direct + 10 reverse + 4
+inline). A real shared-library fixture checks all 32 ABI signatures,
+fixed-name calls and rooted subrs (46 checks); baseline and candidate pass,
+and changing an expected result fails. Pin identity/GC/cleanup, v2 copy/ticket
+drivers, static FFI refusal, three batteries, Anvil, arity and static42 pass.
+Boot/regex/files means are -2.829%/-2.740%/-3.052%, GC6/6,17/16,8/8, with
+identical output in all layouts. An initial scalar-subr constructor fixture
+hit baseline =memory-full= before arity could be inspected; the accepted
+fixture uses the separately validated rooted constructor instead.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

@@ -23686,7 +23686,7 @@ local (not inlined as `(wf_argval args 0)' at each call site) because
 value (a gp `ref') -- the same reason the e2e dlsym test
 (`nelisp-aot-compiler/e2e-extern-call-ptr-f64-dynamic-sqrt') let-binds its
 own `dlsym' result before calling it."
-  (let ((chain '(seq (wf_write_nil out) 0)))
+  (let ((chain 3))
     (dotimes (sig 32)
       (let* ((ret-f64-p (/= 0 (logand sig 16)))
              (f64-binds nil)
@@ -23705,8 +23705,8 @@ own `dlsym' result before calling it."
              (body
               (if ret-f64-p
                   `(let* ((pcret (f64-bits (extern-call-ptr-f64 pcfn ,@argforms))))
-                     (seq (sexp-write-float out (bits-to-f64 pcret)) 0))
-                `(wf_write_int out (extern-call-ptr pcfn ,@argforms))))
+                     (let ((object (alloc-bytes 32 8))) (seq (sexp-write-float object (bits-to-f64 pcret)) object)))
+                `(wf_write_int_w 0 (extern-call-ptr pcfn ,@argforms))))
              (arm (if f64-binds
                       `(let* ,(nreverse f64-binds) ,body)
                     body)))
@@ -23779,9 +23779,9 @@ assembly point in `nelisp-standalone--applyfn-reader-table' rather than
 baked into `nelisp-standalone--applyfn-bf-arms' at load time.  Splicing it
 into that constant unconditionally is what broke every aarch64 build."
   (list (cons '(:lit "ptr-call-typed")
-              (if (nelisp-standalone--ptr-call-typed-live-p)
+              (cons :word (if (nelisp-standalone--ptr-call-typed-live-p)
                   (nelisp-standalone--build-ptr-call-typed-dispatch)
-                (nelisp-standalone--applyfn-ptr-call-typed-unsupported-form)))))
+                (list 'nl_abi_fail (nelisp-standalone--applyfn-ptr-call-typed-unsupported-form) 0))))))
 
 (defconst nelisp-standalone--applyfn-bf-arms
   (append
@@ -24088,27 +24088,27 @@ into that constant unconditionally is what broke every aarch64 build."
                      (nl_native_subr_module_live_count
                       (wf_argval args 0))))
     ((:lit "nelisp--native-subr-arity")
-     . (let* ((value (wf_arg_ptr args 0))
+     :word . (let* ((value (wf_arg_ptr args 0))
               (slots (if (= (ptr-read-u8 value 0) 18)
                          (record-slot-count value)
                        0)))
         (if (= slots 10)
-            (bf_rooted_subr_arity value out)
+            (bf_rooted_subr_arity_w value 0)
         (if (= slots 4)
-            (wf_write_int out 0)
+            (wf_write_int_w 0 0)
           (if (= slots 5)
-              (wf_write_int out 1)
+              (wf_write_int_w 0 1)
             (if (= slots 6)
-                (wf_write_int out 2)
+                (wf_write_int_w 0 2)
               ;; 3 encodes the `&optional' arity (1 . 2) (S6.6), 4 the
               ;; `&optional' arity (4 . 5) (S6.7).
               (if (= slots 7)
-                  (wf_write_int out 3)
+                  (wf_write_int_w 0 3)
                 (if (= slots 8)
-                    (wf_write_int out 4)
+                    (wf_write_int_w 0 4)
                   (if (= slots 9)
-                      (wf_write_int out 5)
-                    (wf_write_nil out))))))))))
+                      (wf_write_int_w 0 5)
+                    3)))))))))
     ((:lit "make-record") :word . (bf_make_record_w args 0))
     ((:lit "make-byte-code") :word . (bf_make_byte_code_w args 0))
     ((:lit "fetch-bytecode") :word . (wf_write_nil_w 0))
@@ -24658,7 +24658,7 @@ into double-precision (f64) marshalling:
 
 This is what lets the reader call libm/UCRT (sqrt/pow/...) and any other
 fixed-table shared-library entry point directly from elisp."
-  (let ((chain '(seq (wf_write_nil out) 0)))
+  (let ((chain 3))
     (dolist (row (reverse table))
       (let* ((sym (nth 0 row))
              (arity (nth 2 row))
@@ -24690,14 +24690,14 @@ fixed-table shared-library entry point directly from elisp."
                   ;; bare extern name `nl_sexp_write_float' is a generic call that
                   ;; cannot emit a `bits-to-f64' value arg; the grammar op can.)
                   `(let* ((frb (f64-bits (extern-call-f64 ,(intern sym) ,@argforms))))
-                     (seq (sexp-write-float out (bits-to-f64 frb)) 0))
+                     (let ((object (alloc-bytes 32 8))) (seq (sexp-write-float object (bits-to-f64 frb)) object)))
                 (if (eq ret-class 's32)
                     `(let* ((irv (extern-call ,(intern sym) ,@argforms)))
-                       (wf_write_int out
+                       (wf_write_int_w 0
                                      (if (> irv 2147483647)
                                          (- irv 4294967296)
                                        irv)))
-                  `(wf_write_int out (extern-call ,(intern sym) ,@argforms)))))
+                  `(wf_write_int_w 0 (extern-call ,(intern sym) ,@argforms)))))
              (arm (if f64-binds
                       `(let* ,(nreverse f64-binds) ,body)
                     body)))
@@ -24718,8 +24718,8 @@ in `nelisp-standalone-build-reader'.")
 
 (defconst nelisp-standalone--applyfn-extern-arms
   (list (cons '(:lit "nl-ffi-call")
-              (nelisp-standalone--build-ffi-dispatch
-               nelisp-standalone--reader-extern-table)))
+              (cons :word (nelisp-standalone--build-ffi-dispatch
+               nelisp-standalone--reader-extern-table))))
   "Linux dynamic `nl-ffi-call' dispatch arm (Step C / D1 / F1).
 It dispatches by name to every table symbol through its PLT stub -> GOT.  The
 Windows subset is built separately from the same table plus its DLL map.")
@@ -24727,9 +24727,9 @@ Windows subset is built separately from the same table plus its DLL map.")
 (defun nelisp-standalone--applyfn-windows-extern-arms ()
   "Return the PE-import-backed Windows x86_64 `nl-ffi-call' dispatch arm."
   (list (cons '(:lit "nl-ffi-call")
-              (nelisp-standalone--build-ffi-dispatch
+              (cons :word (nelisp-standalone--build-ffi-dispatch
                (nelisp-standalone--windows-reader-extern-table)
-               'windows-x86_64))))
+               'windows-x86_64)))))
 
 (defun nelisp-standalone--reader-dynamic-p ()
   "Non-nil when building the dynamically-linked reader (NELISP_READER_DYNAMIC).
@@ -24811,7 +24811,7 @@ is defined LATER in this file (load order), so evaluating this eagerly at
 `defconst'-load time would signal `void-function' -- same reasoning as
 `nelisp-standalone--reader-dynamic-p' above being a function."
   (list (cons '(:lit "nl-ffi-call")
-              (nelisp-standalone--applyfn-ffi-unsupported-form))))
+              (cons :word (list 'nl_abi_fail (nelisp-standalone--applyfn-ffi-unsupported-form) 0)))))
 
 (defun nelisp-standalone--reader-extern-builtin-names ()
   "Builtin name(s) for the Step C external FFI dispatcher (`nl-ffi-call').
@@ -25349,29 +25349,25 @@ extern arms in dynamic builds."
     (append (nelisp-standalone--applyfn-reader-table)
             (list
              (cons '(:u8 "nelisp--native-pin-copy")
-                   '(wf_write_int
-                     out
-                     (nl_reader_native_pin_copy
+                   (cons :word '(wf_write_int_w 0 (nl_reader_native_pin_copy
                       (wf_arg_ptr args 2)
                       (nl_root_pin_reserve
-                       (wf_argval args 0) (wf_argval args 1)))))
+                       (wf_argval args 0) (wf_argval args 1))))))
              (cons '(:u8 "nelisp--native-pin-copy-v2")
-                   '(wf_write_int
-                     out
-                     (nl_reader_native_pin_copy
+                   (cons :word '(wf_write_int_w 0 (nl_reader_native_pin_copy
                       (wf_arg_ptr args 3)
                       (nl_root_pin_slot_v2
                        (wf_argval args 0) (wf_argval args 1)
-                       (wf_argval args 2)))))
+                       (wf_argval args 2))))))
              (cons '(:u8 "nelisp--native-pin-eq-slots")
-                   '(if (= (nl_reader_native_pin_eq_slots
+                   (cons :word '(if (= (nl_reader_native_pin_eq_slots
                             (wf_argval args 0) (wf_argval args 1)) 1)
-                        (wf_write_t out)
-                      (wf_write_nil out)))
+                        7
+                      3)))
              (cons '(:lit "nelisp--native-unbox-reference")
-                   '(nl_reader_native_result_ref
+                   (cons :word '(nl_reader_native_result_ref_w
                      (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)
-                     args out))))
+                     args 0)))))
     (nelisp-standalone--builtin-fixed-arities))))
 
 ;; ===================================================================
@@ -42573,15 +42569,19 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
            (= (wf_bytecode_flat_path_int_cell func) 1))
       (nl_bi_syscall_path_int_slots (- header 96) (- header 64) (- header 32) out)
     (nl_apply_stash_invalid_function env func)))
+(defun bf_rooted_subr_arity_w (func _pad)
+  (let* ((data (nl_record_slot_word func 1))
+         (minimum (nl_vector_slot_word data 1))
+         (maximum (nl_vector_slot_word data 2)))
+    (if (= (nl_word_payload maximum) -1)
+        (let* ((bytes (alloc-bytes 4 8)))
+          (seq (ptr-write-u32 bytes 0 2037277037)
+               (nelisp_cons_construct_w minimum (nl_alloc_symbol_w bytes 4 0) 0)))
+      (nelisp_cons_construct_w minimum maximum 0))))
+
 (defun bf_rooted_subr_arity (func out)
-  (let* ((d (nl_record_slot_word func 1))
-         (min (nl_vector_slot_word d 1)) (max (nl_vector_slot_word d 2)))
-    (if (= (nl_word_payload max) -1)
-        (let* ((bytes (alloc-bytes 4 8)) (many (alloc-bytes 32 8)))
-          (ptr-write-u32 bytes 0 2037277037)
-          (nl_alloc_symbol bytes 4 many)
-          (seq (nelisp_cons_construct min many out) 0))
-      (seq (nelisp_cons_construct min max out) 0))))
+  (nl_abi_word_to_rc (bf_rooted_subr_arity_w func 0) out))
+
 (defun nl_apply_rooted_subr (func args env out)
   (nl_apply_rooted_subr_frame func args (- -1 (nl_apply_list_len args)) env out))
 (defun nl_apply_rooted_subr_frame (func args packed-argc env out)
