@@ -225,8 +225,8 @@
       (nelisp_env_lkv_mirror_with_frames_rc
        mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0))
 
-    ;; The status-returning body behind the word entry above (writes the
-    ;; value into the private OUT-PTR box).
+    ;; Legacy status/OUT body for existing C-ABI consumers. The WORD entry
+    ;; above reads the terminal value directly and does not call this body.
     (defun nelisp_env_lkv_mirror_with_frames_rc
         (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))

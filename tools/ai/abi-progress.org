@@ -101,6 +101,13 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # Mean total Ir: boot 29,062,019,454.25 -> 28,218,344,162.25 (-2.903%, GC 6/6),
 # regex 95,741,355,967.25 -> 93,068,131,901.5 (-2.792%, GC 17/16), files
 # 39,497,825,152.75 -> 38,242,027,830.75 (-3.179%, GC 8/8), identical outputs.
+# Round 3 array setters: census 1486; S6.2 66 = 44 direct + 17 reverse
+# + 5 inline. Setters preserve the original value WORD; physical table-slot
+# equality compares immediate WORDs without making a view. The selected
+# producer decoder check is 9 old findings -> 0 new findings.
+# Mean total Ir: boot 29,062,019,454.25 -> 28,196,669,189.5 (-2.978%, GC 6/6),
+# regex 95,741,355,967.25 -> 93,027,522,750.75 (-2.835%, GC 17/16), files
+# 39,497,825,152.75 -> 38,252,484,689.5 (-3.153%, GC 8/8), identical outputs.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).

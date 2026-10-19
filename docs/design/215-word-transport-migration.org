@@ -331,6 +331,21 @@ checks default-write/void/reinitialize ordering, alias notification, and
 callback errors. Baseline, candidate and GNU agree; discarding callback events
 must fail its sequence assertion.
 
+Array setters now take their value from the argument list as a canonical WORD
+and return that WORD. String and bool-vector mutators share raw status
+operations; the legacy typed string entries copy their validated integer
+view, while WORD entries preserve the argument. Char-table range and extra
+setters similarly return the input WORD instead of decoding an output box.
+The physical table store remains a 32-byte Sexp: its same-range comparison
+handles an immediate WORD against that store explicitly, keeping heap
+identity comparison on the existing path.
+
+The 214-case array check covers vectors, records, bool vectors, character
+and range/default/extra-slot table writes, repeated ranges, strings, GC
+identity and ten invalid inputs. Baseline and GNU agree, including all ten
+error conditions. A mutation that skips a vector write must fail the value
+assertion.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

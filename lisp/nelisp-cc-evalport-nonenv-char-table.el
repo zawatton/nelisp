@@ -213,6 +213,15 @@
            (nl_ct_coalesce box pl)
            1))))
     ;; Set every char in [FROM,TO] (FROM <= TO, both valid chars) to VAL.
+    (defun nl_ct_value_eq (slot value)
+      ;; SLOT is physical 32-byte table storage; VALUE may be a WORD or a
+      ;; legacy view. Compare immediates without constructing a view/WORD.
+      (if (= (logand value 1) 1)
+          (if (= (nl_val_tag value) (nl_val_tag slot))
+              (if (= (nl_val_tag value) 2)
+                  (if (= (nl_word_payload value) (nl_word_payload slot)) 1 0) 1)
+            0)
+        (bf_eq2 slot value)))
     (defun nl_ct_set_range (box from to val)
       (let* ((eptr (ptr-read-u64 (+ box 64) 0))
              (n (ptr-read-u64 (+ box 80) 0))
@@ -221,7 +230,7 @@
              (same (if (= (- hi lo) 1)
                        (if (<= (nl_ct_start eptr lo) from)
                            (if (>= (nl_ct_end eptr lo) to)
-                               (bf_eq2 (nl_ct_val eptr lo) val)
+                               (nl_ct_value_eq (nl_ct_val eptr lo) val)
                              0)
                          0)
                      0)))
@@ -237,9 +246,9 @@
           1)))
     ;; Doc 215 builtin word ABI: set and answer VAL as a WORD (an immediate stays as it is).
     (defun nl_char_table_set_raw_w (arg idx val _pad)
+      ;; VAL is the caller's canonical WORD; legacy entries copy their view.
       (if (= (nelisp_ptr_read_u8 arg 0) 9)
-          (seq (nl_ct_set_range (ptr-read-u64 (+ arg 8) 0) idx idx val)
-               (if (= (logand val 1) 1) val (nl_ct_slot_word val)))
+          (seq (nl_ct_set_range (ptr-read-u64 arg 8) idx idx val) val)
         (extern-call nl_abi_fail 1 0)))
     (defun nl_char_table_set_range_raw (arg from to val out)
       (let* ((tag (nelisp_ptr_read_u8 arg 0)))
@@ -252,10 +261,10 @@
     ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
     ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `nl_char_table_set_range_raw'.
     (defun nl_char_table_set_range_raw_w (arg from to val _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (nl_char_table_set_range_raw arg from to val out) 0)
-            (let* ((tg (ptr-read-u8 out 0))) (if (= tg 2) (+ (* (ptr-read-u64 out 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 out))))
-          (nl_abi_fail 1 0))))))
+      ;; VAL is the caller's canonical WORD; legacy entries copy their view.
+      (if (= (nelisp_ptr_read_u8 arg 0) 9)
+          (seq (nl_ct_set_range (ptr-read-u64 arg 8) from to val) val)
+        (extern-call nl_abi_fail 1 0)))))
   "Interval-based CharTable get/set kernel.")
 (provide (quote nelisp-cc-evalport-nonenv-char-table))
 ;;; nelisp-cc-evalport-nonenv-char-table.el ends here

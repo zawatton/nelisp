@@ -2185,6 +2185,14 @@
         (symbol-value 'par-word-alias)
         (makunbound 'par-word-default)
         (boundp 'par-word-default)))
+;; Array setters return the input WORD even when a bool vector stores t.
+(mapcar (lambda (value)
+          (let ((v (vector nil)) (bits (make-bool-vector 1 nil))
+                (ct (make-char-table 'par-word-array nil)))
+            (list (aset v 0 value) (aref v 0)
+                  (aset bits 0 value) (aref bits 0)
+                  (set-char-table-range ct '(8 . 10) value) (aref ct 9))))
+        '(nil t 0 -7))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

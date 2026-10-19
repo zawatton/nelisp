@@ -19854,24 +19854,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_extra_slot_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1))
-             (val (wf_arg_ptr args 2)))
-        (if (= (nl_word_tag64 ct) 9)
-            (if (= (nl_word_tag64 nbox) 2)
-                (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
-                  (if (if (< n 0) 1 (if (< n 10) 0 1))
-                      (bf_args_out_of_range ct nbox)
-                    (seq (wf_dirty)
-                         (nl_sexp_clone_into
-                          val (+ (ptr-read-u64 (+ box 96) 0) (* n 32)))
-                         (wf_copy32 out val) 0)))
-              (bf_wrong_type_fixnump nbox))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+      (seq  (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1))
+             (val (wf_arg_word args 2)))
+          (if (= (nl_word_tag64 ct) 9) (if (= (nl_word_tag64 nbox) 2) (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
+          (if (if (< n 0) 1 (if (< n 10) 0 1)) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_sexp_clone_into
+                          val (+ (ptr-read-u64 (+ box 96) 0) (* n 32))) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
     ;; char-table-range / set-char-table-range, GNU semantics.  RANGE is
     ;; nil (the default slot), t (every char; set only), a char, or a
     ;; (FROM . TO) cons of chars.  GET on a cons answers the value at FROM
@@ -19945,46 +19932,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_range_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1))
-             (val (wf_arg_ptr args 2)))
-        (if (= (ptr-read-u64 ct 0) 9)
-            (let* ((rtag (nl_word_tag64 range)))
-              (if (= rtag 0)
-                  (seq (wf_dirty)
-                       (nl_sexp_clone_into val (+ (ptr-read-u64 ct 8) 32))
-                       (wf_copy32 out val) 0)
-                (if (= rtag 1)
-                    (seq (wf_dirty)
-                         (nl_char_table_set_range_raw ct 0 4194303 val out) 0)
-                  (if (= rtag 2)
-                      (if (= (nl_ct_char_ok (nl_word_payload range)) 1)
-                          (seq (wf_dirty)
-                               (nl_char_table_set_range_raw
-                                ct (nl_word_payload range) (nl_word_payload range)
-                                val out)
-                               0)
-                        (bf_wrong_type_characterp range))
-                    (if (= rtag 7)
-                        (let* ((fromp (nl_cons_car_ptr range))
+      (seq  (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1))
+             (val (wf_arg_word args 2)))
+          (if (= (ptr-read-u64 ct 0) 9) (let* ((rtag (nl_word_tag64 range)))
+          (if (= rtag 0) (seq (wf_dirty) (nl_sexp_clone_into val (+ (ptr-read-u64 ct 8) 32)) val) (if (= rtag 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct 0 4194303 val 0)) (if (= rtag 2) (if (= (nl_ct_char_ok (nl_word_payload range)) 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct (nl_word_payload range) (nl_word_payload range) val 0)) (nl_abi_fail (bf_wrong_type_characterp range) 0)) (if (= rtag 7) (let* ((fromp (nl_cons_car_ptr range))
                                (top (nl_cons_cdr_ptr range))
                                (bad (nl_ct_cons_ok fromp top)))
-                          (if (= bad 0)
-                              (let* ((from (ptr-read-u64 fromp 8))
+          (if (= bad 0) (let* ((from (ptr-read-u64 fromp 8))
                                      (to (ptr-read-u64 top 8)))
-                                (if (> from to)
-                                    (seq (wf_copy32 out val) 0)
-                                  (seq (wf_dirty)
-                                       (nl_char_table_set_range_raw
-                                        ct from to val out)
-                                       0)))
-                            bad))
-                      (bf_char_table_bad_range 1 out))))))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+          (if (> from to) (seq  val) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct from to val 0)))) (nl_abi_fail bad 0))) (bf_char_table_bad_range_w 1 0)))))) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
     ;; wrong-type-argument char-table-p OFFENDER -- mirrors
     ;; `bf_wrong_type_symbolp' exactly, byte-packed the same way (verified
     ;; the predicate name against host Emacs: `(char-table-parent 5)' signals
@@ -20510,35 +20466,41 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; `bf_str_ptr' for EVERY tag: tag 15 is boxed and reading arr+16 directly
     ;; treats an NlStr box word as a byte pointer (measured SIGSEGV in P1).
     ;; Doc 215 builtin word ABI: bf_aset_string_write_w returns the result WORD (0 = signal stashed); bf_aset_string_write keeps the (rc, OUT) ABI.
-    (defun bf_aset_string_write_w (arr byte-idx val _pad)
+    (defun bf_aset_string_write_status (arr byte-idx val)
       (seq
        (wf_dirty)
-       (ptr-write-u8 (bf_str_ptr arr) byte-idx (ptr-read-u64 val 8))
-       (nl_val_store_word val)))
+       (ptr-write-u8 (bf_str_ptr arr) byte-idx (nl_word_payload val))
+       0))
+    (defun bf_aset_string_write_w (arr byte-idx val _pad)
+      (if (= (bf_aset_string_write_status arr byte-idx val) 0) val 0))
     (defun bf_aset_string_write (arr byte-idx val out)
-      (nl_abi_word_to_rc (bf_aset_string_write_w arr byte-idx val 0) out))
+      (let* ((rc (bf_aset_string_write_status arr byte-idx val)))
+        (if (= rc 0) (seq (wf_copy32 out val) 0) rc)))
     ;; Doc 215 builtin word ABI: bf_aset_unibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_unibyte_string keeps the (rc, OUT) ABI.
-    (defun bf_aset_unibyte_string_w (arr idx idx-slot val _pad)
-      (if (= (ptr-read-u64 val 0) 2)
+    (defun bf_aset_unibyte_string_status (arr idx idx-slot val)
+      (if (= (nl_word_tag64 val) 2)
           (if (if (< idx 0) 1 (if (< idx (bf_str_len arr)) 0 1))
-              (nl_abi_fail (bf_args_out_of_range arr idx-slot) 0)
-            (let* ((cp (ptr-read-u64 val 8)))
+              (bf_args_out_of_range arr idx-slot)
+            (let* ((cp (nl_word_payload val)))
               (if (if (< cp 0) 1 (if (> cp 255) 1 0))
-                  (nl_abi_fail (bf_args_out_of_range_byte val) 0)
+                  (bf_args_out_of_range_byte val)
                 (seq (nl_aref_cache_invalidate (bf_str_ptr arr))
-                     (bf_aset_string_write_w arr idx val 0)))))
-        (nl_abi_fail (bf_wrong_type_integerp val) 0)))
+                     (bf_aset_string_write_status arr idx val)))))
+        (bf_wrong_type_integerp val)))
+    (defun bf_aset_unibyte_string_w (arr idx idx-slot val _pad)
+      (if (= (bf_aset_unibyte_string_status arr idx idx-slot val) 0) val 0))
     (defun bf_aset_unibyte_string (arr idx idx-slot val out)
-      (nl_abi_word_to_rc (bf_aset_unibyte_string_w arr idx idx-slot val 0) out))
+      (let* ((rc (bf_aset_unibyte_string_status arr idx idx-slot val)))
+        (if (= rc 0) (seq (wf_copy32 out val) 0) rc)))
     ;; Tag 5 goes through the same O(1)-amortized cache `bf_aref_checked'
     ;; uses (fusing the bounds check into the walk); tag 6 keeps the old
     ;; unconditional `nl_str_charlen' + `nl_u8_cidx_byte' pair -- see the
     ;; `bf_aref_checked' comment for why tag 6 is left as-is.
     ;; Doc 215 builtin word ABI: bf_aset_multibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_multibyte_string keeps the (rc, OUT) ABI.
-    (defun bf_aset_multibyte_string_w (arr idx idx-slot val _pad)
-      (if (= (ptr-read-u64 val 0) 2)
+    (defun bf_aset_multibyte_string_status (arr idx idx-slot val)
+      (if (= (nl_word_tag64 val) 2)
           (if (< idx 0)
-              (nl_abi_fail (bf_args_out_of_range arr idx-slot) 0)
+              (bf_args_out_of_range arr idx-slot)
             (let* ((byte-idx
                     (if (= (ptr-read-u64 arr 0) 5)
                         (nl_str_aref_byte_off arr (bf_str_len arr) idx)
@@ -20546,19 +20508,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (nl_u8_cidx_byte arr 0 (bf_str_len arr) 0 idx)
                         -1))))
               (if (< byte-idx 0)
-                  (nl_abi_fail (bf_args_out_of_range arr idx-slot) 0)
-                (let* ((cp (ptr-read-u64 val 8)))
+                  (bf_args_out_of_range arr idx-slot)
+                (let* ((cp (nl_word_payload val)))
                   ;; Both sides must be ASCII.  This is stricter than the
                   ;; 30.1 host used by `emacs-parity', deliberately
                   ;; matching 31.1.
                   (if (if (< cp 0) 1
                         (if (> cp 127) 1
                           (if (>= (m5_byte_at arr byte-idx) 128) 1 0)))
-                      (bf_aset_fixed_width_rejected_w 0)
-                    (bf_aset_string_write_w arr byte-idx val 0))))))
-        (nl_abi_fail (bf_wrong_type_integerp val) 0)))
+                      (seq (bf_aset_fixed_width_rejected_w 0) 1)
+                    (bf_aset_string_write_status arr byte-idx val))))))
+        (bf_wrong_type_integerp val)))
+    (defun bf_aset_multibyte_string_w (arr idx idx-slot val _pad)
+      (if (= (bf_aset_multibyte_string_status arr idx idx-slot val) 0) val 0))
     (defun bf_aset_multibyte_string (arr idx idx-slot val out)
-      (nl_abi_word_to_rc (bf_aset_multibyte_string_w arr idx idx-slot val 0) out))
+      (let* ((rc (bf_aset_multibyte_string_status arr idx idx-slot val)))
+        (if (= rc 0) (seq (wf_copy32 out val) 0) rc)))
     ;; aset ARR IDX VAL: vector/string/record/char-table mutation.
     ;; Writes into a PRE-EXISTING container -> persistent escape -> bump the
     ;; mutation epoch (NO-ESCAPE gate).  Validate IDX before reading payload@8;
@@ -20574,7 +20539,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_aset_checked_w (args _pad)
       (let* ((arr (wf_arg_ptr args 0))
              (idx (nl_word_payload (wf_arg_word args 1)))
-             (val (wf_arg_ptr args 2)))
+             (val (wf_arg_word args 2)))
         (if (= (ptr-read-u64 arr 0) 8)
             ;; Bounds are checked exactly like `bf_aref_checked': an unchecked
             ;; `vector-slot-set' wrote outside the vector (found 2026-10-03 via
@@ -20583,7 +20548,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (if (< idx 0) 1 (if (< idx (vector-len arr)) 0 1))
                 (nl_abi_fail (bf_args_out_of_range arr (wf_arg_word args 1)) 0)
               (seq (wf_dirty) (vector-slot-set arr idx val)
-                   (nl_val_store_word val)))
+                   val))
           ;; Doc 200 P3: unibyte values are exactly one byte.  Multibyte
           ;; replacement is permitted only when both old and new characters
           ;; are ASCII, so neither the tag nor byte length can change.
@@ -20602,9 +20567,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               ;; `record-slot-set' grammar op (as bf_record / bf_make_record).
               (if (= (ptr-read-u64 arr 0) 12)
                   (if (= idx 0)
-                      (nl_val_store_word val)
+                      val
                     (seq (wf_dirty) (record-slot-set arr (- idx 1) val)
-                         (nl_val_store_word val)))
+                         val))
                 ;; Doc 186 P0/P1: CharTable(9).  Delegates to
                 ;; `nl_char_table_set_raw' (same manifest unit as the aref arm
                 ;; above); the kernel grows the entries array itself and echoes
@@ -20625,18 +20590,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     ;; GNU Emacs 31: an interpreted closure is not an array.
                     (if (= (nl_closure_shape_p arr) 1)
                         (nl_abi_fail (bf_wrong_type_arrayp arr) 0)
-                      (nl_val_store_word val))))))))))
+                      val)))))))))
     (defun bf_aset_checked (args out)
       (nl_abi_word_to_rc (bf_aset_checked_w args 0) out))
     ;; Doc 215 builtin word ABI: bf_aset_bool_vector_w returns the result WORD (0 = signal stashed).
-    (defun bf_aset_bool_vector_w (arr idx idx-slot val _pad)
+    (defun bf_aset_bool_vector_status (arr idx idx-slot val)
       (let* ((box (ptr-read-u64 arr 8)))
         (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
-            (nl_abi_fail (bf_args_out_of_range arr idx-slot) 0)
+            (bf_args_out_of_range arr idx-slot)
           (seq (wf_dirty)
                (nl_bv_bit_set (ptr-read-u64 box 8) idx
-                              (if (= (ptr-read-u64 val 0) 0) 0 1))
-               (nl_val_store_word val)))))
+                              (if (= (nl_word_tag64 val) 0) 0 1))
+               0))))
+    (defun bf_aset_bool_vector_w (arr idx idx-slot val _pad)
+      (if (= (bf_aset_bool_vector_status arr idx idx-slot val) 0) val 0))
     ;; nelisp-emacs-lib keeps its sparse compatibility char-table as an exact
     ;; seven-slot tagged vector.  Ordinary vectors stay on the direct native
     ;; aref/aset path; only this marker shape calls back into the library.
