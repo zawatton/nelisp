@@ -1,0 +1,24 @@
+Native Windows acceptance (S6) for eval/windows-20261019 at fad569657
+Host: user's Windows machine, GNU Emacs 31.1 (mingw64), MSYS2 make, Python 3; clean target/,
+XDG_CACHE_HOME=$PWD/target/xdg-cache. Recorded by the coordinator from the Windows session's report (2026-10-19).
+
+$ git log -1 --oneline
+fad56965 fix(windows): use typed float steps and ship lean cold images
+$ sh tools/ai/windows-bringup-check.sh native
+[standalone-reader] linked 118 units -> .../target/nelisp.exe (src="(+ 40 2)")
+[standalone-reader] build digest 62810ca0fa824277cf6869a5b4e422d90a6f0cc7c38171465c8e290a2abefe07
+[standalone-reader] cold image -> .../target/nelisp.exe.cold (161679000 bytes)
+[standalone-reader] artifact runtime cache -> .../target/nelisp-artifact-runtime.el.nelc (enabled)
+nil
+EXIT-STASH thrown list of 20000: 2240640 live bytes held after the catch, 680 after an immediate replaced it (need >= 1048576, then < 524288) -- PASS
+BOOT-LIBRARIES checks=23 failures=0 PASS
+NATIVE-WINDOWS-S1-S3-PASS
+bringup rc=0
+$ target/nelisp.exe --cold-load-from target/nelisp.exe.cold --load test/standalone-bytecode-word-check.el
+BYTECODE-WORD PASS 145/145 cases match GNU 31.1
+$ target/nelisp.exe --eval '(list (1+ 2.5) (1- 2.5))'
+(3.5 1.5)
+$ time target/nelisp.exe --cold-load-from target/nelisp.exe.cold --eval nil
+real 0m0.209s
+Earlier run at 684b0b91a on the same machine: --eval nil (source boot) 5.965s; cold boot 0.189s;
+cold boot + (require 'rx) + (rx "a" (+ digit)) => "a[[:digit:]]+" in 2.04s. No crash in any run.

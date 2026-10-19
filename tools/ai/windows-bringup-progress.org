@@ -25,4 +25,4 @@ cmd: sh tools/ai/windows-bringup-check.sh S4
 cmd: sh tools/ai/windows-bringup-check.sh S5
 
 ** S1.6 S6 Native Windows passes S1 through S3 on the user's machine
-pending
+evidence: tools/ai/windows-bringup-native-evidence.txt sha256=9f9e315f689979a66232e6d56cf012e9a790e01ab2e4123b75802ee53142bdff
