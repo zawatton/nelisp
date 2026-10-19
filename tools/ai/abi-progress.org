@@ -286,11 +286,12 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # excluded instructions or widened Ir cap. Only the operational timeout grows
 # to1780 seconds per long process; denominator21 remains unchanged. abi-gc-count.gdb
 # rejects the insufficient6000-operation control in6s instead of Callgrind.
-# An uncommitted synthetic-pressure experiment (128 disposable1MiB raw
+# An uncommitted synthetic-pressure experiment on bd25c1caa (128 disposable1MiB raw
 # allocations per20 regex batches) is outside the original regex acceptance
 # workload and remains KNOWN-RED: mean75,629,385,986.75 ->80,878,574,771.75 Ir,
 # +6.941%, GC10 ->13 in each layout; identical outputs. It is not resolved by
 # a repeated-regex PASS. Profiles: target/abi-ir/ir-skgmhi97/regex-gc-*.cg.
+# This additional workload is not remeasured on d826844bb.
 # The fixed24000 comparison on bd25c1caa genuinely fails too: mean
 # 255,221,297,100.50 ->258,361,406,097.50 (+1.230%), GC11 ->17, identical
 # output. Complete failed evidence: target/abi-ir/ir-6u8klrrz/measurement.json,
@@ -305,10 +306,18 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # manifest pins input hashes before/after, all24 successful jobs and artifacts.
 # This live verifier checks that provenance and recomputes every raw-profile
 # output/GC/Ir verdict. The evidence line below pins the manifest itself.
+# Final d826844bb comparison (same fixed workloads/caps): boot mean
+# 1,215,539,309.75 ->977,237,406.50 (-19.605%, GC0/0), regex6000
+# 69,805,864,448.25 ->67,117,509,973.50 (-3.851%, GC4/4), regex24000
+# 255,221,733,196.75 ->247,827,459,048.25 (-2.897%, GC11/15 every layout).
+# All outputs agree. Every raw profile and successful exit is pinned in the
+# manifest; the repeated-regex regression is resolved without changing its
+# workload, Ir cap or GC floor. Additional raw-pressure result remains unmeasured.
 ** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
+evidence: $ABI_IR_PROFILE/measurement.json sha256=5a51d9a4186343eb19378dc17eec1bcb88a193078b5a6639d8b7cb30477cd158
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN

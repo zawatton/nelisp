@@ -85,7 +85,7 @@ S6.3 verifies these identities and recomputes every independent verdict from
 the raw profiles. A ledger evidence hash anchors the manifest itself; no
 cached PASS decision is trusted.
 
-An uncommitted experiment injected128 disposable1MiB raw allocations per
+An uncommitted experiment on =bd25c1caa= injected128 disposable1MiB raw allocations per
 outer iteration into regex6000. It is outside the original regex workload
 and remains a known-red additional stress result: mean Ir75,629,385,986.75
 to80,878,574,771.75 (+6.941%), GC10 to13 in each layout, identical outputs.
@@ -94,6 +94,7 @@ allocator's adaptive debt policy can change collection/reuse frequency;
 layout0 collector-inclusive Ir grows8,677,726,410 to9,276,417,047, and
 zero-fill Ir grows5,636,413,202 to6,930,769,912. A repeated-regex PASS does
 not resolve this stress regression.
+This additional workload has not been remeasured on =d826844bb=.
 
 The fixed24000-operation comparison on =bd25c1caa= also fails: mean Ir
 255,221,297,100.50 to258,361,406,097.50 (+1.230%), GC11 to17 in every layout,
@@ -110,6 +111,14 @@ publication; pointer values continue through their published views. No
 native is added. The104-case C/VM fixture fails at the first boxed operand
 on the old binary and passes after the fix, alongside GNU145 and FFI74.
 Linux/Windows census totals remain1369/1394 with every S6.2 idiom zero.
+The fixed =d826844bb= workload now passes: boot mean Ir1,215,539,309.75
+to977,237,406.50 (-19.605%, GC0/0), regex6000 mean69,805,864,448.25
+to67,117,509,973.50 (-3.851%, GC4/4), and regex24000 mean255,221,733,196.75
+to247,827,459,048.25 (-2.897%, GC11/15 in every layout). All outputs agree.
+The complete manifest in =target/abi-ir/ir-728ls676/= is pinned by S6.3's
+evidence hash and verified live; no workload or acceptance cap changed after
+the genuine failure. The additional raw-pressure workload remains unmeasured
+on this corrected binary.
 S6.4 loads five vendored source files in a fixed order from this checkout,
 then runs a fixed builtin micro-suite.  Each process starts with a fresh
 empty XDG cache inside the worktree.  Output must be identical and the
