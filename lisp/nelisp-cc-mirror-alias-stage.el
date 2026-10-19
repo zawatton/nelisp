@@ -47,9 +47,9 @@
           (if (or (/= (nelisp_mirror_alias_slot_tag_matches
                         table-ptr table-tag-ptr 0 0) 1)
                   (< (record-slot-count table-ptr) 3)
-                  (/= (sexp-tag (record-slot-ref-ptr table-ptr 0)) 2)
-                  (/= (sexp-tag (record-slot-ref-ptr table-ptr 1)) 8)
-                  (/= (sexp-tag (record-slot-ref-ptr table-ptr 2)) 2)
+                  (/= (sexp-tag (nl_record_slot_word table-ptr 0)) 2)
+                  (/= (sexp-tag (nl_record_slot_word table-ptr 1)) 8)
+                  (/= (sexp-tag (nl_record_slot_word table-ptr 2)) 2)
                   (< (sar (nelisp_mirror_slot_raw_word table-ptr 2) 2) 0)
                   (let ((bucket-count
                          (sar (nelisp_mirror_slot_raw_word table-ptr 0) 2)))
@@ -59,15 +59,15 @@
                             (vector-len
                              (record-slot-ref-ptr table-ptr 1)))))
                   (if (= role 1)
-                      (or (/= (sexp-tag (record-slot-ref-ptr entry-ptr 5)) 1)
+                      (or (/= (sexp-tag (nl_record_slot_word entry-ptr 5)) 1)
                           (= (nelisp_mirror_alias_stage_true_p
                               (record-slot-ref-ptr entry-ptr 5)) 0)
-                          (and (/= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 0)
-                               (/= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 1)
-                               (/= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 4)
-                               (/= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 16)))
-                    (or (/= (sexp-tag (record-slot-ref-ptr entry-ptr 5)) 0)
-                        (/= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 0)))
+                          (and (/= (sexp-tag (nl_record_slot_word entry-ptr 4)) 0)
+                               (/= (sexp-tag (nl_record_slot_word entry-ptr 4)) 1)
+                               (/= (sexp-tag (nl_record_slot_word entry-ptr 4)) 4)
+                               (/= (sexp-tag (nl_record_slot_word entry-ptr 4)) 16)))
+                    (or (/= (sexp-tag (nl_record_slot_word entry-ptr 5)) 0)
+                        (/= (sexp-tag (nl_record_slot_word entry-ptr 4)) 0)))
                   (/= (extern-call nelisp_mirror_lookup_entry mirror-ptr key-ptr) 0))
               0
             1))))
@@ -314,7 +314,7 @@
                  (setq i 0)
                  (while (< i size)
                    (vector-slot-set copy-buckets i
-                                    (vector-ref-ptr (+ base-a 128) i))
+                                    (nl_vector_slot_word (+ base-a 128) i))
                    (setq i (+ i 1)))
                  (let ((idx-a
                         (logand (extern-call nelisp_fnv1a (+ base-a 32))
@@ -332,11 +332,11 @@
                     (vector-slot-set copy-buckets idx-a (+ base-a 256))
                     (vector-slot-set copy-buckets idx-b (+ base-b 256))))))
                  (record-make table-tag-root 3 copy-table)
-                 (record-slot-set copy-table 0 (record-slot-ref-ptr (+ base-a 96) 0))
+                 (record-slot-set copy-table 0 (nl_record_slot_word (+ base-a 96) 0))
                  (record-slot-set copy-table 1 copy-buckets)
                  (sexp-int-make new-count
-                                (+ (sexp-int-unwrap
-                                    (record-slot-ref-ptr (+ base-a 96) 2)) 2))
+                                (+ (nl_word_payload
+                                    (nl_record_slot_word (+ base-a 96) 2)) 2))
                  (record-slot-set copy-table 2 new-count)
                  ;; The table has copied its tag by now. Preserve the epoch
                  ;; in the trusted-tag root slot for the paired commit call.

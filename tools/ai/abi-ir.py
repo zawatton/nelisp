@@ -60,6 +60,9 @@ def run_one(tmp, mode, who, binary):
                                 cwd=ROOT, env=env, stdout=out, stderr=err, timeout=1100)
     if result.returncode:
         raise RuntimeError(f"{mode} {who} exit {result.returncode}: {stem}.err")
+    marker = {"regex": "ABI-REGEX 6000", "files": "ABI-FILES (1000 527500"}.get(mode)
+    if marker and marker not in stem.with_suffix(".out").read_text():
+        raise RuntimeError(f"{mode} {who} missing completion marker: {stem}.out")
     return profile_counts(stem.with_suffix(".cg"), binary)
 
 

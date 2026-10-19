@@ -125,7 +125,7 @@
       ;; `nelisp-cc-frame-bind.el'.
       (and (cons-set-car scratch-outer-slot scratch-pair-slot)
            (cons-set-cdr scratch-outer-slot
-                         (vector-ref-ptr buckets-ptr idx))
+                         (nl_vector_slot_word buckets-ptr idx))
            (vector-slot-set buckets-ptr idx scratch-outer-slot)))
     ;; Internal tail used only after the public mutation entry point has
     ;; admitted the caller.  Keeping it separate prevents an `_or_insert'
@@ -213,22 +213,22 @@
          ;; FNV-1a(NAME) & (BUCKET-COUNT - 1).
          (nelisp_mirror_prepend_install
           (record-slot-ref-ptr
-           (record-slot-ref-ptr mirror-ptr 0) ; HT-PTR
+           (nl_record_slot_word mirror-ptr 0) ; HT-PTR
            1)                                  ; HT.slots[1] = buckets vec
           (logand
            (extern-call nelisp_fnv1a sym-ptr)
-           (- (sexp-int-unwrap
-               (record-slot-ref-ptr
-                (record-slot-ref-ptr mirror-ptr 0)
+           (- (nl_word_payload
+               (nl_record_slot_word
+                (nl_record_slot_word mirror-ptr 0)
                 0))                            ; HT.slots[0] = bucket count
               1))
           outer-slot   ; outer scratch (stack)
           pair-slot)   ; inner pair scratch (stack)
          ;; Step 6: bump HT.slots[2] entry count.
          (sexp-int-make count-slot
-                        (+ (sexp-int-unwrap
-                            (record-slot-ref-ptr
-                             (record-slot-ref-ptr mirror-ptr 0)
+                        (+ (nl_word_payload
+                            (nl_record_slot_word
+                             (nl_record_slot_word mirror-ptr 0)
                              2))
                            1))
          (record-slot-set (record-slot-ref-ptr mirror-ptr 0)

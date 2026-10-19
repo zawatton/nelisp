@@ -135,6 +135,10 @@ def has_unquote(x):
 # ---------------------------------------------------------------- tables
 
 CONS_PTR = {"nl_cons_car_ptr": "nl_cons_car_word", "nl_cons_cdr_ptr": "nl_cons_cdr_word"}
+CONS_PTR.update({"record-slot-ref-ptr": "nl_record_slot_word",
+                 "vector-ref-ptr": "nl_vector_slot_word",
+                 "nl_record_slot_ptr": "nl_record_slot_word",
+                 "nl_vector_slot_ptr": "nl_vector_slot_word"})
 CONS_ACC = set(CONS_PTR) | set(CONS_PTR.values())
 SRC = {"record-slot-set": (2,), "vector-slot-set": (2,), "nl_record_set_slot": (2,),
        "nl_vector_set_slot": (2,), "nl_consbox_set_car": (1,), "nl_consbox_set_cdr": (1,),
@@ -365,6 +369,10 @@ class Engine:
         pos = idx - off
         if pos < 0:
             return None
+        # Only a proven WORD producer can make this conversion an identity.
+        # Arbitrary view parameters (word_params, sexp_known=False) retain it.
+        if sexp_known and h == "nl_val_store_word" and pos == 0 and len(args) == 1:
+            return [(parent.start, args[0].start, ""), (args[0].end, parent.end, "")]
         # sexp-tag is emitted immediate-aware already (Doc 146 sec 3.0 step 2).
         if h == "sexp-tag" and pos == 0 and parent[0] != "extern-call":
             return []

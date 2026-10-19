@@ -2041,13 +2041,13 @@
       (let ((count (vector-len vec)))
         (if (or (< count 4) (> count 6))
             0
-          (let* ((arglist (vector-ref-ptr vec 0))
+          (let* ((arglist (nl_vector_slot_word vec 0))
                  (arg-tag (sexp-tag arglist))
-                 (code-tag (sexp-tag (vector-ref-ptr vec 1)))
-                 (constants-tag (sexp-tag (vector-ref-ptr vec 2)))
-                 (depth (vector-ref-ptr vec 3))
+                 (code-tag (sexp-tag (nl_vector_slot_word vec 1)))
+                 (constants-tag (sexp-tag (nl_vector_slot_word vec 2)))
+                 (depth (nl_vector_slot_word vec 3))
                  (depth-value (if (= (sexp-tag depth) 2)
-                                  (sexp-int-unwrap depth) -1))
+                                  (nl_word_payload depth) -1))
                  (min-fixnum -2305843009213693952)
                  (max-fixnum 2305843009213693951))
             ;; GNU lread.c accepts at most six closure slots. Its ARGLIST may
@@ -2055,8 +2055,8 @@
             ;; invalid.
             (if (and (or (= arg-tag 0) (= arg-tag 7)
                          (and (= arg-tag 2)
-                              (>= (sexp-int-unwrap arglist) min-fixnum)
-                              (<= (sexp-int-unwrap arglist) max-fixnum)))
+                              (>= (nl_word_payload arglist) min-fixnum)
+                              (<= (nl_word_payload arglist) max-fixnum)))
                    ;; This runtime has no distinct interpreted-function
                    ;; representation. GNU accepts cons CODE as a lazy or
                    ;; interpreted closure, but it must not be mislabeled 17.
@@ -2072,7 +2072,7 @@
     (defun nelisp_reader_p_fill_byte_code (vec record i n)
       (if (>= i n)
           1
-        (and (record-slot-set record i (vector-ref-ptr vec i))
+        (and (record-slot-set record i (nl_vector_slot_word vec i))
              (nelisp_reader_p_fill_byte_code vec record (+ i 1) n))))
 
     (defun nelisp_reader_p_parse_byte_code

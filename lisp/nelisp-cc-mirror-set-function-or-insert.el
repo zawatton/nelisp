@@ -39,17 +39,17 @@
             (and
              (extern-call nelisp_mirror_alloc_entry
                           (vector-ref-ptr scratch-vec-ptr 5)
-                          (vector-ref-ptr scratch-vec-ptr 7)
-                          (vector-ref-ptr scratch-vec-ptr 8)
-                          (vector-ref-ptr scratch-vec-ptr 9)
-                          (vector-ref-ptr scratch-vec-ptr 10)
+                          (nl_vector_slot_word scratch-vec-ptr 7)
+                          (nl_vector_slot_word scratch-vec-ptr 8)
+                          (nl_vector_slot_word scratch-vec-ptr 9)
+                          (nl_vector_slot_word scratch-vec-ptr 10)
                           entry-slot)
              (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
                           entry-slot
                           scratch-vec-ptr)))
         (and (record-slot-set entry-ptr 1
-                              (vector-ref-ptr scratch-vec-ptr 8))
+                              (nl_vector_slot_word scratch-vec-ptr 8))
              1)))
     (defun nelisp_mirror_set_function_or_insert
         (mirror-ptr sym-ptr scratch-vec-ptr _pad)

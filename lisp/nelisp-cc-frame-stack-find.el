@@ -696,7 +696,7 @@
               ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
               ;; (`vector-ref-ptr'); empty buckets yield a Nil view that
               ;; the walker's non-Cons base case handles.
-              (vector-ref-ptr buckets-ptr j)
+              (nl_vector_slot_word buckets-ptr j)
               pair-slot out filtered filter-ptr frame-ptr)
              (nl_capture_walk_buckets buckets-ptr (+ j 1) bc
                                       pair-slot out filtered filter-ptr frame-ptr))))
@@ -718,11 +718,11 @@
       (if (= filtered 0)
           (if (= (nelisp_frame_stack_find_word_tag_p
                   (nelisp_frame_slot_raw_word frame-ptr 0) 12) 1)
-              (let* ((ht-ptr (record-slot-ref-ptr frame-ptr 0)))
+              (let* ((ht-ptr (nl_record_slot_word frame-ptr 0)))
                 (nl_capture_walk_buckets
-                 (record-slot-ref-ptr ht-ptr 1)
+                 (nl_record_slot_word ht-ptr 1)
                  0
-                 (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+                 (nl_word_payload (nl_record_slot_word ht-ptr 0))
                  pair-slot out filtered filter-ptr frame-ptr))
             ;; Small frame: the alist is one chain.
             (nl_capture_walk_bucket
@@ -774,15 +774,15 @@
       ;; Returns i64 0 = TRAMPOLINE_OK so the `out_call!' bridge yields
       ;; the populated `*out' Sexp value back to the elisp caller.
       ;; AOT `let' is single-binding only; nest each var.
-      (let* ((depth (sexp-int-unwrap (vector-ref-ptr in-vec 1))))
+      (let* ((depth (nl_word_payload (nl_vector_slot_word in-vec 1))))
         (if (= depth 0)
             0
-          (let* ((stack-ptr (vector-ref-ptr in-vec 0)))
+          (let* ((stack-ptr (nl_vector_slot_word in-vec 0)))
             (let* ((pair-slot (vector-ref-ptr in-vec 2))
                    (filter-ptr (vector-ref-ptr in-vec 3))
-                   (filtered (sexp-int-unwrap (vector-ref-ptr in-vec 4))))
+                   (filtered (nl_word_payload (nl_vector_slot_word in-vec 4))))
               (and (nl_capture_walk_frames
-                    (record-slot-ref-ptr stack-ptr 0)
+                    (nl_record_slot_word stack-ptr 0)
                     (- depth 1)
                     pair-slot
                     out

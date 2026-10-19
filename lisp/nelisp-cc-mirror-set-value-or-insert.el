@@ -102,17 +102,17 @@
             (and
              (extern-call nelisp_mirror_alloc_entry
                           (vector-ref-ptr scratch-vec-ptr 5)  ; tag-sym
-                          (vector-ref-ptr scratch-vec-ptr 7)  ; value
-                          (vector-ref-ptr scratch-vec-ptr 8)  ; function
-                          (vector-ref-ptr scratch-vec-ptr 9)  ; plist
-                          (vector-ref-ptr scratch-vec-ptr 10) ; constant
+                          (nl_vector_slot_word scratch-vec-ptr 7)  ; value
+                          (nl_vector_slot_word scratch-vec-ptr 8)  ; function
+                          (nl_vector_slot_word scratch-vec-ptr 9)  ; plist
+                          (nl_vector_slot_word scratch-vec-ptr 10) ; constant
                           entry-slot)                         ; result (stack)
              (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
                           entry-slot                          ; entry (stack)
                           scratch-vec-ptr)))                  ; scratch
         (and (record-slot-set entry-ptr 0
-                              (vector-ref-ptr scratch-vec-ptr 7))
+                              (nl_vector_slot_word scratch-vec-ptr 7))
              1)))
     (defun nelisp_mirror_set_value_or_insert
         (mirror-ptr sym-ptr scratch-vec-ptr _pad)

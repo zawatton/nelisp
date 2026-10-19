@@ -186,7 +186,7 @@
         (let ((ht-rec-ptr (nl_record_slot_word mirror-ptr 0)))
           (let ((head (ptr-read-u64
                        (+ (ptr-read-u64
-                           (ptr-read-u64 (record-slot-ref-ptr ht-rec-ptr 1) 8) 8)
+                           (nl_word_payload (nl_record_slot_word ht-rec-ptr 1)) 8)
                           (* (logand
                               (extern-call nelisp_fnv1a sym-ptr)
                               (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1))
