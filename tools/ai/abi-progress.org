@@ -8,6 +8,7 @@
 #   ABI_STATIC_BIN  static build of the same source
 #   ABI_CENSUS      NELISP_BOX_CENSUS output (census.tsv) of a dynamic build of the same source
 #   ABI_BASE_BIN    the eval/core baseline binary (10beb8a3c) the merge gate compares against
+#   ABI_IR_PROFILE  completed abi-ir.py ir profile directory, pinned below
 # The dump and binaries are produced by hand (about 3 minutes per build):
 #   NELISP_BOX_DUMP=$PWD/target/abi/dump.jsonl NELISP_READER_DYNAMIC=1 \
 #   NELISP_STANDALONE_READER_OUTPUT=target/abi/nelisp-dynamic ... -f nelisp-standalone-build-reader
@@ -277,10 +278,37 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # parallel profiles; print Ir/GC per layout and mean delta.  All outputs
 # must agree and mean candidate Ir <= mean baseline Ir for each workload.
 # Regex retains >=10 sweeps per binary per layout.  Denominator stays 21.
-** S6.3 End to end: mean boot and regex-load Ir over four layouts <= baseline (callgrind)
-#+REQUIRES: ABI_BIN,ABI_BASE_BIN
+# Round 6b measurement change: cold-image regex6000 has only4 sweeps on
+# both binaries. Preserve its independent mean-Ir cap, and repeat the original
+# regex workload to24000 operations for the >=10 automatic-sweep comparison.
+# Count-only calibration gave baseline9/candidate12 at18000, then11/17 at24000
+# in all four layouts. Freeze24000 before inspecting Ir. No explicit GC,
+# excluded instructions or widened Ir cap. Only the operational timeout grows
+# to1780 seconds per long process; denominator21 remains unchanged. abi-gc-count.gdb
+# rejects the insufficient6000-operation control in6s instead of Callgrind.
+# An uncommitted synthetic-pressure experiment (128 disposable1MiB raw
+# allocations per20 regex batches) is outside the original regex acceptance
+# workload and remains KNOWN-RED: mean75,629,385,986.75 ->80,878,574,771.75 Ir,
+# +6.941%, GC10 ->13 in each layout; identical outputs. It is not resolved by
+# a repeated-regex PASS. Profiles: target/abi-ir/ir-skgmhi97/regex-gc-*.cg.
+# The fixed24000 comparison on bd25c1caa genuinely fails too: mean
+# 255,221,297,100.50 ->258,361,406,097.50 (+1.230%), GC11 ->17, identical
+# output. Complete failed evidence: target/abi-ir/ir-6u8klrrz/measurement.json,
+# SHA256 c9f8495f5af095ae762fe0bd1925f48f470ab73ce9ec8d8633020dab4f269c47.
+# Keep the workload and caps fixed. Repair existing immediate-only VM integer
+# and vector-index consumers instead, with i62 input/result and product bounds.
+# Preserve immediate evaluator arguments after publishing their precise root;
+# pointers still use the rooted view. No native added;104 C/VM cases red at
+# old boxed operand ->green, GNU145 and FFI74 pass. Census1369, S6.2 all0.
+# The shared meter caps each command at600s. Prepare the expensive run with
+# tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"; its completed
+# manifest pins input hashes before/after, all24 successful jobs and artifacts.
+# This live verifier checks that provenance and recomputes every raw-profile
+# output/GC/Ir verdict. The evidence line below pins the manifest itself.
+** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
+#+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
-cmd: tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"
+cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN

@@ -13358,9 +13358,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (index (ptr-read-u64 (+ mem (* (+ (- sp arity) 1) 8)) 0)))
         (if (if (= (logand arr 1) 1) 0
               (if (/= (ptr-read-u64 arr 0) 8) 0
-                (if (/= (logand index 3) 1) 0
+                (if (/= (wf_bytecode_w_tag index) 2) 0
                   (if (= (bf_nemacs_char_table_vector_p arr) 0) 1 0))))
-            (let ((i (sar index 2)))
+            (let ((i (wf_bytecode_w_int index)))
               (if (and (>= i 0) (< i (vector-len arr)))
                   (let* ((data (ptr-read-u64 (ptr-read-u64 arr 8) 8)))
                     (if (= opcode 73)
@@ -13391,9 +13391,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((dst (+ mem (* (- sp arity) 8)))
                  (l (ptr-read-u64 dst 0))
                  (r (ptr-read-u64 (+ mem (* (- sp 1) 8)) 0)))
-            (if (or (/= (logand l 3) 1) (/= (logand r 3) 1))
+            (if (or (/= (wf_bytecode_w_tag l) 2) (/= (wf_bytecode_w_tag r) 2))
                 2
-              (let* ((a (sar l 2)) (b (sar r 2)))
+              (let* ((a (wf_bytecode_w_int l)) (b (wf_bytecode_w_int r)))
+                ;; Physical Int objects are valid WORD operands too. Unlike
+                ;; immediates, they can contain a full i64: keep the original
+                ;; i62 input bound before doing any potentially overflowing op.
+                (if (or (< a -2305843009213693952) (> a 2305843009213693951)
+                        (< b -2305843009213693952) (> b 2305843009213693951))
+                    2
                 ;; A small product cannot overflow before the range check.
                 (if (and (= opcode 95)
                          (or (< a -1073741824) (> a 1073741823)
@@ -13412,7 +13418,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      (if (= opcode 92) (+ a b) (* a b))))))))
                       (if (= w -1)
                           2
-                        (seq (ptr-write-u64 dst 0 w) 0)))))))))))
+                        (seq (ptr-write-u64 dst 0 w) 0))))))))))))
     (defun wf_bytecode_call_primitive (env mem sp opcode)
       (if (= (wf_bytecode_small_arithmetic mem sp opcode) 0)
           0
@@ -16180,8 +16186,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ;; Fixnum arithmetic and comparison on the words
                      ;; themselves: 83 sub1, 84 add1, 85 =, 86 >, 87 <,
                      ;; 88 <=, 89 >=, 90 -, 92 +.  A tagged fixnum word
-                     ;; orders like its value.  Anything else, and a result
-                     ;; outside the fixnum range, takes the generic path.
+                     ;; orders like its value. Owned Int boxes use the checked
+                     ;; numeric helper below; other types and range failures
+                     ;; retain the generic path.
                      ((if (< base 83) 0 (if (> base 92) 0 (if (= base 91) 0 1)))
                       (let* ((unary (if (< base 85) 1 0))
                              (dst (if (= unary 1) top next))
@@ -16205,6 +16212,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (if (/= w -1)
                             (seq (ptr-write-u64 dst 0 w)
                                  (if (= unary 1) 0 (setq sp (- sp 1))))
+                          ;; Preserve the immediate hot arm, then accept owned
+                          ;; Int boxes through the same checked numeric reader.
+                          ;; Comparisons/subtraction previously bypassed this
+                          ;; helper and built legacy argument lists instead.
+                          (if (= (wf_bytecode_small_arithmetic mem sp base) 0)
+                              (if (= unary 1) 0 (setq sp (- sp 1)))
                           (if (= unary 1)
                               (if (= (wf_bytecode_call_primitive env mem sp base) 0)
                                   0 (setq done 4))
@@ -16215,7 +16228,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (seq (setq bad-op raw) (setq done 2))
                                 (if (= (wf_bytecode_w_boxed env mem sp 2 base bx) 0)
                                     (setq sp (- sp 1))
-                                  (setq done 4))))))))
+                                  (setq done 4)))))))))
                      ((= base 178)
                       (let* ((index (- sp operand 1)))
                         (if (if (<= sp 0) 1
