@@ -22,8 +22,9 @@ cmd: BOOT_IMAGE_IR_CAP=2000000000 python3 tools/ai/boot-image-check.py ir
 #+NOTE: bwrap overlays the complete checkout with tmpfs. The binary and sidecars are copied outside it; nil, explicit rx and the 23-check demanded-library corpus run as fresh processes.
 cmd: python3 tools/ai/boot-image-check.py isolated
 
-** S1.5 S5 Standalone checks, repository verification and 40-tool Anvil MCP smoke pass
+** S1.5 S5 Standalone checks and 40-tool Anvil pass with no new differential failures
 #+REQUIRES: BOOT_IMAGE_BIN
-#+NOTE: Round 2 fixes init storage reused from collectable image holes and the unrooted condition-case error scratch. Source/image root census and original stash retention now pass; see tools/ai/boot-root-inventory.json. Repository verification remains a real failure, including the pre-existing standalone-eval duplicate nl_apply_do_eval build failure; it is not counted as a pass.
+#+NOTE: Round 3 explicitly changes S5 from absolute repository verification to comparison against 9ad3c5588 built with the same dynamic-reader command. Candidate standalone-checks must pass and Anvil initialize/tools-list must return 40 tools. ERT collection, static reader smokes, development REPL and repository verification may remain red only with matching baseline failure evidence. The command revalidates binary/sidecar and raw-output hashes and compares all six paired suite verdicts; it does not claim repository-wide green. See boot-image-differential.json for exact recipes and the known-red set.
+evidence: tools/ai/boot-image-differential.json sha256=82ef2d55f7007e2e4654e21fe1ae5e182457b12b11764c1d9c458b88e14d3d7f
 #+TIMEOUT: 600
 cmd: python3 tools/ai/boot-image-check.py e2e

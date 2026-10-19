@@ -200,16 +200,15 @@ def main():
                 print(row["feature"], row["ir"], flush=True)
         result.update(rows=rows, baseline=baseline)
     else:
-        result["roots"] = execute(["python3", "tools/ai/boot-root-check.py", "--census-only"],
-                                  args.name + "-roots", env=dict(ENV, BOOT_IMAGE_BIN=str(binary)))
-        result["standalone"] = execute(["sh", "test/perf/standalone-checks.sh"], args.name + "-standalone",
-                                       env=dict(ENV, EVAL_BIN=str(binary)), timeout=540)
-        result["verify"] = execute(["sh", "tools/ai/nelisp-ai.sh", "verify"], args.name + "-verify")
-        result["anvil"] = smoke(binary, args.name + "-anvil")
+        # Round 3 explicitly changes S5 to differential acceptance. These
+        # receipts retain both complete outputs and build identities; do not
+        # mistake a shared repository failure for repository-wide green.
+        result["differential"] = execute(
+            ["python3", "tools/ai/boot-image-differential.py"],
+            args.name + "-differential", env=dict(ENV, BOOT_IMAGE_BIN=str(binary)))
         (OUT / (args.name + "-e2e.json")).write_text(json.dumps(result, indent=2) + "\n")
-        if result["roots"]["rc"] or result["standalone"]["rc"] or result["verify"]["rc"]:
-            raise RuntimeError("S5 failed: roots rc=%s, standalone rc=%s, verify rc=%s; see target/boot-image/%s-e2e.json" %
-                               (result["roots"]["rc"], result["standalone"]["rc"], result["verify"]["rc"], args.name))
+        if result["differential"]["rc"]:
+            raise RuntimeError("S5 differential failed; see target/boot-image/%s-differential.err" % args.name)
     (OUT / (args.name + "-" + args.mode + ".json")).write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({k: v for k, v in result.items() if k not in ("rows", "roots", "baseline", "samples", "standalone", "verify", "stdout", "stderr")}))
 

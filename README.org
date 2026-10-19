@@ -605,6 +605,37 @@ part-way through the build (issue #5, on Emacs 28.2).  This requirement
 applies only to building — the resulting =target/nelisp= is a standalone
 binary and needs no Emacs at run time.
 
+The source-free Linux boot build used for the boot-image lane is:
+
+#+begin_src shell
+mkdir -p target/tmp
+TMPDIR=$PWD/target/tmp NELISP_READER_DYNAMIC=1 \
+  NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/candidate6 \
+  make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64
+#+end_src
+
+This single target writes =candidate6=, =candidate6.cold= and
+=candidate6.native-startup.el=. Distribute all three together. The =.cold=
+file is the relocated base heap; the =.native-startup.el= companion supplies
+compiler capabilities on demand. For another executable name, rename both
+companions to retain those suffixes. A normal =--eval nil= restores the heap
+without reading Elisp sources. The embedded optional libraries remain
+available when the build checkout is hidden. The S4 check copies the trio
+to a fresh directory and hides that checkout with =bwrap --tmpfs=.
+
+S5 uses the explicitly revised differential criterion: standalone checks
+must pass, Anvil must return 40 tools, and every remaining candidate failure
+must have the same observed failure on the =9ad3c5588= baseline. This is
+separate from the repository-wide =verify= verdict. Build commands, host
+harness overlays, known failures and raw-output hashes are recorded in
+=tools/ai/boot-image-differential.json=. With those local artifacts present:
+
+#+begin_src shell
+BOOT_IMAGE_BIN=$PWD/target/boot-image/candidate6 \
+  python3 tools/ai/boot-image-differential.py
+python3 tools/ai/boot-image-differential.py --self-test
+#+end_src
+
 Tier guarantees (v2.0):
 - =linux-x86_64= — 1st-class (CI blocker, every release must pass).
 - =macos-aarch64= / =windows-x86_64= — end-to-end CI gated on real

@@ -1,0 +1,561 @@
+{
+  "schema": 1,
+  "measured": "2026-10-19",
+  "baseline_commit": "9ad3c5588d6f007d081a7497fc699a409ee03b93",
+  "candidate_commit": "ee859d559579bdc8474c859263f887da53a5e8ab",
+  "criteria_change": "Round 3: S5 is differential. Candidate standalone-checks must pass, Anvil must return 40 tools, and every other candidate failure must match the baseline. This is not an absolute repository verification pass.",
+  "baseline_reuse": "base-dynamic matches the original S1 SHA-256 and build log; built before any boot implementation, with the identical dynamic-reader command. Baseline source for host tests and static builds is git archive 9ad3c5588 inside this worktree, not another worktree.",
+  "build_command": "TMPDIR=$PWD/target/tmp NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/candidate6 make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "baseline_build_command": "TMPDIR=$PWD/target/tmp NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/base-dynamic make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "static_build_command": "env -u NELISP_READER_DYNAMIC TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_STANDALONE_READER_OUTPUT=$ROOT/target/boot-image/round3/static-SIDE make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "harness_overlay": [
+    "For the aligned full ERT run only, copy tools/ai/nelisp-ai.sh and tools/ai/nelisp-ert-collection.el plus test/nelisp-bytecode-logb-provider-test.el from candidate to the extracted baseline. These host-only fixes preload GNU json before package paths, defer standalone ERT driver footers, and defer missing optional logb fixtures until their test bodies. Production baseline runtime/compiler sources remain at 9ad3c5588.",
+    "Both original make test runs are retained unchanged: json-read-file is undefined before ERT collection on both. Both development REPL launchers independently fail at excessive-lisp-nesting 16000.",
+    "Static smoke suite uses the existing nelisp-standalone-reader-test driver with only its builder rebound to return the already built static binary; no runtime is replaced. Both execute the embedded expression, then stop at the first command smoke: missing replace-regexp-in-string. Generated form/byte/line locations differ because embedded source size changed; conditions and full call chains match.",
+    "Repository verify uses separate initially empty gate directories with the unmodified manifest on each source tree. Both report the same missing required gates; the complete inventory is below. Missing gates are unexecuted, not passing tests.",
+    "Both standalone runs use the candidate harness and the same 31 input files. The baseline additionally fails the new feature-parity and library-rollback controls. The existing sparse-maphash performance failure remains on both and is not hidden."
+  ],
+  "artifacts": {
+    "baseline": {
+      "": {
+        "path": "target/boot-image/base-dynamic",
+        "sha256": "03fc02ad0572ae4d98ec5cbbd6ad98b9a36612997566dc4e768c2f716064a07a"
+      },
+      ".cold": {
+        "path": "target/boot-image/base-dynamic.cold",
+        "sha256": "1d4fdbe34b61f0bf987f74cdbd17c3b7c9c10af2a4809c06553c854d1d644b87"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/base-dynamic.native-startup.el",
+        "sha256": "92ba0811c460cef9c8ea19ff1775afeebae6e3722d418493743831426c55abb7"
+      }
+    },
+    "candidate": {
+      "": {
+        "path": "target/boot-image/candidate6",
+        "sha256": "c09a4f474e0f54080181259337283f9eefa7134dc3002631f518a1e2419422c9"
+      },
+      ".cold": {
+        "path": "target/boot-image/candidate6.cold",
+        "sha256": "524ef38771dd64a077215aeaa8292c2c96eb5ed38243ebaca5ba4036a4528971"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/candidate6.native-startup.el",
+        "sha256": "df04325f7c5c823d23ff04dac6e246fb9c659793a8d1d7ec2535fe6a03bbee38"
+      }
+    }
+  },
+  "static_artifacts": {
+    "baseline": {
+      "": {
+        "path": "target/boot-image/round3/static-baseline",
+        "sha256": "693ceb2b9e618c22b40d2436a9e67ec72af158b8690246eafd2bdcb4f63a497c"
+      },
+      ".cold": {
+        "path": "target/boot-image/round3/static-baseline.cold",
+        "sha256": "90091389b01e7460787b09cbc20fd227032e927fe51847e528ab047b760b8bbf"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/round3/static-baseline.native-startup.el",
+        "sha256": "32d651ce6792f9efc3540858d999b150536ab3da6163072be71a8d644e98fbd0"
+      }
+    },
+    "candidate": {
+      "": {
+        "path": "target/boot-image/round3/static-candidate",
+        "sha256": "de1e5735f55552f17680e7fa0e27068719aa9efab93eecb94dadf73a4030a68b"
+      },
+      ".cold": {
+        "path": "target/boot-image/round3/static-candidate.cold",
+        "sha256": "a8f1438f74e181b423e72a0f5f7d7aa8e9b528656ee5ff23931e38d46a4ab001"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/round3/static-candidate.native-startup.el",
+        "sha256": "b4927659463146498b84ee997d0261ff6f4adeace4c1871aefd575c5de338d74"
+      }
+    }
+  },
+  "harness": [
+    {
+      "path": "test/perf/standalone-checks.sh",
+      "sha256": "ddb0820b09673401789e05e93546a63dcedf5528de3d9d34faaf4c5e4ef0f21c"
+    },
+    {
+      "path": "test/perf/standalone-checks-known-red.txt",
+      "sha256": "98a402c5d5cd9606eb88bac857e0f1e950e480be6effdb228fe4d809c72f11c9"
+    },
+    {
+      "path": "tools/ai/nelisp-ai.sh",
+      "sha256": "97469429628764f8b4d9fc9c75173964c625caa80463e63caafdacc930ac33d8"
+    },
+    {
+      "path": "tools/ai/nelisp-ert-collection.el",
+      "sha256": "ce64d3f982585d66ead47e0d3a2fb65aa03aa54a76fff8bddca84be71159b903"
+    },
+    {
+      "path": "test/nelisp-bytecode-logb-provider-test.el",
+      "sha256": "5ed0cf84cca9d9f7bcd20081642d16f6c6dcacb2233bd7af979ae967a2f958dd"
+    },
+    {
+      "path": "tools/ai/gates.expected",
+      "sha256": "9165baf693c7c00d66b92cbaea0098290916187f469f9d064371285090ebd979"
+    }
+  ],
+  "suites": {
+    "standalone": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic EVAL_BIN=$ROOT/target/boot-image/base-dynamic STANDALONE_CHECK_LOGDIR=$ROOT/target/boot-image/round3/baseline/standalone NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh $ROOT/test/perf/standalone-checks.sh",
+        "cwd": ".",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/standalone.out",
+          "sha256": "e3e07184a2fa60d0c628385e7d810e4ca730562dac9f7fdbea21584bd39d8f4d"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/standalone.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 205.91537372602033
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 EVAL_BIN=$ROOT/target/boot-image/candidate6 STANDALONE_CHECK_LOGDIR=$ROOT/target/boot-image/round3/candidate/standalone NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates sh $ROOT/test/perf/standalone-checks.sh",
+        "cwd": ".",
+        "rc": 0,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/standalone.out",
+          "sha256": "4d136ce2c9afc0538cd6c4dc4ed921ff8cde89f6725849ee2f13945653eaefa2"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/standalone.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 79.06135187199106
+      }
+    },
+    "ert": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh test",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 255,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/ert-aligned.out",
+          "sha256": "102cd21303bcd9dbf2a207593c60773af995379bafd663bda9acb0fa664be195"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/ert-aligned.err",
+          "sha256": "da3f4f04dda8f9bec2e6d0879f9b92d2fc5f00ffa5dc41f91ab87329918ec8a1"
+        }
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates sh tools/ai/nelisp-ai.sh test",
+        "cwd": ".",
+        "rc": 255,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/ert-common.out",
+          "sha256": "b8e14d5f8b2adac2d6b8a40d25e5e329dc2bf050fa8d77661e811ccd1a228a49"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/ert-common.err",
+          "sha256": "98d6c2746a8168b0bf844011377adfa9f2e5db680ce478670026449cb2e7024a"
+        },
+        "seconds": 2.416912254993804
+      }
+    },
+    "make-test": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates make test",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 2,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/make-test.out",
+          "sha256": "e251da8912626c8473414ed45d38db0b7fae11ac2057ad3974ec157012e35e96"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/make-test.err",
+          "sha256": "c06177c98729139e969d18460bdd7747e51fd0e28ce5387fc3cfdd21553999c9"
+        },
+        "seconds": 1.4155929100234061
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates make test",
+        "cwd": ".",
+        "rc": 2,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/make-test.out",
+          "sha256": "c24ec55dbd7c626cbecc3528cbcb2c60d630ff8eb18cb78d5b0ece27d36f3e91"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/make-test.err",
+          "sha256": "968117a8c48908be6d165e31a7dd3ac66b9df37a2f8e1c87ea82b8c4b22b73dd"
+        },
+        "seconds": 1.3154933539917693
+      }
+    },
+    "repl": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh repl --no-prompt",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/repl.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/repl.err",
+          "sha256": "b4d5c2f4b78bd7ad2340d4c64c784a3c6d419b8dc3d321d5a9d039bf98a08629"
+        },
+        "seconds": 32.20241017299122
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates sh tools/ai/nelisp-ai.sh repl --no-prompt",
+        "cwd": ".",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/repl.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/repl.err",
+          "sha256": "b4d5c2f4b78bd7ad2340d4c64c784a3c6d419b8dc3d321d5a9d039bf98a08629"
+        },
+        "seconds": 30.500255463994108
+      }
+    },
+    "static": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round3/static-baseline NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates emacs -Q --batch -L lisp -L src -L scripts -l nelisp-standalone-build --eval '(cl-letf (((symbol-function '\"'\"'nelisp-standalone-build-reader) (lambda () (getenv \"BOOT_IMAGE_STATIC_BIN\")))) (nelisp-standalone-reader-test))'",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/static.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/static.err",
+          "sha256": "a5b66df377c4923d4366b5b878a4db8947de1644d0f03506731b38ebf447c3dc"
+        },
+        "seconds": 18.286875941994367
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round3/static-candidate NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates emacs -Q --batch -L lisp -L src -L scripts -l nelisp-standalone-build --eval '(cl-letf (((symbol-function '\"'\"'nelisp-standalone-build-reader) (lambda () (getenv \"BOOT_IMAGE_STATIC_BIN\")))) (nelisp-standalone-reader-test))'",
+        "cwd": ".",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/static.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/static.err",
+          "sha256": "f3636525adcad4146c0f635686f54c0d55c17f3ecb060f57b3a5fcbbe1f12eb9"
+        },
+        "seconds": 17.936153340997407
+      }
+    },
+    "verify": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh verify",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/verify.out",
+          "sha256": "8ad1061deb78db40c9e0a6b11b97742bfd753f1e2ba12868932578add2e9c0d1"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/verify.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 0.11406385898590088
+      },
+      "candidate": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate6 NELISP_GATE_DIR=$ROOT/target/boot-image/round3/candidate/gates sh tools/ai/nelisp-ai.sh verify",
+        "cwd": ".",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/candidate/verify.out",
+          "sha256": "8ad1061deb78db40c9e0a6b11b97742bfd753f1e2ba12868932578add2e9c0d1"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/candidate/verify.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 0.11407251900527626
+      }
+    }
+  },
+  "known_red": {
+    "standalone": [],
+    "ert": [
+      "error (\"nl-ffi-memory: requires Linux x86_64 syscall-direct\")\ncontext: {\"files\": [\"test/nelisp-eln-registration-vectors-test.el\"], \"frames\": [\"error\", \"nl-ffi-memory-allocate\", \"nelisp-eln-registration-vectors-register\", \"load-with-code-conversion\"]}"
+    ],
+    "make-test": [
+      "void-function (json-read-file)\ncontext: {\"files\": [\"scripts/nelisp-standalone-build.el\", \"test/nelisp-alloc-check-test.el\"], \"frames\": [\"load-with-code-conversion\", \"require\", \"load-with-code-conversion\"]}"
+    ],
+    "repl": [
+      "(excessive-lisp-nesting . 16000)"
+    ],
+    "static": [
+      "command smoke: temp-name child 1 failed rc=1 stderr=\"nelisp: uncaught error: in eval-elisp-source, top-level form <source-location>: void-function: (replace-regexp-in-string)\ncontext: {\"files\": [], \"frames\": [\"signal\", \"progn\", \"if\", \"let\", \"if\", \"let\", \"if\", \"advice-member-p\", \"unless\", \"when\", \"when\", \"apply\", \"if\", \"let\", \"if\", \"let*\", \"if\", \"let\", \"let*\", \"load\"]}"
+    ],
+    "verify": [
+      "artifact-service: no report (the gate never ran)",
+      "bench-aot-checked-arith: no report (the gate never ran)",
+      "binary-size-ratchet: no report (the gate never ran)",
+      "bootstrap-contract: no report (the gate never ran)",
+      "builtin-arity: no report (the gate never ran)",
+      "compile: no report (the gate never ran)",
+      "doc-claims: no report (the gate never ran)",
+      "doc200-census: no report (the gate never ran)",
+      "emacs-compat: no report (the gate never ran)",
+      "emacs-parity: no report (the gate never ran)",
+      "ert-full: no report (the gate never ran)",
+      "fallback-inventory-selftest: no report (the gate never ran)",
+      "fallback-inventory: no report (the gate never ran)",
+      "ffi-dsl: no report (the gate never ran)",
+      "ffi-loader: no report (the gate never ran)",
+      "gate-mutation: no report (the gate never ran)",
+      "gate-selfcheck: no report (the gate never ran)",
+      "generated-source-parse: no report (the gate never ran)",
+      "lisp-byte-compile: no report (the gate never ran)",
+      "lsp-server: no report (the gate never ran)",
+      "macho-acceptance-test: no report (the gate never ran)",
+      "native-symbol-test: no report (the gate never ran)",
+      "native-unit-repl-smoke: no report (the gate never ran)",
+      "nelisp-native-artifact-gate: no report (the gate never ran)",
+      "nelisp-nelix-native-hot-gate: no report (the gate never ran)",
+      "nelisp-performance-gate: no report (the gate never ran)",
+      "nelisp-runtime-image-cache-gate: no report (the gate never ran)",
+      "nelisp-sexp-clone-bind-smoke: no report (the gate never ran)",
+      "nelisp-source-command-substrate-gate: no report (the gate never ran)",
+      "nelisp-thread-allocating-standalone-smoke: no report (the gate never ran)",
+      "nelisp-thread-mirror-guard-standalone-smoke: no report (the gate never ran)",
+      "nelisp-thread-percpu-roots-smoke: no report (the gate never ran)",
+      "nelisp-thread-standalone-smoke: no report (the gate never ran)",
+      "nelisp-toml-standalone-smoke: no report (the gate never ran)",
+      "nl-actor-standalone-smoke: no report (the gate never ran)",
+      "nl-check-gate: no report (the gate never ran)",
+      "nl-condition-standalone-smoke: no report (the gate never ran)",
+      "nl-num-standalone-smoke: no report (the gate never ran)",
+      "nl-resource-standalone-smoke: no report (the gate never ran)",
+      "nl-safe-standalone-smoke: no report (the gate never ran)",
+      "ns-gate: no report (the gate never ran)",
+      "ns-inventory: no report (the gate never ran)",
+      "package-registry: no report (the gate never ran)",
+      "package-resolver: no report (the gate never ran)",
+      "package-store: no report (the gate never ran)",
+      "parens-check: no report (the gate never ran)",
+      "parity-coverage: no report (the gate never ran)",
+      "parity-fuzz: no report (the gate never ran)",
+      "partial-inventory: no report (the gate never ran)",
+      "pkg-graph: no report (the gate never ran)",
+      "pkg-load-lists: no report (the gate never ran)",
+      "precise-root-coverage: no report (the gate never ran)",
+      "prelude-toplevel-check: no report (the gate never ran)",
+      "project-arguments: no report (the gate never ran)",
+      "project-bench: no report (the gate never ran)",
+      "project-build: no report (the gate never ran)",
+      "project-cli-contract: no report (the gate never ran)",
+      "project-cli-integration: no report (the gate never ran)",
+      "project-debug: no report (the gate never ran)",
+      "project-distribution: no report (the gate never ran)",
+      "project-doc: no report (the gate never ran)",
+      "project-manifest: no report (the gate never ran)",
+      "project-packages: no report (the gate never ran)",
+      "project-profile-build: no report (the gate never ran)",
+      "project-test-runner: no report (the gate never ran)",
+      "reader-surface-audit: no report (the gate never ran)",
+      "reference-parity: no report (the gate never ran)",
+      "special-variables: no report (the gate never ran)",
+      "standalone-chunk-growth-test: no report (the gate never ran)",
+      "standalone-eval-test: no report (the gate never ran)",
+      "standalone-midform-gc-bounded: no report (the gate never ran)",
+      "standalone-parallel-compile-test: no report (the gate never ran)",
+      "standalone-reader-buffer-smoke: no report (the gate never ran)",
+      "standalone-reader-smokes: no report (the gate never ran)",
+      "standalone-reader-test: no report (the gate never ran)",
+      "standalone-selfhost-mt-test: no report (the gate never ran)",
+      "standalone-selfhost-test: no report (the gate never ran)",
+      "substrate-parity-smoke: no report (the gate never ran)",
+      "substrate-presence-corpus-check: no report (the gate never ran)",
+      "symbol-identity: no report (the gate never ran)",
+      "unsafe-inventory: no report (the gate never ran)",
+      "vendor-shadow-gate: no report (the gate never ran)",
+      "version-consistency: no report (the gate never ran)",
+      "wasm-dtw-skeleton-smoke: no report (the gate never ran)",
+      "wasm-runtime-image-smoke: no report (the gate never ran)"
+    ]
+  },
+  "anvil": {
+    "baseline": {
+      "tools": 40,
+      "startup_seconds": 7.9043791229778435,
+      "stdout": {
+        "path": "target/boot-image/round3-baseline-anvil.out",
+        "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+      },
+      "stderr": {
+        "path": "target/boot-image/round3-baseline-anvil.err",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "BOOT_IMAGE_BIN=$ROOT/target/boot-image/base-dynamic python3 tools/ai/boot-image-check.py smoke --name round3-baseline"
+    },
+    "candidate": {
+      "tools": 40,
+      "startup_seconds": 4.068446946010226,
+      "stdout": {
+        "path": "target/boot-image/round3-candidate-anvil.out",
+        "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+      },
+      "stderr": {
+        "path": "target/boot-image/round3-candidate-anvil.err",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "BOOT_IMAGE_BIN=$ROOT/target/boot-image/candidate6 python3 tools/ai/boot-image-check.py smoke --name round3-candidate"
+    }
+  },
+  "sparse_maphash": {
+    "baseline": {
+      "path": "target/boot-image/round3/baseline/standalone/standalone-maphash-sparse-check.out",
+      "sha256": "99d9f1898d8fc98b6848270434c488010b92323ed2082cbf532f62a8924ec60f"
+    },
+    "candidate": {
+      "path": "target/boot-image/round3/candidate/standalone/standalone-maphash-sparse-check.out",
+      "sha256": "7a47539ad26fee22499854648e410d829d7390acb4b9f2fab3fa7c136bb63457"
+    }
+  },
+  "limits": [
+    "Full ERT cannot finish collection on this branch; the aligned run reaches the same Linux syscall-direct FFI requirement on both.",
+    "Static reader smoke suite stops at its first failing command smoke on both. Later smoke bodies were not reached.",
+    "No standalone-eval success is claimed. Its previously reported duplicate nl_apply_do_eval link problem is outside this boot acceptance scope."
+  ],
+  "build_script_hunks": [
+    {
+      "hunk": "@@ -60,0 +61 @@",
+      "purpose": "Import the boot-image helper"
+    },
+    {
+      "hunk": "@@ -30025,0 +30027 @@ keeps this slice independent of caller-scope dynamic-variable semantics.\"",
+      "purpose": "Embed GNU preload providers"
+    },
+    {
+      "hunk": "@@ -30670 +30672 @@ source.\"",
+      "purpose": "Accept optional library deferral"
+    },
+    {
+      "hunk": "@@ -30675,6 +30677,4 @@ feature even when the file was in this tree.",
+      "purpose": "Describe relocatable fallback and source paths"
+    },
+    {
+      "hunk": "@@ -30702,3 +30702,3 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Embed byte-run source"
+    },
+    {
+      "hunk": "@@ -30712 +30711,0 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Do not provide a byte-run feature"
+    },
+    {
+      "hunk": "@@ -30716,6 +30715,4 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Embed macroexp; defer inline/json for reader"
+    },
+    {
+      "hunk": "@@ -31276,3 +31273,2 @@ Relative names and complete bytes are covered; timestamps are irrelevant.\"",
+      "purpose": "Describe demand-loaded reader libraries"
+    },
+    {
+      "hunk": "@@ -31289 +31285 @@ can use it.\"",
+      "purpose": "Enable reader library deferral"
+    },
+    {
+      "hunk": "@@ -31420 +31416 @@ can use it.\"",
+      "purpose": "Install relocatable lazy library registry"
+    },
+    {
+      "hunk": "@@ -31447,3 +31443 @@ can use it.\"",
+      "purpose": "Defer the process-buffer adapter provider"
+    },
+    {
+      "hunk": "@@ -37773 +37767 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Update cold-loader ownership comment"
+    },
+    {
+      "hunk": "@@ -37787,5 +37781,4 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Describe driver-selected companion policy"
+    },
+    {
+      "hunk": "@@ -37991,4 +37984,3 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Keep absent cold selection a no-op"
+    },
+    {
+      "hunk": "@@ -38163,0 +38156 @@ correctly.\"",
+      "purpose": "Splice companion path native helper forms"
+    },
+    {
+      "hunk": "@@ -39430,0 +39424,12 @@ correctly.\"",
+      "purpose": "Select executable-relative cold image for ordinary commands"
+    },
+    {
+      "hunk": "@@ -39435 +39440 @@ correctly.\"",
+      "purpose": "Load the selected cold image"
+    },
+    {
+      "hunk": "@@ -39469,0 +39475,4 @@ correctly.\"",
+      "purpose": "Use bump-only permanent driver initialization"
+    },
+    {
+      "hunk": "@@ -39540 +39549,2 @@ correctly.\"",
+      "purpose": "Restore selected globals and release allocated companion path"
+    },
+    {
+      "hunk": "@@ -39733,0 +39744 @@ correctly.\"",
+      "purpose": "Restore free-list reuse after watermark"
+    },
+    {
+      "hunk": "@@ -43435,2 +43446,3 @@ Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0",
+      "purpose": "Document implicit Linux companion loading"
+    }
+  ],
+  "round3_build_script_changes": "None. The 21 hunks above are the full baseline-to-ee859d559 diff; Round 3 changes only acceptance tooling, its evidence/ledger and deployment documentation.",
+  "development_loop": {
+    "expensive_paired_suite_seconds": 389.27855541498866,
+    "receipt_validation_seconds": 0.959,
+    "negative_controls": "20 built-in controls, six mutated-artifact controls, and seven actual-receipt mutations from the independent Astra ultra audit rejected broken observations. Current receipts have no new failures.",
+    "limitations": "Receipt validation checks immutable prior executions; it is not a fresh execution of the suites. A changed binary, sidecar, harness or raw output invalidates the result."
+  },
+  "supplementary_check_tier": {
+    "status": "Both optional full check-tier attempts were interrupted during gate-selfcheck after matching preceding static failures. Required standalone/ERT/static/verify/Anvil paired runs completed and are recorded separately; no full check-tier pass is claimed.",
+    "logs": {
+      "baseline": {
+        "path": "target/boot-image/round3/check-baseline.log",
+        "sha256": "bb82f6bc042a51af77e45dcc60388cf9d26ff7e5b43c83d6c18cf441a84211d9"
+      },
+      "candidate": {
+        "path": "target/boot-image/round3/check-candidate.log",
+        "sha256": "5d3654554a9649ddafd8881ee756791274af18e2cf67d4138da5a7737218357c"
+      }
+    },
+    "compile": "All 23 compile error diagnostics match after normalizing source line/column locations.",
+    "census": "The archived baseline lacks a Git index. A focused rerun on each source tree supplied an isolated index made by GIT_INDEX_FILE=... git read-tree COMMIT and rebound only the host census index-path accessor. All census failure rows match; no production source or shared Git index was changed.",
+    "census_outputs": {
+      "baseline": {
+        "out": {
+          "path": "target/boot-image/round3/baseline/census.out",
+          "sha256": "7569b12d1c244d3659fd1fc250c7e121c1bf0219afb6b8d78e2a5c06e84c1d8d"
+        },
+        "err": {
+          "path": "target/boot-image/round3/baseline/census.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "candidate": {
+        "out": {
+          "path": "target/boot-image/round3/candidate/census.out",
+          "sha256": "bac294a7c594a6d734d14bae154fcb57b56de5022b3dcf1b41b98cddaaecf747"
+        },
+        "err": {
+          "path": "target/boot-image/round3/candidate/census.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "cost_not_paid": "The supplementary gate-selfcheck reruns additional whole gates, including its own standalone build/parity paths. Further waiting was not needed for the explicitly requested six completed differential suites; its incomplete result remains visible."
+  }
+}
