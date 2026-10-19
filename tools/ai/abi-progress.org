@@ -141,6 +141,30 @@ cmd: python3 tools/ai/abi-partition.py check G4 "$ABI_DUMP" --arms
 # source-parse, as at the preceding checkpoint. No Ir gates run in this lane.
 # Source reload cannot replace the statically linked ABI callers; the
 # validation uses a rebuilt dynamic binary rather than claiming live repair.
+#+NOTE: G4 VM integration on lane A plus g4misc: resolve all eight merge
+# hunks. Use wf_bytecode_try_jit_frame_w and wf_bytecode_w without OUT;
+# retain lane A's dynamic arity/invalid-function stashes and WORD result.
+# JIT staging exhaustion and rc=1 without a pending signal remain misses
+# (2); a stashed exit returns 0. Both call-result and hit-flag tags accept
+# immediate and physical views. Keep both parity additions and --all.
+# Dynamic build 218.771 s; binary SHA256
+# 246c6005670ef3829da01eb998ada578c1cdf4dd269d734c63ac195afd09b354.
+# G4 has exactly the 14 g4cap defuns left; g4vm/g4misc have no OUT debt.
+# Census build/replay summaries agree: 114 units, TOTAL1370, S6.2=0.
+# Bytecode145, G4VM48/JIT24, rooted-frame62, FX call-shape/spike, corpus
+# seeds1/7 (0 differing lines), three baseline-matching batteries, FFI,
+# Anvil40 tools and generator8 pass. All63 standalone files execute with
+# only the listed maphash-sparse known-red. The new Bnth fixture fails on
+# the premerge g4misc binary and passes here and on GNU Emacs31.1.
+# Development efficiency: readerio now creates/removes its own three-file
+# fixture instead of relying on target/codex/round3. Before: rc1 in
+# 0.189636 s with no fixture; after: all30 checks pass in0.344067 s.
+# Update APPLY-WORD's renamed producer: stale check rc1/0.141056 s ->
+# rc0/0.139269 s, all14 producers checked. No acceptance is weakened.
+# Check-tier retains the inherited compile/parens33/doc200-census198/
+# prelude-toplevel1/partial-inventory12 findings; stop at gate-selfcheck
+# (exit130), rather than repeat the prior lane's900 s timeout. Full ERT,
+# static and Ir gates are not rerun for this dynamic merge brief.
 #+REQUIRES: ABI_DUMP
 cmd: python3 tools/ai/abi-partition.py check G4 "$ABI_DUMP" --defuns
 

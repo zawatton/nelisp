@@ -7,7 +7,7 @@ names={'nl_apply_do_apply_w','nl_apply_do_funcall_w','nl_apply_do_eval_w',
        'nl_apply_flat_builtin_frame_w','nl_apply_rooted_subr_w','nl_apply_list_append_w',
        'nelisp_apply_function_w','nl_eval_inner_w','nl_apply_rooted_subr_frame_w',
        'nl_n4_apply_raw_w','nl_apply_native_subr_w','wf_bytecode_function_w',
-       'wf_bytecode_function_result_w','wf_bytecode_try_jit_frame_word'}
+       'wf_bytecode_function_result_w','wf_bytecode_try_jit_frame_w'}
 converters={'nl_val_store_word','nl_abi_rc_to_word','nl_abi_rc2_to_word','nl_val_to_word'}
 defs={}
 def walk(x):

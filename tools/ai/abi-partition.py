@@ -6,6 +6,7 @@
       exit 0 iff GROUP has no legacy arm left in nelisp_apply_function_w and
       every listed defun is converted: F_w is defined, or F no longer has an
       OUT-style parameter (default partition: tools/ai/abi-partition.json)
+      --all prints every remaining name instead of the first ten
 
 Reads the unit-source dump (NELISP_BOX_DUMP), takes the dispatch arms of
 nelisp_apply_function_w (one per builtin name), the runtime defuns each arm

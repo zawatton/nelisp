@@ -2260,6 +2260,14 @@
          (eq (catch 'abi-helper (throw 'abi-helper (funcall reader))) object)
          ((lambda ()))
          ((lambda () 'first -19))))
+ ;; Bnth returns WORDs and preserves the reached-tail vs whole-list datum.
+ (let ((answers nil))
+   (dolist (index '(0 1 7 128 -1 2305843009213693952))
+     (push (condition-case e
+               (byte-code (unibyte-string 192 193 56 135)
+                          (vector index '(a . b)) 2)
+             (error e)) answers))
+   (nreverse answers))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

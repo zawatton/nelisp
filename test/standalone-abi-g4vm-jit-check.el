@@ -1,0 +1,57 @@
+;;; standalone-abi-g4vm-jit-check.el --- JIT hit/miss/exit WORDs -*- lexical-binding: t; -*-
+
+(defvar abi-g4vm-jit-value nil)
+(defvar abi-g4vm-jit-mode 'hit)
+(defvar abi-g4vm-jit-calls 0)
+(defvar nelisp-bytecode-jit--dispatch-active nil)
+(let ((original (and (fboundp 'nelisp-bytecode-jit--runtime-dispatch)
+                     (symbol-function 'nelisp-bytecode-jit--runtime-dispatch)))
+      (increment-code (make-byte-code 257 (unibyte-string 84 135) [] 2))
+      (checked 0))
+  (unwind-protect
+      (progn
+        (fset 'nelisp-bytecode-jit--runtime-dispatch
+              (lambda (_fn &rest _args)
+                (setq abi-g4vm-jit-calls (1+ abi-g4vm-jit-calls))
+                (garbage-collect)
+                (cond ((eq abi-g4vm-jit-mode 'miss) nil)
+                      ((eq abi-g4vm-jit-mode 'error) (error "G4VM JIT exit"))
+                      ((eq abi-g4vm-jit-mode 'throw) (throw 'g4vm-exit 71))
+                      (t (vector t abi-g4vm-jit-value)))))
+        (dolist (value (list nil t 0 -7 2305843009213693952 1.25
+                            "jit word" '(a . b) [nil t -7]))
+          (setq abi-g4vm-jit-value value)
+          (dolist (answer (list (funcall increment-code 5)
+                                (apply increment-code '(5))))
+            (unless (equal answer value) (error "JIT hit lost %S" value))
+            (setq checked (1+ checked))))
+        (unless (= abi-g4vm-jit-calls 18) (error "JIT fixture did not run"))
+        (let ((before abi-g4vm-jit-calls)
+              (wide (make-byte-code 771 (unibyte-string 135) [] 4)))
+          (unless (and (= (funcall wide 1 2 3) 3)
+                       (= (let ((nelisp-bytecode-jit--dispatch-active t))
+                            (funcall increment-code 5)) 6)
+                       (= before abi-g4vm-jit-calls))
+            (error "JIT bypass dispatched")))
+        (setq abi-g4vm-jit-mode 'miss)
+        (unless (= (funcall increment-code 5) 6)
+          (error "JIT miss did not run bytecode"))
+        (setq abi-g4vm-jit-mode 'error)
+        (unless (equal (condition-case e (funcall increment-code 0) (error e))
+                       '(error "G4VM JIT exit"))
+          (error "JIT signal lost"))
+        (setq abi-g4vm-jit-mode 'throw)
+        (unless (= (catch 'g4vm-exit (funcall increment-code 0)) 71)
+          (error "JIT throw lost"))
+        ;; A dynamic bytecode callback exercises the rooted frame result.
+        ;; Its argument descriptor bypasses recursive lexical JIT dispatch.
+        (fset 'nelisp-bytecode-jit--runtime-dispatch
+              (make-byte-code '(fn &rest arguments) (unibyte-string 192 135)
+                              (vector (vector t "frame hit")) 1))
+        (unless (equal (funcall increment-code 5) "frame hit")
+          (error "JIT frame WORD lost"))
+        (setq checked (+ checked 6))
+        (princ (format "ABI-G4VM-JIT checked=%d PASS\n" checked)))
+    (if original (fset 'nelisp-bytecode-jit--runtime-dispatch original)
+      (fmakunbound 'nelisp-bytecode-jit--runtime-dispatch))))
+nil
