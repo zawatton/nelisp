@@ -19,8 +19,12 @@
 #   abi-merge-gate.sh ir CANDIDATE BASELINE
 #       Instruction counts (valgrind callgrind) instead of wall time, which is
 #       noisy on this shared machine: `--eval nil' boot and a regex load (the
-#       regex line of test/perf/shallow-binding-bench.el, 20 x 300 matches, >=10 GC cycles per binary),
-#       both binaries under ABI_LAYOUT_PAD=0/700/1400/2100 bytes in parallel.
+#       regex line of test/perf/shallow-binding-bench.el, 20 x 300 matches,
+#       explicit GC after every 2 iterations, >=10 actual GC cycles per
+#       binary in each layout). Boot uses ABI_LAYOUT_PAD
+#       0/700/1400/2100; regex uses 0/2100, all in parallel. Prior regex
+#       four-layout Ir spread was <0.001%; endpoint layouts keep the
+#       collecting workload within the 600-second criterion timeout.
 #       Exits 0 only if all outputs agree and each workload's mean candidate
 #       count is <= the mean baseline count. Prints per-layout Ir/GC and spread.
 #   abi-merge-gate.sh files CANDIDATE BASELINE

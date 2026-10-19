@@ -1176,7 +1176,7 @@ cross-unit call) before the freed payload is poisoned."
                           (let* ((next (ptr-read-u64 cur 0))
                                  (mask (ptr-read-u64 (data-addr nl_freelist_small_mask) 0))
                                  (bit (shl 1 (/ (- want 16) 8)))
-                                 (o 0))
+                                 (o 0) (pair-limit (- want 16)))
                             (seq
                              (ptr-write-u64 (data-addr nl_gc_stats) 0
                                             (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
@@ -1186,9 +1186,11 @@ cross-unit call) before the freed payload is poisoned."
                                                 (if (= (logand mask bit) 0) mask (- mask bit))
                                               (logior mask bit)))
                              (ptr-write-u64 (- cur 8) 0 (logand hw 4294967288))
-                             (while (< o (- want 8))
+                             (while (< o pair-limit)
                                (ptr-write-u64 (+ cur o) 0 0)
-                               (setq o (+ o 8)))
+                               (ptr-write-u64 (+ cur (+ o 8)) 0 0)
+                               (setq o (+ o 16)))
+                             (if (< o (- want 8)) (ptr-write-u64 (+ cur o) 0 0) 0)
                              cur))
                         0)
                     0))
@@ -1208,16 +1210,18 @@ cross-unit call) before the freed payload is poisoned."
               0)
             (let* ((bt (logand (ptr-read-u64 r 0) 4294967288))
                    (obj (+ r 8))
-                   (o 0))
+                   (o 0) (pair-limit (- want 16)))
               (seq
                (ptr-write-u64 (data-addr nl_gc_stats) 0
                               (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
                (ptr-write-u64 r 0 want)
                (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
                (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
-               (while (< o (- want 8))
+               (while (< o pair-limit)
                  (ptr-write-u64 (+ obj o) 0 0)
-                 (setq o (+ o 8)))
+                 (ptr-write-u64 (+ obj (+ o 8)) 0 0)
+                 (setq o (+ o 16)))
+               (if (< o (- want 8)) (ptr-write-u64 (+ obj o) 0 0) 0)
                obj))
           (nl_alloc_bytes_slow size align))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
@@ -2761,11 +2765,15 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; PERF (2026-10-15): the loop body is plain forms, not an `nl_seq2'
     ;; call per word; every reused block and the GC start index pass here.
     (defun nl_alloc_zero_fill (obj off nbytes)
-      (let* ((o off))
+      (let* ((o off) (pair-limit (- nbytes 8)))
         (seq
-         (while (< o nbytes)
+         (while (< o pair-limit)
            (ptr-write-u64 (+ obj o) 0 0)
-           (setq o (+ o 8)))
+           (ptr-write-u64 (+ obj (+ o 8)) 0 0)
+           (setq o (+ o 16)))
+         ;; Preserve the original final full-word store even when callers
+         ;; supply an n*4 byte count rather than a multiple of eight.
+         (if (< o nbytes) (ptr-write-u64 (+ obj o) 0 0) 0)
          0)))
     (defun nl_chunk_cursor_addr (chunk)
       (if (= chunk (ptr-read-u64 268436160 0))
@@ -4217,16 +4225,22 @@ REPL-facing module it feeds."
           0)))
     ;; Set map bits [G0, G1), whole words at a time where aligned.
     (defun nl_boot_hole_set_bits (map g0 g1)
-      (let ((g g0))
+      (let ((g g0) (offset 0) (count 0))
         (seq
          (while (< g g1)
            (if (if (= (logand g 63) 0) (if (< g1 (+ g 64)) 0 1) 0)
                (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0 (- 0 1))
                     (setq g (+ g 64)))
-             (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0
+             (seq
+                  (setq offset (logand g 63))
+                  (setq count (if (< (- g1 g) (- 64 offset))
+                                  (- g1 g) (- 64 offset)))
+                  ;; The full-word arm above handles count=64, so this
+                  ;; mask never relies on a machine shift by 64.
+                  (ptr-write-u64 (+ map (* (sar g 6) 8)) 0
                                  (logior (ptr-read-u64 (+ map (* (sar g 6) 8)) 0)
-                                         (shl 1 (logand g 63))))
-                  (setq g (+ g 1)))))
+                                         (shl (- (shl 1 count) 1) offset)))
+                  (setq g (+ g count)))))
          0)))
     ;; Exact starts, indexed only while the stopped heap is being marked.
     ;; Entries remain {data-start, end, bitmap}; one bit per eight arena bytes.
@@ -25059,7 +25073,7 @@ into whatever the index happened to select."
    (when (nelisp-standalone--callsite-enabled-p)
      (list
       (cons '(:u8 "nelisp--native-callsite-symbol-addr")
-            `(wf_write_int out
+            `(:word wf_write_int_w 0
               ,(let* ((names (nelisp-standalone--callsite-symbol-names))
                       (form 0)
                       (idx (length names)))
@@ -43804,44 +43818,6 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (setq i (+ i 1)))
          (nl_sexp_clone_into list out)
          (nl_cons_root_finish env mark 0))))
-    (defun nl_n4_local_pair (pair out env)
-      (let* ((mark (nl_root_mark env)) (value (nl_root_reserve env))
-             (entry (nl_root_reserve env)))
-        (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
-             (nelisp_cons_construct (nl_cons_car_word pair) value entry)
-             (nelisp_cons_construct entry out out)
-             (nl_cons_root_finish env mark 0))))
-    (defun nl_n4_local_bucket (bucket out env)
-      (if (= (nl_val_tag bucket) 7)
-          (seq (nl_n4_local_pair (nl_cons_car_word bucket) out env)
-               (nl_n4_local_bucket (nl_cons_cdr_word bucket) out env)) 0))
-    ;; Reconstruct suspended shallow values without changing the live mirror.
-    (defun nl_n4_local_shadow_entry (names name)
-      (if (= (nl_val_tag names) 7)
-          (let* ((pair (nl_cons_car_word names)))
-            (if (= (bf_eq2 (nl_cons_car_word pair) name) 1) pair
-              (nl_n4_local_shadow_entry (nl_cons_cdr_word names) name))) 0))
-    (defun nl_n4_local_shallow (item out shadow env emit)
-      (let* ((name (vector-ref-ptr item 0))
-             (prior (nl_n4_local_shadow_entry shadow name))
-             (mark (nl_root_mark env)) (value (nl_root_reserve env))
-             (entry (nl_root_reserve env)))
-        (seq
-         (if (= prior 0) (nelisp_env_lkv_mirror (+ env 0) name value 0)
-           (nl_sexp_clone_into (nl_cons_cdr_ptr prior) value))
-         (if (= emit 1)
-             (seq (nelisp_cons_construct name value entry)
-                  (nelisp_cons_construct entry out out)) 0)
-         (nelisp_cons_construct name (vector-ref-ptr item 1) entry)
-         (nelisp_cons_construct entry shadow shadow)
-         (nl_cons_root_finish env mark 0))))
-    (defun nl_n4_local_history (names out shadow env emit)
-      (if (= (nl_val_tag names) 7)
-          (let* ((item (nl_cons_car_word names)) (tag (nl_val_tag item)))
-            (seq
-             (if (= tag 8) (nl_n4_local_shallow item out shadow env emit)
-               (if (and (= emit 1) (= tag 7)) (nl_n4_local_pair item out env) 0))
-             (nl_n4_local_history (nl_cons_cdr_word names) out shadow env emit))) 0))
     (defun nl_n4_locals (env index out)
       (nl_abi_word_to_rc (nl_n4_locals_w env index 0) out))
     (defun nl_n4_reverse (list out)
@@ -45112,7 +45088,9 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
                 ;; functions go into the image already compiled for the VM.
-                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (nelisp--arena-dump-image-stream %S))"
+                ;; Match the compiler image path: do not freeze transient
+                ;; bootstrap allocations into every subsequent cold start.
+                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                         (nelisp-standalone--cold-target-path image))))
              (process-environment (nelisp-standalone--cold-build-environment))
              (status nil) (output nil))

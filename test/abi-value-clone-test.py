@@ -11,27 +11,34 @@ ROOT = Path(__file__).resolve().parents[1]
 binary = Path(sys.argv[1]).resolve()
 symbols = {p[2]: int(p[0], 16) for line in subprocess.check_output(
     ['nm', '-n', str(binary)], text=True).splitlines()
-    if len(p := line.split()) == 3 and p[1] in ('t', 'T')}
+    if len(p := line.split()) == 3 and p[1] in ('t', 'T', 'b', 'B', 'd', 'D')}
 parent = ROOT / 'target/abi-value-clone'
 parent.mkdir(parents=True, exist_ok=True)
 directory = Path(tempfile.mkdtemp(dir=parent))
 library = directory / 'fixture.so'
 source = directory / 'fixture.c'
-source.write_text('#include <stdint.h>\n#include <string.h>\n' + '\n'.join(
+source.write_text('#include <stdint.h>\n#include <string.h>\n'
+    + f'#define FORCE ((volatile uint64_t *)(uintptr_t){symbols["nl_bind_clone_force"]}ULL)\n'
+    + '\n'.join(
     f'#define {name} ((int64_t (*)(int64_t,int64_t))(uintptr_t){symbols[symbol]}ULL)'
     for name, symbol in [('CLONE', 'nl_val_clone_into'), ('LOAD', 'nl_val_load')]) + r'''
 int64_t abi_value_clone(int64_t unused) {
   _Alignas(8) unsigned char src[32], expected[32], scratch[32];
   int64_t dst, word;
-  const unsigned char tags[] = {0,1,2,2,2,2,2,2};
+  const unsigned char tags[] = {0,1,2,2,2,2,2,2,3,3,3,3};
   const uint64_t payloads[] = {0,0,0,UINT64_C(0xfffffffffffffff9),
     UINT64_C(0x1fffffffffffffff),UINT64_C(0xe000000000000000),
-    UINT64_C(0x7fffffffffffffff),UINT64_C(0x8000000000000000)};
-  for (int i=0; i<8; i++) {
-    memset(src,0,32); src[0]=tags[i]; memcpy(src+8,&payloads[i],8);
+    UINT64_C(0x7fffffffffffffff),UINT64_C(0x8000000000000000),
+    0,UINT64_C(0x8000000000000000),UINT64_C(0x7ff8000000000042),
+    UINT64_C(0x7ff0000000000000)};
+  const uint64_t saved_force=*FORCE;
+  for (int mode=0; mode<2; mode++) {
+   *FORCE=mode;
+   for (int i=0; i<12; i++) {
+    memset(src,0xa5,32); src[0]=tags[i]; memcpy(src+8,&payloads[i],8);
     memcpy(expected,src,32); dst=0;
     word=CLONE((int64_t)(uintptr_t)src,(int64_t)(uintptr_t)&dst);
-    if (!word || word!=dst || word==(int64_t)(uintptr_t)src) return 100+i;
+    if (!word || (word&7) || word!=dst || word==(int64_t)(uintptr_t)src) return 100+i;
     memset(src,0x55,32);  /* The caller may immediately reuse its view. */
     const void *view=(void *)(uintptr_t)LOAD(word,(int64_t)(uintptr_t)scratch);
     if (memcmp(view,expected,32)) return 200+i;
@@ -41,7 +48,9 @@ int64_t abi_value_clone(int64_t unused) {
     dst=0;
     if (CLONE(words[i],(int64_t)(uintptr_t)&dst)!=words[i] || dst!=words[i]) return 300+i;
   }
-  return 13;
+  }
+  *FORCE=saved_force;
+  return 34;
 }
 ''')
 subprocess.run(['cc', '-shared', '-fPIC', '-o', str(library), str(source)], check=True)
@@ -54,8 +63,8 @@ probe.write_text(';;; -*- lexical-binding: t; -*-\n' + r'''
        (entry (nl-ffi-call "dlsym" handle (abi-value-cstring "abi_value_clone"))))
   (unless (> entry 0) (error "value clone fixture did not open"))
   (let ((result (ptr-call entry 0 0 0 0 0 0)))
-    (unless (= result 13) (error "physical value clone changed: %d" result)))
-  (princ "ABI-VALUE-CLONE checks=13 PASS\n"))
+    (unless (= result 34) (error "physical value clone changed: %d" result)))
+  (princ "ABI-VALUE-CLONE checks=34 PASS\n"))
 '''.replace('LIBRARY', json.dumps(str(library))))
 result = subprocess.run([str(binary), '--load', str(probe)], cwd=ROOT,
                         env=dict(os.environ, TMPDIR=str(directory),
@@ -63,8 +72,8 @@ result = subprocess.run([str(binary), '--load', str(probe)], cwd=ROOT,
                         capture_output=True, timeout=120)
 (directory / 'stdout').write_bytes(result.stdout)
 (directory / 'stderr').write_bytes(result.stderr)
-ok = result.returncode == 0 and not result.stderr and b'ABI-VALUE-CLONE checks=13 PASS' in result.stdout
-print('physical/WORD clone13', 'PASS' if ok else 'FAIL', directory)
+ok = result.returncode == 0 and not result.stderr and b'ABI-VALUE-CLONE checks=34 PASS' in result.stdout
+print('physical/WORD clone34', 'PASS' if ok else 'FAIL', directory)
 if not ok:
     print(result.returncode, result.stderr.decode()[:700])
 sys.exit(0 if ok else 1)
