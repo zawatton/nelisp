@@ -169,6 +169,10 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Owned-value checkpoint: TOTAL1418; S6.2 41 (20direct+17reverse+4inline).
+# Owned110/marker8, public67 and twelve printed GNU numeric/append results,
+# skipped-write mutation, consumer/capture/cleanup, batteries/Anvil/arity and
+# static42 pass. Boot/regex/files -3.024%/-2.853%/-3.258%, GC6/6,17/16,8/8.
 # Reader/I/O checkpoint: TOTAL1446; S6.2 52 (30direct+17reverse+5inline).
 # Public reader21/nativeIO30 and direct context4/8, array214/environment102,
 # batteries/Anvil/arity, static42 and complete-walk12 controls pass.

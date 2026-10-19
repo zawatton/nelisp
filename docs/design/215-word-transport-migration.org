@@ -371,6 +371,19 @@ array214, environment102, three batteries and static thread42 pass; changing
 a read-all value must fail the new assertion. The complete census walker
 reports TOTAL 1446 and S6.2 52 (30 direct + 17 reverse + 5 inline).
 
+Owned-value producers now retain canonical argument WORDs through shallow
+copies, append tails, closure environments/doc slots, bignum bit-operation
+folds, parent-table results and string formatting. The numeric-marker list
+copy roots its WORD holder across recursive evaluation. No producer calls
+the copy helper with an immediate view; its immediate input is already a
+WORD. The 110-case owned-value check and eight supported marker arithmetic
+cases agree with the baseline; public67 assertions, twelve printed numeric/
+append results and marker8 also agree with GNU. Skipping a cons write fails
+the mutation check. Census TOTAL1418; S6.2 41 (20 direct + 17 reverse + 4
+inline). Three batteries, Anvil, arity, consumer/capture/cleanup and static42
+pass. Four-layout boot/regex/files means are -3.024%/-2.853%/-3.258%, with GC
+base/candidate 6/6, 17/16 and 8/8, including all collector instructions.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

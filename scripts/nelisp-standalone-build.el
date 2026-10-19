@@ -7644,7 +7644,7 @@ argument (reachability + in-arena bounds checks).")
                                 (nl_abi_rc_to_word (wf_copy32 out (nl_cons_cdr_ptr a)) out)))))
     ((:u8 "cons") :word . (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                                                  (alloc-bytes 32 8)))
-    ((:u8 "list") :word . (nl_g4arm_copy_w 0 args))
+    ((:u8 "list") :word . (nl_g4arm_copy_w 0 (if (= (nl_val_tag args) 0) 3 args)))
     ;; --- list search hot paths ---
     ;; `memq' walked with the cons accessors and stopped at a non-list,
     ;; answering nil -- which is also the answer for "not a member".
@@ -7736,7 +7736,7 @@ argument (reachability + in-arena bounds checks).")
     ;; a cell comes back unchanged, so the caller does not have to ask first.
     ((:lit "nelisp--cell-value") :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 11)
                                        (nl_cell_get_value_w (wf_arg_ptr args 0) 0)
-                                     (nl_g4arm_copy_w 0 (wf_arg_ptr args 0))))
+                                     (nl_g4arm_copy_w 0 (wf_arg_word args 0))))
     ((:lit "puthash")          :word . (let* ((argc (m5_list_len args 0)))
                                   (if (/= argc 3)
                                       (nl_abi_fail (bf_wrong_number_of_args name_ptr argc) 0)
@@ -8473,20 +8473,16 @@ leave symbols unresolved at link time."
       (nl_abi_word_to_rc (wf_numeric_marker_value_w value 0 check) out))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_copy_w (args env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
-
-      (if (= (nl_val_tag args) 7)
-          (let* ((value (nl_root_reserve env)) (tail (nl_root_reserve env))
-                 (rc (wf_numeric_marker_value_word (nl_cons_car_word args) value 1)))
-            (if (= rc 0)
-                (if (= (wf_numeric_marker_copy (nl_cons_cdr_word args) env tail) 0)
-                    (seq (nelisp_cons_construct value tail out) 0)
-                  1)
-              rc))
-        (seq (wf_word_store_out out args) 0))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+  (if (= (nl_val_tag args) 7)
+      (let* ((holder_root (nl_root_reserve env))
+             (word (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 1)))
+        (if (= word 0) 0
+          (let* ((holder (nelisp_cons_construct_w word 3 0)))
+            (seq (wf_word_store_out holder_root holder)
+                 (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
+                   (if (= tail_word 0) 0
+                     (nelisp_cons_construct_w (nl_cons_car_word holder) tail_word 0)))))))
+    args))
     (defun wf_numeric_marker_copy (args env out)
       (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
     (defun wf_numeric_marker_relation (a b mode)
@@ -8837,13 +8833,10 @@ leave symbols unresolved at link time."
                (ptr-write-u64 sb 8 (logior (ptr-read-u64 sb 8) 4611686018427387904))
              0)
            sb))
-    (defun nl_g4arm_copy_w (_pad src)
-      (let ((tg (ptr-read-u8 src 0)))
-        (if (= tg 2) (nl_imm_int (ptr-read-u64 src 8))
-          (if (= tg 0) 3
-            (if (= tg 1) 7
-              (let ((b (alloc-bytes 32 8)))
-                (seq (wf_copy32 b src) b)))))))
+    (defun nl_g4arm_copy_w (_pad word)
+  (if (= (logand word 1) 1) word
+    (let ((object (alloc-bytes 32 8)))
+      (seq (wf_copy32 object word) object))))
     ;; Doc 187: `wf_write_int' ALWAYS returns 0 (its own `seq' ends in 0), so
     ;; `(wf_write_int out (wf_sum args 0))' would unconditionally write
     ;; whatever `wf_sum' returned into OUT and report rc=0 "ok" -- even when
@@ -10922,7 +10915,7 @@ leave symbols unresolved at link time."
                 (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
                 0))))))
 )))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+          (if (= abi_rc 0) out (nl_abi_fail abi_rc 0)))))
     ;; flat-arena boot-wiring (4): SPLIT relocate -- the real-arena load.  In a
     ;; live runtime chunk-0 and the interned region are SEPARATE mmaps at
     ;; unrelated bases, so the load cannot use one contiguous `+ newbase'; it
@@ -12778,22 +12771,18 @@ eval applyfn.")
     ;; Every level that might receive the sentinel (both the recursive
     ;; result here and, at the top, `wf_append_walk''s own eventual
     ;; TAIL_SLOT) now checks for it before treating it as a pointer.
-    (defun wf_append_prepend (s tail_slot)
-      (if (= tail_slot 1)
-          1
-        (if (= (nl_val_tag s) 7)
-            (let* ((rest_slot (wf_append_prepend (nl_cons_cdr_word s) tail_slot)))
-              (if (= rest_slot 1)
-                  1
-                (let* ((out_slot (alloc-bytes 32 8)))
-                  (seq (nelisp_cons_construct (nl_cons_car_word s) rest_slot out_slot) out_slot))))
-          (if (= (nl_val_tag s) 0)
-              tail_slot
-            (bf_wrong_type_listp (wf_word_view s))))))
+    (defun wf_append_prepend (s tail_word)
+  (if (= tail_word 0) 0
+    (if (= (nl_val_tag s) 7)
+        (let* ((rest_word (wf_append_prepend (nl_cons_cdr_word s) tail_word)))
+          (if (= rest_word 0) 0
+            (nelisp_cons_construct_w (nl_cons_car_word s) rest_word 0)))
+      (if (= (nl_val_tag s) 0) tail_word
+        (seq (bf_wrong_type_listp (wf_word_view s)) 0)))))
     (defun wf_append_walk (cur)
-      (if (= (nl_val_tag (nl_cons_cdr_word cur)) 7)
-          (wf_append_prepend (nl_cons_car_ptr cur) (wf_append_walk (nl_cons_cdr_word cur)))
-        (nl_cons_car_ptr cur)))
+  (if (= (nl_val_tag (nl_cons_cdr_word cur)) 7)
+      (wf_append_prepend (nl_cons_car_word cur) (wf_append_walk (nl_cons_cdr_word cur)))
+    (nl_cons_car_word cur)))
     ;; The delegate call resolves the target symbol itself, via
     ;; `nelisp_env_lookup_function', THEN calls `nl_apply_function' with
     ;; the resolved value -- the same two-step `bf_nemacs_char_table_
@@ -12811,18 +12800,10 @@ eval applyfn.")
                 (nl_apply_function_w function-word args env 0)
               (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
     (defun wf_append_w (args env _pad)
-      (if (= (ptr-read-u64 args 0) 0)
-          3
-        (if (= (nl_val_tag (nl_cons_cdr_word args)) 0)
-            (nl_cons_car_word args)
-          (if (= (wf_append_fast_p args) 1)
-              ;; `wf_append_walk' can return the `bf_wrong_type_listp'
-              ;; sentinel 1; the signal is already stashed.
-              (let* ((result (wf_append_walk args)))
-                (if (= result 1)
-                    (nl_abi_fail 1 0)
-                  (nl_val_store_word result)))
-            (wf_append_slow_w args env 0)))))
+  (if (= (nl_val_tag args) 0) 3
+    (if (= (nl_val_tag (nl_cons_cdr_word args)) 0) (nl_cons_car_word args)
+      (if (= (wf_append_fast_p args) 1) (wf_append_walk args)
+        (wf_append_slow_w args env 0)))))
     ;; --- assoc: fast path (TESTFN omitted or nil) native; a genuine
     ;; callable TESTFN delegates to `nelisp--assoc-slow' (Doc 143's own
     ;; funcall-based walk, unchanged). --------------------------------
@@ -17570,6 +17551,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (nl_cons_car_ptr (nl_cons_cdr_word arg))
                 arg))
           e)))
+    (defun nl_closure_doc_value_w (body _pad)
+  (let* ((element (nl_cons_car_word body)))
+    (if (= (nl_closure_docmark_p (wf_word_view element)) 1)
+        (let* ((arg (nl_cons_car_word (nl_cons_cdr_word element))))
+          (if (= (nl_val_tag arg) 7) (nl_cons_car_word (nl_cons_cdr_word arg)) arg))
+      element)))
     (defun nl_closure_iform_p (body)
       (if (= (ptr-read-u64 body 0) 7)
           (let* ((a (nl_cons_car_word body)))
@@ -19308,29 +19295,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= i n) 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_format_simple_w (fmt argl _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (if (= (m5_string_tag_p (ptr-read-u64 fmt 0)) 0) (wf_write_nil out)
-        ;; GNU returns the original string for a plain template and the
-        ;; sole %s string argument, preserving identity and text properties.
-        (if (= (bf_format_plain_p fmt) 1)
-            (seq (wf_copy32 out fmt) 0)
-        (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 0) 37)
-                 (= (m5_byte_at fmt 1) 115) (= (ptr-read-u64 argl 0) 7)
-                 (= (m5_string_tag_p (nl_val_tag (nl_cons_car_word argl))) 1))
-            (seq (wf_copy32 out (nl_cons_car_ptr argl)) 0)
-        (if (= (m5_unibyte_tag_p (ptr-read-u64 fmt 0)) 1) (wf_write_nil out)
-          (if (= (bf_fmt_simple_scan fmt 0 (m5_strlen fmt) argl) 0) (wf_write_nil out)
-            (let* ((ms (alloc-bytes 32 8))
+  (if (= (m5_string_tag_p (ptr-read-u64 fmt 0)) 0) 3
+    (if (= (bf_format_plain_p fmt) 1) fmt
+      (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 0) 37)
+               (= (m5_byte_at fmt 1) 115) (= (nl_val_tag argl) 7)
+               (= (m5_string_tag_p (nl_val_tag (nl_cons_car_word argl))) 1))
+          (nl_cons_car_word argl)
+        (if (= (m5_unibyte_tag_p (ptr-read-u64 fmt 0)) 1) 3
+          (if (= (bf_fmt_simple_scan fmt 0 (m5_strlen fmt) argl) 0) 3
+            (let* ((builder (alloc-bytes 32 8))
                    (unibyte (if (= (m5_observably_unibyte_p fmt) 1)
                                 (m5_concat_all_unibyte_p argl) 0)))
-              (seq (m5_make_builder ms 32 unibyte)
-                   (m5_fmt_loop ms fmt 0 (m5_strlen fmt) argl)
-                   (m5_finish_string ms out (- 1 unibyte))
-                   0)))))))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+              (seq (m5_make_builder builder 32 unibyte)
+                   (m5_fmt_loop builder fmt 0 (m5_strlen fmt) argl)
+                   (m5_finish_string_w builder 0 (- 1 unibyte))))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
     ;; the name unchanged and a separate tag-16 identity. It reuses the
     ;; monotonic mutation epoch (whose reset is disabled), as the old
@@ -19763,21 +19741,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_parent_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_word args 0)))
-        (if (= (nl_word_tag64 ct) 9)
-            (let* ((box (nl_word_payload ct))
-                   (pptr (ptr-read-u64 (+ box 88) 0)))
-              (if (= pptr 0)
-                  (seq (wf_write_nil out) 0)
-                (seq (ptr-write-u64 out 0 9) (ptr-write-u64 (+ out 8) 0 pptr)
-                     (ptr-write-u64 (+ out 16) 0 0) (ptr-write-u64 (+ out 24) 0 0)
-                     0)))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (let* ((ct (wf_arg_word args 0)))
+    (if (= (nl_word_tag64 ct) 9)
+        (let* ((parent (ptr-read-u64 (+ (nl_word_payload ct) 88) 0)))
+          (if (= parent 0) 3
+            (let* ((object (alloc-bytes 32 8)))
+              (seq (ptr-write-u64 object 0 9) (ptr-write-u64 object 8 parent)
+                   (ptr-write-u64 object 16 0) (ptr-write-u64 object 24 0) object))))
+      (nl_abi_fail (bf_wrong_type_char_table_p ct) 0))))
     ;; set-char-table-parent CHAR-TABLE PARENT -> PARENT (Emacs's own return
     ;; convention, verified against host Emacs).  PARENT nil clears the link
     ;; (box+88 = 0, matching `nl_char_table_get_raw''s own "0 = no parent"
@@ -20143,17 +20114,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (cond
              ((= idx 0) (nl_cons_car_word d2))
              ((= idx 1)
-              (bf_closure_slot_or_singleton_w (if (= (nl_closure_iform_p b1) 1) (nl_cons_cdr_ptr b1) b1) 0 0))
+              (bf_closure_slot_or_singleton_w (if (= (nl_closure_iform_p b1) 1) (nl_cons_cdr_word b1) (if (= (nl_closure_doc_p b0) 1) (nl_cons_cdr_word b0) (nl_cons_cdr_word d2))) 0 0))
              ((= idx 2)
               (if (= (nl_val_tag (nl_cons_car_word d1)) 7)
                   (if (= (bf_closure_typed_p b0) 1)
                       (bf_closure_env_view_fwd_w (nl_cons_car_ptr d1) 0)
                     (bf_closure_env_view_w (nl_cons_car_ptr d1) 0))
-                (bf_closure_slot_or_singleton_w (nl_cons_car_ptr d1) 1 0)))
+                (bf_closure_slot_or_singleton_w (nl_cons_car_word d1) 1 0)))
              ((= idx 3) 3)
              ((= idx 4)
               (if (= (nl_closure_doc_p b0) 1)
-                  (nl_val_store_word (nl_closure_doc_value b0))
+                  (nl_closure_doc_value_w b0 0)
                 3))
              (t (bf_closure_iform_value_w (nl_cons_cdr_ptr (nl_cons_car_word b1)) 0)))))))
     ;; Slot 2 of a closure with captured bindings, as GNU lays out a lexical
@@ -20174,31 +20145,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (bf_closure_env_shadowed_p key (nl_cons_cdr_ptr rest)))
         0))
     ;; Doc 215 builtin word ABI: bf_closure_env_view_rev_w returns the result WORD (0 = signal stashed).
-    (defun bf_closure_env_view_rev_w (node acc _pad)
-      (if (= (ptr-read-u64 node 0) 7)
-          (let* ((entry (nl_cons_car_ptr node))
-                 (rest (nl_cons_cdr_ptr node)))
-            (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1)
-                (bf_closure_env_view_rev_w rest acc 0)
-              (let* ((cell (alloc-bytes 32 8)))
-                (seq
-                 (if (= (ptr-read-u64 entry 0) 7)
-                     (let* ((val (alloc-bytes 32 8))
-                            (pair (alloc-bytes 32 8))
-                            (box (nl_cons_cdr_ptr entry)))
-                       (seq (if (= (ptr-read-u64 box 0) 11)
-                                (nl_cell_get_value box val)
-                              (wf_copy32 val box))
-                            (nelisp_cons_construct (nl_cons_car_word entry) val pair)
-                            (nelisp_cons_construct pair acc cell)))
-                   (nelisp_cons_construct entry acc cell))
-                 (bf_closure_env_view_rev_w rest cell 0)))))
-        (nl_val_store_word acc)))
+    (defun bf_closure_env_view_rev_w (node acc_word _pad)
+  (if (= (nl_val_tag node) 7)
+      (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node)))
+        (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1)
+            (bf_closure_env_view_rev_w rest acc_word 0)
+          (let* ((value_word
+                  (if (= (ptr-read-u64 entry 0) 7)
+                      (let* ((word (nl_cons_cdr_word entry)))
+                        (nelisp_cons_construct_w
+                         (nl_cons_car_word entry)
+                         (if (= (nl_val_tag word) 11) (nl_cell_get_value_w word 0) word) 0))
+                    (nl_cons_car_word node))))
+            (bf_closure_env_view_rev_w
+             rest (nelisp_cons_construct_w value_word acc_word 0) 0))))
+    acc_word))
     ;; Doc 215 builtin word ABI: bf_closure_env_view_w returns the result WORD (0 = signal stashed).
     (defun bf_closure_env_view_w (env _pad)
-      (let* ((acc (alloc-bytes 32 8)))
-        (seq (wf_write_nil acc)
-             (bf_closure_env_view_rev_w env acc 0))))
+  (bf_closure_env_view_rev_w env 3 0))
     ;; The same view in capture order (the order `make-interpreted-closure'
     ;; was given, or first-mention order for a `lambda' evaluated here), for
     ;; a closure carrying a `(:documentation 'TYPE)' marker.  This runtime
@@ -20209,25 +20173,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; order, so capture order is the order it needs.
     ;; Doc 215 builtin word ABI: bf_closure_env_view_fwd_w returns the result WORD (0 = signal stashed); bf_closure_env_view_fwd keeps the (rc, OUT) ABI.
     (defun bf_closure_env_view_fwd_w (node _pad)
-      (if (= (ptr-read-u64 node 0) 7)
-          (let* ((entry (nl_cons_car_ptr node))
-                 (rest (nl_cons_cdr_ptr node))
-                 (tail (alloc-bytes 32 8)))
-            (seq
-             (bf_closure_env_view_fwd rest tail)
-             (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1)
-                 (nl_val_store_word tail)
-               (if (= (ptr-read-u64 entry 0) 7)
-                   (let* ((val (alloc-bytes 32 8))
-                          (pair (alloc-bytes 32 8))
-                          (box (nl_cons_cdr_ptr entry)))
-                     (seq (if (= (ptr-read-u64 box 0) 11)
-                              (nl_cell_get_value box val)
-                            (wf_copy32 val box))
-                          (nelisp_cons_construct (nl_cons_car_word entry) val pair)
-                          (nelisp_cons_construct_w pair tail 0)))
-                 (nelisp_cons_construct_w entry tail 0)))))
-        3))
+  (if (= (nl_val_tag node) 7)
+      (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node))
+             (tail_word (bf_closure_env_view_fwd_w rest 0)))
+        (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1) tail_word
+          (let* ((value_word
+                  (if (= (ptr-read-u64 entry 0) 7)
+                      (let* ((word (nl_cons_cdr_word entry)))
+                        (nelisp_cons_construct_w
+                         (nl_cons_car_word entry)
+                         (if (= (nl_val_tag word) 11) (nl_cell_get_value_w word 0) word) 0))
+                    (nl_cons_car_word node))))
+            (nelisp_cons_construct_w value_word tail_word 0))))
+    3))
     (defun bf_closure_env_view_fwd (node out)
       (nl_abi_word_to_rc (bf_closure_env_view_fwd_w node 0) out))
     ;; 1 when the closure body B0 starts with a `(:documentation 'TYPE)' form.
@@ -20239,14 +20197,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; empty body (GNU never stores an empty body), `(t)' for an empty
     ;; lexical environment (GNU's marker for lexical binding).
     ;; Doc 215 builtin word ABI: bf_closure_slot_or_singleton_w returns the result WORD (0 = signal stashed).
-    (defun bf_closure_slot_or_singleton_w (p elt-t _pad)
-      (if (= (ptr-read-u64 p 0) 0)
-          (let* ((e (alloc-bytes 32 8))
-                 (nil-slot (alloc-bytes 32 8)))
-            (seq (if (= elt-t 1) (wf_write_t e) (wf_write_nil e))
-                 (wf_write_nil nil-slot)
-                 (nelisp_cons_construct_w e nil-slot 0)))
-        (nl_val_store_word p)))
+    (defun bf_closure_slot_or_singleton_w (word elt-t _pad)
+  (if (= word 3) (nelisp_cons_construct_w (if (= elt-t 1) 7 3) 3 0) word))
     ;; Slot 5 from IFCDR = (cdr (interactive ...)): the lone spec, or
     ;; [SPEC MODES] when modes follow, as `make-interpreted-closure' does.
     ;; Doc 215 builtin word ABI: bf_closure_iform_value_w returns the result WORD (0 = signal stashed).
@@ -23438,12 +23390,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; `logxor') and is combined against each remaining list element in
     ;; turn via `nl_bignum_bitop'.
     ;; Doc 215 builtin word ABI: wf_bitop_fold_w returns the result WORD (0 = signal stashed).
-    (defun wf_bitop_fold_w (opcode lp acc_ptr _pad)
-      (if (= (ptr-read-u64 lp 0) 7)
-          (let* ((tmp (alloc-bytes 32 8)))
-            (seq (nl_bignum_bitop opcode acc_ptr (nl_cons_car_ptr lp) tmp)
-                 (wf_bitop_fold_w opcode (nl_cons_cdr_ptr lp) tmp 0)))
-        (nl_val_store_word acc_ptr)))
+    (defun wf_bitop_fold_w (opcode lp acc_word _pad)
+  (if (= (nl_val_tag lp) 7)
+      (let* ((word (nl_bignum_bitop_w opcode (wf_word_view acc_word)
+                                    (nl_cons_car_ptr lp) 0)))
+        (if (= word 0) 0 (wf_bitop_fold_w opcode (nl_cons_cdr_word lp) word 0)))
+    acc_word))
     ;; `lognot' on a Bignum operand: X -> -(X+1), computed by adding the
     ;; constant 1 (via `nl_bignum_add_raw', which already threads a
     ;; result sign through) and then FLIPPING that sign -- the identity
@@ -23877,7 +23829,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                    (tg (ptr-read-u64 sym 0)))
                                (if (if (or (= tg 0) (= tg 1)) 1
                                      (if (= tg 4) 1 (if (= tg 16) 1 0)))
-                                   (nl_g4arm_copy_w 0 sym)
+                                   (nl_g4arm_copy_w 0 (if (= tg 0) 3 (if (= tg 1) 7 sym)))
                                  (let* ((wbuf (alloc-bytes 24 1))
                                         (cbuf1 (alloc-bytes 8 1))
                                         (cbuf2 (alloc-bytes 24 1))
@@ -24016,7 +23968,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "symbol-value") :word . (if (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) 1
                                    (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 2
                                      (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 1) 2 0)))
-                            (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) (if (= (bf_keyword_raw (wf_arg_ptr args 0)) 1) (nl_g4arm_copy_w 0 (wf_arg_ptr args 0)) (bf_symbol_value_w args env 0)) (nl_g4arm_copy_w 0 (wf_arg_ptr args 0)))
+                            (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) (if (= (bf_keyword_raw (wf_arg_ptr args 0)) 1) (nl_g4arm_copy_w 0 (wf_arg_word args 0)) (bf_symbol_value_w args env 0)) (nl_g4arm_copy_w 0 (wf_arg_word args 0)))
                           (nl_abi_fail (bf_wrong_type_symbolp (wf_arg_ptr args 0)) 0)))
     ((:lit "fboundp")  :word . (bf_fboundp_w args env 0))
     ((:lit "symbol-function") :word . (bf_symbol_function_w args env 0))
@@ -24093,7 +24045,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "intern-soft") :word . (if (= (bf_obarray_arg_bad args) 1) 0
                              (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
                                (if (if (= tg 4) 1 (if (= tg 0) 1 (if (= tg 1) 1 0)))
-                                   (nl_g4arm_copy_w 0 a)
+                                   (nl_g4arm_copy_w 0 (wf_arg_word args 0))
                                  (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
                                      (bf_intern_soft_w a 0)
                                    (if (= tg 16) 3
@@ -24191,11 +24143,11 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
     ((:lit "setcar")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
-                                  (seq (wf_dirty) (cons-set-car c v) (nl_g4arm_copy_w 0 v))
+                                  (seq (wf_dirty) (cons-set-car c v) (nl_g4arm_copy_w 0 (wf_arg_word args 1)))
                                 (nl_abi_fail (bf_wrong_type_consp c) 0))))
     ((:lit "setcdr")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
-                                  (seq (wf_dirty) (cons-set-cdr c v) (nl_g4arm_copy_w 0 v))
+                                  (seq (wf_dirty) (cons-set-cdr c v) (nl_g4arm_copy_w 0 (wf_arg_word args 1)))
                                 (nl_abi_fail (bf_wrong_type_consp c) 0))))
     ;; load FILE &optional ...: reader-only absolute-path file load.  The
     ;; optional args are ignored for now; callers in nelisp-emacs pass absolute
@@ -24279,20 +24231,17 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "logand")  :word . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int_w 0 (wf_logand_fold args (- 0 1)))
                           (if (= (bf_first_non_integer_or_bignum args) 0)
-                              (let ((acc (alloc-bytes 32 8)))
-                                (seq (wf_write_int acc (- 0 1)) (wf_bitop_fold_w 0 args acc 0)))
+                              (wf_bitop_fold_w 0 args -3 0)
                             (nl_abi_fail (bf_int_arg_error_or_bignum args) 0))))
     ((:lit "logior")  :word . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int_w 0 (wf_logior_fold args 0))
                           (if (= (bf_first_non_integer_or_bignum args) 0)
-                              (let ((acc (alloc-bytes 32 8)))
-                                (seq (wf_write_int acc 0) (wf_bitop_fold_w 1 args acc 0)))
+                              (wf_bitop_fold_w 1 args 1 0)
                             (nl_abi_fail (bf_int_arg_error_or_bignum args) 0))))
     ((:lit "logxor")  :word . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int_w 0 (wf_logxor_fold args 0))
                           (if (= (bf_first_non_integer_or_bignum args) 0)
-                              (let ((acc (alloc-bytes 32 8)))
-                                (seq (wf_write_int acc 0) (wf_bitop_fold_w 2 args acc 0)))
+                              (wf_bitop_fold_w 2 args 1 0)
                             (nl_abi_fail (bf_int_arg_error_or_bignum args) 0))))
     ;; lognot X = -X-1 (two's complement bitwise NOT).  Doc 190 Phase C:
     ;; the fixnum fast path is unchanged; a Bignum operand routes to
