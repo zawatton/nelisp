@@ -174,6 +174,17 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1681
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# A3 checkpoint: TOTAL1388; S6.2 8 (5direct+3reverse+0inline), after the
+# inherited char-table batch TOTAL1392/S6.2 12. Each owned reader/control
+# conversion row is zero; the private immediate cloner decoder is removed.
+# Physical ABI atoms retain owned boxes; typed metadata producers write WORDs
+# directly and semantic readers accept boxed atoms. GNU N4-reference40 and
+# reader/control77, C ABI clone13/context8/finish18, bytecode145/FX shape+
+# spike+result44, table214/root10/C ABI6/image8, batteries/Anvil/arity pass.
+# All57 standalone files execute with only the known-red maphash-sparse;
+# callback40/globals122/worker intern2 and two new GNU corpus forms pass.
+# Reverse adapters stay until A1/A2 integration. No criteria changed; Ir and
+# static integration checks deliberately remain deferred by the sub-lane brief.
 # Round 4 N4/globals: TOTAL1411; S6.2 remains21. GNU40 activation corpus
 # passes, including alist frames and repeated/outer shallow values. Prior
 # lane crashes. Globals122, finish18, batteries/Anvil/arity pass.

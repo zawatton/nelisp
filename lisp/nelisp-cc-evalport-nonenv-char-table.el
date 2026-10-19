@@ -85,7 +85,7 @@
       (let* ((box (ptr-read-u64 arg 8)) (eptr (ptr-read-u64 box 64))
              (elen (ptr-read-u64 box 80)) (i (nl_ct_lower_end eptr elen idx))
              (hit (and (< i elen) (<= (nl_ct_start eptr i) idx))))
-        (if (and hit (/= (ptr-read-u64 (nl_ct_val eptr i) 0) 3))
+        (if (and hit (/= (nl_val_tag (ptr-read-u64 (nl_ct_val eptr i) 0)) 0))
             (ptr-read-u64 (nl_ct_val eptr i) 0)
           (ptr-read-u64 box 32))))
     (defun nl_char_table_get_local_raw (arg idx out)
@@ -103,9 +103,9 @@
              (i (nl_ct_lower_end eptr elen idx))
              (hit (and (< i elen) (<= (nl_ct_start eptr i) idx)))
              (value (if hit (ptr-read-u64 (nl_ct_val eptr i) 0) 3)))
-        (if (/= value 3) value
+        (if (/= (nl_val_tag value) 0) value
           (let* ((parent (ptr-read-u64 box 88)) (default (ptr-read-u64 box 32)))
-            (if (and (= default 3) (/= parent 0))
+            (if (and (= (nl_val_tag default) 0) (/= parent 0))
                 (nl_ct_get_box_w parent idx 0) default)))))
     ;; Doc 215 builtin word ABI: the value WORD, or 0 after a stashed error for a non-char-table.
     (defun nl_char_table_get_raw_w (arg idx _pad)

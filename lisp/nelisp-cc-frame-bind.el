@@ -258,10 +258,10 @@
              (extern-call nelisp_fnv1a name-ptr)
              (- (sar (nelisp_frame_bind_slot_raw_word ht-ptr 0) 2) 1))
             scratch-pair-slot scratch-outer-slot)
-           (sexp-int-make scratch-count-slot
-                          (+ (sar (nelisp_frame_bind_slot_raw_word ht-ptr 2) 2)
-                             1))
-           (record-slot-set ht-ptr 2 scratch-count-slot)))
+           ;; The table's size is typed integer metadata, produced as a
+           ;; fixnum WORD without a physical scratch/decoder round trip.
+           (record-slot-set ht-ptr 2
+                            (+ (* (+ (sar (nelisp_frame_bind_slot_raw_word ht-ptr 2) 2) 1) 4) 1))))
     (defun nelisp_frame_bind_in_ht
         (ht-ptr name-ptr cell-ptr
                 scratch-pair-slot scratch-outer-slot scratch-count-slot)

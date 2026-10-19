@@ -678,3 +678,40 @@ The constructor loader template is regenerated through its existing script;
 its bytes and exact three gate transformations are unchanged, with a refreshed
 owner source identity. Its owner/serializer controls pass30 with one optional
 real-render fixture skipped.
+
+** S6.2 A3 reader/control compatibility boundaries
+
+The caught value returns its owned stash copy directly. The legacy reader
+context entry similarly owns a physical copy before recursive parsing, so a
+context stored as a container child cannot alias the caller's reused slot.
+The legacy N4 debugger handoff consumes OUT as a borrowed physical view;
+the debugger copies it into rooted arguments before evaluation. All public
+compatibility signatures remain unchanged.
+
+=nl_val_clone_into= preserves incoming immediate WORDs and clones physical
+slots into owned boxes, including Nil/T/Int. Its old immediate decoder
+=nl_vci_store_slot_imm= is removed. Physical INT64_MIN/MAX retain their full
+payloads. This introduces no replacement box-to-WORD decoder. General value
+consumers inspect semantic WORD tags and integer payloads; typed mirror/frame
+counts and let address metadata are produced as immediate WORDs directly.
+Bytecode descriptors, FX metadata, captured declaration markers, char-table
+fallback, time's optional nil, and switch targets accept boxed atoms too.
+
+The source guard is red5 on the preceding dump and green0 on this build.
+The four owned census rows each go from1 to0 (the private decoder disappears).
+The fresh dynamic build and cold image pass; recorder and reconstructed dump
+agree over114 units. TOTAL1392 ->1388; S6.2 12 ->8 (5direct+3reverse+0inline).
+Both reverse adapters remain for A1/A2 integration; no criteria changed.
+
+GNU31.1 matches N4 reference40 and reader/control77, including boxed bytecode
+descriptors, char-table nil fallback and switch targets. Physical clone13,
+reader context8, legacy finish18, bytecode145, FX shape/spike/result44,
+array214, table roots10/C ABI6/image8, readerIO30/control29/environment102/
+apply66 and the three baseline batteries pass. The wrong-thrown-value mutant
+fails. Anvil40/search and unchanged arity pass with the known-red threads
+column. All57 standalone check files execute with only the existing
+maphash-sparse known red; callback40, globals122 and worker intern2 pass.
+Their fixes inspect semantic callback/constant flags and directly publish
+the worker's typed zero-depth WORD. The two new differential corpus forms
+also match GNU31.1. Astra reviewed all reported fixes without another
+concrete finding. Static and Ir checks remain integration work.

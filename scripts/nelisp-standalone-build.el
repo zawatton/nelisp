@@ -6143,7 +6143,7 @@ REPL-facing module it feeds."
     (defun nl_fx_out_of_range (rec)
       (if (= (ptr-read-u64 (data-addr nl_fx_tbl_cache) 32) 0) 0
         (if (< (ptr-read-u64 (ptr-read-u64 rec 8) 16) 4) 1
-          (let* ((i (sar (nl_vector_slot_word rec 3) 2)))
+          (let* ((i (wf_bytecode_w_int (nl_vector_slot_word rec 3))))
             (if (< i (ptr-read-u64 (data-addr nl_fx_tbl_cache) 24)) 1
               (if (< i (ptr-read-u64 (data-addr nl_fx_tbl_cache) 32)) 0 1))))))
     (defun nl_fx_tbl_entry_put (entry)
@@ -14458,8 +14458,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= entry 0)
                  -1
                (let* ((target (nl_cons_cdr_word entry)))
-                 (if (= (logand target 3) 1)
-                     (let* ((offset (sar target 2)))
+                 (if (= (wf_bytecode_w_tag target) 2)
+                     (let* ((offset (wf_bytecode_w_int target)))
                        (if (if (< offset 0) 1
                              (if (< offset code-len) 0 1))
                            -2
@@ -15292,7 +15292,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (rc (wf_bytecode_execute_frame
                           (nl_record_slot_word func 1)
                           (nl_record_slot_word func 2)
-                          (sar (nl_record_slot_word func 3) 2)
+                          (wf_bytecode_w_int (nl_record_slot_word func 3))
                           env out 0 0 0 0 0 0 0 0)))
                 (seq (wf_bytecode_unbind (+ env 32) bound) rc)))))))
     (defun wf_bytecode_bind_argframe (env formals frame argc)
@@ -15345,7 +15345,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (wf_bytecode_execute_frame
                             (nl_record_slot_word func 1)
                             (nl_record_slot_word func 2)
-                            (sar (nl_record_slot_word func 3) 2)
+                            (wf_bytecode_w_int (nl_record_slot_word func 3))
                             env out 0 0 0 0 0 0 0 0))))
                 (seq (if (< bound 0) 0 (wf_bytecode_unbind (+ env 32) bound)) rc)))))))
     (defun wf_bytecode_jit_dispatch_active_p (env)
@@ -15467,14 +15467,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (or (/= (sexp-tag func) 17) (< (record-slot-count func) 4))
           2
         (let* ((dw (nl_record_slot_word func 0)))
-          (if (/= (logand dw 3) 1)
+          (if (/= (wf_bytecode_w_tag dw) 2)
               (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
                   (wf_bytecode_dynamic_function_frame func dw frame argc env out)
                 2)
             (let* ((jit-status (wf_bytecode_try_jit_frame func 0 argc env out frame)))
               (if (= jit-status 1) 0
                 (if (= jit-status 2) 1
-                  (let* ((template (sar dw 2))
+                  (let* ((template (wf_bytecode_w_int dw))
                          (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
@@ -15486,18 +15486,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (wf_bytecode_execute_frame
                          (nl_record_slot_word func 1)
                          (nl_record_slot_word func 2)
-                         (sar (nl_record_slot_word func 3) 2)
+                         (wf_bytecode_w_int (nl_record_slot_word func 3))
                          env out 0 argc maxargs rest frame 0 0 0)))))))))))
     (defun wf_bytecode_function (func args env out)
       (let* ((argc (bf_byte_code_arg_count args 0))
              (dw (nl_record_slot_word func 0)))
-        (if (= (logand dw 3) 1)
+        (if (= (wf_bytecode_w_tag dw) 2)
             (let* ((jit-status (wf_bytecode_try_jit func args argc env out)))
               (if (= jit-status 1)
                   0
                 (if (= jit-status 2)
                     1
-                  (let* ((template (sar dw 2))
+                  (let* ((template (wf_bytecode_w_int dw))
                          (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
@@ -15509,7 +15509,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (wf_bytecode_execute_frame
                          (nl_record_slot_word func 1)
                          (nl_record_slot_word func 2)
-                         (sar (nl_record_slot_word func 3) 2)
+                         (wf_bytecode_w_int (nl_record_slot_word func 3))
                          env out args argc maxargs rest 0 0 0 0)))))))
           (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
               (wf_bytecode_dynamic_function func dw args argc env out)
@@ -15719,7 +15719,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (< (record-slot-count func) 4)
           2
         (let* ((dw (nl_record_slot_word func 0)))
-          (if (/= (logand dw 3) 1)
+          (if (/= (wf_bytecode_w_tag dw) 2)
               (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
                   (wf_bytecode_w_dynamic_function func dw mem first argc env outw out)
                 2)
@@ -15734,7 +15734,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              status)))))
               (if (= jit-status 1) 0
                 (if (= jit-status 2) 1
-                  (let* ((template (sar dw 2))
+                  (let* ((template (wf_bytecode_w_int dw))
                          (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
@@ -15746,7 +15746,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (wf_bytecode_execute_frame
                          (nl_record_slot_word func 1)
                          (nl_record_slot_word func 2)
-                         (sar (nl_record_slot_word func 3) 2)
+                         (wf_bytecode_w_int (nl_record_slot_word func 3))
                          env out 0 argc maxargs rest 0
                          (+ mem (* first 8)) outw 0)))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
@@ -15763,7 +15763,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (wf_bytecode_execute_frame
                (nl_record_slot_word func 1)
                (nl_record_slot_word func 2)
-               (sar (nl_record_slot_word func 3) 2)
+               (wf_bytecode_w_int (nl_record_slot_word func 3))
                env out 0 argc 0 0 0 (+ mem (* first 8)) outw formals))))))
     (defun wf_bytecode_call (env mem sp argc bx)
       ;; Bcall.  A bytecode callee runs on the caller's argument words
@@ -18097,10 +18097,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (let* ((w lst) (r 2))
           (seq
            (while (= r 2)
-             (if (= w 3) (setq r 1)
+             (if (= (nl_val_tag w) 0) (setq r 1)
                (if (/= (m5_fx_word_cons_p w 0) 1) (setq r 0)
                  (let* ((e (nl_cons_car_word w)))
-                   (if (if (= e 7) 1
+                   (if (if (= (nl_val_tag e) 1) 1
                          (if (= (logand e 1) 1) 0
                            (if (= (ptr-read-u64 e 0) 4) 1 0)))
                        (setq w (nl_cons_cdr_word w))
@@ -18169,10 +18169,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; [CODE NLOCALS MIN INDEX NAME MAX REST-INDEX]; MAX -1 means &rest.
     ;; The operand is ARGC, plus (REST-INDEX + 1) << 16 with &rest.
     (defun m5_fx_arity_code (rec argc)
-      (let* ((amin (sar (nl_vector_slot_word rec 2) 2))
+      (let* ((amin (wf_bytecode_w_int (nl_vector_slot_word rec 2)))
              (len (ptr-read-u64 (ptr-read-u64 rec 8) 16))
-             (amax (if (< len 7) amin (sar (nl_vector_slot_word rec 5) 2)))
-             (arest (if (< len 7) -1 (sar (nl_vector_slot_word rec 6) 2))))
+             (amax (if (< len 7) amin (wf_bytecode_w_int (nl_vector_slot_word rec 5))))
+             (arest (if (< len 7) -1 (wf_bytecode_w_int (nl_vector_slot_word rec 6)))))
         (if (< argc amin) -1
           (if (if (= amax -1) 0 (> argc amax)) -1
             (if (> argc 65535) -1
@@ -18246,7 +18246,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq
                (m5_fx_frame_lazy env base argc 0)
                (let* ((word (m5_fx_run_w (nl_vector_slot_word rec 0)
-                              (sar (nl_vector_slot_word rec 1) 2)
+                              (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                               env 0 0 code (if (= argc 0) 0 (+ base 1)) 0)))
                  (if (= word 2)
                      (nl_n4_direct_apply_w fn
@@ -18259,7 +18259,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (/= rc 0) rc
               (seq (m5_fx_frame_lazy env base argc 0)
                    (m5_fx_interp_run_done
-                    (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+                    (m5_fx_run (nl_vector_slot_word rec 0) (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                                env out 0 code (if (= argc 0) 0 (+ base 1)) 0)
                     fn base argc env out scratch 0)))))))
     ;; -3 from the run (declined at entry, no effect yet): apply FN to the
@@ -18331,7 +18331,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_call_words (rec fn argp argc env oslot resw _pad)
       (let* ((frame (nl_n4_push_words env fn argp argc)))
         (m5_fx_call_words_done
-         (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+         (m5_fx_run (nl_vector_slot_word rec 0) (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                     env oslot 0 (m5_fx_arity_code rec argc) argp resw)
          env oslot resw frame 0)))
     (defun m5_fx_call_words_done (st env oslot resw frame _pad)
@@ -18353,7 +18353,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; -3 to decline the run (no effect has happened yet).  C is nil or
     ;; [GEN-CELL LAST-GEN NAME...], see `nelisp--fx-special-gen' (prelude).
     (defun m5_fx_entry_check (c env)
-      (if (= c 3) 0
+      (if (= (nl_val_tag c) 0) 0
         (let* ((gen (nl_vector_slot_word (nl_vector_slot_word c 0) 0)))
           (if (= gen (nl_vector_slot_word c 1)) 0
             (let* ((n (ptr-read-u64 (ptr-read-u64 c 8) 16)) (i 2) (special 0))
@@ -18397,7 +18397,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
-             (stksize (sar (ptr-read-u64 (+ base (* (- (ptr-read-u64 (ptr-read-u64 code 8) 16) 1) 8)) 0) 2))
+             (stksize (wf_bytecode_w_int (ptr-read-u64 (+ base (* (- (ptr-read-u64 (ptr-read-u64 code 8) 16) 1) 8)) 0)))
              (nwords (+ nlocals stksize 1))
              (vbox (nl_alloc_vector nwords))
              (mem (ptr-read-u64 vbox 8))
@@ -18450,14 +18450,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (m5_fx_list_copy a 0)))))
          (while (= status 0)
            (seq
-            (setq op (sar (ptr-read-u64 (+ base (* pc 8)) 0) 2))
+            (setq op (wf_bytecode_w_int (ptr-read-u64 (+ base (* pc 8)) 0)))
             (if (= op 2)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0
-                                    (ptr-read-u64 (+ mem (* (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2) 8)) 0))
+                                    (ptr-read-u64 (+ mem (* (wf_bytecode_w_int (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0)) 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
             (if (= op 3)
                 (seq (setq sp (- sp 1))
-                     (ptr-write-u64 (+ mem (* (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2) 8)) 0
+                     (ptr-write-u64 (+ mem (* (wf_bytecode_w_int (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0)) 8)) 0
                                     (ptr-read-u64 (+ stk (* sp 8)) 0))
                      (setq pc (+ pc 2)))
             (if (= op 1)
@@ -18465,11 +18465,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
             (if (= op 9)
                 (seq (setq sp (- sp 1))
-                     (if (= (ptr-read-u64 (+ stk (* sp 8)) 0) 3)
-                         (setq pc (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2))
+                     (if (= (nl_val_tag (ptr-read-u64 (+ stk (* sp 8)) 0)) 0)
+                         (setq pc (wf_bytecode_w_int (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0)))
                        (setq pc (+ pc 2))))
             (if (= op 8)
-                (setq pc (sar (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) 2))
+                (setq pc (wf_bytecode_w_int (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0)))
             (if (if (= op 6) 1 (if (= op 13) 1 (if (= op 14) 1 (if (= op 4) 1 (if (= op 5) 1 0)))))
                 (seq (setq b (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq a (ptr-read-u64 (+ stk (* (- sp 2) 8)) 0))
@@ -18499,7 +18499,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (ptr-read-u64 resw 0))
                             (setq pc (+ pc 2)))))
             (if (= op 16)
-                (seq (setq n (sar (ptr-read-u64 (+ base (* (+ pc 2) 8)) 0) 2))
+                (seq (setq n (wf_bytecode_w_int (ptr-read-u64 (+ base (* (+ pc 2) 8)) 0)))
                      (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw fslot oslot nslot 0)))
                      (if (/= r 0) (setq status r)
                        (seq (setq sp (+ (- sp n) 1))
@@ -18588,7 +18588,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (seq (setq n (+ n 1)) (setq a (nl_cons_cdr_word a))))
          (setq code (m5_fx_arity_code rec n))
          (if (< code 0) 2
-           (m5_fx_run_w (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+           (m5_fx_run_w (nl_vector_slot_word rec 0) (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                         env 0 args code 0 0)))))
     (defun m5_fx_apply (rec args env out)
       (let* ((n 0) (a args) (code 0))
@@ -18598,7 +18598,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (seq (setq n (+ n 1)) (setq a (ptr-read-u64 (ptr-read-u64 a 8) 8))))
          (setq code (m5_fx_arity_code rec n))
          (if (< code 0) -3
-           (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
+           (m5_fx_run (nl_vector_slot_word rec 0) (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                       env out args code 0 0)))))
     (defun m5_streq_bytes (a b i n)
       (if (>= i n) 1
@@ -20276,7 +20276,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; lexical environment (GNU's marker for lexical binding).
     ;; Doc 215 builtin word ABI: bf_closure_slot_or_singleton_w returns the result WORD (0 = signal stashed).
     (defun bf_closure_slot_or_singleton_w (word elt-t _pad)
-  (if (= word 3) (nelisp_cons_construct_w (if (= elt-t 1) 7 3) 3 0) word))
+  (if (= (nl_val_tag word) 0) (nelisp_cons_construct_w (if (= elt-t 1) 7 3) 3 0) word))
     ;; Slot 5 from IFCDR = (cdr (interactive ...)): the lone spec, or
     ;; [SPEC MODES] when modes follow, as `make-interpreted-closure' does.
     ;; Doc 215 builtin word ABI: bf_closure_iform_value_w returns the result WORD (0 = signal stashed).
@@ -24344,7 +24344,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                (wf_float_time_w 0)
                              (if (= (ptr-read-u64 args 0) 7)
                                  (let* ((tmw (nl_cons_car_word args)))
-                                   (if (= tmw 3)
+                                   (if (= (nl_val_tag tmw) 0)
                                        (wf_float_time_w 0)
                                      (let* ((b (alloc-bytes 32 8))
                                             (w (wf_ft_convert_w (if (= (logand tmw 1) 0) tmw (nl_sci_store_imm tmw b)) 0)))
@@ -25379,7 +25379,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
                                                 (+ env 0) (+ env 64) symbol-word 0))
                                 (word
                                  (if (and (/= function-word 0) (/= function-word 2)
-                                          (/= function-word 3))
+                                          (/= (nl_val_tag function-word) 0))
                                      (seq (wf_word_store_out function-root function-word)
                                           (nl_apply_function_w function-root args env 0))
                                    ,(if (eq (car entry) 'bf_n2_call_lisp_equal)
@@ -27501,14 +27501,15 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                           (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0)
                         (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))))
         0))
-    ;; The thrown value is copied out of the stash into a fresh box before the
-    ;; flag is cleared (the stash is reused by the next signal); no safepoint
-    ;; lies between here and the return.
+    ;; The thrown value owns a fresh box before the reused stash is cleared.
+    ;; Boxed atoms are valid WORDs too; retain their physical representation
+    ;; rather than decoding the copied box into an immediate. No safepoint
+    ;; lies between this copy and the return.
     (defun nl_ct_caught_word (box _pad)
       (seq (nl_ct_copy32 box 268435512 0 0)
            (ptr-write-u64 268435472 0 0)
            (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-           (nl_val_store_word box)))
+           box))
     (defun nl_ct_catch_on_match_w (eqres _p1 _p2 _p3)
       (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
     (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
@@ -37441,8 +37442,9 @@ gets no native definitions and is gated by
          (vector-make 8 backing_slot)
          (record-make type_slot 2 (+ env 32))
          (record-slot-set (+ env 32) 0 backing_slot)
-         (sexp-int-make depth_slot 0)
-         (record-slot-set (+ env 32) 1 depth_slot)
+         ;; Private frame depth is typed metadata, just like the parent's.
+         ;; Keep DEPTH_SLOT as an unused compatible ABI argument.
+         (record-slot-set (+ env 32) 1 1)
          0))
      ;; One 1 MiB-plus-page mmap per eval worker:
      ;;   +0..119   private EvalCtx
@@ -42860,7 +42862,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 
 (defun nl_n4_local_bucket_word (bucket holder)
   (if (= (nl_val_tag bucket) 7)
-      (seq (nl_n4_local_pair_word (nl_cons_car_word bucket) holder)
+      ;; Bare declaration markers are not (NAME . CELL) binding pairs.
+      (seq (if (= (nl_val_tag (nl_cons_car_word bucket)) 7)
+               (nl_n4_local_pair_word (nl_cons_car_word bucket) holder) 0)
            (nl_n4_local_bucket_word (nl_cons_cdr_word bucket) holder)) 0))
 
 ;; Enumerating an outer activation must see each shallow binding's own
@@ -42970,8 +42974,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                 (setq i (+ i 1))))
          (record-make type 2 fresh)
          (record-slot-set fresh 0 backing)
-         (wf_write_int depth-slot depth)
-         (record-slot-set fresh 1 depth-slot)
+         (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
          (wf_write_nil pair)
          (if (= (ptr-read-u64 frame 104) 0)
@@ -43731,7 +43734,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
   (if (= frame 0) rc
     (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
         (nl_n4_finish_rc rc
-          (nl_n4_finish_w (nl_val_store_word out) env 0 frame) out 0)
+          ;; OUT is a borrowed physical view, consumed into the debugger's
+          ;; rooted argument before evaluation. It never escapes as a WORD.
+          (nl_n4_finish_w out env 0 frame) out 0)
       (let* ((state (ptr-read-u64 env 176)))
         (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) rc)))))
     (defun nl_n4_direct_apply_w (function args env _pad)
@@ -43866,8 +43871,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (setq i (+ i 1))))
          (record-make type 2 fresh)
          (record-slot-set fresh 0 backing)
-         (wf_write_int depth-slot depth)
-         (record-slot-set fresh 1 depth-slot)
+         (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
          (wf_write_nil pair)
          (if (= (ptr-read-u64 frame 104) 0)

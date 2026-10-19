@@ -132,8 +132,7 @@
      ;;   Step-8 scratch-overwrite leak is additionally eliminated.
      (let ((ht-slot (alloc-bytes 32 8))
            (buckets-slot (alloc-bytes 32 8))
-           (backing-slot (alloc-bytes 32 8))
-           (int-slot (alloc-bytes 32 8)))
+           (backing-slot (alloc-bytes 32 8)))
        (and
         ;; Step 1: allocate fresh fast-hash-table record (3 slots).
         (record-make (vector-ref-ptr scratch-ptr 1)  ; ht type-tag sym
@@ -151,15 +150,15 @@
                          buckets-slot)
         ;; Step 4: ht.slot 0 = Sexp::Int(65536) — bucket-count (a power
         ;; of 2: lookups mask the hash with count - 1).
-        (sexp-int-make int-slot 65536)
+        ;; Typed metadata producers publish fixnum WORDs directly. The
+        ;; mirror/frame fast readers deliberately consume these WORDs.
         (record-slot-set ht-slot
                          0
-                         int-slot)
+                         262145)
         ;; Step 5: ht.slot 2 = Sexp::Int(0) — size.
-        (sexp-int-make int-slot 0)
         (record-slot-set ht-slot
                          2
-                         int-slot)
+                         1)
         ;; Step 6: allocate nelisp-env record (3 slots) into *globals-out.
         (record-make (vector-ref-ptr scratch-ptr 0)  ; nelisp-env type-tag sym
                      3
@@ -181,10 +180,9 @@
                          0
                          backing-slot)
         ;; Step 11: frames.slot 1 = Sexp::Int(0) — depth.
-        (sexp-int-make int-slot 0)
         (record-slot-set frames-out
                          1
-                         int-slot))))
+                         1))))
   "AOT source for Wave h `nelisp_env_install_empty_globals_frames'.
 
 Builds a fresh empty globals mirror (nelisp-env Record with a 65536-bucket

@@ -2224,6 +2224,14 @@
     (garbage-collect)
     (list (char-table-subtype table) (aref table 0) (aref table 17)
           (char-table-extra-slot table 0) (eq (aref table 18) table))))
+ ;; Physical compatibility values remain valid WORDs through catch and
+ ;; construction, including nil and signed integer endpoints.
+ (let ((answers nil))
+   (dolist (value '(nil t 0 -7 2305843009213693951 -2305843009213693952))
+     (let ((answer (catch 'abi-reader-control (throw 'abi-reader-control value))))
+       (push (list (eq answer value) (not answer) (aref (vector answer) 0)) answers)))
+   (nreverse answers))
+ (let ((load-file-name -7)) (car (read-from-string "(#$ [#$] . #$)")))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

@@ -628,8 +628,8 @@
       (if (= (sexp-tag captured) 0)
           1
         (if (= (sexp-tag captured) 7)
-            (if (= (nl_cons_car_word captured) 7)
-                (if (= (nl_cons_cdr_word captured) 3) 1 0)
+            (if (= (nl_val_tag (nl_cons_car_word captured)) 1)
+                (if (= (nl_val_tag (nl_cons_cdr_word captured)) 0) 1 0)
               0)
           0)))
 

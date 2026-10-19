@@ -22,8 +22,8 @@ def verify(directory):
 
     summary = read("summary.txt")
     statuses = re.findall(r"^[abcd] .*?\brc=(\d+)", summary, re.M)
-    require(len(statuses) == 20 and all(s == "0" for s in statuses),
-            "20 successful commands")
+    require(len(statuses) == 22 and all(s == "0" for s in statuses),
+            "22 successful commands")
     require("STANDALONE-CHECKS PASS" in read("a-standalone-checks.log"), "battery completion")
     markers = {
         "standalone-shallow-binding-check": r"SHALLOW-BINDING failures=0 PASS",
@@ -34,6 +34,7 @@ def verify(directory):
         "standalone-prn-string-escape-check": r"PRN-ESC cases=[1-9][0-9]* bad=0 PASS",
         "standalone-bytecode-word-check": r"BYTECODE-WORD PASS 145/145 cases match GNU",
         "standalone-abi-char-table-word-check": r"ABI-CHAR-TABLE-WORD checks=10 PASS",
+        "standalone-abi-reader-control-word-check": r"ABI-READER-CONTROL-WORD checks=77 PASS",
         "standalone-abi-fx-result-word-check": r"ABI-FX-RESULT checked=44 PASS",
         "standalone-fx-call-shape-check": r"FX-CALL-SHAPE failures=0 PASS",
     }
@@ -43,6 +44,7 @@ def verify(directory):
             "GNU activation API parity")
     require("char-table legacy6 PASS" in read("b-char-table-legacy.log"), "physical char-table ABI")
     require("CHAR-TABLE-IMAGE checks=8 PASS" in read("b-char-table-image.log"), "char-table image relocation")
+    require("physical/WORD clone13 PASS" in read("b-value-clone.log"), "physical value ownership and WORD identity")
     # Standalone adds a final Lisp nil echo to this otherwise identical corpus.
     actual = read("b-standalone-cl-loop-gnu-check.log").rstrip()
     expected = read("b-cl-loop-gnu.emacs.out").rstrip()

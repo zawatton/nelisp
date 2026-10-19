@@ -10,7 +10,7 @@ EVAL_BIN=$D sh test/perf/standalone-checks.sh > $V/a-standalone-checks.log 2>&1
 echo "a rc=$? FAIL=$(grep -c 'STANDALONE-CHECK FAIL' $V/a-standalone-checks.log) known-red=$(grep -c 'known-red' $V/a-standalone-checks.log) last: $(tail -1 $V/a-standalone-checks.log) $(date +%T)" >> $R
 grep 'STANDALONE-CHECK FAIL\|known-red' $V/a-standalone-checks.log | sed 's/^/a   /' >> $R
 # b
-for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el test/standalone-abi-fx-result-word-check.el test/standalone-abi-char-table-word-check.el; do
+for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el test/standalone-abi-fx-result-word-check.el test/standalone-abi-char-table-word-check.el test/standalone-abi-reader-control-word-check.el; do
   lg=$V/b-$(basename $f .el).log
   timeout 600 nice -n 10 $D --load $f > $lg 2>&1; rc=$?
   echo "b $f rc=$rc last: $(tail -1 $lg | cut -c1-150)" >> $R
@@ -23,6 +23,8 @@ python3 test/abi-char-table-legacy-test.py "$D" > "$V/b-char-table-legacy.log" 2
 echo "b char-table-legacy rc=$? last: $(tail -1 "$V/b-char-table-legacy.log")" >> "$R"
 python3 test/abi-char-table-image-test.py "$D" > "$V/b-char-table-image.log" 2>&1
 echo "b char-table-image rc=$? last: $(tail -1 "$V/b-char-table-image.log")" >> "$R"
+python3 test/abi-value-clone-test.py "$D" > "$V/b-value-clone.log" 2>&1
+echo "b value-clone rc=$? last: $(tail -1 "$V/b-value-clone.log")" >> "$R"
 # c
 for n in standalone allocating-standalone percpu-roots mirror-guard; do
   f=tools/nelisp-thread-$n-smoke.el; lg=$V/c-$n.log

@@ -128,37 +128,18 @@
             (ptr-write-u64 dst_word_ptr 0 box))
        box))
 
-    (defun nl_vci_store_slot_imm (src_slot dst_word_ptr)
-      (let ((tag (ptr-read-u8 src_slot 0)))
-        (if (= tag 0)
-            (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 3) 3)
-          (if (= tag 1)
-              (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 7) 7)
-            (if (= tag 2)
-                ;; Physical Int slots also carry full signed 64-bit values.
-                ;; Outside the immediate range, retain an owned Int box;
-                ;; shifting into a fixnum would discard the high bits.
-                (if (or (< (ptr-read-u64 src_slot 8) -2305843009213693952)
-                        (> (ptr-read-u64 src_slot 8) 2305843009213693951))
-                    0
-                  (let ((word (+ (* (ptr-read-u64 (+ src_slot 8) 0) 4) 1)))
-                    (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word)))
-              0)))))
-
     ;; Public C-ABI entry: nl_val_clone_into(src_slot, dst_word_ptr) -> word.
     ;; Immediate SRC (low bit 1): write the 8B word straight to
     ;; DST_WORD_PTR, return it.  Slot-pointer SRC (low bit 0): first
-    ;; convert Nil/T/Int slots back to their canonical immediate word,
-    ;; then default to a shallow rebox when SRC is already arena-owned;
+    ;; retain physical slots as owned boxes, including Nil/T/Int. WORD
+    ;; callers already supply canonical immediates; no physical result is
+    ;; decoded here. Use a shallow rebox when SRC is already arena-owned;
     ;; otherwise use the legacy fresh-box clone.  A BSS flag exposed by
     ;; `nl_bind_clone_force_flag' forces the legacy path.
     (defun nl_val_clone_into (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
-        (let ((imm-word (nl_vci_store_slot_imm src_slot dst_word_ptr)))
-          (if (not (= imm-word 0))
-              imm-word
-            (if (extern-call nl_bind_clone_force_flag)
+        (if (extern-call nl_bind_clone_force_flag)
                 (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
               ;; Membership only chooses the shallow symbol/string path.
               ;; Every other tag takes the same fresh clone on either side
@@ -176,7 +157,7 @@
                         (if (= (ptr-read-u8 src_slot 0) 14)
                             (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
                           (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))
-                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))))
+                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

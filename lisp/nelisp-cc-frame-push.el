@@ -135,10 +135,10 @@
     (defun nelisp_frame_push_bump_now (frames-ptr int-slot)
       ;; Recompute depth+1 again after install; the depth bump must match the
       ;; current frame record, not an old local that survived several calls.
-      (and (sexp-int-make
-            int-slot
-            (+ (sar (nelisp_frame_push_depth_word frames-ptr) 2) 1))
-           (record-slot-set frames-ptr 1 int-slot)))
+      ;; Publish the known integer directly; INT-SLOT remains a compatible
+      ;; unused argument for the legacy frame-push caller.
+      (record-slot-set frames-ptr 1
+                       (+ (* (+ (sar (nelisp_frame_push_depth_word frames-ptr) 2) 1) 4) 1)))
     (defun nelisp_frame_push (frames-ptr scratch-vec-ptr)
      ;; frames-ptr:      *const Sexp pointing at Env::frames_record (=
      ;;                  Sexp::Record(`nelisp-lexframe-stack')).

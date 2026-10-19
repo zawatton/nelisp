@@ -20,10 +20,11 @@
     ;; scratch can be swept while FORM collects and then reused as an arena
     ;; block header; writing a legacy result back into it corrupts the heap.
     ;; No safepoint follows the returned value before this immediate test.
-    ;; 0 is evaluation failure (including flagless abort), 3 is Lisp nil.
+    ;; 0 is evaluation failure (including flagless abort). Legacy physical
+    ;; input can also produce an owned Nil box, so inspect the WORD's tag.
     (defun nl_eval_is_truthy (form env)
       (let* ((word (extern-call nelisp_eval_call_w form env 0)))
-        (if (= word 0) -1 (if (= word 3) 0 1)))))
+        (if (= word 0) -1 (if (= (nl_val_tag word) 0) 0 1)))))
   "AOT truth predicate over the evaluator's WORD result.")
 
 (provide 'nelisp-cc-eval-is-truthy)

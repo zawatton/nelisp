@@ -1615,11 +1615,16 @@
 
     (defun nelisp_reader_parse_one_with_context
         (str-ptr cursor-slot result-slot slot-pool depth context-slot)
-      (let* ((context-word (if (= context-slot 0) 3 (nl_val_store_word context-slot)))
-             (w (nelisp_reader_parse_one_with_context_w
-                 str-ptr cursor-slot 0 slot-pool depth context-word)))
-        (if (= w 0) -1
-          (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))
+      ;; The physical compatibility entry owns a copy, including boxed atoms.
+      ;; It can outlive CONTEXT-SLOT when #$ becomes a container child. The
+      ;; recursive reader has no evaluation/collection safepoint.
+      (let* ((context-word (if (= context-slot 0) 3 (alloc-bytes 32 8))))
+        (seq
+         (if (/= context-slot 0) (nl_sexp_clone_into context-slot context-word) 0)
+         (let* ((w (nelisp_reader_parse_one_with_context_w
+                    str-ptr cursor-slot 0 slot-pool depth context-word)))
+           (if (= w 0) -1
+             (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))))
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_parse_one_with_context_w (str-ptr cursor-slot _pad slot-pool depth context-word)
   (let* ((pool-cap (nelisp_reader_p_pool_cap)) (parse-cap (- pool-cap 1)) (w 0)
