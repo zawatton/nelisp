@@ -47,7 +47,10 @@
 
 (defconst nl-ns-inventory--namespace-overrides
   '(("lisp/nelisp-sexp-layout.el" . "nelisp-")
-    ("lisp/nelisp-lexframe.el" . "nelisp-lexframe-"))
+    ("lisp/nelisp-lexframe.el" . "nelisp-lexframe-")
+    ;; Shared Unicode providers are public nelisp-unicode-* functions;
+    ;; compressed data and lookup helpers remain private nelisp--unicode-*.
+    ("lisp/nelisp-stdlib-unicode.el" . "nelisp-"))
   "Explicit `nl-ns-declare' overrides for files whose majority-prefix
 inference (`nl-ns-file-namespace') picks a narrower namespace than the
 file's own names actually share.  nelisp-sexp-layout.el defines several

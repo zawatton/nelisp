@@ -1840,10 +1840,10 @@ from `(defvar X nil)'."
 ;; Simple case mapping over ASCII, Latin-1, Latin Extended-A, Greek and
 ;; Cyrillic.  Verified character by character against Emacs 30.1 across every
 ;; code point in those ranges -- the three that no rule covers (#xDF, #x4C0,
-;; #x4CF) are written out.  OUTSIDE those ranges a character passes through
-;; unchanged, which is a real limit and is stated rather than hidden: Latin
-;; Extended-B and the rest of the BMP need a generated table, and a table is
-;; the honest way to get them, not more rules.
+;; #x4CF) are written out.  These branches remain the bootstrap/ASCII-heavy
+;; fast path.  Outside them, `nelisp-stdlib-unicode.el' supplies the generated
+;; GNU 31.1 mapping; an older image without that module retains the old
+;; pass-through fallback.
 ;;
 ;; Before this the mapping was ASCII only, so (upcase "ae\u0301") -- any accented
 ;; letter -- came back unchanged.  A case operation cannot report a character
@@ -1873,7 +1873,9 @@ from `(defvar X nil)'."
    ((= c #x4CF) #x4C0)
    ((nelisp--case-pair-p c #x4C1 #x4CE t) (1- c))
    ((nelisp--case-pair-p c #x4D0 #x4FF nil) (1- c))
-   (t c)))
+   (t (if (fboundp 'nelisp-unicode-simple-upcase)
+          (nelisp-unicode-simple-upcase c)
+        c))))
 
 (defun nelisp--case-down-char (c)
   (cond
@@ -1898,7 +1900,9 @@ from `(defvar X nil)'."
    ((= c #x4C0) #x4CF)
    ((nelisp--case-pair-p c #x4C1 #x4CE nil) (1+ c))
    ((nelisp--case-pair-p c #x4D0 #x4FF t) (1+ c))
-   (t c)))
+   (t (if (fboundp 'nelisp-unicode-simple-downcase)
+          (nelisp-unicode-simple-downcase c)
+        c))))
 
 (defun nelisp--case-letter-p (c)
   (not (and (eq (nelisp--case-up-char c) c) (eq (nelisp--case-down-char c) c))))
@@ -1952,6 +1956,8 @@ from `(defvar X nil)'."
   (cond (nelisp--case-table (nelisp--case-installed obj nil))
         ((and (stringp obj) (unibyte-string-p obj))
          (nelisp--case-unibyte-string obj nil))
+        ((and (stringp obj) (fboundp 'nelisp-unicode-case-string))
+         (nelisp-unicode-case-string obj 'lower))
         ((stringp obj)
          (let ((out "") (i 0) (n (length obj)))
            (while (< i n)
@@ -1971,16 +1977,38 @@ from `(defvar X nil)'."
   (unless (or (stringp obj) (integerp obj))
     (signal 'wrong-type-argument (list 'char-or-string-p obj)))
   (if (integerp obj) (upcase obj)
-    (let ((n (length obj)) (i 0) (out "") (prev nil))
-      (while (< i n)
-        (let* ((c (aref obj i))
-               (w (or (nelisp--case-letter-p c) (and (>= c ?0) (<= c ?9)))))
-          (setq out (concat out (char-to-string (if (and w (not prev))
-                                                    (nelisp--case-up-char c)
-                                                  c))))
-          (setq prev w))
-        (setq i (1+ i)))
-      out))))
+    (cond
+     ((unibyte-string-p obj)
+      (let ((n (length obj)) (i 0) bytes (initial t))
+        (while (< i n)
+          (let* ((c (aref obj i))
+                 ;; Non-ASCII bytes use Emacs's raw-byte pseudocharacters for
+                 ;; syntax lookup; byte 160 is a word constituent there even
+                 ;; though Unicode U+00A0 is whitespace.
+                 (syntax (char-syntax (if (>= c 128) (+ c #x3fff00) c)))
+                 (word (or (eq syntax ?w)
+                           (and (boundp 'case-symbols-as-words)
+                                case-symbols-as-words (eq syntax ?_)))))
+            (setq bytes (cons (if (and initial (>= c ?a) (<= c ?z))
+                                  (- c 32)
+                                c)
+                              bytes)
+                  initial (not word)))
+          (setq i (1+ i)))
+        (apply #'unibyte-string (nreverse bytes))))
+     ((fboundp 'nelisp-unicode-case-string)
+      (nelisp-unicode-case-string obj 'title))
+     (t
+      (let ((n (length obj)) (i 0) (out "") (prev nil))
+        (while (< i n)
+          (let* ((c (aref obj i))
+                 (w (or (nelisp--case-letter-p c) (and (>= c ?0) (<= c ?9)))))
+            (setq out (concat out (char-to-string (if (and w (not prev))
+                                                      (nelisp--case-up-char c)
+                                                    c))))
+            (setq prev w))
+          (setq i (1+ i)))
+        out))))))
 
 ;; The regexp engine honours this (lisp/nelisp-stdlib-regexp.el); stock Emacs
 ;; already binds it, so the guard makes this a declaration for the standalone
@@ -1994,14 +2022,16 @@ from `(defvar X nil)'."
   ;; A STRING gets the FULL mapping and a CHARACTER the simple one, which is
   ;; Emacs's rule and is not a distinction worth guessing at: (upcase ?\N{U+00DF})
   ;; is U+1E9E, while (upcase "\N{U+00DF}") is "SS", because a full mapping may
-  ;; change the length and a character cannot.  U+00DF is the only expansion
-  ;; inside the ranges mapped here.
+  ;; change the length and a character cannot.  The generated Unicode module
+  ;; carries every GNU 31.1 full mapping; the inline fallback knows U+00DF.
   (unless (or (stringp obj)
               (and (integerp obj) (>= obj 0) (<= obj 4194303)))
     (signal 'wrong-type-argument (list 'char-or-string-p obj)))
   (cond (nelisp--case-table (nelisp--case-installed obj t))
         ((and (stringp obj) (unibyte-string-p obj))
          (nelisp--case-unibyte-string obj t))
+        ((and (stringp obj) (fboundp 'nelisp-unicode-case-string))
+         (nelisp-unicode-case-string obj 'upper))
         ((stringp obj)
          (let ((out "") (i 0) (n (length obj)))
            (while (< i n)
@@ -4425,33 +4455,49 @@ The matcher accepts some incomplete expressions; searches must reject them."
 
 (defun nelisp--cc03-replacement-case (text)
   "Determine the case conversion requested by the matched TEXT."
-  (let ((i 0) (n (length text)) (lower nil) (upper nil)
-        (initial t) (capitalized t))
+  ;; This is the four-flag decision in GNU 31.1 search.c's
+  ;; `replace-match': the case of the previous character determines whether
+  ;; the current one is a word initial, including caseless constituents.
+  (let ((i 0) (n (length text)) (prevc ?\n)
+        (some-multiletter-word nil) (some-lowercase nil)
+        (some-nonuppercase-initial nil) (some-uppercase nil))
     (while (< i n)
-      (let* ((c (aref text i)) (up (upcase c)) (down (downcase c))
-             (word (or (eq (char-syntax c) ?w)
-                       (and (boundp 'case-symbols-as-words) case-symbols-as-words
-                            (eq (char-syntax c) ?_)))))
-        (if word
-            (progn
-              (when (/= up down)
-                (if (= c down) (setq lower t) (setq upper t))
-                (when (and initial (/= c up)) (setq capitalized nil)))
-              (setq initial nil))
-          (setq initial t)))
+      (let* ((c (aref text i))
+             (up (upcase c)) (down (downcase c))
+             (prevc-syntax (char-syntax prevc))
+             (prevc-word
+              (or (eq prevc-syntax ?w)
+                  (and (boundp 'case-symbols-as-words)
+                       case-symbols-as-words (eq prevc-syntax ?_)))))
+        (cond
+         ((and (/= up down) (= c down))
+          (setq some-lowercase t)
+          (if prevc-word
+              (setq some-multiletter-word t)
+            (setq some-nonuppercase-initial t)))
+         ;; GNU's `uppercasep' is true when downcasing changes C.  That also
+         ;; includes Unicode titlecase characters such as U+01C5, which are
+         ;; distinct from both their uppercase and lowercase mappings.
+         ((/= down c)
+          (setq some-uppercase t)
+          (when prevc-word (setq some-multiletter-word t)))
+         ((not prevc-word)
+          (setq some-nonuppercase-initial t)))
+        (setq prevc c))
       (setq i (1+ i)))
-    (cond ((and upper (not lower)) 'upper)
-          ((and upper capitalized) 'capitalize))))
+    (cond
+     ((and (not some-lowercase) some-multiletter-word) 'upper)
+     ((and (not some-nonuppercase-initial) some-multiletter-word) 'capitalize)
+     ((and (not some-nonuppercase-initial) some-uppercase) 'upper))))
 
 (defun nelisp--cc03-expand-replacement (newtext literal string case-action)
-  "Expand NEWTEXT, preserving the case of backreference substitutions."
-  (let ((i 0) (start 0) (n (length newtext)) (initial t) pieces part)
+  "Expand NEWTEXT, then apply CASE-ACTION across the complete result."
+  (let ((i 0) (start 0) (n (length newtext)) pieces part)
     (while (< i n)
       (if (and (not literal) (eq (aref newtext i) ?\\))
           (progn
             (when (> i start)
-              (setq part (nelisp--cc03-case-text (substring newtext start i) case-action initial)
-                    pieces (cons (car part) pieces) initial (cdr part)))
+              (setq pieces (cons (substring newtext start i) pieces)))
             (setq i (1+ i))
             (when (= i n) (error "Invalid use of ‘\\’ in replacement text"))
             (let ((c (aref newtext i)))
@@ -4462,30 +4508,43 @@ The matcher accepts some incomplete expressions; searches must reject them."
                ((eq c ?\\) (setq part "\\"))
                ((eq c ??) (setq part "\\?"))
                (t (error "Invalid use of ‘\\’ in replacement text")))
-              ;; Substitutions affect word boundaries but retain their case.
-              (setq part (nelisp--cc03-case-text part nil initial)
-                    pieces (cons (car part) pieces) initial (cdr part)))
+              ;; GNU applies case conversion after expanding NEWTEXT, so a
+              ;; substituted group is converted and affects word boundaries.
+              (setq pieces (cons part pieces)))
             (setq i (1+ i) start i))
         (setq i (1+ i))))
     (when (> n start)
-      (setq part (nelisp--cc03-case-text (substring newtext start n) case-action initial)
-            pieces (cons (car part) pieces)))
-    (apply #'concat (nreverse pieces))))
+      (setq pieces (cons (substring newtext start n) pieces)))
+    (let ((expanded (apply #'concat (nreverse pieces))))
+      ;; Apply conversion once to the fully expanded string.  Besides making
+      ;; word boundaries span backreferences, this preserves GNU's full
+      ;; titlecase mappings (ǆ -> ǅ, ﬃ -> Ffi).
+      (cond ((eq case-action 'upper) (upcase expanded))
+            ((eq case-action 'capitalize) (upcase-initials expanded))
+            (t expanded)))))
 
 (defun nelisp--cc03-case-text (text action initial)
   "Return converted TEXT and the next word-initial state as a cons.
-ACTION applies only to literal text; INITIAL also crosses substitutions."
+INITIAL crosses literal text and substituted match groups."
   (let ((i 0) (n (length text)) chars)
     (while (< i n)
       (let* ((c (aref text i)) (syntax (char-syntax c))
              (word (or (eq syntax ?w)
                        (and (boundp 'case-symbols-as-words)
                             case-symbols-as-words (eq syntax ?_)))))
-        (setq chars (cons (char-to-string
-                           (cond ((eq action 'upper) (upcase c))
-                                 ((eq action 'capitalize)
-                                  (if initial (upcase c) (downcase c)))
-                                 (t c))) chars)
+        (setq chars (cons
+                     (cond
+                      ;; Use string upcase for full Unicode mappings: unlike
+                      ;; character upcase, U+00DF expands to "SS".
+                      ((eq action 'upper) (upcase (char-to-string c)))
+                      ((eq action 'capitalize)
+                       ;; GNU `upcase-initials' titlecases U+00DF to "Ss" and
+                       ;; otherwise preserves the rest of each word.
+                       (if initial
+                           (if (= c #xDF) "Ss" (char-to-string (upcase c)))
+                         (char-to-string c)))
+                      (t (char-to-string c)))
+                     chars)
               initial (not word)))
       (setq i (1+ i)))
     (cons (apply #'concat (nreverse chars)) initial)))
@@ -13848,22 +13907,20 @@ this file, but not disallowed) cannot be confused with a lookup miss.")
 
 (defun nelisp--syntax-default-class (ch)
   "Bottom-of-chain class for character CH when no table entry (own or
-inherited) covers it: the five whitespace codepoints (space/tab/
-newline/formfeed/CR) are whitespace, ASCII letters/digits and any
-character above the ASCII range are word constituents, everything else
-falls to symbol-constituent.  An approximation of Emacs's own
-Unicode-category-driven default, not a port of it (Doc 204 §6.2 scopes
-the full class set out) -- no consumer through P4 exercises a character
-this rule disagrees with Emacs 30.1 on; a future phase that needs exact
-parity here will have to extend this."
-  (cond
-   ((memq ch '(?\s ?\t ?\n ?\f ?\r)) ?\s)
-   ((or (and (>= ch ?0) (<= ch ?9))
-        (and (>= ch ?A) (<= ch ?Z))
-        (and (>= ch ?a) (<= ch ?z))
-        (>= ch 128))
-    ?w)
-   (t ?_)))
+inherited) covers it.  The generated Unicode provider contains GNU 31.1's
+standard syntax classes for every Unicode scalar.  The older bootstrap
+approximation remains available when loading this prelude without that
+module."
+  (if (fboundp 'nelisp-unicode-syntax)
+      (nelisp-unicode-syntax ch)
+    (cond
+     ((memq ch '(?\s ?\t ?\n ?\f ?\r)) ?\s)
+     ((or (and (>= ch ?0) (<= ch ?9))
+          (and (>= ch ?A) (<= ch ?Z))
+          (and (>= ch ?a) (<= ch ?z))
+          (>= ch 128))
+      ?w)
+     (t ?_))))
 
 (defun nelisp--syntax-lookup (table ch)
   "Class char for character CH in TABLE, walking TABLE's PARENT chain
@@ -22339,37 +22396,75 @@ signals an error rather than passing text through unexpanded."
               (setq i (1+ i)))))
         out)))
   (defun nelisp--rris-case (matched rep)
-    "Apply Emacs's FIXEDCASE=nil adjustment: MATCHED all-caps upcases REP."
-    (let ((i 0) (n (length matched)) (letters 0) (uppers 0))
-      (while (< i n)
-        (let ((c (aref matched i)))
-          (when (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z)))
-            (setq letters (1+ letters))
-            (when (and (>= c ?A) (<= c ?Z)) (setq uppers (1+ uppers)))))
-        (setq i (1+ i)))
-      (if (and (> letters 1) (= letters uppers)) (upcase rep) rep)))
+    "Apply GNU `replace-match' case adjustment from MATCHED to REP."
+    (let ((action (nelisp--cc03-replacement-case matched)))
+      ;; Keep REP itself when no conversion is requested.  Rebuilding it one
+      ;; character at a time changes an unibyte replacement into multibyte.
+      (cond ((eq action 'upper) (upcase rep))
+            ((eq action 'capitalize) (upcase-initials rep))
+            (t rep))))
   (defun nelisp--rris (regexp rep string
                               &optional fixedcase literal
                               subexp start)
-    (let ((l (length string))
-          (from (or start 0))
-          (pieces nil))
-      (while (and (< from l) (string-match regexp string from))
-        (let* ((mb (match-beginning (or subexp 0)))
-               (me (match-end (or subexp 0)))
-               (whole-e (match-end 0))
-               (matched (substring string mb me))
-               (text (if (stringp rep)
-                         (nelisp--rris-expand rep string literal)
-                       (funcall rep (substring string (match-beginning 0)
-                                               (match-end 0))))))
-          (when (= whole-e (match-beginning 0))
-            (setq whole-e (min l (1+ (match-beginning 0)))))
-          (setq pieces (cons (if fixedcase text (nelisp--rris-case matched text))
-                             (cons (substring string from mb) pieces)))
-          (setq from (max whole-e (if (= me mb) (min l (1+ mb)) me)))))
-      (setq pieces (cons (substring string from l) pieces))
-      (apply #'concat (nreverse pieces)))))
+    (save-match-data
+      (let ((l (length string))
+            (from (or start 0))
+            (pieces nil))
+        (while (and (< from l) (string-match regexp string from))
+          (let* ((whole-b (match-beginning 0))
+                 (whole-match-end (match-end 0))
+                 (mb (match-beginning (or subexp 0)))
+                 (me (match-end (or subexp 0)))
+                 (whole-e whole-match-end)
+                 (matched (substring string mb me))
+                 (text (if (stringp rep)
+                           (nelisp--rris-expand rep string literal)
+                         (let ((replacement
+                                ;; GNU translates match data to the matched
+                                ;; substring while calling a functional REP.
+                                (if (fboundp 'match-data--translate)
+                                    (let ((saved-data (match-data)))
+                                      (unwind-protect
+                                          (progn
+                                            (match-data--translate (- whole-b))
+                                            (funcall rep
+                                                     (substring string whole-b
+                                                                whole-match-end)))
+                                        (set-match-data saved-data)))
+                                  (let ((saved-caps nlre--last-caps)
+                                        (saved-buffer nlre--last-buffer)
+                                        (translated (copy-sequence nlre--last-caps))
+                                        (i 0))
+                                    (while (< i (length translated))
+                                      (let ((cap (aref translated i)))
+                                        (when cap
+                                          (aset translated i
+                                                (cons (- (car cap) whole-b)
+                                                      (- (cdr cap) whole-b)))))
+                                      (setq i (1+ i)))
+                                    (unwind-protect
+                                        (progn
+                                          (setq nlre--last-caps translated
+                                                nlre--last-buffer nil)
+                                          (funcall rep
+                                                   (substring string whole-b
+                                                              whole-match-end)))
+                                      (setq nlre--last-caps saved-caps
+                                            nlre--last-buffer saved-buffer))))))
+                           ;; A function's result is still NEWTEXT: expand it
+                           ;; unless LITERAL requests verbatim insertion.
+                           (nelisp--rris-expand replacement string literal)))))
+            (when (= whole-e whole-b)
+              (setq whole-e (min l (1+ whole-b))))
+            (let ((next-from whole-e))
+              ;; Keep the rest of the whole match when replacing a subgroup,
+              ;; and the character skipped to advance after an empty match.
+              (setq pieces (cons (substring string me next-from)
+                                 (cons (if fixedcase text (nelisp--rris-case matched text))
+                                       (cons (substring string from mb) pieces)))
+                    from next-from))))
+        (setq pieces (cons (substring string from l) pieces))
+        (apply #'concat (nreverse pieces))))))
 (unless (fboundp 'nelisp--base64-value)
   (defun nelisp--base64-value (char)
     (cond
@@ -25421,6 +25516,9 @@ no-op function, without wiring a real menu-bar item into MAPS."
                (nreverse out)))
             (t (process-get process key))))
      (t t))))
+
+(unless (fboundp 'looking-back)
+  (defalias 'looking-back 'nlre--looking-back))
 
 (defun re-search-backward (regexp &optional bound noerror count)
   "Search backward for REGEXP, validating regexp syntax even on empty text."

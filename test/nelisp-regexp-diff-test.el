@@ -137,8 +137,8 @@ first real match -- the case the filter exists to speed up."
       (should (= nlre--compiled-cache-hits 1))
       (should (= nlre--compiled-cache-misses 1)))))
 
-(ert-deftest nelisp-regexp-compiled-cache-separates-fold-and-syntax-table ()
-  "Case-fold values and syntax-table identities occupy separate entries."
+(ert-deftest nelisp-regexp-compiled-cache-separates-fold-not-irrelevant-syntax-table ()
+  "Fold values differ, while literal patterns ignore syntax-table identity."
   (nlre--compiled-cache-clear)
   (setq nlre--compiled-cache-hits 0
         nlre--compiled-cache-misses 0)
@@ -149,9 +149,176 @@ first real match -- the case the filter exists to speed up."
   (let ((case-fold-search nil))
     (with-syntax-table (copy-syntax-table)
       (nlre--compiled-pattern "cache-key")))
-  (should (= nlre--compiled-cache-count 3))
-  (should (= nlre--compiled-cache-hits 0))
-  (should (= nlre--compiled-cache-misses 3)))
+  (should (= nlre--compiled-cache-count 2))
+  (should (= nlre--compiled-cache-hits 1))
+  (should (= nlre--compiled-cache-misses 2)))
+
+(ert-deftest nelisp-regexp-compiled-cache-invalidates-mutable-inputs ()
+  "Mutating key inputs in place must never return a stale compilation."
+  (let ((case-fold-search nil)
+        (pattern (copy-sequence "alpha"))
+        (search-spaces-regexp (copy-sequence " +")))
+    (nlre--compiled-cache-clear)
+    (let ((pattern-first (nlre--compiled-pattern pattern)))
+      (aset pattern 0 ?o)
+      (should-not (eq pattern-first (nlre--compiled-pattern pattern))))
+    (let ((spaces-first (nlre--compiled-pattern "a b")))
+      (aset search-spaces-regexp 0 ?x)
+      (should-not (eq spaces-first (nlre--compiled-pattern "a b"))))))
+
+(ert-deftest nelisp-regexp-compiled-cache-defers-case-table-contents ()
+  "Cached plans stay valid because case translation happens at match time."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (table (copy-case-table (current-case-table))))
+      (set-case-table table)
+      (nlre--compiled-cache-clear)
+      (let ((first (nlre--compiled-pattern "A")))
+        (should (= (nlre-string-match "A" "a") 0))
+        (set-char-table-range (char-table-extra-slot table 1) ?A ?z)
+        (should (eq first (nlre--compiled-pattern "A")))
+        (should-not (nlre-string-match "A" "a"))
+        (should (= (nlre-string-match "A" "z") 0))))))
+
+(ert-deftest nelisp-regexp-compiled-cache-tracks-only-needed-syntax-table ()
+  "Syntax mutation invalidates syntax patterns but not literal patterns."
+  (with-temp-buffer
+    (let ((case-fold-search nil)
+          (table (copy-syntax-table)))
+      (set-syntax-table table)
+      (nlre--compiled-cache-clear)
+      (let ((syntax-first (nlre--compiled-pattern "\\sw"))
+            (literal-first (nlre--compiled-pattern "literal")))
+        (modify-syntax-entry ?_ "w" table)
+        (should-not (eq syntax-first (nlre--compiled-pattern "\\sw")))
+        (should (eq literal-first (nlre--compiled-pattern "literal")))))))
+
+(ert-deftest nelisp-regexp-anchored-greedy-suffix-plan-matches-host ()
+  "Anchored greedy-dot captures use the finite suffix plan with GNU spans."
+  (dolist (case
+           '(("\\`\\(.*\\)\\(\\)\\'" "alpha")
+             ("\\`\\(.*\\)\\(\\.el\\)\\'" "alpha.el")
+             ("\\`\\(.*\\)\\(a\\|ba\\)\\'" "ba")
+             ("\\`\\(.*\\)\\(\\.so\\|\\.elc\\|\\.elc\\.gz\\|\\.el\\|\\.el\\.gz\\)\\'"
+              "alpha.el.gz")
+             ("\\`\\(.*\\)\\(\n\\.el\\)\\'" "alpha\n.el")
+             ("\\`\\(.*\\)\\(\\.el\\)\\'" "alpha\nbeta.el")))
+    (let* ((regexp (nth 0 case))
+           (string (nth 1 case))
+           (reference (string-match regexp string))
+           (reference-data (and reference (match-data)))
+           (compiled (nlre--compiled-pattern regexp))
+           (plan (aref compiled 2))
+           (actual (nlre-string-match regexp string)))
+      (should (and plan (eq (aref plan 0) :greedy-suffix)))
+      (should (equal actual reference))
+      (when reference
+        (should (equal (nlre-match-beginning 0) (nth 0 reference-data)))
+        (should (equal (nlre-match-end 0) (nth 1 reference-data)))
+        (should (equal (nlre-match-beginning 1) (nth 2 reference-data)))
+        (should (equal (nlre-match-end 1) (nth 3 reference-data)))
+        (should (equal (nlre-match-beginning 2) (nth 4 reference-data)))
+        (should (equal (nlre-match-end 2) (nth 5 reference-data)))))))
+
+(ert-deftest nelisp-regexp-search-spaces-and-syntax-table-match-host ()
+  "Mutable search and syntax inputs affect matching exactly as on GNU."
+  (dolist (spaces '("[ \t]+" "\\([ \t]+\\)"))
+    (let* ((search-spaces-regexp spaces)
+           (regexp "a b\\(c\\)") (string "a\t\tbc")
+           (reference (string-match regexp string))
+           (reference-data (and reference (match-data)))
+           (actual (nlre-string-match regexp string)))
+      (should (equal actual reference))
+      (should (equal (and actual (nlre-match-beginning 1))
+                     (and reference (nth 2 reference-data))))
+      (when (> (length reference-data) 4)
+        (should (equal (nlre-match-beginning 2) (nth 4 reference-data))))))
+  (with-temp-buffer
+    (let ((table (copy-syntax-table)))
+      (set-syntax-table table)
+      (modify-syntax-entry ?_ "w" table)
+      (let* ((regexp "\\w+") (string "_x")
+             (reference (string-match regexp string))
+             (reference-end (and reference (match-end 0)))
+             (actual (nlre-string-match regexp string)))
+        (should (equal actual reference))
+        (should (equal (and actual (nlre-match-end 0)) reference-end))))))
+
+(ert-deftest nelisp-regexp-case-fold-unicode-and-suffix-match-host ()
+  "Canonical Unicode case folding also applies to finite suffix plans."
+  (let ((case-fold-search t))
+    (dolist (case '(("σ" "ς") ("\\(ä\\)\\'" "Ä")))
+      (let* ((regexp (nth 0 case)) (string (nth 1 case))
+             (reference (string-match regexp string))
+             (reference-data (and reference (match-data)))
+             (actual (nlre-string-match regexp string)))
+        (should (equal actual reference))
+        (should (equal (and actual (nlre-match-end 0))
+                       (and reference (nth 1 reference-data))))))))
+
+(ert-deftest nelisp-regexp-posix-alpha-matches-unicode-letters ()
+  "POSIX alphabetic classes classify Unicode letters at match time."
+  (let* ((case-fold-search nil)
+         (regexp "[[:alpha:]]+")
+         (string "Ää σς")
+         (reference (string-match regexp string))
+         (reference-end (and reference (match-end 0)))
+         (actual (nlre-string-match regexp string)))
+    (should (equal actual reference))
+    (should (equal (and actual (nlre-match-end 0)) reference-end))
+    (should (= actual 0))
+    (should (= (nlre-match-end 0) 2))))
+
+(ert-deftest nelisp-regexp-raw-byte-literal-keeps-pattern-kind ()
+  "A raw byte pattern remains distinct from the same-codepoint text pattern."
+  (let* ((case-fold-search nil)
+         (pattern (unibyte-string 233))
+         (subjects (list pattern (string 233) (string-as-multibyte pattern))))
+    (dolist (string subjects)
+      (let ((reference (string-match pattern string))
+            (actual (nlre-string-match pattern string)))
+        (should (equal actual reference))))))
+
+(ert-deftest nelisp-regexp-raw-byte-suffix-keeps-pattern-kind ()
+  "Raw-byte finite suffixes remain distinct from Unicode text."
+  (let* ((case-fold-search nil)
+         (byte (unibyte-string 233))
+         (open (unibyte-string ?\\ ?\())
+         (close-eos (unibyte-string ?\\ ?\) ?\\ ?'))
+         (suffix (concat open byte close-eos))
+         (greedy (concat (unibyte-string ?\\ ?` ?\\ ?\( ?. ?* ?\\ ?\)
+                                         ?\\ ?\()
+                         byte close-eos))
+         (subjects (list byte (string 233) (string-as-multibyte byte))))
+    (dolist (regexp (list suffix greedy))
+      (let ((plan (aref (nlre--compiled-pattern regexp) 2)))
+        (should (memq (aref plan 0) '(:suffix :greedy-suffix))))
+      (dolist (string subjects)
+        (let ((reference (string-match regexp string))
+              (reference-data (match-data))
+              (nlre--last-buffer nil)
+              (actual (nlre-string-match regexp string)))
+          (should (equal actual reference))
+          (when reference
+            (should (equal (nlre-match-data t) reference-data))))))))
+
+(ert-deftest nelisp-regexp-multichar-literal-prefix-scans-before-engine ()
+  "A leading literal run locates candidates without changing full matching."
+  (dolist (case '(("needle\\([0-9]+\\)" "xxxxneedle42" nil nil)
+                  ("Needle\\(.\\)\\1" "xxneedleaa" t nil)
+                  ("needleZ." "xxneedleZtail" nil 10)
+                  ("needleZ." "xxneedleZtail" nil 9)))
+    (let* ((regexp (nth 0 case)) (string (nth 1 case))
+           (case-fold-search (nth 2 case)) (ceiling (nth 3 case))
+           (reference (if ceiling
+                          (string-match regexp (substring string 0 ceiling))
+                        (string-match regexp string)))
+           (compiled (nlre--compiled-pattern regexp))
+           (prefix (aref compiled 4))
+           (actual (nlre-string-match regexp string 0 ceiling)))
+      (should (and prefix (eq (aref prefix 0) :literal)
+                   (> (length (aref prefix 1)) 1)))
+      (should (equal actual reference)))))
 
 (ert-deftest nelisp-regexp-compiled-cache-evicts-least-recently-used ()
   "The bounded cache evicts the LRU entry rather than clearing everything."
@@ -272,7 +439,24 @@ via the backtracking slow path (Doc T48d)."
     (goto-char 1)
     (should (= (nlre--re-search-forward "needle" nil nil) 9))
     (should (= (point) 9))
-    (should (= (nlre-match-beginning 0) 3))))
+    (should (= (nlre-match-beginning 0) 3))
+    (should (eq nlre--last-buffer (current-buffer)))
+    (let ((integer-data (nlre-match-data t))
+          (marker-data (nlre-match-data)))
+      (should (equal (butlast integer-data) '(3 9)))
+      (should (eq (car (last integer-data)) (current-buffer)))
+      (should (markerp (car marker-data)))
+      (should (= (marker-position (car marker-data)) 3)))
+    (let ((old-caps nlre--last-caps) (old-buffer nlre--last-buffer))
+      (goto-char 1)
+      ;; The internal string scan finds NEEDLE later, but `looking-at' fails
+      ;; and must restore the prior successful buffer match state.
+      (should-not (nlre--looking-at "needle"))
+      (should (eq nlre--last-caps old-caps))
+      (should (eq nlre--last-buffer old-buffer))
+      (should-not (nlre--re-search-forward "absent" nil t))
+      (should (eq nlre--last-caps old-caps))
+      (should (eq nlre--last-buffer old-buffer)))))
 
 (ert-deftest nelisp-regexp-single-atom-fast-plan-matches-host ()
   "A bare, quantifier-free, group-free single atom takes the `:atom' fast
@@ -452,6 +636,43 @@ char), only the flipped case, or no match exists at all."
       (should (= (point) 2))
       (should (eq nlre--last-caps 'saved-match-data)))))
 
+(ert-deftest nelisp-regexp-looking-back-matches-host-and-retains-point ()
+  "Backward look checks exact end, greedy extension, limits and captures."
+  (dolist (case '((".*" nil nil) (".*" 4 t) ("a.*" nil nil)
+                  ("\\(a.*\\)" 3 t) ("z" nil nil)))
+    (with-temp-buffer
+      (insert "xxabc")
+      (goto-char (point-max))
+      (let* ((regexp (nth 0 case)) (limit (nth 1 case)) (greedy (nth 2 case))
+             (origin (point))
+             (reference (looking-back regexp limit greedy))
+             (reference-start (and reference (match-beginning 0)))
+             (reference-end (and reference (match-end 0)))
+             (reference-group (and reference (> (length (match-data)) 2)
+                                   (cons (match-beginning 1) (match-end 1))))
+             (actual (nlre--looking-back regexp limit greedy)))
+        (should (equal actual reference))
+        (should (= (point) origin))
+        (when reference
+          (should (= (nlre-match-beginning 0) reference-start))
+          (should (= (nlre-match-end 0) reference-end))
+          (when reference-group
+            (should (equal (cons (nlre-match-beginning 1) (nlre-match-end 1))
+                           reference-group))))))))
+
+(ert-deftest nelisp-regexp-looking-back-failure-preserves-match-state ()
+  "A failed backward look preserves match data and buffer origin."
+  (with-temp-buffer
+    (insert "xxabc")
+    (goto-char (point-max))
+    (should (nlre--looking-back "a.*" nil nil))
+    (let ((old-caps nlre--last-caps) (old-buffer nlre--last-buffer)
+          (origin (point)))
+      (should-not (nlre--looking-back "z" nil nil))
+      (should (= (point) origin))
+      (should (eq nlre--last-caps old-caps))
+      (should (eq nlre--last-buffer old-buffer)))))
+
 (defun nelisp-regexp-diff-tramp-regexps ()
   "Tramp's `file-name-handler-alist' regexps from the host Emacs, or nil.
 These are the prefilter's motivating case: tried on every file name."
@@ -536,6 +757,186 @@ start index, on every group span, with START, and under case folding."
                (mine (nlre-string-match re s))
                (mine-groups (and mine (nelisp-regexp-diff--mine-groups 5))))
           (should (equal (list s fold ref ref-groups) (list s fold mine mine-groups))))))))
+
+(ert-deftest nelisp-regexp-posix-unicode-and-syntax-match-host ()
+  "POSIX classes use GNU categories, case mappings and buffer syntax."
+  (with-temp-buffer
+    (dolist (syntax '("_" "w" " "))
+      (set-syntax-table (copy-syntax-table))
+      (modify-syntax-entry ?_ syntax)
+      (dolist (fold '(nil t))
+        (let ((case-fold-search fold))
+          (dolist (class '("alpha" "alnum" "word" "upper" "lower" "space"
+                           "blank" "punct" "cntrl" "graph" "print"))
+            (dolist (char '(9 10 32 65 95 97 127 160 178 223 453 769
+                           8544 19968 8203 128512 1114111))
+              (let* ((regexp (concat "[[:" class ":]]"))
+                     (text (char-to-string char))
+                     (reference (string-match regexp text)))
+                (should (equal (list class char fold reference)
+                               (list class char fold
+                                     (nlre-string-match regexp text))))))))))))
+
+(ert-deftest nelisp-regexp-late-case-api-and-in-place-canonical-mutation ()
+  "Discover a late case API and never assume the standard table is immutable."
+  (with-temp-buffer
+    (let* ((case-fold-search t)
+           (table (copy-case-table (current-case-table)))
+           (nlre--case-table-reader nil))
+      (set-case-table table)
+      (nlre--compiled-cache-clear)
+      (should (= 0 (nlre-string-match "A" "a")))
+      (should (eq nlre--case-table-reader 'current-case-table))
+      (set-char-table-range (char-table-extra-slot table 1) ?A ?z)
+      (should-not (nlre-string-match "A" "a"))
+      (should (= 0 (nlre-string-match "A" "z"))))))
+
+(ert-deftest nelisp-regexp-cached-prefilter-defers-case-and-posix-syntax ()
+  "Forbidden probes must not freeze mutable case or syntax predicates."
+  (with-temp-buffer
+    (let ((case-fold-search t) (pattern "\\`A+\\'"))
+      (nlre--compiled-cache-clear)
+      (should (= 0 (nlre-string-match pattern "A")))
+      (let ((table (copy-case-table (current-case-table))))
+        (set-case-syntax-pair ?A ?/ table)
+        (set-case-table table)
+        (should (= 0 (string-match pattern "/")))
+        (should (= 0 (nlre-string-match pattern "/")))))
+    (let ((case-fold-search nil) (pattern "\\`[[:word:]]+\\'"))
+      (set-syntax-table (copy-syntax-table))
+      (modify-syntax-entry ?/ ".")
+      (nlre--compiled-cache-clear)
+      (should-not (nlre-string-match pattern "/"))
+      (modify-syntax-entry ?/ "w")
+      (should (= 0 (string-match pattern "/")))
+      (should (= 0 (nlre-string-match pattern "/"))))
+    (let ((case-fold-search nil) (search-spaces-regexp "\\w+")
+          (pattern "\\` \\'"))
+      (modify-syntax-entry ?/ ".")
+      (nlre--compiled-cache-clear)
+      (should-not (nlre-string-match pattern "/"))
+      (modify-syntax-entry ?/ "w")
+      (should (= 0 (string-match pattern "/")))
+      (should (= 0 (nlre-string-match pattern "/"))))))
+
+(ert-deftest nelisp-regexp-set-case-equivalence-cycles-match-host ()
+  "General and finite set plans use full case equivalence, including custom pairs."
+  (with-temp-buffer
+    (let ((case-fold-search t))
+      (dolist (pattern '("[σ]" "[σ]+" "[Σ]" "\\`[σ]\\'"))
+        (should (equal (string-match pattern "ς")
+                       (nlre-string-match pattern "ς"))))
+      (let ((table (copy-case-table (current-case-table))))
+        (set-case-syntax-pair ?A ?/ table)
+        (set-case-table table)
+        (dolist (pattern '("[A]" "[A]+" "\\`[A]\\'" "[[:upper:]]"))
+          (should (equal (string-match pattern "/")
+                         (nlre-string-match pattern "/"))))))))
+
+(ert-deftest nelisp-regexp-dot-tests-canonical-newlines ()
+  "GNU applies canonical case translation before dot's newline rejection."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (table (copy-case-table (current-case-table))))
+      (set-case-table table)
+      (aset (char-table-extra-slot table 1) ?B ?\n)
+      (dolist (case '(("." "B") (".+" "B")
+                      ("\\`\\(.*\\)\\(x\\)\\'" "Bx")))
+        (should (equal (string-match (car case) (cadr case))
+                       (nlre-string-match (car case) (cadr case))))))))
+
+(ert-deftest nelisp-regexp-posix-canonical-bitmap-differs-from-ranges ()
+  "GNU's class bitmap and multibyte range flags have distinct fold rules."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (table (copy-case-table (current-case-table))))
+      (set-case-table table)
+      (aset (char-table-extra-slot table 1) ?λ ?!)
+      (aset (char-table-extra-slot table 1) ?1 ?x)
+      (aset (char-table-extra-slot table 1) ?! ?1)
+      (dolist (case '(("[[:alpha:]]" "λ") ("[[:lower:]]" "λ")
+                      ("[[:punct:]]" "λ") ("[λ]" "Λ") ("[λ]+" "Λ")
+                      ("\\`[λ]\\'" "Λ")
+                      ("[[:digit:]]" "!") ("[0-9]" "!")))
+        (should (equal (string-match (car case) (cadr case))
+                       (nlre-string-match (car case) (cadr case)))))))
+  (let ((case-fold-search nil) (raw (char-to-string #x3fff80)))
+    (should (equal (string-match "[[:word:]]" raw)
+                   (nlre-string-match "[[:word:]]" raw)))))
+
+(ert-deftest nelisp-regexp-cache-separates-equal-pattern-byte-kinds ()
+  "ASCII content can be equal while its compilation byte kind differs."
+  (let ((case-fold-search t)
+        (unibyte "A") (multibyte (substring (concat "λ" "A") 1)))
+    (should (equal unibyte multibyte))
+    (nlre--compiled-cache-clear)
+    (let ((first (nlre--compiled-pattern unibyte)))
+      (should-not (eq first (nlre--compiled-pattern multibyte)))
+      (should (eq first (nlre--compiled-pattern unibyte))))))
+
+(ert-deftest nelisp-regexp-spaces-preserve-quantified-runs-and-raw-bytes ()
+  "Space substitution follows GNU's quantifier exception and byte kind."
+  (let ((case-fold-search nil) (search-spaces-regexp "-"))
+    (dolist (pattern '(" +" "  +" " *" " ?" " \\{2\\}"))
+      (dolist (text '("   " "---"))
+        (should (equal (string-match pattern text)
+                       (nlre-string-match pattern text)))))
+    (let ((pattern (unibyte-string ?\[ 255 ?\])))
+      (dolist (text (list (unibyte-string 255) (string 255)))
+        (should (equal (string-match pattern text)
+                       (nlre-string-match pattern text)))))))
+
+(ert-deftest nelisp-regexp-cross-byte-canonical-mappings-match-host ()
+  "Literal and set rules differ when ASCII maps to a nonbyte character."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (table (copy-case-table (current-case-table)))
+          (multi-a (substring (concat "λ" "A") 1)))
+      (set-case-table table)
+      (aset (char-table-extra-slot table 1) ?A ?λ)
+      (dolist (pattern (list "A" multi-a "[A]" "[A]+" "\\`[A]\\'"
+                             "[[:alpha:]]" "[[:upper:]]"))
+        (dolist (text '("A" "λ"))
+          (should (equal (list pattern (multibyte-string-p pattern) text
+                               (string-match pattern text))
+                         (list pattern (multibyte-string-p pattern) text
+                               (nlre-string-match pattern text)))))))))
+
+(ert-deftest nelisp-regexp-raw-byte-backrefs-do-not-become-unicode-case-pairs ()
+  "Raw bytes keep their byte identity while matching a folded backreference."
+  (dolist (fold '(nil t))
+    (let ((case-fold-search fold))
+      (dolist (text (list (unibyte-string 201 233) (unibyte-string 233 233)
+                          (unibyte-string ?A ?a)))
+        (should (equal (string-match "\\(.\\)\\1" text)
+                       (nlre-string-match "\\(.\\)\\1" text)))))))
+
+(ert-deftest nelisp-regexp-custom-fold-search-bitmap-applies-only-at-start ()
+  "GNU filters initial byte candidates separately from charset membership."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (table (copy-case-table (current-case-table))))
+      (set-case-table table)
+      (aset (char-table-extra-slot table 1) ?A ?λ)
+      (dolist (case (list '("[[:lower:]]" "A") '("x[[:lower:]]" "xA")
+                          '(".[[:lower:]]" "xA")
+                          '("x*[[:lower:]]" "A") '("x?[[:lower:]]" "A")
+                          '("\\(?:x\\|[[:lower:]]\\)" "A")
+                          '("\\(?:x\\|\\)[[:lower:]]" "A")
+                          (list "[[:lower:]]" (string-to-multibyte "A"))))
+        (should (equal (string-match (car case) (cadr case))
+                       (nlre-string-match (car case) (cadr case)))))
+      (set-buffer-multibyte nil)
+      (insert "A") (goto-char 1)
+      (should (equal (looking-at "[[:lower:]]")
+                     (nlre--looking-at "[[:lower:]]")))
+      (erase-buffer) (insert "Aa") (goto-char 3)
+      (dolist (greedy '(nil t))
+        (let* ((expected (looking-back "[[:lower:]]+" nil greedy))
+               (spans (match-data t)))
+          (should (equal expected
+                         (nlre--looking-back "[[:lower:]]+" nil greedy)))
+          (should (equal spans (nlre-match-data t))))))))
 
 (provide 'nelisp-regexp-diff-test)
 ;;; nelisp-regexp-diff-test.el ends here

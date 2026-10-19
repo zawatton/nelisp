@@ -45,6 +45,15 @@
 ;;; Code:
 
 (list
+ ;; Regex fast plans retain greedy captures and notice mutable pattern text.
+ (let ((case-fold-search nil) (pattern (copy-sequence "file")))
+   (let ((hit (string-match "\\`\\(.*\\)\\(a\\|ba\\)\\'" "ba")))
+     (list hit (match-beginning 1) (match-end 1)
+           (match-beginning 2) (match-end 2)
+           (progn (string-match pattern "file")
+                  (aset pattern 0 ?m)
+                  (list (string-match pattern "file")
+                        (string-match pattern "mile"))))))
  ;; Backtrace locals must traverse small alist frames as well as table frames.
  (let ((activation-local 7))
    (cdr (assq 'activation-local (backtrace--locals 1 'backtrace--locals))))

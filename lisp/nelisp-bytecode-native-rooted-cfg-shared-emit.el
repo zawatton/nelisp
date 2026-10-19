@@ -295,14 +295,19 @@
            (edges (plist-get block :successors))
            (taken (cl-find 'taken edges :key (lambda (e) (plist-get e :kind))))
            (fall (cl-find 'fallthrough edges :key (lambda (e) (plist-get e :kind))))
-           (root (car (plist-get operation :input-roots)))
+           (root (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
+                  context (car (plist-get operation :input-roots))))
            (yes (nelisp-bytecode-native-rooted-cfg-shared-emit--to context id (plist-get taken :target) nil nil))
            (no (nelisp-bytecode-native-rooted-cfg-shared-emit--to context id (plist-get fall :target) nil nil)))
-      `(let ((cycle_condition (extern-call nl_root_pin_slot_v2 env ticket ,root 0 0 0)))
-         (if (= cycle_condition 0) 2
-           (if (= (ptr-read-u64 cycle_condition 0) 0)
-               ,(if (eq (plist-get operation :taken-if) 'nil) yes no)
-             ,(if (eq (plist-get operation :taken-if) 'nil) no yes)))))))
+      (if root
+          `(let ((cycle_condition (extern-call nl_root_pin_slot_v2 env ticket ,root 0 0 0)))
+             (if (= cycle_condition 0) 2
+               (if (= (ptr-read-u64 cycle_condition 0) 0)
+                   ,(if (eq (plist-get operation :taken-if) 'nil) yes no)
+                 ,(if (eq (plist-get operation :taken-if) 'nil) no yes))))
+        (nelisp-bytecode-native-rooted-cfg-shared-emit--fail
+         context "conditional root cannot be resolved")
+        0))))
 
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit--compact (cfg)
   "Fuse straight-line generated blocks without duplicating effects or loop heads."

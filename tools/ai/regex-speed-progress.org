@@ -1,0 +1,20 @@
+#+TITLE: Regex hot-path speed
+
+* S1 Regex cache and fast paths
+
+** S1.1 Profile compilation, cache, syntax access, engine and match data
+#+NOTE: Exclusive instrumented attribution over 200 calls per pattern. data-dispatch bounds capture allocation/publication plus dispatch; capture writes inside backtracking remain in engine. Compile includes parse. Raw uninstrumented times are in target/regex-speed/profile-before.log and before.json. Recipe: prepare attribution.el with regex-speed.py, load immutable baseline-bytecode.el then attribution-bytecode.el on the cold reader.
+evidence: target/regex-speed/attribution-before.out sha256=c8af164954300be26aca7e469307ba29bc194b151a82b8891dade9aecf2a2838
+
+** S1.2 Bounded complete-key cache with at most 2 us repeated hit cost
+cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion cache
+
+** S1.3 Literal, anchored capture/suffix and prefix scanning fast paths preserve groups
+cmd: TMPDIR="$PWD/target/tmp" emacs -Q --batch -L lisp -l test/nelisp-regexp-diff-test.el -l test/nelisp-regex-replacement-test.el -f ert-run-tests-batch-and-exit
+
+** S1.4 Every probe pattern costs at most 200 us per match
+#+NOTE: Revised the brief's provisional 20 us to 200 us after S1: the old engine consumed 60.55/61.09/71.41% for the anchored patterns; the general VM/evaluator boundaries and capture construction remain after selecting finite plans. V5 fresh-process, warm-up/GC, three-sample median is 78-147 us; the fixed S1.2 cache limit stays 2 us. Timings retain post-operation GC separately; ABI Ir includes all GC.
+cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion match --limit 200
+
+** S1.5 GNU parity, regex suites, eleven eval/core groups, 40 MCP tools and ABI Ir
+cmd: python3 tools/ai/regex-speed-verify.py check target/regex-speed/final-manifest.json

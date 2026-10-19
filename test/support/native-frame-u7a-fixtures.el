@@ -5,6 +5,8 @@
 (defvar u7a-effects nil)
 (defvar u7a-inner nil)
 (defvar u7a-other-buffer nil)
+(defvar u7a-bare-target 'target-outside)
+(defvaralias 'u7a-bare-alias 'u7a-bare-target)
 (defun u7a-callback ()
   (push (symbol-value 'u7a-special) u7a-effects)
   (garbage-collect)
@@ -41,6 +43,26 @@
                     (vector (or symbol 'u7a-special) 'inside 'result) 1))
    (t (make-byte-code 257 (unibyte-string 24 193 32 41 135)
                       (vector (or symbol 'u7a-special) 'u7a-callback) 1))))
+(defun native-frame-u7a-bare-function (kind)
+  "Return a variable-only bytecode fixture without binding/frame opcodes."
+  (pcase kind
+    ('get (make-byte-code 0 (unibyte-string 8 135) [u7a-special] 1))
+    ('set (make-byte-code 257 (unibyte-string 137 16 135) [u7a-special] 2))
+    ('constant-set (make-byte-code 257 (unibyte-string 137 16 135) [t] 2))
+    ('rich
+     (make-byte-code
+      514
+      (apply #'unibyte-string
+             '(1 194 61 131 8 0 8 135 1 195 61 131 18 0 137 137 16
+               135 1 196 61 131 26 0 9 135 1 197 61 131 36 0 137 137
+               17 135 1 198 61 131 61 0 137 131 50 0 8 130 54 0 199
+               67 137 16 200 32 136 137 8 66 135 1 201 61 131 72 0
+               201 202 8 34 135 203 204 205 8 68 34 135))
+      (vector 'u7a-special 'u7a-bare-alias 'get 'set 'alias-get
+              'alias-set 'gc-diamond 'changed 'garbage-collect 'throw
+              'u7a-exit 'signal 'error 'u7a-bare)
+      6))
+    (_ (error "Unknown U7a bare fixture %S" kind))))
 (defun native-frame-u7a-observe (function args)
   "Observe result, exact signal/throw, effects and the binding after exit."
   (setq u7a-effects nil)
