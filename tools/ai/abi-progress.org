@@ -169,6 +169,13 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Reader/I/O checkpoint: TOTAL1446; S6.2 52 (30direct+17reverse+5inline).
+# Public reader21/nativeIO30 and direct context4/8, array214/environment102,
+# batteries/Anvil/arity, static42 and complete-walk12 controls pass.
+# Four-layout boot/regex/files means -2.980%/-2.796%/-3.074%, with
+# GC base/candidate 6/6, 17/16, 8/8 and identical output in every layout.
+# Normal compile/parens checks retain their inherited failures (33 parens
+# findings); the 60-second normal-check run stops at generated-source-parse.
 # conversion-walk-v2: complete initializer traversal and per-unit certificate.
 # Array checkpoint restated under this definition: TOTAL 1487; S6.2 67
 # (45 direct + 17 reverse + 5 inline). The previously missed direct call is

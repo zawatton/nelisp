@@ -1004,7 +1004,7 @@
    ((= kind 15) (nelisp_reader_p_parse_byte_code_w str-ptr cursor-slot 0 slot-pool depth))
    ((= kind 26) (nelisp_reader_p_parse_label_def_w str-ptr cursor-slot 0 slot-pool depth))
    ((= kind 27) (nelisp_reader_p_parse_label_ref_w 0 slot-pool depth))
-   ((= kind 28) (nl_val_store_word (nelisp_reader_p_slot slot-pool (nelisp_reader_p_pool_cap))))
+   ((= kind 28) (ptr-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_pool_cap)) 0))
    ((= kind 29)
     (let* ((object (alloc-bytes 32 8)))
       (if (= (nelisp_reader_p_make_uninterned_symbol object (nelisp_reader_p_slot slot-pool 1)) 1)
@@ -1597,28 +1597,30 @@
       (nelisp_reader_parse_one_with_context
        str-ptr cursor-slot result-slot slot-pool depth 0))
 
-    (defun nelisp_reader_parse_one_with_load_file_name (str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)
-      (let* ((w (nelisp_reader_parse_one_with_load_file_name_w str-ptr cursor-slot 0 slot-pool depth load-file-name-slot)))
-        (if (= w 0) -1
-          (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))
+    (defun nelisp_reader_parse_one_with_load_file_name
+        (str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)
+      (nelisp_reader_parse_one_with_context
+       str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot))
     ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_parse_one_with_load_file_name_w
-        (str-ptr cursor-slot _pad slot-pool depth load-file-name-slot)
+        (str-ptr cursor-slot _pad slot-pool depth load-file-name-word)
       (nelisp_reader_parse_one_with_context_w
-       str-ptr cursor-slot 0 slot-pool depth load-file-name-slot))
+       str-ptr cursor-slot 0 slot-pool depth load-file-name-word))
 
-    (defun nelisp_reader_parse_one_with_context (str-ptr cursor-slot result-slot slot-pool depth context-slot)
-      (let* ((w (nelisp_reader_parse_one_with_context_w str-ptr cursor-slot 0 slot-pool depth context-slot)))
+    (defun nelisp_reader_parse_one_with_context
+        (str-ptr cursor-slot result-slot slot-pool depth context-slot)
+      (let* ((context-word (if (= context-slot 0) 3 (nl_val_store_word context-slot)))
+             (w (nelisp_reader_parse_one_with_context_w
+                 str-ptr cursor-slot 0 slot-pool depth context-word)))
         (if (= w 0) -1
           (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
-    (defun nelisp_reader_parse_one_with_context_w (str-ptr cursor-slot _pad slot-pool depth context-slot)
+    (defun nelisp_reader_parse_one_with_context_w (str-ptr cursor-slot _pad slot-pool depth context-word)
   (let* ((pool-cap (nelisp_reader_p_pool_cap)) (parse-cap (- pool-cap 1)) (w 0)
          (context-pool-slot (nelisp_reader_p_slot slot-pool parse-cap)))
     (if (< pool-cap 16) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
       (seq
-       (if (= context-slot 0) (ptr-write-u64 context-pool-slot 0 0)
-         (nl_abi_word_to_rc context-slot context-pool-slot))
+       (ptr-write-u64 context-pool-slot 0 (if (= context-word 0) 3 context-word))
        (ptr-write-u64 268436448 0 parse-cap)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)

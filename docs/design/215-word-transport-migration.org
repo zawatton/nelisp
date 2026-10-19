@@ -357,6 +357,20 @@ identity and ten invalid inputs. Baseline and GNU agree, including all ten
 error conditions. A mutation that skips a vector write must fail the value
 assertion.
 
+Reader-facing builtin and I/O producers now keep canonical WORDs: read-one
+and read-all preserve nil/t/zero, parser EOF is 2, directory and intern
+enumerators build WORD lists, process polling writes integer WORDs, and
+raw file reads retain their owned string object. A key/value-line miss
+still produces the legacy empty string. The context pool field for =#$=
+contains one canonical WORD, never a result-slot view. Its legacy public
+C entry still accepts a physical context Sexp and has one explicit,
+counted input conversion; the WORD entry accepts that value directly.
+Four legacy immediate contexts agree with the baseline; the candidate's
+legacy and WORD entries pass eight checks. Public reader21, native I/O30,
+array214, environment102, three batteries and static thread42 pass; changing
+a read-all value must fail the new assertion. The complete census walker
+reports TOTAL 1446 and S6.2 52 (30 direct + 17 reverse + 5 inline).
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
