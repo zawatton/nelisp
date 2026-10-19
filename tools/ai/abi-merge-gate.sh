@@ -19,14 +19,14 @@
 #   abi-merge-gate.sh ir CANDIDATE BASELINE
 #       Instruction counts (valgrind callgrind) instead of wall time, which is
 #       noisy on this shared machine: `--eval nil' boot and a regex load (the
-#       regex line of test/perf/shallow-binding-bench.el, 10 x 300 matches),
+#       regex line of test/perf/shallow-binding-bench.el, 20 x 300 matches, >=10 GC cycles per binary),
 #       both binaries in parallel.  Exits 0 only if each candidate count is
 #       <= the baseline's x ABI_GATE_IR_RATIO (default 1.00).
 #   abi-merge-gate.sh census CENSUS_TSV MAX
 #       Exits 0 only if box-census.py's TOTAL for CENSUS_TSV is below MAX.
 #   abi-merge-gate.sh store-word CENSUS_TSV MAX
 #       Exits 0 only if the nl_val_store_word count (all families) is <= MAX;
-#       prints the per-family counts.
+#       prints per-family nl_val_store_word + nl_abi_rc_to_word dependencies.
 export LC_ALL=C
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -68,33 +68,10 @@ case "$1" in
                       (r + 0 <= (rb + 0) * k) ? "PASS" : "FAIL"; exit !ok }'
     ;;
   ir)
-    cand=$2; base=$3
-    [ -x "$cand" ] && [ -x "$base" ] || { echo "usage: $0 ir CANDIDATE BASELINE"; exit 2; }
-    cand=$(readlink -f "$cand"); base=$(readlink -f "$base")   # the runs cd into a temp dir
-    command -v valgrind >/dev/null || { echo "ir: valgrind not found"; exit 2; }
-    tmp=$(mktemp -d) || exit 2
-    cat > $tmp/regex.el <<'EOS'
-(let ((names (mapcar (lambda (k) (format "some-library-%d.el" k)) (number-sequence 1 300))) (i 0))
-  (while (< i 10)
-    (dolist (s names) (string-match "\\`\\(.*\\)\\(\\.el\\)\\'" s))
-    (setq i (1+ i))))
-EOS
-    for who in base cand; do
-      b=$base; [ $who = cand ] && b=$cand
-      (cd $tmp && timeout 1200 valgrind --tool=callgrind --callgrind-out-file=$tmp/boot-$who.cg "$b" --eval nil > $tmp/boot-$who.log 2>&1) &
-      (cd $tmp && timeout 1200 valgrind --tool=callgrind --callgrind-out-file=$tmp/regex-$who.cg "$b" --load $tmp/regex.el > $tmp/regex-$who.log 2>&1) &
-    done
-    wait
-    ir() { awk '/Collected :/ {print $NF}' "$1"; }
-    bb=$(ir $tmp/boot-base.log); bc_=$(ir $tmp/boot-cand.log); rb=$(ir $tmp/regex-base.log); rc_=$(ir $tmp/regex-cand.log)
-    rm -rf "$tmp"
-    ratio=${ABI_GATE_IR_RATIO:-1.00}
-    echo "Ir boot base ${bb:-none} cand ${bc_:-none}; regex base ${rb:-none} cand ${rc_:-none} (gate: cand <= base x $ratio)"
-    [ -n "$bb" ] && [ -n "$bc_" ] && [ -n "$rb" ] && [ -n "$rc_" ] || exit 1
-    awk -v b="$bc_" -v bb="$bb" -v r="$rc_" -v rb="$rb" -v k="$ratio" \
-      'BEGIN { ob = (b <= bb * k); orx = (r <= rb * k);
-               printf "boot %s (%+.3f%%), regex %s (%+.3f%%)\n", ob ? "PASS" : "FAIL", (b / bb - 1) * 100,
-                      orx ? "PASS" : "FAIL", (r / rb - 1) * 100; exit !(ob && orx) }'
+    python3 tools/ai/abi-ir.py ir "$2" "$3"
+    ;;
+  files)
+    python3 tools/ai/abi-ir.py files "$2" "$3"
     ;;
   census)
     total=$(python3 tools/ai/box-census.py summary "$2" | awk '$1 == "TOTAL" {print $2}')
@@ -102,11 +79,18 @@ EOS
     [ -n "$total" ] && [ "$total" -lt "$3" ]
     ;;
   store-word)
-    out=$(python3 tools/ai/box-census.py summary "$2")
-    n=$(echo "$out" | awk '$1 == "nl_val_store_word" {print $2}')
-    echo "$out" | grep -o '^family [a-z-]* \|nl_val_store_word=[0-9]*' | paste -sd' ' | sed 's/ family /\nfamily /g'
-    echo "nl_val_store_word ${n:-none} (must be <= $3)"
-    [ -n "$n" ] && [ "$n" -le "$3" ]
+    python3 - "$2" "$3" <<'PYGATE'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("census", "tools/ai/box-census.py")
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+s, _ = c.tally(c.load(sys.argv[1]))
+keys = ("nl_val_store_word", "nl_abi_rc_to_word")
+for family, counts in s["families"].items():
+    print("family", family, " ".join(f"{k}={counts.get(k, 0)}" for k in keys))
+n = sum(s["idioms"].get(k, 0) for k in keys)
+print(f"box-to-word dependencies {n} (must be <= {sys.argv[2]})")
+sys.exit(0 if s["units"] and n <= int(sys.argv[2]) else 1)
+PYGATE
     ;;
-  *) echo "usage: $0 perf|ir CANDIDATE BASELINE | census TSV MAX | store-word TSV MAX"; exit 2 ;;
+  *) echo "usage: $0 perf|ir|files CANDIDATE BASELINE | census TSV MAX | store-word TSV MAX"; exit 2 ;;
 esac

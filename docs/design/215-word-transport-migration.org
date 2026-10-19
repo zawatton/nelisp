@@ -35,6 +35,21 @@ inlined helper body would otherwise be counted once per call site, and the
 inliner only runs on a cache miss.  =tools/ai/box-census.py= summarises the
 file per idiom and per unit family.
 
+The census also counts =nl_abi_rc_to_word= call sites.  The reader boundary
+currently converts legacy reader results through that helper, whose body
+calls =nl_val_store_word=: these sites are remaining box-to-word work, not
+converted producers.  S6.2 sums both call heads, including the helper's
+own =nl_val_store_word= call.  S6.1 retains its strict TOTAL < 1676 limit.
+
+S6.3 compares total callgrind Ir, including every GC instruction.  Its
+fixed regex workload must execute at least ten GC sweeps on each binary;
+the gate prints both counts and fails if either count is too small.
+S6.4 loads five vendored source files in a fixed order from this checkout,
+then runs a fixed builtin micro-suite.  Each process starts with a fresh
+empty XDG cache inside the worktree.  Output must be identical and the
+candidate's total Ir must not exceed the baseline's; both GC counts are
+reported.  This addition changes the ABI ledger from 20 to 21 criteria.
+
 * Rooting rule
 
 Facts, read from the source at e0ab2ae3a:

@@ -7,6 +7,8 @@ A unit recorded more than once keeps only its last record.
 
   box-census.py summary FILE [--json OUT]
       totals per idiom, per family and per unit
+  box-census.py from-dump DUMP OUT
+      reproduce the build census from its pre-inline unit-source dump
   box-census.py top FILE [--idiom I] [--family F] [-n N]
       the defuns with the most debt
   box-census.py check FILE --family F [--idiom I ...] --max N
@@ -21,7 +23,7 @@ import json, re, sys
 DEBT = ["alloc-bytes-32-8", "nl_cons_car_ptr", "nl_cons_cdr_ptr",
         "record-slot-ref-ptr", "vector-ref-ptr", "nl_vector_slot_ptr",
         "nl_record_slot_ptr", "clone_into", "wf_copy32", "nl_root_reserve",
-        "nl_val_store_word", "nl_sci_store_imm"]
+        "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word"]
 CONS = ["nl_cons_car_ptr", "nl_cons_cdr_ptr"]
 
 # Order matters: first match wins.  Stage 1 = the first five.
@@ -91,6 +93,41 @@ def main(a):
     if len(a) < 2:
         sys.exit(__doc__)
     cmd, path = a[0], a[1]
+    if cmd == "from-dump":
+        units = {}
+        for line in open(path, encoding="utf-8"):
+            d = json.loads(line)
+            units[d["unit"]] = d["source"]
+        with open(a[2], "w", encoding="utf-8") as out:
+            for unit, source in units.items():
+                rows = {}
+                def walk(x, fn="-"):
+                    if not isinstance(x, list) or not x or x[0] in ("quote", "$str", "$vec"):
+                        return
+                    if x[0] == "defun":
+                        fn = x[1]
+                        rows[(fn, "defun")] = rows.get((fn, "defun"), 0) + 1
+                        for y in x[2:]:
+                            walk(y, fn)
+                        return
+                    head = x[1] if x[0] == "extern-call" else x[0]
+                    idiom = None
+                    if x == ["alloc-bytes", 32, 8]:
+                        idiom = "alloc-bytes-32-8"
+                    elif isinstance(head, str) and (head in DEBT or head.endswith("_clone_into")):
+                        idiom = norm(head)
+                    if idiom:
+                        key = (fn, idiom)
+                        rows[key] = rows.get(key, 0) + 1
+                    # Match the build recorder's cdr traversal, including its
+                    # handling of binding lists. Changing that is a separate
+                    # census definition change requiring a new baseline.
+                    for y in x[1:]:
+                        walk(y, fn)
+                walk(source)
+                for (fn, idiom), n in rows.items():
+                    out.write(f"{unit}\t{fn}\t{idiom}\t{n}\n")
+        return
     summary, by_fn = tally(load(path))
     if cmd == "summary":
         print("units %d  defuns %d" % (summary["units"], summary["defuns"]))

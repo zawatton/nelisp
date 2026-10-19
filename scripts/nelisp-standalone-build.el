@@ -1687,7 +1687,7 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
 (defconst nelisp-standalone--box-census-idioms
   '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
     nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
-    wf_copy32 nl_root_reserve nl_val_store_word nl_sci_store_imm)
+    wf_copy32 nl_root_reserve nl_val_store_word nl_sci_store_imm nl_abi_rc_to_word)
   "Call heads counted by the box-migration census (see
 `nelisp-standalone--box-census-record').  `(alloc-bytes 32 8)' is counted
 separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here

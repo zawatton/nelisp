@@ -112,7 +112,7 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
-** S6.2 No nl_val_store_word left in any census family (1824-total build: 221; evaluator 129, other 83, regexp 9)
+** S6.2 No box-to-word dependency left (nl_val_store_word plus nl_abi_rc_to_word)
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
@@ -120,3 +120,8 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"
+
+** S6.4 Source execution of five vendor files and builtin micro-suite: identical output and total Ir <= baseline
+#+REQUIRES: ABI_BIN,ABI_BASE_BIN
+#+TIMEOUT: 600
+cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
