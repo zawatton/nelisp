@@ -10,7 +10,7 @@
   '(seq
     (defun nl_eval_arg_list_drive_w
         (cur env root-mark state-slot value-slot head-slot tail-slot)
-      (let* ((cursor cur) (head 0) (status 0) (value 0) (node 0) (result 3))
+      (let* ((cursor cur) (head 0) (status 0) (value 0) (argument 0) (node 0) (result 3))
         (seq
          (wf_word_store_out head-slot 3)
          (while (and (= status 0) (= (nl_val_tag cursor) 7))
@@ -26,11 +26,15 @@
               (seq
                ;; Publish the result root before the constructor allocates.
                (wf_word_store_out value-slot value)
+               ;; Preserve original immediates across the WORD boundary.
+               ;; Pointer wrappers still use the published view: a copied
+               ;; header roots the payload, not its original heap wrapper.
+               (setq argument (if (= (logand value 1) 1) value value-slot))
                (if (= head 0)
-                   (seq (nelisp_cons_construct value-slot 3 head-slot)
+                   (seq (nelisp_cons_construct argument 3 head-slot)
                         (wf_copy32 tail-slot head-slot)
                         (setq head 1))
-                 (seq (setq node (nelisp_cons_construct_w value-slot 3 0))
+                 (seq (setq node (nelisp_cons_construct_w argument 3 0))
                       (ptr-write-u64 (ptr-read-u64 tail-slot 8) 8 node)
                       (wf_copy32 tail-slot node)))
                (setq cursor (nl_cons_cdr_word state-slot))))))
