@@ -29,6 +29,9 @@ Shapes rewritten (V is bound to a fresh (alloc-bytes 32 8) box):
   C  (let ((V (alloc-bytes 32 8))) (seq (W .. V) (nl_val_store_word V)))
      where W always writes a float or another heap object into V: the box
      is the object, so (nl_val_store_word V) -> V.
+
+  E  The same two-expression sequence with an EQUIV_W constructor calls
+     the word producer directly and drops the private transport binding.
 """
 import json, re, sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -192,12 +195,26 @@ def main(a):
     text = open(PATH, encoding="utf-8").read()
     tree = read_file(text, PATH)
     conv = Conv(text, plain_adapters(dump))
-    edits = Edits(); done = {"A": 0, "B": 0, "C": 0}; left = []
+    edits = Edits(); done = {"A": 0, "B": 0, "C": 0, "E": 0}; left = []
     for n, _, _ in BA.walk(tree):
         v, body = alloc_binding(n)
         if v is None:
             continue
         seqf = None; kind = None
+        if (is_call(body) and body[0] == "seq" and len(body) == 3 and is_store(body[2], v)
+                and is_call(body[1]) and str(body[1][0]) in EQUIV_W):
+            w = body[1]; pos = EQUIV_W[str(w[0])] + 1
+            if (pos < len(w) and w[pos] == v
+                    and sum(mentions(arg, v) for arg in w[1:]) == 1):
+                call = text[w.start:w.end]
+                # Keep token edits local to the call so nested expressions
+                # and comments need no printer round trip.
+                local = [(w[0].start, w[0].end, str(w[0]) + "_w"),
+                         (w[pos].start, w[pos].end, "0")]
+                for start, end, replacement in sorted(local, reverse=True):
+                    call = call[:start-w.start] + replacement + call[end-w.start:]
+                edits.add(PATH, n.start, n.end, call); done["E"] += 1
+                continue
         # A
         if (is_call(body) and body[0] == "if" and len(body) == 4 and is_call(body[1]) and body[1][0] == "="
                 and len(body[1]) == 3 and is_call(body[1][1]) and body[1][1][0] in ("seq", "progn")
@@ -282,7 +299,8 @@ def main(a):
     done["D"] = 0
     visit(tree, [])
     new = edits.apply({PATH: text})
-    print("wordify: A %d B %d C %d D %d; left %d" % (done["A"], done["B"], done["C"], done["D"], len(left)))
+    print("wordify: A %d B %d C %d D %d E %d; left %d" %
+          (done["A"], done["B"], done["C"], done["D"], done["E"], len(left)))
     if "--json" in a:
         json.dump(left, open(a[a.index("--json") + 1], "w"), indent=0)
     if write and PATH in new:

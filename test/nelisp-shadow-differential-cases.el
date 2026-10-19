@@ -45,6 +45,13 @@
 ;;; Code:
 
 (list
+ ;; Word-valued function-cell lookup preserves nil, aliases and immediates.
+ (let ((symbol (make-symbol "abi-function-cell")))
+   (list (symbol-function symbol)
+         (progn (fset symbol 'car) (symbol-function symbol))
+         (progn (fset symbol 9) (symbol-function symbol))
+         (fboundp symbol)
+         (progn (fmakunbound symbol) (symbol-function symbol))))
  ;; A same-face neighbor can still change another property; gaps and reverse
  ;; scans must use the character before POSITION on the backward path.
  (let ((s (make-string 12 ?x)))

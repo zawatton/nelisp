@@ -16575,16 +16575,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun m5_finish_string_w (ms _pad multibyte)
       (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (seq (mut-str-finalize ms out)
+        (seq (mut-str-finalize ms out)
            (if (= multibyte 1)
                (ptr-write-u64 out 8
                  (logior (ptr-read-u64 out 8) 4611686018427387904))
              0)
-           0)
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+           out)))
     (defun m5_finish_string (ms out multibyte)
       (nl_abi_word_to_rc (m5_finish_string_w ms 0 multibyte) out))
     (defun m5_raw_high_p (str)
@@ -19688,7 +19684,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_char_table_alloc_w (subtype default_ptr _pad)
       (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
+        (seq (seq
       (let* ((box (alloc-bytes 128 8))
              (extra (nl_ct_extra_fill (alloc-bytes 320 8) 0 10)))
         (seq
@@ -19712,9 +19708,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ out 16) 0 0)
          (ptr-write-u64 (+ out 24) 0 0)
          0))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+        ) out)))
     (defun nl_char_table_alloc (subtype default_ptr out)
       (nl_abi_word_to_rc (nl_char_table_alloc_w subtype default_ptr 0) out))
     ;; wrong-number-of-arguments make-char-table 0 -- SUBTYPE is mandatory.
@@ -20109,15 +20103,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_unibyte_string_w (args _pad)
       (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
+        (seq (seq
       (let* ((ms (alloc-bytes 32 8)))
         (seq (nl_alloc_unibyte_mut_str (bf_vec_count args 0) ms)
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
              0))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+        ) out)))
     ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
     ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
     ;; LENGTH must be a non-negative fixnum; Emacs signals `(wrong-type-
@@ -21407,7 +21399,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; elisp, then called something that was never a function.  A nil cell
     ;; (how `fmakunbound' unbinds) is not a function either.
     (defun bf_fboundp_cell_p (tmp)
-      (let* ((tg (ptr-read-u64 tmp 0)))
+      (let* ((tg (nl_word_tag64 tmp)))
         (if (= tg 0) 0
           ;; `nl_sp_eq_lit' compares at most two words; the sentinel's name is
           ;; 22 bytes, so match on length plus the first two words -- no other
@@ -21446,18 +21438,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; rather than by copying the cell through unchanged.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_symbol_function_w (args env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((sym (wf_arg_ptr args 0)) (tmp (alloc-bytes 32 8)) (mirror (+ env 0)) (unbound (+ env 64)))
+      (let* ((sym (wf_arg_ptr args 0)) (mirror (+ env 0)) (unbound (+ env 64)))
         (if (or (= (ptr-read-u64 sym 0) 4) (= (ptr-read-u64 sym 0) 16))
-            (if (= (nelisp_env_lookup_function mirror unbound sym tmp) 0)
-                (if (= (bf_fboundp_cell_p tmp) 0) (wf_write_nil out)
-                  (seq (wf_copy32 out tmp) 0))
-              (wf_write_nil out))
-          (bf_wrong_type_symbolp sym)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+            (let* ((value (nelisp_env_lookup_function_w mirror unbound sym 0)))
+              (if (= value 2) 3
+                (if (= value 0) 0
+                  (if (= (bf_fboundp_cell_p value) 0) 3 value))))
+          (nl_abi_fail (bf_wrong_type_symbolp sym) 0))))
     ;; Keep declaration metadata separate from variable values. The prelude
     ;; and the native fast paths share this per-environment registry.
     (defun bf_special_registry (env create)
@@ -25731,9 +25718,7 @@ extern arms in dynamic builds."
         ))
     ;; Doc 215 word ABI: the empty string WORD.
     (defun wf_copy32_strnil_w (_pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (seq (nl_alloc_str (alloc-bytes 1 1) 0 out)
-             (nl_val_store_word out))))
+      (nl_alloc_str_w (alloc-bytes 1 1) 0 0))
     (defun wf_copy32_strnil (out)
       (nl_abi_word_to_rc (wf_copy32_strnil_w 0) out))
     ;; Two-phase read (2026-06-10): rdf used to alloc-bytes a FIXED 8 MiB
@@ -25790,8 +25775,7 @@ extern arms in dynamic builds."
         (if (< n 1)
             ;; n = 0 is EOF; n < 0 is an error, and keeping what was already
             ;; read matches how the single-read form behaved on a late error.
-            (let* ((out (alloc-bytes 32 8)))
-              (seq (nl_alloc_str buf pos out) (nl_val_store_word out)))
+            (nl_alloc_str_w buf pos 0)
           (nl_bi_rf_read_loop_w fd buf (+ pos n) cap 0))))
     (defun nl_bi_rf_read_rest_w (fd head n0 _pad)
       (let* ((buf (alloc-bytes 8388608 1)))
@@ -25816,8 +25800,7 @@ extern arms in dynamic builds."
                       ;; Only n < 1 ends it here: 0 is EOF, negative is an error. A
                       ;; short-but-positive first read continues into the loop, because
                       ;; short does not mean finished -- see `nl_bi_rf_read_loop'.
-                      (let* ((out (alloc-bytes 32 8)))
-                        (seq (nl_alloc_str buf 0 out) (nl_val_store_word out)))
+                      (nl_alloc_str_w buf 0 0)
                     (nl_bi_rf_read_rest_w fd buf n 0))))
           (seq (nl_os_close_handle fd) w))))
     (defun nl_bi_rf_withfd (fd buf out)
