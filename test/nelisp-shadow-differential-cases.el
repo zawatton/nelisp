@@ -2239,6 +2239,15 @@
        (push (list (eq answer value) (not answer) (aref (vector answer) 0)) answers)))
    (nreverse answers))
  (let ((load-file-name -7)) (car (read-from-string "(#$ [#$] . #$)")))
+ ;; G4 helpers preserve object identity through a captured lambda body and
+ ;; the throw stash, while the empty body still returns nil.
+ (let* ((object (vector 'abi-evaluator-helper))
+        (reader (eval '(lambda () (garbage-collect) abi-helper-cell)
+                      (list (cons 'abi-helper-cell object)))))
+   (list (eq (funcall reader) object)
+         (eq (catch 'abi-helper (throw 'abi-helper (funcall reader))) object)
+         ((lambda ()))
+         ((lambda () 'first -19))))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

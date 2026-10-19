@@ -44,8 +44,8 @@
 ;;; Code:
 
 (defconst nelisp-cc-mirror-alloc-entry--source
-  '(defun nelisp_mirror_alloc_entry
-       (tag-sym-ptr value-ptr function-ptr plist-ptr constant-ptr dst)
+  '(defun nelisp_mirror_alloc_entry_w
+       (tag-sym-ptr value-ptr function-ptr plist-ptr constant-ptr _pad)
      ;; tag-sym-ptr:  *const Sexp pointing at `Sexp::Symbol("symbol-entry")'
      ;;               (= the type-tag for the freshly-allocated record;
      ;;               the Rust safe wrapper materialises this Sexp on the
@@ -54,12 +54,9 @@
      ;; function-ptr: *const Sexp — slot 1 (= the function cell).
      ;; plist-ptr:    *const Sexp — slot 2 (= the property list).
      ;; constant-ptr: *const Sexp — slot 3 (= Sexp::T / Sexp::Nil flag).
-     ;; dst:  *mut Sexp, caller-owned Sexp::Nil — receives the
-     ;;               freshly-allocated `Sexp::Record(NlRecordRef)' of
-     ;;               the symbol-entry record.
-     ;;
-     ;; Returns: i64 — 1 on success.  All sub-ops materialise non-zero
-     ;; rax sentinels so the `and' value-form chain threads through.
+     ;; Returns the newly constructed symbol-entry object as its WORD.
+     ;; No caller OUT storage is decoded or retained. Like bf_record_w,
+     ;; this constructs the object itself and returns its owned address.
      ;;
      ;; Refcount discipline: `record-make' allocates with all 5 slots
      ;; pre-filled with `Sexp::Nil' (= via `nl_alloc_record').  The
@@ -69,15 +66,15 @@
      ;; the caller's stack values stay live across the call.  When the
      ;; caller's frame unwinds, each box's refcount drops back to its
      ;; pre-call value while the record retains its own ref.
-     (and
-      ;; Step 1: allocate fresh symbol-entry record with 5 slots. The
-      ;; record allocator nil-fills slot 4 without changing this ABI.
-      (record-make tag-sym-ptr 5 dst)
-      ;; Step 2-5: refcount-safely install each slot.
-      (record-slot-set dst 0 value-ptr)
-      (record-slot-set dst 1 function-ptr)
-      (record-slot-set dst 2 plist-ptr)
-      (record-slot-set dst 3 constant-ptr)))
+     (let ((entry (alloc-bytes 32 8)))
+       (seq
+        ;; The record allocator nil-fills slot 4.
+        (record-make tag-sym-ptr 5 entry)
+        (record-slot-set entry 0 value-ptr)
+        (record-slot-set entry 1 function-ptr)
+        (record-slot-set entry 2 plist-ptr)
+        (record-slot-set entry 3 constant-ptr)
+        entry)))
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh five-slot `symbol-entry' Record via `record-make'

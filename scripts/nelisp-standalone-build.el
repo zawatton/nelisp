@@ -27302,12 +27302,6 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
 ;; ===================================================================
 (defconst nelisp-standalone--catch-throw-source
   '(seq
-    (defun nl_ct_copy32 (dst src _p2 _p3)
-      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
-           (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
-           (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
-           0))
     ;; Evaluator-internal state (minimal-native clause 2), not a new public
     ;; primitive.  A registered worker owns env+160; its mmap metadata page
     ;; leaves that word free after the result at +128..159.  Main evaluation
@@ -27364,7 +27358,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
        (nl_ct_no_catch_publish env data error_slot (alloc-bytes 8 1))))
     (defun nl_ct_no_catch_rooted (env tag_slot val_slot rooted_val)
       (seq
-       (nl_ct_copy32 rooted_val val_slot 0 0)
+       (wf_copy32 rooted_val val_slot)
        (nl_ct_no_catch_build env tag_slot rooted_val
                              (nl_root_reserve env) (nl_root_reserve env)
                              (nl_root_reserve env))))
@@ -27400,7 +27394,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     (defun nl_ct_arg_error_value (env datum name_word kind marker value)
       (seq
        (if (= kind 0) (sexp-int-make value datum)
-         (nl_ct_copy32 value datum 0 0))
+         (wf_copy32 value datum))
        (nl_ct_root_finish
         env marker
         (nl_ct_arg_error_build env name_word kind value
@@ -27435,8 +27429,8 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                   (ptr-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
               (nl_ct_no_catch env tag_slot val_slot)
           (seq
-           (nl_ct_copy32 268435480 tag_slot 0 0)
-           (nl_ct_copy32 268435512 val_slot 0 0)
+           (wf_copy32 268435480 tag_slot)
+           (wf_copy32 268435512 val_slot)
            ;; Flag value 2 = `throw' (vs 1 = signal/error).  The shared M6
            ;; stash is used by BOTH throw and signal; using a distinct value
            ;; lets `condition-case' trap ONLY signals (flag==1) and `catch'
@@ -27467,7 +27461,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
        tag_form env 0 tag_slot val_slot))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
-    ;; back blanked, `nl_ct_copy32' stashed a nil tag, and the throw missed its
+    ;; back blanked, the copy stashed a nil tag, and the throw missed its
     ;; own `catch': `(catch 'tg (throw 'tg (f)))' answered `no-catch: (0 7)'.
     ;; Rooted for the whole of `nl_sf_throw'; VAL_SLOT is written by the eval
     ;; and read immediately after, so it needs no root of its own.
@@ -27537,7 +27531,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; rather than decoding the copied box into an immediate. No safepoint
     ;; lies between this copy and the return.
     (defun nl_ct_caught_word (box _pad)
-      (seq (nl_ct_copy32 box 268435512 0 0)
+      (seq (wf_copy32 box 268435512)
            (ptr-write-u64 268435472 0 0)
            (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
            box))
@@ -43214,10 +43208,6 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
   (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 vector 8) 8) (* index 8)) 0))
 (defun nl_rooted_vector_int (vector index)
   (sar (nl_rooted_vector_word vector index) 2))
-(defun nl_rooted_vector_copy (vector index dst)
-  ;; Materialize immediate values directly into their owned root, never an
-  ;; allocating vector-ref-ptr view. Pointer values retain the full Sexp copy.
-  (wf_copy32 dst (nl_val_load (nl_rooted_vector_word vector index) dst)))
 (defun nl_apply_flat_builtin_frame (func header env out)
   ;; Internal evaluator ABI only. The gateway owns these published roots;
   ;; no pointer or synthetic value is exposed to Lisp or to artifact IR.
@@ -43315,7 +43305,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                        (mode (nl_rooted_vector_int init 1))
                        (dst (+ base (* index 32))))
                   (if (= mode 1)
-                      (nl_rooted_vector_copy constants (nl_rooted_vector_int init 2) dst)
+                      (wf_word_store_out dst (nl_rooted_vector_word constants (nl_rooted_vector_int init 2)))
                     (if (= mode 2)
                         (let* ((value (vector-ref-ptr init 2))
                                (n (vector-len value)) (box (nl_alloc_vector n)) (j 0))
@@ -43327,7 +43317,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                             (ptr-write-u64 (ptr-read-u64 box 8) (* j 8)
                                            (nl_rooted_vector_word value j))
                             (setq j (+ j 1))))
-                      (nl_rooted_vector_copy init 2 dst))))
+                      (wf_word_store_out dst (nl_rooted_vector_word init 2)))))
                 (setq i (+ i 1)))
               (let ((status (call-ptr entry env ticket arity count 0 0)))
                 (if (and (>= status 512) (< status (+ 512 count)))

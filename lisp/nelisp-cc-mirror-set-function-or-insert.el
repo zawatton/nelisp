@@ -30,23 +30,21 @@
         (entry-ptr mirror-ptr sym-ptr scratch-vec-ptr _pad _pad2)
       ;; Dispatch on ENTRY-PTR; hit-path writes slot 1 (= function
       ;; cell).  See `set_value_or_insert_dispatch' for details.
-      ;; Doc 147 Phase 2 decouple (see `mirror_set_value_or_insert' for the
-      ;; full rationale): stage the new entry in a fresh 32B STACK slot
-      ;; ENTRY-SLOT instead of writing-through `(vector-ref-ptr scratch 6)'
-      ;; (now an 8B WORD slot whose `vector-ref-ptr' view is transient).
+      ;; Publish the returned entry WORD in scratch slot 6 before allocating
+      ;; the bucket cons; never write through a transient vector slot view.
       (if (= entry-ptr 0)
-          (let ((entry-slot (alloc-bytes 32 8)))
+          (let ((entry-word
+                 (extern-call nelisp_mirror_alloc_entry_w
+                              (nl_vector_slot_word scratch-vec-ptr 5)
+                              (nl_vector_slot_word scratch-vec-ptr 7)
+                              (nl_vector_slot_word scratch-vec-ptr 8)
+                              (nl_vector_slot_word scratch-vec-ptr 9)
+                              (nl_vector_slot_word scratch-vec-ptr 10) 0)))
             (and
-             (extern-call nelisp_mirror_alloc_entry
-                          (vector-ref-ptr scratch-vec-ptr 5)
-                          (nl_vector_slot_word scratch-vec-ptr 7)
-                          (nl_vector_slot_word scratch-vec-ptr 8)
-                          (nl_vector_slot_word scratch-vec-ptr 9)
-                          (nl_vector_slot_word scratch-vec-ptr 10)
-                          entry-slot)
+             (vector-slot-set scratch-vec-ptr 6 entry-word)
              (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
-                          entry-slot
+                          (nl_vector_slot_word scratch-vec-ptr 6)
                           scratch-vec-ptr)))
         (and (record-slot-set entry-ptr 1
                               (nl_vector_slot_word scratch-vec-ptr 8))

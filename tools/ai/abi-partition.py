@@ -2,7 +2,7 @@
 """Partition the builtin word-ABI conversion into 4 disjoint groups (Doc 215).
 
   abi-partition.py DUMP OUT.json
-  abi-partition.py check GROUP DUMP [PARTITION.json] [--arms|--defuns]
+  abi-partition.py check GROUP DUMP [PARTITION.json] [--arms|--defuns] [--all]
       exit 0 iff GROUP has no legacy arm left in nelisp_apply_function_w and
       every listed defun is converted: F_w is defined, or F no longer has an
       OUT-style parameter (default partition: tools/ai/abi-partition.json)
@@ -170,7 +170,7 @@ def legacy_arm(arm):
             and isinstance(arm[2], list) and arm[2] and arm[2][0] == "nl_abi_rc_to_word")
 
 
-def check(group, dump, part, only=None):
+def check(group, dump, part, only=None, show_all=False):
     defs, _ = load(dump)
     d = json.load(open(part))
     g = d["groups"][group]
@@ -188,7 +188,8 @@ def check(group, dump, part, only=None):
         bad_arms = []
     print("ABI-CHECK %s legacy arms %d, unconverted defuns %d %s" % (
         group, len(bad_arms), len(bad_defs), "PASS" if not bad_arms and not bad_defs else "FAIL"))
-    for x in (bad_arms + bad_defs)[:10]:
+    findings = bad_arms + bad_defs
+    for x in findings if show_all else findings[:10]:
         print("  " + x)
     sys.exit(0 if not bad_arms and not bad_defs else 1)
 
@@ -197,6 +198,7 @@ if __name__ == "__main__":
     if sys.argv[1] == "check":
         a = [x for x in sys.argv[2:] if not x.startswith("--")]
         only = "arms" if "--arms" in sys.argv else ("defuns" if "--defuns" in sys.argv else None)
-        check(a[0], a[1], a[2] if len(a) > 2 else "tools/ai/abi-partition.json", only)
+        check(a[0], a[1], a[2] if len(a) > 2 else "tools/ai/abi-partition.json",
+              only, show_all="--all" in sys.argv)
     else:
         main(sys.argv[1], sys.argv[2])
