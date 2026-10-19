@@ -506,6 +506,25 @@ reverse + 3 inline): the shared decoder is still counted once while its
 remaining non-definer callers are converted. Boot/regex/files means are
 -3.252%/-2.981%/-3.487%, GC6/6,17/16,8/8, all layout outputs identical.
 
+Apply/funcall/eval now return evaluator WORDs directly. Apply's prefix and
+append producers construct canonical cons children in holders reserved
+before binding; they never read a private result box. Funcall roots the
+resolved function and remaining arguments. Eval's slow path saves its WORD
+as a rooted child through frame pop, then reads the root before release.
+Flat syscall dispatch calls its WORD producer and rooted-subr dispatch
+forwards to the actual compiled-frame C-ABI boundary without another OUT.
+Signal-only tails no longer allocate an output merely to report failure.
+
+Apply66 agrees with baseline/GNU and rejects a wrong-prefix expectation;
+the six-call source guard is red before these producers exist and green
+here. Typed/fixed/rooted FFI46, capture/definer/constructor/autoload/callback/
+environment, native tail8, batteries/Anvil/arity, static42 and parked-worker3
+pass. A second three-case parked test verifies apply/funcall with two
+registered workers and an actual main-thread collection. TOTAL1397; S6.2
+21 (12 direct + 6 reverse + 3 inline). Root reservations account for the
+TOTAL increase; reverse dependencies fall by three. Boot/regex/files means
+are -3.173%/-2.891%/-3.428%, GC6/6,17/16,8/8, every layout output identical.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

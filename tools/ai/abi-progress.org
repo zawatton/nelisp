@@ -169,6 +169,12 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Apply/eval checkpoint: TOTAL1397; S6.2 21 (12direct+6reverse+3inline).
+# Apply66 baseline/GNU, prefix mutant, six-call source guard red/green,
+# FFI46, capture/definer/constructor/autoload/callback/environment, tail8,
+# batteries/Anvil/arity, static42+parked roots3+parked calls3.
+# Root reservations raise TOTAL; reverse adapters fall by3. Boot/regex/files
+# -3.173%/-2.891%/-3.428%, GC6/6,17/16,8/8, all outputs identical.
 # Definer checkpoint: TOTAL1388; S6.2 24 (12direct+9reverse+3inline).
 # Six actual definer producers no longer decode results; shared decoder
 # count remains until non-definer callers are migrated. Definer131 baseline/

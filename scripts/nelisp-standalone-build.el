@@ -41975,6 +41975,10 @@ OUT replaced by 0; any other tail rc form runs against a private OUT box
        (tail (x)
          (cond
           ((eql x 2) 2)
+          ((and (consp x) (memq (car x)
+                 '(nl_apply_stash_invalid_function nl_apply_stash_wta
+                   bf_wrong_number_of_args nl_cons_stash_void_function)))
+           `(seq ,x 0))
           ((and (consp x) (eq (car x) 'if))
            (if (uses-out (nth 1 x))
                (wrap x)
@@ -42665,7 +42669,169 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               (cdr src))))))))))
 
 (defconst nelisp-standalone--rooted-subr-helpers
-  '(
+  '((defun nl_apply_flat_builtin_frame_w (func header env _pad)
+  (if (and (> header 4096) (= (sexp-tag header) 2)
+           (= (ptr-read-u64 header 8) 3) (= (wf_bytecode_flat_path_int_cell func) 1))
+      (nl_bi_syscall_path_int_slots_w (- header 96) (- header 64) (- header 32) 0)
+    (seq (nl_apply_stash_invalid_function env func) 0)))
+
+(defun nl_apply_rooted_subr_w (func args env _pad)
+  (nl_apply_rooted_subr_frame_w func args (- -1 (nl_apply_list_len args)) env 0))
+
+(defun nl_apply_append_node_word (holder item)
+  (let* ((node (nelisp_cons_construct_w item 3 0))
+         (previous (nl_cons_cdr_word holder)))
+    (seq
+     (if (= previous 3) (ptr-write-u64 (ptr-read-u64 holder 8) 0 node)
+       (ptr-write-u64 (ptr-read-u64 previous 8) 8 node))
+     (ptr-write-u64 (ptr-read-u64 holder 8) 8 node) node)))
+
+(defun nl_apply_list_init_w (head holder)
+  ;; HOLDER's child WORDs root the actual fresh headers through allocation.
+  (let* ((cur head) (more 1))
+    (seq
+     (wf_word_store_out holder (nelisp_cons_construct_w 3 3 0))
+     (while (= more 1)
+       (if (= (nl_val_tag cur) 7)
+           (let* ((rest (nl_cons_cdr_word cur)))
+             (if (= (nl_val_tag rest) 7)
+                 (seq (nl_apply_append_node_word holder (nl_cons_car_word cur))
+                      (setq cur rest))
+               (setq more 0)))
+         (setq more 0)))
+     (nl_cons_car_word holder))))
+
+(defun nl_apply_list_last_word (list)
+  (if (= (nl_val_tag list) 7)
+      (let* ((rest (nl_cons_cdr_word list)))
+        (if (= (nl_val_tag rest) 7) (nl_apply_list_last_word rest)
+          (nl_cons_car_word list))) list))
+
+(defun nl_apply_list_append_w (head tail holder)
+  (let* ((cur head))
+    (seq
+     (wf_word_store_out holder (nelisp_cons_construct_w 3 3 0))
+     (while (= (nl_val_tag cur) 7)
+       (seq (nl_apply_append_node_word holder (nl_cons_car_word cur))
+            (setq cur (nl_cons_cdr_word cur))))
+     (let* ((last (nl_cons_cdr_word holder)))
+       (if (= last 3) tail
+         (seq (ptr-write-u64 (ptr-read-u64 last 8) 8 tail)
+              (nl_cons_car_word holder)))))))
+
+(defun nl_apply_do_apply_w (args env _pad)
+  (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    (let* ((mark (nl_root_mark env)) (input (nl_root_reserve env))
+           (function-root (nl_root_reserve env)) (prefix (nl_root_reserve env))
+           (holder (nl_root_reserve env)) (spliced (nl_root_reserve env)))
+      (seq
+       (wf_word_store_out input args)
+       (let* ((name (nl_cons_car_word input)) (tag (nl_val_tag name))
+              (function (if (or (= tag 4) (= tag 16))
+                            (nelisp_env_lookup_function_w env (+ env 64) name 0) name))
+              (word
+               (if (or (= function 0) (= function 2) (= function 3))
+                   (seq (nl_cons_stash_void_function env (wf_word_view name)) 0)
+                 (seq
+                  (wf_word_store_out function-root function)
+                  (let* ((rest (nl_cons_cdr_word input))
+                         (head (nl_apply_list_init_w rest prefix))
+                         (tail (nl_apply_list_last_word rest))
+                         (joined (nl_apply_list_append_w head tail holder)))
+                    (seq
+                     (wf_word_store_out spliced joined)
+                     (nl_n4_named_apply_w (wf_word_view name) function-root spliced env 0)))))))
+         (seq (nl_root_release env mark) word))))))
+
+(defun nl_apply_do_funcall_w (args env _pad)
+  (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    (let* ((mark (nl_root_mark env)) (input (nl_root_reserve env))
+           (function-root (nl_root_reserve env)) (rest-root (nl_root_reserve env)))
+      (seq
+       (wf_word_store_out input args)
+       (let* ((name (nl_cons_car_word input)) (tag (nl_val_tag name))
+              (symbol (or (= tag 4) (= tag 16)))
+              (function (if symbol (nl_lookup_fn_autoload_w env (+ env 64) name 0) name))
+              (word
+               (if (and symbol (or (= function 0) (= function 2) (= function 3)))
+                   (seq (nl_cons_stash_void_function env (wf_word_view name)) 0)
+                 (seq
+                  (wf_word_store_out function-root function)
+                  (wf_word_store_out rest-root (nl_cons_cdr_word input))
+                  (if symbol
+                      (nl_n4_named_apply_w (wf_word_view name) function-root rest-root env 0)
+                    (nl_apply_function_w function-root rest-root env 0))))))
+         (seq (nl_root_release env mark) word))))))
+
+(defun nl_apply_do_push_frame_w (env _pad)
+  (if (= (nl_apply_frame_push env) 0) 7 0))
+(defun nl_apply_do_pop_frame_w (env _pad)
+  (if (= (nl_apply_frame_pop env) 0) 7 0))
+
+(defun nl_apply_do_bind_local_w (args env _pad)
+  (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    (let* ((rest (nl_cons_cdr_word args)))
+      (if (/= (nl_val_tag rest) 7) (seq (nl_apply_stash_wta env args) 0)
+        (let* ((name (nl_cons_car_word args)) (value (nl_cons_car_word rest)))
+          (if (= (nl_apply_bind_local env (wf_word_view name) (wf_word_view value)) 0)
+              value 0))))))
+
+(defun nl_n3_eval_fast_w (form env _pad)
+  (let* ((tag (nl_val_tag form)))
+    (if (or (= tag 4) (= tag 16)) 2
+      (if (= tag 7)
+          (let* ((name (nl_cons_car_word form)))
+            (if (if (= (logand name 1) 1) 0
+                  (or (= (sexp-name-eq name "+") 1) (= (sexp-name-eq name "-") 1)
+                      (= (sexp-name-eq name "*") 1) (= (sexp-name-eq name "/") 1)))
+                (let* ((args (nl_cons_cdr_word form)))
+                  (if (= (nl_n3_eval_literal_args (wf_word_view args)) 1)
+                      (let* ((mark (nl_root_mark env)) (fn (nl_root_reserve env))
+                             (function (nelisp_env_lookup_function_w env (+ env 64) name 0))
+                             (word
+                              (if (or (= function 0) (= function 2)) 2
+                                (seq
+                                 (wf_word_store_out fn function)
+                                 (if (and (= (sexp-tag fn) 7)
+                                          (= (let* ((fw (nl_cons_car_word fn)))
+                                               (if (= (logand fw 1) 1) 0
+                                                 (sexp-name-eq fw "builtin"))) 1)
+                                          (= (symbol-eq (nl_apply_list_nth fn 1) name) 1))
+                                     (nl_apply_function_w fn (wf_word_view args) env 0) 2)))))
+                        (seq (nl_root_release env mark) word)) 2)) 2)) form))))
+
+(defun nl_n3_eval_slow_w (args-list env _pad)
+  (let* ((count (nl_apply_list_len args-list)) (mark (nl_root_mark env))
+         (args (nl_root_reserve env)) (lex (nl_root_reserve env))
+         (value-root (nl_root_reserve env))
+         (saved (logand (ptr-read-u64 env 112) 2097152)))
+    (seq
+     (wf_word_store_out args args-list)
+     (if (= count 2) (wf_word_store_out lex (wf_arg_word args 1)) (wf_write_nil lex))
+     (wf_word_store_out value-root (nelisp_cons_construct_w 3 3 0))
+     (nelisp_frame_scope_push (+ env 32))
+     (ptr-write-u64 env 112
+       (logior (logand (ptr-read-u64 env 112) -2097153)
+               (if (= (sexp-tag lex) 0) 2097152 0)))
+     (nl_n3_eval_bind_pairs lex (+ env 32))
+     (let* ((word (nelisp_eval_call_w (wf_arg_ptr args 0) env 0)))
+       (seq
+        (if (/= word 0) (ptr-write-u64 (ptr-read-u64 value-root 8) 0 word) 0)
+        (nl_env_pop_frame env)
+        (ptr-write-u64 env 112 (logior (logand (ptr-read-u64 env 112) -2097153) saved))
+        (let* ((result (if (= word 0) 0 (nl_cons_car_word value-root))))
+          (seq (nl_root_release env mark) result)))))))
+
+(defun nl_apply_do_eval_w (args env _pad)
+  (let* ((count (nl_apply_list_len args)))
+    (if (or (< count 1) (> count 2))
+        (let* ((buf (alloc-bytes 8 1)))
+          (seq (ptr-write-u64 buf 0 1818326629)
+               (bf_wrong_number_of_args (nl_alloc_symbol_w buf 4 0) count) 0))
+      (let* ((fast (nl_n3_eval_fast_w (wf_arg_word args 0) env 0)))
+        (if (= fast 2) (nl_n3_eval_slow_w args env 0) fast)))))
+
+
 ;; Generic raw-v2 activation. Native under clauses 1 and 2: tagged-object
 ;; copying plus evaluator/GC entry; the Lisp cache callable is its reference.
 (defun nl_rooted_vector_word (vector index)
@@ -43650,7 +43816,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 `nelisp-standalone--apply-word-names' split into F_w, whose tail calls of
 the same set and of `nelisp_apply_function' become word calls (other
 tails run against a private box), and the (rc, OUT) adapter F."
-  (let ((words (cons 'nelisp_apply_function nelisp-standalone--apply-word-names))
+  (let ((words (append '(nl_apply_do_eval nl_apply_do_funcall nl_apply_do_apply
+                         nl_apply_do_push_frame nl_apply_do_pop_frame nl_apply_do_bind_local
+                         nl_apply_flat_builtin_frame nl_apply_rooted_subr)
+                      (cons 'nelisp_apply_function nelisp-standalone--apply-word-names)))
         result)
     (dolist (form forms)
       (if (and (eq (car-safe form) 'defun)
