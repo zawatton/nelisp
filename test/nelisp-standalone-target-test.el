@@ -1593,7 +1593,7 @@ rebase -> SIGSEGV in the REPL print path's quit-flag check."
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(nl_os_alloc_chunk #x4000000)
+                 '(nl_os_reserve_chunk #x4000000)
                  arena))
         (should (tree-member-p
                  '(extern-call VirtualAlloc 0 size 8192 4)
@@ -1624,7 +1624,7 @@ rebase -> SIGSEGV in the REPL print path's quit-flag check."
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(nl_os_alloc_chunk #x4000000)
+                 '(nl_os_reserve_chunk #x4000000)
                  arena))
         (should (tree-member-p
                  '(extern-call VirtualAlloc 0 size 8192 4)

@@ -3040,7 +3040,7 @@ addressing by a runtime base, never by a fixed reservation."
                    (oldie (ptr-read-u64 (+ oldbase 840) 0)))
               (if (<= needed oldsize)
                   (if (= (nl_os_commit_range oldbase 0 needed) 0) -1 0)
-                (let ((newbase (nl_os_alloc_chunk needed)))
+                (let ((newbase (nl_os_reserve_chunk needed)))
                   (if (= newbase 0) -1
                     (if (= (nl_os_commit_range newbase 0 needed) 0)
                         (seq (nl_os_free_chunk newbase needed) -1)
@@ -3104,7 +3104,7 @@ arm64 Linux has no legacy x86 numbering)."
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((base (nl_os_alloc_chunk ,nelisp-standalone--windows-arena-size)))
+     (let ((base (nl_os_reserve_chunk ,nelisp-standalone--windows-arena-size)))
        (if (= base 0)
            ;; Exit code 88 = standalone arena allocation failure.
            (extern-call ExitProcess 88)
@@ -3128,6 +3128,12 @@ arm64 Linux has no legacy x86 numbering)."
 (defun nelisp-standalone--windows-alloc-chunk-form ()
   "Return Windows chunk allocation forms using VirtualAlloc(NULL, ...)."
   '((defun nl_os_alloc_chunk (size)
+      ;; Side tables and activation records can touch the entire mapping.
+      ;; MEM_RESERVE|MEM_COMMIT supplies zero-filled, writable pages.
+      (extern-call VirtualAlloc 0 size 12288 4))
+    ;; Raw OS allocation, minimal native surface clause 3. Only arena owners
+    ;; reserve without committing their payload; metadata needs one page.
+    (defun nl_os_reserve_chunk (size)
       (let ((base (extern-call VirtualAlloc 0 size 8192 4)))
         (if (= base 0)
             0
@@ -3386,6 +3392,15 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                                                  chunk-forms)
                                    form)))))
                          (cdr nelisp-standalone--arena-source))))
+       (when try-alloc-form
+         ;; Windows heap growth retains its lazy commit charge. Other
+         ;; platforms keep their original mmap allocation forms verbatim.
+         (setq body
+               (mapcar (lambda (form)
+                         (if (and (consp form) (eq (cadr form) 'nl_chunk_alloc_new))
+                             (cl-subst 'nl_os_reserve_chunk 'nl_os_alloc_chunk form)
+                           form))
+                       body)))
        (setq body
              (if (nelisp-standalone--runtime-reload-enabled-p)
                  (append
@@ -3418,6 +3433,10 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                         (nl_alloc_bytes_slow size align)))))
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
+                          (when try-alloc-form
+                            (list (cl-find-if
+                                   (lambda (form) (eq (cadr form) 'nl_os_reserve_chunk))
+                                   chunk-forms)))
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
