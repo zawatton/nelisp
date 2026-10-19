@@ -1,0 +1,154 @@
+#+TITLE: Doc 216 — Header-less heap: tagged WORDs address the payload directly
+#+STATUS: PLANNED
+#+LEDGER: tools/ai/word-heap-progress.org
+
+* What this project is (and is not)
+
+This project retires the per-object 32-byte Sexp *header box*. After it, a
+pointer WORD addresses the object's payload directly, the way GNU Emacs's
+tagged =Lisp_Object= does. Each heap object then needs one allocation and one
+dereference instead of two.
+
+It is NOT a redo of Doc 147. Doc 147 already shrank the *container slots*:
+- cons car/cdr, vector, record and frame slots now hold 8-byte WORDs;
+- the =NlConsBox= went from 72 B to 24 B.
+
+It is NOT Doc 215 either. Doc 215 moved *transport*: every runtime function
+passes and returns WORDs, and the transport boxes are gone (S6.2 = 0 on
+eval/abi-integ-20261019).
+
+What remains is the object representation itself:
+
+#+begin_example
+WORD (pointer, low bit 0) --> 32-byte Sexp header box   [tag byte @0, payload pointer @8, ...]
+                                   |
+                                   +--> payload (NlConsBox: car WORD @0, cdr WORD @8, refcount @16)
+#+end_example
+
+* Measured starting point (2026-10-19, eval/core 4f2bfc2b6 / anvil dc8284690)
+
+| object                          | bytes/object | GNU Emacs 31 (reference) |
+|---------------------------------+--------------+--------------------------|
+| cons (make-list)                |           72 | 16                       |
+| float (in a list, minus cons)   |          ~40 | 16                       |
+| string, 8 chars (minus cons)    |          ~56 | ~41-48                   |
+| symbol, make-symbol (minus cons)|          ~56 | 48                       |
+| vector slot                     |            8 | 8                        |
+
+Method: the =objsize.el= probe. It reads live bytes from =nelisp--arena-stats=
+field 4 after two collections, with conservative stack scanning off. The
+probe is deterministic, and it is the S0 evidence tool. RSS is not used.
+
+A cons today costs:
+- a 32 B header box (tag 7 plus a pointer to the NlConsBox);
+- a 24 B NlConsBox, which still carries the Rust-era =refcount= word @16;
+- allocator rounding.
+
+A =car= therefore takes three dependent loads: WORD -> header -> NlConsBox -> car.
+
+The box census of the ABI integration branch shows the remaining
+representation idioms: 1369 occurrences in total.
+
+| idiom                                       | count | what it is                                        |
+|---------------------------------------------+-------+---------------------------------------------------|
+| =alloc-bytes 32 8=                          |   594 | mostly header boxes of new objects; some scratch  |
+| =nl_root_reserve=                           |   239 | 32 B precise-root slots                           |
+| =nl_cons_car_ptr= / =nl_cons_cdr_ptr=       |   233 | 32 B Sexp views of a car/cdr WORD                 |
+| =vector-ref-ptr= / =record-slot-ref-ptr=    |    85 | 32 B views of container slots                     |
+| =clone_into= / =wf_copy32=                  |   206 | 32 B Sexp copies                                  |
+| =nl_sci_store_imm=                          |    12 | WORD -> box shim                                  |
+
+* Target representation (decided in S0, provisional here)
+
+The current WORD space has to keep working:
+- fixnum =(n<<2)|1=, so the low 2 bits are =01=;
+- nil =3= and t =7=, so the low 3 bits are =011= and =111=;
+- pointers are 8-aligned and their low bit is 0.
+
+Candidate tag scheme: make pointer WORDs carry a type tag in bits 1-2 while
+bit 0 stays 0. With 8-byte alignment that gives four pointer kinds:
+
+| low bits | meaning during migration                                     |
+|----------+--------------------------------------------------------------|
+| =000=    | legacy: the address of a 32 B Sexp header box (today's objects) |
+| =010=    | header-less cons: address of a 16 B (car, cdr) payload       |
+| =100=    | header-less string/symbol (exact split decided in S0)        |
+| =110=    | header-less vectorlike: payload begins with a type/size header word |
+
+The legacy tag =000= is what makes per-type migration possible. Objects that
+still have a header box and objects that do not can live in one heap, so each
+type flips independently and every stage stays green. S0 must compare this
+scheme with 16-byte alignment, which gives a GNU-style 3-bit tag space, and
+must show that every existing WORD decoder still works unchanged:
+=nl_word_payload=, =wf_bytecode_w_tag= / =wf_bytecode_w_int=, the inline
+=(= tg 2)= decoders, the FFI and image relocation code.
+
+The cons =refcount= word should be dropped. The tracing GC makes it dead
+weight; S0 has to confirm that no live reader of it remains (the rc-aware
+=cons-set-*= / clone / drop paths). Dropping it is the difference between a
+24 B and a 16 B cons.
+
+* Expected effects (to be quantified by S0 before any implementation)
+
+- **Memory.**
+  - cons: 72 B -> 16-24 B, so list-shaped data (alists, plists, code,
+    char-table auxiliaries) becomes 3-4 times smaller.
+  - Precedent: Doc 147's cons-box shrink alone gave -729 MB of peak.
+  - The =.cold= images and the library's ~1 GB heap shrink with it, which also
+    means faster image restore and lower RSS.
+- **Speed.**
+  - =car= / =cdr= drop from three dependent loads to one.
+  - Each object needs one allocation instead of two.
+  - Type checks read the tag bits of the WORD, so they need no memory load.
+  - The GC scans fewer bytes and fewer objects.
+  - No multiplier is claimed until S0's callgrind attribution of header loads
+    and =*_ptr= materialisers is in.
+- **Compatibility.** This is GNU's own representation, so FFI, dump and
+  object-identity semantics converge.
+
+* Cost and risk
+
+The change reaches:
+- every reader of the header tag byte, i.e. =sexp-tag= or =ptr-read-u8 BOX 0=
+  applied to a box pointer;
+- the GC: marking, sweep, compaction and relocation;
+- the =.cold= / image format, so existing images become invalid;
+- the reader and printer;
+- FFI;
+- native/AOT, bytecode and fx codegen;
+- threads (per-CPU roots);
+- the Windows allocator.
+
+The known failure mode at each type flip is the Doc 155 GC marking-gap
+pattern: root marking misses children, and sweep then frees live objects.
+Every stage therefore ends with the exit-stash / GC-root checks, an image
+dump/restore round-trip, the eval/core full suite, and Windows under wine.
+
+* Stages (see the ledger for the checkable criteria)
+
+| Stage | Work |
+|---|---|
+| S0 | Measure and predict. Per-type bytes; heap composition by type (anvil after startup, the library base image, =.cold=); Ir attributable to header loads and =*_ptr=; design decision record (tag scheme, alignment, refcount removal). No implementation. |
+| S1 | Accessor layer. Route every raw header read through one accessor module. A new census idiom counts raw header reads outside it, with a negative control. No layout change. |
+| S2 | cons header-less (tag =010=), then refcount removal. |
+| S3 | strings and symbols header-less. |
+| S4 | vectors, records, char-tables and frames header-less (vectorlike header word). |
+| S5 | floats, bignums, markers and the remaining types. |
+| S6 | Roots and copies: 32 B root slots become WORD roots, and the =alloc-bytes 32 8=, =*_ptr=, =clone_into= and =wf_copy32= idioms reach 0. |
+| S7 | Image format version bump, stale-image rejection, native Windows acceptance, library images rebuilt (coordinated with the nelisp-emacs-lib session). |
+| S8 | Final. Live bytes after a fixed vendor load at most the provisional 50% of baseline; Ir gates for files and regex at or below baseline; boot not slower; 400-call anvil soak; native Windows. |
+
+All thresholds after S0 are provisional. S0 revises them, and the revision is
+reported as a criteria change.
+
+* Sequencing and coordination
+
+- The plan branch (=eval/word-heap-plan=) is based on the ABI integration
+  branch, because the census and accessor tooling live there.
+- *Implementation starts only after the ABI (Doc 215) merges into eval/core*,
+  so that the =scripts/nelisp-standalone-build.el= conflicts are not fought
+  twice.
+- S0 is read-only measurement and may start immediately.
+- The nelisp-emacs-lib session must rebuild its images after S7. Its census
+  (ccore, process, display, ...) is part of S7's evidence.
+- anvil switches binaries only after S8 passes and the user approves.

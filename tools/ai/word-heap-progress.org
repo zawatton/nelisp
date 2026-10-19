@@ -1,0 +1,100 @@
+#+TITLE: Header-less heap (Doc 216): tagged WORDs address the payload directly
+
+* S0 Measure and predict before any implementation
+
+** S0.1 Per-type bytes/object table (objsize probe) for cons, float, string, symbol, vector, record, bignum, marker
+#+NOTE: Baseline cons=72 B (2026-10-19, dc8284690). Evidence: probe source + output, sha-pinned.
+pending
+
+** S0.2 Heap composition by type (bytes, count) for anvil after startup, the library base image, and a .cold image
+#+NOTE: Decides the stage order. If cons is not at least 60% of live bytes, reorder S2-S5 and report the change.
+pending
+
+** S0.3 callgrind attribution of Ir spent in header loads and *_ptr materialisers for the boot, files and regex workloads
+#+NOTE: The only basis for any speed claim.
+pending
+
+** S0.4 Design decision record: tag scheme, alignment, coexistence of legacy =000= boxes, cons refcount removal; all existing WORD decoders proven unchanged
+pending
+
+** S0.5 End to end: S1+ thresholds revised from S0 data and the revision reported (criteria-change record)
+pending
+
+* S1 Accessor layer (no layout change)
+
+** S1.1 box-census counts raw header reads outside the accessor module, with a negative control that must count
+pending
+
+** S1.2 Raw header reads outside the accessor module = 0
+pending
+
+** S1.3 End to end: eval/core full suite (dyn+static), standalone-checks, wine Windows smoke on the accessor-only tree
+pending
+
+* S2 cons header-less
+
+** S2.1 bytes/cons <= 24 by the objsize probe
+pending
+
+** S2.2 cons refcount removed: bytes/cons <= 16
+pending
+
+** S2.3 End to end: full suite, exit-stash/GC-root checks, image dump/restore round-trip, wine Windows smoke
+pending
+
+* S3 strings and symbols header-less
+
+** S3.1 bytes per 8-char string and per uninterned symbol at or below the S0-revised thresholds
+pending
+
+** S3.2 End to end: full suite, GC-root checks, image round-trip, reader/printer parity with GNU 31.1, wine smoke
+pending
+
+* S4 vectors, records, char-tables and frames header-less (vectorlike header word)
+
+** S4.1 vector/record/char-table objects carry no 32 B header box (probe plus census)
+pending
+
+** S4.2 End to end: full suite, GC-root checks, image round-trip, closure/frame parity cases, wine smoke
+pending
+
+* S5 floats, bignums, markers and remaining types header-less
+
+** S5.1 No object type allocates a 32 B header box (census of allocation sites by type)
+pending
+
+** S5.2 End to end: full suite, GC-root checks, image round-trip, numeric parity cases, wine smoke
+pending
+
+* S6 Roots and copies retired
+
+** S6.1 Census: alloc-bytes-32-8 = 0, *_ptr materialisers = 0, clone_into = 0, wf_copy32 = 0
+pending
+
+** S6.2 Precise roots are WORD slots: nl_root_reserve 32 B slots = 0
+pending
+
+** S6.3 End to end: full suite, thread smokes on static, GC-root checks, wine smoke
+pending
+
+* S7 Image format and platforms
+
+** S7.1 .cold image format version bumped; a stale image is rejected with a clear error (test)
+pending
+
+** S7.2 Native Windows acceptance on the user's machine (auto-discovered .cold, eval, GC root, bytecode 145/145)
+pending
+
+** S7.3 nelisp-emacs-lib images rebuilt and its census (ccore/process/display/buffer/...) passes (evidence from that session)
+pending
+
+* S8 Final
+
+** S8.1 Live bytes after a fixed vendor load are at most 50% of the 2026-10-19 baseline (provisional until S0.5)
+pending
+
+** S8.2 Ir gates: files and regex at or below the baseline, boot not slower (four address layouts, total Ir including GC)
+pending
+
+** S8.3 End to end: anvil 400-call side-by-side soak with 0 mismatches, plus the eval/core full suite on the final binaries
+pending
