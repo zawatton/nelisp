@@ -119,7 +119,10 @@
   "Return bootstrap-only raw OS helpers; no new Lisp primitive is exported.
 Minimal native surface clauses 3/4: executable path and external scratch
 memory must be available before the first Lisp form or heap restoration."
-  (if (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 linux-aarch64))
+  (cond
+   ((eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+    (nelisp-boot-image--windows-native-forms))
+   ((memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 linux-aarch64))
       (let ((arm (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)))
       `((defun nl_boot_image_decimal (buffer number)
           (if (< number 10)
@@ -182,8 +185,100 @@ memory must be available before the first Lisp form or heap restoration."
           (if (= path 0) 0
             (let ((scratch (- path 4672)))
               (seq (nl_os_close_handle (ptr-read-u64 scratch 4640))
-                   (nl_os_free_chunk scratch 8192)))))))
-    '((defun nl_boot_image_companion () 0)
-      (defun nl_boot_image_release (_path) 0))))
+                   (nl_os_free_chunk scratch 8192))))))))
+   (t '((defun nl_boot_image_companion () 0)
+        (defun nl_boot_image_release (_path) 0)))))
+
+(defun nelisp-boot-image--windows-native-forms ()
+  "Return pre-heap Win32 discovery and handle-pinned cold input helpers."
+  '((defun nl_boot_image_windows_valid (scratch executable image)
+      ;; Match Linux's same-owner policy using the owner SID, not the current
+      ;; token (an installed executable may belong to an administrator).
+      ;; READ_CONTROL failure rejects discovery. FILE_SHARE_READ alone denies
+      ;; writers and deletion throughout validation and both restore reads.
+      (let ((info (+ scratch 65536))
+            (exe_sd (+ scratch 65600)) (image_sd (+ scratch 66624))
+            (length (+ scratch 67648)) (exe_owner (+ scratch 67656))
+            (image_owner (+ scratch 67664)) (defaulted (+ scratch 67672)))
+        (if (or (/= (extern-call GetFileType image) 1)
+                (= (extern-call GetFileInformationByHandle image info) 0)
+                (/= (logand (ptr-read-u32 info 0) 1040) 0)
+                (/= (ptr-read-u32 info 40) 1)
+                (= (extern-call GetKernelObjectSecurity executable 1 exe_sd 1024 length) 0)
+                (= (extern-call GetKernelObjectSecurity image 1 image_sd 1024 length) 0)
+                (= (extern-call GetSecurityDescriptorOwner exe_sd exe_owner defaulted) 0)
+                (= (extern-call GetSecurityDescriptorOwner image_sd image_owner defaulted) 0)
+                (= (ptr-read-u64 exe_owner 0) 0)
+                (= (ptr-read-u64 image_owner 0) 0))
+            0
+          (extern-call EqualSid (ptr-read-u64 exe_owner 0)
+                       (ptr-read-u64 image_owner 0)))))
+    (defun nl_boot_image_companion ()
+      ;; 32768 UTF-16 units plus metadata. This mapping must survive arena
+      ;; restoration; no pathname or handle is allocated inside the heap.
+      (let ((scratch (nl_os_alloc_chunk 73728)))
+        (if (= scratch 0) 0
+          (let ((n (extern-call GetModuleFileNameW 0 scratch 32762)))
+            (if (or (<= n 0) (>= n 32762))
+                (seq (nl_os_free_chunk scratch 73728) 0)
+              ;; The module path can retain a symbolic-link launch spelling.
+              ;; Compare the executable target's owner, not the link's owner;
+              ;; the companion itself is still opened without following links.
+              (let ((executable (extern-call CreateFileW scratch 2147614720 1 0 3 128 0)))
+                (if (< executable 0)
+                    (seq (nl_os_free_chunk scratch 73728) 0)
+                  (seq
+                   (ptr-write-u16 scratch (* n 2) 46)
+                   (ptr-write-u16 scratch (* (+ n 1) 2) 99)
+                   (ptr-write-u16 scratch (* (+ n 2) 2) 111)
+                   (ptr-write-u16 scratch (* (+ n 3) 2) 108)
+                   (ptr-write-u16 scratch (* (+ n 4) 2) 100)
+                   (ptr-write-u16 scratch (* (+ n 5) 2) 0)
+                   (let* ((image (extern-call CreateFileW scratch 2147614720 1 0 3 2097280 0))
+                          (valid (if (< image 0) 0
+                                   (nl_boot_image_windows_valid scratch executable image))))
+                     (seq
+                      (nl_os_close_handle executable)
+                      (if (= valid 0)
+                          (seq (nl_os_close_handle image)
+                               (nl_os_free_chunk scratch 73728) 0)
+                        (seq
+                         (ptr-write-u64 scratch 67680 image)
+                         ;; Negative OS pointer is an opaque boot-only token;
+                         ;; explicit UTF-8 path pointers remain positive.
+                         (- 0 scratch)))))))))))))
+    (defun nl_boot_image_open_pinned (path)
+      (if (>= path 0) (nl_os_open_read path)
+        (let* ((scratch (- 0 path))
+               (image (ptr-read-u64 scratch 67680))
+               (copy (+ scratch 67688))
+               (process (extern-call GetCurrentProcess)))
+          ;; The loaders close their input independently. Duplicate the checked
+          ;; handle, rewind its shared file position, and never reopen a path.
+          (if (or (= (extern-call SetFilePointerEx image 0 0 0) 0)
+                  (= (extern-call DuplicateHandle process image process copy 0 0 2) 0))
+              -1 (ptr-read-u64 copy 0)))))
+    (defun nl_boot_image_read_header (path header fd)
+      (let ((n (nl_fa_read_all fd header 64 0)))
+        (seq
+         (if (>= path 0) 0
+           (let ((cached (+ (- 0 path) 67712)) (i 0)
+                 (size (ptr-read-u64 header 8))
+                 (globals (ptr-read-u64 header 32)))
+             (seq
+              ;; Retain the validated header outside the restored arena. The
+              ;; globals install then has no second I/O operation that can
+              ;; fail after the arena has already been published.
+              (while (< i 64)
+                (ptr-write-u8 cached i (ptr-read-u8 header i))
+                (setq i (+ i 1)))
+              (if (or (/= n 64) (< globals 0) (< size 8) (> globals (- size 8)))
+                  (ptr-write-u64 header 0 0) 0))))
+         n)))
+    (defun nl_boot_image_release (path)
+      (if (>= path 0) 0
+        (let ((scratch (- 0 path)))
+          (seq (nl_os_close_handle (ptr-read-u64 scratch 67680))
+               (nl_os_free_chunk scratch 73728)))))))
 
 (provide 'nelisp-boot-image)
