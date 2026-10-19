@@ -2024,7 +2024,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (nl_n4_capture_filtered) (nl_env_capture_lexical_filtered)
     (nl_env_capture_lexical_with_filter) (nl_clx_build_symbol_filter)
     (bf_env_capture_roots) (nelisp_eval_call_with_err)
-    (nl_apply_flat_builtin_frame) (nl_apply_rooted_subr) (nl_apply_rooted_subr_frame)
+    (nl_apply_flat_builtin_frame) (nl_apply_rooted_subr)
     (nl_apply_list_append)
     ;; `nl_lookup_fn_autoload' is not split: it is on every call dispatch
     ;; and its word form is written by hand next to it (no box unless the
@@ -43262,7 +43262,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 
 (defun nl_apply_rooted_subr (func args env out)
   (nl_apply_rooted_subr_frame func args (- -1 (nl_apply_list_len args)) env out))
-(defun nl_apply_rooted_subr_frame (func args packed-argc env out)
+(defun nl_apply_rooted_subr_frame_w (func args packed-argc env _pad)
   (let* ((d (record-slot-ref-ptr func 1))
          (entry (nl_rooted_vector_int d 0))
          (minimum (nl_rooted_vector_int d 1))
@@ -43275,12 +43275,15 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (flat (>= packed-argc 0))
          (argc (if flat packed-argc (- -1 packed-argc)))
          (counter (if (= (vector-len d) 10) (vector-ref-ptr d 9) 0))
+         (counter-mark (nl_root_mark env))
+         (out (if (= counter 0) 0 (nl_root_reserve_checked env)))
          ;; Optional entry instrumentation belongs to the common activation,
-         ;; not a Lisp rest/APPLY wrapper. OUT is the caller's published root.
+         ;; not a Lisp rest/APPLY wrapper. OUT is a precise temporary root.
          ;; Existing dynamic lookup/setq preserve aliases, local bindings,
          ;; watchers and mutation epochs. No new native helper or import.
          (counter-rc
           (if (= counter 0) 0
+            (if (= out 0) (wf_bytecode_root_exhausted)
             (let* ((name (vector-ref-ptr counter 0))
                    (lookup (bf_dynamic_lookup env name out)))
               (if (/= lookup 0) lookup
@@ -43292,17 +43295,19 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   ;; The retained Lisp expression is the reference for float,
                   ;; bignum, overflow and wrong-type behavior of the counter.
                   (seq (wf_write_nil out)
-                       (nl_apply_function (vector-ref-ptr counter 1) out env out))))))))
-    (if (/= counter-rc 0) counter-rc
+                       (nl_apply_function (vector-ref-ptr counter 1) out env out)))))))))
+    (seq
+    (nl_root_release env counter-mark)
+    (if (/= counter-rc 0) 0
     (if (or (< argc minimum) (and (>= maximum 0) (> argc maximum)))
-        (bf_wrong_number_of_args (nl_record_slot_word func 0) argc)
-      (let* ((ticket (nl_root_pin_begin_v2 env)) (base 0) (i 0) (valid 1) (rc 1))
-        (if (= ticket 0) (wf_bytecode_root_exhausted)
+        (seq (bf_wrong_number_of_args (nl_record_slot_word func 0) argc) 0)
+      (let* ((ticket (nl_root_pin_begin_v2 env)) (base 0) (i 0) (valid 1) (word 0))
+        (if (= ticket 0) (seq (wf_bytecode_root_exhausted) 0)
           (seq
            (setq base (nl_root_pin_reserve_many_v2 env ticket count))
            (if (= base 0) (setq valid 0) 0)
            (if (= valid 0)
-               (seq (nl_root_pin_end_v2 env ticket) (wf_bytecode_root_exhausted))
+               (seq (nl_root_pin_end_v2 env ticket) (wf_bytecode_root_exhausted) 0)
              (seq
               (setq i 0)
               ;; Omitted optional slots are already nil. Copy the rest tail:
@@ -43347,7 +43352,12 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                 (setq i (+ i 1)))
               (let ((status (call-ptr entry env ticket arity count 0 0)))
                 (if (and (>= status 512) (< status (+ 512 count)))
-                    (seq (wf_copy32 out (+ base (* (- status 512) 32))) (setq rc 0))
+                    ;; The raw-v2 result slot expires with TICKET. Construct
+                    ;; an owned result object before releasing it; the object
+                    ;; itself is the WORD, with no storage-to-WORD decoding.
+                    (let* ((result (alloc-bytes 32 8)))
+                      (seq (wf_copy32 result (+ base (* (- status 512) 32)))
+                           (setq word result)))
                   (if (and (>= exit 0) (= status (+ 1024 exit)))
                       (seq
                        (wf_copy32 268435480 (+ base (* (+ exit 1) 32)))
@@ -43355,10 +43365,13 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                        (ptr-write-u64 268435472 0 (ptr-read-u64 (+ base (* exit 32)) 8))
                        (atomic-fetch-add 268435544 1))
                     (if (and (>= status 256) (< status (+ 256 count)))
-                        (setq rc (bf_wrong_type_listp (+ base (* (- status 256) 32))))
-                      (setq rc (nl_apply_stash_invalid_function env func))))))
-              (if (= (nl_root_pin_end_v2 env ticket) 1) rc
-                (nl_apply_stash_invalid_function env func)))))))))))
+                        (bf_wrong_type_listp (+ base (* (- status 256) 32)))
+                      (nl_apply_stash_invalid_function env func)))))
+              (if (= (nl_root_pin_end_v2 env ticket) 1) word
+                (seq (nl_apply_stash_invalid_function env func) 0))))))))))))
+(defun nl_apply_rooted_subr_frame (func args packed-argc env out)
+  (nl_abi_word_to_rc
+   (nl_apply_rooted_subr_frame_w func args packed-argc env 0) out))
 (defun bf_make_rooted_subr (args out env)
   (let* ((d (wf_arg_ptr args 0)) (name (wf_arg_ptr args 1))
          (module (wf_arg_word args 2)) (valid 1) (i 0))
