@@ -2035,6 +2035,62 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
 (defun nelisp-standalone--abi-out-param-p (p)
   (memq p '(out out_ptr out-ptr result_slot result-slot out_slot)))
 
+(defun nelisp-standalone--abi-definer-word (form)
+  "Emit a definer's canonical result, retaining physical mutation inputs."
+  (let* ((name (nth 1 form)) (params (nth 2 form))
+         (out (nth 2 params)) (named (memq name '(nl_sf_defun nl_sf_defmacro nl_sf_defvar nl_sf_defconst)))
+         (body (cons 'progn (nthcdr 3 form)))
+         (selector-scratch nil))
+    (cl-labels
+        ((walk (x)
+           (cond
+            ((not (consp x)) x)
+            ((and (eq (car x) 'bf_defvar_init_mode) (eq (nth 3 x) out))
+             (setq selector-scratch t)
+             `(bf_defvar_init_mode ,(nth 1 x) ,(nth 2 x) selector-scratch))
+            ((and named (eq (car x) 'let*)
+                  (equal (car (cadr x)) '(name_ptr (nl_cons_car_ptr args))))
+             `(let* ((name-word (nl_cons_car_word args))
+                     (name_ptr (wf_word_view name-word))
+                     ,@(cdr (cadr x))) ,@(mapcar #'walk (cddr x))))
+            (t (mapcar #'walk x))))
+         (has-out (x)
+           (cond ((eq x out) t) ((consp x) (cl-some #'has-out x))))
+         (tail (x)
+           (cond
+            ((eql x 2) 2)
+            ((numberp x) (if (= x 0) 3 0))
+            ((symbolp x) `(if (= ,x 0) 3 0))
+            ((eq (car x) 'if)
+             `(if ,(cadr x) ,(tail (nth 2 x)) ,(tail (nth 3 x))))
+            ((memq (car x) '(let let*))
+             `(,(car x) ,(cadr x) ,@(butlast (cddr x)) ,(tail (car (last x)))))
+            ((memq (car x) '(seq progn))
+             (let ((xs (cdr x)))
+               (if (and named (equal (last xs 2) `((nl_sexp_clone_into name_ptr ,out) 0)))
+                   (if (butlast xs 2) `(,(car x) ,@(butlast xs 2) name-word) 'name-word)
+                 `(,(car x) ,@(butlast xs) ,(tail (car (last xs)))))))
+            ((and (eq (car x) 'nelisp_eval_call) (eq (nth 3 x) out))
+             `(nelisp_eval_call_w ,(nth 1 x) ,(nth 2 x) 0))
+            ((and (memq (car x) '(bf_defconst_install bf_set_defvar_value bf_declare_local_value
+                                 nl_sf_defvaralias_apply)) (has-out x))
+             (let ((wordcall (cons (intern (format "%s_w" (car x)))
+                                   (cl-substitute 0 out (cdr x)))))
+               (if named
+                   ;; Local declaration accepts canonical nil/t as valid names.
+                   (let ((call (cl-subst 'name-word 'name_ptr wordcall)))
+                     `(if (= ,call 0) 0 name-word))
+                 wordcall)))
+            ((has-out x) (error "unconverted definer result: %s %S" name x))
+            (t `(seq ,x 0)))))
+      (setq body (walk body))
+      (setq body (tail body))
+      ;; defvar's bound/default selector uses a physical lookup scratch only.
+      (when (has-out body) (error "definer still references OUT: %s" name))
+      (list 'defun (intern (format "%s_w" name))
+            (mapcar (lambda (p) (cond ((eq p out) '_pad) ((eq p '_pad) '_pad1) (t p))) params)
+            (if selector-scratch `(let* ((selector-scratch (alloc-bytes 32 8))) ,body) body)))))
+
 (defun nelisp-standalone--abi-box-split-defun (form kind)
   "FORM (defun F PARAMS . BODY) as (F_w ADAPTER); see `nelisp-standalone--abi-box-split'."
   (when (eq kind 'status)
@@ -2048,14 +2104,18 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                             (t p)))
                           params))
          (cargs (mapcar (lambda (p) (if (eq p out) 0 p)) params)))
-    (list `(defun ,wname ,wparams
+    (if (memq name '(nl_sf_defun nl_sf_defvar nl_sf_defconst nl_sf_defalias nl_sf_defvaralias nl_sf_defmacro))
+        (list (nelisp-standalone--abi-definer-word form)
+              `(defun ,name ,params
+                 (nl_abi_word_to_rc (,wname ,@cargs) ,out)))
+      (list `(defun ,wname ,wparams
              (let* ((,out (alloc-bytes 32 8)))
                (,(pcase kind ('special 'nl_abi_rc2_to_word)
                          (_ 'nl_abi_rc_to_word))
                 (progn ,@body) ,out)))
           `(defun ,name ,params
              (,(if (eq kind 'status) 'nl_abi_lookup_to_rc 'nl_abi_word_to_rc)
-              (,wname ,@cargs) ,out)))))
+              (,wname ,@cargs) ,out))))))
 
 (defun nelisp-standalone--abi-box-split-source (source)
   "SOURCE with every `nelisp-standalone--abi-box-split' defun split.
@@ -41873,6 +41933,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 
 (defconst nelisp-standalone--special-word-forms
   '(nl_sf_progn nl_sf_if nl_sf_let nl_sf_let_star nl_sf_setq nl_sf_while
+    nl_sf_quote nl_sf_dolist nl_sf_cl_defun
     nl_sf_function nl_sf_lambda nl_sf_condition_case nl_sf_unwind_protect
     nl_sf_catch nl_sf_throw nl_sf_when nl_sf_unless nl_sf_and nl_sf_or nl_sf_cond
     nl_sf_prog1 nl_sf_prog2 nl_n3_special_cell nl_n3_special_call
@@ -41881,6 +41942,27 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   "Entries with a Doc 215 word form F_w taking 0 in OUT's position.  `nl_apply_special_w' calls F_w directly.")
 
 (defun nelisp-standalone--special-tail-words (form out &optional word-forms)
+  (setq form
+        (cl-labels
+            ((walk (x)
+               (cond
+                ((not (consp x)) x)
+                ((and (memq (car x) '(let let*))
+                      (= (length (cadr x)) 1) (= (length x) 3)
+                      (equal (nth 2 x) (caaadr x))
+                      (consp (cadr (car (cadr x))))
+                      (memq (car (cadr (car (cadr x))))
+                            nelisp-standalone--special-word-forms))
+                 (walk (cadr (car (cadr x)))))
+                ((and (eq (car x) '=) (equal (nth 2 x) 0)
+                      (consp (cadr x)) (eq (caadr x) 'nl_sf_definer_lookup)
+                      (eq (nth 5 (cadr x)) out))
+                 (let ((call (cadr x)))
+                   `(let* ((definition-word
+                             (nl_sf_definer_lookup_w ,@(cl-substitute 0 out (cdr call)))))
+                      (and (/= definition-word 0) (/= definition-word 2)))))
+                (t (mapcar #'walk x)))))
+          (walk form)))
   "FORM, a tail of the `nl_apply_special' dispatch body answering an rc with
 the value in OUT, rewritten to answer the result WORD (2 = not special).
 Tail calls of `nelisp-standalone--special-word-forms' become F_w calls with
@@ -43648,7 +43730,11 @@ tails run against a private box), and the (rc, OUT) adapter F."
   "Legacy combiner-cons defuns replaced by `nelisp-standalone--combiner-cons-word'.")
 
 (defconst nelisp-standalone--combiner-cons-word
-  '((defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
+  '((defun nl_sf_quote_w (args _pad)
+  (if (= (nl_val_tag args) 7) (nl_cons_car_word args) 3))
+(defun nl_sf_cl_defun_w (_args _env _pad _pad1) 2)
+
+    (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
       (if (= (sexp-tag head_ptr) 4)
           (if (= (nl_sp_eq_dolist head_ptr) 1)
               (nl_eic_dolist_w tail_ptr env form_ptr 0)

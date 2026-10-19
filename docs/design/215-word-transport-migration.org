@@ -490,6 +490,22 @@ Boot/regex/files means are -2.967%/-2.767%/-3.105%, GC6/6,17/16,8/8,
 with identical outputs in every layout. The initial missing reader entry
 was a fixable link error; only completed =round3-load2= builds are accepted.
 
+The six native definers now emit genuine WORD bodies. Named definitions
+retain the canonical NAME child; defalias returns the evaluator WORD and
+defvaralias calls its typed WORD installer. Defvar's remaining physical
+scratch serves only the bound/default selector, never result decoding.
+The generator rejects unknown OUT producers and keeps distinct unused
+parameters. Quote, dolist and cl-defun dispatch call their WORD producers;
+a status-only definer lookup no longer forces a private result box.
+Definer131 agrees with baseline and GNU Emacs, and redirecting an alias to
+the wrong base is rejected. A source guard verifies all six definitions
+contain no result decoder (red on =round3-load2=, green here).
+Constructor/autoload/callback/environment, native tail8, batteries/Anvil/arity,
+static42 and parked-worker3 pass. TOTAL1388; S6.2 remains 24 (12 direct + 9
+reverse + 3 inline): the shared decoder is still counted once while its
+remaining non-definer callers are converted. Boot/regex/files means are
+-3.252%/-2.981%/-3.487%, GC6/6,17/16,8/8, all layout outputs identical.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
