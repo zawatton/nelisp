@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "contract": "Precise roots are enumerated by hard-coded walkers, not registered through an init-time address registry. The root families are identical in source and image boot; their storage provenance differed.",
+  "root_families": [
+    {"name": "driver and recorded evaluator frames", "walker": "nl_gc_mark_roots / nl_gc_mark_recorded_contexts", "members": ["env", "result", "out", "pool", "src", "cursor", "builtin-symbol"], "lifetime": "driver storage is permanent; nested frames are explicitly recorded"},
+    {"name": "environment", "walker": "nl_gc_mark_recorded_env", "members": ["globals mirror and fast buckets at env+0", "frame stack at env+32", "unbound marker at env+64", "active backtrace values through env+176"]},
+    {"name": "main evaluator root reserve", "walker": "nl_gc_mark_rootstack", "storage": "fresh BSS nl_rootstack_region .. nl_rootstack_top"},
+    {"name": "native loader pin reserve", "walker": "nl_gc_mark_pinned_roots", "storage": "fresh BSS nl_root_pin_region and control"},
+    {"name": "private worker reserves", "walker": "nl_gc_mark_thread_roots", "storage": "fresh BSS registry of worker EvalCtx and atomically published top"},
+    {"name": "exit tag and value", "walker": "nl_gc_mark_rootstack", "storage": "current arena base +24 and +56; unconditionally traced even after the flag is cleared"},
+    {"name": "shared symentry", "walker": "nl_gc_mark_symentry", "storage": "current arena base +872 points at a tagged symbol slot"},
+    {"name": "macro and free-variable caches", "walker": "nl_mxcache_mark_all / nl_fvcache_mark_all", "storage": "fresh BSS table pointers and current epoch; no cache registration is restored from the image"},
+    {"name": "canonical symbol strings", "walker": "nl_gc_symname_mark_roots", "storage": "fresh external sidecar and BSS nil/t symbol slots"},
+    {"name": "frame type symbols", "storage": "fresh BSS nl_frame_push_sym0 / nl_frame_push_sym1, repopulated at init; name bytes belong to the permanent intern region"}
+  ],
+  "driver_initial_allocations": ["globals", "frames", "unbound", "ctx", "builtin_buf", "builtin_sym", "src", "cursor", "result", "pool", "out", "argv_list", "argv_sym_buf", "argv_sym", "environ_list", "environ_sym_buf", "environ_sym", "dd_sym_buf", "dd_sym", "dd_value", "noninteractive_sym_buf", "noninteractive_sym", "noninteractive_value", "invname_sym_buf", "invname_sym", "invname_value", "invdir_sym_buf", "invdir_sym", "invdir_value", "cla_sym_buf", "cla_sym", "argv0_str", "cla_rest", "cla_value", "fbuf", "linebuf"],
+  "init_difference": "candidate4 allocated the driver's pool in a collectable image hole (nl_gc_is_boot=0), while source boot made it permanent. Disable free-list reuse throughout driver initialization, then restore reuse after freezing the watermark. This preserves all 36 initial allocations and their setup allocations, rather than patching one observed address.",
+  "independent_scratch_defect": "The condition-case error/body scratch was an unrooted arena allocation. Its protected form could collect and reuse that address before nelisp_eval_call_with_err cleared its four words. A Valgrind remote watchpoint observed an actual 32 -> 0 block-header write at nelisp_eval_call_with_err+607; the destination was the scratch's last word. The malformed chain then made nl_gc_index_prepare return 0, so subsequent GC calls did not update live-byte accounting. The exit stash itself was already traced from the correct current arena base.",
+  "scratch_fix": "Own a rootstack slot across the protected form, clause matching and handler evaluation, releasing it on normal completion, handled signals and propagated throws. Retain the fourth argument only for ABI compatibility.",
+  "regressions": {
+    "census": "BOOT_IMAGE_BIN=$BIN python3 tools/ai/boot-root-check.py --census-only compares 15 named slots plus reserve/frame/cache metadata using the same executable with and without its image companion. candidate4 fails on driver/pool; candidate6 passes in both modes.",
+    "retention": "The full boot-root-check.py also runs the unchanged exit-stash check under three environment layouts in each boot mode. All eight cases pass on candidate6.",
+    "scratch": "standalone-condition-case-root-check.el crashes on candidate5 and passes all 20 checks on candidate6. It forces precise-only collections in protected forms and handlers, checks retained payloads and heap structure, and detects leaked root reservations.",
+    "parity": "The added shadow differential form returns (completed (error payload) thrown) on both GNU Emacs 31.1 and candidate6."
+  },
+  "artifact": {"binary": "target/boot-image/candidate6", "sha256": "c09a4f474e0f54080181259337283f9eefa7134dc3002631f518a1e2419422c9", "boot_ir": 1141865933},
+  "raw_evidence": "target/boot-image/{roots-red,roots-final,cc-root-red,final6-standalone,condition-parity}.*; target/codex/gdb-local{2,3}.log",
+  "development_loop": "The root census uses ELF symbols and the existing pointer API, requiring no new builtin or compiler bootstrap. Image-only census took 0.523 s in the isolated focused run, versus 90 s for the first debugger pass that targeted an unused inlined helper. The documented development REPL bootstrap failed with excessive-lisp-nesting 16000; the ordinary CLI probe remains usable."
+}

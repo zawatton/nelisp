@@ -39472,6 +39472,10 @@ correctly."
             ;; same capture for normal (non-cold, non-growing) boot, where
             ;; `nl_arena_base' never changes after `nl_arena_init'.
             (_sptop (ptr-write-u64 268436456 0 (aot-current-sp)))
+            ;; Driver locals are permanent boot storage.  Image holes remain
+            ;; collectable after restore, so do not put these allocations in
+            ;; the restored free lists before freezing the boot watermark.
+            (_boot_bump (ptr-write-u64 268435624 0 1))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 184 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
@@ -39737,6 +39741,7 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        (ptr-write-u64 268435624 0 0)
         ;; Allocation-debt accounting starts after the boot image is frozen.
         ;; Boot allocations are permanent and must not consume the first
         ;; post-boot debt budget or make the first diagnostic form collect

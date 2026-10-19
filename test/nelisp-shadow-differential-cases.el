@@ -45,6 +45,15 @@
 ;;; Code:
 
 (list
+ ;; The protected form and handler can both collect. Their error/body slot
+ ;; must remain live through success, a caught signal and a propagated throw.
+ (list
+  (condition-case nil (progn (garbage-collect) 'completed) (error 'unexpected))
+  (condition-case problem (progn (garbage-collect) (signal 'error '(payload)))
+    (error (garbage-collect) problem))
+  (catch 'cc-root-exit
+    (condition-case nil (progn (garbage-collect) (throw 'cc-root-exit 'thrown))
+      (error 'unexpected))))
  ;; A same-face neighbor can still change another property; gaps and reverse
  ;; scans must use the character before POSITION on the backward path.
  (let ((s (make-string 12 ?x)))

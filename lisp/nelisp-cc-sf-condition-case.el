@@ -287,16 +287,29 @@
     ;; Returns: 0=Ok (result in *out), 1=Err (err stashed in env var).
     ;; Empty args (Nil tag 0) → return 1 (malformed).
     ;; Arity 4 (even).
-    (defun nl_sf_condition_case (args env out s1)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_cc_after_cdr1
-           (extern-call nl_cons_cdr_ptr args)
-           args env out s1 0)
-        1)))
+    (defun nl_sf_cc_root_finish (status env mark _pad)
+      (and (or (extern-call nl_root_release env mark) 1) status))
+    (defun nl_sf_cc_rooted (s1 args env out mark _pad)
+      (nl_sf_cc_root_finish
+       (if (= (sexp-tag args) 7)
+           (nl_sf_cc_after_cdr1
+            (extern-call nl_cons_cdr_ptr args)
+            args env out s1 0)
+         1)
+       env mark 0))
+    (defun nl_sf_cc_root_marked (mark args env out)
+      (nl_sf_cc_rooted (extern-call nl_root_reserve env)
+                       args env out mark 0))
+    ;; The caller's scratch is retained only for ABI compatibility. It is
+    ;; arena storage, and the protected form may collect and reuse it before
+    ;; nelisp_eval_call_with_err clears or fills it. Own a precise root for
+    ;; the entire protected form, clause matching and handler evaluation.
+    (defun nl_sf_condition_case (args env out _caller-scratch)
+      (nl_sf_cc_root_marked (extern-call nl_root_mark env) args env out)))
 
   "AOT source for `nl_sf_condition_case'.
 
-19 defuns (seq form) — CPS chain implementing args destructuring,
+22 defuns (seq form) — CPS chain implementing args destructuring,
 protected-form eval with err interception, clause matching with var
 binding (both delegated to `nl_cc_match_and_bind' Rust helper), handler
 body progn-eval, and final frame pop.

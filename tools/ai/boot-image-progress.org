@@ -24,6 +24,6 @@ cmd: python3 tools/ai/boot-image-check.py isolated
 
 ** S1.5 S5 Standalone checks, repository verification and 40-tool Anvil MCP smoke pass
 #+REQUIRES: BOOT_IMAGE_BIN
-#+NOTE: STOPPED at the brief's semantic-difference blocker: EVAL_BIN=$BOOT_IMAGE_BIN makes standalone-exit-stash-root-check retain 0 bytes rather than >= 1048576. The baseline source and baseline cold boots pass with that variable. See tools/ai/boot-image-blocker.json. Keep this command red; baseline repository verifier failures are also not counted as a pass.
+#+NOTE: Round 2 fixes init storage reused from collectable image holes and the unrooted condition-case error scratch. Source/image root census and original stash retention now pass; see tools/ai/boot-root-inventory.json. Repository verification remains a real failure, including the pre-existing standalone-eval duplicate nl_apply_do_eval build failure; it is not counted as a pass.
 #+TIMEOUT: 600
 cmd: python3 tools/ai/boot-image-check.py e2e
