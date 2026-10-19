@@ -82,6 +82,9 @@ native)
   target/nelisp.exe --eval '(+ 1 2)' >target/codex/native-add.out
   grep -qx 3 target/codex/native-add.out
   target/nelisp.exe --eval nil
+  python3 tools/ai/windows-cold-auto-check.py native
+  target/nelisp.exe --eval "(progn (require 'rx) (princ (if (string-match-p (rx (+ digit)) \"123\") \"RX-OK\" \"RX-FAIL\")))" >target/codex/native-plain-rx.out
+  grep -q RX-OK target/codex/native-plain-rx.out
   target/nelisp.exe --cold-load-from target/nelisp.exe.cold --eval '(+ 1 2)' >target/codex/native-cold-add.out
   grep -qx 3 target/codex/native-cold-add.out
   target/nelisp.exe --cold-load-from target/nelisp.exe.cold --load test/standalone-exit-stash-root-check.el
@@ -89,5 +92,6 @@ native)
   target/nelisp.exe --cold-load-from target/nelisp.exe.cold --eval "(progn (require 'rx) (princ (if (string-match-p (rx (+ digit)) \"123\") \"RX-OK\" \"RX-FAIL\")))" >target/codex/native-rx.out
   grep -q RX-OK target/codex/native-rx.out
   echo NATIVE-WINDOWS-S1-S3-PASS
+  echo NATIVE-WINDOWS-W6-AUTO-COLD-PASS
   ;;
 esac

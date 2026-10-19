@@ -676,6 +676,28 @@ The elisp-side PE/COFF writer + Win64 ABI codegen produce native COFF
 =.o= files.  Use a native toolchain with host Emacs, or use WSL2/MSYS2
 with the Linux-style commands above.
 
+The lean Windows reader build produces =target/nelisp.exe.cold= beside
+=target/nelisp.exe=. Ordinary commands discover this image automatically:
+
+#+begin_src shell
+target/nelisp.exe --eval '(+ 1 2)'
+target/nelisp.exe --eval "(progn (require 'rx) (rx (+ digit)))"
+# Native MSYS2 acceptance, including five-run plain/explicit boot medians:
+sh tools/ai/windows-bringup-check.sh native
+#+end_src
+
+Keep =nelisp.exe=, =nelisp.exe.cold= and =nelisp.exe.native-startup.el=
+together when moving the build; paths containing spaces or Unicode are
+supported. Discovery uses wide Windows APIs and reads a pinned handle.
+Only a disk file with one link, no reparse-point/directory attributes and
+the same owner SID as the executable is accepted. The handle denies other
+writers and deletion during restore. Missing, unreadable or incompatible
+images fall back to source boot. =--cold-load-from PATH= remains an explicit
+override; help, =--embedded=, =--neln-selftest= and artifact/runtime-image
+commands retain their separate bootstrap paths. macOS retains explicit
+image selection. The same adjacent-file policy could use macOS executable
+path discovery and pinned descriptors in a separate implementation.
+
 *** From source — recommended for hacking and using the Elisp API
 
 #+begin_src shell

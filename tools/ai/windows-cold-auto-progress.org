@@ -1,0 +1,30 @@
+#+TITLE: Windows adjacent cold image discovery
+
+* S1 Windows companion acceptance
+
+** S1.1 W1 Plain Wine boot restores the adjacent lean image without source reads
+#+NOTE: No reader builtin or (:lit ...) primitive is added. Bootstrap-only helpers use minimal-native clauses 3/4. Win32 checks disk type, attributes, single link and equal owner SID; FILE_SHARE_READ denies concurrent writes/deletion. This follows Linux's same-owner check, without claiming equivalent DACL/mode-bit filtering. The first validated header is retained outside the arena so globals publication cannot fail on a second read. The verifier requires the header-derived full byte count and rejects mutations of every completed read size. The pre-change binary fails W1 because it never opens its companion.
+#+NOTE: The executable open follows a terminal link so its target's owner is checked; the image open uses OPEN_REPARSE_POINT and rejects that attribute. A targeted control fails when both opens use OPEN_REPARSE_POINT and passes after correcting the executable flags. Native Windows reproduction of that launch shape is not claimed.
+#+NOTE: Development loop improvement: the production companion PE probe compiles in 0.224770 s, versus 260.766089 s for a full Windows reader rebuild. These are different verification scopes, not throughput measurements. The probe checks valid/missing/hard-linked/directory inputs, repeated pinned reads, writer denial while pinned and writer success after release. A no-op release mutation fails with exit 42. Artifact hashes and all five controls are recorded in target/codex/round3/probe-results.json. A reader REPL cannot publish pre-heap discovery, so this focused PE is the applicable narrow execution path.
+cmd: python3 tools/ai/windows-cold-auto-check.py W1
+
+** S1.2 W2 Five-run plain median is at most 1.5 times explicit cold median
+#+NOTE: Wine final-build medians: plain 0.414559 s, explicit 0.414651 s, ratio 0.999780. Both paths must first demonstrate successful traced image reads; measured runs reject boot diagnostics. Native timing is checked separately by windows-bringup-check.sh native.
+cmd: python3 tools/ai/windows-cold-auto-check.py W2
+
+** S1.3 W3 Missing and invalid images fall back and opt-out commands stay bare
+#+NOTE: The foreign-build and truncated images produce the existing build-digest rejection and complete source fallback. All 17 opt-outs are traced individually; --neln-selftest has the existing non-Linux unsupported exit 125. An initial concurrent build/source probe was killed by signal 9 without a runtime diagnostic; the isolated repeat passed. No Wine exemption changes the restore checks.
+#+TIMEOUT: 300
+cmd: python3 tools/ai/windows-cold-auto-check.py W3
+
+** S1.4 W4 Relocated image works in paths containing spaces and Unicode
+#+NOTE: Copy the executable, image and native-startup companion, plus Wine-only DLL dependencies, to fresh directories. Require completed image reads and addition output in both the space-containing and Japanese path.
+#+NOTE: Wine's Unix launcher cannot start the Japanese path with LC_ALL=C (exit 53 before the executable runs); the meter exports that locale. Use C.UTF-8 for Wine subprocesses, preserving the meter's numeric locale and all Win32 path/restore assertions. The failed control is recorded in target/codex/round3/W4-C-locale-control.log. Persist exception details because the generic meter keeps only exit status.
+cmd: python3 tools/ai/windows-cold-auto-check.py W4
+
+** S1.5 W5 Rebuilt Linux dynamic and static binaries pass the eval/core suite
+#+NOTE: Linux x86_64/aarch64 and macOS aarch64 boot companion and cold-loader forms are byte-identical to 80902e27f. Full dynamic/static builds and the 11-group suite are recorded under target/codex/round3 and target/final-verify/checks-windows-round3. The command validates binary/image/source/log hashes; a prior receipt cannot validate changed inputs. The broad check-tier attempt finds existing compile/parens failures in unchanged files and is stopped during generated-source-parse; it is not reported as passing.
+cmd: python3 tools/ai/windows-cold-auto-check.py W5
+
+** S1.6 W6 Native Windows end-to-end acceptance on the user's machine
+pending

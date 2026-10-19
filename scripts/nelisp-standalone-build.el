@@ -24175,6 +24175,9 @@ decisions, not accidental loader requirements of every Windows reader.")
     ("CloseHandle" "kernel32.dll" 1)
     ("CreateFileW" "kernel32.dll" 7)
     ("GetFileInformationByHandle" "kernel32.dll" 2)
+    ("GetFileType" "kernel32.dll" 1)
+    ("DuplicateHandle" "kernel32.dll" 7)
+    ("EqualSid" "advapi32.dll" 2)
     ("SetFilePointerEx" "kernel32.dll" 4)
     ("ReadFile" "kernel32.dll" 5)
     ("GetFileSizeEx" "kernel32.dll" 2)
@@ -38017,12 +38020,16 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     (defun nl_cold_load_arena (override)
       (if (= override 0)
           -1
-        (let* ((fd (nl_os_open_read override)))
+        (let* ((fd ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(nl_boot_image_open_pinned override)
+                      '(nl_os_open_read override))))
           (if (< fd 0) -1
             (let* ((base0 (ptr-read-u64 (data-addr nl_arena_base) 0))
                    (ib0 (ptr-read-u64 (+ base0 832) 0)))
               (seq
-               (nl_fa_read_all fd ib0 64 0)
+               ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                    '(nl_boot_image_read_header override ib0 fd)
+                  '(nl_fa_read_all fd ib0 64 0))
                (let* ((magic (ptr-read-u64 ib0 0))
                       (slen (ptr-read-u64 ib0 8))
                       (isz (ptr-read-u64 ib0 16))
@@ -38148,12 +38155,18 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     (defun nl_cold_overwrite_globals (globals override)
       (if (= override 0)
           0
-        (let* ((fd (nl_os_open_read override)))
+        (let* ((fd ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(if (< override 0) 0 (nl_os_open_read override))
+                      '(nl_os_open_read override))))
           (if (< fd 0) 0
-            (let* ((hdr (alloc-bytes 64 8)))
+            (let* ((hdr ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                             '(if (< override 0) (+ (- 0 override) 67712) (alloc-bytes 64 8))
+                           '(alloc-bytes 64 8))))
               (seq
-               (nl_fa_read_all fd hdr 64 0)
-               (nl_os_close_handle fd)
+               ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                     '((if (>= override 0)
+                           (seq (nl_fa_read_all fd hdr 64 0) (nl_os_close_handle fd)) 0))
+                   '((nl_fa_read_all fd hdr 64 0) (nl_os_close_handle fd)))
                (let* ((magic (ptr-read-u64 hdr 0))
                       (slen (ptr-read-u64 hdr 8))
                       (goff (ptr-read-u64 hdr 32)))
@@ -43476,8 +43489,8 @@ The Wine prefix selects the coordinator's target OS and is never dumped."
 (defun nelisp-standalone--build-cold-image (binary)
   "Dump BINARY's post-prelude heap to `nelisp-standalone--cold-image-path'.
 Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0
-skips it. Ordinary Linux commands discover BINARY.cold through the actual
-executable path; other targets retain explicit `--cold-load-from PATH'.
+skips it. Ordinary Linux and Windows commands discover BINARY.cold through
+the actual executable path; all targets support `--cold-load-from PATH'.
 The trailer must carry BINARY's own build digest, so a stale or foreign
 file is rejected at load and startup falls back to the normal prelude boot.
 The dump runs in a scrubbed environment and a neutral directory: every

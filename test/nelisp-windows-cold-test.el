@@ -48,7 +48,50 @@
 (defun nelisp-windows-cold-test--os ()
   (let ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment)))
     (append (nelisp-standalone--reader-os-source-forms)
-            (nelisp-standalone--reader-cold-source-forms))))
+            (nelisp-standalone--reader-cold-source-forms)
+            (nelisp-boot-image-native-forms))))
+
+(ert-deftest nelisp-windows-companion-retains-header-before-publication ()
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (forms (nelisp-boot-image-native-forms))
+         (reader (nelisp-windows-cold-test--function forms 'nl_boot_image_read_header))
+         (memory (make-hash-table :test 'equal))
+         (count 64))
+    (cl-letf (((symbol-function 'nl_fa_read_all) (lambda (&rest _) count))
+              ((symbol-function 'ptr-read-u64)
+               (lambda (_ptr off) (pcase off (8 1024) (32 128) (_ 0))))
+              ((symbol-function 'ptr-read-u8) (lambda (_ptr off) off))
+              ((symbol-function 'ptr-write-u8)
+               (lambda (ptr off byte) (puthash (list ptr off) byte memory)))
+              ((symbol-function 'ptr-write-u64)
+               (lambda (ptr off value) (puthash (list ptr off) value memory))))
+      (should (= (funcall reader -1000 2000 7) 64))
+      (should (= (hash-table-count memory) 64))
+      (should (= (gethash (list 68712 63) memory) 63))
+      (should-not (gethash (list 2000 0) memory))
+      (setq count 63)
+      (should (= (funcall reader -1000 2000 7) 63))
+      (should (= (gethash (list 2000 0) memory) 0))
+      ;; Positive explicit paths keep their previous loader behavior.
+      (clrhash memory)
+      (funcall reader 1000 2000 7)
+      (should (= (hash-table-count memory) 0)))))
+
+(ert-deftest nelisp-windows-companion-owner-is-executable-target ()
+  (let ((nelisp-standalone--target 'windows-x86_64) calls)
+    (cl-labels ((walk (form)
+                  (when (consp form)
+                    (when (and (eq (car form) 'extern-call) (eq (cadr form) 'CreateFileW))
+                      (push form calls))
+                    (mapc #'walk form))))
+      (walk (nelisp-windows-cold-test--definition
+             (nelisp-boot-image-native-forms) 'nl_boot_image_companion)))
+    (setq calls (nreverse calls))
+    (should (= (length calls) 2))
+    ;; Follow the executable's link to compare its actual owner's SID;
+    ;; open the image itself without following a terminal reparse point.
+    (should (= (nth 7 (car calls)) 128))
+    (should (= (nth 7 (cadr calls)) 2097280))))
 
 (ert-deftest nelisp-windows-allocation-side-tables-fully-committed ()
   "Side tables, N4 frames and boot scratch may touch every allocated page."
@@ -146,6 +189,7 @@ Feed the header through the actual writer/read loops and both loader entries."
                  (lambda (p n) (write-word p 0 (+ (read-word p 0 8) n) 8)))
                 ((symbol-function 'alloc-bytes) (lambda (&rest _) 8000))
                 ((symbol-function 'nl_align_up) (lambda (v a) (* (/ (+ v a -1) a) a)))
+                ((symbol-function 'nl_chunk_size_for) #'identity)
                 ((symbol-function 'nl_cold_grow_chunk0) (lambda (_) (throw 'header-accepted t)))
                 ((symbol-function 'nl_cold_diag_bad_header) (lambda () (ert-fail "Header rejected")))
                 ((symbol-function 'nl_cold_zero) (lambda (&rest _) nil))
@@ -171,7 +215,8 @@ Feed the header through the actual writer/read loops and both loader entries."
         ;; Install emitted functions dynamically; no host implementation of file I/O.
         (let ((names '(nl_os_open_write_truncate nl_os_open_read nl_os_close_handle
 						 nl_os_write_file_handle nl_os_read_file_handle nl_fa_write_all
-						 nl_fa_read_all nl_cold_header_invalid_p nl_cold_load_arena
+                         nl_fa_read_all nl_boot_image_open_pinned nl_boot_image_read_header
+                         nl_cold_header_invalid_p nl_cold_load_arena
 						 nl_cold_overwrite_globals)))
           (let ((originals (mapcar (lambda (name) (cons name (and (fboundp name) (symbol-function name)))) names)))
             (unwind-protect
