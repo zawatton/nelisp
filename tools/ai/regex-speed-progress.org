@@ -3,18 +3,23 @@
 * S1 Regex cache and fast paths
 
 ** S1.1 Profile compilation, cache, syntax access, engine and match data
-#+NOTE: Exclusive instrumented attribution over 200 calls per pattern. data-dispatch bounds capture allocation/publication plus dispatch; capture writes inside backtracking remain in engine. Compile includes parse. Raw uninstrumented times are in target/regex-speed/profile-before.log and before.json. Recipe: prepare attribution.el with regex-speed.py, load immutable baseline-bytecode.el then attribution-bytecode.el on the cold reader.
-evidence: target/regex-speed/attribution-before.out sha256=c8af164954300be26aca7e469307ba29bc194b151a82b8891dade9aecf2a2838
+#+NOTE: Exclusive instrumented attribution over 200 calls per pattern. data-dispatch bounds capture allocation/publication plus dispatch; capture writes inside backtracking remain in engine. Compile includes parse. Raw uninstrumented times are in target/regex-speed/profile-before.log and before.json. 2026-10-20 rerun on the fresh 45d970c82 build base-final. Recipe: regex-speed.py prepare --source target/regex-speed/attribution.el, then load attribution-resume-bytecode.el on base-final. The wrapper dispatch clock is exclusive; compile includes parse.
+evidence: target/regex-speed/attribution-resume-before.out sha256=9a812cee9f9045b35b0a993d12da1485991a215aed2ce7ae67cd50bc7744ff39
 
 ** S1.2 Bounded complete-key cache with at most 2 us repeated hit cost
-cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion cache
+cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-blocked.json --criterion cache
 
 ** S1.3 Literal, anchored capture/suffix and prefix scanning fast paths preserve groups
-cmd: TMPDIR="$PWD/target/tmp" emacs -Q --batch -L lisp -l test/nelisp-regexp-diff-test.el -l test/nelisp-regex-replacement-test.el -f ert-run-tests-batch-and-exit
+cmd: TMPDIR="$PWD/target/tmp" emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp -l test/nelisp-regexp-diff-test.el -l test/nelisp-regex-replacement-test.el -f ert-run-tests-batch-and-exit
 
 ** S1.4 Every literal, anchored and suffix-alternation probe costs at most 20 us
 #+NOTE: 2026-10-20: restored the provisional fast-path target from the unsupported 200 us relaxation to 20 us, as required by the resume brief. No probe uses the general engine, so no relaxed general-engine limit is claimed.
-cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-final.json --criterion match --limit 20
+cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-blocked.json --criterion match --limit 20
 
 ** S1.5 GNU parity, regex suites, eleven eval/core groups, 40 MCP tools and ABI Ir
+#+NOTE: 2026-10-20 BLOCKED by a pre-existing, unexplained GNU semantic difference in the general engine. Both fresh base 45d970c82 and candidate return 1 for (string-match "\\(ab\\|a\\)*b" "ab"), versus GNU 31.1's 0. A nested repetition/backreference also falsely matches "ab". The same differences occur in the host Lisp engine. See target/regex-speed/blocker-{gnu,base,candidate,host-current}.out and BLOCKED.json. Stop rule invoked; no general-engine rewrite attempted.
+#+NOTE: The compiled dynamic/static checkpoint passed 11 groups / 0 failures, the MCP smoke exposed 40 tools after 25 s of open stdin, and all 4 ABI layouts passed with mean Ir 68313488283.50 -> 24053592656.00 (-64.789%, including GC). Later Lisp-only fast-path refinements are validated as blocked-final-bytecode.el on that dynamic reader; no final acceptance manifest is claimed.
+#+NOTE: Reviewed WIP 83626ebeb: d7ca6863f removes native funcall/AREF experiments, rooted CFG changes, frame/primitive tests and unrelated variable/varset smokes. Remaining build-script hunks: (1) Unicode source injection; reader (2) string-match, (3) string-match-p, (4) match-data/save-match-data; artifact fallback (5) string-match, (6) string-match-p, (7) match-data/save-match-data. No new native entries.
+#+NOTE: Development-efficiency repair: regex-speed.py --public-wrappers previously generated the entire reader prelude and timed out at 60 s; extracting the canonical literal forms takes 0.591 s. A missing-wrapper fixture is rejected. Full check was interrupted at gate-selfcheck on stop; its 33 parens findings also reproduce unchanged on the base (1158 files / 33 findings).
+cmd: python3 tools/ai/regex-speed-verify.py record target/regex-speed/final-manifest.json target/regex-speed/final-dynamic target/regex-speed/final-static --parity target/regex-speed/blocked-parity-reload.out --parity-gnu target/regex-speed/blocked-parity-gnu.out --native target/regex-speed/blocked-parity-cold.out --ert-focused target/regex-speed/ert-blocked-final.log --ert-mvp target/regex-speed/package-resume.log --ert-text-core target/regex-speed/text-core-resume.log --core11 target/regex-speed/core11-resume.log --mcp-json target/regex-speed/mcp-resume-final/result.json --abi-ir target/regex-speed/abi-final.log
 cmd: python3 tools/ai/regex-speed-verify.py check target/regex-speed/final-manifest.json

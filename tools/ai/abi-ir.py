@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Total-Ir comparisons including the 6000-call ABI regex workload.
 
-Use: abi-ir.py regex CANDIDATE BASELINE. Retain both endpoint layouts,
+Use: abi-ir.py regex CANDIDATE BASELINE. Retain all four required layouts,
 whole-process instruction counts and ten or more actual GC sweeps.
 """
 import bisect
@@ -17,11 +17,24 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-LAYOUTS = {"boot": (0, 700, 1400, 2100), "regex": (0, 2100),
+LAYOUTS = {"boot": (0, 700, 1400, 2100), "regex": (0, 700, 1400, 2100),
            "files": (0, 700, 1400, 2100)}
 REGEX_ITERATIONS = 20
 REGEX_GC_INTERVAL = 2
 GC_CYCLE_FUNCTION = "nl_gc_sweep_merge_chunks"
+
+
+def profile_directory(mode):
+    """Honor a durable evidence destination; legacy callers get a temp path."""
+    if os.environ.get("ABI_IR_OUTPUT"):
+        output = Path(os.environ["ABI_IR_OUTPUT"]).resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        if any(output.iterdir()):
+            raise ValueError(f"profile output must be empty: {output}")
+        return output
+    parent = ROOT / "target/abi-ir"
+    parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"{mode}-", dir=parent))
 
 
 def callgraph_options(binary):
@@ -135,15 +148,13 @@ def pattern_profiles(candidate, baseline, gnu):
     """Record the same 6000 calls and ten full GCs for each probe pattern.
 
     These are whole-process instruction counts, including startup and GC.
-    The separate `regex' mode retains the exact two-layout ABI acceptance.
+    The separate `regex' mode retains the exact four-layout ABI acceptance.
     """
     version = subprocess.check_output([str(gnu), "-Q", "--batch", "--eval",
                                        "(princ emacs-version)"], text=True).strip()
     if version != "31.1":
         raise RuntimeError(f"GNU 31.1 required, got {version!r}")
-    tmp_root = ROOT / "target/abi-ir"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="patterns-", dir=tmp_root))
+    tmp = profile_directory("patterns")
     patterns = [r"\`\(.*\)\(\)\'", r"\`\(.*\)\(\.el\)\'",
                 r"\`\(.*\)\(\.so\|\.elc\|\.elc\.gz\|\.el\|\.el\.gz\)\'", "file"]
 
@@ -208,14 +219,12 @@ def main():
     if len(sys.argv) == 5 and sys.argv[1] == "patterns":
         return pattern_profiles(*sys.argv[2:])
     mode, cand, base = sys.argv[1:]
-    tmp_root = ROOT / "target/abi-ir"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix=f"{mode}-", dir=tmp_root))
+    tmp = profile_directory(mode)
     print(f"profiles: {tmp}", flush=True)
     # Same fixed work for both binaries. No GC instructions are subtracted.
     # Keep the original regex work and interleave ten explicit collections.
     # Count actual sweeps, including automatic GC, rather than requests.
-    # Prior four-layout regex spread was <0.001%; retain endpoint layouts.
+    # The acceptance contract requires all four layouts, even with low spread.
     (tmp / "regex.el").write_text(rf'''
 (let ((names (mapcar (lambda (k) (format "some-library-%d.el" k)) (number-sequence 1 300))) (i 0))
   (while (< i {REGEX_ITERATIONS})

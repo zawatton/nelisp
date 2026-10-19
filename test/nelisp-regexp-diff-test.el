@@ -13,6 +13,24 @@
          (expand-file-name "../lisp/nelisp-stdlib-regexp.el"
                            (file-name-directory (or load-file-name buffer-file-name))))
 
+(ert-deftest nelisp-regexp-invalid-pattern-error-data-matches-host ()
+  "Malformed patterns signal GNU's complete condition rather than matching."
+  (dolist (pattern '("[" "[^" "[a" "\\(" "\\)" "\\" "\\1"))
+    (let ((expected (condition-case e (string-match pattern "a") (error e)))
+          (actual (condition-case e (nlre-string-match pattern "a") (error e))))
+      (should (equal actual expected)))))
+
+(ert-deftest nelisp-regexp-subexpression-error-data-matches-host ()
+  "Invalid subexpression indices preserve GNU's condition and data."
+  (string-match "x" "x")
+  (nlre-string-match "x" "x")
+  (dolist (index '(-1 1.5 bad 3))
+    (dolist (pair '((match-beginning . nlre-match-beginning)
+                    (match-end . nlre-match-end)))
+      (let ((expected (condition-case e (funcall (car pair) index) (error e)))
+            (actual (condition-case e (funcall (cdr pair) index) (error e))))
+        (should (equal actual expected))))))
+
 (defconst nelisp-regexp-diff-cases
   '(;; literals / any / anchors
     ("abc" "xxabcyy") ("a.c" "xaqcy") ("a.c" "xabcy")

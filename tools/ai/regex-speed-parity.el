@@ -12,7 +12,7 @@
 
 (defun regex-speed-case (name form)
   (let ((answer (condition-case error-data (eval form)
-                  (error (list :error (car error-data))))))
+                  (error (list :error error-data)))))
     (princ (format "%S %S\n" name answer))))
 
 (dolist (fold '(nil t))
@@ -51,6 +51,17 @@
     (list (string-match "a b" "a\tb") (regex-speed-data))))
 (regex-speed-case 'negative-start
  '(list (string-match "a" "ba" -1) (regex-speed-data)))
+
+(dolist (form '((string-match "" "abc" -5)
+                (string-match-p "" "abc" -5)
+                (string-match "[" "a")
+                (string-match "\\(" "a")
+                (string-match "\\)" "a")
+                (string-match "\\" "a")
+                (progn (string-match "x" "x") (match-beginning -1))
+                (with-temp-buffer (looking-at "["))
+                (with-temp-buffer (re-search-forward "[" nil t))))
+  (regex-speed-case (list 'error-data form) form))
 
 (dolist (pattern '("file" "\\(f.+?\\)e" "" "^" "\\w+"))
   (regex-speed-case (list 'looking pattern)
@@ -127,4 +138,10 @@
                 (string-match "A" "λ") (string-match multi-a "λ")
                 (string-match "[A]" "A") (string-match "[A]" "λ")))
       (set-case-table saved))))
+(dolist (row '(("\\(ab\\|a\\)*b" "ab")
+               ("\\(\\(a\\|b\\)*\\)\\2" "ab")))
+  (regex-speed-case (list 'general-backtracking row)
+   `(let* ((case-fold-search nil)
+           (hit (string-match ,(car row) ,(cadr row))))
+      (list hit (and hit (regex-speed-data))))))
 (princ "REGEX-PARITY-DONE\n")

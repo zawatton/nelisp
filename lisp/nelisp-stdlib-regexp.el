@@ -68,7 +68,7 @@ and matching.  Nil selects the portable downcase fallback.")
         nlre--compiled-cache-last nil))
 
 ;; Entry: [PATTERN CASE-FOLD SEARCH-SPACES SYNTAX-DEPENDENT
-;;         SYNTAX-SIGNATURE COMPILED TICK MULTIBYTE].
+;;         SYNTAX-SIGNATURE COMPILED TICK MULTIBYTE ORIGINAL-PATTERN].
 ;; `nlre--compiled-cache-lru'
 ;; is just the unordered list of all live entries, not an ordering; TICK
 ;; (a per-entry stamp from the monotonic `nlre--compiled-cache-tick'
@@ -176,11 +176,12 @@ and matching.  Nil selects the portable downcase fallback.")
   ;; Key on a private copy: a caller may mutate PAT in place afterwards
   ;; (GNU recompiles on content), and a mutated key would both poison the
   ;; hash and make the `eq' head shortcut return a stale program.
-  (setq pat (copy-sequence pat))
-  (let ((e (vector pat fold (nlre--copy-key-value spaces)
+  (let* ((original pat)
+         (pat (copy-sequence pat))
+         (e (vector pat fold (nlre--copy-key-value spaces)
                    syntax-dependent syntax-signature compiled
                    (setq nlre--compiled-cache-tick (1+ nlre--compiled-cache-tick))
-                   (multibyte-string-p pat))))
+                   (multibyte-string-p pat) original)))
     (puthash pat (cons e (gethash pat nlre--compiled-cache))
              nlre--compiled-cache)
     (setq nlre--compiled-cache-lru (cons e nlre--compiled-cache-lru)
@@ -193,6 +194,23 @@ and matching.  Nil selects the portable downcase fallback.")
 (defun nlre--compiled-pattern (pat)
   "Return cached compiled representation for PAT.
 The result is [AST GROUP-COUNT FAST-PLAN]."
+  (let ((entry nlre--compiled-cache-last))
+    ;; String kind cannot change in place.  Identity avoids the kind query,
+    ;; while the private content snapshot still detects ASET on the caller's
+    ;; original string.  Syntax-dependent entries use the full validator.
+    (if (and entry (not (aref entry 3))
+             (equal pat (aref entry 0))
+             (or (eq pat (aref entry 8))
+                 (eq (multibyte-string-p pat) (aref entry 7)))
+             (eq (not case-fold-search) (not (aref entry 1)))
+             (equal search-spaces-regexp (aref entry 2)))
+        (progn
+          (setq nlre--compiled-cache-hits (1+ nlre--compiled-cache-hits))
+          (aref entry 5))
+      (nlre--compiled-pattern-slow pat))))
+
+(defun nlre--compiled-pattern-slow (pat)
+  "Validate syntax-sensitive or older entries, or compile PAT on a miss."
   (let* ((fold (and case-fold-search t))
          (spaces search-spaces-regexp)
          (head nlre--compiled-cache-last)
@@ -232,7 +250,8 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
   "Parse PAT into a top-level node (a :seq or :alt). Sets group count."
   (setq nlre--gcount 0)
   (let ((r (nlre--parse-alt pat 0 (length pat))))
-    ;; r = (NODE . pos)
+    (when (< (cdr r) (length pat))
+      (signal 'invalid-regexp (list "Unmatched ) or \\)")))
     (car r)))
 
 (defun nlre--parse-alt (pat i n)
@@ -328,6 +347,8 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
      ((eq c ?$) (cons (list :eol) (1+ i)))
      ((eq c ?\[) (nlre--parse-set pat (1+ i) n))
      ((eq c ?\\)
+      (when (= (1+ i) n)
+        (signal 'invalid-regexp (list "Trailing backslash")))
       (let ((d (aref pat (1+ i))))
         (cond
          ((eq d ?\() ;; plain, shy, or explicitly numbered group
@@ -348,8 +369,10 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                 (setq nlre--gcount explicit))
               (let* ((r (nlre--parse-alt pat k n))
                      (inner (car r)) (j (cdr r)))
-                (when (and (< (1+ j) n) (eq (aref pat j) ?\\) (eq (aref pat (1+ j)) ?\)))
-                  (setq j (+ j 2)))
+                (unless (and (< (1+ j) n) (eq (aref pat j) ?\\)
+                             (eq (aref pat (1+ j)) ?\)))
+                  (signal 'invalid-regexp (list "Unmatched ( or \\(")))
+                (setq j (+ j 2))
                 (cons (if shy inner (list :group gn inner)) j)))))
          ((eq d ?w) (cons (list :word nil) (+ i 2)))
          ((eq d ?W) (cons (list :word t) (+ i 2)))
@@ -422,7 +445,9 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
               (setq i (+ j 2))))
            ((and (< (+ i 2) n) (eq (aref pat (1+ i)) ?-) (not (eq (aref pat (+ i 2)) ?\])))
             (setq ranges (cons (cons c (aref pat (+ i 2))) ranges) i (+ i 3)))
-           (t (setq ranges (cons (cons c c) ranges) i (1+ i)))))))
+           (t (setq ranges (cons (cons c c) ranges) i (1+ i))))))
+      (when cont
+        (signal 'invalid-regexp (list "Unmatched [ or [^"))))
     (cons (list :set neg (nlre--set-kind-ranges (nreverse ranges)
                                                (multibyte-string-p pat))
                 (nreverse classes)) i)))
@@ -660,7 +685,8 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
   (when (and variants (not nlre--plan-failed))
     (let ((ends (make-hash-table :test 'equal)) empty
           (ascii-ends (make-hash-table :test 'equal)) ascii-empty
-          (ascii-only t) contains-set all (xs (reverse variants)))
+          (ascii-only t) contains-set all (xs (reverse variants))
+          (simple-caps (and (eq tag :greedy-suffix) (eq greedy-group 1))))
       (while (and xs (not nlre--plan-failed))
         (let ((v (car xs))
               (strings (nlre--atom-strings (reverse (aref (car xs) 0)))))
@@ -672,6 +698,11 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                    (ascii (nlre--ascii-fold-text raw))
                    (len (length raw)) (entry (cons raw v))
                    (ascii-entry (cons ascii v)))
+              (let* ((caps (aref v 1))
+                     (span (and (= (length caps) 3) (aref caps 2))))
+                (unless (and span (null (aref caps 1))
+                             (= (car span) 0) (= (cdr span) len))
+                  (setq simple-caps nil)))
               (unless (nlre--ascii-text-p raw) (setq ascii-only nil))
               (setq all (cons entry all))
               (if (= len 0)
@@ -684,7 +715,7 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
       (and (not nlre--plan-failed)
            (vector tag ends fold empty greedy-group all
                    ascii-ends ascii-empty ascii-only
-                   nlre--pattern-multibyte contains-set)))))
+                   nlre--pattern-multibyte contains-set simple-caps)))))
 
 (defun nlre--suffix-plan (ast ng fold)
   (let ((nodes (and (eq (car ast) :seq) (nth 1 ast))))
@@ -1263,6 +1294,11 @@ one, which would demote them to the interpreter)."
 
 (defun nlre--literal-search (needle string start)
   (cond
+   ((fboundp 'nelisp--string-search-chars)
+    ;; Use the existing character-index scanner directly.  Its t sentinel
+    ;; retains the public fallback for representations it cannot handle.
+    (let ((result (nelisp--string-search-chars needle string start)))
+      (if (eq result t) (string-search needle string start) result)))
    ((and (fboundp 'nelisp--string-search)
          (not (multibyte-string-p needle))
          (not (multibyte-string-p string)))
@@ -1342,7 +1378,10 @@ one, which would demote them to the interpreter)."
                                 (>= raw-last #x3fff80)
                                 (<= raw-last #x3fffff))
                            (- raw-last #x3fff00) raw-last))
-             (last (if fold (nlre--fold-char raw-last) raw-last)))
+             (last (if (and fast-fold (< raw-last 128))
+                       (if (and (>= raw-last ?A) (<= raw-last ?Z))
+                           (+ raw-last 32) raw-last)
+                     (if fold (nlre--fold-char raw-last) raw-last))))
         (setq short (gethash last table))
         (when (> (- n start) 1)
           (let* ((raw-prev (aref string (- n 2)))
@@ -1350,7 +1389,10 @@ one, which would demote them to the interpreter)."
                                     (>= raw-prev #x3fff80)
                                     (<= raw-prev #x3fffff))
                                (- raw-prev #x3fff00) raw-prev))
-                 (prev (if fold (nlre--fold-char raw-prev) raw-prev)))
+                 (prev (if (and fast-fold (< raw-prev 128))
+                           (if (and (>= raw-prev ?A) (<= raw-prev ?Z))
+                               (+ raw-prev 32) raw-prev)
+                         (if fold (nlre--fold-char raw-prev) raw-prev))))
             (setq xs (gethash (+ last (* 1114112 (1+ prev)))
                               table))))))
       (while (and (not hit) (or xs short))
@@ -1358,9 +1400,12 @@ one, which would demote them to the interpreter)."
         (let* ((entry (car xs)) (text (car entry)) (variant (cdr entry))
                (pos (- n (length text))) (bos (aref variant 2)))
           (when (and (>= pos start) (or (null bos) (= (+ pos bos) 0))
-                     (if fold
-                         (nlre--folded-text-equal-at-p text string pos n)
-                       (eq pos (nlre--literal-search text string pos))))
+                     (if fast-fold
+                         (or (eq pos (nlre--literal-search text string pos))
+                             (nlre--folded-text-equal-at-p text string pos n))
+                       (if fold
+                           (nlre--folded-text-equal-at-p text string pos n)
+                         (eq pos (nlre--literal-search text string pos)))))
             (setq hit (cons pos variant))))
         (setq xs (cdr xs)))
       (when (and (not hit) empty)
@@ -1394,7 +1439,10 @@ one, which would demote them to the interpreter)."
                                   (>= raw-last #x3fff80)
                                   (<= raw-last #x3fffff))
                              (- raw-last #x3fff00) raw-last))
-               (last (if fold (nlre--fold-char raw-last) raw-last)))
+               (last (if (and fast-fold (< raw-last 128))
+                         (if (and (>= raw-last ?A) (<= raw-last ?Z))
+                             (+ raw-last 32) raw-last)
+                       (if fold (nlre--fold-char raw-last) raw-last))))
           (setq short (gethash last table))
           (when (> n 1)
             (let* ((raw-prev (aref string (- n 2)))
@@ -1402,7 +1450,10 @@ one, which would demote them to the interpreter)."
                                       (>= raw-prev #x3fff80)
                                       (<= raw-prev #x3fffff))
                                  (- raw-prev #x3fff00) raw-prev))
-                   (prev (if fold (nlre--fold-char raw-prev) raw-prev)))
+                   (prev (if (and fast-fold (< raw-prev 128))
+                             (if (and (>= raw-prev ?A) (<= raw-prev ?Z))
+                                 (+ raw-prev 32) raw-prev)
+                           (if fold (nlre--fold-char raw-prev) raw-prev))))
               (setq xs (gethash (+ last (* 1114112 (1+ prev)))
                                 table)))))))
       (setq xs (append xs short empty))
@@ -1411,9 +1462,12 @@ one, which would demote them to the interpreter)."
                (pos (- n (length text))))
           (when (and (>= pos 0) (or (null newline) (>= newline pos))
                      (or (null hit) (> pos (car hit)))
-                     (if fold
-                         (nlre--folded-text-equal-at-p text string pos n)
-                       (eq pos (nlre--literal-search text string pos))))
+                     (if fast-fold
+                         (or (eq pos (nlre--literal-search text string pos))
+                             (nlre--folded-text-equal-at-p text string pos n))
+                       (if fold
+                           (nlre--folded-text-equal-at-p text string pos n)
+                         (eq pos (nlre--literal-search text string pos)))))
             (setq hit (cons pos variant))))
         (setq xs (cdr xs)))
       hit)))
@@ -1672,8 +1726,11 @@ of STRING.  Sets `nlre--match-data' as usual."
                  (if (and nlre--fold nlre--translate-table p
                           (memq (aref p 0) '(:suffix :greedy-suffix))
                           (aref p 10)) nil p)))
-         ;; Capture state is shared only between attempts in this call.
-         (caps (make-vector ng nil))
+         ;; Finite plans with the common two full captures construct the
+         ;; three spans directly, avoiding a generic capture traversal.
+         (simple-caps (and (null max-end) plan (eq (aref plan 0) :greedy-suffix)
+                           (aref plan 11)))
+         (caps (unless simple-caps (make-vector ng nil)))
          (hit nil))
     (setq nlre--caps caps)
     (cond
@@ -1693,9 +1750,12 @@ of STRING.  Sets `nlre--match-data' as usual."
         (when result
           (let ((suffix-start (car result)))
             (setq hit 0)
-            (nlre--plan-set-caps caps (cdr result) suffix-start n)
-            (aset caps 0 (cons 0 n))
-            (aset caps (aref plan 4) (cons 0 suffix-start))))))
+            (if simple-caps
+                (setq caps (vector (cons 0 n) (cons 0 suffix-start)
+                                   (cons suffix-start n)))
+              (nlre--plan-set-caps caps (cdr result) suffix-start n)
+              (aset caps 0 (cons 0 n))
+              (aset caps (aref plan 4) (cons 0 suffix-start)))))))
      ((and (null max-end) plan (eq (aref plan 0) :atom))
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
             hit (nlre--atom-plan-match plan string i n))
@@ -1811,9 +1871,15 @@ of STRING.  Sets `nlre--match-data' as usual."
       hit)))
 
 (defun nlre-match-beginning (n)
+  (unless (fixnump n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (when (< n 0) (signal 'args-out-of-range (list n 0)))
   (and nlre--last-caps (< n (length nlre--last-caps))
        (let ((c (aref nlre--last-caps n))) (and c (car c)))))
 (defun nlre-match-end (n)
+  (unless (fixnump n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (when (< n 0) (signal 'args-out-of-range (list n 0)))
   (and nlre--last-caps (< n (length nlre--last-caps))
        (let ((c (aref nlre--last-caps n))) (and c (cdr c)))))
 

@@ -1194,6 +1194,13 @@
        ;; nothing to do with the file.
        )
 
+ ;; Regex compilation and subgroup validation preserve complete conditions.
+ (list (condition-case e (string-match "[" "a") (error e))
+       (condition-case e (string-match "\\(" "a") (error e))
+       (condition-case e (string-match "" "abc" -5) (error e))
+       (progn (string-match "x" "x")
+              (condition-case e (match-beginning -1) (error e))))
+
  ;; The `f' rounding family requires a FLOAT: (ffloor 65) signals while
  ;; (floor 65) is 65.  Accepting any number, which an earlier pass did,
  ;; is the loose reading of a strict contract.

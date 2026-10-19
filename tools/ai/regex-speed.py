@@ -40,19 +40,30 @@ def prepare(args):
       (with-temp-file (getenv "REGEX_SPEED_OUTPUT")
         (insert (car result))
         (when (equal (getenv "REGEX_SPEED_WRAPPERS") "1")
-          (require 'nelisp-standalone-build)
-          (let ((text (nelisp-standalone--reader-repl-prelude-source))
-                (position 0) forms)
-            (condition-case nil
-                (while t
-                  (let* ((read-result (read-from-string text position))
-                         (form (car read-result)))
-                    (setq position (cdr read-result))
-                    (when (and (memq (car-safe form) '(defun defmacro))
-                               (memq (cadr form) '(string-match string-match-p match-data save-match-data)))
-                      (push (concat (prin1-to-string form) "\\n") forms))))
-              (end-of-file nil))
-            (unless (= (length forms) 4) (error "Expected four public wrappers"))
+          ;; Read the canonical literal fragments without generating an entire
+          ;; standalone prelude, compiler proofs, and unrelated native units.
+          (let* ((definition
+                  (with-temp-buffer
+                    (insert-file-contents "scripts/nelisp-standalone-build.el")
+                    (goto-char (point-min))
+                    (re-search-forward "^(defun nelisp-standalone--reader-repl-prelude-source ")
+                    (beginning-of-line)
+                    (read (current-buffer))))
+                 (text
+                  (cl-labels ((strings (node)
+                                (cond ((stringp node) (list node))
+                                      ((consp node) (append (strings (car node))
+                                                            (strings (cdr node)))))))
+                    (apply #'concat (strings definition))))
+                 forms)
+            (dolist (name '(string-match string-match-p match-data save-match-data))
+              (let* ((prefix (format "(%s %s "
+                                     (if (eq name 'save-match-data) "defmacro" "defun") name))
+                     (position (string-search prefix text)))
+                (unless position (error "Missing canonical wrapper: %s" name))
+                (let ((form (car (read-from-string text position))))
+                  (unless (eq (cadr form) name) (error "Wrong wrapper: %s" name))
+                  (push (concat (prin1-to-string form) "\\n") forms))))
             (insert (car (nelisp-prelude-bytecode-transform
                           (apply #'concat (nreverse forms)) "regex-public-wrappers.el" nil t))))))
       (princ (format "REGEX-BYTECODE %d\\n" (cadr result))))'''

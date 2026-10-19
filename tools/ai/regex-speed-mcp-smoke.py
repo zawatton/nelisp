@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 def sha256(path):
@@ -68,22 +69,33 @@ def main():
     ]
     try:
         with (output / "stderr").open("w") as error_stream:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 [str(launcher)],
-                input="".join(json.dumps(row) + "\n" for row in requests),
+                stdin=subprocess.PIPE,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=error_stream,
                 env=environment,
                 cwd=tool_root,
-                timeout=180,
             )
+            process.stdin.write(json.dumps(requests[0]) + "\n")
+            process.stdin.flush()
+            # Keep the stream open while the standalone MCP runtime boots.
+            time.sleep(25)
+            stdout, _ = process.communicate(
+                json.dumps(requests[1]) + "\n", timeout=155)
     except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
         return fail("MCP process timed out after 180 seconds")
-    (output / "stdout").write_text(process.stdout)
+    except BrokenPipeError:
+        process.kill()
+        process.communicate()
+        return fail("MCP process closed stdin before tools/list")
+    (output / "stdout").write_text(stdout)
 
     rows = []
-    for line in process.stdout.splitlines():
+    for line in stdout.splitlines():
         try:
             row = json.loads(line)
         except ValueError:

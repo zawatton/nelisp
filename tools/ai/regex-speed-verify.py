@@ -192,7 +192,7 @@ def default_focused_count():
 
 def validate_core(path):
     text = path.read_text(errors="replace")
-    require("BOOT-IMAGE-FULL-SUITE mode=full checked=11 findings=0" in text,
+    require("GATE-COUNT: 11 cases, 0 failures" in text,
             "core11: missing full 11/0 marker")
     seen = re.findall(r"^([a-z0-9-]+) rc=(-?[0-9]+)(?:\s|$)", text, re.MULTILINE)
     named = [(name, code) for name, code in seen if name in CORE_NAMES]
@@ -225,14 +225,14 @@ def validate_mcp(path, dynamic_hash):
 def validate_abi(path):
     text = path.read_text(errors="replace")
     pattern = re.compile(
-        r"^Ir regex layout (0|2100) base ([1-9][0-9]*) cand ([1-9][0-9]*); "
+        r"^Ir regex layout (0|700|1400|2100) base ([1-9][0-9]*) cand ([1-9][0-9]*); "
         r"GC base ([0-9]+) cand ([0-9]+); output identical; delta [^\n]+$",
         re.MULTILINE)
     rows = pattern.findall(text)
-    require(len(re.findall(r"^Ir regex layout ", text, re.MULTILINE)) == 2,
+    require(len(re.findall(r"^Ir regex layout ", text, re.MULTILINE)) == 4,
             "ABI Ir: unexpected extra layout rows")
-    require([row[0] for row in rows] == ["0", "2100"],
-            "ABI Ir: expected exactly layouts 0 and 2100")
+    require([row[0] for row in rows] == ["0", "700", "1400", "2100"],
+            "ABI Ir: expected exactly layouts 0, 700, 1400 and 2100")
     require(all(int(row[3]) >= 10 and int(row[4]) >= 10 for row in rows),
             "ABI Ir: each binary/layout needs at least 10 GC sweeps")
     require(sum(int(row[2]) for row in rows) <= sum(int(row[1]) for row in rows),
@@ -382,6 +382,25 @@ def selftest(_args):
         }))
         expect_rejection("wrong-mcp-count", lambda: validate_mcp(mcp, "a" * 64))
 
+        abi = tmp / "abi.log"
+        layout_rows = [
+            f"Ir regex layout {layout} base 200 cand 100; GC base 10 cand 10; "
+            "output identical; delta -50.000%\n"
+            for layout in (0, 700, 1400, 2100)
+        ]
+        mean = "Ir regex mean base 200.00 cand 100.00; delta -50%; output identical; PASS\n"
+        abi.write_text("".join(layout_rows) + mean)
+        validate_abi(abi)
+        abi.write_text(layout_rows[0] + layout_rows[-1] + mean)
+        expect_rejection("missing-middle-layouts", lambda: validate_abi(abi))
+
+        core = tmp / "core.log"
+        core_rows = "".join(f"{name} rc=0 1s\n" for name in CORE_NAMES)
+        core.write_text(core_rows + "GATE-COUNT: 11 cases, 0 failures\n")
+        validate_core(core)
+        core.write_text(core_rows + "GATE-COUNT: 0 cases, 0 failures\n")
+        expect_rejection("zero-core-cases", lambda: validate_core(core))
+
         repository = tmp / "repo"
         (repository / "tools").mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(repository)], check=True)
@@ -398,7 +417,7 @@ def selftest(_args):
         mutated[0]["sha256"] = "0" * 64
         expect_rejection("source-hash-mutation",
                          lambda: verify_source_state(mutated, repository))
-    print("REGEX-SPEED-VERIFY SELFTEST PASS controls=3")
+    print("REGEX-SPEED-VERIFY SELFTEST PASS controls=5")
 
 
 def add_evidence_arguments(parser):
