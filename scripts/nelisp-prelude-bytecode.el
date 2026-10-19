@@ -521,6 +521,19 @@ The declarations follow BODY's leading docstring, `declare' and
               (mapcar (lambda (symbol) (list 'defvar symbol)) specials)
               rest))))
 
+(defun nelisp-prelude-bytecode--unlowered-native-head-p (form)
+  "Non-nil when FORM contains reader syntax GNU CALL cannot represent.
+GNU CALL must still honor function cells for funcall/apply. Retain source
+for throw and defalias syntax rather than losing that distinction."
+  (and (consp form)
+       (not (eq (car form) 'quote))
+       (or (memq (car form) '(throw defalias))
+           (let ((tail form) (found nil))
+             (while (and (consp tail) (not found))
+               (setq found (nelisp-prelude-bytecode--unlowered-native-head-p (car tail))
+                     tail (cdr tail)))
+             found))))
+
 (defun nelisp-prelude-bytecode-transform
     (source provenance &optional parity-fixtures core-mode whole-file-functions
             whole-file-compile-p)
@@ -534,6 +547,11 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
         (report nil)
         (replacements nil)
         (whole-file-mode whole-file-compile-p)
+        (native-macro-redefinitions
+         (and whole-file-compile-p
+              (cl-some (lambda (form)
+                         (memq (cadr form) '(lambda defalias when unless prog2 dolist throw)))
+                       (nth 1 (nelisp-prelude-bytecode--top-level-declarations source)))))
         (whole-file-functions (nelisp-prelude-bytecode--copy-function-map
                                whole-file-functions))
         (compile-lexical (and core-mode
@@ -685,6 +703,17 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                           (nelisp-prelude-bytecode--vendor-rejection
                            form compiled (substring source start end)))))
                (cond
+                (native-macro-redefinitions
+                 ;; Whole-file GNU compilation may already have erased a
+                 ;; native head, including one introduced by another macro.
+                 (setq reason "native-special-head-macro-requires-source"))
+                ((or (nelisp-prelude-bytecode--unlowered-native-head-p body)
+                     ;; A macro can introduce these after source scanning.
+                     ;; Constants also conservatively retain indirect uses
+                     ;; and quoted data; source replay keeps their semantics.
+                     (cl-some (lambda (constant) (memq constant '(throw defalias)))
+                              (nelisp-prelude-bytecode--vendor-constants compiled)))
+                 (setq reason "native-special-head-requires-source"))
                 ((and (consp compiled) (eq (car compiled) :compile-error))
                  (setq reason (format "compile-error:%s"
                                       (error-message-string (cadr compiled)))))

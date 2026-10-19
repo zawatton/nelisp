@@ -1,0 +1,19 @@
+#+TITLE: VM special-form head precedence
+
+* S1 Compilation and standalone acceptance
+** S1.1 Regression fails on the original compiler
+cmd: test -f target/codex/before-regression.exit && test "$(cat target/codex/before-regression.exit)" != 0 && rg -Fq 'FAIL (throw 1) got (error excessive-lisp-nesting)' target/codex/before-regression.log
+** S1.2 Dynamic and static regressions pass
+cmd: test "$(cat target/codex/dynamic-regression.exit)" = 0 && test "$(cat target/codex/static-regression.exit)" = 0
+** S1.3 Bytecode word corpus passes all 145 cases
+cmd: rg -q 'BYTECODE-WORD PASS 145/145' target/final-verify/checks-vm-special/standalone-bytecode-word-check.log
+** S1.4 All compiler tiers and special heads are audited
+#+NOTE: Name-prioritized heads: lambda defalias when unless prog2 dolist throw. GNU cell-sensitive heads: progn if let let* setq while function quote condition-case unwind-protect catch defvar defconst and or cond prog1. defun/defmacro defer on changed markers; defvaralias defers when bound; cl-defun always defers; inline aliases the progn special object. GNU CALL/native bytecode gateways retain indirect function-cell dispatch; source/adoption guards preserve syntax before this boundary. Astra ultra reviewed; no native additions; zero standalone-build.el hunks.
+cmd: rg -q '^Ran 13 tests, 13 results as expected, 0 unexpected' target/codex/focused-ert.log && rg -q '^Ran 652 tests, 649 results as expected, 0 unexpected, 3 skipped' target/codex/host-suite.log
+** S1.5 Targeted standalone runner reduces development cost
+#+NOTE: Existing all-check route: 107 seconds; exact-path runner: 1.519 seconds, one output file, same final dynamic binary. Default full-corpus behavior remains exercised by S1.7. Full eval/core run: 128.422 seconds. Final builds: dynamic 143 seconds, static 138 seconds. The full AI CI check tier is not substituted for the brief's evaluator acceptance: AI tooling documents 2784 seconds for that larger lane (1257 seconds gate-mutation alone).
+cmd: test -f target/codex/final-results.json && test "$(cat target/codex/dynamic-regression.exit)" = 0
+** S1.6 Anvil MCP exposes and exercises 40 tools
+cmd: rg -q '^ANVIL-MCP PASS 40 tools;' target/codex/anvil-mcp.log
+** S1.7 Complete eval/core suite passes 11 groups
+cmd: rg -q '^GATE-COUNT: 11 cases, 0 failures$' target/codex/final-checks.log

@@ -8,7 +8,16 @@ cd "$(dirname "$0")/../.." || exit 2
 fail=0
 logdir=${STANDALONE_CHECK_LOGDIR:-target/standalone-checks}
 mkdir -p "$logdir" || exit 2
-for f in test/standalone-*-check.el; do
+# Optional exact paths keep a focused edit from running the entire corpus.
+# Validate every path before starting any process; the default remains all.
+if [ "$#" = 0 ]; then set -- test/standalone-*-check.el; fi
+for f do
+  case "$f" in
+    test/standalone-*-check.el) [ -f "$f" ] || exit 2 ;;
+    *) echo "invalid standalone check: $f" >&2; exit 2 ;;
+  esac
+done
+for f do
   name=$(basename "$f" .el)
   if timeout 300 nice -n 10 "$EVAL_BIN" --load "$f" >"$logdir/$name.out" 2>"$logdir/$name.err"; then :;
   else
