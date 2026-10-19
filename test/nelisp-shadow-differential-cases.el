@@ -2239,6 +2239,18 @@
        (push (list (eq answer value) (not answer) (aref (vector answer) 0)) answers)))
    (nreverse answers))
  (let ((load-file-name -7)) (car (read-from-string "(#$ [#$] . #$)")))
+ ;; Bytecode's evaluator entry preserves canonical results across GC and
+ ;; both lexical and dynamically bound argument descriptors.
+ (let ((answers nil))
+   (dolist (value (list nil t -7 2305843009213693951 -2305843009213693952
+                       1.25 "bytecode result" '(a . b) [nil t -7]))
+     (let ((lexical (make-byte-code 0 (unibyte-string 192 135) (vector value) 1))
+           (dynamic (make-byte-code '(abi-bytecode-argument)
+                                    (unibyte-string 8 135) [abi-bytecode-argument] 1)))
+       (garbage-collect)
+       (push (list (eq (funcall lexical) value)
+                   (eq (funcall dynamic value) value)) answers)))
+   (nreverse answers))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

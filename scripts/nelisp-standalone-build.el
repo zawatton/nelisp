@@ -2012,7 +2012,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
 ;; a miss without a pending exit, and its legacy adapter maps 2 back to rc 1.
 ;; KIND `special' marks a special form that may answer rc 2 ("not handled
 ;; here", e.g. a definer with a `declare' left to the Lisp macro): F_w
-;; passes 2 through (nl_abi_rc2_to_word).
+;; preserves 2 in its direct WORD producer.
 ;; Only build-script / build-generated defuns are listed; lisp/ units are
 ;; converted in their source.
 (defconst nelisp-standalone--abi-box-split
@@ -2096,27 +2096,16 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
   "FORM (defun F PARAMS . BODY) as (F_w ADAPTER); see `nelisp-standalone--abi-box-split'."
   (when (eq kind 'status)
     (error "lookup requires a direct WORD producer: %s" (nth 1 form)))
-  (let* ((name (nth 1 form)) (params (nth 2 form)) (body (nthcdr 3 form))
+  (let* ((name (nth 1 form)) (params (nth 2 form))
          (out (or (cl-find-if #'nelisp-standalone--abi-out-param-p params)
                   (error "abi box split: %s has no OUT parameter" name)))
          (wname (intern (format "%s_w" name)))
-         (wparams (mapcar (lambda (p) (cond ((eq p out) '_pad)
-                                            ((eq p '_pad) '_pad1)
-                                            (t p)))
-                          params))
          (cargs (mapcar (lambda (p) (if (eq p out) 0 p)) params)))
     (if (memq name '(nl_sf_defun nl_sf_defvar nl_sf_defconst nl_sf_defalias nl_sf_defvaralias nl_sf_defmacro))
         (list (nelisp-standalone--abi-definer-word form)
               `(defun ,name ,params
                  (nl_abi_word_to_rc (,wname ,@cargs) ,out)))
-      (list `(defun ,wname ,wparams
-             (let* ((,out (alloc-bytes 32 8)))
-               (,(pcase kind ('special 'nl_abi_rc2_to_word)
-                         (_ 'nl_abi_rc_to_word))
-                (progn ,@body) ,out)))
-          `(defun ,name ,params
-             (,(if (eq kind 'status) 'nl_abi_lookup_to_rc 'nl_abi_word_to_rc)
-              (,wname ,@cargs) ,out))))))
+      (error "abi split requires a direct WORD producer: %s" name))))
 
 (defun nelisp-standalone--abi-box-split-source (source)
   "SOURCE with every `nelisp-standalone--abi-box-split' defun split.
@@ -2947,27 +2936,9 @@ directory tracks the tree rather than accumulating every key ever built."
       (let* ((box (ptr-read-u64 record 8)))
         (ptr-read-u64 (+ (ptr-read-u64 box 32) (* (ptr-read-u64 box 48) 8)) 0)))
     (defun nl_word_int (w) (sar w 2))
-    ;; Doc 146 §3.0 step 3/4: store a 32-byte storage Sexp at SLOT into a passing
-    ;; value WORD.  Immediate tags collapse to their word (Int -> (n<<2)|1, Nil
-    ;; -> 3, T -> 7); heap tags (Float/Symbol/Str/Cons/Vector/...) keep the slot
-    ;; pointer.  This is the storage-Sexp -> word boundary, inverse of
-    ;; nl_sci_store_imm.  SLOT is always an 8-aligned storage slot.
-    ;; Doc 147 Phase 1: RENAMED from `nl_val_load' to `nl_val_store_word' to
-    ;; free the `nl_val_load' name for the Phase 0 keystone (.o, arity 2,
-    ;; word -> 32B-slot view) now linked via the val-load.o unit.  This local
-    ;; producer is the INVERSE direction (storage slot -> word).
-    (defun nl_val_store_word (slot)
-      (let ((tg (ptr-read-u8 slot 0)))
-        (if (= tg 2) (nl_imm_int (ptr-read-u64 slot 8))
-          (if (= tg 0) 3
-            (if (= tg 1) 7
-              slot)))))
     ;; Doc 215 builtin word ABI adapters.  A WORD is never 0, so 0 carries
     ;; "failed, signal stashed"; 2 (never a WORD either) is reserved for
     ;; "not handled" (nl_apply_special_w).
-    ;; rc + private OUT box -> WORD: the box itself is the value (no copy).
-    (defun nl_abi_rc_to_word (rc out)
-      (if (= rc 0) (nl_val_store_word out) 0))
     ;; WORD -> rc + caller's OUT box, for callers still on the legacy ABI.
     ;; W = 2 ("not handled") is returned as rc 2; only nl_apply_special_w
     ;; produces it, and its adapter nl_apply_special must hand it on.
@@ -2989,12 +2960,6 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; failure stashed a signal, 2 ("not found") when it did not.
     (defun nl_abi_miss (_rc _pad)
       (if (/= (ptr-read-u64 268435472 0) 0) 0 2))
-    ;; A legacy (rc, private OUT box) as a word result where rc 1 may come
-    ;; without a stash (it is a failure, never a miss): 0 after making sure
-    ;; a signal is stashed.
-    ;; rc (2 = not handled) + private OUT box -> WORD, 2 passed through.
-    (defun nl_abi_rc2_to_word (rc out)
-      (if (= rc 2) 2 (nl_abi_rc_to_word rc out)))
     (defun nl_abi_status_fail (rc object)
       ;; Constructor status: the sole caller builds a Cons object in OBJECT.
       ;; It is already a heap WORD; never pass an immediate storage view.
@@ -7760,16 +7725,8 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "eq")   :word . (if (= (wf_raw_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) 7 3))
     ((:u8 "null") :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 7 3))
     ((:u8 "not")  :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 7 3))
-    ;; A cons answers its car/cdr WORD (the child itself, no copy); any other
-    ;; argument keeps the legacy path through a private box.
-    ((:u8 "car")  :word . (let* ((a (wf_arg_ptr args 0)))
-                            (if (= (sexp-tag a) 7) (nl_cons_car_word a)
-                              (let ((out (alloc-bytes 32 8)))
-                                (nl_abi_rc_to_word (wf_copy32 out (nl_cons_car_ptr a)) out)))))
-    ((:u8 "cdr")  :word . (let* ((a (wf_arg_ptr args 0)))
-                            (if (= (sexp-tag a) 7) (nl_cons_cdr_word a)
-                              (let ((out (alloc-bytes 32 8)))
-                                (nl_abi_rc_to_word (wf_copy32 out (nl_cons_cdr_ptr a)) out)))))
+    ((:u8 "car")  :word . (bf_car_w args 0))
+    ((:u8 "cdr")  :word . (bf_cdr_w args 0))
     ((:u8 "cons") :word . (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                                                  (alloc-bytes 32 8)))
     ((:u8 "list") :word . (nl_g4arm_copy_w 0 (if (= (nl_val_tag args) 0) 3 args)))
@@ -8341,17 +8298,14 @@ by name pending that follow-up; this paragraph is the record of why."
         1))))
 
 (defun nelisp-standalone--applyfn-word-arm (impl)
-  "Doc 215 builtin word ABI: IMPL as a form whose value is the result WORD,
-or 0 after stashing a signal.  An arm written for the word ABI is
-`(:word . FORM)' and is used as is; a legacy arm (an rc form that writes
-the free variable `out') runs against a fresh private box, which becomes
-the WORD itself (`nl_abi_rc_to_word').  This is the per-builtin adapter
-that lets arms convert one at a time."
+  "Return IMPL's direct WORD producer, or reject a legacy result arm."
   (cond
    ((eq (car-safe impl) :word) (cdr impl))
+   ;; The arithmetic-only baked manifest uses a failure-only default.
+   ((eql impl 1) 0)
    ;; A signal-only producer has no result to materialize or decode.
    ((eq (car-safe impl) 'nl_applyfn_unsupported) `(nl_abi_fail ,impl 0))
-   (t `(let ((out (alloc-bytes 32 8))) (nl_abi_rc_to_word ,impl out)))))
+   (t (error "builtin arm requires a direct WORD producer: %S" impl))))
 
 (defun nelisp-standalone--applyfn-build-dispatch (&optional table default-form word-abi)
   "Fold the (MATCH . IMPL) TABLE (default the full dispatch table) into a
@@ -14833,16 +14787,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= (sexp-tag spec) 4)
                (if (= (bf_eq2 spec symbol) 1)
                    (setq matched 1)
-                 (let* ((chain (wf_bytecode_w_peek conditions)))
+                 (let* ((chain conditions))
                    (while (if (= matched 0) (wf_bytecode_w_consp chain) 0)
                      (if (= (wf_bytecode_w_eqv spec (ptr-read-u64 (ptr-read-u64 chain 8) 0)) 1)
                          (setq matched 1)
                        (setq chain (ptr-read-u64 (ptr-read-u64 chain 8) 8))))))
              (if (= (sexp-tag spec) 7)
-                 (let* ((patterns (wf_bytecode_w_peek spec)) (chain 0))
+                 (let* ((patterns spec) (chain 0))
                    (while (if (= matched 0) (wf_bytecode_w_consp patterns) 0)
                      (seq
-                      (setq chain (wf_bytecode_w_peek conditions))
+                      (setq chain conditions)
                       (while (if (= matched 0) (wf_bytecode_w_consp chain) 0)
                         (if (= (wf_bytecode_w_eqw (ptr-read-u64 (ptr-read-u64 patterns 8) 0)
                                                   (ptr-read-u64 (ptr-read-u64 chain 8) 0)) 1)
@@ -14861,7 +14815,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (previous (nl_root_reserve env))
              (saved-unwinds (nl_root_reserve env))
              (out-bindings (nl_root_reserve env))
-             (cursor (wf_bytecode_w_peek handlers))
+             (cursor handlers)
              (found 0)
              (destination 0)
              (saved-sp 0)
@@ -14919,7 +14873,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (out-bindings (nl_root_reserve env))
              (error-object (nl_root_reserve env))
              (spec-slot (nl_root_reserve env))
-             (cursor (wf_bytecode_w_peek handlers))
+             (cursor handlers)
              (found 0) (destination 0) (saved-sp 0)
              (unwind-rc 0) (new-bindings 0))
         (seq
@@ -15043,7 +14997,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((prev 3)
              ;; The head cell needs a heap word of its own: VALUE is a view.
              (current (if (= (ptr-read-u64 value 0) 7) (wf_bytecode_w_newbox value)
-                        (wf_bytecode_w_peek value)))
+                        value))
              (head current)
              (next 0)
              (state 0))
@@ -15177,7 +15131,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (seq (m5_make_builder ms 16 all-unibyte)
                        (m5_concat_walk ms args)
                        (m5_finish_string ms out (- 1 all-unibyte)) 0)))
-          (let* ((bad (wf_bytecode_concat_bad (wf_bytecode_w_peek args) out)))
+          (let* ((bad (wf_bytecode_concat_bad args out)))
             (if (= why 1)
                 (bf_wrong_type_sequencep bad)
               (if (= why 2)
@@ -15282,7 +15236,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((mark (nl_root_mark env))
              (value (nl_root_reserve env))
              (params formals)
-             (arg-cursor (wf_bytecode_w_peek args))
+             (arg-cursor args)
              (index 0) (state 0) (bound 0) (done 0))
         (seq
          (wf_write_nil value)
@@ -15405,8 +15359,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_try_jit (func args argc env out)
       (wf_bytecode_try_jit_frame func args argc env out 0))
     (defun wf_bytecode_try_jit_frame (func args argc env out frame)
+      (let* ((word (wf_bytecode_try_jit_frame_word func args argc env out frame)))
+        (if (= word 2) 0
+          (if (= word 0) 2 (seq (wf_bytecode_w_load out word) 1)))))
+    (defun wf_bytecode_try_jit_frame_word (func args argc env out frame)
       (if (> argc 2)
-          0
+          2
         (let* ((mark (nl_root_mark env))
                (name-buf (alloc-bytes 40 8))
                (name-slot (nl_root_reserve env))
@@ -15415,7 +15373,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (tail (nl_root_reserve env))
                (result (nl_root_reserve env))
                (nil-slot (nl_root_reserve env))
-               (status 0))
+               (status 2))
           (seq
            (ptr-write-u64 name-buf 0 7074434230661178734)
            (ptr-write-u64 (+ name-buf 8) 0 3271131133926274169)
@@ -15478,12 +15436,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (seq (wf_bytecode_w_load result aw) 0)))))
                               0)
                              (if (/= rc 0)
-                                 (setq status 2)
+                                 (setq status 0)
                                (if (and (= (ptr-read-u64 call-result 0) 8)
                                         (= (vector-len call-result) 2)
                                         (= (nl_vector_slot_word call-result 0) 7))
-                                   (seq (wf_bytecode_w_load out (nl_vector_slot_word call-result 1))
-                                        (setq status 1))
+                                   (setq status (nl_vector_slot_word call-result 1))
                                  0)))
                         0)
                     0)))
@@ -15520,31 +15477,59 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (wf_bytecode_w_int (nl_record_slot_word func 3))
                          env out 0 argc maxargs rest frame 0 0 0)))))))))))
     (defun wf_bytecode_function (func args env out)
+      (nl_abi_word_to_rc (wf_bytecode_function_w func args env 0) out))
+    (defun wf_bytecode_function_w (func args env _pad)
+      ;; The VM publishes its result WORD in a rooted vector. OUT is only
+      ;; error/JIT scratch; no physical result is decoded at this boundary.
+      (let* ((mark (nl_root_mark env))
+             (out (nl_root_reserve env)) (result (nl_root_reserve env)))
+        (if (= result 0)
+            (seq (nl_root_release env mark) (nl_abi_fail (wf_bytecode_root_exhausted) 0))
+          (seq
+           (vector-make 1 result)
+           (let* ((word (wf_bytecode_function_result_w func args env out result)))
+             (seq (nl_root_release env mark) word))))))
+    (defun wf_bytecode_function_result_w (func args env out result)
       (let* ((argc (bf_byte_code_arg_count args 0))
-             (dw (nl_record_slot_word func 0)))
+             (dw (nl_record_slot_word func 0))
+             (outw (ptr-read-u64 (ptr-read-u64 result 8) 8)))
         (if (= (wf_bytecode_w_tag dw) 2)
-            (let* ((jit-status (wf_bytecode_try_jit func args argc env out)))
-              (if (= jit-status 1)
-                  0
-                (if (= jit-status 2)
-                    1
+            (let* ((jit-word (wf_bytecode_try_jit_frame_word func args argc env out 0)))
+              (if (/= jit-word 2)
+                  jit-word
                   (let* ((template (wf_bytecode_w_int dw))
                          (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
                     (if (or (< template 0) (> maxargs 127))
-                        (bf_invalid_byte_code_object out)
+                        (bf_invalid_byte_code_object_w 0)
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
-                          (bf_wrong_number_of_args (bf_subr_arity_name func env) argc)
-                        (wf_bytecode_execute_frame
-                         (nl_record_slot_word func 1)
-                         (nl_record_slot_word func 2)
-                         (wf_bytecode_w_int (nl_record_slot_word func 3))
-                         env out args argc maxargs rest 0 0 0 0)))))))
+                          (nl_abi_fail (bf_wrong_number_of_args (bf_subr_arity_name func env) argc) 0)
+                        (let* ((rc (wf_bytecode_execute_frame
+                                   (nl_record_slot_word func 1)
+                                   (nl_record_slot_word func 2)
+                                   (wf_bytecode_w_int (nl_record_slot_word func 3))
+                                   env out args argc maxargs rest 0 0 outw 0)))
+                          (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
           (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
-              (wf_bytecode_dynamic_function func dw args argc env out)
-            (bf_wrong_type_fixnump (wf_bytecode_w_view dw out))))))
+              (let* ((shape (wf_bytecode_arglist_shape dw 0 0 0)))
+                (if (< shape 0)
+                    (nl_abi_fail (nl_apply_stash_invalid_function env func) 0)
+                  (let* ((required (logand shape 65535))
+                         (maximum (/ (logand shape 4294967295) 65536))
+                         (rest (/ shape 4294967296)))
+                    (if (or (< argc required) (and (= rest 0) (> argc maximum)))
+                        (nl_abi_fail (bf_wrong_number_of_args (bf_subr_arity_name func env) argc) 0)
+                      (let* ((bound (wf_bytecode_bind_arglist env dw args argc))
+                             (rc (wf_bytecode_execute_frame
+                                  (nl_record_slot_word func 1)
+                                  (nl_record_slot_word func 2)
+                                  (wf_bytecode_w_int (nl_record_slot_word func 3))
+                                  env out 0 0 0 0 0 0 outw 0)))
+                        (seq (wf_bytecode_unbind (+ env 32) bound)
+                             (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
+            (nl_abi_fail (bf_wrong_type_fixnump (wf_bytecode_w_view dw out)) 0)))))
     (defun wf_bytecode (args env out initial-args initial-argc
                              initial-maxargs initial-rest)
       ;; The public byte-code primitive: ARGS is (CODE CONSTANTS DEPTH).
@@ -15576,14 +15561,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_w_load (dst w)
       ;; Word W as a 32-byte view in the rooted slot DST.
       (if (= (logand w 1) 0) (wf_copy32 dst w) (nl_sci_store_imm w dst)))
-    (defun wf_bytecode_w_peek (view)
-      ;; The word of the value in VIEW, for reading only: a heap value
-      ;; answers VIEW itself, which must never be stored as a word.
-      (let* ((tag (ptr-read-u64 view 0)))
-        (if (= tag 0) 3
-          (if (= tag 1) 7
-            (if (= tag 2) (+ (shl (ptr-read-u64 view 8) 2) 1)
-              view)))))
     (defun wf_bytecode_w_int (w)
       ;; The integer of a fixnum word, or of an integer box.
       (if (= (logand w 1) 0) (ptr-read-u64 w 8) (sar w 2)))
@@ -15754,17 +15731,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
                   (wf_bytecode_w_dynamic_function func dw mem first argc env outw out)
                 2)
-            (let* ((jit-status
-                    (if (> argc 2) 0
+             (let* ((jit-word
+                    (if (> argc 2) 2
                       (let* ((mark (nl_root_mark env))
                              (st (wf_bytecode_w_stage env mem first argc))
-                             (status (if (= st 0) 0
-                                       (wf_bytecode_try_jit_frame func 0 argc env out st))))
-                        (seq (if (= status 1) (nl_val_clone_into out outw) 0)
+                             (word (if (= st 0) 2
+                                     (wf_bytecode_try_jit_frame_word func 0 argc env out st))))
+                        (seq (if (and (/= word 0) (/= word 2)) (ptr-write-u64 outw 0 word) 0)
                              (nl_root_release env mark)
-                             status)))))
-              (if (= jit-status 1) 0
-                (if (= jit-status 2) 1
+                             word)))))
+              (if (and (/= jit-word 0) (/= jit-word 2)) 0
+                (if (= jit-word 0) 1
                   (let* ((template (wf_bytecode_w_int dw))
                          (mandatory (logand template 127))
                          (rest (if (= (logand template 128) 0) 0 1))
@@ -23778,17 +23755,17 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
 
 (defconst nelisp-standalone--process-windows-real-arms
   '(((:lit "nelisp-process-call-process") :word . (nl_bi_process_call_process_w args 0))
-    ((:lit "nelisp-process-start") . (nl_bi_process_windows_start args out))
-    ((:lit "nelisp-process-start-process") . (nl_bi_process_windows_start args out))
+    ((:lit "nelisp-process-start") :word . (nl_bi_process_windows_start_w args 0))
+    ((:lit "nelisp-process-start-process") :word . (nl_bi_process_windows_start_w args 0))
     ((:lit "nelisp-process-object-p") :word . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) 7 3))
     ((:lit "nelisp-process-async-ready-p") :word . (wf_write_t_w 0))
     ((:lit "nelisp-process-pid") :word . (wf_write_int_w 0 (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
     ((:lit "nelisp-process-status") :word . (wf_write_int_w 0 (nl_bi_process_windows_status_code (wf_arg_ptr args 0))))
     ((:lit "nelisp-process-exit-status") :word . (wf_write_int_w 0 (nl_bi_process_windows_exit_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-read-output") . (nl_bi_process_windows_read_output args out))
-    ((:lit "nelisp-process-write") . (nl_bi_process_windows_write args out))
-    ((:lit "nelisp-process-close-stdin") . (nl_bi_process_windows_close_stdin args out))
-    ((:lit "nelisp-process-poll") . (nl_bi_process_windows_poll args out))
+    ((:lit "nelisp-process-read-output") :word . (nl_bi_process_windows_read_output_w args 0))
+    ((:lit "nelisp-process-write") :word . (nl_bi_process_windows_write_w args 0))
+    ((:lit "nelisp-process-close-stdin") :word . (nl_bi_process_windows_close_stdin_w args 0))
+    ((:lit "nelisp-process-poll") :word . (nl_bi_process_windows_poll_w args 0))
     ((:lit "nelisp-process-wait") :word . (wf_write_int_w 0 (nl_bi_process_windows_wait_object (wf_arg_ptr args 0))))
     ((:lit "nelisp-process-delete") :word . (seq (nl_bi_process_windows_delete_object (wf_arg_ptr args 0)) 3)))
   "Complete async-process lifecycle arms for windows-x86_64.")
@@ -23802,7 +23779,8 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                     nelisp-standalone--process-windows-real-arms
                   (list (car nelisp-standalone--process-windows-real-arms)
                         (nth 3 nelisp-standalone--process-windows-real-arms))))
-          (unsupported (nelisp-standalone--applyfn-unsupported-primitive-form)))
+          (unsupported (list :word 'seq
+                             (nelisp-standalone--applyfn-unsupported-primitive-form) 0)))
       (mapcar
        (lambda (posix-arm)
          (or (assoc (car posix-arm) real)
@@ -24546,7 +24524,7 @@ families.")
                         (fbox (alloc-bytes 32 8)))
                    (seq (sexp-write-float fbox (bits-to-f64 result-bits)) fbox))
                (nl_abi_fail (bf_wrong_type_numberp arg) 0))))
-    (nelisp-standalone--applyfn-unsupported-primitive-form)))
+    '(:word nl_abi_fail (nl_applyfn_unsupported name_ptr) 0)))
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sin" "cos" "sxhash-eq"
@@ -26628,17 +26606,20 @@ Other targets return nil, preserving their generated process source exactly."
       ;; Slots 0..5 preserve the POSIX public layout.  Slot 5 owns the parent
       ;; write end of the child's stdin pipe; slot 6 owns the process HANDLE;
       ;; slot 1 remains the real DWORD pid returned to callers.
+      (defun nl_bi_process_windows_make_object_w (pid process_handle out_handle in_handle _pad)
+        (let* ((object (nl_w_vector_make 7 0)))
+          (seq
+           (nl_bi_process_set_int object 0 1886547811)
+           (nl_bi_process_set_int object 1 pid)
+           (nl_bi_process_set_int object 2 out_handle)
+           (nl_bi_process_set_int object 3 0)
+           (nl_bi_process_set_int object 4 -1)
+           (nl_bi_process_set_int object 5 in_handle)
+           (nl_bi_process_set_int object 6 process_handle)
+           object)))
       (defun nl_bi_process_windows_make_object (pid process_handle out_handle in_handle out)
-        (seq
-         (vector-make 7 out)
-         (nl_bi_process_set_int out 0 1886547811)
-         (nl_bi_process_set_int out 1 pid)
-         (nl_bi_process_set_int out 2 out_handle)
-         (nl_bi_process_set_int out 3 0)
-         (nl_bi_process_set_int out 4 -1)
-         (nl_bi_process_set_int out 5 in_handle)
-         (nl_bi_process_set_int out 6 process_handle)
-         0))
+        (nl_abi_word_to_rc
+         (nl_bi_process_windows_make_object_w pid process_handle out_handle in_handle 0) out))
       (defun nl_bi_process_windows_mark_exit (proc code)
         (seq
          (nl_bi_process_set_int proc 4 code)
@@ -26691,7 +26672,7 @@ Other targets return nil, preserving their generated process source exactly."
       ;; final post-exit drain.  EOF after exit closes the last owned pipe end,
       ;; so normal-completion slice 1 does not leak HANDLEs even though
       ;; explicit `nelisp-process-delete' belongs to slice 2.
-      (defun nl_bi_process_windows_read_output (args out)
+      (defun nl_bi_process_windows_read_output_w (args _pad)
         (let* ((proc (wf_arg_ptr args 0))
                (limit (wf_argval args 1)))
           (if (= (nl_bi_process_object_p_raw proc) 1)
@@ -26705,11 +26686,12 @@ Other targets return nil, preserving their generated process source exactly."
                         (if (>= pipe_handle 0)
                             (extern-call CloseHandle pipe_handle) 0)
                         (nl_bi_process_set_int proc 2 -1)))
-                     (wf_write_nil out)
-                     0)
-                  (nl_seq2 (nl_alloc_str buf n out) 0)))
-            (nl_seq2 (wf_write_nil out) 0))))
-      (defun nl_bi_process_windows_write (args out)
+                     3)
+                  (nl_alloc_str_w buf n 0)))
+            3)))
+      (defun nl_bi_process_windows_read_output (args out)
+        (nl_abi_word_to_rc (nl_bi_process_windows_read_output_w args 0) out))
+      (defun nl_bi_process_windows_write_w (args _pad)
         (let* ((proc (wf_arg_ptr args 0))
                (str (wf_arg_ptr args 1)))
           (if (= (nl_bi_process_object_p_raw proc) 1)
@@ -26719,18 +26701,22 @@ Other targets return nil, preserving their generated process source exactly."
                              handle (nl_bi_strptr str) (nl_bi_strlen str))
                           -1)))
                 (if (< n 0)
-                    (nl_seq2 (wf_write_nil out) 0)
-                  (nl_seq2 (wf_write_int out n) 0)))
-            (nl_seq2 (wf_write_nil out) 0))))
-      (defun nl_bi_process_windows_close_stdin (args out)
+                    3
+                  (nl_imm_int n)))
+            3)))
+      (defun nl_bi_process_windows_write (args out)
+        (nl_abi_word_to_rc (nl_bi_process_windows_write_w args 0) out))
+      (defun nl_bi_process_windows_close_stdin_w (args _pad)
         (let* ((proc (wf_arg_ptr args 0)))
           (if (= (nl_bi_process_object_p_raw proc) 1)
               (let* ((handle (nl_bi_process_get_int proc 5)))
                 (seq
                  (if (>= handle 0) (extern-call CloseHandle handle) 0)
                  (nl_bi_process_set_int proc 5 -1)
-                 (wf_write_t out)))
-            (wf_write_nil out))))
+                 7))
+            3)))
+      (defun nl_bi_process_windows_close_stdin (args out)
+        (nl_abi_word_to_rc (nl_bi_process_windows_close_stdin_w args 0) out))
       (defun nl_bi_process_windows_delete_object (proc)
         (if (= (nl_bi_process_object_p_raw proc) 1)
             (let* ((status (nl_bi_process_windows_status_code proc))
@@ -26760,7 +26746,7 @@ Other targets return nil, preserving their generated process source exactly."
                (nl_bi_process_set_int proc 3 3)
                0))
           0))
-      (defun nl_bi_process_windows_poll (args out)
+      (defun nl_bi_process_windows_poll_w (args _pad)
         (let* ((proc (wf_arg_ptr args 0))
                (pipe_handle (nl_bi_process_get_int proc 2))
                (available_slot (nl_win_valloc 8))
@@ -26774,23 +26760,20 @@ Other targets return nil, preserving their generated process source exactly."
                                  (nl_process_windows_last_error) 0))
                (status (nl_bi_process_windows_status_code proc))
                (exitcode (nl_bi_process_get_int proc 4))
-               (v0 (alloc-bytes 32 8)) (v1 (alloc-bytes 32 8))
-               (v2 (alloc-bytes 32 8)))
+               (object (nl_w_vector_make 3 0)))
           (seq
            ;; Keep the mapped error read live.  EPIPE is ordinary EOF here;
            ;; other failures also mean not-readable because the established
            ;; three-element poll result has no error slot.
            (if (= mapped_errno 32) 0 0)
            (extern-call VirtualFree available_slot 0 32768)
-           (vector-make 3 out)
-           (wf_write_int v0 (if (> available 0) 1 0))
-           (vector-slot-set out 0 v0)
-           (wf_write_int v1 (if (= status 0) 0 1))
-           (vector-slot-set out 1 v1)
-           (wf_write_int v2 exitcode)
-           (vector-slot-set out 2 v2)
-           0)))
-      (defun nl_bi_process_windows_start (args out)
+           (vector-slot-set object 0 (nl_imm_int (if (> available 0) 1 0)))
+           (vector-slot-set object 1 (nl_imm_int (if (= status 0) 0 1)))
+           (vector-slot-set object 2 (nl_imm_int exitcode))
+           object)))
+      (defun nl_bi_process_windows_poll (args out)
+        (nl_abi_word_to_rc (nl_bi_process_windows_poll_w args 0) out))
+      (defun nl_bi_process_windows_start_w (args _pad)
         (let* ((program_sx (wf_arg_ptr args 0))
                (arglst (nl_cons_cdr_ptr args))
                (sa (nl_win_inheritable_sa))
@@ -26809,7 +26792,7 @@ Other targets return nil, preserving their generated process source exactly."
                (extern-call VirtualFree stdout_pipe 0 32768)
                (extern-call VirtualFree stdin_pipe 0 32768)
                (extern-call VirtualFree sa 0 32768)
-               (wf_write_nil out))
+               3)
             (let* ((parent_stdout (ptr-read-u64 stdout_pipe 0))
                    (child_stdout (ptr-read-u64 stdout_pipe 8))
                    (child_stdin (ptr-read-u64 stdin_pipe 0))
@@ -26844,15 +26827,17 @@ Other targets return nil, preserving their generated process source exactly."
                    (seq (extern-call CloseHandle parent_stdout)
                         (extern-call CloseHandle parent_stdin)
                         (extern-call VirtualFree pi 0 32768)
-                        (wf_write_nil out))
+                        3)
                  (let* ((process_handle (ptr-read-u64 pi 0))
                         (thread_handle (ptr-read-u64 pi 8))
                         (pid (ptr-read-u32 pi 16)))
                    (seq
                     (extern-call CloseHandle thread_handle)
                     (extern-call VirtualFree pi 0 32768)
-                    (nl_bi_process_windows_make_object
-                     pid process_handle parent_stdout parent_stdin out))))))))))))
+                    (nl_bi_process_windows_make_object_w
+                     pid process_handle parent_stdout parent_stdin 0)))))))))
+      (defun nl_bi_process_windows_start (args out)
+        (nl_abi_word_to_rc (nl_bi_process_windows_start_w args 0) out)))))
 
 (defconst nelisp-standalone--fileio-forms-part3
   '(
@@ -28961,11 +28946,6 @@ relies on for `nelisp-cc-evalport-combiner-cons--source' and its siblings).")
     (defun nl_sf_while_w (_a _e _o _p) 0) (defun nl_sf_lambda_w (_a _e _o _p) 0)
     (defun nl_sf_function_w (_a _e _o _p) 0) (defun nl_sf_condition_case_w (_a _e _o _p) 0)
     (defun nl_sf_unwind_protect_w (_a _e _o _p) 0) (defun nl_sf_progn_w (_a _e _o _p) 0)
-    ;; The shared shim's evaluator boundary calls `nl_eval_inner_w'; this
-    ;; build links the unpatched eval-inner unit, so adapt it here.
-    (defun nl_eval_inner_w (form env _pad _pad1)
-      (let* ((out (alloc-bytes 32 8)))
-        (nl_abi_rc_to_word (nl_eval_inner form env out 0) out)))
     (defun nl_env_lookup_val (_f _e _o) 1) (defun nl_cell_get_value (_c _o) 1)
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
@@ -36779,7 +36759,8 @@ instead of referencing an implementation that was never emitted."
            ("nelisp-socket-close" nl_socket_close_impl linux-x86_64 windows-x86_64)
            ("nelisp-socket-poll" nl_socket_poll_impl linux-x86_64 windows-x86_64)
            ("nelisp-socket-connect-error" nl_socket_connect_error_impl linux-x86_64 windows-x86_64)))
-        (sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
+        (sig (list :word 'seq
+                   (nelisp-standalone--applyfn-unsupported-primitive-form) 0)))
     (mapcar
      (lambda (entry)
        (cons (list :lit (car entry))
@@ -36821,12 +36802,61 @@ instead of referencing an implementation that was never emitted."
    `((ptr-write-u8 ,buf-sym ,(* (length string) 2) 0)
      (ptr-write-u8 ,buf-sym ,(1+ (* (length string) 2)) 0))))
 
+(defconst nelisp-standalone--tls-word-producers
+  '(nl_tls_finish_handshake nl_tls_handshake_loop nl_tls_connect_impl
+    nl_tls_send_impl nl_tls_decrypt_loop nl_tls_recv_impl
+    nl_tls_close_impl nl_tls_protocol_impl)
+  "Schannel result producers whose retained OUT entries are view adapters.")
+
+(defun nelisp-standalone--tls-word-defun (form)
+  "Produce Schannel WORD results directly, rejecting any residual OUT use."
+  (if (not (memq (cadr form) nelisp-standalone--tls-word-producers))
+      (list form)
+    (cl-labels
+        ((uses-out (x) (if (consp x) (cl-some #'uses-out x) (eq x 'out)))
+         (result (x)
+           (pcase x
+             (`(wf_write_nil out) 3)
+             (`(wf_write_int out ,value) `(nl_imm_int ,value))
+             (`(,name ,bytes ,len out)
+              (when (memq name '(nl_alloc_str nl_alloc_unibyte_str))
+                `(,(intern (format "%s_w" name)) ,bytes ,len 0)))))
+         (tail (x)
+           (let ((value (result x)))
+             (cond
+              (value value)
+              ((eql x 1) 0)
+              ((memq (car-safe x) '(nl_tls_fail nl_tls_signal_error)) `(seq ,x 0))
+              ((eq (car-safe x) 'if)
+               `(if ,(nth 1 x) ,(tail (nth 2 x)) ,(tail (nth 3 x))))
+              ((memq (car-safe x) '(let let*))
+               `(,(car x) ,(cadr x) ,@(butlast (cddr x)) ,(tail (car (last x)))))
+              ((memq (car-safe x) '(seq progn))
+               (let* ((body (cdr x))
+                      (written (and (eql (car (last body)) 0)
+                                    (result (car (last (butlast body)))))))
+                 `(,(car x) ,@(if written (butlast body 2) (butlast body))
+                   ,(or written (tail (car (last body)))))))
+              ((memq (car-safe x) (cons 'nl_tls_plain_deliver
+                                       nelisp-standalone--tls-word-producers))
+               `(,(intern (format "%s_w" (car x)))
+                 ,@(cl-substitute 0 'out (cdr x))))
+              (t (error "Schannel tail requires a WORD producer: %S" x))))))
+      (let* ((name (cadr form)) (params (nth 2 form))
+             (body (tail (cons 'progn (nthcdr 3 form))))
+             (wname (intern (format "%s_w" name))))
+        (when (uses-out body) (error "Schannel WORD producer retains OUT: %s" name))
+        (list `(defun ,wname ,(cl-substitute '_pad 'out params) ,body)
+              `(defun ,name ,params
+                 (nl_abi_word_to_rc (,wname ,@(cl-substitute 0 'out params)) out)))))))
+
 (defun nelisp-standalone--tls-forms ()
   "Return the Windows x86_64 Schannel TLS native units.
 `nelisp-tls-close' releases only the TLS context and its buffers; the socket
 belongs to the caller, just as `nelisp-tls-connect' does not open it."
   (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-    (list
+    (mapcan #'nelisp-standalone--tls-word-defun
+     (list
      '(defun nl_tls_status_s32 (status)
         (if (> status 2147483647) (- status 4294967296) status))
      '(defun nl_tls_zero (ptr count)
@@ -37208,16 +37238,18 @@ belongs to the caller, just as `nelisp-tls-connect' does not open it."
               (if (not (= rc 0))
                   (nl_tls_signal_error rc)
                 (seq (wf_write_int out len) 0))))))
-     '(defun nl_tls_plain_deliver (ctx maxbytes out)
+     '(defun nl_tls_plain_deliver_w (ctx maxbytes _pad)
         (let* ((plain (ptr-read-u64 ctx 88))
                (have (ptr-read-u64 ctx 96))
                (take (if (> have maxbytes) maxbytes have))
-               (left (- have take)))
+               (left (- have take))
+               (word (nl_alloc_unibyte_str_w plain take 0)))
           (seq
-           (nl_alloc_unibyte_str plain take out)
            (if (> left 0) (nl_tls_copy plain (+ plain take) left) 0)
            (ptr-write-u64 ctx 96 left)
-           0)))
+           word)))
+     '(defun nl_tls_plain_deliver (ctx maxbytes out)
+        (nl_abi_word_to_rc (nl_tls_plain_deliver_w ctx maxbytes 0) out))
      '(defun nl_tls_post_handshake_loop
           (ctx input_desc input_buffers output_desc output_buffers attrs)
         (let* ((read_rc (if (= (ptr-read-u64 ctx 56) 0)
@@ -37388,18 +37420,18 @@ belongs to the caller, just as `nelisp-tls-connect' does not open it."
                (ptr-write-u8 buf 4 46)
                (ptr-write-u8 buf 5 (if (= protocol 8192) 51 50))
                (nl_alloc_str buf 6 out)
-               0))))))))
+               0)))))))))
 
 (defun nelisp-standalone--tls-dispatch-arms ()
   "Return the five TLS arms, all live on Win64."
   (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
     (list
-     (cons '(:lit "nelisp-tls-connect") '(nl_tls_connect_impl args out))
-     (cons '(:lit "nelisp-tls-send") '(nl_tls_send_impl args out))
-     (cons '(:lit "nelisp-tls-recv") '(nl_tls_recv_impl args out))
-     (cons '(:lit "nelisp-tls-close") '(nl_tls_close_impl args out))
+     (cons '(:lit "nelisp-tls-connect") '(:word nl_tls_connect_impl_w args 0))
+     (cons '(:lit "nelisp-tls-send") '(:word nl_tls_send_impl_w args 0))
+     (cons '(:lit "nelisp-tls-recv") '(:word nl_tls_recv_impl_w args 0))
+     (cons '(:lit "nelisp-tls-close") '(:word nl_tls_close_impl_w args 0))
      (cons '(:lit "nelisp-tls-protocol")
-           '(nl_tls_protocol_impl args out)))))
+           '(:word nl_tls_protocol_impl_w args 0)))))
 
 (defun nelisp-standalone--tls-builtin-names ()
   "Return target-visible TLS names; Schannel is windows-x86_64-only."
@@ -37741,7 +37773,8 @@ target the same installed names signal catchable
            (nl_thread_join_impl_w args env 0))
          `((:lit "nelisp-thread-gc-inhibit") :word .
            (nl_thread_gc_inhibit_impl_w args 0)))
-      (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
+      (let ((sig (list :word 'seq
+                       (nelisp-standalone--applyfn-unsupported-primitive-form) 0)))
         (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
 
 (defun nelisp-standalone--reader-os-source-forms ()
@@ -42083,15 +42116,17 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   "FORM, a tail of the `nl_apply_special' dispatch body answering an rc with
 the value in OUT, rewritten to answer the result WORD (2 = not special).
 Tail calls of `nelisp-standalone--special-word-forms' become F_w calls with
-OUT replaced by 0; any other tail rc form runs against a private OUT box
-\(`nl_abi_rc2_to_word').  So does any subtree that uses OUT outside a tail."
+OUT replaced by 0. Reject any remaining physical result dependency."
   (cl-labels
       ((uses-out (x) (cond ((eq x out) t)
                            ((consp x) (or (uses-out (car x)) (uses-out (cdr x))))))
-       (wrap (x) `(let* ((,out (alloc-bytes 32 8))) (nl_abi_rc2_to_word ,x ,out)))
+       (wrap (x) (error "special tail requires a direct WORD producer: %S" x))
        (tail (x)
          (cond
           ((eql x 2) 2)
+          ((and (consp x) (eq (car x) 'nl_abi_word_to_rc)
+                (eq (nth 2 x) out) (not (uses-out (nth 1 x))))
+           (nth 1 x))
           ((and (consp x) (memq (car x)
                  '(nl_apply_stash_invalid_function nl_apply_stash_wta
                    bf_wrong_number_of_args nl_cons_stash_void_function)))
@@ -43213,7 +43248,8 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 (defun nl_rooted_vector_word (vector index)
   (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 vector 8) 8) (* index 8)) 0))
 (defun nl_rooted_vector_int (vector index)
-  (sar (nl_rooted_vector_word vector index) 2))
+  ;; Descriptor values may be immediate or owned integer objects.
+  (nl_word_payload (nl_rooted_vector_word vector index)))
 (defun nl_rooted_vector_copy (vector index dst)
   ;; Materialize immediate values directly into their owned root, never an
   ;; allocating vector-ref-ptr view. Pointer values retain the full Sexp copy.
@@ -43443,11 +43479,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                       (let ((word (call-ptr address 0 0 0 0 0 0)))
                         (if (/= (logand word 3) 2)
                             (nl_apply_stash_invalid_function env func_ptr)
-                          (seq (ptr-write-u64 out 0 2)
-                               (ptr-write-u64 out 8 (sar word 2))
-                               (ptr-write-u64 out 16 0)
-                               (ptr-write-u64 out 24 0)
-                               0))))
+                          (nl_abi_word_to_rc (nl_imm_int (sar word 2)) out))))
                   (nl_apply_stash_invalid_function env func_ptr))))))))
         (forms (cdr src)))
     (setq forms
@@ -44214,7 +44246,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 `nelisp-standalone--apply-word-names' split into F_w, whose tail calls of
 the same set and of `nelisp_apply_function' become word calls (other
 tails run against a private box), and the (rc, OUT) adapter F."
-  (let ((words (append '(nl_apply_do_push_captured nl_apply_do_set_use_elisp nl_apply_do_symbol_function nl_apply_do_globals_op
+  (let ((words (append '(wf_bytecode_function nl_apply_do_push_captured nl_apply_do_set_use_elisp nl_apply_do_symbol_function nl_apply_do_globals_op
                          nl_apply_do_eval nl_apply_do_funcall nl_apply_do_apply
                          nl_apply_do_push_frame nl_apply_do_pop_frame nl_apply_do_bind_local
                          nl_apply_flat_builtin_frame nl_apply_rooted_subr)

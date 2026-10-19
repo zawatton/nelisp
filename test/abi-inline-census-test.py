@@ -42,6 +42,22 @@ class InlineCensusTest(unittest.TestCase):
             "let*", [["word", ["extern-call", "nl_val_store_word", "view"]]], "word"
         ]).get("nl_val_store_word", 0))
 
+    def test_two_status_reverse_conversion_is_counted_and_rejected(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=root / "target/tmp") as directory:
+            source = Path(directory) / "dump.jsonl"
+            output = Path(directory) / "census.tsv"
+            source.write_text(json.dumps({"unit": "synthetic.o", "source": [
+                "seq", ["defun", "f", [], ["let*", [["word", [
+                    "extern-call", "nl_abi_rc2_to_word", 2, "out"]]], "word"]]]}) + "\n")
+            subprocess.run([sys.executable, str(root / "tools/ai/box-census.py"),
+                            "from-dump", str(source), str(output)], check=True)
+            self.assertEqual(1, census.tally(census.load(output))[0]["idioms"].get(
+                "nl_abi_rc2_to_word", 0))
+            result = subprocess.run([str(root / "tools/ai/abi-merge-gate.sh"),
+                                     "store-word", str(output), "0"], capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+
     def test_binding_name_and_quoted_data_are_not_calls(self):
         idioms = self.idioms([
             "let*", [["nl_val_store_word", 3]],
@@ -75,6 +91,12 @@ class InlineCensusTest(unittest.TestCase):
 
     def count(self, body):
         return census.inline_conversions(["defun", "synthetic", [], body])["synthetic"]
+
+    def test_wide_tag_read_also_identifies_inline_decoding(self):
+        self.assertEqual(1, self.count([
+            "let*", [["tag", ["ptr-read-u64", "view", 0]]],
+            ["if", ["=", "tag", 2],
+             ["+", ["shl", ["ptr-read-u64", "view", 8], 2], 1], "view"]]))
 
     def test_producer_out_decoded_inline(self):
         self.assertEqual(1, self.count([

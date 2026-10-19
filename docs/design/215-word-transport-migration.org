@@ -35,13 +35,40 @@ inlined helper body would otherwise be counted once per call site, and the
 inliner only runs on a cache miss.  =tools/ai/box-census.py= summarises the
 file per idiom and per unit family.
 
-The census also counts =nl_abi_rc_to_word= call sites.  The reader boundary
-currently converts legacy reader results through that helper, whose body
-calls =nl_val_store_word=: these sites are remaining box-to-word work, not
-converted producers.  S6.2 sums both call heads, including the helper's
-own =nl_val_store_word= call.  Round 4 moves the baseline to eval/core =80902e27f= (source-free image
-boot); its fresh dynamic census is 1681. S6.1 requires TOTAL < 1681.
-This changes the baseline and threshold, while retaining 21 criteria.
+The census counts =nl_val_store_word=, both reverse adapter spellings
+(=nl_abi_rc_to_word= and =nl_abi_rc2_to_word=), and inline decoding as S6.2
+debt. Round 6 removes the adapters and their unused decoder. Generators
+reject any unconverted builtin arm, special tail or split result instead
+of emitting a reverse adapter. The reader replaces the base car/cdr arms
+with the same direct WORD producers. Its selected units exclude =trap.o=;
+the obsolete small-eval trap wrapper is removed as well. The small-eval
+target already fails before this change with duplicate =nl_apply_do_eval=
+in =combiner-apply.o= and =shim.o=; reader verification is the shipping gate.
+
+Round 6 moves the baseline to eval/core =10beb8a3c=, using its dynamic Linux
+binary with the matching =.cold= and =.native-startup.el=. Selecting that
+revision's sources and replaying the dump with the current walker yields
+TOTAL 1682 over 114 units. S6.1 now requires TOTAL < 1682 and the ledger retains
+21 criteria. S6.2 requires =conversion-walk-v3=, which includes the
+two-status reverse adapter and 64-bit tag reads in the census and merge check.
+The latter exposes =wf_bytecode_w_peek=; its callers now pass their rooted
+physical views directly to readers that already accept boxed atoms. The
+decoder is deleted rather than exempted from the census.
+
+Round 6b localizes the rooted-subr regression to A3 (=90dc60ad4=): A1
+and A2 pass the existing 46-case FFI check; A3 and both subsequent merges
+fail at zero arguments. Descriptor slots contain valid owned integer
+objects, so =nl_rooted_vector_int= must use =nl_word_payload= rather than
+shifting their addresses. The regression check explicitly constructs native
+immediate and boxed descriptors with zero, one and multiple arguments.
+Lisp literal/returned producers also exercise APPLY and FUNCALL; source
+syntax alone does not guarantee the physical representation of an integer.
+Windows process and Schannel results now have direct WORD producers;
+their retained OUT entries materialize views in the forward direction.
+Unsupported platform arms return zero after stashing the signal. The
+generation guard remains strict, including Schannel's result-tail walk.
+Eight host generator checks exercise both platforms and both dynamic
+settings before a cross-build, including rejected unconverted results.
 
 S6.3 compares total callgrind Ir, including every GC instruction.  Its
 fixed regex workload must execute at least ten GC sweeps on each binary;

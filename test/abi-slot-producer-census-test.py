@@ -30,7 +30,6 @@ if source is None:
     raise SystemExit("FAIL: missing applyfn-reader.o")
 # The two-status spelling is the same reverse adapter debt, even in old
 # dumps whose general census did not name it as a separate idiom.
-census.CONVERSION_CALLS += ("nl_abi_rc2_to_word",)
 rows = census.conversion_rows(source)
 definitions = [x[1] for x in census.forms(source) if x[0] == "defun"]
 failed = False

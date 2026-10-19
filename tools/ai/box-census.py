@@ -23,11 +23,11 @@ import json, re, sys
 DEBT = ["alloc-bytes-32-8", "nl_cons_car_ptr", "nl_cons_cdr_ptr",
         "record-slot-ref-ptr", "vector-ref-ptr", "nl_vector_slot_ptr",
         "nl_record_slot_ptr", "clone_into", "wf_copy32", "nl_root_reserve",
-        "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word",
+        "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word", "nl_abi_rc2_to_word",
         "inline-box-to-word"]
 CONS = ["nl_cons_car_ptr", "nl_cons_cdr_ptr"]
-CONVERSION_CALLS = ("nl_val_store_word", "nl_abi_rc_to_word")
-CONVERSION_WALK_VERSION = "conversion-walk-v2"
+CONVERSION_CALLS = ("nl_val_store_word", "nl_abi_rc_to_word", "nl_abi_rc2_to_word")
+CONVERSION_WALK_VERSION = "conversion-walk-v3"
 
 # Order matters: first match wins.  Stage 1 = the first five.
 FAMILIES = [
@@ -79,7 +79,8 @@ def inline_conversions(source):
         decoded, tags = set(), set()
         key = lambda x: json.dumps(x, sort_keys=True)
         for x in nodes:
-            if x[0] in ("ptr-read-u8", "nelisp_ptr_read_u8", "sexp-tag"):
+            if x[0] in ("ptr-read-u8", "nelisp_ptr_read_u8", "ptr-read-u64",
+                        "nelisp_ptr_read_u64", "sexp-tag"):
                 if len(x) == 2 or (len(x) == 3 and x[2] == 0):
                     tags.add(key(x[1]))
             if (x[0] in ("*", "ash", "shl") and len(x) == 3) or (
