@@ -178,7 +178,7 @@ inside BASE's mapped page."
                     nl_u8_back_one nl_u8_walk_back
                     nl_u8_cidx_byte_bounded
                     nl_aref_cache_slot nl_aref_cache_lookup
-                    nl_aref_cache_store nl_str_aref_commit
+                    nl_aref_cache_store nl_aref_cache_invalidate nl_str_aref_commit
                     nl_str_aref_byte_off)))
          (bf-aset-forms
           (mapcar #'nelisp-doc200-unibyte-repr-test--bf-defun
@@ -197,9 +197,10 @@ inside BASE's mapped page."
          (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
          1))
       (defun bf_wrong_type_integerp (_offender) 2)
+      (defun bf_wrong_type_characterp (_offender) 2)
       (defun bf_args_out_of_range (_arr _idx) 3)
       (defun bf_args_out_of_range_byte (_offender) 4)
-      (defun bf_aset_fixed_width_rejected (_out) 5)
+      (defun bf_aset_fixed_width_rejected (kind _out) (if (= kind 0) 4 5))
       ,@bf-layout-forms
       (defun m5_strlen (src) (bf_str_len src))
       (defun m5_byte_at (src i) (ptr-read-u8 (bf_str_ptr src) i))
@@ -355,8 +356,17 @@ inside BASE's mapped page."
                          nl_cli_put_octal_byte
                          nl_cli_put_unibyte_string_value
                          nl_cli_value_to_buf))
+         ;; Building the reader source also prepares its embedded compiler.
+         ;; Extract every printer from one snapshot instead of building it
+         ;; once per name (five full generations for this one probe).
+         (driver-source
+          (let ((nelisp-standalone--core-bytecode-build-cache
+                 (make-hash-table :test #'equal)))
+            ;; Match the reader build's source-hash-checked generation cache.
+            (nelisp-standalone--reader-driver-source)))
          (driver-forms
-          (mapcar #'nelisp-doc200-unibyte-repr-test--driver-defun
+          (mapcar (lambda (name)
+                    (nelisp-doc200-unibyte-repr-test--defun name driver-source))
                   driver-names))
          (strptr
           (nelisp-doc200-unibyte-repr-test--defun
@@ -384,6 +394,11 @@ inside BASE's mapped page."
          (gc-stubs
           `((defun nl_gc_mark_buf (ptr)
               (seq (ptr-write-u64 ,base 0 ptr) 0))
+            ;; This probe exercises raw-string payload marking, outside the
+            ;; typed census/clear modes and symbol-name side table.
+            (defun nl_gc_typed_slot (_sp _tag) 0)
+            (defun nl_gc_symname_mark_one (_kind _key _len) 0)
+            (defun nl_seq2 (_a b) b)
             (defun nl_gc_mark_block (_ptr) 1)
             (defun nl_gc_mark_cons (_ptr) 0)
             (defun nl_gc_mark_vec_slots (_ptr _i _n) 0)
@@ -708,6 +723,50 @@ inside BASE's mapped page."
                   source)))
       (should (= rc 1))
       (should (string-match-p "nelisp-raw-byte-unrepresentable" stderr)))))
+
+(ert-deftest nelisp-doc200-unibyte-repr/cli-symbol-name-source-kind ()
+  "Preserve argv source kind through precheck, wrapping, and action sequences."
+  (skip-unless (equal emacs-version "31.1"))
+  (let ((binary (expand-file-name
+                 "target/nelisp" nelisp-doc200-unibyte-repr-test--repo-root))
+        (gnu (expand-file-name invocation-name invocation-directory))
+        (expression
+         (concat
+          "(progn (let ((s (symbol-name 'cli-byte-name-unique)))"
+          " (prin1 (list (multibyte-string-p s)"
+          " (condition-case err (aset s 0 233) (error err))"
+          " (aref s 0) (if (boundp 'cli_marker) cli_marker 0)))"
+          " (terpri)) (kill-emacs 0))")))
+    (unless (file-executable-p binary) (ert-skip "standalone is not built"))
+    (cl-labels
+        ((output
+          (program arguments)
+          (let ((stderr-file (make-temp-file "nelisp-doc200-cli-stderr-")))
+            (unwind-protect
+                (with-temp-buffer
+                  (should (= (apply #'call-process program nil
+                                    (list t stderr-file) nil arguments) 0))
+                  (let ((stdout (buffer-string)))
+                    (with-temp-buffer
+                      (insert-file-contents stderr-file)
+                      (should (equal (buffer-string) "")))
+                    stdout))
+              (delete-file stderr-file)))))
+      (dolist (multiple '(nil t))
+        (dolist (multibyte '(nil t))
+          (let* ((source (concat (if multibyte ";; é\n" "") expression))
+                 (arguments (append (when multiple
+                                      '("--eval" "(setq cli_marker 73)"))
+                                    (list "--eval" source)))
+                 (expected
+                  (format
+                   (if multibyte
+                       "(t (error \"Attempt to store non-ASCII char into multibyte string\") 99 %d)\n"
+                     "(nil 233 233 %d)\n")
+                   (if multiple 73 0))))
+            (should (equal (output gnu (append '("-Q" "--batch") arguments))
+                           expected))
+            (should (equal (output binary arguments) expected))))))))
 
 (provide 'nelisp-doc200-unibyte-repr-test)
 ;;; nelisp-doc200-unibyte-repr-test.el ends here

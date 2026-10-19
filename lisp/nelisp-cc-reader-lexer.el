@@ -1118,8 +1118,15 @@
           (nelisp_reader_prog2
            (sexp-int-make cursor-out-slot end-or-err)
            (nelisp_reader_prog2
-            (mut-str-finalize scratch payload-slot)
-            22)))))
+            ;; ASCII literals are unibyte in GNU Emacs.  Preserve that kind
+            ;; explicitly so a later aset can store any byte without making
+            ;; the same buffer look like malformed UTF-8 through an alias.
+            (if (= (nelisp_reader_scratch_has_high_p scratch) 0)
+                (nl_mut_str_mark_unibyte scratch)
+              0)
+            (nelisp_reader_prog2
+             (mut-str-finalize scratch payload-slot)
+             22))))))
 
     (defun nelisp_reader_lex_string
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
