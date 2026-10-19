@@ -66,13 +66,12 @@
          (while (< cap n)
            (setq cap (* cap 2)))
          cap)))
-    (defun nelisp_frame_stack_ensure_capacity_copy (src dst i n)
+    (defun nelisp_frame_stack_ensure_capacity_copy_w (src target i n)
       ;; Element-by-element copy from src vector (= `*const Sexp'
       ;; pointing at the OLD `Sexp::Vector') into dst vector (= `*mut
       ;; Sexp' pointing at the NEW `Sexp::Vector' in the scratch
-      ;; slot).  Indices [i, n).  Returns 1 on completion (= a
-      ;; non-zero sentinel so the outer `and' threads through without
-      ;; short-circuiting on the rax = 0 condition).
+      ;; slot). Indices [i, n). Return the destination vector WORD for
+      ;; installation into the frames record; TARGET is an existing vector.
       ;;
       ;; `vector-slot-set' delegates to `nl_vector_set_slot' which is
       ;; refcount-aware (= clones the source Sexp into the dst slot,
@@ -87,9 +86,9 @@
         (seq
          (while (< k n)
            (seq
-            (vector-slot-set dst k (nl_vector_slot_word src k))
+            (vector-slot-set target k (nl_vector_slot_word src k))
             (setq k (+ k 1))))
-         1)))
+         target)))
     (defun nelisp_frame_stack_ensure_capacity_grow
         (frames-ptr scratch-slot new-cap _pad)
       ;; Allocate new vector of capacity new-cap into scratch-slot,
@@ -105,12 +104,11 @@
       ;; vector, so we'd read from the new (empty Nil) backing
       ;; instead of the OLD one.
       (and (vector-make new-cap scratch-slot)
-           (nelisp_frame_stack_ensure_capacity_copy
-            (nl_record_slot_word frames-ptr 0)
-            scratch-slot
-            0
-            (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2))
-           (record-slot-set frames-ptr 0 scratch-slot)
+           (record-slot-set
+            frames-ptr 0
+            (nelisp_frame_stack_ensure_capacity_copy_w
+             (nl_record_slot_word frames-ptr 0) scratch-slot 0
+             (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)))
            new-cap))
     (defun nelisp_frame_stack_ensure_capacity_initial (cap)
       ;; Initial c for compute_cap: max(cap, 1).  cap may be 0 on

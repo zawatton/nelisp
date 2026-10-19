@@ -120,6 +120,27 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 cmd: python3 tools/ai/abi-partition.py check G4 "$ABI_DUMP" --arms
 
 ** S4.2 Every G4 defun has a _w form or no OUT slot
+#+NOTE: G4 misc lane: the actual dynamic dumps show the five owned helpers
+# unconverted before / after = 5 / 0 (full G4 = 23 / 18; the remaining names
+# belong to parallel lanes). nl_ali_body loses its unused OUT parameter;
+# mirror_alloc_entry and frame_stack_ensure_capacity_copy return WORDs;
+# nl_ct_copy32 and nl_rooted_vector_copy are folded into existing helpers.
+# No compatibility entry points remain. Candidate build 182 s, SHA256
+# 09c50d20c247d73a1fa4b6ba10277bf39a179b84e91f6525441c8645708fb204.
+# Three batteries match 4bf106be9 exactly; lambda ERT 3/3; GNU 31.1 parity
+# helpers 18, captures 40, bytecode 145; Anvil MCP 40 tools/search passes
+# with the inherited worklog threads-column failure. All 61 standalone
+# checks ran: readerio passes after copying its required fixture; rooted-frame
+# has the identical wrong-number-of-arguments failure on 4bf106be9; maphash
+# remains known-red. S6.2 remains 2 globally (adapter definitions), 0 in the
+# evaluator family; this lane adds none. Full G4 S4.2/S4.3 remain failing.
+# Development efficiency: abi-partition --all exposes 23/23 findings rather
+# than 10/23 in one invocation (0.1667 s before / 0.1617 s after). CLI tests
+# fail against the old tool and pass 3/3 after. Normal check retains the
+# inherited compile errors and 33 parens findings; stopped in generated-
+# source-parse, as at the preceding checkpoint. No Ir gates run in this lane.
+# Source reload cannot replace the statically linked ABI callers; the
+# validation uses a rebuilt dynamic binary rather than claiming live repair.
 #+REQUIRES: ABI_DUMP
 cmd: python3 tools/ai/abi-partition.py check G4 "$ABI_DUMP" --defuns
 

@@ -32,18 +32,19 @@
       ;; Dispatch on ENTRY-PTR; hit-path writes all 4 slots (= same as
       ;; existing helper #12 `mirror_install_entry').
       (if (= entry-ptr 0)
-          (and
-           (extern-call nelisp_mirror_alloc_entry
-                        (vector-ref-ptr scratch-vec-ptr 5)
-                        (vector-ref-ptr scratch-vec-ptr 7)
-                        (vector-ref-ptr scratch-vec-ptr 8)
-                        (vector-ref-ptr scratch-vec-ptr 9)
-                        (vector-ref-ptr scratch-vec-ptr 10)
-                        (vector-ref-ptr scratch-vec-ptr 6))
-           (extern-call nelisp_mirror_bucket_prepend_unchecked
-                        mirror-ptr sym-ptr
-                        (vector-ref-ptr scratch-vec-ptr 6)
-                        scratch-vec-ptr))
+          (let ((entry-word
+                 (extern-call nelisp_mirror_alloc_entry_w
+                              (nl_vector_slot_word scratch-vec-ptr 5)
+                              (nl_vector_slot_word scratch-vec-ptr 7)
+                              (nl_vector_slot_word scratch-vec-ptr 8)
+                              (nl_vector_slot_word scratch-vec-ptr 9)
+                              (nl_vector_slot_word scratch-vec-ptr 10) 0)))
+            (and
+             (vector-slot-set scratch-vec-ptr 6 entry-word)
+             (extern-call nelisp_mirror_bucket_prepend_unchecked
+                          mirror-ptr sym-ptr
+                          (nl_vector_slot_word scratch-vec-ptr 6)
+                          scratch-vec-ptr)))
         (and (record-slot-set entry-ptr 0
                               (vector-ref-ptr scratch-vec-ptr 7))
              (record-slot-set entry-ptr 1

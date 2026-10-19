@@ -575,9 +575,8 @@
       (nl_ali_body_slot
        (nl_root_reserve env) body env 0 cap-flag root-mark))
 
-    ;; `out' is an unused pad kept by name (test/nelisp-lambda-body-loop-test
-    ;; matches this header).
-    (defun nl_ali_body (body env out cap-flag _p5 _p6)
+    ;; The body chain already returns WORDs; its third argument is padding.
+    (defun nl_ali_body (body env _pad cap-flag _p5 _p6)
       (nl_ali_body_mark
        (nl_root_mark env) body env 0 cap-flag 0))
 

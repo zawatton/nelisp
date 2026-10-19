@@ -7,7 +7,7 @@
   (let* ((file (expand-file-name "lisp/nelisp-cc-apply-lambda-inner.el"
                                 nelisp-lambda-body-loop-test--root))
          (text (with-temp-buffer (insert-file-contents file) (buffer-string)))
-         (start (string-match "(defun nl_ali_body (body env out cap-flag" text))
+         (start (string-match "(defun nl_ali_body (body env _pad cap-flag" text))
          (end (and start (string-match "\n    ;; After nl_push_and_bind" text start)))
          (drive-start (string-match "(defun nl_ali_body_drive " text))
          (drive-end (and drive-start (string-match "\n    (defun " text drive-start))))
