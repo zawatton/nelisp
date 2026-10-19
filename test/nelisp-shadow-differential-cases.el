@@ -45,6 +45,12 @@
 ;;; Code:
 
 (list
+ ;; Canonical names are selected as immediate WORDs before symbol allocation.
+ (let ((name (make-symbol "nil")))
+   (list (eq (intern "nil") nil) (eq (intern "t") t)
+         (eq (intern-soft "nil") nil) (eq (intern-soft "t") t)
+         (symbol-name name) (eq name nil)
+         (aref [nil t -7] 2)))
  ;; Reader WORDs preserve immediates and read-label identity across recursion.
  (let* ((values (car (read-from-string "(nil t -7 [nil t 9] . tail)"))))
    (list (car values) (cadr values) (nth 2 values) (aref (nth 3 values) 2)

@@ -256,6 +256,19 @@ old producer APIs (27 findings before, zero after, 21 WORD entries checked).
 Do not test WORD validity with numeric ranges: zero and negative fixnums
 are valid WORDs. Test 0 (failure) and 2 (EOF) individually.
 
+Socket/thread producers now return WORDs, including the clone dispatch and
+join finish helpers; their old names retain the OUT adapters. Dispatch arms
+are explicitly =:word=. A signal-only unsupported arm calls =nl_abi_fail=
+without allocating an unused result box. Symbol constructors select nil/t
+before allocating the heap symbol; unibyte string constructors return their
+own freshly written heap header. No new reader builtin name is introduced.
+
+=test/standalone-abi-io-word-check.el= exercises send/recv/poll/close through
+Linux pipes, including embedded NUL/255 bytes, empty EOF, booleans and fd
+errors. This covers the same read/write producers when network =socket()=
+is denied by the sandbox (EPERM on both baseline and candidate). It does
+not replace the real network round-trip smoke outside that sandbox.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

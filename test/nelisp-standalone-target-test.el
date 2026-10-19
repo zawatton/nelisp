@@ -2567,15 +2567,15 @@ deterministic against-the-bug gate for both emitted cache implementations."
 (ert-deftest nelisp-standalone-target-socket-dispatch-supported-targets-real ()
   "Both x86-64 targets get real call forms for all eight socket primitives."
   (let ((expected
-         '(((:lit "nelisp-socket-listen") . (nl_socket_listen_impl args out))
-           ((:lit "nelisp-socket-accept") . (nl_socket_accept_impl args out))
-           ((:lit "nelisp-socket-connect") . (nl_socket_connect_impl args out))
-           ((:lit "nelisp-socket-send") . (nl_socket_send_impl args out))
-           ((:lit "nelisp-socket-recv") . (nl_socket_recv_impl args out))
-           ((:lit "nelisp-socket-close") . (nl_socket_close_impl args out))
-           ((:lit "nelisp-socket-poll") . (nl_socket_poll_impl args out))
-           ((:lit "nelisp-socket-connect-error") .
-            (nl_socket_connect_error_impl args out)))))
+         '(((:lit "nelisp-socket-listen") :word . (nl_socket_listen_impl_w args 0))
+           ((:lit "nelisp-socket-accept") :word . (nl_socket_accept_impl_w args 0))
+           ((:lit "nelisp-socket-connect") :word . (nl_socket_connect_impl_w args 0))
+           ((:lit "nelisp-socket-send") :word . (nl_socket_send_impl_w args 0))
+           ((:lit "nelisp-socket-recv") :word . (nl_socket_recv_impl_w args 0))
+           ((:lit "nelisp-socket-close") :word . (nl_socket_close_impl_w args 0))
+           ((:lit "nelisp-socket-poll") :word . (nl_socket_poll_impl_w args 0))
+           ((:lit "nelisp-socket-connect-error") :word .
+            (nl_socket_connect_error_impl_w args 0)))))
     (dolist (target '(linux-x86_64 windows-x86_64))
       (let ((nelisp-standalone--target target))
         (should (equal (nelisp-standalone--socket-dispatch-arms)
@@ -2615,7 +2615,11 @@ real) native call\"."
         (should (equal names expected-names))
         (dolist (arm arms)
           (should (eq (cdr arm) shared))
-          (should-not (memq (car-safe (cdr arm)) real-impls)))))))
+          (should-not
+           (cl-intersection (flatten-tree (cdr arm))
+                            (append real-impls
+                                    (mapcar (lambda (s) (intern (format "%s_w" s)))
+                                            real-impls)))))))))
 
 (ert-deftest nelisp-standalone-target-tls-builtins-installed ()
   "The complete TLS family is visible only in the Win64 reader."
@@ -2721,11 +2725,15 @@ real) native call\"."
       (should (tree-member-p '(nl_thread_registry_clear) forms))
       (should (tree-member-p '(nl_thread_park_safepoint env) forms))
       (should (tree-member-p
-               '(defun nl_thread_join_impl (args env out)
-                  (nl_thread_join_finish
+               '(defun nl_thread_join_impl_w (args env _pad)
+                  (nl_thread_join_finish_w
                    (nl_thread_join_wait
                     (wf_argval args 0) (wf_argval args 1) env 0)
-                   out 0 0))
+                   0 0 0))
+               forms))
+      (should (tree-member-p
+               '(defun nl_thread_join_impl (args env out)
+                  (nl_abi_word_to_rc (nl_thread_join_impl_w args env 0) out))
                forms))
       (should (tree-member-p
                '(defun nl_thread_gc_inhibit_begin ()
@@ -2735,7 +2743,7 @@ real) native call\"."
       (should (tree-member-p '(atomic-fetch-add done 1) forms)))))
 
 (ert-deftest nelisp-standalone-target-thread-dispatch-linux-x86-64-real ()
-  "Linux x86_64 maps all five public names to real native units."
+  "Linux x86_64 maps all six public names to real WORD producers."
   (let* ((nelisp-standalone--target 'linux-x86_64)
          (arms (nelisp-standalone--thread-dispatch-arms)))
     (should
@@ -2743,10 +2751,11 @@ real) native call\"."
             '("nelisp-thread-shared-alloc" "nelisp-thread-atomic-add"
               "nelisp-thread-atomic-read" "nelisp-thread-spawn"
               "nelisp-thread-join" "nelisp-thread-gc-inhibit")))
-    (should (equal (mapcar (lambda (arm) (car-safe (cdr arm))) arms)
-                   '(nl_thread_shared_alloc_impl nl_thread_atomic_add_impl
-                     nl_thread_atomic_read_impl nl_thread_spawn_impl
-                     nl_thread_join_impl nl_thread_gc_inhibit_impl)))))
+    (should (cl-every (lambda (arm) (eq (cadr arm) :word)) arms))
+    (should (equal (mapcar (lambda (arm) (caddr arm)) arms)
+                   '(nl_thread_shared_alloc_impl_w nl_thread_atomic_add_impl_w
+                     nl_thread_atomic_read_impl_w nl_thread_spawn_impl_w
+                     nl_thread_join_impl_w nl_thread_gc_inhibit_impl_w)))))
 
 (ert-deftest nelisp-standalone-target-thread-non-linux-x86-64-unsupported ()
   "Every non-Linux-x86_64 target installs only unsupported-signal arms."
@@ -2769,7 +2778,11 @@ real) native call\"."
                        expected-names))
         (dolist (arm arms)
           (should (eq (cdr arm) shared))
-          (should-not (memq (car-safe (cdr arm)) real-impls)))))))
+          (should-not
+           (cl-intersection (flatten-tree (cdr arm))
+                            (append real-impls
+                                    (mapcar (lambda (s) (intern (format "%s_w" s)))
+                                            real-impls)))))))))
 
 (ert-deftest nelisp-standalone-target-gc-conserv-owner-rejects-pointer-words ()
   "`nl_gc_conserv_owner\' must not take a 64-bit pointer word for a block header.

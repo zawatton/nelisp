@@ -8220,9 +8220,11 @@ or 0 after stashing a signal.  An arm written for the word ABI is
 the free variable `out') runs against a fresh private box, which becomes
 the WORD itself (`nl_abi_rc_to_word').  This is the per-builtin adapter
 that lets arms convert one at a time."
-  (if (eq (car-safe impl) :word)
-      (cdr impl)
-    `(let ((out (alloc-bytes 32 8))) (nl_abi_rc_to_word ,impl out))))
+  (cond
+   ((eq (car-safe impl) :word) (cdr impl))
+   ;; A signal-only producer has no result to materialize or decode.
+   ((eq (car-safe impl) 'nl_applyfn_unsupported) `(nl_abi_fail ,impl 0))
+   (t `(let ((out (alloc-bytes 32 8))) (nl_abi_rc_to_word ,impl out)))))
 
 (defun nelisp-standalone--applyfn-build-dispatch (&optional table default-form word-abi)
   "Fold the (MATCH . IMPL) TABLE (default the full dispatch table) into a
@@ -19206,14 +19208,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_w (sx _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (if (= (nl_alloc_symbol_named (bf_str_ptr sx) (bf_str_len sx) sx out) 1)
-          0
-        (bf_signal_memory_full))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (let* ((w (nl_alloc_symbol_named_w (bf_str_ptr sx) (bf_str_len sx) sx 0)))
+    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w)))
     ;; Doc 163 Phase C: real soft-fail lookup backing elisp `intern-soft''s
     ;; string-argument case (lisp/nelisp-stdlib-misc.el).  `nl_intern_lookup'
     ;; (lisp/nelisp-cc-nlstr-direct-ops.el) probes the SAME open-addressing
@@ -19226,14 +19222,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; ...))) ...)' then never terminated (see Doc 163).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_soft_w (sx _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (if (= (nl_intern_lookup (bf_str_ptr sx) (bf_str_len sx) out) 0)
-          (wf_write_nil out)
-        0)
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (nl_intern_lookup_w (bf_str_ptr sx) (bf_str_len sx) 0))
     ;; Every name in the global intern table as a fresh list of symbols, for a
     ;; library `mapatoms' and obarray completion.  One native walk over the
     ;; 2^20 slots (len+1 @+0, buf @+8; 0 = empty), consing from the last slot
@@ -19405,20 +19394,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (bf_mksym_hex n buf start (- shift 1)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_make_symbol_w (sx _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (if (= (m5_string_tag_p (sexp-tag sx)) 0)
-          (bf_wrong_type_stringp sx)
-        (let* ((identity (nl_next_symbol_identity)))
-          (if (> identity 0)
-              (if (= (nl_alloc_uninterned_symbol_named
-                      (bf_str_ptr sx) (bf_str_len sx) identity sx out) 1)
-                  0
-                (bf_signal_memory_full))
-            (bf_signal_overflow_error))))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (if (= (m5_string_tag_p (sexp-tag sx)) 0)
+      (nl_abi_fail (bf_wrong_type_stringp sx) 0)
+    (let* ((identity (nl_next_symbol_identity)))
+      (if (> identity 0)
+          (let* ((w (nl_alloc_uninterned_symbol_named_w
+                     (bf_str_ptr sx) (bf_str_len sx) identity sx 0)))
+            (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))
+        (nl_abi_fail (bf_signal_overflow_error) 0)))))
     ;; Doc 22 A14 (test harness): `record' / `recordp'.  The reader left these
     ;; VOID so no tag-12 Record could be built (and thus the aref-on-record
     ;; SEGFAULT could not be reproduced on the bare reader).  `(record TYPE
@@ -19839,29 +19822,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; shape `setcar'/`setcdr' guard above.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_parent_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_word args 0)) (parent (wf_arg_ptr args 1)))
-        (if (= (nl_word_tag64 ct) 9)
-            (let* ((box (nl_word_payload ct)) (ptag (ptr-read-u64 parent 0)))
-              (if (= ptag 0)
-                  (seq (wf_dirty) (ptr-write-u64 (+ box 88) 0 0)
-                       (wf_write_nil out) 0)
-                (if (= ptag 9)
-                    (let* ((parent-box (ptr-read-u64 parent 8))
-                           (cycle (nl_ct_map_parent_cycle_p parent-box)))
-                      (if (= cycle 1)
-                          (bf_char_table_parent_cycle_error out)
-                        (if (= (nl_ct_parent_chain_contains parent-box box) 1)
-                            (bf_char_table_parent_cycle_error out)
-                          (seq (wf_dirty)
-                               (ptr-write-u64 (+ box 88) 0 parent-box)
-                               (wf_copy32 out parent) 0))))
-                  (bf_wrong_type_char_table_p parent))))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (let* ((ct (wf_arg_word args 0)) (parent (wf_arg_ptr args 1)))
+    (if (= (nl_word_tag64 ct) 9)
+        (let* ((box (nl_word_payload ct)) (ptag (ptr-read-u64 parent 0)))
+          (if (= ptag 0)
+              (seq (wf_dirty) (ptr-write-u64 (+ box 88) 0 0) 3)
+            (if (= ptag 9)
+                (let* ((parent-box (ptr-read-u64 parent 8)))
+                  (if (or (= (nl_ct_map_parent_cycle_p parent-box) 1)
+                          (= (nl_ct_parent_chain_contains parent-box box) 1))
+                      (nl_abi_fail (bf_char_table_parent_cycle_error (alloc-bytes 32 8)) 0)
+                    (seq (wf_dirty) (ptr-write-u64 (+ box 88) 0 parent-box) parent)))
+              (nl_abi_fail (bf_wrong_type_char_table_p parent) 0))))
+      (nl_abi_fail (bf_wrong_type_char_table_p ct) 0))))
     (defun bf_map_char_table_w (args env _pad)
       (let* ((argc (m5_list_len args 0)))
         (if (/= argc 2)
@@ -20358,21 +20331,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; [SPEC MODES] when modes follow, as `make-interpreted-closure' does.
     ;; Doc 215 builtin word ABI: bf_closure_iform_value_w returns the result WORD (0 = signal stashed).
     (defun bf_closure_iform_value_w (ifcdr _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
-
-      (if (= (ptr-read-u64 ifcdr 0) 7)
-          (if (= (nl_val_tag (nl_cons_cdr_word ifcdr)) 7)
-              (let* ((spec (nl_cons_car_word ifcdr))
-                     (modes (nl_cons_cdr_word ifcdr)))
-                (seq (vector-make 2 out)
-                     (vector-slot-set out 0 spec)
-                     (vector-slot-set out 1 modes)
-                     0))
-            (seq (wf_copy32 out (nl_cons_car_ptr ifcdr)) 0))
-        (seq (wf_write_nil out) 0))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+  (if (= (nl_val_tag ifcdr) 7)
+      (if (= (nl_val_tag (nl_cons_cdr_word ifcdr)) 7)
+          (let* ((object (nl_w_vector_make 2 0)))
+            (vector-slot-set object 0 (nl_cons_car_word ifcdr))
+            (vector-slot-set object 1 (nl_cons_cdr_word ifcdr)) object)
+        (nl_cons_car_word ifcdr))
+    3))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -20567,8 +20532,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (bf_ct_top_lookup_w seqp (nl_word_payload (wf_arg_word args 1)) 0)
               ;; `elt' takes a SEQUENCE: a non-sequence is `sequencep'.
               (if (if (= tg 8) 1 (if (= tg 10) 1 (if (= tg 12) 1 (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0)))))))
-                  (let* ((aout (alloc-bytes 32 8)))
-                    (let* ((rcw (bf_aref args aout))) (if (= rcw 0) (nl_val_store_word aout) (nl_abi_fail rcw 0))))
+                  (bf_aref_w args 0)
                 (nl_abi_fail (bf_wrong_type_sequencep seqp) 0)))))))
     (defun bf_elt_checked (args out)
       (nl_abi_word_to_rc (bf_elt_checked_w args 0) out))
@@ -25902,7 +25866,7 @@ extern arms in dynamic builds."
          (mut-str-finalize ms out)
          0))
 )))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+          (if (= abi_rc 0) out (nl_abi_fail abi_rc 0)))))
     ;; Doc 215 builtin word ABI: nl_bi_ptr_write_bytes_w returns the result WORD (0 = signal stashed).
     (defun nl_bi_ptr_write_bytes_w (args _pad)
       (let* ((dst (wf_argval args 0))
@@ -36530,7 +36494,7 @@ signaller receives their negative form; and one reader-startup
       ;; sequence.  When FAMILY is 10 (host contains ':'), `socket(2)' is
       ;; called with AF_INET6 and `nl_socket_build_sockaddr6' builds the
       ;; 28-byte struct instead.
-      '(defun nl_socket_listen_impl (args out)
+      '(defun nl_socket_listen_impl_w (args _pad)
          (let* ((host_sx (wf_arg_ptr args 0))
                 (host_ptr (nl_bi_strptr host_sx))
                 (host_len (nl_bi_strlen host_sx))
@@ -36540,7 +36504,7 @@ signaller receives their negative form; and one reader-startup
                 (socktype (if (= nowait 1) 2049 1))
                 (fd (syscall-direct 41 family socktype 0 0 0 0)))
            (if (< fd 0)
-               (nl_socket_signal_error fd)
+               (nl_abi_rc_nil (nl_socket_signal_error fd) 0)
              (let* ((optval (alloc-bytes 4 4))
                     (addr (if (= family 10) (alloc-bytes 28 1) (alloc-bytes 16 1))))
                (seq
@@ -36552,16 +36516,17 @@ signaller receives their negative form; and one reader-startup
                        (alen (if (= family 10) 28 16)))
                   (if (< abuild 0)
                       (seq (nl_os_close_handle fd)
-                           (nl_socket_signal_error (- 0 9999)))
+                           (nl_abi_rc_nil (nl_socket_signal_error (- 0 9999)) 0))
                     (let* ((brc (syscall-direct 49 fd addr alen 0 0 0)))
                       (if (< brc 0)
                           (seq (nl_os_close_handle fd)
-                               (nl_socket_signal_error brc))
+                               (nl_abi_rc_nil (nl_socket_signal_error brc) 0))
                         (let* ((lrc (syscall-direct 50 fd 16 0 0 0 0)))
                           (if (< lrc 0)
                               (seq (nl_os_close_handle fd)
-                                   (nl_socket_signal_error lrc))
-                            (seq (wf_write_int out fd) 0))))))))))))
+                                   (nl_abi_rc_nil (nl_socket_signal_error lrc) 0))
+                            (seq (wf_write_int_w 0 fd)))))))))))))
+      '(defun nl_socket_listen_impl (args out) (nl_abi_word_to_rc (nl_socket_listen_impl_w args 0) out))
       ;; nelisp-socket-accept LISTEN-FD &optional NOWAIT -> conn-fd.
       ;; accept4(2), no peer address requested (NULL/NULL).
       ;;
@@ -36581,15 +36546,16 @@ signaller receives their negative form; and one reader-startup
       ;; -1 (an ordinary int, distinguishable from any real fd, always >=
       ;; 0) instead of raising `nelisp-socket-error'.  Every OTHER negative
       ;; return still raises exactly as Phase 1 already does.
-      '(defun nl_socket_accept_impl (args out)
+      '(defun nl_socket_accept_impl_w (args _pad)
          (let* ((nowait (nl_socket_bool_arg args 1))
                 (flags (if (= nowait 1) 2048 0))
                 (cfd (syscall-direct 288 (wf_argval args 0) 0 0 flags 0 0)))
            (if (< cfd 0)
                (if (if (= nowait 1) (= cfd (- 0 11)) 0)
-                   (seq (wf_write_int out (- 0 1)) 0)
-                 (nl_socket_signal_error cfd))
-             (seq (wf_write_int out cfd) 0))))
+                   (seq (wf_write_int_w 0 (- 0 1)))
+                 (nl_abi_rc_nil (nl_socket_signal_error cfd) 0))
+             (seq (wf_write_int_w 0 cfd)))))
+      '(defun nl_socket_accept_impl (args out) (nl_abi_word_to_rc (nl_socket_accept_impl_w args 0) out))
       ;; nelisp-socket-connect HOST PORT &optional NOWAIT -> fd.
       ;; socket(2) -> connect(2).
       ;;
@@ -36615,7 +36581,7 @@ signaller receives their negative form; and one reader-startup
       ;; unaffected.  EINPROGRESS (errno -115) handling is family-agnostic
       ;; (a nonblocking `connect(2)' on an AF_INET6 socket returns the
       ;; identical errno), so that check is untouched.
-      '(defun nl_socket_connect_impl (args out)
+      '(defun nl_socket_connect_impl_w (args _pad)
          (let* ((host_sx (wf_arg_ptr args 0))
                 (host_ptr (nl_bi_strptr host_sx))
                 (host_len (nl_bi_strlen host_sx))
@@ -36625,7 +36591,7 @@ signaller receives their negative form; and one reader-startup
                 (socktype (if (= nowait 1) 2049 1))
                 (fd (syscall-direct 41 family socktype 0 0 0 0)))
            (if (< fd 0)
-               (nl_socket_signal_error fd)
+               (nl_abi_rc_nil (nl_socket_signal_error fd) 0)
              (let* ((addr (if (= family 10) (alloc-bytes 28 1) (alloc-bytes 16 1)))
                     (abuild (if (= family 10)
                                 (nl_socket_build_sockaddr6 host_ptr host_len port addr)
@@ -36633,14 +36599,15 @@ signaller receives their negative form; and one reader-startup
                     (alen (if (= family 10) 28 16)))
                (if (< abuild 0)
                    (seq (nl_os_close_handle fd)
-                        (nl_socket_signal_error (- 0 9999)))
+                        (nl_abi_rc_nil (nl_socket_signal_error (- 0 9999)) 0))
                  (let* ((crc (syscall-direct 42 fd addr alen 0 0 0)))
                    (if (< crc 0)
                        (if (if (= nowait 1) (= crc (- 0 115)) 0)
-                           (seq (wf_write_int out fd) 0)
+                           (seq (wf_write_int_w 0 fd))
                          (seq (nl_os_close_handle fd)
-                              (nl_socket_signal_error crc)))
-                     (seq (wf_write_int out fd) 0))))))))
+                              (nl_abi_rc_nil (nl_socket_signal_error crc) 0)))
+                     (seq (wf_write_int_w 0 fd)))))))))
+      '(defun nl_socket_connect_impl (args out) (nl_abi_word_to_rc (nl_socket_connect_impl_w args 0) out))
       ;; nelisp-socket-send FD STRING -> bytes-sent (integer).  Reuses
       ;; `nl_os_write_file_handle' (write(2), syscall 1 on Linux x86_64) --
       ;; a connected socket fd is just an fd.  STRING's raw bytes go out
@@ -36648,46 +36615,48 @@ signaller receives their negative form; and one reader-startup
       ;; 161: no re-encoding pass, so UTF-8 multibyte content -- Japanese
       ;; text included -- round-trips whatever bytes the Lisp string
       ;; actually holds).
-      '(defun nl_socket_send_impl (args out)
+      '(defun nl_socket_send_impl_w (args _pad)
          (let* ((fd (wf_argval args 0))
                 (str_sx (wf_arg_ptr args 1))
                 (n (nl_os_write_file_handle
                     fd (nl_bi_strptr str_sx) (nl_bi_strlen str_sx))))
            (if (< n 0)
-               (nl_socket_signal_error n)
-             (seq (wf_write_int out n) 0))))
+               (nl_abi_rc_nil (nl_socket_signal_error n) 0)
+             (seq (wf_write_int_w 0 n)))))
+      '(defun nl_socket_send_impl (args out) (nl_abi_word_to_rc (nl_socket_send_impl_w args 0) out))
       ;; nelisp-socket-recv FD MAX-BYTES -> string.  Reuses
       ;; `nl_os_read_file_handle' (read(2), syscall 0).  `nl_alloc_str'
       ;; wraps the raw received bytes directly, same byte-clean contract as
       ;; send -- no decode/re-encode round trip, so an invalid-UTF-8 or
       ;; multibyte payload comes back exactly as the peer sent it.
-      '(defun nl_socket_recv_impl (args out)
+      '(defun nl_socket_recv_impl_w (args _pad)
          (let* ((fd (wf_argval args 0))
                 (maxbytes (wf_argval args 1))
                 (buf (alloc-bytes maxbytes 1))
                 (n (nl_os_read_file_handle fd buf maxbytes)))
            (if (< n 0)
-               (nl_socket_signal_error n)
+               (nl_abi_rc_nil (nl_socket_signal_error n) 0)
              ;; Doc 200: what comes off a socket is bytes, so say so.  This
              ;; wrapped the bytes in a tag-5 Str before there was any way to
              ;; express "these are bytes", and the comment above carried the
              ;; byte-clean intent that the tag could not.  A tag-14 unibyte
              ;; string states it, and matches what `insert-file-contents'
              ;; already produces for the same reason.
-             (seq (nl_alloc_unibyte_str buf n out) 0))))
+             (seq (nl_alloc_unibyte_str_w buf n 0)))))
+      '(defun nl_socket_recv_impl (args out) (nl_abi_word_to_rc (nl_socket_recv_impl_w args 0) out))
       ;; nelisp-socket-close FD -> nil.  shutdown(2) SHUT_RDWR=2 is
       ;; best-effort (ENOTCONN on an already-idle socket is harmless and
       ;; ignored, matching common practice) followed by `nl_os_close_handle'
       ;; (close(2)).  Never signals -- closing an already-closed/invalid fd
       ;; is not treated as an error here, matching close(2)'s own common
       ;; usage (idempotent-ish cleanup).
-      '(defun nl_socket_close_impl (args out)
+      '(defun nl_socket_close_impl_w (args _pad)
          (let* ((fd (wf_argval args 0)))
            (seq
             (syscall-direct 48 fd 2 0 0 0 0)
             (nl_os_close_handle fd)
-            (wf_write_nil out)
-            0)))
+            3)))
+      '(defun nl_socket_close_impl (args out) (nl_abi_word_to_rc (nl_socket_close_impl_w args 0) out))
       ;; nelisp-socket-poll FD WANT-WRITE TIMEOUT -> t/nil.  P3 (doc 194
       ;; S3.3 item 2): the SAME poll(2) shape `nl_os_process_poll_readable'
       ;; (this file's per-target OS-helper section) already uses,
@@ -36727,7 +36696,7 @@ signaller receives their negative form; and one reader-startup
       ;; `(if (nelisp-socket-poll ...) ...)' call site true even when not
       ;; ready -- caught before this ever reached the poll loop (P4), not
       ;; asserted.
-      '(defun nl_socket_poll_impl (args out)
+      '(defun nl_socket_poll_impl_w (args _pad)
          (let* ((fd (wf_argval args 0))
                 (want_write (nl_socket_bool_arg args 1))
                 (timeout (wf_argval args 2))
@@ -36740,8 +36709,9 @@ signaller receives their negative form; and one reader-startup
             (let* ((rc (syscall-direct 7 pfd 1 timeout 0 0 0))
                    (revents (/ (ptr-read-u32 pfd 4) 65536)))
               (if (if (> rc 0) (if (= (logand revents mask) 0) 0 1) 0)
-                  (wf_write_t out)
-                (wf_write_nil out))))))
+                  7
+                3)))))
+      '(defun nl_socket_poll_impl (args out) (nl_abi_word_to_rc (nl_socket_poll_impl_w args 0) out))
       ;; nelisp-socket-connect-error FD -> integer (0 = connected, else the
       ;; real errno).  P3 (doc 194 S3.3 item 3): getsockopt(2), Linux
       ;; x86_64 syscall number 55 -- confirmed against the standard,
@@ -36762,7 +36732,7 @@ signaller receives their negative form; and one reader-startup
       ;; getsockopt(2) failure itself (bad fd, etc.) still signals
       ;; `nelisp-socket-error', matching every other syscall in this
       ;; family.
-      '(defun nl_socket_connect_error_impl (args out)
+      '(defun nl_socket_connect_error_impl_w (args _pad)
          (let* ((fd (wf_argval args 0))
                 (optval (alloc-bytes 4 4))
                 (optlen (alloc-bytes 4 4)))
@@ -36770,8 +36740,9 @@ signaller receives their negative form; and one reader-startup
             (ptr-write-u32 optlen 0 4)
             (let* ((rc (syscall-direct 55 fd 1 4 optval optlen 0)))
               (if (< rc 0)
-                  (nl_socket_signal_error rc)
-                (seq (wf_write_int out (ptr-read-u32 optval 0)) 0))))))))
+                  (nl_abi_rc_nil (nl_socket_signal_error rc) 0)
+                (seq (wf_write_int_w 0 (ptr-read-u32 optval 0))))))))
+      '(defun nl_socket_connect_error_impl (args out) (nl_abi_word_to_rc (nl_socket_connect_error_impl_w args 0) out))))
     ('windows-x86_64
      (list
       ;; Winsock is initialized once from the reader driver's startup path,
@@ -36825,7 +36796,7 @@ signaller receives their negative form; and one reader-startup
       ;; below additionally applies its own NOWAIT argument to a successfully
       ;; returned socket, preserving the existing returned-socket contract
       ;; when a blocking listener already has a connection queued.
-      '(defun nl_socket_listen_impl (args out)
+      '(defun nl_socket_listen_impl_w (args _pad)
          (let* ((host_sx (wf_arg_ptr args 0))
                 (host_ptr (nl_bi_strptr host_sx))
                 (host_len (nl_bi_strlen host_sx))
@@ -36834,7 +36805,7 @@ signaller receives their negative form; and one reader-startup
                 (family (if (= (nl_ipv6_has_colon_walk host_ptr 0 host_len) 1) 23 2))
                 (sock (extern-call socket family 1 0)))
            (if (= sock (- 0 1))
-               (nl_socket_signal_error (nl_socket_windows_error))
+               (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
              (let* ((optval (alloc-bytes 4 4))
                     (addr (if (= family 23) (alloc-bytes 28 1) (alloc-bytes 16 1)))
                     (abuild (if (= family 23)
@@ -36842,7 +36813,7 @@ signaller receives their negative form; and one reader-startup
                               (nl_socket_build_sockaddr host_ptr host_len port addr)))
                     (alen (if (= family 23) 28 16)))
                (if (< abuild 0)
-                   (nl_socket_windows_close_error sock (- 0 9999))
+                   (nl_abi_rc_nil (nl_socket_windows_close_error sock (- 0 9999)) 0)
                  (seq
                   (ptr-write-u32 optval 0 1)
                   ;; Winsock constants, not the numerically different Linux
@@ -36854,17 +36825,18 @@ signaller receives their negative form; and one reader-startup
                                      (nl_socket_windows_set_nonblock sock 1)
                                    0)))
                     (if (< nb_err 0)
-                        (nl_socket_windows_close_error sock nb_err)
+                        (nl_abi_rc_nil (nl_socket_windows_close_error sock nb_err) 0)
                       (let* ((brc (extern-call bind sock addr alen)))
                         (if (= (nl_socket_windows_socket_error_p brc) 1)
-                            (nl_socket_windows_close_error
-                             sock (nl_socket_windows_error))
+                            (nl_abi_rc_nil (nl_socket_windows_close_error
+                             sock (nl_socket_windows_error)) 0)
                           (let* ((lrc (extern-call listen sock 16)))
                             (if (= (nl_socket_windows_socket_error_p lrc) 1)
-                                (nl_socket_windows_close_error
-                                 sock (nl_socket_windows_error))
-                              (seq (wf_write_int out sock) 0)))))))))))))
-      '(defun nl_socket_accept_impl (args out)
+                                (nl_abi_rc_nil (nl_socket_windows_close_error
+                                 sock (nl_socket_windows_error)) 0)
+                              (seq (wf_write_int_w 0 sock))))))))))))))
+      '(defun nl_socket_listen_impl (args out) (nl_abi_word_to_rc (nl_socket_listen_impl_w args 0) out))
+      '(defun nl_socket_accept_impl_w (args _pad)
          (let* ((nowait (nl_socket_bool_arg args 1))
                 (sock (extern-call accept (wf_argval args 0) 0 0)))
            (if (= sock (- 0 1))
@@ -36874,19 +36846,20 @@ signaller receives their negative form; and one reader-startup
                  ;; in-flight check deliberately use the raw WSA code; every
                  ;; value exposed or signalled is mapped afterwards.
                  (if (if (= nowait 1) (= wsa_errno 10035) 0)
-                     (seq (wf_write_int out (- 0 1)) 0)
-                   (nl_socket_signal_error
-                    (- 0 (nl_socket_windows_map_errno wsa_errno)))))
+                     (seq (wf_write_int_w 0 (- 0 1)))
+                   (nl_abi_rc_nil (nl_socket_signal_error
+                    (- 0 (nl_socket_windows_map_errno wsa_errno))) 0)))
              (let* ((nb_err (if (= nowait 1)
                                 (nl_socket_windows_set_nonblock sock 1)
                               0)))
                (if (< nb_err 0)
-                   (nl_socket_windows_close_error sock nb_err)
-                 (seq (wf_write_int out sock) 0))))))
+                   (nl_abi_rc_nil (nl_socket_windows_close_error sock nb_err) 0)
+                 (seq (wf_write_int_w 0 sock)))))))
+      '(defun nl_socket_accept_impl (args out) (nl_abi_word_to_rc (nl_socket_accept_impl_w args 0) out))
       ;; The shared sockaddr_in6 builder writes Linux AF_INET6=10.  Its layout
       ;; is otherwise byte-identical, so overwrite only the native-endian
       ;; family byte with Winsock AF_INET6=23 after a successful build.
-      '(defun nl_socket_connect_impl (args out)
+      '(defun nl_socket_connect_impl_w (args _pad)
          (let* ((host_sx (wf_arg_ptr args 0))
                 (host_ptr (nl_bi_strptr host_sx))
                 (host_len (nl_bi_strlen host_sx))
@@ -36895,21 +36868,21 @@ signaller receives their negative form; and one reader-startup
                 (family (if (= (nl_ipv6_has_colon_walk host_ptr 0 host_len) 1) 23 2))
                 (sock (extern-call socket family 1 0)))
            (if (= sock (- 0 1))
-               (nl_socket_signal_error (nl_socket_windows_error))
+               (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
              (let* ((addr (if (= family 23) (alloc-bytes 28 1) (alloc-bytes 16 1)))
                     (abuild (if (= family 23)
                                 (nl_socket_build_sockaddr6 host_ptr host_len port addr)
                               (nl_socket_build_sockaddr host_ptr host_len port addr)))
                     (alen (if (= family 23) 28 16)))
                (if (< abuild 0)
-                   (nl_socket_windows_close_error sock (- 0 9999))
+                   (nl_abi_rc_nil (nl_socket_windows_close_error sock (- 0 9999)) 0)
                  (seq
                   (if (= family 23) (ptr-write-u8 addr 0 23) 0)
                   (let* ((nb_err (if (= nowait 1)
                                      (nl_socket_windows_set_nonblock sock 1)
                                    0)))
                     (if (< nb_err 0)
-                        (nl_socket_windows_close_error sock nb_err)
+                        (nl_abi_rc_nil (nl_socket_windows_close_error sock nb_err) 0)
                       (let* ((crc (extern-call connect sock addr alen)))
                         (if (= (nl_socket_windows_socket_error_p crc) 1)
                             (let* ((wsa_errno (nl_socket_windows_raw_error)))
@@ -36918,27 +36891,30 @@ signaller receives their negative form; and one reader-startup
                               ;; Compare raw here, exactly as accept does, then
                               ;; map only a real error crossing the boundary.
                               (if (if (= nowait 1) (= wsa_errno 10035) 0)
-                                  (seq (wf_write_int out sock) 0)
-                                (nl_socket_windows_close_error
+                                  (seq (wf_write_int_w 0 sock))
+                                (nl_abi_rc_nil (nl_socket_windows_close_error
                                  sock (- 0 (nl_socket_windows_map_errno
-                                             wsa_errno)))))
-                          (seq (wf_write_int out sock) 0)))))))))))
-      '(defun nl_socket_send_impl (args out)
+                                             wsa_errno))) 0)))
+                          (seq (wf_write_int_w 0 sock))))))))))))
+      '(defun nl_socket_connect_impl (args out) (nl_abi_word_to_rc (nl_socket_connect_impl_w args 0) out))
+      '(defun nl_socket_send_impl_w (args _pad)
          (let* ((sock (wf_argval args 0))
                 (str_sx (wf_arg_ptr args 1))
                 (n (extern-call send sock (nl_bi_strptr str_sx)
                                 (nl_bi_strlen str_sx) 0)))
            (if (= (nl_socket_windows_socket_error_p n) 1)
-               (nl_socket_signal_error (nl_socket_windows_error))
-             (seq (wf_write_int out n) 0))))
-      '(defun nl_socket_recv_impl (args out)
+               (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
+             (seq (wf_write_int_w 0 n)))))
+      '(defun nl_socket_send_impl (args out) (nl_abi_word_to_rc (nl_socket_send_impl_w args 0) out))
+      '(defun nl_socket_recv_impl_w (args _pad)
          (let* ((sock (wf_argval args 0))
                 (maxbytes (wf_argval args 1))
                 (buf (alloc-bytes maxbytes 1))
                 (n (extern-call recv sock buf maxbytes 0)))
            (if (= (nl_socket_windows_socket_error_p n) 1)
-               (nl_socket_signal_error (nl_socket_windows_error))
-             (seq (nl_alloc_unibyte_str buf n out) 0))))
+               (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
+             (seq (nl_alloc_unibyte_str_w buf n 0)))))
+      '(defun nl_socket_recv_impl (args out) (nl_abi_word_to_rc (nl_socket_recv_impl_w args 0) out))
       ;; Measured on this Windows 11 host before choosing the implementation:
       ;; a refused nonblocking loopback connect made WSAPoll return 1 with
       ;; revents=#x13 (POLLWRNORM|POLLERR|POLLHUP), while select returned the
@@ -36948,7 +36924,7 @@ signaller receives their negative form; and one reader-startup
       ;; Win64 WSAPOLLFD is 16 bytes (8-byte SOCKET, events at 8, revents at
       ;; 10).  Its event numbers also differ: POLLIN=#x300, POLLOUT=#x10,
       ;; POLLERR|POLLHUP|POLLNVAL=#x7.
-      '(defun nl_socket_poll_impl (args out)
+      '(defun nl_socket_poll_impl_w (args _pad)
          (let* ((sock (wf_argval args 0))
                 (want_write (nl_socket_bool_arg args 1))
                 (timeout (wf_argval args 2))
@@ -36961,13 +36937,14 @@ signaller receives their negative form; and one reader-startup
             (let* ((rc (extern-call WSAPoll pfd 1 timeout))
                    (revents (/ (ptr-read-u32 pfd 8) 65536)))
               (if (= (nl_socket_windows_socket_error_p rc) 1)
-                  (nl_socket_signal_error (nl_socket_windows_error))
+                  (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
                 (if (if (> rc 0)
                         (if (= (logand revents mask) 0) 0 1)
                       0)
-                    (wf_write_t out)
-                  (wf_write_nil out)))))))
-      '(defun nl_socket_connect_error_impl (args out)
+                    7
+                  3))))))
+      '(defun nl_socket_poll_impl (args out) (nl_abi_word_to_rc (nl_socket_poll_impl_w args 0) out))
+      '(defun nl_socket_connect_error_impl_w (args _pad)
          (let* ((sock (wf_argval args 0))
                 (optval (alloc-bytes 4 4))
                 (optlen (alloc-bytes 4 4)))
@@ -36977,18 +36954,17 @@ signaller receives their negative form; and one reader-startup
             ;; Linux arm's numeric 1/4 pair queries different options.
             (let* ((rc (extern-call getsockopt sock 65535 4103 optval optlen)))
               (if (= (nl_socket_windows_socket_error_p rc) 1)
-                  (nl_socket_signal_error (nl_socket_windows_error))
+                  (nl_abi_rc_nil (nl_socket_signal_error (nl_socket_windows_error)) 0)
                 (seq
-                 (wf_write_int out
-                               (nl_socket_windows_map_errno
-                                (ptr-read-u32 optval 0)))
-                 0))))))
+                 (wf_write_int_w 0 (nl_socket_windows_map_errno
+                                (ptr-read-u32 optval 0)))))))))
+      '(defun nl_socket_connect_error_impl (args out) (nl_abi_word_to_rc (nl_socket_connect_error_impl_w args 0) out))
       ;; Preserve the Linux primitive's cleanup contract: close is best-effort
       ;; and always returns nil.  A SOCKET must never reach CloseHandle/close.
-      '(defun nl_socket_close_impl (args out)
+      '(defun nl_socket_close_impl_w (args _pad)
          (seq (extern-call closesocket (wf_argval args 0))
-              (wf_write_nil out)
-              0))))
+              3))
+      '(defun nl_socket_close_impl (args out) (nl_abi_word_to_rc (nl_socket_close_impl_w args 0) out))))
     (_ nil)))
 
 (defun nelisp-standalone--socket-dispatch-arms ()
@@ -37014,7 +36990,7 @@ instead of referencing an implementation that was never emitted."
      (lambda (entry)
        (cons (list :lit (car entry))
              (if (memq (nelisp-standalone-arena-rewrite-target) (cddr entry))
-                 (list (cadr entry) 'args 'out)
+                 (cons :word (list (intern (format "%s_w" (cadr entry))) 'args 0))
                sig)))
      entries)))
 
@@ -37789,43 +37765,40 @@ gets no native definitions and is gated by
      ;; clone returns, onto each task's now-distinct current stack, before this
      ;; helper establishes a clean frame.  The parent ACK wait keeps the old
      ;; spawn frame alive until the child has captured LAUNCH.
-     '(defun nl_thread_clone_dispatch (tid launch out)
+     '(defun nl_thread_clone_dispatch_w (tid launch _pad)
         (if (= tid 0)
-            (nl_thread_worker_start launch)
+            (nl_abi_rc_nil (nl_thread_worker_start launch) 0)
           (if (< tid 0)
-              (seq (wf_write_int out tid) 0)
+              (seq (wf_write_int_w 0 tid))
             (seq
              (nl_thread_spawn_wait_ack launch)
-             (wf_write_int out tid)
-             0))))
+             (wf_write_int_w 0 tid)))))
+      '(defun nl_thread_clone_dispatch (tid launch out) (nl_abi_word_to_rc (nl_thread_clone_dispatch_w tid launch 0) out))
      ;; nelisp-thread-shared-alloc SIZE -> raw mmap address.  MAP_PRIVATE is
      ;; process-private, while CLONE_VM makes the mapping visible to every
      ;; worker task in this process, exactly as selfhost-mt-test.sh proves.
-     '(defun nl_thread_shared_alloc_impl (args out)
+     '(defun nl_thread_shared_alloc_impl_w (args _pad)
         (seq
-         (wf_write_int
-          out
-          (syscall-direct 9 0 (wf_argval args 0) 3 34 (- 0 1) 0))
-         0))
+         (wf_write_int_w 0 (syscall-direct 9 0 (wf_argval args 0) 3 34 (- 0 1) 0))))
+      '(defun nl_thread_shared_alloc_impl (args out) (nl_abi_word_to_rc (nl_thread_shared_alloc_impl_w args 0) out))
      ;; SeqCst fetch-add; return the pre-add value.
-     '(defun nl_thread_atomic_add_impl (args out)
+     '(defun nl_thread_atomic_add_impl_w (args _pad)
         (seq
-         (wf_write_int out
-                       (atomic-fetch-add (wf_argval args 0)
-                                         (wf_argval args 1)))
-         0))
+         (wf_write_int_w 0 (atomic-fetch-add (wf_argval args 0)
+                                         (wf_argval args 1)))))
+      '(defun nl_thread_atomic_add_impl (args out) (nl_abi_word_to_rc (nl_thread_atomic_add_impl_w args 0) out))
      ;; Join polling is intentionally a plain aligned u64 load on x86_64.
-     '(defun nl_thread_atomic_read_impl (args out)
+     '(defun nl_thread_atomic_read_impl_w (args _pad)
         (seq
-         (wf_write_int out (ptr-read-u64 (wf_argval args 0) 0))
-         0))
+         (wf_write_int_w 0 (ptr-read-u64 (wf_argval args 0) 0))))
+      '(defun nl_thread_atomic_read_impl (args out) (nl_abi_word_to_rc (nl_thread_atomic_read_impl_w args 0) out))
      ;; WORKER-ID STACK-TOP A0 A1 A2.  STACK-TOP=0 asks this primitive to
      ;; mmap its own stack (64 KiB for Tier 2, 64 MiB for Tier 3a); a nonzero top
      ;; lets a low-level caller supply
      ;; one.  The top 64 bytes are reserved for the raw launch record.  clone
      ;; returns the child tid to the parent; the child never returns through
      ;; this function, because `nl_thread_worker_start' exits task 60.
-     '(defun nl_thread_spawn_impl (args env out)
+     '(defun nl_thread_spawn_impl_w (args env _pad)
         (let* ((worker_id (wf_argval args 0))
                (requested_top (wf_argval args 1))
                (a0 (if (= worker_id 2)
@@ -37858,17 +37831,16 @@ gets no native definitions and is gated by
                  (ptr-write-u64 launch 24 a2)
                  (ptr-write-u64 launch 32 0)
                  (ptr-write-u64 launch 40 worker_env)
-                 (nl_thread_clone_dispatch
+                 (nl_thread_clone_dispatch_w
                   (syscall-direct 56 1792 launch 0 0 0 0)
-                  launch out)))
+                  launch 0)))
             (seq
-             (wf_write_int out
-                           (if (= worker_id 2)
+             (wf_write_int_w 0 (if (= worker_id 2)
                                (if (< worker_env 4096)
                                    (if (< worker_env 0) worker_env (- 0 12))
                                  (if (< stack_base 0) stack_base (- 0 22)))
-                             (if (< stack_base 0) stack_base (- 0 22))))
-             0))))
+                             (if (< stack_base 0) stack_base (- 0 22))))))))
+      '(defun nl_thread_spawn_impl (args env out) (nl_abi_word_to_rc (nl_thread_spawn_impl_w args env 0) out))
      ;; Spin join: once the SeqCst done counter reaches EXPECTED, result-slot
      ;; reads by the parent are routed after completion (Doc 199 section 6.2).
      ;; Tier 3b also makes the spin a worker safepoint: the per-iteration call
@@ -37883,13 +37855,15 @@ gets no native definitions and is gated by
                  (setq status 1)
                (nl_thread_park_safepoint env)))
            (ptr-read-u64 counter 0))))
-     '(defun nl_thread_join_finish (value out _c _d)
-        (seq (wf_write_int out value) 0))
-     '(defun nl_thread_join_impl (args env out)
-        (nl_thread_join_finish
+     '(defun nl_thread_join_finish_w (value _pad _c _d)
+        (seq (wf_write_int_w 0 value)))
+      '(defun nl_thread_join_finish (value out _c _d) (nl_abi_word_to_rc (nl_thread_join_finish_w value 0 _c _d) out))
+     '(defun nl_thread_join_impl_w (args env _pad)
+        (nl_thread_join_finish_w
          (nl_thread_join_wait
           (wf_argval args 0) (wf_argval args 1) env 0)
-         out 0 0))
+         0 0 0))
+      '(defun nl_thread_join_impl (args env out) (nl_abi_word_to_rc (nl_thread_join_impl_w args env 0) out))
      ;; Begin/end the bounded parallel section (the public primitive retains
      ;; its historical `gc-inhibit' name).  BEGIN (nonzero arg):
      ;; require 8 MiB free in the current chunk, snapshot that descriptor,
@@ -37898,7 +37872,7 @@ gets no native definitions and is gated by
      ;; gate, restore the prior free-list flag, and return 1 only if the current
      ;; chunk is still the snapshotted chunk (no racy growth path was reached).
      '(defun nl_thread_gc_inhibit_begin () (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1))
-     '(defun nl_thread_gc_inhibit_impl (args out)
+     '(defun nl_thread_gc_inhibit_impl_w (args _pad)
         (let* ((requested (wf_argval args 0)))
           (if (= requested 0)
               (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
@@ -37921,18 +37895,17 @@ gets no native definitions and is gated by
                      ;; registry reset; entries need not be individually
                      ;; scrubbed because the count is the publication bound.
                      (nl_thread_registry_clear)
-                     (wf_write_int out same)
-                     0))
-                (seq (wf_write_int out 0) 0))
+                     (wf_write_int_w 0 same)))
+                (seq (wf_write_int_w 0 0)))
             (if (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
-                (seq (wf_write_int out (- 0 16)) 0)
+                (seq (wf_write_int_w 0 (- 0 16)))
               (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 1)
-                  (seq (wf_write_int out (- 0 16)) 0)
+                  (seq (wf_write_int_w 0 (- 0 16)))
                 (let* ((chunk (ptr-read-u64 268436168 0))
                        (cursor (ptr-read-u64 (nl_chunk_cursor_addr chunk) 0))
                        (size (ptr-read-u64 (+ chunk 8) 0)))
                   (if (> (+ cursor 8388608) size)
-                      (seq (wf_write_int out (- 0 12)) 0)
+                      (seq (wf_write_int_w 0 (- 0 12)))
                     (seq
                      ;; No worker exists yet.  Start the bypass epoch empty.
                      (nl_aref_cache_clear)
@@ -37945,8 +37918,8 @@ gets no native definitions and is gated by
                       (data-addr nl_thread_parallel_ctx) 16 1)
                      (ptr-write-u64 268435624 0 1)
                      (nl_thread_gc_inhibit_begin)
-                     (wf_write_int out 1)
-                     0)))))))))))
+                     (wf_write_int_w 0 1)))))))))
+      '(defun nl_thread_gc_inhibit_impl (args out) (nl_abi_word_to_rc (nl_thread_gc_inhibit_impl_w args 0) out)))))
 
 (defun nelisp-standalone--thread-dispatch-arms ()
   "Return the Doc 199 `nelisp-thread-*' apply-function dispatch arms.
@@ -37961,18 +37934,18 @@ target the same installed names signal catchable
                  "nelisp-thread-gc-inhibit")))
     (if (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
         (list
-         `((:lit "nelisp-thread-shared-alloc") .
-           (nl_thread_shared_alloc_impl args out))
-         `((:lit "nelisp-thread-atomic-add") .
-           (nl_thread_atomic_add_impl args out))
-         `((:lit "nelisp-thread-atomic-read") .
-           (nl_thread_atomic_read_impl args out))
-         `((:lit "nelisp-thread-spawn") .
-           (nl_thread_spawn_impl args env out))
-         `((:lit "nelisp-thread-join") .
-           (nl_thread_join_impl args env out))
-         `((:lit "nelisp-thread-gc-inhibit") .
-           (nl_thread_gc_inhibit_impl args out)))
+         `((:lit "nelisp-thread-shared-alloc") :word .
+           (nl_thread_shared_alloc_impl_w args 0))
+         `((:lit "nelisp-thread-atomic-add") :word .
+           (nl_thread_atomic_add_impl_w args 0))
+         `((:lit "nelisp-thread-atomic-read") :word .
+           (nl_thread_atomic_read_impl_w args 0))
+         `((:lit "nelisp-thread-spawn") :word .
+           (nl_thread_spawn_impl_w args env 0))
+         `((:lit "nelisp-thread-join") :word .
+           (nl_thread_join_impl_w args env 0))
+         `((:lit "nelisp-thread-gc-inhibit") :word .
+           (nl_thread_gc_inhibit_impl_w args 0)))
       (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
         (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
 

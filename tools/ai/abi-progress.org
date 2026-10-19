@@ -72,6 +72,11 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # regex 95,741,355,967.25 -> 93,000,284,273.25 (-2.863%, GC 17/16), files
 # 39,497,825,152.75 -> 38,128,912,437.75 (-3.466%, GC 8/8); identical output.
 # Source-context decoding remains explicit; no claim of S6.2 completion.
+# Round 3 builtin/OS family: census 1577; S6.2 122 = 84 direct + 28 reverse
+# + 10 inline. G3 arm/defun checks now pass. Four-layout means: boot
+# 29,062,019,454.25 -> 28,181,086,827 (-3.031%, GC 6/6), regex
+# 95,741,355,967.25 -> 93,007,337,321 (-2.856%, GC 17/16), files
+# 39,497,825,152.75 -> 38,127,321,573 (-3.470%, GC 8/8); identical outputs.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).

@@ -237,6 +237,11 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (nl_alloc_unibyte_str_pos
        bytes-ptr (if (< len 0) 0 len) result-slot))
 
+    ;; The freshly written string header is the heap object itself.
+    (defun nl_alloc_unibyte_str_w (bytes-ptr len _pad)
+      (let ((object (alloc-bytes 32 8)))
+        (seq (nl_alloc_unibyte_str bytes-ptr len object) object)))
+
     ;; Inner Sexp::Symbol writer (tag=4, identical to Str write modulo tag).
     (defun nl_alloc_symbol_write (bytes-ptr n alloc-n dest-slot char-buf)
       (and
@@ -572,9 +577,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot))
     ;; Doc 215 builtin word ABI: nl_alloc_symbol_w returns the result WORD; nl_alloc_symbol keeps the direct slot-writing form (hot leaf).
     (defun nl_alloc_symbol_w (bytes-ptr len _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (nl_alloc_symbol bytes-ptr len s)
-             (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))))))
+      (if (= (nl_name_is_nil bytes-ptr len) 1) 3
+        (if (= (nl_name_is_t bytes-ptr len) 1) 7
+          (let ((object (alloc-bytes 32 8)))
+            (seq (nl_alloc_symbol bytes-ptr len object) object)))))
 
     ;; The miss-only heap fallback allocates before rereading the rooted input
     ;; string. A GC during `alloc-bytes' may move its byte buffer.
@@ -636,12 +642,11 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_alloc_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_alloc_symbol_named_w (bytes-ptr len name-slot _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (if (/= (nl_alloc_symbol_named bytes-ptr len name-slot result-slot) 0)
-            ;; "nil" and "t" are the canonical immediates; every other name is a heap symbol.
-            (if (= (nl_name_is_nil bytes-ptr len) 1) 3
-              (if (= (nl_name_is_t bytes-ptr len) 1) 7 result-slot))
-          (nl_abi_fail 1 0))))
+      (if (= (nl_name_is_nil bytes-ptr len) 1) 3
+        (if (= (nl_name_is_t bytes-ptr len) 1) 7
+          (let ((object (alloc-bytes 32 8)))
+            (if (/= (nl_alloc_symbol_named bytes-ptr len name-slot object) 0)
+                object (nl_abi_fail 1 0))))))
 
     ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
     ;; that updated Sexp only after the destination buffer has been allocated.
@@ -815,12 +820,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
     ;; `nl_intern_lookup_pos' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_intern_lookup_pos_w (bytes-ptr n _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (if (/= (nl_intern_lookup_pos bytes-ptr n result-slot) 0)
-            ;; "nil" and "t" hit as the canonical immediates.
-            (if (= (nl_name_is_nil bytes-ptr n) 1) 3
-              (if (= (nl_name_is_t bytes-ptr n) 1) 7 result-slot))
-          3)))
+      (if (= (nl_name_is_nil bytes-ptr n) 1) 3
+        (if (= (nl_name_is_t bytes-ptr n) 1) 7
+          (let ((object (alloc-bytes 32 8)))
+            (if (/= (nl_intern_lookup_pos bytes-ptr n object) 0) object 3)))))
 
     ;; Public entry: nl_intern_lookup(bytes_ptr, len, result_slot).
     ;; Returns 0 (RESULT-SLOT left untouched) when NAME has never been
@@ -836,12 +839,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
     ;; `nl_intern_lookup' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_intern_lookup_w (bytes-ptr len _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (if (/= (nl_intern_lookup bytes-ptr len result-slot) 0)
-            ;; "nil" and "t" hit as the canonical immediates.
-            (if (= (nl_name_is_nil bytes-ptr len) 1) 3
-              (if (= (nl_name_is_t bytes-ptr len) 1) 7 result-slot))
-          3)))
+      (nl_intern_lookup_pos_w bytes-ptr (if (< len 0) 0 len) 0))
 
     ;; Internal read-only cursor used by native diagnostics and future
     ;; obarray work.  CURSOR is a slot index in [0, 2^20].  A hit writes the
