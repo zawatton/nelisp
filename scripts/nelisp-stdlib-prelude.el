@@ -25998,6 +25998,26 @@ a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
   "Nil while compiling a body known to name no macro: `macroexpand-all'
 would return it unchanged, and expanding is most of a compilation's cost.")
 
+(defconst nelisp--fx-native-heads '(lambda defalias when unless prog2 dolist throw)
+  "Reader forms dispatched by name even with a user-bound function cell.
+GNU special forms instead follow their special objects (N3); cl-defun,
+defun, defmacro and defvaralias can defer to their current function cells.")
+
+(defconst nelisp--fx-native-macro-environment
+  (list '(lambda) '(defalias) '(throw) '(when) '(unless) '(prog2)
+        (cons 'dolist
+              (lambda (spec &rest body)
+                (let ((tail (make-symbol "tail")))
+                  (list 'let (list (list tail (cadr spec)))
+                        (list 'while tail
+                              (list 'let (list (list (car spec) (list 'car tail)))
+                                    (cons 'progn body)
+                                    (list 'setq tail (list 'cdr tail))))
+                        (nth 2 spec))))))
+  "Protect reader heads from user macro expansion during VM compilation.
+Dolist uses the reader's canonical expansion, matching its let/while
+template. When, unless and prog2 are lowered directly by the VM compiler.")
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
@@ -26061,6 +26081,17 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (if c (progn (comp (nth 2 x)) (emit 12) (emit 3 (cdr c)))
                      (emit 1 (nth 1 x)) (comp (nth 2 x)) (emit 16 'set 2))))
                 ((eq op 'progn) (body (cdr x)))
+                ((memq op '(when unless))
+                 (let ((skip (label)) (end (label)))
+                   (comp (cadr x)) (jump 9 skip)
+                   (if (eq op 'when) (body (cddr x)) (emit 1 nil))
+                   (jump 8 end) (place skip)
+                   (if (eq op 'unless) (body (cddr x)) (emit 1 nil))
+                   (place end)))
+                ((eq op 'prog2)
+                 (if (null (cddr x)) (emit 1 nil)
+                   (comp (cadr x)) (emit 11) (comp (nth 2 x))
+                   (dolist (a (nthcdr 3 x)) (comp a) (emit 11))))
                 ((eq op 'if)
                  (let ((else (label)) (end (label)))
                    (comp (nth 1 x)) (jump 9 else)
@@ -26099,7 +26130,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                        (comp a) (emit 12) (jump 9 next) (jump 8 end)
                        (place next) (emit 11)))
                    (emit 1 nil) (place end)))
-                ((and (symbolp op) (special-form-p op)) (unsupported x))
+                ((and (symbolp op)
+                      (or (memq op nelisp--fx-native-heads)
+                          (special-form-p op)))
+                 (unsupported x))
                 ((and (symbolp op) (assq op nelisp--fx-inline-ops)
                       (= (length (cdr x)) (cddr (assq op nelisp--fx-inline-ops))))
                  (dolist (a (cdr x)) (comp a))
@@ -26119,7 +26153,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                   (emit 17 nil)
                   (comp (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
-                            (macroexpand-all form)
+                            (macroexpand-all form nelisp--fx-native-macro-environment)
                           form))
                   (emit 0) 'ok)
                 'ok)

@@ -2125,6 +2125,16 @@
        (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
                             (prin1-to-string tree))))))
 
+;; A named closure crosses first-call VM compilation while retaining throw
+;; syntax. This is portable to GNU, where throw's normal cell is callable.
+(progn
+  (fset 'vsh-parity-throw (lambda (tag value) (throw tag value)))
+  (unwind-protect
+      (let ((answers nil))
+        (dotimes (i 6)
+          (push (catch 'vsh-tag (vsh-parity-throw 'vsh-tag 42)) answers))
+        (nreverse answers))
+    (fmakunbound 'vsh-parity-throw)))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

@@ -1111,7 +1111,7 @@ The `.elc' lane has always expanded before handing a body to the bytecode
 compiler (`nelisp-bc--compile-defun-to-elc-form'); this lane did not, so
 `dolist' and `dotimes' reached a compiler that does not know them."
   (if (fboundp 'macroexpand-all)
-      (condition-case nil (macroexpand-all form) (error form))
+      (condition-case nil (nelisp-bc-macroexpand-source form) (error form))
     form))
 
 (defun nelisp-artifact--try-compile-defun (form)
