@@ -27,4 +27,4 @@ cmd: python3 tools/ai/windows-cold-auto-check.py W4
 cmd: python3 tools/ai/windows-cold-auto-check.py W5
 
 ** S1.6 W6 Native Windows end-to-end acceptance on the user's machine
-pending
+evidence: tools/ai/windows-cold-auto-native-evidence.txt sha256=051a99c7c6c893679bdf59d7ff85a91f548e926792b54c27f1b6925161e243be

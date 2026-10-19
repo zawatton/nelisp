@@ -1,0 +1,21 @@
+Native Windows acceptance (W6) for eval/windows-20261019 at 70f8a26c2
+Host: user's Windows machine, GNU Emacs 31.1 (mingw64), MSYS2; clean target/,
+XDG_CACHE_HOME=$PWD/target/xdg-cache. Recorded by the coordinator from the Windows session's report (2026-10-19).
+
+70f8a26c feat(windows): discover and pin adjacent lean cold images
+[standalone-reader] build digest ef236708422d88a4e94b051bcd68a6de56d9b047ec35b6e485c67935b610cabb
+[standalone-reader] cold image -> .../target/nelisp.exe.cold (161946072 bytes)
+[standalone-reader] artifact runtime cache -> .../target/nelisp-artifact-runtime.el.nelc (enabled)
+nil
+{"medians": {"plain": 0.2225, "explicit": 0.2212}, "ratio": 1.006}
+EXIT-STASH ... -- PASS
+BOOT-LIBRARIES checks=23 failures=0 PASS
+NATIVE-WINDOWS-S1-S3-PASS
+NATIVE-WINDOWS-W6-AUTO-COLD-PASS
+bringup rc=0
+- nelisp.exe --eval nil (no flag, auto cold): real 0.238s
+- (progn (require 'rx) (rx (+ digit))) => "[[:digit:]]+"
+- .cold moved away: --eval '(+ 1 2)' => 3, real 6.114s (source boot, clean fallback)
+- exe + .cold + .native-startup.el copied to a folder named "日本語 フォルダ" (Japanese + space):
+  --eval '(+ 1 2)' => 3, real 0.305s
+- scripts/__pycache__ is no longer tracked; the worktree stays clean after the build.
