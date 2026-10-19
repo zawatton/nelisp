@@ -1,0 +1,2 @@
+(setq abi-load-before-syntax t)
+(

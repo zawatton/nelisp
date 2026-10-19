@@ -466,6 +466,30 @@ callback/environment, batteries/Anvil/arity, static42 and parked-worker3 pass.
 TOTAL1399; S6.2 26 (13 direct + 9 reverse + 4 inline). Boot/regex/files means
 are -2.825%/-2.760%/-3.144%, GC6/6,17/16,8/8; all layout outputs agree.
 
+Load/require and source-string evaluation now produce WORDs directly. Load
+returns t at successful EOF and nil for a suppressed missing file; its
+per-form output remains a physical GC root and is never decoded to obtain
+the load result. Require retains the caller's feature WORD. The caller
+reserves saved-buffer, load-file-name and loop roots before creating its
+file scope. Buffer restoration consumes the saved canonical child WORD;
+the old physical-input/physical-output restore entry remains independent.
+Source evaluation retains canonical form and result children across safe
+boundary drains and GC, and retires the actual AST's macro-cache key before
+the next read. A declaration tail similarly keeps its existing argument and
+body WORDs, including unibyte docstrings. These conversions remove every
+caller of =nl_val_to_word=, so that decoder is deleted.
+
+Load18, buffer-restore3 and source-eval34 agree with the golden baseline;
+the fixtures are checked in. Native declaration-tail8 passes on the golden
+baseline, rejects the first draft's omitted unibyte case, and passes on the
+accepted =round3-load2= build. A changed source result is rejected.
+Constructor/autoload/callback/environment, batteries/Anvil/arity, census12,
+static42 and parked-worker3 pass; build/from-dump census rows agree for all
+114 units. TOTAL1392; S6.2 24 (12 direct + 9 reverse + 3 inline).
+Boot/regex/files means are -2.967%/-2.767%/-3.105%, GC6/6,17/16,8/8,
+with identical outputs in every layout. The initial missing reader entry
+was a fixable link error; only completed =round3-load2= builds are accepted.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

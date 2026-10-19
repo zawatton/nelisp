@@ -2866,14 +2866,7 @@ directory tracks the tree rather than accumulating every key ever built."
         (ptr-read-u64 w 8)))
     ;; A 32-byte Sexp slot or view as a WORD, cloning a heap value into a
     ;; fresh box exactly as nl_sexp_clone_into into a caller box did.
-    (defun nl_val_to_word (src)
-      (if (= (logand src 1) 1) src
-        (let ((tg (ptr-read-u8 src 0)))
-          (if (= tg 2) (nl_imm_int (ptr-read-u64 src 8))
-            (if (= tg 0) 3
-              (if (= tg 1) 7
-                (let ((b (alloc-bytes 32 8)))
-                  (seq (nl_sexp_clone_into src b) b))))))))
+
     ;; A container slot WORD as the value record-slot-ref / vector-ref
     ;; produced: immediates as they are, a heap value cloned into a fresh box.
     (defun nl_word_clone (w)
@@ -21710,16 +21703,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil nil-slot)
          (nelisp_cons_construct file nil-slot load-args)
          (bf_load load-args env out))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_require_load_file' itself is unchanged: inner callers keep their rooted OUT.
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_require_load_file_w (file env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_require_load_file file env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  ;; FILE is the canonical argument/path WORD, including a nil argument.
+  (bf_load_w (nelisp_cons_construct_w file 3 0) env 0))
     (defun bf_require_after_load (rc feature noerror env out)
       (if (= rc 0)
           (let* ((features (alloc-bytes 32 8)))
@@ -21733,16 +21720,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= noerror 1)
             (seq (ptr-write-u64 268435472 0 0) (wf_write_nil out) 0)
           1)))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_require_after_load' itself is unchanged: inner callers keep their rooted OUT.
-    (defun bf_require_after_load_w (rc feature noerror env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_require_after_load rc feature noerror env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+    ;; Doc 215: the producer returns its canonical WORD directly.
+    (defun bf_require_after_load_w (loaded feature noerror env _pad)
+  (if (/= loaded 0)
+      (if (= (bf_feature_member_p (wf_word_view feature)
+                                (wf_word_view (bf_features_get_w env 0))) 1)
+          feature
+        (if (= noerror 1)
+            (seq (ptr-write-u64 268435472 0 0) 3)
+          (seq (bf_require_file_missing (wf_word_view feature)) 0)))
+    (if (= noerror 1)
+        (seq (ptr-write-u64 268435472 0 0) 3) 0)))
     (defun bf_require (args env out)
       (let* ((feature (wf_arg_ptr args 0))
              (features (alloc-bytes 32 8))
@@ -21781,16 +21769,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (if (= noerror 1)
                         (seq (wf_write_nil out) 0)
                       (bf_require_file_missing feature)))))))))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_require' itself is unchanged: inner callers keep their rooted OUT.
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_require_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_require args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((feature (wf_arg_word args 0))
+         (noerror (bf_require_noerror_p args))
+         (explicit (bf_require_arg_present_p args 1))
+         (candidate (if (= explicit 1) (wf_arg_word args 1) 3))
+         (file (if (= (nl_word_tag64 candidate) 0) feature candidate)))
+    (if (= (bf_feature_member_p (wf_word_view feature)
+                              (wf_word_view (bf_features_get_w env 0))) 1)
+        feature
+      (if (= (bf_require_file_readable_p (wf_word_view file)) 1)
+          (bf_require_after_load_w (bf_require_load_file_w file env 0)
+                                  feature noerror env 0)
+        (if (= explicit 1)
+            (if (= noerror 1) 3
+              (seq (bf_require_file_missing (wf_word_view file)) 0))
+          (let* ((dirs (alloc-bytes 32 8)))
+            (seq
+             (bf_load_path_get env dirs)
+             (let* ((found (bf_require_search_w (wf_word_view feature) dirs 0)))
+               (if (/= found 3)
+                   (bf_require_after_load_w (bf_require_load_file_w found env 0)
+                                           feature noerror env 0)
+                 (if (= noerror 1) 3
+                   (seq (bf_require_file_missing (wf_word_view feature)) 0)))))))))))
     (defun bf_set_dynamic_value (env sym val)
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
           (if (= (nelisp_mirror_is_constant (+ env 0) sym) 1)
@@ -22176,27 +22179,105 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; in this runtime is a flag plus a stash (@268435472), not a stack
     ;; unwind, so `bf_load_readable' returns a code either way and the restore
     ;; below always runs.
+    (defun bf_load_with_lfn_rooted_w (args env old-root loop-root)
+  (let* ((sym (alloc-bytes 32 8)))
+    (seq
+     (bf_load_file_name_symbol sym)
+     ;; OLD-ROOT is a stable physical input to the setter after nested loads.
+     (if (= (nelisp_env_lookup_value env (+ env 32) sym old-root) 0) 0
+       (wf_write_nil old-root))
+     (nl_env_set_value env sym (wf_arg_ptr args 0))
+     (let* ((word (bf_load_readable_rooted_w args env loop-root)))
+       (let* ((restore-name (alloc-bytes 32 8)))
+         (seq
+          (bf_load_file_name_symbol restore-name)
+          (nl_env_set_value env restore-name old-root)
+          word))))))
+    (defun bf_load_inner_rooted_w (args env old-root loop-root)
+  (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
+      (bf_load_with_lfn_rooted_w args env old-root loop-root)
+    (bf_load_searched_w args env 0)))
+    (defun nl_driver_eval_word_with_recorded_roots (form env result out pool src cursor bsym state)
+  (let* ((depth-before (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
+         (pushed (nl_gc_ctx_push env result out pool src cursor bsym)))
+    (seq
+     (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+     (let* ((word (nelisp_eval_call_w
+                   (if (= (logand form 1) 1) result form) env 0)))
+       (seq
+        (if (/= word 0)
+            (seq
+             (ptr-write-u64 (ptr-read-u64 state 8) 8 word)
+             (wf_word_store_out out word)) 0)
+        (let* ((drain-rc
+                (if (and (/= word 0) (= depth-before 0) (= pushed 1))
+                    (nl_driver_safe_boundary_drain env) 0)))
+          (seq
+           (if (= pushed 1) (nl_gc_ctx_pop) 0)
+           (if (and (/= word 0) (= drain-rc 0))
+               (nl_cons_cdr_word state) 0))))))))
+    (defun bf_eval_source_string_loop_w (src cursor result pool env out bsym state)
+  (let* ((more 1))
+    (seq
+     (while (= more 1)
+       (seq
+        ;; Retire the actual canonical AST cache key before reading another.
+        (let* ((previous (nl_cons_car_word state)))
+          (if (= (logand previous 1) 0) (nl_mxcache_evict previous) 0))
+        (nl_mxcache_evict result)
+        (wf_write_nil result)
+        (ptr-write-u64 268435472 0 0)
+        (let* ((form (nelisp_reader_parse_one_with_context_w src cursor 0 pool 0 3)))
+          (if (= form 2) (setq more 0)
+            (if (= form 0)
+                (setq more 3)
+              (seq
+               (ptr-write-u64 (ptr-read-u64 state 8) 0 form)
+               (wf_word_store_out result form)
+               (wf_write_nil out)
+               (if (= (nl_driver_eval_word_with_recorded_roots
+                        form env result out pool src cursor bsym state) 0)
+                   (setq more 2)
+                 (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0)) 0
+                   (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
+                          (bump (ptr-read-u64 268436184 0))
+                          (lo (+ (* live 3) 1048576)) (hi (+ bump 16777216)))
+                     (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))))))))
+     (if (= more 3) (seq (bf_read_syntax_error src) 0)
+       (if (= more 2) 0 (nl_cons_cdr_word state))))))
+    (defun bf_eval_source_string_inner_rooted_w (args env result out state)
+  (let* ((src (wf_arg_ptr args 0)) (cursor (alloc-bytes 32 8))
+         (cap (let* ((n (* 4 (m5_strlen src))))
+                (if (< n 256) 256 (if (> n 32768) 32768 n))))
+         (pool (alloc-bytes (* cap 32) 8)) (bsym (alloc-bytes 32 8))
+         (prevcap (ptr-read-u64 268436448 0)))
+    (seq
+     (wf_write_nil bsym)
+     (ptr-write-u64 268435624 0 0)
+     (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+     (wf_word_store_out state (nelisp_cons_construct_w 3 3 0))
+     (ptr-write-u64 268436448 0 cap)
+     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym state)))
+       (seq
+        (if (/= word 0) (wf_dirty) 0)
+        (ptr-write-u64 268436448 0 prevcap)
+        word)))))
+    (defun nl_sf_decl_strip_body_word (body)
+  (if (= (nl_word_tag64 body) 7)
+      (let* ((head (nl_cons_car_word body)) (rest (nl_cons_cdr_word body)))
+        (if (or (= (nl_word_tag64 head) 5) (= (nl_word_tag64 head) 14))
+            (if (= (nl_word_tag64 rest) 7) (nl_sf_decl_strip_body_word rest) body)
+          (if (= (nl_sf_decl_is_declare_form (wf_word_view head)) 1)
+              (nl_sf_decl_strip_body_word rest) body)))
+    body))
     (defun bf_load_with_lfn (args env out)
-      (let* ((sym (alloc-bytes 32 8))
-             (old (alloc-bytes 32 8)))
-        (seq
-         (bf_load_file_name_symbol sym)
-         (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) sym old) 0)
-             0
-           (wf_write_nil old))
-         (nl_env_set_value env sym (wf_arg_ptr args 0))
-         (let* ((rc (bf_load_readable args env out)))
-           (seq (nl_env_set_value env sym old) rc)))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_load_with_lfn' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_load_with_lfn_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_with_lfn_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_load_with_lfn args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
+         (loop-root (nl_root_reserve env))
+         (word (bf_load_with_lfn_rooted_w args env old-root loop-root)))
+    (seq (nl_root_release env mark) word)))
     ;; Non-nil when the name carries its own root, so `load-path' must not be
     ;; consulted: a leading `/' or `\\', or a `X:' drive prefix.
     (defun bf_load_abs_p (sx)
@@ -22251,66 +22332,51 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; where `(require 'subr-x)' worked (v1.2.0 parity gap 2).  A name that
     ;; carries its own root is never searched, as in Emacs.
     (defun bf_load_searched (args env out)
-      (let* ((dirs (alloc-bytes 32 8))
-             (found (alloc-bytes 32 8)))
-        (seq
-         (bf_load_path_get env dirs)
-         (if (= (bf_load_abs_p (wf_arg_ptr args 0)) 1)
-             (if (= (bf_load_noerror_p args) 1)
-                 (seq (wf_write_nil out) 0)
-               (bf_require_file_missing (wf_arg_ptr args 0)))
-           (if (= (bf_load_search (wf_arg_ptr args 0) dirs found) 1)
-               ;; Re-enter through the ordinary path so the hit gets the same
-               ;; `load-file-name' binding and the same reader loop.
-               (bf_require_load_file found env out)
-             (if (= (bf_load_noerror_p args) 1)
-                 (seq (wf_write_nil out) 0)
-               (bf_require_file_missing (wf_arg_ptr args 0))))))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_load_searched' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_load_searched_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_searched_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_load_searched args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((dirs (alloc-bytes 32 8)) (found (alloc-bytes 32 8)))
+    (seq
+     (bf_load_path_get env dirs)
+     (if (= (bf_load_abs_p (wf_arg_ptr args 0)) 1)
+         (if (= (bf_load_noerror_p args) 1) 3
+           (seq (bf_require_file_missing (wf_arg_ptr args 0)) 0))
+       (if (= (bf_load_search (wf_arg_ptr args 0) dirs found) 1)
+           ;; FOUND is a freshly allocated String object, not an immediate OUT.
+           (bf_require_load_file_w found env 0)
+         (if (= (bf_load_noerror_p args) 1) 3
+           (seq (bf_require_file_missing (wf_arg_ptr args 0)) 0)))))))
     (defun bf_load_current_buffer (env out)
-      ;; Resolve the public function instead of peeking at a backing variable.
-      ;; The always-on prelude and the later compatibility layer use different
-      ;; buffer representations, while this interface is shared by both.
-      (let* ((buf (alloc-bytes 16 1))
-             (sym (alloc-bytes 32 8))
-             (fn (alloc-bytes 32 8))
-             (nil-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 3275364210996049251) ; "current-"
-         (ptr-write-u64 (+ buf 8) 0 125779835254114) ; "buffer"
-         (nl_alloc_symbol buf 14 sym)
-         (wf_write_nil nil-slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym fn) 0)
-             (nl_apply_function fn nil-slot env out)
-           1))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_load_current_buffer' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_load_current_buffer_w env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_current_buffer_w (env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_load_current_buffer env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((mark (nl_root_mark env)) (function-root (nl_root_reserve env))
+         (buf (alloc-bytes 16 1)))
+    (seq
+     (ptr-write-u64 buf 0 3275364210996049251)
+     (ptr-write-u64 buf 8 125779835254114)
+     (let* ((sym (nl_alloc_symbol_w buf 14 0))
+            (function-word (nelisp_env_lookup_function_w env (+ env 64) sym 0))
+            (word (if (or (= function-word 0) (= function-word 2)) 0
+                    (seq
+                     (wf_word_store_out function-root function-word)
+                     (nl_apply_function_w function-root (wf_word_view 3) env 0)))))
+       (seq (nl_root_release env mark) word)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_load_restore_buffer_w (env saved _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      ;; The standalone buffer model has two synchronized ambient variables.
-      ;; Restore both directly: a loaded compatibility file may rebind public
-      ;; buffer function names, so resolving or retaining `set-buffer' across
-      ;; the load is not stable enough to restore the entry-time model.
-      (let* ((buf1 (alloc-bytes 24 1))
+  (let* ((buf1 (alloc-bytes 24 1)) (buf2 (alloc-bytes 24 1)))
+    (seq
+     (ptr-write-u64 buf1 0 3255381746650998126)
+     (ptr-write-u64 buf1 8 3275364210996049251)
+     (ptr-write-u64 buf1 16 125779835254114)
+     (ptr-write-u64 buf2 0 7074434230661178734)
+     (ptr-write-u64 buf2 8 7146418153057576565)
+     (ptr-write-u64 buf2 16 128017497223797)
+     (bf_set_dynamic_value env (nl_alloc_symbol_w buf1 22 0) (wf_word_view saved))
+     (bf_set_dynamic_value env (nl_alloc_symbol_w buf2 22 0) (wf_word_view saved))
+     saved)))
+    (defun bf_load_restore_buffer (env saved out)
+(let* ((buf1 (alloc-bytes 24 1))
              (buf2 (alloc-bytes 24 1))
              (name1 (alloc-bytes 32 8))
              (name2 (alloc-bytes 32 8)))
@@ -22326,66 +22392,106 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (bf_set_dynamic_value env name1 saved)
          (bf_set_dynamic_value env name2 saved)
          (nl_sexp_clone_into saved out)
-         0))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
-    (defun bf_load_restore_buffer (env saved out)
-      (nl_abi_word_to_rc (bf_load_restore_buffer_w env saved 0) out))
+         0)))
     (defun bf_load (args env out)
-      ;; One lexical environment spans every top-level form of this file.
-      ;; Nested loads get their own scope; dynamic callers remain visible.
-      ;;
-      ;; GNU Emacs also restores the caller's current buffer after `load', even
-      ;; when a loaded form selects another buffer.  Capture and restore through
-      ;; the public buffer functions so both prelude and compatibility buffers
-      ;; follow the same path their ordinary callers use.
-      (let* ((mark (nl_root_mark env))
-             (saved (nl_root_reserve env))
-             (ignored (nl_root_reserve env))
-             (have-saved 0)
-             (status 0))
-        (seq
-         (setq have-saved (if (= (bf_load_current_buffer env saved) 0) 1 0))
-         (nelisp_frame_scope_push (+ env 32))
-         (setq status
-               (nelisp_eval_call_root_done
-                (bf_load_inner args env out) env))
-         (if (= have-saved 1)
-             (if (= status 0)
-                 (setq status (bf_load_restore_buffer env saved ignored))
-               ;; A pending signal prevents Lisp dispatch.  Restoring the
-               ;; public setter is therefore deferred on this path.  Source
-               ;; errors already unwind the evaluator frame; the normal path
-               ;; above is the one that may leak a selected buffer.
-               0)
-           0)
-         (nl_root_release env mark)
-         status)))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_load' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_load_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_load args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  ;; Reserve before creating the lexical file scope (Doc 215 R3).
+  (let* ((mark (nl_root_mark env)) (saved-root (nl_root_reserve env))
+         (old-root (nl_root_reserve env)) (loop-root (nl_root_reserve env))
+         (args-root (nl_root_reserve env)) (saved 0) (word 0))
+    (seq
+     (wf_word_store_out args-root args)
+     (setq saved (bf_load_current_buffer_w env 0))
+     (if (/= saved 0)
+         (wf_word_store_out saved-root (nelisp_cons_construct_w saved 3 0)) 0)
+     (nelisp_frame_scope_push (+ env 32))
+     (setq word (nelisp_eval_call_root_done
+                 (bf_load_inner_rooted_w args-root env old-root loop-root) env))
+     (if (and (/= saved 0) (/= word 0))
+         (bf_load_restore_buffer_w env (nl_cons_car_word saved-root) 0) 0)
+     (nl_root_release env mark)
+     word)))
     (defun bf_load_inner (args env out)
-      (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
-          (bf_load_with_lfn args env out)
-        (bf_load_searched args env out)))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_load_inner' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_load_inner_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_inner_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_load_inner args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
+         (loop-root (nl_root_reserve env))
+         (word (bf_load_inner_rooted_w args env old-root loop-root)))
+    (seq (nl_root_release env mark) word)))
+    (defun bf_load_readable_rooted_w (args env out)
+      ;; Doc 147 Phase 1.5 Group P — the reader parse pool is now a RAW
+      ;; 32B-slot buffer (cap*32 bytes) instead of a GC-managed
+      ;; Sexp::Vector.  `pool' IS the buffer base; slot N lives at
+      ;; pool+N*32 (see `nelisp_reader_p_slot').  Store the cap at the
+      ;; control-region word @268436448 so the GC pool arms can walk it.
+      (let* ((src (alloc-bytes 32 8))
+             (cursor (alloc-bytes 32 8))
+             (result (alloc-bytes 32 8))
+             (bsym (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
+         (ptr-write-u64 268435624 0 0)
+         (nl_bi_read_file args src)
+         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+         ;; Size the parse pool to the source AFTER reading it: a single huge
+         ;; form (e.g. emoji-labels.el's `#s(hash-table ...)' with thousands of
+         ;; entries) overflows a fixed 32768-slot pool -> reader SIGSEGV.  4x
+         ;; source bounds node count; floor 32768, cap 4194304 (the cap avoids
+         ;; over-allocating ~19M slots on the 4.8MB ja-dic.el).
+         ;; NESTED-LOAD cap restore (2026-06-11): the cap word @268436448
+         ;; must match the pool the CURRENT loop passes to the GC arms.  A
+         ;; nested big (load ...) used to leave ITS larger cap behind, so
+         ;; the outer loop's GC walked far past its own (smaller) pool ->
+         ;; silent abort / SIGSEGV after returning from the inner load
+         ;; (found loading dash.el from the wrapped user init, M18).
+         (let* ((cap (let ((n (* 4 (m5_strlen src))))
+                       (if (< n 32768) 32768 (if (> n 4194304) 4194304 n))))
+                (pool (alloc-bytes (* cap 32) 8))
+                (prevcap (ptr-read-u64 268436448 0)))
+           (seq
+            (ptr-write-u64 268436448 0 cap)
+            (let* ((lrc (bf_load_eval_loop src cursor result pool env out bsym 1)))
+              ;; 2 = a form signalled and the signal is already raised.
+              ;; 3 = the reader stopped before the end of the file.  That one
+              ;; used to be indistinguishable from reaching the end, so `load'
+              ;; wrote t for a file it had abandoned -- `provide' at the bottom
+              ;; never ran, and `require' then reported the file missing.
+              (if (= lrc 2)
+                  (seq
+                   (ptr-write-u64 268436448 0 prevcap)
+                   0)
+                (if (= lrc 3)
+                    (seq
+                     (ptr-write-u64 268436448 0 prevcap)
+                     (bf_read_syntax_error (wf_arg_word args 0)) 0)
+                  (let* ((callback-result (alloc-bytes 32 8))
+                         (callback-name (alloc-bytes 32 8))
+                         (callback-rc
+                          (seq
+                           (bf_after_load_function_symbol callback-name)
+                           (let* ((file-name-symbol (alloc-bytes 32 8))
+                                  (event-file (alloc-bytes 32 8)))
+                             (seq
+                              (bf_load_file_name_symbol file-name-symbol)
+                              (if (= (nelisp_env_lookup_value
+                                      (+ env 0) (+ env 32)
+                                      file-name-symbol event-file) 0)
+                                  0
+                                (wf_copy32 event-file (wf_arg_ptr args 0)))
+                              (wf_write_nil callback-result)
+                              (bf_apply_named_1 env callback-name
+                                                event-file callback-result))))))
+                    (seq
+                     (ptr-write-u64 268436448 0 prevcap)
+                     (if (= callback-rc 0)
+                         (seq
+                          (ptr-write-u64 268435472 0 0)
+                          (wf_dirty)
+                          7)
+                       0)))))))))))
     (defun bf_load_readable (args env out)
       ;; Doc 147 Phase 1.5 Group P — the reader parse pool is now a RAW
       ;; 32B-slot buffer (cap*32 bytes) instead of a GC-managed
@@ -22459,63 +22565,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           0)
                        callback-rc)))))))))))
     (defun bf_eval_source_string (args env out)
-      (seq (nelisp_frame_scope_push (+ env 32))
-           (nelisp_eval_call_root_done (bf_eval_source_string_inner args env out) env)))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_eval_source_string' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_eval_source_string_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_eval_source_string args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
+         (out (nl_root_reserve env)) (state (nl_root_reserve env)) (word 0))
+    (seq
+     (nelisp_frame_scope_push (+ env 32))
+     (setq word (nelisp_eval_call_root_done
+                 (bf_eval_source_string_inner_rooted_w args env result out state) env))
+     (nl_root_release env mark)
+     word)))
     (defun bf_eval_source_string_inner (args env out)
-      ;; Doc 147 Phase 1.5 Group P — RAW parse-pool buffer (cap*32 bytes),
-      ;; `pool' IS the base; slot N @ pool+N*32 (`nelisp_reader_p_slot').
-      ;; `src' is bound before `pool', so the cap can size the alloc
-      ;; directly; store the same cap @268436448 for the GC pool arms.
-      (let* ((src (wf_arg_ptr args 0))
-             (cursor (alloc-bytes 32 8))
-             (result (alloc-bytes 32 8))
-             ;; Doc 08 §8.15: right-size the per-form parse pool to the source
-             ;; length instead of a fixed 32768-slot (~1MB) buffer.  The parsed
-             ;; form's nodes live IN this pool (a GC root), so a retained
-             ;; defun/defvar pins the whole pool -> a 1MB pool per small form was
-             ;; 54-68% of the vendor-load arena.  4x source length bounds the
-             ;; node count (each parse node needs >=1 source char) and the 32768
-             ;; cap keeps the previous behaviour for big forms (no regression).
-             (pool (alloc-bytes (* (let ((n (* 4 (m5_strlen src))))
-                                     (if (< n 256) 256 (if (> n 32768) 32768 n)))
-                                   32)
-                                8))
-             (bsym (alloc-bytes 32 8))
-             ;; same nested cap-restore contract as bf_load (2026-06-11)
-             (prevcap (ptr-read-u64 268436448 0)))
-        (seq
-         (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
-         (ptr-write-u64 268435624 0 0)
-         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-         (ptr-write-u64 268436448 0 (let ((n (* 4 (m5_strlen src))))
-                                      (if (< n 256) 256 (if (> n 32768) 32768 n))))
-         (let* ((lrc (bf_eval_source_string_loop src cursor result pool env out bsym 1)))
-           (if (= lrc 2)
-               (seq (ptr-write-u64 268436448 0 prevcap) 1)
-             (if (= lrc 3)
-                 (seq (ptr-write-u64 268436448 0 prevcap)
-                      (bf_read_syntax_error src))
-               (seq (wf_dirty) (ptr-write-u64 268436448 0 prevcap) 0)))))))
-    ;; Doc 215 word ABI (evaluator re-entrant, R2): OUT is a precise root slot
-    ;; for the whole call; the result is copied to a fresh WORD before release.
-    ;; `bf_eval_source_string_inner' itself is unchanged: inner callers keep their rooted OUT.
+  (nl_abi_word_to_rc (bf_eval_source_string_inner_w args env 0) out))
+    ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_inner_w (args env _pad)
-      (let* ((nl_abi_mark (nl_root_mark env))
-             (out (nl_root_reserve env)))
-        (let* ((nl_abi_rc (bf_eval_source_string_inner args env out)))
-          (let* ((nl_abi_w (if (= nl_abi_rc 0) (nl_val_to_word out) 0)))
-            (seq (nl_root_release env nl_abi_mark)
-                 (if (= nl_abi_w 0) (nl_abi_fail nl_abi_rc 0) nl_abi_w))))))
+  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
+         (out (nl_root_reserve env)) (state (nl_root_reserve env))
+         (word (bf_eval_source_string_inner_rooted_w args env result out state)))
+    (seq (nl_root_release env mark) word)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_read_load_file_name_w (env _pad)
   (let* ((sym (alloc-bytes 32 8)))
@@ -27470,18 +27538,11 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                 body_ptr)))
         body_ptr))
     ;; Answers the normalized tail WORD; the second parameter is unused.
-    (defun nl_sf_decl_normalize_tail (tail_ptr _pad) (let ((out__w 0)) (seq
-      (if (= (sexp-tag tail_ptr) 7)
-          (let* ((args_ptr (nl_cons_car_ptr tail_ptr))
-                 (body_ptr (nl_cons_cdr_ptr tail_ptr))
-                 (stripped_body_ptr (nl_sf_decl_strip_body body_ptr))
-                 (args_clone (alloc-bytes 32 8))
-                 (body_clone (alloc-bytes 32 8)))
-            (seq
-             (nl_sexp_clone_into args_ptr args_clone)
-             (nl_sexp_clone_into stripped_body_ptr body_clone)
-             (setq out__w (nelisp_cons_construct args_clone body_clone (alloc-bytes 32 8)))))
-        (setq out__w (nl_val_to_word tail_ptr))) out__w)))
+    (defun nl_sf_decl_normalize_tail (tail _pad)
+  (if (= (nl_word_tag64 tail) 7)
+      (nelisp_cons_construct_w (nl_cons_car_word tail)
+        (nl_sf_decl_strip_body_word (nl_cons_cdr_word tail)) 0)
+    tail))
     ;; GNU semantics for `declare' and for a redefined definer.  The native
     ;; `defun' / `defmacro' arms below run before the evaluator consults the
     ;; function cell, and used to strip every `declare' clause.  So a
@@ -27565,7 +27626,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
        (if (= (nl_sf_definer_route 0 (nl_sf_definer_body args) env 0) 2)
          2
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (tail_ptr (nl_cons_cdr_ptr args))
+                (tail_ptr (nl_cons_cdr_word args))
                 (fbuf (alloc-bytes 8 1))
                 (fset_sym (alloc-bytes 32 8))
                 (qbuf (alloc-bytes 8 1))
@@ -27885,7 +27946,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
        (if (= (nl_sf_definer_route 1 (nl_sf_definer_body args) env 0) 2)
          2
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (tail2_ptr (nl_cons_cdr_ptr args)))
+                (tail2_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag tail2_ptr) 7)
                (let* ((fbuf (alloc-bytes 8 1)) (fset_sym (alloc-bytes 32 8))
                       (lbuf (alloc-bytes 8 1)) (list_sym (alloc-bytes 32 8))
