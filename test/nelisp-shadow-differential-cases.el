@@ -2125,6 +2125,11 @@
        (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
                             (prin1-to-string tree))))))
 
+;; Closure slots participate in the same print graph as lists and vectors.
+(let ((f (eval '(let ((f nil)) (setq f (lambda () f)) f) t)))
+  (list (let ((print-circle t)) (prin1-to-string f))
+        (let ((print-circle nil)) (format "%S" f))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here
