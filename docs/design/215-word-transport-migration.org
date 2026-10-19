@@ -608,3 +608,17 @@ eq / null / not / car / cdr / cons in the shared table, and =bf_car_w=,
   reported with the reason (=--json OUT=).
 - =python3 tools/ai/abi-partition.py check GROUP DUMP [--arms|--defuns]=
   is the per-group gate; tools/ai/abi-progress.org runs it per stage.
+
+** Round 4 activation inspection
+
+The old N4 locals walker predates this lane and crashes on the unchanged
+=locals-parameter= corpus on both =9ad3c5588= and =80902e27f=. It treated
+every frame's slot 0 as a bucket-table Record, although small frames store
+an alist there. The WORD walker handles both shapes. It also reconstructs
+shallow bindings from their saved values while walking from inner to outer
+frames, so repeated and suspended bindings retain their own values.
+=python3 test/abi-n4-reference-test.py BINARY= compares the complete corpus
+against GNU Emacs 31.1, with the existing optional Lisp thread providers
+loaded for its thread cases. The pre-fix binary crashes; the repaired one
+runs the corpus. Globals/function-cell122 and legacy finish18 also pass.
+The final verifier runs this parity check and requires its completion marker.

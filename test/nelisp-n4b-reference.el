@@ -79,5 +79,16 @@
 (n4-row "frame-bignum" (backtrace-frame--internal #'list 1180591620717411303424 nil))
 (n4-row "base-offset-nil" (backtrace-frame--internal #'list 0 '(0)))
 (n4-row "base-offset-one-nil" (backtrace-frame--internal #'list 0 '(1)))
+(defun n4-shadow-inner ()
+  (let ((n4-repeat 'inner)) (backtrace--locals 1 'n4-shadow-inner)))
+(defun n4-shadow-outer ()
+  (let ((n4-repeat 'outer)) (n4-shadow-inner)))
+(n4-row "locals-outer-shallow-shadow" (n4-shadow-outer))
+;; The inner helper selects the binding owner without adding its own locals.
+(defun n4-shallow-values-helper () (backtrace--locals 1 'n4-shallow-values-helper))
+(defun n4-shallow-values-owner ()
+  (let ((n4-repeat nil) (n4-repeat t) (n4-repeat "value"))
+    (n4-shallow-values-helper)))
+(n4-row "locals-shallow-value-classes" (n4-shallow-values-owner))
 (princ "N4-BACKTRACE-REFERENCE-DONE\n")
 nil

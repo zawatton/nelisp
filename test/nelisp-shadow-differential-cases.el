@@ -2208,6 +2208,9 @@
                   (aset bits 0 value) (aref bits 0)
                   (set-char-table-range ct '(8 . 10) value) (aref ct 9))))
         '(nil t 0 -7))
+
+;; N4 locals must handle the small alist frame as well as promoted tables.
+((lambda (par-n4-local) (backtrace--locals 1 'backtrace--locals)) 7)
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

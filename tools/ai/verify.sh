@@ -17,6 +17,8 @@ for f in test/standalone-shallow-binding-check.el test/standalone-shallow-bindin
 done
 timeout 300 emacs --batch -l test/standalone-cl-loop-gnu-check.el > $V/b-cl-loop-gnu.emacs.out 2>/dev/null
 if diff $V/b-standalone-cl-loop-gnu-check.log $V/b-cl-loop-gnu.emacs.out > $V/b-cl-loop-gnu.diff; then echo "b cl-loop-gnu diff vs GNU: identical" >> $R; else echo "b cl-loop-gnu diff vs GNU: $(wc -l < $V/b-cl-loop-gnu.diff) diff lines" >> $R; fi
+python3 test/abi-n4-reference-test.py "$D" > "$V/b-n4-reference.log" 2>&1
+echo "b n4-reference rc=$? last: $(tail -1 "$V/b-n4-reference.log")" >> "$R"
 # c
 for n in standalone allocating-standalone percpu-roots mirror-guard; do
   f=tools/nelisp-thread-$n-smoke.el; lg=$V/c-$n.log

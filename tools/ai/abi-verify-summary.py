@@ -22,8 +22,8 @@ def verify(directory):
 
     summary = read("summary.txt")
     statuses = re.findall(r"^[abcd] .*?\brc=(\d+)", summary, re.M)
-    require(len(statuses) == 15 and all(s == "0" for s in statuses),
-            "15 successful commands")
+    require(len(statuses) == 16 and all(s == "0" for s in statuses),
+            "16 successful commands")
     require("STANDALONE-CHECKS PASS" in read("a-standalone-checks.log"), "battery completion")
     markers = {
         "standalone-shallow-binding-check": r"SHALLOW-BINDING failures=0 PASS",
@@ -37,6 +37,8 @@ def verify(directory):
     }
     for name, marker in markers.items():
         require(bool(re.search(marker, read(f"b-{name}.log"))), name)
+    require(bool(re.search(r"N4-REFERENCE checks=[1-9][0-9]* PASS", read("b-n4-reference.log"))),
+            "GNU activation API parity")
     # Standalone adds a final Lisp nil echo to this otherwise identical corpus.
     actual = read("b-standalone-cl-loop-gnu-check.log").rstrip()
     expected = read("b-cl-loop-gnu.emacs.out").rstrip()

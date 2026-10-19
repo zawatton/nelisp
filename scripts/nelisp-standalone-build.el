@@ -42735,7 +42735,265 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               (cdr src))))))))))
 
 (defconst nelisp-standalone--rooted-subr-helpers
-  '((defun nl_apply_flat_builtin_frame_w (func header env _pad)
+  '((defun nl_apply_do_push_captured_w (args env _pad)
+  (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    (if (= (nl_env_push_captured env (wf_arg_ptr args 0)) 0) 7 0)))
+
+(defun nl_apply_do_set_use_elisp_w (args env _pad)
+  (let* ((on (if (= (nl_val_tag args) 7)
+                 (if (= (nl_val_tag (nl_cons_car_word args)) 0) 0 1) 0))
+         (old (ptr-read-u64 env 112)))
+    (seq (ptr-write-u64 env 112 (if (= on 1) (logior old 1) (logand old -2)))
+         (if (= on 1) 7 3))))
+
+(defun nl_apply_do_symbol_function_w (args env _pad)
+  (let* ((count (m5_list_len args 0)))
+    (if (= count 1)
+        (let* ((name (wf_arg_word args 0)) (tag (nl_val_tag name)))
+          (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16))
+              (let* ((word (nelisp_env_lookup_function_w env (+ env 64) (wf_word_view name) 0)))
+                ;; The public symbol-function operation returns nil on a miss.
+                (if (or (= word 0) (= word 2)) 3 word))
+            (seq (nl_apply_stash_wrong_symbolp env (wf_word_view name)) 0)))
+      (let* ((bytes (alloc-bytes 16 1)) (signal-slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 bytes 0 7362660191469140339)
+         (ptr-write-u64 bytes 8 31084746153094773)
+         (bf_wrong_number_of_args (nl_alloc_symbol_w bytes 15 0) count)
+         (cons-make-with-clone 268435480 268435512 signal-slot)
+         (nl_env_stash_signal env signal-slot) 0)))))
+
+(defun nl_n3_globals_mode_w (args env _pad)
+  (let* ((value (nl_apply_list_nth args 2)))
+    (seq (ptr-write-u64 env 112
+           (logior (logand (ptr-read-u64 env 112) -1048577)
+                   (if (= (sexp-tag value) 0) 0 1048576))) 3)))
+
+(defun nl_n3_globals_read_w (op name env)
+  (let* ((sym (wf_word_view name)) (unbound (+ env 64)))
+    (if (or (= (sexp-name-eq op "get-value") 1) (= (sexp-name-eq op "get-function") 1))
+        (let* ((entry (nelisp_mirror_lookup_entry env sym)))
+          (if (= entry 0) (seq (nl_apply_stash_wta env op) 0)
+            (nl_record_slot_word entry (if (= (sexp-name-eq op "get-value") 1) 0 1))))
+      (if (= (sexp-name-eq op "is-bound") 1)
+          (if (= (nelisp_mirror_is_bound env sym unbound) 0) 3 7)
+        (if (= (sexp-name-eq op "is-fbound") 1)
+            (if (= (nelisp_mirror_is_fbound env sym unbound) 0) 3 7)
+          (if (= (sexp-name-eq op "is-constant") 1)
+              (if (= (nelisp_mirror_is_constant env sym) 0) 3 7)
+            (if (= (sexp-name-eq op "clear-value") 1)
+                (seq (nelisp_mirror_clear_value env sym unbound) name)
+              (if (= (sexp-name-eq op "clear-function") 1)
+                  (seq (nelisp_mirror_clear_function env sym unbound) name)
+                (seq (nl_apply_stash_wta env op) 0)))))))))
+
+(defun nl_n3_globals_set_w (op name value env)
+  (let* ((sym (wf_word_view name)) (val (wf_word_view value))
+         (nil-slot (alloc-bytes 32 8)) (scratch (alloc-bytes 32 8))
+         (unbound (+ env 64)))
+    (seq
+     (wf_write_nil nil-slot)
+     (if (= (nl_apply_eq_set_value op) 1)
+         (seq (nl_apply_build_setop_scratch unbound val unbound nil-slot scratch)
+              (nelisp_mirror_set_value_or_insert env sym scratch 0) value)
+       (if (= (nl_apply_eq_set_function op) 1)
+           (seq (nl_apply_build_setop_scratch unbound unbound val nil-slot scratch)
+                (nelisp_mirror_set_function_or_insert env sym scratch 0) value)
+         (if (= (nl_apply_eq_set_constant op) 1)
+             (let* ((flag (if (= (nl_val_tag value) 0) 3 7)))
+               (seq
+                (nl_apply_build_setop_scratch unbound unbound unbound (wf_word_view flag) scratch)
+                (nelisp_mirror_set_constant_or_insert env sym scratch 0) flag))
+           (seq (nl_apply_stash_wta env op) 0)))))))
+
+(defun nl_n3_globals_raw_w (args env _pad)
+  (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    (let* ((rest (nl_cons_cdr_word args)))
+      (if (/= (nl_val_tag rest) 7) (seq (nl_apply_stash_wta env args) 0)
+        (let* ((op (wf_arg_ptr args 0)) (name (nl_cons_car_word rest))
+               (more (nl_cons_cdr_word rest)))
+          (if (= (nl_val_tag more) 7)
+              (nl_n3_globals_set_w op name (nl_cons_car_word more) env)
+            (nl_n3_globals_read_w op name env)))))))
+
+(defun nl_apply_do_globals_op_w (args env _pad)
+  (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
+      (nl_n3_globals_mode_w args env 0)
+    (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
+        (nl_n4_frame_op_w args env 0)
+      (nl_n3_globals_raw_w args env 0))))
+
+(defun nl_n4_snapshot_w (env _pad)
+  (let* ((mark (nl_root_mark env)) (list-root (nl_root_reserve env))
+         (item-root (nl_root_reserve env)) (value (nl_root_reserve env))
+         (state (nl_n4_state env)) (i 0))
+    (seq
+     (wf_word_store_out list-root (nelisp_cons_construct_w 3 3 0))
+     (wf_word_store_out item-root (nelisp_cons_construct_w 3 3 0))
+     (while (< i (ptr-read-u64 state 0))
+       (let* ((frame (nl_n4_record state i)))
+         (seq
+          (nl_n4_materialize frame)
+          (ptr-write-u64 frame 136 (nl_n4_hidden state i frame (ptr-read-u64 frame 144)))
+          (ptr-write-u64 (ptr-read-u64 item-root 8) 0 (nl_w_vector_make 6 0))
+          (let* ((item (nl_cons_car_word item-root)))
+            (seq
+             (wf_write_int value (ptr-read-u64 frame 128)) (vector-slot-set item 0 value)
+             (if (= (ptr-read-u64 frame 112) 0) (wf_write_nil value) (wf_write_t value))
+             (vector-slot-set item 1 value) (vector-slot-set item 2 frame)
+             (if (= (ptr-read-u64 frame 112) 0) (vector-slot-set item 3 (+ frame 32))
+               (seq (nl_bf_bind_rest_copy_spine (+ frame 32) value) (vector-slot-set item 3 value)))
+             (if (= (ptr-read-u64 frame 120) 0) (wf_write_nil value) (wf_write_t value))
+             (vector-slot-set item 4 value)
+             (wf_write_int value (ptr-read-u64 frame 136)) (vector-slot-set item 5 value)
+             (ptr-write-u64 (ptr-read-u64 list-root 8) 0
+               (nelisp_cons_construct_w (nl_cons_car_word item-root) (nl_cons_car_word list-root) 0))))
+          (setq i (+ i 1)))))
+     (let* ((word (nl_cons_car_word list-root)))
+       (seq (nl_root_release env mark) word)))))
+
+(defun nl_n4_local_pair_word (pair holder)
+  (let* ((value (nl_cell_get_value_w (nl_cons_cdr_word pair) 0)))
+    (seq
+     (ptr-write-u64 (ptr-read-u64 holder 8) 8
+       (nelisp_cons_construct_w (nl_cons_car_word pair) value 0))
+     (ptr-write-u64 (ptr-read-u64 holder 8) 0
+       (nelisp_cons_construct_w (nl_cons_cdr_word holder) (nl_cons_car_word holder) 0)) 0)))
+
+(defun nl_n4_local_bucket_word (bucket holder)
+  (if (= (nl_val_tag bucket) 7)
+      (seq (nl_n4_local_pair_word (nl_cons_car_word bucket) holder)
+           (nl_n4_local_bucket_word (nl_cons_cdr_word bucket) holder)) 0))
+
+;; Enumerating an outer activation must see each shallow binding's own
+;; value, rather than the mirror value of the innermost binding. SHADOW is
+;; a rooted alist of values restored while walking the saved binding stack.
+(defun nl_n4_local_shadow_value (names name)
+  (if (= (nl_val_tag names) 7)
+      (let* ((pair (nl_cons_car_word names)))
+        (if (= (bf_eq2 (nl_cons_car_word pair) name) 1)
+            (nl_cons_cdr_word pair)
+          (nl_n4_local_shadow_value (nl_cons_cdr_word names) name))) 2))
+
+(defun nl_n4_local_shallow_word (item holder shadow env emit)
+  (let* ((name (nl_vector_slot_word item 0))
+         (saved (nl_vector_slot_word item 1))
+         (prior (nl_n4_local_shadow_value (nl_cons_car_word shadow) name))
+         (value (if (= prior 2) (nelisp_env_lkv_mirror_w env name 0 0) prior)))
+    (seq
+     (if (= emit 1)
+         (seq
+          (ptr-write-u64 (ptr-read-u64 holder 8) 8
+            (nelisp_cons_construct_w name value 0))
+          (ptr-write-u64 (ptr-read-u64 holder 8) 0
+            (nelisp_cons_construct_w (nl_cons_cdr_word holder) (nl_cons_car_word holder) 0))) 0)
+     (ptr-write-u64 (ptr-read-u64 shadow 8) 0
+       (nelisp_cons_construct_w
+        (nelisp_cons_construct_w name saved 0) (nl_cons_car_word shadow) 0)) 0)))
+
+(defun nl_n4_local_history_word (names holder shadow env emit)
+  (if (= (nl_val_tag names) 7)
+      (let* ((item (nl_cons_car_word names)) (tag (nl_val_tag item)))
+        (seq
+         (if (= tag 8) (nl_n4_local_shallow_word item holder shadow env emit)
+           (if (and (= emit 1) (= tag 7)) (nl_n4_local_pair_word item holder) 0))
+         (nl_n4_local_history_word (nl_cons_cdr_word names) holder shadow env emit))) 0))
+
+(defun nl_n4_locals_w (env index _pad)
+  (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
+         (start (ptr-read-u64 frame 96))
+         (depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+         (end (if (< (+ index 1) (ptr-read-u64 state 0))
+                  (ptr-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
+         (backing (nl_record_slot_word (+ frame 64) 0))
+         (mark (nl_root_mark env)) (result (nl_root_reserve env))
+         (shadow (nl_root_reserve env)) (i (- depth 1)))
+    (seq
+     (wf_word_store_out result (nelisp_cons_construct_w 3 3 0))
+     (wf_word_store_out shadow (nelisp_cons_construct_w 3 3 0))
+     ;; Observe younger shallow bindings without including them in the result.
+     (while (>= i end)
+       (seq (nl_n4_local_history_word
+             (nl_record_slot_word (nl_vector_slot_word backing i) 1) result shadow env 0)
+            (setq i (- i 1))))
+     (while (>= i start)
+       (let* ((local (nl_vector_slot_word backing i))
+              (table (nl_record_slot_word local 0)))
+         (seq
+          ;; Small lexical frames contain nil/alists; promoted frames contain
+          ;; a bucket-table Record. The pre-existing walker indexed both as
+          ;; Records and crashed on the locals-parameter reference case.
+          (if (= (nl_val_tag table) 12)
+              (let* ((buckets (nl_record_slot_word table 1))
+                     (count (nl_word_payload (nl_record_slot_word table 0))) (j 0))
+                (while (< j count)
+                  (seq (nl_n4_local_bucket_word (nl_vector_slot_word buckets j) result)
+                       (setq j (+ j 1)))))
+            (nl_n4_local_bucket_word table result))
+          (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env 1)))
+       (setq i (- i 1)))
+     (let* ((word (nl_cons_car_word result)))
+       (seq (nl_root_release env mark) word)))))
+
+(defun nl_n4_frame_op_w (args env _pad)
+  (let* ((code (sexp-int-unwrap (nl_apply_list_nth args 1)))
+         (payload (nl_apply_list_nth args 2)) (state (nl_n4_state env)))
+    (if (= code 0) (nl_n4_snapshot_w env 0)
+      (let* ((serial (sexp-int-unwrap (nl_apply_list_nth payload 0)))
+             (found (nl_n4_find state serial)))
+        (if (= found 0) 3
+          (let* ((index (- found 1)) (frame (nl_n4_record state index)))
+            (if (= code 4) (if (= (ptr-read-u64 frame 120) 0) 3 7)
+              (if (= code 1) (nl_n4_locals_w env index 0)
+                (if (= code 2)
+                    (let* ((value (wf_arg_word payload 1)))
+                      (seq (ptr-write-u64 frame 120 (if (= (nl_val_tag value) 0) 0 1)) value))
+                  (nl_n4_frame_eval_w env frame (nl_apply_list_nth payload 1) 0))))))))))
+
+(defun nl_n4_frame_eval_w (env frame expression _pad)
+      ;; Clone the binding stack prefix, retaining shared records/cells. The
+      ;; suspended suffix stays rooted in SAVED and each activation record.
+      ;; This has N3 eval's scope isolation while allowing live cell mutation.
+      (let* ((mark (nl_root_mark env)) (saved (nl_root_reserve env))
+             (fresh (nl_root_reserve env)) (backing (nl_root_reserve env))
+             (type (nl_root_reserve env)) (depth-slot (nl_root_reserve env))
+             (alist (nl_root_reserve env)) (pair (nl_root_reserve env))
+             (expr (nl_root_reserve env)) (args (nl_root_reserve env))
+             (depth (ptr-read-u64 frame 96)) (flags (ptr-read-u64 env 112))
+             (i 0))
+        (seq
+         (nl_sexp_clone_into expression expr)
+         (nl_sexp_clone_into (+ env 32) saved)
+         (record-type-tag (+ frame 64) type)
+         (vector-make (+ depth 8) backing)
+         (while (< i depth)
+           (seq (vector-slot-set backing i
+                  (nl_vector_slot_word (nl_record_slot_word (+ frame 64) 0) i))
+                (setq i (+ i 1))))
+         (record-make type 2 fresh)
+         (record-slot-set fresh 0 backing)
+         (wf_write_int depth-slot depth)
+         (record-slot-set fresh 1 depth-slot)
+         (wf_write_nil alist)
+         (wf_write_nil pair)
+         (if (= (ptr-read-u64 frame 104) 0)
+             (seq (nl_capture_walk_frames backing (- depth 1) pair alist 0 pair)
+                  (wf_write_nil pair)
+                  (nl_n4_reverse alist pair)
+                  (nl_sexp_clone_into pair alist)) 0)
+         (nl_sexp_clone_into fresh (+ env 32))
+         (ptr-write-u64 env 112
+                        (logior (logand flags -2097153) (ptr-read-u64 frame 104)))
+         ;; Captured cells are installed directly by the N3 binder. Alist
+         ;; precedence is inner-first, matching N3's explicit-alist contract.
+         (wf_write_nil args)
+         (if (= (ptr-read-u64 frame 104) 0)
+             (seq (if (= (sexp-tag alist) 0) (wf_write_t alist) 0)
+                  (nelisp_cons_construct alist args args))
+           (nelisp_cons_construct args args args))
+         (nelisp_cons_construct expr args args)
+         (nl_n4_eval_finish (nl_n3_eval_slow_w args env 0) env saved flags mark))))
+(defun nl_apply_flat_builtin_frame_w (func header env _pad)
   (if (and (> header 4096) (= (sexp-tag header) 2)
            (= (ptr-read-u64 header 8) 3) (= (wf_bytecode_flat_path_int_cell func) 1))
       (nl_bi_syscall_path_int_slots_w (- header 96) (- header 64) (- header 32) 0)
@@ -43470,14 +43728,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_finish_rc (rc r out _pad)
       (if (= r 0) (if (= rc 0) 1 rc) (nl_abi_word_to_rc r out)))
     (defun nl_n4_finish (rc env out frame)
-      ;; Status-only exits preserve the complete physical OUT. Only a debugger
-      ;; consumes a value WORD, after an activation explicitly requests it.
-      (if (= frame 0) rc
-        (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
-            (nl_n4_finish_rc rc
-              (nl_n4_finish_w (nl_val_store_word out) env 0 frame) out 0)
-          (let* ((state (ptr-read-u64 env 176)))
-            (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) rc)))))
+  ;; The legacy physical OUT is already complete. Only a debugger consumes
+  ;; its value as a WORD; status-only exits must preserve all 32 bytes.
+  (if (= frame 0) rc
+    (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
+        (nl_n4_finish_rc rc
+          (nl_n4_finish_w (nl_val_store_word out) env 0 frame) out 0)
+      (let* ((state (ptr-read-u64 env 176)))
+        (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) rc)))))
     (defun nl_n4_direct_apply_w (function args env _pad)
       ;; The cons evaluator already owns the activation. Keep its original
       ;; operator (including aliases), and replace forms only after evaluation.
@@ -43579,29 +43837,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                         (nelisp_cons_construct entry out out))) 0)
              (nl_n4_local_history (nl_cons_cdr_word names) out))) 0))
     (defun nl_n4_locals (env index out)
-      (let* ((state (nl_n4_state env))
-             (frame (nl_n4_record state index))
-             (start (ptr-read-u64 frame 96))
-             (end (if (< (+ index 1) (ptr-read-u64 state 0))
-                      (ptr-read-u64 (nl_n4_record state (+ index 1)) 96)
-                    (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2)))
-             (backing (nl_record_slot_word (+ frame 64) 0))
-             (mark (nl_root_mark env)) (result (nl_root_reserve env))
-             (i (- end 1)))
-        (seq
-         (wf_write_nil result)
-         (while (>= i start)
-           (let* ((local (nl_vector_slot_word backing i))
-                  (table (nl_record_slot_word local 0))
-                  (buckets (nl_record_slot_word table 1)) (j 0)
-                  (count (nl_word_payload (nl_record_slot_word table 0))))
-             (while (< j count)
-               (seq (nl_n4_local_bucket (nl_vector_slot_word buckets j) result env)
-                    (setq j (+ j 1))))
-             (nl_n4_local_history (nl_record_slot_word local 1) result))
-           (setq i (- i 1)))
-         (nl_sexp_clone_into result out)
-         (nl_cons_root_finish env mark 0))))
+      (nl_abi_word_to_rc (nl_n4_locals_w env index 0) out))
     (defun nl_n4_reverse (list out)
       (if (= (sexp-tag list) 7)
           (seq (nelisp_cons_construct (nl_cons_car_word list) out out)
@@ -43878,16 +44114,42 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (cons 'seq (nelisp-standalone--apply-word-forms (nreverse result)))))
 
 (defconst nelisp-standalone--apply-word-names
-  '(nl_n4_apply_raw nl_apply_closure_or_lambda nl_apply_builtin nl_apply_native_subr)
+  '(nl_n4_apply_raw nl_apply_closure_or_lambda nl_apply_builtin nl_apply_native_subr nl_apply_do_fset)
   "Combiner-apply defuns given a Doc 215 word form by
 `nelisp-standalone--apply-word-forms' (their last parameter is OUT).")
+
+(defun nelisp-standalone--abi-fset-word (form out)
+  "Produce the canonical definition after the legacy install side effects."
+  (cl-labels
+      ((has-out (x) (cond ((eq x out) t) ((consp x) (cl-some #'has-out x))))
+       (tail (x)
+         (cond
+          ((numberp x) (if (= x 0) 3 0))
+          ((symbolp x) `(if (= ,x 0) 3 0))
+          ((eq (car x) 'if) `(if ,(cadr x) ,(tail (nth 2 x)) ,(tail (nth 3 x))))
+          ((memq (car x) '(let let*))
+           `(,(car x) ,(cadr x) ,@(butlast (cddr x)) ,(tail (car (last x)))))
+          ((memq (car x) '(seq progn))
+           (let ((xs (cdr x)))
+             (if (equal (last xs 2) `((nl_sexp_clone_into def_ptr ,out) 0))
+                 (if (butlast xs 2) `(,(car x) ,@(butlast xs 2) definition-word) 'definition-word)
+               `(,(car x) ,@(butlast xs) ,(tail (car (last xs)))))))
+          ((has-out x) (error "unconverted fset output: %S" x))
+          (t `(seq ,x 0)))))
+    (let ((body (tail form)))
+      (when (has-out body) (error "fset still uses result OUT"))
+      `(let* ((definition-word
+                (if (= (nl_val_tag args_list_ptr) 7)
+                    (if (= (nl_val_tag (nl_cons_cdr_word args_list_ptr)) 7)
+                        (wf_arg_word args_list_ptr 1) 3) 3))) ,body))))
 
 (defun nelisp-standalone--apply-word-forms (forms)
   "FORMS (the final combiner-apply defuns) with each of
 `nelisp-standalone--apply-word-names' split into F_w, whose tail calls of
 the same set and of `nelisp_apply_function' become word calls (other
 tails run against a private box), and the (rc, OUT) adapter F."
-  (let ((words (append '(nl_apply_do_eval nl_apply_do_funcall nl_apply_do_apply
+  (let ((words (append '(nl_apply_do_push_captured nl_apply_do_set_use_elisp nl_apply_do_symbol_function nl_apply_do_globals_op
+                         nl_apply_do_eval nl_apply_do_funcall nl_apply_do_apply
                          nl_apply_do_push_frame nl_apply_do_pop_frame nl_apply_do_bind_local
                          nl_apply_flat_builtin_frame nl_apply_rooted_subr)
                       (cons 'nelisp_apply_function nelisp-standalone--apply-word-names)))
@@ -43900,10 +44162,12 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (wname (intern (format "%s_w" name)))
                  (wparams (append (butlast params) '(_pad)))
                  (word-body
-                  (nelisp-standalone--special-tail-words
+                  (if (eq name 'nl_apply_do_fset)
+                  (nelisp-standalone--abi-fset-word (cons 'progn (nthcdr 3 form)) out)
+                (nelisp-standalone--special-tail-words
                    (cons 'progn (cl-subst 'nl_apply_lambda_fx 'nl_apply_lambda_inner
                                          (nthcdr 3 form)))
-                   out (cons 'nl_apply_lambda_fx words))))
+                   out (cons 'nl_apply_lambda_fx words)))))
             (unless (eq out 'out)
               (error "apply word ABI: %s does not end in OUT" name))
             ;; The word form reaches the lambda dispatcher through its word

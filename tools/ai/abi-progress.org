@@ -174,6 +174,9 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1681
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Round 4 N4/globals: TOTAL1411; S6.2 remains21. GNU40 activation corpus
+# passes, including alist frames and repeated/outer shallow values. Prior
+# lane crashes. Globals122, finish18, batteries/Anvil/arity pass.
 # Apply/eval checkpoint: TOTAL1397; S6.2 21 (12direct+6reverse+3inline).
 # Apply66 baseline/GNU, prefix mutant, six-call source guard red/green,
 # FFI46, capture/definer/constructor/autoload/callback/environment, tail8,
