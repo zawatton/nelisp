@@ -1704,7 +1704,8 @@ instruction byte is included in the digest rather than silently truncated."
     "nl_gc_loop_ctx" "nl_gc_reclaim_scratch" "nl_gc_start_index"
     "nl_gc_stats" "nl_mxcache_disable_lookup" "nl_mxcache_epoch"
     "nl_mxcache_table_base" "nl_thread_parallel_ctx"
-    "nl_gc_conserv_state" "nl_runtime_reload_state")
+    "nl_gc_conserv_state" "nl_runtime_reload_state"
+    "nl_freelist_large_mask" "nl_symbol_name_t" "nl_symbol_name_nil" "nl_symbol_name_state" "nl_fx_tbl_cache" "nl_boot_hole_map" "nl_native_subr_state" "nl_gc_typed_state" "nl_cold_chunk0_domain")
   "Known shared writable exports used by a full GC/arena unit.
 
 The final import list still comes from the compiled unit.  This list only
@@ -2552,6 +2553,36 @@ The enclosing CFG admission must still authenticate the complete contract."
        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
       (input-reuse-owner
        (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
+(defun nelisp-native-load--raw-v2-resolve-local-calls (unit)
+  "Resolve emitted near CALL relocations to functions owned by UNIT.
+Runtime intrinsics can emit PLT32 relocations even when the allocator is
+part of the same complete runtime unit. Those calls belong to the artifact,
+not its import table. Reject every other local relocation encoding."
+  (let* ((text (plist-get unit :text)) (symbols (plist-get unit :symbols))
+         (definitions (plist-get unit :defuns)) (remaining nil) (patched nil))
+    (dolist (reloc (plist-get unit :relocs))
+      (let* ((name (plist-get reloc :symbol))
+             (definition (cl-find name definitions :key (lambda (x) (plist-get x :name)) :test #'equal))
+             (symbol (and definition (cl-find name symbols :key (lambda (x) (plist-get x :name)) :test #'equal))))
+        (if (null symbol) (push reloc remaining)
+          (let* ((offset (plist-get reloc :offset)) (target (plist-get symbol :value))
+                 (addend (plist-get reloc :addend)))
+            (unless (and (eq (plist-get reloc :type) 'plt32) (equal addend -4)
+                         (integerp offset) (> offset 0) (<= (+ offset 4) (length text))
+                         (= (aref text (1- offset)) #xe8)
+                         (eq (plist-get symbol :section) 'text)
+                         (integerp target) (<= 0 target) (< target (length text)))
+              (error "nelisp-native-load: unsupported local call relocation: %S" name))
+            (let ((delta (- (+ target addend) offset)))
+              (unless (<= -2147483648 delta 2147483647)
+                (error "nelisp-native-load: local call displacement overflow"))
+              (unless patched (setq patched (copy-sequence text)))
+              (dotimes (i 4) (aset patched (+ offset i) (logand (ash delta (* -8 i)) 255))))))))
+    (if (null patched) unit
+      (let ((result (copy-sequence unit)))
+        (setq result (plist-put result :text patched))
+        (plist-put result :relocs (nreverse remaining))))))
+
 (defun nelisp-native-load-raw-v2-compile-file
     (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot cache-only)
   "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
@@ -2574,6 +2605,10 @@ SOURCE-SNAPSHOT is internal: (FORMS . SOURCE-BYTES) from the emitter, avoiding
 file reading and parsing while retaining identical source provenance.
 CACHE-ONLY is internal to the private rooted-CFG cache: return the manifest
 without publishing an intermediate artifact.  The cache owns publication."
+  ;; The complete collector is deeper than the host's default evaluation
+  ;; budget. Match the ordinary standalone compiler locally; source/spec,
+  ;; import, size and relocation validation below retain their own bounds.
+  (let ((max-lisp-eval-depth (max max-lisp-eval-depth 40000)))
   (when (and cache-only
              (not (and rooted-cfg-spec (consp source-snapshot)
                        (listp (car source-snapshot)) (stringp (cdr source-snapshot))
@@ -2921,6 +2956,7 @@ without publishing an intermediate artifact.  The cache owns publication."
       (setq unit
             (nelisp-aot-compile-to-link-unit
              (cons 'seq rewritten) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
+      (setq unit (nelisp-native-load--raw-v2-resolve-local-calls unit))
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
     (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
     (let* ((text (or (plist-get unit :text) ""))
@@ -3278,7 +3314,7 @@ without publishing an intermediate artifact.  The cache owns publication."
       (when (and validation-receiver cfg-validation-result)
         (funcall validation-receiver cfg-validated-contract
                  cfg-validation-digest cfg-validator-owner))
-      manifest)))
+      manifest))))
 )
 
 (defun nelisp-native-load--raw-v2-compile-file-with-validation

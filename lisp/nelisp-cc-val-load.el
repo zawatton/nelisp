@@ -135,8 +135,14 @@
           (if (= tag 1)
               (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 7) 7)
             (if (= tag 2)
-                (let ((word (+ (* (ptr-read-u64 (+ src_slot 8) 0) 4) 1)))
-                  (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
+                ;; Physical Int slots also carry full signed 64-bit values.
+                ;; Outside the immediate range, retain an owned Int box;
+                ;; shifting into a fixnum would discard the high bits.
+                (if (or (< (ptr-read-u64 src_slot 8) -2305843009213693952)
+                        (> (ptr-read-u64 src_slot 8) 2305843009213693951))
+                    0
+                  (let ((word (+ (* (ptr-read-u64 (+ src_slot 8) 0) 4) 1)))
+                    (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word)))
               0)))))
 
     ;; Public C-ABI entry: nl_val_clone_into(src_slot, dst_word_ptr) -> word.

@@ -10,7 +10,7 @@ EVAL_BIN=$D sh test/perf/standalone-checks.sh > $V/a-standalone-checks.log 2>&1
 echo "a rc=$? FAIL=$(grep -c 'STANDALONE-CHECK FAIL' $V/a-standalone-checks.log) known-red=$(grep -c 'known-red' $V/a-standalone-checks.log) last: $(tail -1 $V/a-standalone-checks.log) $(date +%T)" >> $R
 grep 'STANDALONE-CHECK FAIL\|known-red' $V/a-standalone-checks.log | sed 's/^/a   /' >> $R
 # b
-for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el test/standalone-abi-fx-result-word-check.el; do
+for f in test/standalone-shallow-binding-check.el test/standalone-shallow-binding-dyn-check.el test/standalone-fx-forward-macro-check.el test/standalone-fx-late-special-check.el test/perf/fx-spike-check.el test/standalone-prn-string-escape-check.el test/standalone-cl-loop-gnu-check.el test/standalone-bytecode-word-check.el test/standalone-fx-call-shape-check.el test/standalone-abi-fx-result-word-check.el test/standalone-abi-char-table-word-check.el; do
   lg=$V/b-$(basename $f .el).log
   timeout 600 nice -n 10 $D --load $f > $lg 2>&1; rc=$?
   echo "b $f rc=$rc last: $(tail -1 $lg | cut -c1-150)" >> $R
@@ -19,6 +19,10 @@ timeout 300 emacs --batch -l test/standalone-cl-loop-gnu-check.el > $V/b-cl-loop
 if diff $V/b-standalone-cl-loop-gnu-check.log $V/b-cl-loop-gnu.emacs.out > $V/b-cl-loop-gnu.diff; then echo "b cl-loop-gnu diff vs GNU: identical" >> $R; else echo "b cl-loop-gnu diff vs GNU: $(wc -l < $V/b-cl-loop-gnu.diff) diff lines" >> $R; fi
 python3 test/abi-n4-reference-test.py "$D" > "$V/b-n4-reference.log" 2>&1
 echo "b n4-reference rc=$? last: $(tail -1 "$V/b-n4-reference.log")" >> "$R"
+python3 test/abi-char-table-legacy-test.py "$D" > "$V/b-char-table-legacy.log" 2>&1
+echo "b char-table-legacy rc=$? last: $(tail -1 "$V/b-char-table-legacy.log")" >> "$R"
+python3 test/abi-char-table-image-test.py "$D" > "$V/b-char-table-image.log" 2>&1
+echo "b char-table-image rc=$? last: $(tail -1 "$V/b-char-table-image.log")" >> "$R"
 # c
 for n in standalone allocating-standalone percpu-roots mirror-guard; do
   f=tools/nelisp-thread-$n-smoke.el; lg=$V/c-$n.log

@@ -2211,6 +2211,19 @@
 
 ;; N4 locals must handle the small alist frame as well as promoted tables.
 ((lambda (par-n4-local) (backtrace--locals 1 'backtrace--locals)) 7)
+
+;; Char-table getters preserve canonical children across collection and cycles.
+(progn
+  (put 'par-char-word 'char-table-extra-slots 1)
+  (let ((parent (make-char-table 'par-char-parent (concat "parent-" "value")))
+        (table (make-char-table 'par-char-word nil)))
+    (set-char-table-parent table parent)
+    (set-char-table-extra-slot table 0 (vector (concat "extra-" "value")))
+    (aset table 17 (list (concat "entry-" "value")))
+    (aset table 18 table)
+    (garbage-collect)
+    (list (char-table-subtype table) (aref table 0) (aref table 17)
+          (char-table-extra-slot table 0) (eq (aref table 18) table))))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

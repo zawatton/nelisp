@@ -3099,6 +3099,29 @@ without the async core and process adapter that define the standard names."
                    (cons (cons 'nl_os_interpreted_syscall (cdr pattern))
                          '(syscall-direct different))))))
 
+(ert-deftest nelisp-standalone-target-reload-refuses-frozen-capabilities ()
+  "Mutable GC dispatch cannot receive a source-frozen closure capability."
+  (let ((process-environment (copy-sequence process-environment)) (called nil))
+    (setenv "NELISP_RUNTIME_RELOAD" "1")
+    (cl-letf (((symbol-function 'nelisp-native-rooted-startup-evidence-build)
+               (lambda (&rest _) (setq called t) (error "unexpected frozen proof"))))
+      (let ((source (nelisp-standalone--rooted-protocol-startup-src nil)))
+        (should-not called)
+        (should (string-match-p "source-frozen native capabilities unavailable" source))
+        (should-not (string-match-p "(provide " source))))))
+
+(ert-deftest nelisp-standalone-target-production-keeps-frozen-proofs ()
+  "The production path still builds every existing authenticated proof."
+  (let ((process-environment (copy-sequence process-environment)))
+    (setenv "NELISP_RUNTIME_RELOAD" "0")
+    (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target) (lambda () 'linux-x86_64))
+              ((symbol-function 'nelisp-native-rooted-startup-evidence-build) (lambda (&rest _) "rooted;"))
+              ((symbol-function 'nelisp-native-compiler-startup-evidence-build) (lambda (&rest _) "compiler;"))
+              ((symbol-function 'nelisp-native-funcall-startup-evidence-build) (lambda (&rest _) "funcall;"))
+              ((symbol-function 'nelisp-standalone--native-startup-autoload-src) #'identity))
+      (should (equal (nelisp-standalone--rooted-protocol-startup-src nil)
+                     "rooted;compiler;funcall;")))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

@@ -44,6 +44,19 @@ cat >"$dir/fixture.el" <<EOF
 (progn
 (load "$root/lisp/nelisp-runtime-development.el")
 (setq smoke-retained (list "retained" (vector 17 29)))
+(put 'smoke-char-word 'char-table-extra-slots 1)
+(setq smoke-table (make-char-table 'smoke-char-word (concat "default-" "retained")))
+(aset smoke-table 101 (list (concat "entry-" "retained") (vector 17 29)))
+(set-char-table-extra-slot smoke-table 0 (vector (concat "extra-" "retained")))
+(aset smoke-table 102 smoke-table)
+(defun smoke-check-table ()
+  (unless (and (equal (char-table-range smoke-table nil) "default-retained")
+               (equal (aref smoke-table 101) '("entry-retained" [17 29]))
+               (equal (char-table-extra-slot smoke-table 0) '["extra-retained"])
+               (eq (aref smoke-table 102) smoke-table))
+    (error "Published collector lost char-table WORD children"))
+  (nelisp--write-stdout-bytes "GC_V2_CHAR_TABLE_WORDS_PRESERVED\\n"))
+
 (let ((s (nelisp-runtime-reload-status))) (unless (eq (plist-get s :status) 'ready) (error "runtime unavailable: %S" s)))
 (setq smoke-before (nelisp-runtime-reload-status))
 (setq smoke-install (nelisp-runtime-rebuild-and-reload "$root"))
@@ -59,6 +72,7 @@ cat >"$dir/fixture.el" <<EOF
 (ptr-write-u64 smoke-stats 48 0)
 (garbage-collect)
 (unless (= (ptr-read-u64 smoke-stats 8) (/ (* (ptr-read-u64 smoke-stats 16) 300) 100)) (error "A collector threshold mismatch"))
+(smoke-check-table)
 (setq smoke-b-alloc (nelisp-native-load-raw-artifact "$dir/generation-b.nelr" "nl_alloc_bytes_uncheck" (getenv "NELISP_B_SHA")))
 (setq smoke-b-gc (copy-sequence smoke-b-alloc))
 (setq smoke-b-gc (plist-put smoke-b-gc :entry-name "nl_gc_collect_recorded_mark_sweep_body"))
@@ -70,10 +84,12 @@ cat >"$dir/fixture.el" <<EOF
 (unless (= (ptr-read-u64 smoke-stats 8) (/ (* (ptr-read-u64 smoke-stats 16) 301) 100)) (error "B collector did not use its new private helper"))
 (unless (equal smoke-retained '("retained" [17 29])) (error "Retained state changed"))
 (nelisp--write-stdout-bytes "GC_V2_GENERATION_B_HELPER_301\\n")
+(smoke-check-table)
 (setq smoke-restore (nelisp-runtime-reload-restore-originals))
 (unless (eq (plist-get smoke-restore :status) 'published) (error "restore failed: %S" smoke-restore))
 (garbage-collect)
 (unless (= (ptr-read-u64 smoke-stats 8) (/ (* (ptr-read-u64 smoke-stats 16) 300) 100)) (error "Original collector behavior was not restored"))
+(smoke-check-table)
 (ptr-write-u64 smoke-stats 40 smoke-floor)
 (ptr-write-u64 smoke-stats 48 smoke-percent)
 (nelisp--write-stdout-bytes (format "GC_V2_RESTORED_GEN_%d\\n" (plist-get smoke-restore :generation)))
@@ -88,7 +104,7 @@ EOF
 export NELISP_NATIVE_SMOKE_DIR="$dir"
 printf '%s\n' '(load (expand-file-name "fixture.el" (getenv "NELISP_NATIVE_SMOKE_DIR")))' '(exit)' >"$dir/input.el"
 set +e
-NELISP_BIN="$bin" "$root/tools/ai/nelisp-ai.sh" repl --no-prompt <"$dir/input.el" >"$dir/out" 2>"$dir/err"
+NELISP_BIN="$bin" "$root/tools/ai/nelisp-ai.sh" repl --runtime-only --no-prompt <"$dir/input.el" >"$dir/out" 2>"$dir/err"
 status=$?
 set -e
 [ "$status" -eq 0 ]
@@ -100,4 +116,5 @@ grep -Eq '^GC_V2_PUBLISHED_GEN_[0-9]+$' "$dir/out"
 grep -Eq '^GC_V2_RESTORED_GEN_[0-9]+$' "$dir/out"
 grep -Fxq 'GC_V2_INVALID_PRESERVED' "$dir/out"
 grep -Fxq 'GC_V2_GENERATION_B_HELPER_301' "$dir/out"
+[ "$(grep -Fxc GC_V2_CHAR_TABLE_WORDS_PRESERVED "$dir/out")" -eq 3 ]
 echo 'nelisp-native-runtime-repl-smoke: PASS'

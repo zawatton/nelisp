@@ -227,7 +227,7 @@ live raw loader use this predicate."
 
 (ert-deftest nelisp-native-runtime-reload/v2-production-source-compiles-and-checks ()
   "The complete exported allocator/GC source forms a checked v2 unit."
-  (skip-unless (fboundp 'nelisp-runtime-reload-production-source))
+  (require 'nelisp-runtime-reload-build)
   (let* ((dir (make-temp-file "nelisp-native-runtime-reload-v2-" t))
          (source (expand-file-name "runtime-production.el" dir))
          (artifact (expand-file-name "runtime-production.nelr" dir))
@@ -243,7 +243,9 @@ live raw loader use this predicate."
           (let ((nelisp-standalone--target 'linux-x86_64))
             (nelisp-runtime-reload-export-source source))
           (should (file-readable-p source))
-          (nelisp-native-load-raw-v2-compile-file source artifact "ert" binary)
+          (let ((max-lisp-eval-depth 1600))
+            (nelisp-native-load-raw-v2-compile-file source artifact "ert" binary)
+            (should (= max-lisp-eval-depth 1600)))
           (let* ((manifest (nelisp-native-load-manifest artifact))
                  (native (plist-get manifest :native))
                  (problems (nelisp-native-load-raw-v2-check manifest)))
@@ -503,6 +505,34 @@ live raw loader use this predicate."
                  (nelisp-native-runtime-reload-test--platform-only-problem-p
                   problems))))))
       (delete-directory dir t))))
+
+(ert-deftest nelisp-native-runtime-reload-production-data-imports-exported ()
+  "Every current allocator/GC data import has an authenticated resolver slot."
+  (require 'nelisp-runtime-reload-build)
+  (let* ((source (cdr (nelisp-runtime-reload-production-source)))
+         (names (nelisp-native-load--raw-v2-collect-data-addr-names source)))
+    (should-not (cl-set-difference names nelisp-runtime-reload-symbols :test #'equal))))
+
+(ert-deftest nelisp-native-runtime-reload-local-call-relocations ()
+  "Local calls resolve without imports; malformed encodings remain rejected."
+  (let* ((text (unibyte-string #xe8 0 0 0 0 #xc3 #xc3))
+         (reloc '(:type plt32 :symbol "allocator" :offset 1 :addend -4))
+         (unit (list :text text :symbols '((:name "allocator" :section text :value 6))
+                     :defuns '((:name "allocator")) :relocs (list reloc)))
+         (result (nelisp-native-load--raw-v2-resolve-local-calls unit)))
+    (should (equal (plist-get result :text) (unibyte-string #xe8 1 0 0 0 #xc3 #xc3)))
+    (should-not (plist-get result :relocs))
+    (should (equal text (unibyte-string #xe8 0 0 0 0 #xc3 #xc3)))
+    (should (equal (plist-get unit :relocs) (list reloc)))
+    (dolist (bad (list (plist-put (copy-sequence reloc) :offset 0)
+                      (plist-put (copy-sequence reloc) :addend 0)
+                      (plist-put (copy-sequence reloc) :type 'pc32)))
+      (should-error (nelisp-native-load--raw-v2-resolve-local-calls
+                     (plist-put (copy-sequence unit) :relocs (list bad)))))
+    (let ((external (plist-put (copy-sequence reloc) :symbol "external")))
+      (should (equal (plist-get (nelisp-native-load--raw-v2-resolve-local-calls
+                                (plist-put (copy-sequence unit) :relocs (list external))) :relocs)
+                     (list external))))))
 
 (provide 'nelisp-native-runtime-reload-test)
 

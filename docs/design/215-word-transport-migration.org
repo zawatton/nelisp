@@ -635,3 +635,46 @@ passes on the new dump. Bytecode145, FX call-shape/spike, GNU N4 40,
 44 GC/result cases (with actual VM coverage), callback40, apply66 and the
 baseline/Anvil batteries pass. TOTAL1408; S6.2 17 (11 direct, 3 reverse,
 3 inline). The final verifier includes the GC/result corpus.
+
+** Round 4 char-table canonical storage
+
+Subtype, default, interval and extra-slot cells now own canonical child
+WORDs. Existing 32/48-byte strides remain, with unused cell bytes zeroed.
+Getters return those children directly; the collector and image relocation
+walk WORD edges. Physical-input C ABI entries use the existing cloning
+primitive at that input boundary. Its counted inline conversion remains
+explicit S6.2 debt. Full signed 64-bit physical Ints outside the fixnum
+range retain an owned Int box instead of overflowing the immediate encoding.
+
+The six-producer source guard is red17 on the preceding dump and green0
+on this build. Array214, conservative-scan-disabled table roots10, GNU
+map-char-table2, native physical ABI6 and a fresh-process cold-image8 run
+exercise the actual table format. The first table draft fails the physical
+ABI's INT64_MAX case; the preceding physical implementation and range-checked
+cloner pass. The legacy eval-elisp-source Doc186 smoke retains its identical
+pre-existing missing replace-regexp-in-string failure on 80902e27f.
+TOTAL1392; S6.2 12 =8direct+3reverse+1inline. No criteria changed.
+
+The optional runtime-reload build cannot receive source-frozen closure
+capabilities because its GC dispatch is mutable. It now reports that
+limitation explicitly; production closure checking is unchanged. The raw
+runtime-reload resolver includes the current collector's shared symbol,
+boot-domain and activation dependencies. Its full-source host check now
+loads its prerequisite instead of skipping, and compilation uses the same
+local depth budget as the ordinary compiler. Intrinsic near calls to an
+allocator defined in the same raw unit resolve locally after validating the
+CALL encoding, symbol ownership and displacement. They never import a second
+allocator. Invalid local relocation encodings remain rejected.
+
+Native publication evidence: the runtime-only REPL installs the checkout's
+collector (generation1), installs an isolated generation-B collector whose
+private helper changes the debt threshold from 300 to 301, then restores the
+original collector (generation3). Retained Lisp state and char-table children
+pass after all three collections; malformed source preserves the generation.
+The full artifact bootstrap fails at nesting16000 in26.922s on this debug
+binary; the bounded runtime-only startup succeeds in0.786s. The raw runtime
+host suite executes23/23, including its formerly skipped full-source compile.
+The constructor loader template is regenerated through its existing script;
+its bytes and exact three gate transformations are unchanged, with a refreshed
+owner source identity. Its owner/serializer controls pass30 with one optional
+real-render fixture skipped.

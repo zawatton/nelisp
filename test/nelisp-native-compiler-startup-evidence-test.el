@@ -1,5 +1,6 @@
 ;;; nelisp-native-compiler-startup-evidence-test.el --- Constructor derivation controls -*- lexical-binding: t; -*-
 (require 'ert)
+(require 'nelisp-native-load)
 (require 'nelisp-native-compiler-startup-evidence)
 (defconst nelisp-native-compiler-startup-evidence-test--root
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))

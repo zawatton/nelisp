@@ -274,8 +274,12 @@ Start from the repository root:
 
 ```sh
 make runtime-reload-reader
-NELISP_BIN=target/nelisp-runtime-reload tools/ai/nelisp-ai.sh repl
+NELISP_BIN=target/nelisp-runtime-reload tools/ai/nelisp-ai.sh repl --runtime-only
 ```
+
+The `--runtime-only` mode loads the native runtime development API. Runtime
+compilation runs in host Emacs; this mode can repair allocator/GC code
+without bootstrapping the standalone artifact compiler.
 
 Load the development commands and create state that should survive:
 
@@ -323,6 +327,13 @@ process exit. This is not a saved, immutable reload plan: source hashes,
 session identity, and dependency closure are not frozen by this API. The
 common protocol's [native `reload.plan` and `reload.apply`](development-protocol.md#plan-and-apply-a-native-allocatorgc-replacement)
 add process-local, single-use authority and stale-input checks above this API.
+
+The opt-in runtime-reload executable does not issue source-frozen rooted,
+compiler-constructor or F1 capabilities: its collector dispatch can change,
+so the production direct-only closure proof must refuse that code. Calling
+`nelisp-native-startup-ensure` reports this limitation explicitly. The raw
+runtime-reload ABI still verifies executable identity, generation, candidate
+contracts and publication. Use the production build for frozen capabilities.
 
 The replacement contains the allocator and the complete collector unit.
 Collector helpers can be added, removed, renamed, or rewritten within the

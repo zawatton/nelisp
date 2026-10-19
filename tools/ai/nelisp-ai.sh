@@ -717,15 +717,24 @@ EOF
 cmd_repl() {
     if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
         cat <<'EOF'
-usage: tools/ai/nelisp-ai.sh repl [--no-prompt] [--no-print]
+usage: tools/ai/nelisp-ai.sh repl [--runtime-only] [--no-prompt] [--no-print]
 
 Start the standalone REPL after loading the full artifact-command runtime in
 the same live session.  This makes `nelisp-artifact-reload-source-file'
 available to an interactive development session.  The command uses an
 existing target binary; build it first with `make standalone-reader`, or set
-NELISP_BIN to a host-runnable binary.
+NELISP_BIN to a host-runnable binary. Use --runtime-only first to load the
+native allocator/GC development API with host-side compilation.
 EOF
         return 0
+    fi
+
+    repl_mode=artifact
+    repl_required=nelisp-artifact-reload-source-file
+    if [ "${1:-}" = "--runtime-only" ]; then
+        repl_mode=runtime
+        repl_required=nelisp-runtime-build-and-stage
+        shift
     fi
 
     repl_bin=$(nelisp_binary 2>/dev/null || true)
@@ -756,12 +765,18 @@ EOF
     # variable keeps shell quoting out of the Elisp form, including when
     # TMPDIR contains spaces or quote characters.
     set +e
-    NELISP_AI_REPL_RUNTIME="$repl_runtime" \
+    NELISP_AI_REPL_RUNTIME="$repl_runtime" NELISP_AI_REPL_MODE="$repl_mode" \
         "$EMACS" --batch -Q -L lisp -L src -L scripts \
         --eval '(setq load-prefer-newer t)' \
-        --eval '(require (quote nelisp-standalone-build))' \
-        --eval '(with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
-                  (insert (nelisp-standalone--artifact-command-runtime-src t)))' &
+        --eval '(if (equal (getenv "NELISP_AI_REPL_MODE") "runtime")
+                    (with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
+                      (prin1 (list (quote load)
+                                   (expand-file-name "lisp/nelisp-runtime-development.el")
+                                   nil t) (current-buffer))
+                      (insert "\n"))
+                  (require (quote nelisp-standalone-build))
+                  (with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
+                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' &
     repl_generator_pid=$!
     wait "$repl_generator_pid"
     repl_generation_status=$?
@@ -777,7 +792,7 @@ EOF
     # bootstrap form and then copies the caller's input into a named pipe.
     # Keeping its PID lets normal exit and signal paths reap it along with the
     # native child, including when stdin remains open after `(exit)'.
-    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp '\''nelisp-artifact-reload-source-file) (error "artifact runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
     repl_input_fifo="$repl_tmp_dir/input.fifo"
     if ! mkfifo "$repl_input_fifo"; then
         echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2
@@ -799,7 +814,7 @@ EOF
         done <&3
     ) > "$repl_input_fifo" &
     repl_producer_pid=$!
-    NELISP_AI_REPL_RUNTIME="$repl_runtime" \
+    NELISP_AI_REPL_RUNTIME="$repl_runtime" NELISP_AI_REPL_REQUIRED="$repl_required" \
         "$repl_bin" --repl "$@" < "$repl_input_fifo" &
     repl_pid=$!
     exec 3<&-

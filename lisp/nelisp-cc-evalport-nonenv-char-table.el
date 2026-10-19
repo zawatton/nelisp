@@ -77,35 +77,17 @@
         lo))
     ;; Effective lookup: interval value, else default, else parent chain.
     (defun nl_ct_get_box (box idx out)
-      (let* ((eptr (ptr-read-u64 (+ box 64) 0))
-             (elen (ptr-read-u64 (+ box 80) 0))
-             (i (nl_ct_lower_end eptr elen idx))
-             (hit (if (< i elen) (if (<= (nl_ct_start eptr i) idx) 1 0) 0))
-             (vslot (nl_ct_val eptr i)))
-        (if (if (= hit 1) (/= (nelisp_ptr_read_u8 vslot 0) 0) 0)
-            (seq (nl_sexp_clone_into vslot out) 0)
-          (let* ((parent_ptr (ptr-read-u64 (+ box 88) 0)))
-            (if (if (= (nelisp_ptr_read_u8 (+ box 32) 0) 0) (/= parent_ptr 0) 0)
-                (nl_ct_get_box parent_ptr idx out)
-              (seq (nl_sexp_clone_into (+ box 32) out) 0))))))
+      (nl_abi_word_to_rc (nl_ct_get_box_w box idx 0) out))
     ;; `char-table-range' on a (FROM . TO) cons: slot value, else default,
     ;; never the parent chain (verified against host Emacs).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_char_table_get_local_raw_w (arg idx _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((box (ptr-read-u64 (+ arg 8) 0))
-             (eptr (ptr-read-u64 (+ box 64) 0))
-             (elen (ptr-read-u64 (+ box 80) 0))
-             (i (nl_ct_lower_end eptr elen idx))
-             (hit (if (< i elen) (if (<= (nl_ct_start eptr i) idx) 1 0) 0))
-             (vslot (nl_ct_val eptr i)))
-        (if (if (= hit 1) (/= (nelisp_ptr_read_u8 vslot 0) 0) 0)
-            (seq (nl_sexp_clone_into vslot out) 0)
-          (seq (nl_sexp_clone_into (+ box 32) out) 0)))
-        ) 0)
-            (let* ((tg (ptr-read-u8 out 0))) (if (= tg 2) (+ (* (ptr-read-u64 out 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 out))))
-          (nl_abi_fail 1 0))))
+      (let* ((box (ptr-read-u64 arg 8)) (eptr (ptr-read-u64 box 64))
+             (elen (ptr-read-u64 box 80)) (i (nl_ct_lower_end eptr elen idx))
+             (hit (and (< i elen) (<= (nl_ct_start eptr i) idx))))
+        (if (and hit (/= (ptr-read-u64 (nl_ct_val eptr i) 0) 3))
+            (ptr-read-u64 (nl_ct_val eptr i) 0)
+          (ptr-read-u64 box 32))))
     (defun nl_char_table_get_local_raw (arg idx out)
       (nl_abi_word_to_rc (nl_char_table_get_local_raw_w arg idx 0) out))
     (defun nl_char_table_get_raw (arg idx out)
@@ -114,21 +96,17 @@
             (nl_ct_get_box (ptr-read-u64 (+ arg 8) 0) idx out)
           1)))
     ;; Doc 215 builtin word ABI: a storage slot as a value WORD (Int -> immediate, nil 3, t 7).
-    (defun nl_ct_slot_word (s)
-      (let* ((tg (ptr-read-u8 s 0))) (if (= tg 2) (+ (* (ptr-read-u64 s 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 s)))))
+
     ;; Effective lookup returning the value WORD (the table's own child, no clone).
     (defun nl_ct_get_box_w (box idx _pad)
-      (let* ((eptr (ptr-read-u64 (+ box 64) 0))
-             (elen (ptr-read-u64 (+ box 80) 0))
+      (let* ((eptr (ptr-read-u64 box 64)) (elen (ptr-read-u64 box 80))
              (i (nl_ct_lower_end eptr elen idx))
-             (hit (if (< i elen) (if (<= (nl_ct_start eptr i) idx) 1 0) 0))
-             (vslot (nl_ct_val eptr i)))
-        (if (if (= hit 1) (/= (nelisp_ptr_read_u8 vslot 0) 0) 0)
-            (nl_ct_slot_word vslot)
-          (let* ((parent_ptr (ptr-read-u64 (+ box 88) 0)))
-            (if (if (= (nelisp_ptr_read_u8 (+ box 32) 0) 0) (/= parent_ptr 0) 0)
-                (nl_ct_get_box_w parent_ptr idx 0)
-              (nl_ct_slot_word (+ box 32)))))))
+             (hit (and (< i elen) (<= (nl_ct_start eptr i) idx)))
+             (value (if hit (ptr-read-u64 (nl_ct_val eptr i) 0) 3)))
+        (if (/= value 3) value
+          (let* ((parent (ptr-read-u64 box 88)) (default (ptr-read-u64 box 32)))
+            (if (and (= default 3) (/= parent 0))
+                (nl_ct_get_box_w parent idx 0) default)))))
     ;; Doc 215 builtin word ABI: the value WORD, or 0 after a stashed error for a non-char-table.
     (defun nl_char_table_get_raw_w (arg idx _pad)
       (if (= (nelisp_ptr_read_u8 arg 0) 9)
@@ -140,7 +118,7 @@
              (n (ptr-read-u64 (+ box 80) 0)))
         (if (< (+ p 1) n)
             (if (= (nl_ct_start eptr (+ p 1)) (+ (nl_ct_end eptr p) 1))
-                (if (= (bf_eq2 (nl_ct_val eptr p) (nl_ct_val eptr (+ p 1))) 1)
+                (if (= (wf_bytecode_w_eqw (ptr-read-u64 (nl_ct_val eptr p) 0) (ptr-read-u64 (nl_ct_val eptr (+ p 1)) 0)) 1)
                     (seq (ptr-write-u64 (+ eptr (+ (* p 48) 40)) 0
                                         (nl_ct_end eptr (+ p 1)))
                          (nl_ct_move_entries eptr (+ p 2) (+ p 1) (- n (+ p 2)))
@@ -151,7 +129,7 @@
           0)
         (if (> p 0)
             (if (= (+ (nl_ct_end eptr (- p 1)) 1) (nl_ct_start eptr p))
-                (if (= (bf_eq2 (nl_ct_val eptr (- p 1)) (nl_ct_val eptr p)) 1)
+                (if (= (wf_bytecode_w_eqw (ptr-read-u64 (nl_ct_val eptr (- p 1)) 0) (ptr-read-u64 (nl_ct_val eptr p) 0)) 1)
                     (seq (ptr-write-u64 (+ eptr (+ (* (- p 1) 48) 40)) 0
                                         (nl_ct_end eptr p))
                          (nl_ct_move_entries eptr (+ p 1) p (- n (+ p 1)))
@@ -164,7 +142,7 @@
     (defun nl_ct_write_entry (eptr i from to val)
       (let* ((ent (+ eptr (* i 48))))
         (seq (ptr-write-u64 ent 0 from)
-             (nl_sexp_clone_into val (+ ent 8))
+             (nl_ct_store_word (+ ent 8) val)
              (ptr-write-u64 (+ ent 40) 0 to)
              1)))
     ;; The interval at LO..HI overlaps [FROM,TO].  Trim/split the border
@@ -180,8 +158,8 @@
                  (setq eptr2 (nl_ct_reserve box (+ n 2)))
                  (nl_ct_move_entries eptr2 hi (+ hi 2) (- n hi))
                  (ptr-write-u64 (+ eptr2 (* (+ hi 1) 48)) 0 (+ to 1))
-                 (nl_sexp_clone_into (nl_ct_val eptr2 lo)
-                                     (nl_ct_val eptr2 (+ hi 1)))
+                 (nl_ct_store_word (nl_ct_val eptr2 (+ hi 1))
+                                   (ptr-read-u64 (nl_ct_val eptr2 lo) 0))
                  (ptr-write-u64 (+ eptr2 (+ (* (+ hi 1) 48) 40)) 0
                                 (nl_ct_end eptr2 lo))
                  (nl_ct_write_entry eptr2 hi from to val)
@@ -214,14 +192,7 @@
            1))))
     ;; Set every char in [FROM,TO] (FROM <= TO, both valid chars) to VAL.
     (defun nl_ct_value_eq (slot value)
-      ;; SLOT is physical 32-byte table storage; VALUE may be a WORD or a
-      ;; legacy view. Compare immediates without constructing a view/WORD.
-      (if (= (logand value 1) 1)
-          (if (= (nl_val_tag value) (nl_val_tag slot))
-              (if (= (nl_val_tag value) 2)
-                  (if (= (nl_word_payload value) (nl_word_payload slot)) 1 0) 1)
-            0)
-        (bf_eq2 slot value)))
+      (wf_bytecode_w_eqw (ptr-read-u64 slot 0) value))
     (defun nl_ct_set_range (box from to val)
       (let* ((eptr (ptr-read-u64 (+ box 64) 0))
              (n (ptr-read-u64 (+ box 80) 0))
@@ -238,12 +209,10 @@
             1
           (nl_ct_set_range2 box eptr n lo hi from to val))))
     (defun nl_char_table_set_raw (arg idx val out)
-      (let* ((tag (nelisp_ptr_read_u8 arg 0)))
-        (if (= tag 9)
-            (seq (nl_ct_set_range (ptr-read-u64 (+ arg 8) 0) idx idx val)
-                 (nl_sexp_clone_into val out)
-                 0)
-          1)))
+      (if (= (nelisp_ptr_read_u8 arg 0) 9)
+          (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
+            (seq (nl_ct_set_range (ptr-read-u64 arg 8) idx idx word)
+                 (nl_sexp_clone_into val out) 0)) 1))
     ;; Doc 215 builtin word ABI: set and answer VAL as a WORD (an immediate stays as it is).
     (defun nl_char_table_set_raw_w (arg idx val _pad)
       ;; VAL is the caller's canonical WORD; legacy entries copy their view.
@@ -251,12 +220,10 @@
           (seq (nl_ct_set_range (ptr-read-u64 arg 8) idx idx val) val)
         (extern-call nl_abi_fail 1 0)))
     (defun nl_char_table_set_range_raw (arg from to val out)
-      (let* ((tag (nelisp_ptr_read_u8 arg 0)))
-        (if (= tag 9)
-            (seq (nl_ct_set_range (ptr-read-u64 (+ arg 8) 0) from to val)
-                 (nl_sexp_clone_into val out)
-                 0)
-          1)))
+      (if (= (nelisp_ptr_read_u8 arg 0) 9)
+          (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
+            (seq (nl_ct_set_range (ptr-read-u64 arg 8) from to word)
+                 (nl_sexp_clone_into val out) 0)) 1))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
     ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
     ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `nl_char_table_set_range_raw'.

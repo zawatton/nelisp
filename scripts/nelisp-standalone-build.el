@@ -4567,12 +4567,14 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_char_table_slots (base i len stride off)
       (if (= (nl_gc_in_arena base) 0) 0
         (let* ((cap (nl_gc_block_elem_cap base stride))
-               (n (if (< len cap) len cap))
-               (k i))
+               (n (if (< len cap) len cap)) (k i))
           (while (< k n)
-            (nl_seq2 (nl_gc_mark_slot (+ base (+ off (* k stride))))
-                     (setq k (+ k 1))))
-          0)))
+            (seq (nl_gc_mark_char_table_word (+ base (+ off (* k stride))))
+                 (setq k (+ k 1)))) 0)))
+    (defun nl_gc_mark_char_table_word (slot)
+      (let* ((word (ptr-read-u64 slot 0)))
+        (if (= (logand word 1) 1) 0
+          (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))
     ;; Mark a tag-9 box and every owned edge.  `nl_gc_mark_block' is the cycle
     ;; guard for parent/default graphs, so a parent cycle terminates safely.
     ;; `nl_gc_mark_block' proves only that BOX is an unmarked in-arena block;
@@ -4590,8 +4592,8 @@ REPL-facing module it feeds."
                (extra (ptr-read-u64 (+ box 96) 0))
                (extra_len (ptr-read-u64 (+ box 112) 0)))
           (seq
-           (nl_gc_mark_slot box)
-           (nl_gc_mark_slot (+ box 32))
+           (nl_gc_mark_char_table_word box)
+           (nl_gc_mark_char_table_word (+ box 32))
            (nl_gc_mark_buf entries)
            (nl_gc_mark_char_table_slots entries 0 entries_len 48 8)
            (if (= parent 0) 0 (nl_gc_mark_char_table_box parent))
@@ -11168,7 +11170,7 @@ leave symbols unresolved at link time."
                (n (if (< len cap) len cap)) (i 0))
           (while (< i n)
             (nl_seq2
-             (nl_fa_slot (+ base (+ off (* i stride))) ds span dest cin cout dir)
+             (nl_fa_vec_slots (+ base (+ off (* i stride))) 0 1 ds span dest cin cout dir)
              (setq i (+ i 1))))
           0)))
     (defun nl_fa_char_table_box (box ds span dest cin cout dir)
@@ -11180,8 +11182,8 @@ leave symbols unresolved at link time."
                  (extra (ptr-read-u64 box 96))
                  (extra_len (ptr-read-u64 box 112)))
             (seq
-             (nl_fa_slot box ds span dest cin cout dir)
-             (nl_fa_slot (+ box 32) ds span dest cin cout dir)
+             (nl_fa_vec_slots box 0 1 ds span dest cin cout dir)
+             (nl_fa_vec_slots (+ box 32) 0 1 ds span dest cin cout dir)
              (nl_fa_field (+ box 64) entries ds span dest cin cout dir)
              (nl_fa_char_table_slots entries entries_len 48 8 ds span dest cin cout dir)
              (if (= parent 0) 0
@@ -19691,15 +19693,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;;
     ;; Box layout (128 bytes -- matches the CharTableInner + refcount trailer
     ;; `lisp/nelisp-cc-nlchartable-drop.el' documents):
-    ;;   0   subtype      (32B Sexp)
-    ;;   32  default_val  (32B Sexp)
+    ;;   0   subtype      (child WORD + 24B padding)
+    ;;   32  default_val  (child WORD + 24B padding)
     ;;   64  entries.ptr  (8B)  \
     ;;   72  entries.cap  (8B)   > owned by nl_char_table_{get,set}_raw
     ;;   80  entries.len  (8B)  /
     ;;   88  parent       (8B)  -- 0 = none, else a raw CharTable box pointer
     ;;   96  extra.ptr    (8B)  \  Doc 186 P1: fixed NL_CT_MAX_EXTRA (10 --
     ;;   104 extra.cap    (8B)   > Emacs's own extra-slot ceiling) buffer of
-    ;;   112 extra.len    (8B)  /  32B Sexp slots, Nil-filled at construction.
+    ;;   112 extra.len    (8B)  /  32B padded WORD cells, nil-filled at construction.
     ;;   120 refcount     (8B)  -- vestigial in this arena-allocated reader
     ;;                            (real reclaim is per-top-level-form arena
     ;;                            epoch, not refcounting); kept only so the
@@ -19719,8 +19721,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
         ))
     (defun nl_ct_extra_fill (ptr i n)
       (if (>= i n) ptr
-        (seq (wf_write_nil (+ ptr (* i 32)))
+        (seq (nl_ct_store_word (+ ptr (* i 32)) 3)
              (nl_ct_extra_fill ptr (+ i 1) n))))
+    ;; The table owns canonical child WORDs, with 24 bytes of zero padding
+    ;; per cell to retain its interval/extra buffer strides.
+    (defun nl_ct_store_word (slot word)
+      (seq (ptr-write-u64 slot 0 word) (ptr-write-u64 slot 8 0)
+           (ptr-write-u64 slot 16 0) (ptr-write-u64 slot 24 0) word))
     ;; nl_char_table_alloc SUBTYPE-PTR DEFAULT-PTR OUT -> CharTable(tag9).
     ;; The one genuinely new native primitive Doc 186 §3.1 calls for --
     ;; every other char-table primitive already existed.  No dedicated
@@ -19733,35 +19740,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; "clone.o") gives subtype/default_val the same refcount-aware copy
     ;; discipline `nl_char_table_get_raw'/`_set_raw' use internally.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
-    (defun nl_char_table_alloc_w (subtype default_ptr _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (seq (seq
-      (let* ((box (alloc-bytes 128 8))
+    (defun nl_char_table_alloc_w (subtype default-word _pad)
+      (let* ((object (alloc-bytes 32 8)) (box (alloc-bytes 128 8))
              (extra (nl_ct_extra_fill (alloc-bytes 320 8) 0 10)))
-        (seq
-         (nl_sexp_clone_into subtype box)
-         (nl_sexp_clone_into default_ptr (+ box 32))
-         (ptr-write-u64 (+ box 64) 0 0)
-         (ptr-write-u64 (+ box 72) 0 0)
-         (ptr-write-u64 (+ box 80) 0 0)
-         (ptr-write-u64 (+ box 88) 0 0)
-         (ptr-write-u64 (+ box 96) 0 extra)
-         (ptr-write-u64 (+ box 104) 0 10)
-         (ptr-write-u64 (+ box 112) 0 10)
-         (ptr-write-u64 (+ box 120) 0 1)
-         ;; GNU `make-char-table' fills every slot with INIT (and the
-         ;; default slot too): model that as one interval over all chars.
-         (if (= (ptr-read-u64 default_ptr 0) 0)
-             0
-           (nl_ct_set_range box 0 4194303 default_ptr))
-         (ptr-write-u64 out 0 9)
-         (ptr-write-u64 (+ out 8) 0 box)
-         (ptr-write-u64 (+ out 16) 0 0)
-         (ptr-write-u64 (+ out 24) 0 0)
-         0))
-        ) out)))
+        (seq (nl_ct_store_word box subtype) (nl_ct_store_word (+ box 32) default-word)
+             (ptr-write-u64 box 64 0) (ptr-write-u64 box 72 0) (ptr-write-u64 box 80 0)
+             (ptr-write-u64 box 88 0) (ptr-write-u64 box 96 extra)
+             (ptr-write-u64 box 104 10) (ptr-write-u64 box 112 10) (ptr-write-u64 box 120 1)
+             (if (= default-word 3) 0 (nl_ct_set_range box 0 4194303 default-word))
+             (ptr-write-u64 object 0 9) (ptr-write-u64 object 8 box)
+             (ptr-write-u64 object 16 0) (ptr-write-u64 object 24 0) object)))
     (defun nl_char_table_alloc (subtype default_ptr out)
-      (nl_abi_word_to_rc (nl_char_table_alloc_w subtype default_ptr 0) out))
+      ;; Public physical-input compatibility boundary. The ordinary cloning
+      ;; primitive supplies the canonical child WORDs for this legacy entry.
+      (let* ((words (alloc-bytes 16 8)))
+        (seq (nl_val_clone_into subtype words)
+             (nl_val_clone_into default_ptr (+ words 8))
+             (nl_abi_word_to_rc
+              (nl_char_table_alloc_w (ptr-read-u64 words 0) (ptr-read-u64 words 8) 0) out))))
     ;; wrong-number-of-arguments make-char-table 0 -- SUBTYPE is mandatory.
     ;; `bf_make_record'/`bf_make_vector' share the same unguarded
     ;; `nl_cons_car_ptr args' shape on a zero-arg call (a pre-existing,
@@ -19831,28 +19827,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; rely on for their own arg-list walks.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_make_char_table_w (args _pad)
-      (seq
-      (if (= (ptr-read-u64 args 0) 7)
-          (let* ((subtype (nl_cons_car_ptr args))
-                 (rest (nl_cons_cdr_word args)))
-            (if (= (nl_word_tag64 rest) 7)
-                (nl_char_table_alloc_w subtype (nl_cons_car_ptr rest) 0)
-              (let* ((nilbuf (alloc-bytes 32 8)))
-                (seq (wf_write_nil nilbuf)
-                     (nl_char_table_alloc_w subtype nilbuf 0)))))
-        (nl_abi_rc_nil (bf_wrong_number_of_args_make_char_table) 0))
-        ))
+      (if (= (nl_val_tag args) 7)
+          (let* ((subtype (nl_cons_car_word args)) (rest (nl_cons_cdr_word args)))
+            (nl_char_table_alloc_w subtype
+             (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3) 0))
+        (nl_abi_rc_nil (bf_wrong_number_of_args_make_char_table) 0)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_subtype_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_word args 0)))
-        (if (= (nl_word_tag64 ct) 9)
-            (seq (nl_sexp_clone_into (nl_word_payload ct) out) 0)
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+      (let* ((table (wf_arg_word args 0)))
+        (if (= (nl_val_tag table) 9) (ptr-read-u64 (nl_word_payload table) 0)
+          (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_parent_w (args _pad)
   (let* ((ct (wf_arg_word args 0)))
@@ -19915,29 +19899,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; for this accessor (verified against host Emacs).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_extra_slot_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1)))
-        (if (= (nl_word_tag64 ct) 9)
-            (if (= (nl_word_tag64 nbox) 2)
-                (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
-                  (if (if (< n 0) 1 (if (< n 10) 0 1))
-                      (bf_args_out_of_range ct nbox)
-                    (seq (nl_sexp_clone_into
-                          (+ (ptr-read-u64 (+ box 96) 0) (* n 32)) out)
-                         0)))
-              (bf_wrong_type_fixnump nbox))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+      (let* ((table (wf_arg_word args 0)) (index (wf_arg_word args 1)))
+        (if (= (nl_val_tag table) 9)
+            (if (= (nl_val_tag index) 2)
+                (let* ((n (nl_word_payload index)) (box (nl_word_payload table)))
+                  (if (or (< n 0) (>= n 10)) (nl_abi_fail (bf_args_out_of_range table index) 0)
+                    (ptr-read-u64 (+ (ptr-read-u64 box 96) (* n 32)) 0)))
+              (nl_abi_fail (bf_wrong_type_fixnump index) 0))
+          (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_extra_slot_w (args _pad)
       (seq  (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1))
              (val (wf_arg_word args 2)))
           (if (= (nl_word_tag64 ct) 9) (if (= (nl_word_tag64 nbox) 2) (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
-          (if (if (< n 0) 1 (if (< n 10) 0 1)) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_sexp_clone_into
-                          val (+ (ptr-read-u64 (+ box 96) 0) (* n 32))) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
+          (if (if (< n 0) 1 (if (< n 10) 0 1)) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 box 96) (* n 32)) val) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
     ;; char-table-range / set-char-table-range, GNU semantics.  RANGE is
     ;; nil (the default slot), t (every char; set only), a char, or a
     ;; (FROM . TO) cons of chars.  GET on a cons answers the value at FROM
@@ -19984,37 +19959,26 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (bf_wrong_type_characterp fromp)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_range_w (args _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1)))
-        (if (= (ptr-read-u64 ct 0) 9)
-            (let* ((rtag (nl_word_tag64 range)))
-              (if (= rtag 0)
-                  (seq (nl_sexp_clone_into (+ (ptr-read-u64 ct 8) 32) out) 0)
-                (if (= rtag 2)
+      (let* ((table (wf_arg_word args 0)) (range (wf_arg_word args 1)))
+        (if (= (nl_val_tag table) 9)
+            (let* ((tag (nl_val_tag range)))
+              (if (= tag 0) (ptr-read-u64 (nl_word_payload table) 32)
+                (if (= tag 2)
                     (if (= (nl_ct_char_ok (nl_word_payload range)) 1)
-                        (seq (nl_char_table_get_raw ct (nl_word_payload range) out) 0)
-                      (bf_wrong_type_characterp range))
-                  (if (= rtag 7)
-                      (let* ((fromp (nl_cons_car_ptr range))
-                             (top (nl_cons_cdr_ptr range))
-                             (bad (nl_ct_cons_ok fromp top)))
-                        (if (= bad 0)
-                            (seq (nl_char_table_get_local_raw
-                                  ct (ptr-read-u64 fromp 8) out)
-                                 0)
-                          bad))
-                    (bf_char_table_bad_range 0 out)))))
-          (bf_wrong_type_char_table_p ct)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+                        (nl_char_table_get_raw_w table (nl_word_payload range) 0)
+                      (nl_abi_fail (bf_wrong_type_characterp range) 0))
+                  (if (= tag 7)
+                      (let* ((from (nl_cons_car_word range)) (to (nl_cons_cdr_word range))
+                             (bad (nl_ct_cons_ok (wf_word_view from) (wf_word_view to))))
+                        (if (= bad 0) (nl_char_table_get_local_raw_w table (nl_word_payload from) 0) 0))
+                    (bf_char_table_bad_range_w 0 0)))))
+          (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_range_w (args _pad)
       (seq  (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1))
              (val (wf_arg_word args 2)))
           (if (= (ptr-read-u64 ct 0) 9) (let* ((rtag (nl_word_tag64 range)))
-          (if (= rtag 0) (seq (wf_dirty) (nl_sexp_clone_into val (+ (ptr-read-u64 ct 8) 32)) val) (if (= rtag 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct 0 4194303 val 0)) (if (= rtag 2) (if (= (nl_ct_char_ok (nl_word_payload range)) 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct (nl_word_payload range) (nl_word_payload range) val 0)) (nl_abi_fail (bf_wrong_type_characterp range) 0)) (if (= rtag 7) (let* ((fromp (nl_cons_car_ptr range))
+          (if (= rtag 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 ct 8) 32) val) val) (if (= rtag 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct 0 4194303 val 0)) (if (= rtag 2) (if (= (nl_ct_char_ok (nl_word_payload range)) 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct (nl_word_payload range) (nl_word_payload range) val 0)) (nl_abi_fail (bf_wrong_type_characterp range) 0)) (if (= rtag 7) (let* ((fromp (nl_cons_car_ptr range))
                                (top (nl_cons_cdr_ptr range))
                                (bad (nl_ct_cons_ok fromp top)))
           (if (= bad 0) (let* ((from (ptr-read-u64 fromp 8))
@@ -31899,7 +31863,13 @@ publishes the same providers before dumping."
 
 (defun nelisp-standalone--rooted-protocol-startup-src (units)
   "Generate source-bound memory protocol startup from the active helper UNITS."
-  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+  ;; Runtime-reload wrappers intentionally dispatch indirectly to mutable GC
+  ;; code. The direct-only frozen closure proof must continue refusing those
+  ;; wrappers. The separate raw runtime-reload ABI verifies candidate identity,
+  ;; generation and publication; this opt-in binary receives no frozen token.
+  (if (nelisp-standalone--runtime-reload-enabled-p)
+      "(defun nelisp-native-startup-ensure () (error \"source-frozen native capabilities unavailable in runtime-reload build\"))\n"
+    (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
     (let* ((nelisp-native-load--build-target (nelisp-standalone-arena-rewrite-target))
            (source (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
@@ -31914,7 +31884,7 @@ publishes the same providers before dumping."
              units nelisp-standalone--this-file nelisp-standalone--repo-root
              (make-temp-file (expand-file-name "target/standalone-compiler-f1-"
                                                nelisp-standalone--repo-root) t)))))
-      (nelisp-standalone--native-startup-autoload-src source))))
+      (nelisp-standalone--native-startup-autoload-src source)))))
 
 (defun nelisp-standalone--compat-metadata-src ()
   "Return verified dialect owners and genuine runtime version metadata."

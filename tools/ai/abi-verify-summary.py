@@ -22,8 +22,8 @@ def verify(directory):
 
     summary = read("summary.txt")
     statuses = re.findall(r"^[abcd] .*?\brc=(\d+)", summary, re.M)
-    require(len(statuses) == 17 and all(s == "0" for s in statuses),
-            "17 successful commands")
+    require(len(statuses) == 20 and all(s == "0" for s in statuses),
+            "20 successful commands")
     require("STANDALONE-CHECKS PASS" in read("a-standalone-checks.log"), "battery completion")
     markers = {
         "standalone-shallow-binding-check": r"SHALLOW-BINDING failures=0 PASS",
@@ -33,6 +33,7 @@ def verify(directory):
         "fx-spike-check": r"FX-SPIKE failures=0 PASS",
         "standalone-prn-string-escape-check": r"PRN-ESC cases=[1-9][0-9]* bad=0 PASS",
         "standalone-bytecode-word-check": r"BYTECODE-WORD PASS 145/145 cases match GNU",
+        "standalone-abi-char-table-word-check": r"ABI-CHAR-TABLE-WORD checks=10 PASS",
         "standalone-abi-fx-result-word-check": r"ABI-FX-RESULT checked=44 PASS",
         "standalone-fx-call-shape-check": r"FX-CALL-SHAPE failures=0 PASS",
     }
@@ -40,6 +41,8 @@ def verify(directory):
         require(bool(re.search(marker, read(f"b-{name}.log"))), name)
     require(bool(re.search(r"N4-REFERENCE checks=[1-9][0-9]* PASS", read("b-n4-reference.log"))),
             "GNU activation API parity")
+    require("char-table legacy6 PASS" in read("b-char-table-legacy.log"), "physical char-table ABI")
+    require("CHAR-TABLE-IMAGE checks=8 PASS" in read("b-char-table-image.log"), "char-table image relocation")
     # Standalone adds a final Lisp nil echo to this otherwise identical corpus.
     actual = read("b-standalone-cl-loop-gnu-check.log").rstrip()
     expected = read("b-cl-loop-gnu.emacs.out").rstrip()
