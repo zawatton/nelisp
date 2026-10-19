@@ -38020,12 +38020,26 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                           (nl_cold_diag_bad_header) -1)
                    (let* (;; required chunk-0 bytes: control block + coalesced
                           ;; region + reloc table (its transient DS+slen
-                          ;; scratch) + 8 MiB slack (room for the boot allocs
-                          ;; that land right after the cursor before the next
-                          ;; natural chunk growth), 64 KiB aligned (matches
+                          ;; scratch) + startup buffers + an ordinary growth
+                          ;; chunk's capacity for runtime work.  The driver
+                          ;; consumes two read buffers and its parse pool;
+                          ;; subsequent --load parsing and worker evaluation
+                          ;; also need bump space while free-list reuse is
+                          ;; inhibited.  The former 8 MiB slack left ~2.4 MiB
+                          ;; at nil startup and BEGIN refused with -ENOMEM.
+                          ;; Preserve the worker's 8 MiB check and no-growth
+                          ;; contract, giving image boot the same 64 MiB work
+                          ;; budget as a fresh growth chunk.  Linux demand-pages
+                          ;; this reservation; Windows commits it up front.
+                          ;; 64 KiB aligned (matches
                           ;; `nl_chunk_size_for's convention).
                           (needed (nl_align_up
-                                   (+ 1024 (+ slen (+ (* tlen 8) 8388608)))
+                                   (+ 1024
+                                      (+ slen
+                                         (+ (* tlen 8)
+                                            (+ (nl_chunk_size_for 8388608)
+                                               ,(+ (* 2 nelisp-standalone--reader-read-cap)
+                                                   (* 32768 32))))))
                                    65536))
                           (cursize (ptr-read-u64 (+ base0 216) 0)))
                      (seq
