@@ -50,6 +50,16 @@ empty XDG cache inside the worktree.  Output must be identical and the
 candidate's total Ir must not exceed the baseline's; both GC counts are
 reported.  This addition changes the ABI ledger from 20 to 21 criteria.
 
+Round 2 measures both S6.3 and S6.4 under four identical environment layouts:
+=ABI_LAYOUT_PAD= contains 0, 700, 1400 or 2100 bytes.  Every layout prints
+both total Ir values and GC counts.  Each workload passes only if all
+outputs agree and mean candidate Ir is <= mean baseline Ir; regex still
+requires ten GC sweeps per binary in every layout.  All profiles run in
+parallel (up to sixteen processes) to retain the 600-second criterion
+budget.  This changes the measurement, not the 21-criterion denominator.
+The trigger was S6.4 changing from -1.52% inside the sandbox to +0.026%
+outside it with the same binaries and eight GC sweeps on either side.
+
 * Rooting rule
 
 Facts, read from the source at e0ab2ae3a:

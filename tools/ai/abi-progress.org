@@ -116,12 +116,16 @@ cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
-** S6.3 End to end: boot and regex-load instruction counts <= the baseline's (callgrind)
+# Round 2: K=4 environment layouts (ABI_LAYOUT_PAD=0/700/1400/2100 bytes),
+# parallel profiles; print Ir/GC per layout and mean delta.  All outputs
+# must agree and mean candidate Ir <= mean baseline Ir for each workload.
+# Regex retains >=10 sweeps per binary per layout.  Denominator stays 21.
+** S6.3 End to end: mean boot and regex-load Ir over four layouts <= baseline (callgrind)
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh ir "$ABI_BIN" "$ABI_BASE_BIN"
 
-** S6.4 Source execution of five vendor files and builtin micro-suite: identical output and total Ir <= baseline
+** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"

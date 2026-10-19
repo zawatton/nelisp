@@ -20,8 +20,12 @@
 #       Instruction counts (valgrind callgrind) instead of wall time, which is
 #       noisy on this shared machine: `--eval nil' boot and a regex load (the
 #       regex line of test/perf/shallow-binding-bench.el, 20 x 300 matches, >=10 GC cycles per binary),
-#       both binaries in parallel.  Exits 0 only if each candidate count is
-#       <= the baseline's x ABI_GATE_IR_RATIO (default 1.00).
+#       both binaries under ABI_LAYOUT_PAD=0/700/1400/2100 bytes in parallel.
+#       Exits 0 only if all outputs agree and each workload's mean candidate
+#       count is <= the mean baseline count. Prints per-layout Ir/GC and spread.
+#   abi-merge-gate.sh files CANDIDATE BASELINE
+#       Five vendor sources plus builtin micro-suite under the same four
+#       layouts, fresh caches, identical output and mean total Ir <= baseline.
 #   abi-merge-gate.sh census CENSUS_TSV MAX
 #       Exits 0 only if box-census.py's TOTAL for CENSUS_TSV is below MAX.
 #   abi-merge-gate.sh store-word CENSUS_TSV MAX
