@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "measured": "2026-10-19",
+  "base_commit": "9ad3c5588",
+  "reference_sha256": "6c89b5990383ef1ceaf76d05bc96b855718622cc0a5d44c47080515e616a922c",
+  "local_dynamic_sha256": "03fc02ad0572ae4d98ec5cbbd6ad98b9a36612997566dc4e768c2f716064a07a",
+  "instrumented_sha256": "71d58f47ba33d076632c7818a7d0dcd15f786ed234560c819fec28e36707c2e3",
+  "boot_ir": {"reference": 29063659333, "local_dynamic": 29076707469, "instrumented": 29082617408, "reference_explicit_cold": 1417510422},
+  "method": "Fresh processes under Callgrind. For each file compare identical startup prefixes ending immediately after its load, with the load executed versus stubbed. This avoids executing dependent forms after omitting a required provider. Inline's stub still loads macroexp, so its delta excludes macroexp. Macroexp is stubbed via an early provide, then the process stops after inline. Deltas include load-time allocation and collection, and are not assumed additive across later boot phases.",
+  "files": [
+    {"file": "vendor/emacs-lisp/emacs-lisp/backquote.el", "caller": "stdlib prelude: load nelisp-standalone--backquote-file", "ir": 22027255, "gnu_preloaded": true},
+    {"file": "vendor/emacs-lisp/emacs-lisp/byte-run.el", "caller": "nelisp-standalone--load-path-src: load byte-run", "ir": 660722717, "gnu_preloaded": true, "gnu_featurep": false},
+    {"file": "vendor/emacs-lisp/emacs-lisp/macroexp.el", "caller": "inline.el: require macroexp", "ir": 399483241, "gnu_preloaded": true},
+    {"file": "vendor/emacs-lisp/emacs-lisp/inline.el", "caller": "nelisp-standalone--load-path-src: require inline", "ir": 196817372, "gnu_preloaded": false},
+    {"file": "packages/nelisp-emacs-foundation/src/json.el", "caller": "nelisp-standalone--load-path-src: require json", "ir": 164064854, "gnu_preloaded": false},
+    {"file": "vendor/emacs-lisp/emacs-lisp/easy-mmode.el", "caller": "nelisp-standalone--reader-repl-prelude-source: require easy-mmode after faces", "ir": 280522764, "gnu_preloaded": false},
+    {"file": "packages/nelisp-emacs-text-core/src/rx.el", "caller": "nelisp-standalone--reader-repl-prelude-source: require rx", "ir": 381907930, "gnu_preloaded": false},
+    {"file": "vendor/emacs-lisp/emacs-lisp/cl-seq.el", "caller": "nelisp-standalone--reader-repl-prelude-source: require cl-seq", "ir": 456208176, "gnu_preloaded": false},
+    {"file": "lisp/nelisp-process-buffer.el", "caller": "embedded nelisp-process-adapter.el: require nelisp-process-buffer", "ir": 1075691085, "gnu_preloaded": false}
+  ],
+  "feature_parity": {
+    "gnu_Q_batch": {"backquote": true, "byte-run": false, "macroexp": true, "inline": false, "json": false, "easy-mmode": false, "rx": false, "cl-seq": false, "nelisp-process-buffer": false},
+    "before": "All nine featurep results are true. GNU byte-run is preloaded without providing a feature.",
+    "acceptance": "test/standalone-boot-libraries-check.el passes on clean GNU Emacs 31.1, fails with 8 findings on the baseline NeLisp, and exercises demanded providers after checking clean-start feature parity."
+  },
+  "sidecars": {
+    "cold": "Flat arena heap dump after prelude installation and nelisp--fx-register-prelude. Includes object and intern regions, relocation table, and the executable build-digest trailer. Existing code validates header, relocation bounds and build identity. Baseline startup only uses it with explicit --cold-load-from. Reference explicit-cold nil returns nil with no Lisp errors at 1,417,510,422 Ir; local image has 1199 compiled FX records.",
+    "native_startup": "Build-pinned lazy compiler/loader capability and bytecode source companion, authenticated by its SHA-256 on first compiler/loader demand. Normal nil startup does not open it. It is not the base heap image.",
+    "c_core_image": "tools/c-core-image.sh loads a bundle, prepares/collects its heap and calls nelisp--arena-dump-image-stream. It caches .flat images keyed by executable, .cold, bundle and tool hashes; serializes publication with flock; restores explicitly with --cold-load-from. It is an additional-bundle cache, not automatic base startup. Its existing image API can cover the base: an empty extension bundle built in 4.440 s (289898464 bytes), and its identity marker check restored in 0.165 s."
+  },
+  "decision": "Use the existing validated image format for ordinary boot; defer the six optional providers and embed their source for relocation. The external-load measurements total 3.64G Ir against 29.08G for all boot work, so source-read deferral alone does not address most of the measured work. Tighten S3 from provisional 14.5G to 2.0G based on the measured 1.42G image restore, rather than treating 50% as the final target.",
+  "reproduce": [
+    "TMPDIR=$PWD/target/tmp NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/base-dynamic make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+    "TMPDIR=$PWD/target/tmp NELISP_STANDALONE_COLD_IMAGE=0 NELISP_STANDALONE_TARGET=linux-x86_64 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/apportion emacs -Q --batch -L lisp -L src -L scripts -l tools/ai/boot-load-apportion.el",
+    "BOOT_IMAGE_BIN=$PWD/target/boot-image/apportion python3 tools/ai/boot-image-check.py apportion --jobs 2"
+  ],
+  "raw_evidence": "target/boot-image: apportion.json and apportion-*.callgrind/.out/.err; reference.callgrind; reference-cold.callgrind; base-dynamic-ir.json; c-core-base-{build,check}.{out,err}; gnu-feature-parity.out; base-load-history.out. strace denied PTRACE_TRACEME: Operation not permitted; Valgrind --tool=none --trace-syscalls=yes independently records the actual opens. bwrap works and baseline isolation is red despite process exit 0, because stderr contains missing-source errors."
+}
