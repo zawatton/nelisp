@@ -299,6 +299,20 @@ write heap objects; their fresh headers are returned directly. The consumer
 check covers 55 cases, including nil/t/zero hash values, growth, immediate
 list tails, numeric comparison, string lifetime through GC and table parents.
 
+Capture builders now carry the filter and captured alist as WORD accumulators.
+The recursive frame/bucket walk returns its list directly, retaining ordering,
+dynamic-binding exclusions, local declarations, reflection capture and the
+explicit eval-alist shared-cell mode. The old output entries adapt the final
+WORD to their caller's view. Environment roots are built with cons WORDs.
+
+The new 40-case capture check runs with the filter cache enabled and disabled.
+It exposed an earlier migration defect: the reader patched the legacy cell
+getter for pair-backed bindings but left its WORD getter reading the pair.
+Both entries now interpret the shared marker and return the pair's cdr. The
+direct cell probe checks both evaluation and lookup (16 cases), fails against
+the previous binary, and passes after the fix. A capture mutation control
+that discards writes fails with the shared-cell assertion.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

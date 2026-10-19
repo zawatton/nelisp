@@ -8901,25 +8901,16 @@ leave symbols unresolved at link time."
     ;; Symbol -- the whole 32B slot, NOT +8), max_recursion scalar @env+104, use_elisp
     ;; scalar @env+112.  Records/Symbol roots are returned as their Sexp value (slot
     ;; copy); the two scalars as Int Sexps.  Returns nil if no frame is recorded.
+    (defun bf_env_capture_roots_w (_pad)
+  (let* ((env (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (if (= env 0) 3
+      (nelisp_cons_construct_w (nl_word_clone env)
+        (nelisp_cons_construct_w (nl_word_clone (+ env 32))
+          (nelisp_cons_construct_w (nl_word_clone (+ env 64))
+            (nelisp_cons_construct_w (nl_imm_int (ptr-read-u64 env 104))
+              (nelisp_cons_construct_w (nl_imm_int (ptr-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
     (defun bf_env_capture_roots (out)
-      (let* ((env (ptr-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0))
-             (g (alloc-bytes 32 8)) (f (alloc-bytes 32 8)) (u (alloc-bytes 32 8))
-             (nilp (alloc-bytes 32 8))
-             (c4 (alloc-bytes 32 8)) (c3 (alloc-bytes 32 8))
-             (c2 (alloc-bytes 32 8)) (c1 (alloc-bytes 32 8)))
-        (if (= env 0)
-            (wf_write_nil out)
-          (seq
-           (wf_copy32 g (+ env 0))    ; globals_record slot
-           (wf_copy32 f (+ env 32))   ; frames_record slot
-           (wf_copy32 u (+ env 64))   ; unbound_marker slot (tag-4 Symbol)
-           (wf_write_nil nilp)
-           (wf_cons_int (ptr-read-u64 (+ env 112) 0) nilp c4)  ; use_elisp_apply
-           (wf_cons_int (ptr-read-u64 (+ env 104) 0) c4 c3)    ; max_recursion
-           (nelisp_cons_construct u c3 c2)                     ; unbound_marker
-           (nelisp_cons_construct f c2 c1)                     ; frames_record
-           (nelisp_cons_construct g c1 out)                    ; globals_record
-           0))))
+  (nl_abi_word_to_rc (bf_env_capture_roots_w 0) out))
     ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
     ;; codec-friendly cons graph so `nelisp-heap-image-encode-roots' can serialize
     ;; it.  The standalone env-record (tag 12) is opaque to the codec: the active
@@ -41295,94 +41286,107 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (nl_clx_symbol_filter_walk formals-ptr car-ptr out)
                  (nl_clx_symbol_filter_walk formals-ptr cdr-ptr out)))
             0))))
+    (defun nl_clx_build_symbol_filter_w (lambda-args _pad)
+  (if (= (nl_val_tag lambda-args) 7)
+      (nl_clx_symbol_filter_word (nl_cons_car_word lambda-args)
+                                (nl_cons_cdr_word lambda-args) 3)
+    3))
+    (defun nl_clx_symbol_filter_raw_word (node acc)
+  (let* ((tag (nl_val_tag node)))
+    (if (or (= tag 4) (= tag 16))
+        (nelisp_cons_construct_w node acc 0)
+      (if (= tag 7)
+          (nl_clx_symbol_filter_raw_word (nl_cons_cdr_word node)
+            (nl_clx_symbol_filter_raw_word (nl_cons_car_word node) acc))
+        acc))))
+    (defun nl_clx_symbol_filter_word (formals node acc)
+  (let* ((tag (nl_val_tag node)))
+    (if (or (= tag 4) (= tag 16))
+        (if (or (= (nl_clx_formals_contain_symbol formals node) 1)
+                (= (nl_capture_filter_contains acc node) 1)) acc
+          (nelisp_cons_construct_w node acc 0))
+      (if (= tag 7)
+          (nl_clx_symbol_filter_word formals (nl_cons_cdr_word node)
+            (nl_clx_symbol_filter_word formals (nl_cons_car_word node) acc))
+        acc))))
+    (defun nl_capture_emit_word (name cell acc)
+  (nelisp_cons_construct_w (nelisp_cons_construct_w name cell 0) acc 0))
+    (defun nl_capture_names_word (names acc)
+  (if (= (nl_val_tag names) 7)
+      (nl_capture_names_word (nl_cons_cdr_word names)
+        (nelisp_cons_construct_w (nl_cons_car_word names) acc 0))
+    acc))
+    (defun nl_capture_filter_word (frame filter acc)
+  (if (= (nl_val_tag filter) 7)
+      (let* ((name (nl_cons_car_word filter))
+             (cell (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
+                     (nelisp_frame_stack_find_in_frame frame name))))
+        (nl_capture_filter_word frame (nl_cons_cdr_word filter)
+          (if (= cell 0) acc (nl_capture_emit_word name cell acc))))
+    acc))
+    (defun nl_capture_bucket_word (chain acc filtered filter frame)
+  (if (= (nl_val_tag chain) 7)
+      (let* ((pair (nl_cons_car_word chain)))
+        (if (= (nl_val_tag pair) 7)
+            (let* ((name (nl_cons_car_word pair))
+                   (cell (nl_cons_cdr_word pair)))
+              (nl_capture_bucket_word (nl_cons_cdr_word chain)
+                (if (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
+                      (if (= filtered 2)
+                          (if (= (nl_val_tag cell) 11)
+                              (= (ptr-read-u64 cell 16) 13107) 0)
+                        (nl_capture_name_allowed filtered filter name)))
+                    (nl_capture_emit_word name cell acc) acc)
+                filtered filter frame))
+          (nl_capture_bucket_word (nl_cons_cdr_word chain) acc filtered filter frame)))
+    acc))
+    (defun nl_capture_buckets_word (buckets j count acc filtered filter frame)
+  (if (>= j count) acc
+    (nl_capture_buckets_word buckets (+ j 1) count
+      (nl_capture_bucket_word (nl_vector_slot_word buckets j) acc filtered filter frame)
+      filtered filter frame)))
+    (defun nl_capture_frame_word (frame acc filtered filter)
+  (if (= filtered 1)
+      ;; The explicit eval-alist cells (mode 2) are captured even when the
+      ;; ordinary free-variable filter does not name them.
+      (nl_capture_frame_word frame (nl_capture_filter_word frame filter acc) 2 filter)
+    (let* ((bindings (nelisp_frame_slot_raw_word frame 0)))
+      (if (= (nl_val_tag bindings) 12)
+          (nl_capture_buckets_word (nl_record_slot_word bindings 1) 0
+            (nl_word_payload (nl_record_slot_word bindings 0)) acc filtered filter frame)
+        (nl_capture_bucket_word bindings acc filtered filter frame)))))
+    (defun nl_capture_frames_word (backing i acc filtered filter)
+  (if (< i 0) acc
+    (let* ((frame (nl_vector_slot_word backing i))
+           (captured (nl_capture_frame_word frame acc filtered filter))
+           (names (nelisp_frame_local_names frame))
+           (with-names (if (= names 0) captured (nl_capture_names_word names captured))))
+      (if (= (nelisp_frame_scope_boundary_p frame) 1) with-names
+        (nl_capture_frames_word backing (- i 1) with-names filtered filter)))))
     (defun nl_clx_build_symbol_filter (lambda-args out)
-      (seq
-       (nl_clx_write_nil out)
-       (if (= (sexp-tag lambda-args) 7)
-           (let* ((formals-ptr (nl_cons_car_ptr lambda-args))
-                  (body-ptr (nl_cons_cdr_ptr lambda-args)))
-             (nl_clx_symbol_filter_walk formals-ptr body-ptr out))
-         0)))
-    (defun nl_env_capture_lexical_with_filter (env filter-ptr filtered out)
-      (let* ((frames_ptr (+ env 32))
-             (depth (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2)))
-        (seq
-         (nl_clx_write_nil out)
-         (if (= depth 0)
-             0
-           (if (= filtered 1)
-               (if (= filtered 1)
-                   ;; Doc 147 Phase 1.5: build the `invec' WITHOUT holding a
-                   ;; raw write-through interior pointer into its data buffer.
-                   ;; The old code did `(... (vector-ref-ptr invec N))' as a
-                   ;; 32B write DESTINATION, which stomps neighbouring slots
-                   ;; once the Phase-2 buffer stride shrinks 32B->8B.  Route
-                   ;; every write through `vector-slot-set' (= refcount-safe
-                   ;; `nl_vector_set_slot', clones *VAL-PTR into slot N with
-                   ;; the live buffer stride).  Each value is first materialized
-                   ;; into a fresh 32B scratch slot, then cloned into the Vector
-                   ;; by `vector-slot-set'.  `nl_capture_descend_native' still
-                   ;; reads invec[0..2] via `vector-ref-ptr' (a Phase-2 view,
-                   ;; read-safe) — only the producer side changes here.
-                   (let* ((invec (alloc-bytes 32 8)) (alist (alloc-bytes 32 8))
-                          (depth_slot (alloc-bytes 32 8))
-                          (nil_slot (alloc-bytes 32 8))
-                          (filtered_slot (alloc-bytes 32 8)))
-                     (seq
-                      (vector-make 5 invec)
-                      (vector-slot-set invec 0 frames_ptr)
-                      (sexp-int-make depth_slot depth)
-                      (vector-slot-set invec 1 depth_slot)
-                      (nl_clx_write_nil nil_slot)
-                      (vector-slot-set invec 2 nil_slot)
-                      (vector-slot-set invec 3 filter-ptr)
-                      (sexp-int-make filtered_slot filtered)
-                      (vector-slot-set invec 4 filtered_slot)
-                      (nl_clx_write_nil alist)
-                      (nl_capture_descend_native invec alist)
-                      (nl_sexp_clone_into alist out)
-                      0))
-                 0)
-             (let* ((invec (alloc-bytes 32 8)) (alist (alloc-bytes 32 8))
-                    (depth_slot (alloc-bytes 32 8))
-                    (nil_slot (alloc-bytes 32 8))
-                    (filtered_slot (alloc-bytes 32 8)))
-               (seq
-                (vector-make 5 invec)
-                (vector-slot-set invec 0 frames_ptr)
-                (sexp-int-make depth_slot depth)
-                (vector-slot-set invec 1 depth_slot)
-                (nl_clx_write_nil nil_slot)
-                (vector-slot-set invec 2 nil_slot)
-                (vector-slot-set invec 3 filter-ptr)
-                (sexp-int-make filtered_slot filtered)
-                (vector-slot-set invec 4 filtered_slot)
-                (nl_clx_write_nil alist)
-                (nl_capture_descend_native invec alist)
-                (nl_sexp_clone_into alist out)
-                0)))))))
+  (nl_abi_word_to_rc (nl_clx_build_symbol_filter_w lambda-args 0) out))
+    (defun nl_env_capture_lexical_with_filter_w (env filter filtered _pad)
+  (let* ((frames (+ env 32))
+         (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+    (nl_capture_frames_word (nl_record_slot_word frames 0) (- depth 1) 3 filtered filter)))
+    (defun nl_env_capture_lexical_with_filter (env filter filtered out)
+  (nl_abi_word_to_rc (nl_env_capture_lexical_with_filter_w env filter filtered 0) out))
     (defun nl_env_capture_lexical (env out)
       (let* ((nil_slot (alloc-bytes 32 8)))
         (seq
          (nl_clx_write_nil nil_slot)
          (nl_env_capture_lexical_with_filter env nil_slot 0 out))))
+    (defun nl_env_capture_lexical_filtered_w (env lambda-args _pad _pad2)
+  (if (= (nl_fvcache_disabled) 1)
+      (nl_n4_capture_filtered_w env (nl_clx_symbol_filter_raw_word lambda-args 3) 0)
+    (let* ((cached (nl_fvcache_lookup lambda-args)))
+      (if (= cached 0)
+          (let* ((filter (nl_clx_build_symbol_filter_w lambda-args 0)))
+            (if (= (nl_val_tag filter) 7) (nl_fvcache_store lambda-args filter) 0)
+            (nl_n4_capture_filtered_w env filter 0))
+        (nl_n4_capture_filtered_w env cached 0)))))
     (defun nl_env_capture_lexical_filtered (env lambda-args out _pad)
-      (if (= (nl_fvcache_disabled) 1)
-          (let* ((raw_filter_slot (alloc-bytes 32 8)))
-            (seq
-             (nl_clx_write_nil raw_filter_slot)
-             (nl_clx_symbol_filter_walk_raw lambda-args raw_filter_slot)
-             (nl_n4_capture_filtered env raw_filter_slot out)))
-        (let* ((cached (nl_fvcache_lookup lambda-args)))
-          (if (= cached 0)
-              (let* ((filter_slot (alloc-bytes 32 8)))
-                (seq
-                 (nl_clx_build_symbol_filter lambda-args filter_slot)
-                 (if (= (sexp-tag filter_slot) 7)
-                     (nl_fvcache_store lambda-args filter_slot)
-                   0)
-                 (nl_n4_capture_filtered env filter_slot out)))
-            (nl_n4_capture_filtered env cached out)))))))
+  (nl_abi_word_to_rc (nl_env_capture_lexical_filtered_w env lambda-args 0 0) out))))
 
 ;; ===================================================================
 ;; TOP-LEVEL FORM-BOUNDARY ARENA RECLAMATION (the safe reclamation point).
@@ -41824,6 +41828,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                    (if (= (ptr-read-u64 cell-ptr 16) 13107)
                        (let* ((pair (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 0)))
                          (seq (nl_sexp_clone_into (nl_cons_cdr_ptr pair) out) 0))
+                     ,@(cdddr form))) out))
+         ((eq name 'nl_cell_get_value_w)
+          ;; The WORD producer must have the same shared-cell interpretation
+          ;; as the legacy getter above; raw Cell.value is the binding pair.
+          (push `(defun ,name ,(caddr form)
+                   (if (= (ptr-read-u64 cell-ptr 16) 13107)
+                       (nl_cons_cdr_word
+                        (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 0))
                      ,@(cdddr form))) out))
          ((eq name 'nelisp_env_set_value_name_ok)
           ;; Clause 2: callback-protected names live in active root slots.
@@ -43623,12 +43635,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                     (= (sexp-name-eq name "backtrace-frame") 1)
                     (= (sexp-name-eq name "backtrace-frames") 1))
                 1 (nl_n4_reflection_filter_p (nl_cons_cdr_word filter)))) 0))
+    (defun nl_n4_capture_filtered_w (env filter _pad)
+  (nl_env_capture_lexical_with_filter_w env filter
+    (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) 0))
     (defun nl_n4_capture_filtered (env filter out)
-      ;; Reflection needs variables the body does not mention. Keep the
-      ;; existing filtered closure ABI for ordinary and OClosure consumers;
-      ;; explicit eval-alist overrides are always retained by mode 2.
-      (nl_env_capture_lexical_with_filter env filter
-        (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) out))
+  (nl_abi_word_to_rc (nl_n4_capture_filtered_w env filter 0) out))
     (defun nl_n4_captured_lexical_p (frames name)
       (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
         (if (< depth 2) 0
@@ -44028,12 +44039,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
        ((= (sexp-tag form) 7)
         (nl_ei_cons_dispatch_w (extern-call nl_cons_car_ptr form) form env 0))
        ((= (sexp-tag form) 11)
-        ;; Match the reader's N3 patch of the legacy cell getter: a shared
-        ;; captured binding stores (NAME . VALUE), rather than VALUE, in
-        ;; the cell.  The ordinary word getter deliberately reads raw cells.
-        (if (= (ptr-read-u64 form 16) 13107)
-            (nl_cons_cdr_word (ptr-read-u64 (ptr-read-u64 form 8) 0))
-          (extern-call nl_cell_get_value_w form 0)))
+        (extern-call nl_cell_get_value_w form 0))
        (t (nl_val_store_word form))))
     (defun nl_eval_inner (form env out _pad)
       (nl_abi_word_to_rc (nl_eval_inner_w form env 0 0) out))

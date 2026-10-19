@@ -21,7 +21,8 @@ def main():
     cache.mkdir()
     source = "(setq " + " ".join(f"{name} {symbols[symbol]}" for name, symbol in (
         ("abi-cell-eval", "nl_eval_inner_w"),
-        ("abi-cell-cons", "nelisp_cons_construct_w"))) + ")\n" + r'''
+        ("abi-cell-cons", "nelisp_cons_construct_w"),
+        ("abi-cell-get", "nl_cell_get_value_w"))) + ")\n" + r'''
 (let ((checked 0))
   (dolist (marker '(0 13107))
     (dolist (expected '(3 7 69 -31))
@@ -31,10 +32,11 @@ def main():
         (ptr-write-u64 cell 0 11) (ptr-write-u64 cell 8 payload)
         (ptr-write-u64 cell 16 marker) (ptr-write-u64 cell 24 0)
         (ptr-write-u64 payload 0 value) (ptr-write-u64 payload 8 1)
-        (let ((actual (ptr-call abi-cell-eval cell 0 0 0 0 0)))
-          (unless (= actual expected)
-            (error "cell marker %d: expected WORD %d, got %d" marker expected actual)))
-        (setq checked (1+ checked)))))
+        (dolist (producer (list abi-cell-eval abi-cell-get))
+          (let ((actual (ptr-call producer cell 0 0 0 0 0)))
+            (unless (= actual expected)
+              (error "cell marker %d: expected WORD %d, got %d" marker expected actual)))
+          (setq checked (1+ checked))))))
   (princ (format "ABI-CELL-WORD checked=%d PASS\n" checked)))
 '''
     script = directory / "probe.el"
@@ -45,7 +47,7 @@ def main():
                                          XDG_CACHE_HOME=str(cache)),
                                 stdout=out, stderr=err, timeout=120)
     passed = (result.returncode == 0 and not (directory / "stderr").stat().st_size
-              and "ABI-CELL-WORD checked=8 PASS\n" in (directory / "stdout").read_text())
+              and "ABI-CELL-WORD checked=16 PASS\n" in (directory / "stdout").read_text())
     print(f"cell WORD probe {'PASS' if passed else 'FAIL'}: {directory}")
     return 0 if passed else 1
 

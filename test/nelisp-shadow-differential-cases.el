@@ -1925,6 +1925,12 @@
            (setcar saved 8)
            (list (funcall reader) par-capture-cell
                  (eq saved (funcall reader))))) t)
+;; Pair-backed cells yield their value WORD through captured closures.
+(mapcar (lambda (value)
+          (eval '(let ((reader (lambda () par-explicit-captured-word)))
+                   (garbage-collect) (funcall reader))
+                (list (cons 'par-explicit-captured-word value))))
+        '(nil t 0 -7))
 ;; A declared special is looked up at call time, not captured by a closure.
 (eval '(progn
          (defvar par-dynamic-value 0)
