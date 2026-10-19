@@ -306,6 +306,13 @@
  ;; every result derived: returning a raw-byte string here would compare the
  ;; two printers instead of the string semantics.
  (equal (unibyte-string 227 129 130) "あ")
+ ;; Mixed byte representations use distinct ordering/equality contracts.
+ (let ((u (unibyte-string 233))
+       (r (string-as-multibyte (unibyte-string 233))))
+   (list (compare-strings u nil nil "é" nil nil)
+         (compare-strings u nil nil r nil nil)
+         (string-lessp u "é") (string-lessp "é" u)
+         (string= u r) (string-prefix-p u r)))
  (append (unibyte-string 200 201 202) nil)
  (append "あ" nil)
  (list (multibyte-string-p (unibyte-string 200 201))
