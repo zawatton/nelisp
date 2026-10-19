@@ -2278,6 +2278,18 @@
             (funcall write '(updated))
             (garbage-collect)
             (funcall read 'first 'second))) t)
+ ;; Sort skips callbacks for singleton keys and preserves list/vector identity
+ ;; according to the GNU 31 keyword and legacy interfaces.
+ (list (sort (list 1) :key 12)
+       (sort [1] :lessp 12 :key 12)
+       (sort (list '(2 a) '(1 b) '(2 c) '(1 d)) :key #'car :reverse t)
+       (let* ((items (list 3 1 2)) (result (sort items #'<)))
+         (list items result (eq items result)))
+       (let* ((items (vector 3 1 2)) (result (sort items :lessp #'<)))
+         (list items result (eq items result)))
+       (condition-case e
+           (sort (list 2 1) (lambda (_a _b) (signal 'arith-error '(sort-predicate))))
+         (error e)))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

@@ -50,6 +50,7 @@
 (require 'nelisp-standalone-arena-rewrite)
 (require 'bytecomp)
 (require 'json)
+(require 'nelisp-cc-fx-call-primitives)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
@@ -18037,7 +18038,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; result leaves the fixnum range, calls its function SYM on the same
     ;; arguments instead -- the generic answer, signals included -- and the
     ;; run continues.  Nothing is ever retried, so effects happen once.
-    (defun m5_fx_int_p (w) (if (= (logand w 3) 1) 1 0))
+    (defun m5_fx_int_p (w)
+      (if (= (logand w 3) 1) 1
+        (if (= (nl_word_tag64 w) 2)
+            (let* ((value (wf_bytecode_w_int w)))
+              (if (and (>= value -2305843009213693952)
+                       (<= value 2305843009213693951)) 1 0)) 0)))
     (defun m5_fx_fix (n)
       (if (> n 2305843009213693951) -1
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
@@ -18048,13 +18054,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; and its legacy scratch. Results go directly to the rooted RESW word;
     ;; reusing OSLOT on a later call cannot overwrite an earlier result.
     (defun m5_fx_callout (env sym stk sp argc resw fslot oslot nslot _pad)
-      (let* ((rc (nelisp_env_lookup_function (+ env 0) (+ env 64) sym fslot)))
-        (if (/= rc 0) (nl_cons_stash_void_function env sym)
-          (let* ((rec (m5_fx_covered fslot argc env oslot))
-                 (st (if (= rec 0) -3
-                       (m5_fx_call_words rec sym (+ stk (* (- sp argc) 8)) argc env oslot resw 0))))
+      (let* ((cache (if (= (nl_word_tag64 sym) 8) sym 0))
+             (name (if (= cache 0) sym (nl_vector_slot_word cache 0)))
+             (cached (if (or (= cache 0) (= (nl_sb_worker_p env) 1))
+                         0 (m5_fx_cached_function cache env)))
+             (rc (if (= cached 0)
+                     (nelisp_env_lookup_function (+ env 0) (+ env 64) name fslot) 0))
+             (fn (if (= cached 0) fslot cached)))
+        (if (or (/= rc 0) (= (nl_word_tag64 fn) 0))
+            (nl_cons_stash_void_function env name)
+          (let* ((direct (m5_fx_primitive fn stk sp argc resw env oslot))
+                 (rec (if (= direct -3) (m5_fx_covered fn argc env oslot) 0))
+                 (st (if (/= direct -3) direct
+                       (if (= rec 0) -3
+                         (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env oslot resw 0)))))
             (if (= st -3)
-                (m5_fx_call_list sym fslot (m5_fx_list_slot (m5_fx_word_list stk sp argc 0) nslot)
+                (m5_fx_call_list name fn (m5_fx_list_slot (m5_fx_word_list stk sp argc 0) nslot)
                                  env oslot resw)
               st)))))
     ;; The backtrace frame names SYM, as the interpreter's frame for a call
@@ -18488,11 +18503,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (seq (setq b (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq a (ptr-read-u64 (+ stk (* (- sp 2) 8)) 0))
                      (setq r (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
-                                 (if (= op 6) (if (< a b) 7 3)
-                                   (if (= op 13) (if (= a b) 7 3)
-                                     (if (= op 14) (if (> a b) 7 3)
-                                       (m5_fx_fix (if (= op 4) (+ (sar a 2) (sar b 2))
-                                                    (- (sar a 2) (sar b 2)))))))
+                                 (if (= op 6) (if (< (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
+                                   (if (= op 13) (if (= (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
+                                     (if (= op 14) (if (> (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
+                                       (m5_fx_fix (if (= op 4) (+ (wf_bytecode_w_int a) (wf_bytecode_w_int b))
+                                                    (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
                                -1))
                      (if (= r -1)
                          (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw fslot oslot nslot 0)))
@@ -18504,7 +18519,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (if (= op 7) 1 (if (= op 15) 1 0))
                 (seq (setq a (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq r (if (= (m5_fx_int_p a) 1)
-                                 (m5_fx_fix (if (= op 7) (+ (sar a 2) 1) (- (sar a 2) 1)))
+                                 (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
                                -1))
                      (if (= r -1)
                          (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw fslot oslot nslot 0)))
@@ -25237,6 +25252,10 @@ set, which lacks the reader-only `nl_os_write_stderr')."
 ;; Baked-form eval applyfn: core helpers + arithmetic/list dispatch only.  Self-
 ;; contained against `nelisp-standalone--manifest' (no mut-str / str-direct / file
 ;; externs), so `make standalone-eval-test' stays green.
+(setq nelisp-standalone--applyfn-m5-helpers
+      (append nelisp-standalone--applyfn-m5-helpers
+              (cdr nelisp-cc-fx-call-primitives--source)))
+
 (defconst nelisp-standalone--applyfn-baked-source
   (nelisp-standalone--applyfn-assemble
    ;; `m5-helpers' (string/format printer, `m5_prin1' among them) and
