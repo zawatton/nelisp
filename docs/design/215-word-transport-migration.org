@@ -398,6 +398,20 @@ identical output in all layouts. An initial scalar-subr constructor fixture
 hit baseline =memory-full= before arity could be inspected; the accepted
 fixture uses the separately validated rooted constructor instead.
 
+Control/symbol producers keep prog1's value in a rooted WORD holder, return
+dolist's evaluation WORD directly, preserve the keyword object and use
+canonical intern lookup results (nil/t are selected before lookup/allocation).
+Numeric-marker normalization consumes a WORD; its legacy physical input
+entry has an explicit counted conversion, verified by four legacy cases
+and eight legacy/WORD candidate cases. Control29 agrees with baseline/GNU;
+the cached-dolist side-effect mutation fails. Marker8, saved36/capture40,
+batteries/Anvil/arity, static42 and worker nil/t intern2 pass. TOTAL1405;
+S6.2 30 (17 direct + 9 reverse + 4 inline). Boot/regex/files means are
+-2.827%/-2.437%/-3.134%. Boot/file GC base/candidate are 6/6 and 8/8;
+regex baseline is 17 in every layout, candidate is 17/16/16/16. All outputs
+agree and all collector instructions are included. The final whitespace
+cleanup preserves every build-script form; a body mutation is rejected.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

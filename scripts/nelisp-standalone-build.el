@@ -8456,21 +8456,17 @@ leave symbols unresolved at link time."
          (atomic-fetch-add 268435544 1)
          1)))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value keeps the (rc, OUT) ABI.
-    (defun wf_numeric_marker_value_w (value _pad check)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
-
-      (if (= (wf_numeric_marker_p value) 1)
-          (if (= (sexp-tag (nl_record_slot_word value 0)) 0)
-              (wf_numeric_detached_marker)
-            (seq (record-slot-ref value 1 out) 0))
-        (if (and (= check 1) (= (wf_num_tag_ok (sexp-tag value)) 0))
-            (bf_wrong_type_number_or_marker value)
-          (seq (wf_copy32 out value) 0)))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+    (defun wf_numeric_marker_value_w (word _pad check)
+  (if (and (= (logand word 1) 0) (= (wf_numeric_marker_p word) 1))
+      (if (= (nl_val_tag (nl_record_slot_word word 0)) 0)
+          (nl_abi_fail (wf_numeric_detached_marker) 0)
+        (nl_record_slot_word word 1))
+    (if (and (= check 1) (= (wf_num_tag_ok (nl_val_tag word)) 0))
+        (nl_abi_fail (bf_wrong_type_number_or_marker (wf_word_view word)) 0)
+      word)))
     (defun wf_numeric_marker_value (value out check)
-      (nl_abi_word_to_rc (wf_numeric_marker_value_w value 0 check) out))
+  ;; Explicit legacy input boundary: VALUE is a physical 32-byte Sexp.
+  (nl_abi_word_to_rc (wf_numeric_marker_value_w (nl_val_store_word value) 0 check) out))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_copy_w (args env _pad)
   (if (= (nl_val_tag args) 7)
@@ -10502,14 +10498,8 @@ leave symbols unresolved at link time."
     ;; `wf_numeric_marker_value' for a WORD: an immediate is never a
     ;; marker, so it is type-checked by tag and stored into OUT directly.
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_word_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value_word keeps the (rc, OUT) ABI.
-    (defun wf_numeric_marker_value_word_w (w _pad check)
-      (seq
-
-      (if (= (logand w 1) 0) (wf_numeric_marker_value_w w 0 check)
-        (if (and (= check 1) (= (wf_num_tag_ok (nl_val_tag w)) 0))
-            (nl_abi_rc_nil (bf_wrong_type_number_or_marker (wf_word_view w)) 0)
-          (seq w)))
-))
+    (defun wf_numeric_marker_value_word_w (word _pad check)
+  (wf_numeric_marker_value_w word 0 check))
     (defun wf_numeric_marker_value_word (w out check)
       (nl_abi_word_to_rc (wf_numeric_marker_value_word_w w 0 check) out))
     (defun bf_wrong_type_int_or_marker (offender)
@@ -24018,24 +24008,19 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; rather than by a prelude wrapper: the wrapper was one more interpreted
     ;; call on every `intern' -- 22 us of a 26 us hit on a 4 us native probe,
     ;; measured 2026-09-06 -- and every macro-generated name pays it.
-    ((:lit "intern")      :word . (if (= (bf_obarray_arg_bad args) 1) 0
-                             (let* ((a (wf_arg_ptr args 0)) (tg (ptr-read-u64 a 0)))
-                              (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
-                                  ;; An existing intern is a lookup, not a
-                                  ;; mutation.  Only the miss that would insert
-                                  ;; into the shared intern table is refused.
-                                  (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_intern_lookup
-                                            (bf_str_ptr a) (bf_str_len a) b)
-                                           0)
-                                        (if (= (extern-call
-                                                nl_thread_mirror_mutation_guard
-                                                (+ env 0) a)
-                                               1)
-                                            0
-                                          (bf_intern_w a 0))
-                                      (nl_val_store_word b)))
-                                (nl_abi_fail (bf_wrong_type_stringp a) 0)))))
+    ((:lit "intern") :word .
+ (if (= (bf_obarray_arg_bad args) 1) 0
+   (let* ((string (wf_arg_ptr args 0)) (tag (ptr-read-u64 string 0)))
+     (if (or (= tag 5) (= tag 6) (= tag 14) (= tag 15))
+         (let* ((bytes (bf_str_ptr string)) (length (bf_str_len string)))
+           (if (= (nl_name_is_nil bytes length) 1) 3
+             (if (= (nl_name_is_t bytes length) 1) 7
+               (let* ((word (nl_intern_lookup_w bytes length 0)))
+                 (if (= word 3)
+                     (if (= (extern-call nl_thread_mirror_mutation_guard (+ env 0) string) 1)
+                         0 (bf_intern_w string 0))
+                   word)))))
+       (nl_abi_fail (bf_wrong_type_stringp string) 0)))))
     ;; `intern-soft' natively (2026-09-06).  A symbol (nil and t included)
     ;; answers itself -- name identity is symbol identity here, see Doc 163
     ;; sec 8.3 -- a string probes the table without inserting, anything else
@@ -28099,21 +28084,17 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 (defconst nelisp-standalone--sf-prog1-helpers
   '((defun nl_sf_prog_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
-    (defun nl_sf_prog_copy_w (box vslot)
-      (seq (ptr-write-u64 box 0 (ptr-read-u64 vslot 0))
-           (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
-           (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
-           (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
-           (nl_val_store_word box)))
-    (defun nl_sf_prog_body_w (body env vslot _pad)
-      (if (= (nl_sf_progn_w body env 0 0) 0)
-          0
-        (nl_sf_prog_copy_w (alloc-bytes 32 8) vslot)))
+
+    (defun nl_sf_prog_body_w (body env holder _pad)
+  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (nl_cons_car_word holder)))
     (defun nl_sf_prog1_slot_w (args env mark vslot)
-      (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env vslot)))
-        (nl_sf_prog_release_w
-         (if (= rc 0) (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0) (nl_abi_fail rc 0))
-         env mark 0)))
+  (let* ((word (nelisp_eval_call_w (nl_cons_car_ptr args) env 0)))
+    (nl_sf_prog_release_w
+     (if (= word 0) 0
+       (let* ((holder (nelisp_cons_construct_w word 3 0)))
+         (seq (wf_word_store_out vslot holder)
+              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env holder 0))))
+     env mark 0)))
     (defun nl_sf_prog1_marked_w (args env mark _pad)
       (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
   "prog1's rooted value slot (Doc 215 R2).")
@@ -28186,7 +28167,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 ;; compaction epoch) and roots both key and expansion for the GC.  Callers
 ;; without a form pointer pass 0 and keep the uncached behaviour.
 (defconst nelisp-standalone--sf-dolist
-  '(defun nl_sf_dolist (args env out cache_key)
+  '(defun nl_sf_dolist_w (args env _pad cache_key)
      (if (= (sexp-tag args) 7)
          (let* ((spec (nl_cons_car_word args))
                 (body_ptr (nl_cons_cdr_ptr args)))
@@ -28282,9 +28263,9 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (nelisp_cons_construct outer_binds outer_body outer_args)
                   (nelisp_cons_construct let_sym outer_args form)
                   (if (= cache_key 0) 0 (nl_mxcache_store cache_key form))
-                  (nelisp_eval_call form env out)))
-             (seq (nl_cons_write_nil out) 0)))
-       (seq (nl_cons_write_nil out) 0))))
+                  (nelisp_eval_call_w form env 0)))
+             3))
+       3)))
 
 (defun nelisp-standalone--patch-apply-special (form)
   "Rewrite the nl_apply_special defun FORM: replace its terminal else `2'
@@ -28397,6 +28378,8 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
                 (push nelisp-standalone--sf-prog2 out)
                 (push (nelisp-standalone--sf-word-adapter 'nl_sf_prog2) out)
                 (push nelisp-standalone--sf-dolist out)
+                (push '(defun nl_sf_dolist (args env out cache_key)
+                         (nl_abi_word_to_rc (nl_sf_dolist_w args env 0 cache_key) out)) out)
                 (setq inserted t))
               (push (nelisp-standalone--patch-apply-special form) out))
              (t (push form out))))
@@ -43725,7 +43708,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
       ;; Self-evaluating FORM is answered as its own WORD; a view of an
       ;; immediate becomes the immediate (Doc 215 R4).
       (cond
-       ((= (nl_kw_is_keyword form) 1) (nl_val_store_word form))
+       ((= (nl_kw_is_keyword form) 1) form)
        ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
        ((= (sexp-tag form) 7)
