@@ -2008,8 +2008,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (nl_sf_defalias . special) (nl_sf_defvaralias . special)
     (nl_sf_defmacro . special) (nl_sf_dolist)
     (nl_sf_defvaralias_apply) (nl_n3_defvaralias_raw) (nl_n3_declared_default_raw)
-    (nl_n3_alias_write) (nl_n3_default_write) (nl_n3_apply_mode)
-    (nl_n3_apply_lambda_raw)
+    (nl_n3_alias_write) (nl_n3_default_write)
     (nl_n4_capture_filtered) (nl_env_capture_lexical_filtered)
     (nl_env_capture_lexical_with_filter) (nl_clx_build_symbol_filter)
     (bf_env_capture_roots) (nelisp_eval_call_with_err)
@@ -41853,15 +41852,18 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (defun nl_n3_apply_mode_finish (rc env saved _pad)
       (seq (ptr-write-u64 (+ env 112) 0
                            (logior (logand (ptr-read-u64 (+ env 112) 0) -2097153) saved)) rc))
-    (defun nl_n3_apply_mode (captured formals body args env out)
+    (defun nl_n3_apply_mode_w (captured formals body args env _pad)
       (let* ((saved (logand (ptr-read-u64 (+ env 112) 0) 2097152)))
         (seq
          (ptr-write-u64 (+ env 112) 0
                         (logior (logand (ptr-read-u64 (+ env 112) 0) -2097153)
                                 (if (= (sexp-tag captured) 0) 2097152 0)))
          (nl_n3_apply_mode_finish
-          (nl_n3_apply_lambda_raw captured formals body args env out)
-          env saved 0)))))
+          (nl_apply_lambda_inner_w captured formals body args env 0)
+          env saved 0))))
+    (defun nl_n3_apply_mode (captured formals body args env out)
+      (nl_abi_word_to_rc
+       (nl_n3_apply_mode_w captured formals body args env 0) out)))
   "N3 clause 2 evaluator hooks; Lisp registry and reference remain separate.")
 
 (defun nelisp-standalone--n3-rewrite (tree)
@@ -41947,18 +41949,20 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           ;; Doc 215 word forms of the two dispatchers above, written here
           ;; rather than box-split: the closure path's word form calls
           ;; `nl_apply_lambda_fx_w' and the interpreted body answers its WORD
-          ;; with no box (only n3 mode and the fx VM still fill one).
+          ;; with no box (only the fx VM boundary still fills one).
           ;; (nth 3 out) is nl_n3_apply_lambda_raw: the original body.
           (pcase (cdddr (nth 3 out))
             ((and `((nl_abi_word_to_rc (,inner-w . ,_) out))
                   (guard (eq inner-w 'nl_apply_lambda_inner_w))))
             (body (error "lambda word ABI: unexpected nl_apply_lambda_inner body %S" body)))
+          (push '(defun nl_n3_apply_lambda_raw_w
+                     (captured formals body-list args-list env _pad)
+                   (nl_apply_lambda_inner_w captured formals body-list args-list env 0))
+                out)
           (push '(defun nl_apply_lambda_inner_n3_w (captured formals body-list args-list env _pad)
                    (if (or (= (sexp-tag captured) 0)
                            (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0))
-                       (let* ((out (alloc-bytes 32 8)))
-                         (nl_abi_rc_to_word
-                          (nl_n3_apply_mode captured formals body-list args-list env out) out))
+                       (nl_n3_apply_mode_w captured formals body-list args-list env 0)
                      (nl_apply_lambda_inner_w captured formals body-list args-list env 0)))
                 out)
           (push '(defun nl_apply_lambda_fx_w (captured formals body-list args-list env _pad)
@@ -43900,18 +43904,46 @@ tails run against a private box), and the (rc, OUT) adapter F."
           (let* ((name (cadr form)) (params (nth 2 form))
                  (out (car (last params)))
                  (wname (intern (format "%s_w" name)))
-                 (wparams (append (butlast params) '(_pad))))
+                 (wparams (append (butlast params) '(_pad)))
+                 (word-body
+                  (nelisp-standalone--special-tail-words
+                   (cons 'progn (cl-subst 'nl_apply_lambda_fx 'nl_apply_lambda_inner
+                                         (nthcdr 3 form)))
+                   out (cons 'nl_apply_lambda_fx words))))
             (unless (eq out 'out)
               (error "apply word ABI: %s does not end in OUT" name))
             ;; The word form reaches the lambda dispatcher through its word
             ;; entry (`nl_apply_lambda_fx_w', same dispatch as the legacy
             ;; `nl_apply_lambda_inner' patch).
-            (push `(defun ,wname ,wparams
-                     ,(nelisp-standalone--special-tail-words
-                       (cons 'progn (cl-subst 'nl_apply_lambda_fx 'nl_apply_lambda_inner
-                                              (nthcdr 3 form)))
-                       out (cons 'nl_apply_lambda_fx words)))
-                  result)
+            (when (eq name 'nl_n4_apply_raw)
+              ;; A symbol's definition is already a WORD.  The legacy local
+              ;; FSLOT only copied it before recursive dispatch.  Retain the
+              ;; original miss/nil errors; materialise only an immediate
+              ;; invalid-function value that the raw dispatcher must inspect.
+              (let ((matches 0))
+                (cl-labels
+                    ((walk (tree)
+                       (cond
+                        ((not (consp tree)) tree)
+                        ((and (eq (car tree) 'let*)
+                              (equal (cadr tree)
+                                     '((mirror_ptr (+ env 0))
+                                       (unbound_ptr (+ env 64))
+                                       (fslot (alloc-bytes 32 8)))))
+                         (cl-incf matches)
+                         '(let* ((definition_w
+                                  (nl_lookup_fn_autoload_w
+                                   (+ env 0) (+ env 64) func_ptr 0)))
+                            (if (or (= definition_w 0) (= definition_w 2)
+                                    (= definition_w 3))
+                                (nl_abi_fail (nl_cons_stash_void_function env func_ptr) 0)
+                              (nl_n4_apply_raw_w (wf_word_view definition_w)
+                                                args_list_ptr env 0))))
+                        (t (mapcar #'walk tree)))))
+                  (setq word-body (walk word-body)))
+                (unless (= matches 1)
+                  (error "apply word ABI: expected one symbol lookup, got %s" matches))))
+            (push `(defun ,wname ,wparams ,word-body) result)
             (push `(defun ,name ,params
                      (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
                   result))
@@ -43967,17 +43999,20 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_symbol_w (form_ptr head_ptr tail_ptr env root_mark)
       (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark
                             (nl_root_reserve env)))
-    ;; The function cell goes into the reserved root slot FUNC_SLOT (it must
-    ;; outlive argument evaluation) through the legacy lookup.
+    ;; Publish the returned definition WORD in FUNC_SLOT before any argument
+    ;; evaluation or callback can collect (Doc 215 R2).
     (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark func_slot)
       (nl_eic_after_lookup_w
-       (nl_lookup_fn_autoload (+ env 0) (+ env 64) head_ptr func_slot)
+       (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
        form_ptr head_ptr tail_ptr env root_mark func_slot))
-    (defun nl_eic_after_lookup_w (rc_lu form_ptr head_ptr tail_ptr env root_mark func_slot)
+    (defun nl_eic_after_lookup_w (lookup_w form_ptr head_ptr tail_ptr env root_mark func_slot)
       (nl_cons_root_finish
        env root_mark
-       (if (= rc_lu 0)
-           (if (= (logior (logxor (sexp-tag func_slot) 7)
+       (if (or (= lookup_w 0) (= lookup_w 2))
+           (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
+         (seq
+          (wf_word_store_out func_slot lookup_w)
+          (if (= (logior (logxor (sexp-tag func_slot) 7)
                           (logxor (ptr-read-u64 func_slot 16) 13108)) 0)
                (nl_n3_special_call_w func_slot tail_ptr env 0)
              (if (= (sexp-tag func_slot) 0)
@@ -43988,8 +44023,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (if (= (nl_cons_is_macro func_slot) 1)
                      (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
                    (nl_eic_eval_args_w tail_ptr env func_slot
-                                       (nl_root_reserve env) head_ptr)))))
-         (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0))))
+                                       (nl_root_reserve env) head_ptr)))))))))
     (defun nl_eic_alias_w (w tail_ptr env func_slot call_name _pad)
       (if (= w 2)
           (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)

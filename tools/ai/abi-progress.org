@@ -66,6 +66,12 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # 38,383,706,964), GC 8/8 throughout, identical output. Prior binary's
 # mean was -0.312% through the meter (-0.095% in the direct gate).
 # The G4 criteria below remain failing; partial conversion is not completion.
+# Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
+# restoration; direct definition WORDs and body reads remove remaining round
+# trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).
+# S6.4 mean -2.900% (39,483,893,057.5 -> 38,338,766,064.25), GC 8/8,
+# identical output. The non-N3 B trial gained only -0.083% over A2 with
+# per-layout -0.430%..+0.166%; stop further body/lookup micro-optimization.
 
 ** S4.1 G4 has no dispatch arm left on the legacy adapter
 #+REQUIRES: ABI_DUMP

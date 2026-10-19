@@ -24,7 +24,8 @@
       (should (string-match-p "(nl_ali_body_eval" drive))
       (should-not (string-match-p "(nl_ali_body " drive)))))
 (ert-deftest nelisp-lambda-body-loop/2500-forms ()
-  (let ((binary (expand-file-name "target/nelisp" nelisp-lambda-body-loop-test--root)))
+  (let ((binary (expand-file-name (or (getenv "NELISP_BIN") "target/nelisp")
+                                 nelisp-lambda-body-loop-test--root)))
     (unless (file-executable-p binary) (ert-skip "target/nelisp is not built"))
     (let ((file (make-temp-file "nelisp-lambda-body-" nil ".el")))
       (unwind-protect
@@ -40,7 +41,8 @@
 
 (ert-deftest nelisp-lambda-body-loop/error-pops-once ()
   "An error in a lambda body leaves the outer binding usable."
-  (let ((binary (expand-file-name "target/nelisp" nelisp-lambda-body-loop-test--root)))
+  (let ((binary (expand-file-name (or (getenv "NELISP_BIN") "target/nelisp")
+                                 nelisp-lambda-body-loop-test--root)))
     (unless (file-executable-p binary) (ert-skip "target/nelisp is not built"))
     (with-temp-buffer
       (should (= 0 (call-process binary nil t nil "--eval"

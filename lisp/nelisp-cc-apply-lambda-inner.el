@@ -504,7 +504,7 @@
             (if (= tail 3) 1 0)
           (if (= (sexp-tag tail) 0) 1 0))))
 
-    ;; Continue after the cdr was cloned into the root slot.
+    ;; Continue after the cdr WORD was stored in the root slot.
     ;; Arity 6 (even).
     (defun nl_ali_body_after_clone
         (_clone-rc state-slot env _pad cap-flag root-mark)
@@ -513,7 +513,7 @@
     (defun nl_ali_body_after_cdr
         (cdr-ptr state-slot env _pad cap-flag root-mark)
       (nl_ali_body_after_clone
-       (extern-call nl_sexp_clone_into cdr-ptr state-slot)
+       (extern-call wf_word_store_out state-slot cdr-ptr)
        state-slot env 0 cap-flag root-mark))
 
     ;; After nelisp_eval_call_w: EVAL-W is the form's value WORD or 0.
@@ -534,17 +534,18 @@
              (nl_root_release env root-mark)
              (nl_ali_finish 0 env eval-w cap-flag 0 0))
           (nl_ali_body_after_cdr
-           (extern-call nl_cons_cdr_ptr state-slot)
+           (extern-call nl_cons_cdr_word state-slot)
            state-slot env 0 cap-flag root-mark))))
 
-    ;; car-ptr = nl_cons_car_ptr(body) fetched as first arg.
-    ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
+    ;; CAR-WORD is read without materialising an immediate form.
+    ;; Self-evaluate scalar forms; otherwise call the evaluator, carrying CONS
     ;; rather than a possibly materialised cdr view.
     ;; Arity 6 (even).
     (defun nl_ali_body_eval
-        (car-ptr state-slot env _pad cap-flag root-mark)
+        (car-word state-slot env _pad cap-flag root-mark)
       (nl_ali_body_step
-       (extern-call nelisp_eval_call_w car-ptr env 0)
+       (if (< (nl_val_tag car-word) 4) car-word
+         (extern-call nelisp_eval_call_w car-word env 0))
        state-slot env 0 cap-flag root-mark))
 
     ;; Recursive body-eval entry.
@@ -557,7 +558,7 @@
            (nl_root_release env root-mark)
            (nl_ali_finish 0 env 3 cap-flag 0 0))
         (nl_ali_body_eval
-         (extern-call nl_cons_car_ptr state-slot)
+         (extern-call nl_cons_car_word state-slot)
          state-slot env 0 cap-flag root-mark)))
 
     (defun nl_ali_body_start
@@ -567,7 +568,7 @@
     (defun nl_ali_body_slot
         (state-slot body env _pad cap-flag root-mark)
       (nl_ali_body_start
-       (extern-call nl_sexp_clone_into body state-slot)
+       (extern-call wf_word_store_out state-slot body)
        state-slot env 0 cap-flag root-mark))
 
     (defun nl_ali_body_mark (root-mark body env _pad cap-flag _pad1)

@@ -132,6 +132,22 @@ retaining the N3 marker-13107 rule: a shared captured cell contains a pair
 whose cdr is the value.  =test/abi-cell-word-test.py BINARY= covers eight
 ordinary/shared immediate cases and fails on the naive direct-cell rewrite.
 
+The N3 lambda mode path now preserves the result WORD through flag save and
+restore, rather than making three nested WORD -> OUT -> WORD round trips.
+The ordinary function lookup and recursive symbol-apply paths consume the
+definition WORD directly; only an invalid immediate function definition
+needs a view for the legacy type/error dispatcher.  Missing definitions
+still signal =void-function= at the caller, rather than a generic ABI error.
+Lambda/progn bodies read form WORDs and store cursor views without cloning.
+
+Use =NELISP_BIN="$ABI_BIN" emacs --batch -Q -l
+test/nelisp-lambda-body-loop-test.el -f ert-run-tests-batch-and-exit= to test a
+selected build.  Previously this suite ignored NELISP_BIN and skipped two
+runtime cases when =target/nelisp= was absent (1/3 executed, 0.000567 s).
+It now executes all three (3/3, 6.440986 s); a failing selected binary makes
+both runtime tests fail.  This fixes coverage without rebuilding or copying
+the selected executable to =target/nelisp=.
+
 * Coexistence ABI
 
 - A converted function takes WORDs and returns the value WORD.  0 is never

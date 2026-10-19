@@ -53,6 +53,19 @@
                       (setq abi-argument-order (cons 2 abi-argument-order)) nil)
                (progn (setq abi-argument-order (cons 3 abi-argument-order)) t))
          abi-argument-order))
+ ;; Function-cell WORDs distinguish missing/nil from invalid integers.
+ (let ((symbol (make-symbol "abi-function-word-parity")))
+   (unwind-protect
+       (list (condition-case error (funcall symbol) (error (car error)))
+             (progn (fset symbol 0)
+                    (condition-case error (funcall symbol) (error (car error))))
+             (progn (fset symbol -1)
+                    (condition-case error (funcall symbol) (error (car error))))
+             (progn (fset symbol nil)
+                    (condition-case error (funcall symbol) (error (car error))))
+             (progn (fset symbol 'car) (funcall symbol '(19)))
+             (apply symbol '((23))))
+     (fmakunbound symbol)))
  ;; Argument WORD reads retain immediate tags and negative integer payloads.
  (mapcar (lambda (value)
            (list (car (list value)) (cdr (cons 'head value))

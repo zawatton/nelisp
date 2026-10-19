@@ -56,8 +56,9 @@
     ;; Arity 4 (even) throughout; every extern-call is the first argument.
 
     ;; Evaluate one body form (CUR is the real cons whose car it is).
-    (defun nl_sf_progn_eval_w (car-ptr cur env _pad)
-      (extern-call nelisp_eval_call_w car-ptr env 0))
+    (defun nl_sf_progn_eval_w (car-word cur env _pad)
+      (if (< (nl_val_tag car-word) 4) car-word
+        (extern-call nelisp_eval_call_w car-word env 0)))
 
     ;; The next loop state after CUR: 0 at the end, else the tail.  Read
     ;; the cdr WORD; only a non-nil immediate (dotted tail) still needs the
@@ -76,7 +77,7 @@
          (while (> state 0)
            (seq
             (setq w (nl_sf_progn_eval_w
-                     (extern-call nl_cons_car_ptr state) state env 0))
+                     (extern-call nl_cons_car_word state) state env 0))
             (setq state (if (= w 0) -1 (nl_sf_progn_next state 0)))))
          (if (= state -1) 0 w))))
 
