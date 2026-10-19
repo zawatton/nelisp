@@ -13,10 +13,10 @@
   (unless (equal (json-parse-string "{\"a\":1}" :object-type 'alist) '((a . 1)))
     (setq failures (1+ failures)))
   (when (featurep 'json) (setq failures (1+ failures)))
-  ;; Exercise the autoload path as well as explicit require, without relying
-  ;; on expansion of a macro before this script starts executing.
-  (unless (equal (eval '(rx "a")) "a") (setq failures (1+ failures)))
+  ;; rx's guarded fallbacks require explicit demand. The unconditional inline
+  ;; entry point below still exercises autoload publication.
   (unless (eq (require 'rx) 'rx) (setq failures (1+ failures)))
+  (unless (equal (eval '(rx "a")) "a") (setq failures (1+ failures)))
   (require 'json)
   (unless (equal (json-read-from-string "{\"a\":1}") '((a . 1)))
     (setq failures (1+ failures)))
@@ -27,6 +27,8 @@
   (unless (= (boot-libraries--increment 4) 5) (setq failures (1+ failures)))
   (eval '(define-minor-mode boot-libraries--mode "Boot library test." :global t))
   (unless (fboundp 'boot-libraries--mode) (setq failures (1+ failures)))
+  ;; Conditional process aliases are intentionally absent until explicit demand.
+  (require 'nelisp-process-buffer nil t)
   (let ((process (make-pipe-process :name "boot-libraries" :noquery t)))
     (unless (processp process) (setq failures (1+ failures)))
     (delete-process process))

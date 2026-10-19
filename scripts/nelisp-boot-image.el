@@ -61,18 +61,16 @@
                          guarded) definitions))
             ((and (eq (car-safe form) 'defalias) (eq (car-safe (cadr form)) 'quote)
                   (memq (car-safe (nth 2 form)) '(quote function)))
-             (push (cons (cadr (cadr form)) (cadr (nth 2 form))) aliases))
+             (push (list (cadr (cadr form)) (cadr (nth 2 form)) guarded) aliases))
             ((and (consp form) (not (memq (car form) '(quote function lambda))))
              (dolist (child (cdr form))
                (walk child (or guarded (not (memq (car form) '(progn eval-and-compile))))))))))
       (dolist (form (nreverse forms)) (walk form nil)))
     (dolist (alias aliases)
-      (let ((target (assq (cdr alias) definitions)))
-        (when target (push (list (car alias) (symbol-name name) (nth 2 target) (nth 3 target)) definitions))))
-    ;; Process-buffer's public aliases are conditional on the marker substrate.
-    (when (eq name 'nelisp-process-buffer)
-      (dolist (function '(make-pipe-process process-mark set-process-buffer get-buffer-process))
-        (push (list function (symbol-name name) nil) definitions)))
+      (let ((target (assq (nth 1 alias) definitions)))
+        (when target
+          (push (list (car alias) (symbol-name name) (nth 2 target)
+                      (or (nth 2 alias) (nth 3 target))) definitions))))
     definitions))
 
 (defun nelisp-boot-image-libraries-source ()

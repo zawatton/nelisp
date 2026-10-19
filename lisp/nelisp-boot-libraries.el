@@ -70,8 +70,9 @@
     (setq nelisp-boot-library--base-load (symbol-function 'load)))
   (fset 'load #'nelisp-boot-library-load)
   (dolist (entry autoloads)
-    (unless (or (featurep (intern (nth 1 entry)))
-                (and (nth 3 entry) (fboundp (car entry))))
+    ;; A guarded definition is a fallback, not an advertised boot entry point.
+    ;; Publishing its autoload changes fboundp and suppresses consumers' fallbacks.
+    (unless (or (featurep (intern (nth 1 entry))) (nth 3 entry))
       (fset (car entry) (list 'autoload (nth 1 entry) nil nil (nth 2 entry)))))
   t)
 
