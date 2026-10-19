@@ -23,7 +23,8 @@ import json, re, sys
 DEBT = ["alloc-bytes-32-8", "nl_cons_car_ptr", "nl_cons_cdr_ptr",
         "record-slot-ref-ptr", "vector-ref-ptr", "nl_vector_slot_ptr",
         "nl_record_slot_ptr", "clone_into", "wf_copy32", "nl_root_reserve",
-        "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word"]
+        "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word",
+        "inline-box-to-word"]
 CONS = ["nl_cons_car_ptr", "nl_cons_cdr_ptr"]
 
 # Order matters: first match wins.  Stage 1 = the first five.
@@ -47,6 +48,62 @@ STAGE1 = ["gc", "binders", "regexp", "evaluator"]
 
 def norm(idiom):
     return "clone_into" if idiom.endswith("_clone_into") else idiom
+
+
+def forms(x):
+    """Walk expressions, including the first binding in a let binding list."""
+    if isinstance(x, list) and x and x[0] not in ("quote", "$str", "$vec"):
+        yield x
+        for y in x:
+            yield from forms(y)
+
+
+def inline_conversions(source):
+    """Count decoded box/view operands once per function, never heap objects.
+
+    A tag read paired with fixnum payload encoding is a conversion even when
+    the operand is a borrowed storage view rather than a private allocation.
+    Canonical-symbol wrappers also decode nil/t via name predicates instead
+    of a tag read. Count those when a fresh box is passed to a producer.
+    Returning a freshly written heap box alone is deliberately not debt.
+    """
+    result = {}
+    for fn in forms(source):
+        if fn[0] != "defun":
+            continue
+        if fn[1] == "nl_val_store_word":
+            continue  # its call sites already have their own census idiom
+        nodes = list(forms(fn[3:]))
+        decoded, tags, fresh = set(), set(), set()
+        key = lambda x: json.dumps(x, sort_keys=True)
+        for x in nodes:
+            if len(x) == 2 and isinstance(x[0], str) and x[1] == ["alloc-bytes", 32, 8]:
+                fresh.add(x[0])
+            if x[0] in ("ptr-read-u8", "nelisp_ptr_read_u8", "sexp-tag"):
+                if len(x) == 2 or (len(x) == 3 and x[2] == 0):
+                    tags.add(key(x[1]))
+            if (x[0] in ("*", "ash", "shl") and len(x) == 3) or (
+                    x[0] == "nl_imm_int" and len(x) == 2):
+                payload = x[1]
+                if x[0] != "nl_imm_int" and x[2] != (4 if x[0] == "*" else 2):
+                    continue
+                if isinstance(payload, list) and len(payload) == 3 and payload[0] in (
+                        "ptr-read-u64", "nelisp_ptr_read_u64"):
+                    box, off = payload[1:]
+                    if off == 0 and isinstance(box, list) and len(box) == 3 and box[0] == "+" and box[2] == 8:
+                        box, off = box[1], 8
+                    if off == 8:
+                        decoded.add(key(box))
+        hits = decoded & tags
+        heads = {x[0] for x in nodes if isinstance(x[0], str)}
+        if {"nl_name_is_nil", "nl_name_is_t"} <= heads:
+            for box in fresh:
+                if any(box in x[1:] and isinstance(x[0], str)
+                       and x[0].startswith("nl_")
+                       and x[0] not in ("nl_name_is_nil", "nl_name_is_t") for x in nodes):
+                    hits.add(key(box))
+        result[fn[1]] = len(hits)
+    return result
 
 
 def load(path):
@@ -93,6 +150,11 @@ def main(a):
     if len(a) < 2:
         sys.exit(__doc__)
     cmd, path = a[0], a[1]
+    if cmd == "inline-rows":
+        d = json.load(sys.stdin)
+        for fn, n in inline_conversions(d).items():
+            print(f"{path}\t{fn}\tinline-box-to-word\t{n}")
+        return
     if cmd == "from-dump":
         units = {}
         for line in open(path, encoding="utf-8"):
@@ -125,6 +187,8 @@ def main(a):
                     for y in x[1:]:
                         walk(y, fn)
                 walk(source)
+                for fn, n in inline_conversions(source).items():
+                    rows[(fn, "inline-box-to-word")] = n
                 for (fn, idiom), n in rows.items():
                     out.write(f"{unit}\t{fn}\t{idiom}\t{n}\n")
         return

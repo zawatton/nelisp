@@ -1784,6 +1784,16 @@ twice appears twice; readers keep the last occurrence of each unit."
         (with-temp-buffer
           (dolist (r (nreverse rows))
             (insert (format "%s\t%s\t%s\t%d\n" name (nth 0 r) (nth 1 r) (nth 2 r))))
+          ;; Use the same structural detector as from-dump. Zero rows certify
+          ;; that inline conversions were checked, even after the last removal.
+          (let ((dest (current-buffer))
+                (script (expand-file-name "tools/ai/box-census.py"
+                                          nelisp-standalone--repo-root)))
+            (with-temp-buffer
+              (insert (json-encode (nelisp-standalone--box-dump-json source)))
+              (unless (= 0 (call-process-region (point-min) (point-max) "python3"
+                                                nil dest nil script "inline-rows" name))
+                (error "Inline box census failed for %s" name))))
           (let ((coding-system-for-write 'utf-8-unix))
             (write-region (point-min) (point-max) file t 'silent)))))))
 

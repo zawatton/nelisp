@@ -208,6 +208,15 @@ access, and unknown uses.  wf_bytecode_* and m5_fx_*/nl_fx_* are excluded.
 
 ** Coexistence (one function at a time)
 
+S6.2 also counts inline box/view decoding: a tag read paired with fixnum
+payload encoding, or a private producer OUT box decoded via canonical
+nil/t name predicates. Returning a freshly written heap box as the object
+itself is not a conversion. The structural detector is shared by the build
+census and =box-census.py from-dump=; zero rows certify that it ran. Old
+censuses without these rows cannot pass S6.2. This Round 3 criteria change
+keeps the denominator at 21. The reader's pool-slot reverse adapters remain
+debt until its producers and consumers carry WORDs directly.
+
 - Every converted =F= keeps its old name and (rc, OUT) ABI as a one-line
   adapter: =(defun F (.. out) (nl_abi_word_to_rc (F_w .. 0) out))=.
   =nl_abi_word_to_rc= stores an immediate with =nl_sci_store_imm= and a
