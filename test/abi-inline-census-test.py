@@ -42,6 +42,13 @@ class InlineCensusTest(unittest.TestCase):
         self.assertEqual(0, self.count([
             "+", ["*", ["ptr-read-u64", "counter", 8], 4], 1]))
 
+    def test_selecting_immediates_before_allocating_the_object_is_not_debt(self):
+        self.assertEqual(0, self.count([
+            "if", ["nl_name_is_nil", "bytes", "n"], 3,
+            ["if", ["nl_name_is_t", "bytes", "n"], 7,
+             ["let*", [["box", ["alloc-bytes", 32, 8]]],
+              ["seq", ["nl_symbol_producer", "bytes", "n", "box"], "box"]]]]))
+
 
 if __name__ == "__main__":
     unittest.main()

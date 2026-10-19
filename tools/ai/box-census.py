@@ -74,11 +74,9 @@ def inline_conversions(source):
         if fn[1] == "nl_val_store_word":
             continue  # its call sites already have their own census idiom
         nodes = list(forms(fn[3:]))
-        decoded, tags, fresh = set(), set(), set()
+        decoded, tags = set(), set()
         key = lambda x: json.dumps(x, sort_keys=True)
         for x in nodes:
-            if len(x) == 2 and isinstance(x[0], str) and x[1] == ["alloc-bytes", 32, 8]:
-                fresh.add(x[0])
             if x[0] in ("ptr-read-u8", "nelisp_ptr_read_u8", "sexp-tag"):
                 if len(x) == 2 or (len(x) == 3 and x[2] == 0):
                     tags.add(key(x[1]))
@@ -95,13 +93,21 @@ def inline_conversions(source):
                     if off == 8:
                         decoded.add(key(box))
         hits = decoded & tags
-        heads = {x[0] for x in nodes if isinstance(x[0], str)}
-        if {"nl_name_is_nil", "nl_name_is_t"} <= heads:
-            for box in fresh:
-                if any(box in x[1:] and isinstance(x[0], str)
-                       and x[0].startswith("nl_")
-                       and x[0] not in ("nl_name_is_nil", "nl_name_is_t") for x in nodes):
-                    hits.add(key(box))
+        for scope in nodes:
+            if scope[0] not in ("let", "let*") or not isinstance(scope[1], list):
+                continue
+            fresh = [b[0] for b in scope[1] if isinstance(b, list) and len(b) == 2
+                     and b[1] == ["alloc-bytes", 32, 8]]
+            body = list(forms(scope[2:]))
+            heads = {x[0] for x in body if isinstance(x[0], str)}
+            # Predicates before allocation select the WORD directly. Only
+            # predicates inside the private-box scope can decode its result.
+            if {"nl_name_is_nil", "nl_name_is_t"} <= heads:
+                for box in fresh:
+                    if any(box in x[1:] and isinstance(x[0], str)
+                           and x[0].startswith("nl_")
+                           and x[0] not in ("nl_name_is_nil", "nl_name_is_t") for x in body):
+                        hits.add(key(box))
         result[fn[1]] = len(hits)
     return result
 

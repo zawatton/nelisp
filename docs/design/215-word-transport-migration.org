@@ -211,8 +211,10 @@ access, and unknown uses.  wf_bytecode_* and m5_fx_*/nl_fx_* are excluded.
 S6.2 also counts inline box/view decoding: a tag read paired with fixnum
 payload encoding, or a private producer OUT box decoded via canonical
 nil/t name predicates. Returning a freshly written heap box as the object
-itself is not a conversion. The structural detector is shared by the build
-census and =box-census.py from-dump=; zero rows certify that it ran. Old
+itself is not a conversion. Selecting nil/t before allocating a heap symbol
+is a direct WORD producer, not decoding a producer's OUT box; the detector
+checks the allocation scope. It is shared by the build census and
+=box-census.py from-dump=; zero rows certify that it ran. Old
 censuses without these rows cannot pass S6.2. This Round 3 criteria change
 keeps the denominator at 21. The reader's pool-slot reverse adapters remain
 debt until its producers and consumers carry WORDs directly.
