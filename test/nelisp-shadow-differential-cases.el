@@ -45,6 +45,9 @@
 ;;; Code:
 
 (list
+ ;; Reader word producers retain immediate, heap, and quoted leaf values.
+ (mapcar #'read '("17" "-9" "2305843009213693952" "nil" "t"
+                  "word" "\"text\"" "?A" "#xFF" "1.5" "'(1 . t)"))
  ;; Word-valued function-cell lookup preserves nil, aliases and immediates.
  (let ((symbol (make-symbol "abi-function-cell")))
    (list (symbol-function symbol)

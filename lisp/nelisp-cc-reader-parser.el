@@ -740,21 +740,29 @@
                      (ptr-read-u64 payload-slot 24)
                      result-slot))
        (t -1)))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_leaf' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_leaf_w (kind _pad payload-slot)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_leaf kind result-slot payload-slot)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail nl_abi_st 0)))))))
+      (cond
+       ((= kind 20) (nl_read_int_or_bignum_w payload-slot 0))
+       ((= kind 22)
+        (let ((object (alloc-bytes 32 8)))
+          (seq (nelisp_reader_p_copy_str object payload-slot) object)))
+       ((= kind 23)
+        (cond ((= (nelisp_reader_p_is_nil_name payload-slot) 1) 3)
+              ((= (nelisp_reader_p_is_t_name payload-slot) 1) 7)
+              (t (nl_alloc_symbol_named_w
+                  (ptr-read-u64 payload-slot 16)
+                  (ptr-read-u64 payload-slot 24) payload-slot 0))))
+       ((= kind 24) (nl_imm_int (nelisp_reader_p_decode_char payload-slot)))
+       ((= kind 25) (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))
+       ((= kind 21)
+        (let ((object (alloc-bytes 32 8)))
+          (if (= (extern-call nl_str_to_float
+                              (ptr-read-u64 payload-slot 16)
+                              (ptr-read-u64 payload-slot 24) object) 1)
+              object
+            (nl_abi_fail 0 0))))
+       (t (nl_abi_fail -1 0))))
 
     ;; ===========================================================
     ;; Reset the scratch-mutstr (= drain it for the next lex run).
@@ -1081,21 +1089,13 @@
         str-ptr cursor-slot
         (nelisp_reader_p_slot slot-pool 1)   ; payload-slot
         (nelisp_reader_p_slot slot-pool 0))))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_parse_at' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_parse_at_w (str-ptr cursor-slot _pad slot-pool depth)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_parse_at str-ptr cursor-slot result-slot slot-pool depth)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))))))) ; scratch-slot
+      (nelisp_reader_p_dispatch_w
+       str-ptr cursor-slot 0 slot-pool depth
+       (nelisp_reader_p_lex_one
+        str-ptr cursor-slot (nelisp_reader_p_slot slot-pool 1)
+        (nelisp_reader_p_slot slot-pool 0)))) ; scratch-slot
 
     (defun nelisp_reader_p_dispatch
         (str-ptr cursor-slot result-slot slot-pool depth kind)
@@ -1280,21 +1280,17 @@
                     -1)
                 -1)))
         -1))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_build_bool_vector' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_build_bool_vector_w (n-slot str-slot _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_build_bool_vector n-slot str-slot result-slot)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail nl_abi_st 0)))))))
+      (if (= (ptr-read-u64 n-slot 0) 2)
+          (let ((n (ptr-read-u64 n-slot 8)))
+            (if (and (>= n 0)
+                     (= (nelisp_reader_p_bv_string_tag_p (ptr-read-u64 str-slot 0)) 1)
+                     (>= (nelisp_reader_p_bv_str_len str-slot) (nl_bv_bytelen n)))
+                (nl_alloc_bool_vector_from_bytes_w
+                 n (nelisp_reader_p_bv_str_ptr str-slot) 0)
+              (nl_abi_fail -1 0)))
+        (nl_abi_fail -1 0)))
 
     (defun nelisp_reader_p_bool_vector_prefix_p (str-ptr cursor-slot)
       (let* ((cursor (nl_word_payload cursor-slot)))
@@ -1391,21 +1387,23 @@
                                                  (nelisp_reader_p_cdr_idx depth))
                                  result-slot)
            1))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_wrap' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_wrap_w (str-ptr cursor-slot _pad slot-pool depth tag-byte)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_wrap str-ptr cursor-slot result-slot slot-pool depth tag-byte)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
+      (if (and (= (nelisp_reader_p_parse_at
+                   str-ptr cursor-slot
+                   (nelisp_reader_p_slot slot-pool (nelisp_reader_p_car_idx depth))
+                   slot-pool (+ depth 1)) 1)
+               (cons-make-with-clone
+                (nelisp_reader_p_slot slot-pool (nelisp_reader_p_car_idx depth))
+                (nelisp_reader_p_slot slot-pool 2)
+                (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth)))
+               (= (nelisp_reader_p_build_head_symbol
+                   (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth))
+                   (nelisp_reader_p_slot slot-pool 0) tag-byte) 1))
+          (nelisp_cons_construct_w
+           (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth))
+           (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth)) 0)
+        (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))
 
     ;; ===========================================================
     ;; Parse a list body: peek the next token, dispatch.
@@ -1454,21 +1452,15 @@
                         0 0)
          (nelisp_reader_p_seq_loop
           str-ptr cursor-slot result-slot slot-pool depth mode))))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_parse_seq' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_parse_seq_w (str-ptr cursor-slot _pad slot-pool depth mode)
-      (let* ((result-slot (alloc-bytes 32 8)))
+      (if (= (nelisp_reader_p_depth_ok_p slot-pool depth) 0)
+          (nl_abi_fail
+           (nelisp_reader_p_stash_excessive_nesting (nelisp_reader_p_max_depth) 0) 0)
         (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_parse_seq str-ptr cursor-slot result-slot slot-pool depth mode)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
+         (ptr-write-u64
+          (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)) 0 0)
+         (nelisp_reader_p_seq_loop_w str-ptr cursor-slot 0 slot-pool depth mode))))
 
     (defun nelisp_reader_p_seq_loop
         (str-ptr cursor-slot result-slot slot-pool depth mode)
@@ -1479,21 +1471,14 @@
            (nelisp_reader_p_slot slot-pool 1)
            (nelisp_reader_p_slot slot-pool 0))
           (+ 100 (* 200 mode)))))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_seq_loop' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_seq_loop_w (str-ptr cursor-slot _pad slot-pool depth mode)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_seq_loop str-ptr cursor-slot result-slot slot-pool depth mode)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
+      (nelisp_reader_p_seq_dispatch_w
+       str-ptr cursor-slot 0 slot-pool depth
+       (+ (nelisp_reader_p_lex_one
+           str-ptr cursor-slot (nelisp_reader_p_slot slot-pool 1)
+           (nelisp_reader_p_slot slot-pool 0))
+          (+ 100 (* 200 mode)))))
 
     (defun nelisp_reader_p_seq_dot
         (str-ptr cursor-slot result-slot slot-pool depth _pad)
@@ -1604,21 +1589,9 @@
         (str-ptr cursor-slot result-slot slot-pool depth)
       (nelisp_reader_p_parse_seq
        str-ptr cursor-slot result-slot slot-pool depth 0))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_p_parse_list_step' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
     (defun nelisp_reader_p_parse_list_step_w (str-ptr cursor-slot _pad slot-pool depth)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_p_parse_list_step str-ptr cursor-slot result-slot slot-pool depth)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
+      (nelisp_reader_p_parse_seq_w str-ptr cursor-slot 0 slot-pool depth 0))
 
     ;; ===========================================================
     ;; `#s(hash-table ... data (...))' reader literal support.
@@ -2117,21 +2090,11 @@
         (str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)
       (nelisp_reader_parse_one_with_context
        str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot))
-    ;; Doc 215 word ABI (reader): the form WORD, 2 at end of input, or 0 with the
-    ;; signal stashed (old status -1/0).  `nelisp_reader_parse_one_with_load_file_name' keeps the (status, pool slot) ABI and
-    ;; is unchanged: the pool slot stays the reader's own storage.  result-slot here is a fresh
-    ;; transport box, pre-Nil as the parser requires.
-    (defun nelisp_reader_parse_one_with_load_file_name_w (str-ptr cursor-slot _pad slot-pool depth load-file-name-slot)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 result-slot 0 0) (ptr-write-u64 result-slot 8 0)
-         (ptr-write-u64 result-slot 16 0) (ptr-write-u64 result-slot 24 0)
-         (let* ((nl_abi_st (nelisp_reader_parse_one_with_load_file_name str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)))
-           (if (= nl_abi_st 1)
-               (nl_abi_rc_to_word 0 result-slot)
-             (if (= nl_abi_st 2)
-                 2
-               (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))))
+    ;; Doc 215: produce the WORD directly; legacy callers retain their slot ABI.
+    (defun nelisp_reader_parse_one_with_load_file_name_w
+        (str-ptr cursor-slot _pad slot-pool depth load-file-name-slot)
+      (nelisp_reader_parse_one_with_context_w
+       str-ptr cursor-slot 0 slot-pool depth load-file-name-slot))
 
     (defun nelisp_reader_parse_one_with_context
         (str-ptr cursor-slot result-slot slot-pool depth context-slot)
