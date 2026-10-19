@@ -17,7 +17,8 @@
 (defconst nelisp-cc-eval-is-truthy--source
   '(seq
     ;; Doc 215: consume the evaluator's WORD directly. A private physical
-    ;; scratch can be swept while FORM collects and then reused as an arena
+    ;; FORM is a canonical input WORD. A scratch can be swept while it
+    ;; collects and then reused as an arena
     ;; block header; writing a legacy result back into it corrupts the heap.
     ;; No safepoint follows the returned value before this immediate test.
     ;; 0 is evaluation failure (including flagless abort), 3 is Lisp nil.

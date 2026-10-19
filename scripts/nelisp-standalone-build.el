@@ -7358,9 +7358,34 @@ argument (reachability + in-arena bounds checks).")
         ;; Doc 215 word ABI: the value WORD, or 0 with the signal stashed.
         ;; `nelisp_eval_call' keeps the (rc, OUT) ABI as the adapter.
         (defun nelisp_eval_call (form_ptr env out)
-          (nl_abi_word_to_rc (nelisp_eval_call_w form_ptr env 0) out))
+          ;; Legacy view callers keep a view result throughout.  In particular,
+          ;; evaluating a nil/int view must not decode it just to box it again.
+          (if (and (= (ptr-read-u64 (+ env 96) 0) 0)
+                   (= (sar (ptr-read-u64
+                              (ptr-read-u64 (ptr-read-u64 env 40) 32) 8) 2) 0))
+              (seq (nelisp_frame_scope_push (+ env 32))
+                   (nelisp_eval_call_root_done
+                    (nelisp_eval_call_inner form_ptr env out) env))
+            (nelisp_eval_call_inner form_ptr env out)))
         (defun nelisp_eval_call_inner (form_ptr env out)
-          (nl_abi_word_to_rc (nelisp_eval_call_inner_w form_ptr env 0) out))
+          (seq
+           (nl_rootstack_init)
+           (nl_thread_park_safepoint env)
+           (let* ((rec_cur_addr (+ env 96)) (rec_max (ptr-read-u64 env 104))
+                  (rec_cur (ptr-read-u64 rec_cur_addr 0)))
+             (if (>= rec_cur rec_max)
+                 (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
+               (seq
+                (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
+                (if (= (nl_gc_frame_record_armed_p) 1)
+                    (let* ((pushed (nl_gc_eval_ctx_push env form_ptr out 0))
+                           (rc (nl_eval_inner form_ptr env out 0)))
+                      (seq (nl_thread_park_safepoint env)
+                           (nl_bt_maybe_capture rc)
+                           (if (= pushed 1) (nl_gc_ctx_pop) 0)
+                           (ptr-write-u64 rec_cur_addr 0 rec_cur) rc))
+                  (nelisp_eval_call_done (nl_eval_inner form_ptr env out 0)
+                                        env rec_cur rec_cur_addr)))))))
         (defun nelisp_eval_call_w (form_ptr env _pad)
           ;; A top-level form still needs a lexical declaration context.
           ;; Nested calls use their existing frames; the temporary root is
@@ -7374,22 +7399,21 @@ argument (reachability + in-arena bounds checks).")
                    (nelisp_eval_call_root_done
                     (nelisp_eval_call_inner_w form_ptr env 0) env))
             (nelisp_eval_call_inner_w form_ptr env 0)))
-        ;; Word entry of the evaluator boundary.  Until `nl_eval_inner' has a
-        ;; word form, the result goes through a private OUT box; that box is
-        ;; what `nl_gc_eval_ctx_push' records as the context's result root,
-        ;; so a parked worker's collection still marks the in-flight value.
         ;; Word entry of the evaluator boundary.  The context frame records no
         ;; OUT box any more: the result WORD is written into the frame's
         ;; result-root slot (+16) before the exit safepoint, so a parked
         ;; worker's collection still keeps it (Doc 215 R2); an immediate
         ;; needs no root.
-        (defun nelisp_eval_call_inner_w (form_ptr env _pad)
+        (defun nelisp_eval_call_inner_w (form env _pad)
           (seq
            (nl_rootstack_init)
            ;; Doc 199 Tier 3b: every evaluator recursion boundary is a worker
            ;; park safepoint.
            (nl_thread_park_safepoint env)
-           (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
+           ;; Context/backtrace records still consume views.  The evaluator
+           ;; receives FORM's original WORD, including immediate literals.
+           (let* ((form_ptr (wf_word_view form))
+                  (rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
              (let* ((rec_cur (ptr-read-u64 rec_cur_addr 0)) (rec_max (ptr-read-u64 rec_max_addr 0)))
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
@@ -7398,10 +7422,10 @@ argument (reachability + in-arena bounds checks).")
                        (let* ((pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
                         (nelisp_eval_call_recorded_done_w
                          (nelisp_eval_call_record_result
-                          (nl_eval_inner_w form_ptr env 0 0) pushed)
+                          (nl_eval_inner_w form env 0 0) pushed)
                          form_ptr env 0 rec_cur rec_cur_addr pushed))
                      (nelisp_eval_call_done
-                      (nl_eval_inner_w form_ptr env 0 0)
+                      (nl_eval_inner_w form env 0 0)
                       env rec_cur rec_cur_addr))))))))
         (defun nelisp_eval_call_record_result (w pushed)
           (seq (if (= pushed 1)
@@ -14595,8 +14619,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (wf_bytecode_copy cursor cleanup)
             (while (and (= rc 0) (= (ptr-read-u64 cursor 0) 7))
               (seq
-               (wf_bytecode_w_load form (nl_cons_car_word cursor))
-               (setq rc (if (= (nelisp_eval_call_w form env 0) 0) 1 0))
+               (setq rc (if (= (nelisp_eval_call_w (nl_cons_car_word cursor) env 0) 0) 1 0))
                (wf_bytecode_w_load cursor (nl_cons_cdr_word cursor))))))
          ;; A normally returning cleanup preserves the pending exit.  An
          ;; exit raised by the cleanup remains in the shared stash and wins.
@@ -22335,8 +22358,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (pushed (nl_gc_ctx_push env result out pool src cursor bsym)))
     (seq
      (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-     (let* ((word (nelisp_eval_call_w
-                   (if (= (logand form 1) 1) result form) env 0)))
+     (let* ((word (nelisp_eval_call_w form env 0)))
        (seq
         (if (/= word 0)
             (seq
@@ -24113,7 +24135,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                (nl_abi_fail (bf_wrong_type_number_or_marker p) 0)))))
     ;; P1 native byte-code loop.  Keep the public surface to string, vector
     ;; and integer arguments, matching the requested builtin contract.
-    ((:lit "byte-code") . (let* ((cp (wf_arg_ptr args 0))
+    ((:lit "byte-code") :word . (let* ((cp (wf_arg_ptr args 0))
                                   (vp (wf_arg_ptr args 1))
                                   (dp (wf_arg_ptr args 2)))
                              (if (if (= (ptr-read-u64 cp 0) 5) 1
@@ -24123,17 +24145,25 @@ into that constant unconditionally is what broke every aarch64 build."
                                  (if (= (ptr-read-u64 vp 0) 8)
                                      (if (= (ptr-read-u64 dp 0) 2)
                                          (if (> (ptr-read-u64 dp 8) 0)
-                                             (seq (ptr-write-u64 268436360 0 0)
+                                             (let* ((mark (nl_root_mark env))
+                                                    (out (nl_root_reserve_checked env))
+                                                    (result (alloc-bytes 8 8)) (word 0))
+                                               (if (= out 0)
+                                                   (seq (wf_bytecode_root_exhausted) 0)
+                                               (seq (ptr-write-u64 268436360 0 0)
                                                (let* ((cd (nl_bi_strptr cp))
                                                       (clen (m5_strlen cp))
                                                       (rc (if (and (= clen 2)
                                                                    (= (ptr-read-u8 cd 0) 192)
                                                                    (= (ptr-read-u8 cd 1) 135))
-                                                              (let* ((w0 (nl_vector_slot_word vp 0))) (seq (if (= (logand w0 1) 0) (wf_copy32 out w0) (nl_sci_store_imm w0 out)) 0))
-                                                            (wf_bytecode args env out 0 0 0 0))))
+                                                              (seq (ptr-write-u64 result 0 (nl_vector_slot_word vp 0)) 0)
+                                                            ;; The VM already owns a canonical WORD stack.
+                                                            ;; Request that WORD instead of a result view.
+                                                            (wf_bytecode_execute_frame cp vp (ptr-read-u64 dp 8)
+                                                             env out 0 0 0 0 0 0 result 0))))
                                                (if (= (ptr-read-u64 268436360 0) 1)
-                                                   (bf_error out out)
-                                                 (if (= rc 0) 0
+                                                   (setq word (bf_error_w out 0))
+                                                 (if (= rc 0) (setq word (ptr-read-u64 result 0))
                                                    ;; A pending exit that reaches this top-level
                                                    ;; entry point unresolved must keep its real
                                                    ;; kind: 2 means a THROW, and forcing it to 1
@@ -24146,12 +24176,17 @@ into that constant unconditionally is what broke every aarch64 build."
                                                    (seq (if (= (ptr-read-u64 268435472 0) 2)
                                                             0
                                                           (ptr-write-u64 268435472 0 1))
-                                                        1)))))
-                                           (seq (wf_bytecode_error env 255 0 out)
-                                                (bf_error out out)))
-                                       (bf_wrong_type_fixnump dp))
-                                   (bf_wrong_type_arrayp vp))
-                               (bf_wrong_type_stringp cp))))
+                                                        0))))
+                                                (nl_root_release env mark) word)))
+                                           (let* ((mark (nl_root_mark env))
+                                                  (out (nl_root_reserve_checked env)))
+                                             (if (= out 0) (seq (wf_bytecode_root_exhausted) 0)
+                                               (let* ((word (seq (wf_bytecode_error env 255 0 out)
+                                                                 (bf_error_w out 0))))
+                                                 (seq (nl_root_release env mark) word)))))
+                                       (nl_abi_fail (bf_wrong_type_fixnump dp) 0))
+                                   (nl_abi_fail (bf_wrong_type_arrayp vp) 0))
+                               (nl_abi_fail (bf_wrong_type_stringp cp) 0))))
     ((:lit "set")      :word . (bf_set_w args env 0))
     ((:lit "makunbound") :word . (bf_makunbound_w args env 0))
     ((:lit "symbol-value") :word . (if (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) 1
@@ -28165,7 +28200,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      ;; Doc 215 word ABI: the body's value WORD, nil 3, or 0 (signal).
      ;; nl_eval_is_truthy answers 1 / 0 / -1 (signalled).
      (if (= (sexp-tag args) 7)
-         (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
+         (let* ((tv (nl_eval_is_truthy (nl_cons_car_word args) env)))
            (if (= tv 1)
                (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0)
              (if (= tv 0) 3 0)))
@@ -28174,7 +28209,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 (defconst nelisp-standalone--sf-unless
   '(defun nl_sf_unless_w (args env _pad _pad1)
      (if (= (sexp-tag args) 7)
-         (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
+         (let* ((tv (nl_eval_is_truthy (nl_cons_car_word args) env)))
            (if (= tv 1)
                3
              (if (= tv 0) (nl_sf_progn_w (nl_cons_cdr_ptr args) env 0 0) 0)))
@@ -28185,7 +28220,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 (defconst nelisp-standalone--sf-and-walk
   '(defun nl_sf_and_walk_w (rest env _pad _pad1)
      ;; A signal in a conjunct propagates (0); nil short-circuits.
-     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_word rest) env 0)))
        (if (= w 0)
            0
          (let* ((more (nl_cons_cdr_word rest)))
@@ -28201,7 +28236,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 (defconst nelisp-standalone--sf-or-walk
   '(defun nl_sf_or_walk_w (rest env _pad _pad1)
      ;; A signal in a disjunct propagates (0); the first non-nil value wins.
-     (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr rest) env 0)))
+     (let* ((w (nelisp_eval_call_w (nl_cons_car_word rest) env 0)))
        (if (= w 0)
            0
          (if (= (nl_val_tag w) 0)
@@ -28222,7 +28257,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (let* ((clause (nl_cons_car_word clauses))
             (more (nl_cons_cdr_word clauses)))
        (if (= (sexp-tag clause) 7)
-           (let* ((w (nelisp_eval_call_w (nl_cons_car_ptr clause) env 0)))
+           (let* ((w (nelisp_eval_call_w (nl_cons_car_word clause) env 0)))
              (if (= w 0)
                  0
                (if (= (nl_val_tag w) 0)
@@ -28271,7 +28306,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
     (defun nl_sf_prog_body_w (body env holder _pad)
   (if (= (nl_sf_progn_w body env 0 0) 0) 0 (nl_cons_car_word holder)))
     (defun nl_sf_prog1_slot_w (args env mark vslot)
-  (let* ((word (nelisp_eval_call_w (nl_cons_car_ptr args) env 0)))
+  (let* ((word (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
     (nl_sf_prog_release_w
      (if (= word 0) 0
        (let* ((holder (nelisp_cons_construct_w word 3 0)))
@@ -28293,7 +28328,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
      (if (= (sexp-tag args) 7)
          (let* ((rest (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest) 7)
-               (let* ((w1 (nelisp_eval_call_w (nl_cons_car_ptr args) env 0)))
+               (let* ((w1 (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
                  (if (= w1 0) 0 (nl_sf_prog1_w rest env 0 0)))
              3))
        3)))
@@ -41106,7 +41141,17 @@ correctly."
             ;; Preserve a non-signal abort without inventing an error.
             (seq (nl_cce_clear err_out) 0)))))
     (defun nelisp_eval_call_with_err (form env out err_out)
-      (nl_abi_word_to_rc (nelisp_eval_call_with_err_w form env 0 err_out) out)))
+      ;; Physical-view compatibility entry; do not reverse-adapt its result.
+      (let* ((rc (nelisp_eval_call form env out)))
+        (if (= rc 0)
+            (if (and (= (ptr-read-u64 268435472 0) 1)
+                     (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+                     (/= (nl_thread_registry_find env) 0))
+                (seq (nelisp_cons_construct 268435480 268435512 err_out) 1)
+              (seq (nl_cce_clear err_out) 0))
+          (if (= (ptr-read-u64 268435472 0) 1)
+              (seq (nelisp_cons_construct 268435480 268435512 err_out) rc)
+            (seq (nl_cce_clear err_out) rc))))))
   "WAVE-2 condition-case-trapping nelisp_eval_call_with_err (PATCH 1): on a
 signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 `nl_cc_match_and_bind' can match the handler; the no-error path is unchanged.")
@@ -43166,7 +43211,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
        (logior (logand (ptr-read-u64 env 112) -2097153)
                (if (= (sexp-tag lex) 0) 2097152 0)))
      (nl_n3_eval_bind_pairs lex (+ env 32))
-     (let* ((word (nelisp_eval_call_w (wf_arg_ptr args 0) env 0)))
+     (let* ((word (nelisp_eval_call_w (wf_arg_word args 0) env 0)))
        (seq
         (if (/= word 0) (ptr-write-u64 (ptr-read-u64 value-root 8) 0 word) 0)
         (nl_env_pop_frame env)
@@ -43663,7 +43708,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (>= depth 32768) 0
           (let* ((frame (nl_n4_record state depth)))
             (seq
-             (wf_copy32 frame function)
+             ;; The canonical evaluator can pass an immediate operator (for
+             ;; example (nil)). Frames retain a diagnostic view of that WORD.
+             (wf_word_store_out frame function)
              (wf_copy32 (+ frame 32) args)
              ;; The shared stack is a Record view with zero hint words.
              ;; mmap initialized its words 16/24; only its payload changes.
@@ -44267,13 +44314,13 @@ tails run against a private box), and the (rc, OUT) adapter F."
 (defun nl_sf_cl_defun_w (_args _env _pad _pad1) 2)
 
     (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
-      (if (= (sexp-tag head_ptr) 4)
+      (if (= (nl_val_tag head_ptr) 4)
           (if (= (nl_sp_eq_dolist head_ptr) 1)
               (nl_eic_dolist_w tail_ptr env form_ptr 0)
             (nl_eic_symbol_dispatch_w
              (nl_apply_special_w head_ptr tail_ptr env 0)
              form_ptr head_ptr tail_ptr env))
-        (if (= (sexp-tag head_ptr) 16)
+        (if (= (nl_val_tag head_ptr) 16)
             (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
           (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env)))))
     (defun nl_eval_inner_cons (form_ptr head_ptr tail_ptr env out)
@@ -44355,8 +44402,8 @@ tails run against a private box), and the (rc, OUT) adapter F."
           ;; The cache stores Sexp pointers and its collector reads a view.
           ;; Only an immediate expansion needs a durable view at this boundary.
           (let* ((exp_ptr (wf_word_view exp_w)))
-            (seq (nl_mxcache_store form_ptr exp_ptr)
-                 (nelisp_eval_call_w exp_ptr env 0))))))
+            (seq (if (= (logand exp_w 1) 0) (nl_mxcache_store form_ptr exp_ptr) 0)
+                 (nelisp_eval_call_w exp_w env 0))))))
     (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
       (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
@@ -44373,19 +44420,23 @@ tails run against a private box), and the (rc, OUT) adapter F."
 
 (defconst nelisp-standalone--eval-inner-word
   '((defun nl_eval_inner_w (form env _pad _pad1)
-      ;; Self-evaluating FORM is answered as its own WORD; a view of an
-      ;; immediate becomes the immediate (Doc 215 R4).
+      ;; FORM is the original canonical WORD, never an immediate view.
       (cond
+       ((= (logand form 1) 1) form)
        ((= (nl_kw_is_keyword form) 1) form)
        ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
        ((= (sexp-tag form) 7)
-        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_ptr form) form env 0))
+        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_word form) form env 0))
        ((= (sexp-tag form) 11)
         (extern-call nl_cell_get_value_w form 0))
-       (t (nl_val_store_word form))))
+       (t form)))
     (defun nl_eval_inner (form env out _pad)
-      (nl_abi_word_to_rc (nl_eval_inner_w form env 0 0) out))
+      ;; The legacy view ABI evaluates immediate views by copying them.
+      ;; Heap forms can enter the canonical core without conversion.
+      (if (or (= (sexp-tag form) 0) (= (sexp-tag form) 1) (= (sexp-tag form) 2))
+          (seq (nl_sexp_clone_into form out) 0)
+        (nl_abi_word_to_rc (nl_eval_inner_w form env 0 0) out)))
     ;; W from `nl_env_lookup_val_w': 2 = unbound -> void-variable.
     (defun nl_ei_var_w (w form env _pad)
       (if (= w 2) (nl_abi_fail (nl_stash_void_variable env form) 0) w))

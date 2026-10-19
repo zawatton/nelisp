@@ -29,7 +29,7 @@
 ;; ABI:
 ;;   nl_cons_car_ptr: *const Sexp → i64
 ;;   nl_cons_cdr_ptr: *const Sexp → i64
-;;   nl_eval_is_truthy: (*const Sexp, *mut c_void) → i64
+;;   nl_eval_is_truthy: (WORD, *mut c_void) → i64
 ;;     1=truthy, 0=nil, -1=eval error
 ;;   nelisp_eval_call: (*const Sexp, *mut c_void, *mut Sexp) → i64
 ;;
@@ -79,13 +79,13 @@
           0
         (if (= truthy 0)
             (nl_sf_progn_w (extern-call nl_cons_cdr_word cdr) env 0 0)
-          (nl_sf_if_then_w (extern-call nl_cons_car_ptr cdr) env 0 0))))
+          (nl_sf_if_then_w (extern-call nl_cons_car_word cdr) env 0 0))))
 
     (defun nl_sf_if_test_w (test-ptr cdr env _pad)
       (nl_sf_if_branch_w (extern-call nl_eval_is_truthy test-ptr env) cdr env 0))
 
     (defun nl_sf_if_cdr_w (cdr args env _pad)
-      (nl_sf_if_test_w (extern-call nl_cons_car_ptr args) cdr env 0))
+      (nl_sf_if_test_w (extern-call nl_cons_car_word args) cdr env 0))
 
     (defun nl_sf_if_w (args env _pad _pad1)
       (nl_sf_if_cdr_w (extern-call nl_cons_cdr_ptr args) args env 0))

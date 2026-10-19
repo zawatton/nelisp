@@ -235,7 +235,7 @@
 
     (defun nl_sf_uw_slot_w (args env mark vslot)
       (nl_sf_uw_finish_w
-       (nl_sf_uw_got_car_w (extern-call nl_cons_car_ptr args) args env vslot)
+       (nl_sf_uw_got_car_w (extern-call nl_cons_car_word args) args env vslot)
        env mark vslot))
 
     (defun nl_sf_uw_marked_w (args env _pad mark)

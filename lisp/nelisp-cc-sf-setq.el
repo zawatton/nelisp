@@ -110,7 +110,7 @@
                            sym val-cdr env 0 0))
 
     (defun nl_sf_setq_sym_w (sym val-cdr env _pad)
-      (nl_sf_setq_val_w (extern-call nl_cons_car_ptr val-cdr) sym val-cdr env 0 0))
+      (nl_sf_setq_val_w (extern-call nl_cons_car_word val-cdr) sym val-cdr env 0 0))
 
     (defun nl_sf_setq_pair_w (val-cdr args-pair env _pad)
       (nl_sf_setq_sym_w (extern-call nl_cons_car_ptr args-pair) val-cdr env 0))
