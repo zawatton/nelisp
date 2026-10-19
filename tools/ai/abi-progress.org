@@ -169,6 +169,11 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# Autoload checkpoint: TOTAL1399; S6.2 26 (13direct+9reverse+4inline).
+# Callback30 golden PASS / prior lane FAIL / fixed PASS, public autoload11
+# baseline/GNU, original pending throw restored to GNU behavior, mutation,
+# constructor/callback/environment, batteries/Anvil/arity, static42+parked3.
+# Boot/regex/files -2.825%/-2.760%/-3.144%, GC6/6,17/16,8/8, identical outputs.
 # Typed constructor/status checkpoint: TOTAL1403; S6.2 27 (14direct+9reverse+4inline).
 # Constructor38 GNU, heap-object8 + source guard red/green, legacy OUT14
 # golden PASS / prior lane FAIL / fixed PASS, capture/environment/callback,

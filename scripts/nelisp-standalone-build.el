@@ -2007,8 +2007,8 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
 ;;           old body against it and answers the box's WORD (the box is the
 ;;           result object; 0 = failure), and
 ;;   F    -- the (rc, OUT) adapter.
-;; KIND `status' marks a lookup whose rc 1 without a stash is a miss: F_w
-;; answers 2 there (nl_abi_status_to_word) and F maps 2 back to rc 1.
+;; KIND `status' requires a hand-written lookup WORD producer: 2 denotes
+;; a miss without a pending exit, and its legacy adapter maps 2 back to rc 1.
 ;; KIND `special' marks a special form that may answer rc 2 ("not handled
 ;; here", e.g. a definer with a `declare' left to the Lisp macro): F_w
 ;; passes 2 through (nl_abi_rc2_to_word).
@@ -2037,6 +2037,8 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
 
 (defun nelisp-standalone--abi-box-split-defun (form kind)
   "FORM (defun F PARAMS . BODY) as (F_w ADAPTER); see `nelisp-standalone--abi-box-split'."
+  (when (eq kind 'status)
+    (error "lookup requires a direct WORD producer: %s" (nth 1 form)))
   (let* ((name (nth 1 form)) (params (nth 2 form)) (body (nthcdr 3 form))
          (out (or (cl-find-if #'nelisp-standalone--abi-out-param-p params)
                   (error "abi box split: %s has no OUT parameter" name)))
@@ -2048,8 +2050,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
          (cargs (mapcar (lambda (p) (if (eq p out) 0 p)) params)))
     (list `(defun ,wname ,wparams
              (let* ((,out (alloc-bytes 32 8)))
-               (,(pcase kind ('status 'nl_abi_status_to_word)
-                         ('special 'nl_abi_rc2_to_word)
+               (,(pcase kind ('special 'nl_abi_rc2_to_word)
                          (_ 'nl_abi_rc_to_word))
                 (progn ,@body) ,out)))
           `(defun ,name ,params
@@ -2928,7 +2929,7 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; A lookup's legacy status RC (non-zero) as a word result: 0 when the
     ;; failure stashed a signal, 2 ("not found") when it did not.
     (defun nl_abi_miss (_rc _pad)
-      (if (= (ptr-read-u64 268435472 0) 1) 0 2))
+      (if (/= (ptr-read-u64 268435472 0) 0) 0 2))
     ;; A legacy (rc, private OUT box) as a word result where rc 1 may come
     ;; without a stash (it is a failure, never a miss): 0 after making sure
     ;; a signal is stashed.
@@ -2940,8 +2941,7 @@ directory tracks the tree rather than accumulating every key ever built."
       ;; It is already a heap WORD; never pass an immediate storage view.
       (if (= rc 0) object (nl_abi_fail rc 0)))
     ;; A lookup's legacy (status, private OUT box) as its word result.
-    (defun nl_abi_status_to_word (rc out)
-      (if (= rc 0) (nl_val_store_word out) (nl_abi_miss rc 0)))
+    
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
@@ -42785,45 +42785,45 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                 (nl_apply_sym_eq_w head 7233184988050781537 0 0 0 8 1 0)
               0))
         0))
+    (defun nl_lookup_fn_autoload_load_cell_w (mirror unbound sym cell)
+  (let* ((mark (nl_root_mark mirror))
+         (name-root (nl_root_reserve mirror))
+         (function-root (nl_root_reserve mirror))
+         (args-root (nl_root_reserve mirror)) (bytes (alloc-bytes 16 1)))
+    (seq (ptr-write-u64 bytes 0 7233184988050781537)
+         (ptr-write-u64 bytes 8 7233184986943153197)
+         (nl_alloc_symbol bytes 16 name-root)
+         (wf_word_store_out args-root
+           (nelisp_cons_construct_w cell (nelisp_cons_construct_w sym 3 0) 0))
+         (let* ((function-word (nelisp_env_lookup_function_w mirror unbound name-root 0))
+                (word
+                 (if (= function-word 0) 0
+                   (if (= function-word 2)
+                       (nl_abi_fail (nl_cons_stash_void_function mirror name-root) 0)
+                     (seq
+                      (wf_word_store_out function-root function-word)
+                      (let* ((loaded (nl_apply_function_w function-root args-root mirror 0)))
+                        (if (= loaded 0) 0
+                          (nl_lookup_fn_autoload_w mirror unbound sym 0))))))))
+           (seq (nl_root_release mirror mark) word)))))
     (defun nl_lookup_fn_autoload_load (mirror unbound sym out)
-      ;; Call (autoload-do-load CELL SYM) then look SYM up again.
-      (let* ((buf (alloc-bytes 16 1)) (name_slot (alloc-bytes 32 8))
-             (fn_slot (alloc-bytes 32 8)) (nil_slot (alloc-bytes 32 8))
-             (tail (alloc-bytes 32 8)) (args (alloc-bytes 32 8))
-             (res (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 7233184988050781537)
-         (ptr-write-u64 (+ buf 8) 0 7233184986943153197)
-         (nl_alloc_symbol buf 16 name_slot)
-         (nl_apply_write_nil nil_slot)
-         (nelisp_cons_construct sym nil_slot tail)
-         (nelisp_cons_construct out tail args)
-         (if (= (nelisp_env_lookup_function mirror unbound name_slot fn_slot) 0)
-             (let* ((rc (nl_apply_function fn_slot args mirror res)))
-               (if (= rc 0)
-                   (nl_lookup_fn_autoload mirror unbound sym out)
-                 rc))
-           (nl_cons_stash_void_function mirror name_slot)))))
+  ;; The legacy OUT is also the input autoload cell. Keep that input explicit.
+  (nl_abi_lookup_to_rc (nl_lookup_fn_autoload_load_cell_w mirror unbound sym out) out))
     (defun nl_lookup_fn_autoload (mirror unbound sym out)
-      (let* ((rc (nelisp_env_lookup_function mirror unbound sym out)))
-        (if (= rc 0)
-            (if (= (nl_autoload_cell_p out) 1)
-                (nl_lookup_fn_autoload_load mirror unbound sym out)
-              0)
-          rc)))
+  (nl_abi_lookup_to_rc (nl_lookup_fn_autoload_w mirror unbound sym 0) out))
     ;; Doc 215 word form: the function cell's WORD, 2 when unbound, 0 on a
     ;; signal.  Only an autoload cell takes a private box (the loader
     ;; reads the cell from it and rewrites it with the new definition).
     (defun nl_lookup_fn_autoload_w (mirror unbound sym _pad)
-      (let* ((w (nelisp_env_lookup_function_w mirror unbound sym 0)))
-        (if (= (logand w 1) 1) w
-          (if (< w 4096) w
-            (if (= (nl_autoload_cell_p w) 1)
-                (let* ((out (alloc-bytes 32 8)))
-                  (seq (nl_abi_word_to_rc w out)
-                       (nl_abi_status_to_word
-                        (nl_lookup_fn_autoload_load mirror unbound sym out) out)))
-              w))))))
+  (let* ((word (nelisp_env_lookup_function_w mirror unbound sym 0)))
+    (if (= (logand word 1) 1) word
+      (if (< word 4096) word
+        (if (= (nl_autoload_cell_p word) 1)
+            (nl_lookup_fn_autoload_load_cell_w mirror unbound sym word) word)))))
+    (defun nl_lookup_fn_autoload_load_w (mirror unbound sym _pad)
+  (let* ((cell (nelisp_env_lookup_function_w mirror unbound sym 0)))
+    (if (or (= cell 0) (= cell 2)) cell
+      (nl_lookup_fn_autoload_load_cell_w mirror unbound sym cell)))))
   "Autoload-aware call-dispatch lookup helpers (see comment above).")
 
 (defun nelisp-standalone--autoload-mentions-apply-p (form)
@@ -42861,7 +42861,7 @@ autoload-aware; append the helpers when WITH-HELPERS."
                     ((and (consp form) (eq (car form) 'defun)
                           (eq (cadr form) 'nl_cons_stash_void_function))
                      (list 'defun 'nl_cons_stash_void_function (nth 2 form)
-                           (list 'if '(= (ptr-read-u64 268435472 0) 1) 1
+                           (list 'if '(/= (ptr-read-u64 268435472 0) 0) 1
                                  (car (nthcdr 3 form)))))
                     (t
                    (if (and (consp form) (eq (car form) 'defun)

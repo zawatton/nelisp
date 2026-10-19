@@ -451,6 +451,21 @@ batteries/Anvil/arity, static42 and parked-worker3 pass. TOTAL1403; S6.2 27
 (14 direct + 9 reverse + 4 inline). Boot/regex/files means are
 -2.790%/-2.785%/-3.196%, GC6/6,17/16,8/8; every layout output agrees.
 
+Autoload lookup now passes the existing cell explicitly to its WORD loader.
+The legacy loader's OUT was also its input; the automatic private-OUT split
+had discarded it. The 30-case callback test passes on the golden baseline,
+fails on the preceding lane with =autoload cell input lost=, and passes
+after the fix, including nil/t/zero callback results and GC. Public file
+autoload11 also agrees with the baseline and GNU Emacs. Pending throws now
+remain exits rather than misses: the real-file throw test fails with
+=void-function= on the golden baseline and returns -7 on GNU Emacs and the
+fixed build. Missing and nil loader cells retain their original conditions.
+The unused status decoder is deleted; future lookup splits require an
+explicit WORD producer. A replacement-value mutant fails. Constructor,
+callback/environment, batteries/Anvil/arity, static42 and parked-worker3 pass.
+TOTAL1399; S6.2 26 (13 direct + 9 reverse + 4 inline). Boot/regex/files means
+are -2.825%/-2.760%/-3.144%, GC6/6,17/16,8/8; all layout outputs agree.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
