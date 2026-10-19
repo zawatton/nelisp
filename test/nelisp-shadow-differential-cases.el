@@ -45,6 +45,14 @@
 ;;; Code:
 
 (list
+ ;; Evaluated arguments preserve order and previously produced values across GC.
+ (let ((abi-argument-order nil))
+   (list (list (progn (setq abi-argument-order (cons 1 abi-argument-order))
+                      (copy-sequence "first"))
+               (progn (garbage-collect)
+                      (setq abi-argument-order (cons 2 abi-argument-order)) nil)
+               (progn (setq abi-argument-order (cons 3 abi-argument-order)) t))
+         abi-argument-order))
  ;; Argument WORD reads retain immediate tags and negative integer payloads.
  (mapcar (lambda (value)
            (list (car (list value)) (cdr (cons 'head value))

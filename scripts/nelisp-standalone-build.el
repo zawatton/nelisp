@@ -44001,33 +44001,38 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_eval_args_w (tail_ptr env func_slot args_slot call_name)
       (let* ((w (m5_fx_interp_call_w func_slot tail_ptr env args_slot)))
         (if (= w 2)
-            (nl_eic_after_args_w (nl_eval_arg_list tail_ptr env args_slot)
+            (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0)
                                  env func_slot args_slot call_name)
           w)))
-    (defun nl_eic_after_args_w (rc_args env func_slot args_slot call_name)
-      (if (= rc_args 0)
-          (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
-              (nl_n4_direct_apply_w func_slot args_slot env 0)
-            (nl_abi_fail 1 0))
-        (nl_abi_fail rc_args 0)))
+    (defun nl_eic_after_args_w (args_w env func_slot args_slot call_name)
+      (if (= args_w 0) 0
+        (seq
+         ;; The argument list remains rooted through arity callbacks and apply.
+         (wf_word_store_out args_slot args_w)
+         (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
+             (nl_n4_direct_apply_w func_slot args_slot env 0)
+           (nl_abi_fail 1 0)))))
     (defun nl_eic_callable_w (head_ptr tail_ptr env root_mark)
       (nl_eic_callable_slot_w head_ptr tail_ptr env root_mark (nl_root_reserve env)))
     ;; A non-symbol head is evaluated into the rooted FUNC_SLOT.
     (defun nl_eic_callable_slot_w (head_ptr tail_ptr env root_mark func_slot)
       (nl_cons_root_finish
        env root_mark
-       (if (= (nelisp_eval_call head_ptr env func_slot) 0)
-           (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) 0)
-         (nl_abi_fail 1 0))))
+       (let* ((w (nelisp_eval_call_w head_ptr env 0)))
+         (if (= w 0) 0
+           (seq (wf_word_store_out func_slot w)
+                (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) 0))))))
     ;; Expand, cache the expansion against FORM_PTR, evaluate it.
     (defun nl_cons_macro_apply_eval_w (form_ptr func_ptr tail_ptr env _pad)
       (let* ((macrofn_ptr (let* ((mw (nl_cons_cdr_word func_ptr)))
                             (if (= (logand mw 1) 0) mw (nl_cons_cdr_ptr func_ptr))))
-             (exp_slot (alloc-bytes 32 8)))
-        (if (= (nl_apply_function macrofn_ptr tail_ptr env exp_slot) 0)
-            (seq (nl_mxcache_store form_ptr exp_slot)
-                 (nelisp_eval_call_w exp_slot env 0))
-          (nl_abi_fail 1 0))))
+             (exp_w (nl_apply_function_w macrofn_ptr tail_ptr env 0)))
+        (if (= exp_w 0) 0
+          ;; The cache stores Sexp pointers and its collector reads a view.
+          ;; Only an immediate expansion needs a durable view at this boundary.
+          (let* ((exp_ptr (wf_word_view exp_w)))
+            (seq (nl_mxcache_store form_ptr exp_ptr)
+                 (nelisp_eval_call_w exp_ptr env 0))))))
     (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
       (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
@@ -44052,15 +44057,19 @@ tails run against a private box), and the (rc, OUT) adapter F."
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
        ((= (sexp-tag form) 7)
         (nl_ei_cons_dispatch_w (extern-call nl_cons_car_ptr form) form env 0))
-       ((= (sexp-tag form) 11) (nl_ei_cell_w (alloc-bytes 32 8) form))
+       ((= (sexp-tag form) 11)
+        ;; Match the reader's N3 patch of the legacy cell getter: a shared
+        ;; captured binding stores (NAME . VALUE), rather than VALUE, in
+        ;; the cell.  The ordinary word getter deliberately reads raw cells.
+        (if (= (ptr-read-u64 form 16) 13107)
+            (nl_cons_cdr_word (ptr-read-u64 (ptr-read-u64 form 8) 0))
+          (extern-call nl_cell_get_value_w form 0)))
        (t (nl_val_store_word form))))
     (defun nl_eval_inner (form env out _pad)
       (nl_abi_word_to_rc (nl_eval_inner_w form env 0 0) out))
     ;; W from `nl_env_lookup_val_w': 2 = unbound -> void-variable.
     (defun nl_ei_var_w (w form env _pad)
       (if (= w 2) (nl_abi_fail (nl_stash_void_variable env form) 0) w))
-    (defun nl_ei_cell_w (box form)
-      (nl_abi_rc_to_word (extern-call nl_cell_get_value form box) box))
     (defun nl_ei_cons_dispatch_w (car-ptr form env _pad)
       (nl_ei_cons_tail_w (extern-call nl_cons_cdr_ptr form) car-ptr form env 0))
     (defun nl_ei_cons_eval_w (cdr-ptr car-ptr form env)

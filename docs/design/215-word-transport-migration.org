@@ -111,6 +111,27 @@ Rule:
   thread because any conservative pin vetoes compaction; R2 code would need
   forwarding, which is why the parked collector never compacts.
 
+** Evaluator argument transport (Round 2)
+
+=nl_eval_arg_list_w= evaluates left-to-right in a host loop and answers the
+argument-list WORD.  The evaluator calls this producer directly; the old
+=nl_eval_arg_list= and =nl_eval_arg_list_walk= entries adapt only legacy
+callers.  Four checked roots retain the current input cons, evaluated value,
+head payload and tail payload, replacing seven roots and their status/view
+traffic.  Root views borrow payloads; they do not retain the original heap
+header.  The first cons is built in its root, later links use durable cons
+WORDs, and the final result header is allocated while the head is still
+rooted.  No safepoint occurs between releasing the roots and the caller
+publishing the returned value in its own root.  Dotted-tail truncation and
+error propagation are retained.
+
+Macro application consumes =nl_apply_function_w= directly.  The expansion
+cache still requires a pointer view, so only an immediate expansion is
+materialised there.  Cell evaluation returns its value WORD directly while
+retaining the N3 marker-13107 rule: a shared captured cell contains a pair
+whose cdr is the value.  =test/abi-cell-word-test.py BINARY= covers eight
+ordinary/shared immediate cases and fails on the naive direct-cell rewrite.
+
 * Coexistence ABI
 
 - A converted function takes WORDs and returns the value WORD.  0 is never

@@ -59,6 +59,14 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 
 * S4 Group G4 converted
 
+# Round 2 evaluator batch A2: direct argument-list WORD producer (four
+# checked roots instead of seven), macro-result WORDs, and cell-value WORDs
+# preserving the N3 shared-cell rule. Actual build census 1659; S6.2 184.
+# S6.4 four-layout mean -2.786% vs 9ad3c5588 (39,483,893,057.5 ->
+# 38,383,706,964), GC 8/8 throughout, identical output. Prior binary's
+# mean was -0.312% through the meter (-0.095% in the direct gate).
+# The G4 criteria below remain failing; partial conversion is not completion.
+
 ** S4.1 G4 has no dispatch arm left on the legacy adapter
 #+REQUIRES: ABI_DUMP
 cmd: python3 tools/ai/abi-partition.py check G4 "$ABI_DUMP" --arms

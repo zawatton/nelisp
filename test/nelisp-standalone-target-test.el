@@ -205,45 +205,6 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                                   0)))
                              wait)))
 
-    ;; 3b/3c/3d: argument evaluation is a host loop.  The current cons is
-    ;; copied into a root slot before an evaluator call, and no body call
-    ;; refers back to the walker, so argument count does not consume native
-    ;; stack.  The saved mark precedes all reserves and is released on both
-    ;; status paths.
-    (let* ((walk (defun-form 'nl_eval_arg_list_walk
-                                 nelisp-standalone--arglist-source))
-           (drive (defun-form 'nl_eval_arg_list_drive
-                                  nelisp-standalone--arglist-source))
-           (body (cdddr walk))
-           (drive-body (cdddr drive)))
-      (should walk)
-      (should drive)
-      ;; The drive helper owns the seven checked slots as explicit parameters;
-      ;; its only caller must pass that same frame in the same order.
-      (should (equal (caddr drive)
-                     '(cur_ptr env_ptr acc_slot root_mark state_slot eval_slot
-                       nil_slot node_slot head_slot tail_slot status_slot)))
-      (should (= (tree-count 'nl_root_reserve_checked body) 7))
-      (should (equal
-               (mapcar #'car (cadr (car body)))
-               '(root_mark state_slot eval_slot nil_slot node_slot head_slot
-                 tail_slot status_slot)))
-      (should (tree-member-p
-               '(if (= status_slot 0)
-                    (seq (nl_root_release env_ptr root_mark) 1)
-                  (nl_eval_arg_list_drive
-                   cur_ptr env_ptr acc_slot root_mark state_slot eval_slot
-                   nil_slot node_slot head_slot tail_slot status_slot))
-               body))
-      (should (= (tree-count 'nl_eval_arg_list_drive body) 1))
-      (should (tree-symbol-p 'while drive-body))
-      (should (tree-symbol-p 'nl_root_mark body))
-      (should (tree-symbol-p 'nl_root_reserve_checked body))
-      (should (tree-symbol-p 'nl_root_release drive-body))
-      (should (tree-symbol-p 'nl_sexp_clone_into drive-body))
-      (should (tree-symbol-p 'nl_eval_arg_list_copy32 drive-body))
-      (should-not (tree-symbol-p 'nl_eval_arg_list_walk drive-body)))
-
     ;; The two former comparator GAPs are eliminated rather than rooted:
     ;; compare symbol bytes in place, and use immediate-word predicates.
     (let ((bytes (defun-form 'nl_apply_sym_eq_bytes
@@ -254,6 +215,68 @@ non-local-exit behaviour are covered by the standalone reader smoke."
       (should-not (tree-symbol-p 'nelisp_eq_symbol bytes)))
     (should (tree-symbol-p 'nl_apply_sym_eq_w
                            nelisp-cc-evalport-combiner-apply--source))))
+
+(ert-deftest nelisp-standalone-argument-word-roots ()
+  "Argument evaluation keeps worker roots through collection and returns a WORD."
+  (cl-labels
+      ((defun-form
+        (name forms)
+        (cl-find-if (lambda (form)
+                      (and (consp form) (eq (car form) 'defun)
+                           (eq (cadr form) name)))
+                    (if (eq (car-safe forms) 'seq) (cdr forms) forms)))
+       (tree-symbol-p
+        (needle tree)
+        (cond
+         ((eq needle tree) t)
+         ((consp tree)
+          (or (tree-symbol-p needle (car tree))
+              (tree-symbol-p needle (cdr tree))))))
+       (tree-member-p
+        (needle tree)
+        (cond
+         ((equal needle tree) t)
+         ((consp tree)
+          (or (tree-member-p needle (car tree))
+              (tree-member-p needle (cdr tree))))))
+       (tree-count
+        (needle tree)
+        (cond
+         ((equal needle tree) 1)
+         ((consp tree)
+          (+ (tree-count needle (car tree))
+             (tree-count needle (cdr tree))))
+         (t 0))))
+    ;; Argument WORD evaluation remains a host loop with checked roots for
+    ;; the cursor, value, head payload and tail payload.  A copied cons view
+    ;; does not keep its original header alive on parked workers: the final
+    ;; result must be a durable box, and list links never use a root address.
+    (let* ((walk (defun-form 'nl_eval_arg_list_walk_w
+                            nelisp-standalone--arglist-source))
+           (drive (defun-form 'nl_eval_arg_list_drive_w
+                             nelisp-standalone--arglist-source))
+           (body (cdddr walk))
+           (drive-body (cdddr drive)))
+      (should walk)
+      (should drive)
+      (should (equal (caddr drive)
+                     '(cur env root-mark state-slot value-slot head-slot tail-slot)))
+      (should (= (tree-count 'nl_root_reserve_checked body) 4))
+      (should (tree-member-p
+               '(if (= tail-slot 0)
+                    (seq (nl_root_release env mark) 0)
+                  (nl_eval_arg_list_drive_w cur env mark state-slot value-slot
+                                            head-slot tail-slot)) body))
+      (should (= (tree-count 'nl_eval_arg_list_drive_w body) 1))
+      (should (tree-symbol-p 'while drive-body))
+      (should (tree-symbol-p 'nl_root_release drive-body))
+      (should (tree-member-p '(wf_word_store_out state-slot cursor) drive-body))
+      (should (tree-member-p '(wf_word_store_out value-slot value) drive-body))
+      (should (tree-member-p '(wf_copy32 tail-slot node) drive-body))
+      (should (tree-member-p '(wf_copy32 result head-slot) drive-body))
+      (should-not (tree-symbol-p 'nl_sexp_clone_into drive-body))
+      (should-not (tree-symbol-p 'nelisp_eval_call drive-body))
+      (should-not (tree-symbol-p 'nl_eval_arg_list_walk_w drive-body)))))
 
 (ert-deftest nelisp-standalone-target-thread-mirror-mutation-guard-shape ()
   "Doc 199 workers read the shared mirror but cannot mutate it."
