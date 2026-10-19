@@ -27,6 +27,16 @@
     (unless (and (eq (car cycle) 'a) (eq cycle (cdr cycle)))
       (error "reader label identity changed"))
     (setq checks (+ checks 1)))
+  ;; A list and a later hash literal reuse the same reader depth. Their
+  ;; storage must remain WORDs; a one-byte tag write over a pointer used to
+  ;; leave high tag bytes behind and crash the label resolver.
+  (dolist (source '("((x y z) #s(hash-table test eq data (a 1 b 2)))"
+                    "((x (y z)) #s(hash-table test eq data (a 1 b 2)))"))
+    (let ((values (read source)))
+      (unless (and (= (gethash 'a (cadr values)) 1)
+                   (= (gethash 'b (cadr values)) 2))
+        (error "mixed reader scratch changed: %S" source))
+      (setq checks (+ checks 1))))
   (princ (format "ABI-READER-PUBLIC checks=%d PASS\n" checks)))
 
 ;; NATIVE-ONLY

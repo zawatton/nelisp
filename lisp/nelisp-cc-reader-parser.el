@@ -127,6 +127,13 @@
 
     (defun nelisp_reader_p_slot (base n) (+ base (* n 32)))
 
+    ;; The token and hash scratch slots remain physical Sexp views. Value
+    ;; slots carry WORDs, identified explicitly for the mixed-pool GC walker.
+    ;; Clearing a parse slot clears the marker together with its contents.
+    (defun nelisp_reader_p_word_slot_set (slot word)
+      (seq (ptr-write-u64 slot 24 215)
+           (ptr-write-u64 slot 0 word) word))
+
     ;; ===========================================================
     ;; Reader depth guard.  Mirrors `nelisp_eval_call_stash_excessive_
     ;; lisp_nesting' (scripts/nelisp-standalone-build.el, the eval-side
@@ -850,7 +857,7 @@
              (ptr-write-u64 meta 8 1)
              (ptr-write-u64 meta 16 label)
              (ptr-write-u64 meta 24 0)
-             (ptr-write-u64 value 0 3)
+             (nelisp_reader_p_word_slot_set value 3)
              (nelisp_reader_p_label_set_count pool (+ count 1))
              meta)))))
 
@@ -866,7 +873,7 @@
              (ptr-write-u64 meta 8 3)
              (ptr-write-u64 meta 16 label)
              (ptr-write-u64 meta 24 0)
-             (ptr-write-u64 value 0 proxy)
+             (nelisp_reader_p_word_slot_set value proxy)
              (nelisp_reader_p_label_set_count pool (+ count 1))
              1)))))
 
@@ -898,7 +905,7 @@
                 (if (>= proxy-label 0)
                     (setq w (nelisp_reader_p_label_find_value pool proxy-label 0)) 0)
                 (if (= w 0) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-                  (seq (ptr-write-u64 meta 32 w)
+                  (seq (nelisp_reader_p_word_slot_set (+ meta 32) w)
                        (ptr-write-u64 meta 8 2) w))))))))))
 
     (defun nelisp_reader_p_parse_label_ref (result-slot pool depth)
@@ -1151,7 +1158,7 @@
     (defun nelisp_reader_p_parse_seq_w (str-ptr cursor-slot _pad slot-pool depth mode)
   (if (= (nelisp_reader_p_depth_ok_p slot-pool depth) 0)
       (nl_abi_fail (nelisp_reader_p_stash_excessive_nesting (nelisp_reader_p_max_depth) 0) 0)
-    (seq (ptr-write-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)) 0 3)
+    (seq (nelisp_reader_p_word_slot_set (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)) 3)
          (nelisp_reader_p_seq_loop_w str-ptr cursor-slot 0 slot-pool depth mode))))
 
     (defun nelisp_reader_p_seq_loop (str-ptr cursor-slot result-slot slot-pool depth mode)
@@ -1208,9 +1215,9 @@
         (if (or (= item 0) (= item 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
           (let* ((node (nelisp_cons_construct_w item 3 0)))
             (if (= (ptr-read-u64 head-slot 0) 3)
-                (ptr-write-u64 head-slot 0 node)
+                (nelisp_reader_p_word_slot_set head-slot node)
               (cons-set-cdr (ptr-read-u64 tail-slot 0) node))
-            (ptr-write-u64 tail-slot 0 node)
+            (nelisp_reader_p_word_slot_set tail-slot node)
             (nelisp_reader_p_seq_loop_w str-ptr cursor-slot 0 slot-pool depth (if (>= km 200) 1 0)))))))))
 
     ;; Parse a list body (the open paren is already consumed).
@@ -1345,21 +1352,20 @@
 
     (defun nelisp_reader_p_hash_fill_table
         (data table pair-slot newhead-slot)
-      ;; Doc 215: DATA is a WORD (see the plist finders); key and value
-      ;; WORDs go straight into the cloning constructor.
+      ;; Preserve the pool's WORD representation even when this depth was
+      ;; previously used by a list. A legacy constructor only writes the tag
+      ;; byte, leaving the old WORD's high tag bytes in its physical scratch.
       (while (= (nl_val_tag data) 7)
         (let* ((rest (nl_cons_cdr_word data)))
           (if (= (nl_val_tag rest) 7)
               (seq
-               (cons-make-with-clone
-                (nl_cons_car_word data)
-                (nl_cons_car_word rest)
-                pair-slot)
-               (cons-make-with-clone
-                pair-slot
-                (nl_cons_cdr_word table)
-                newhead-slot)
-               (cons-set-cdr table newhead-slot)
+               (nelisp_reader_p_word_slot_set pair-slot
+                (nelisp_cons_construct_w (nl_cons_car_word data)
+                                          (nl_cons_car_word rest) 0))
+               (nelisp_reader_p_word_slot_set newhead-slot
+                (nelisp_cons_construct_w (ptr-read-u64 pair-slot 0)
+                                          (nl_cons_cdr_word table) 0))
+               (cons-set-cdr table (ptr-read-u64 newhead-slot 0))
                (setq data (nl_cons_cdr_word rest)))
             (setq data 3))))
       1)
@@ -1620,7 +1626,7 @@
          (context-pool-slot (nelisp_reader_p_slot slot-pool parse-cap)))
     (if (< pool-cap 16) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
       (seq
-       (ptr-write-u64 context-pool-slot 0 (if (= context-word 0) 3 context-word))
+       (nelisp_reader_p_word_slot_set context-pool-slot (if (= context-word 0) 3 context-word))
        (ptr-write-u64 268436448 0 parse-cap)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)

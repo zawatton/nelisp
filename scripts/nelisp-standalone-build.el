@@ -58,6 +58,7 @@
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-runtime-reload-telemetry)
 (require 'nelisp-vendor-source)
+(require 'nelisp-boot-image)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -3220,7 +3221,7 @@ addressing by a runtime base, never by a fixed reservation."
                    (oldie (ptr-read-u64 (+ oldbase 840) 0)))
               (if (<= needed oldsize)
                   (if (= (nl_os_commit_range oldbase 0 needed) 0) -1 0)
-                (let ((newbase (nl_os_alloc_chunk needed)))
+                (let ((newbase (nl_os_reserve_chunk needed)))
                   (if (= newbase 0) -1
                     (if (= (nl_os_commit_range newbase 0 needed) 0)
                         (seq (nl_os_free_chunk newbase needed) -1)
@@ -3284,7 +3285,7 @@ arm64 Linux has no legacy x86 numbering)."
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((base (nl_os_alloc_chunk ,nelisp-standalone--windows-arena-size)))
+     (let ((base (nl_os_reserve_chunk ,nelisp-standalone--windows-arena-size)))
        (if (= base 0)
            ;; Exit code 88 = standalone arena allocation failure.
            (extern-call ExitProcess 88)
@@ -3308,6 +3309,12 @@ arm64 Linux has no legacy x86 numbering)."
 (defun nelisp-standalone--windows-alloc-chunk-form ()
   "Return Windows chunk allocation forms using VirtualAlloc(NULL, ...)."
   '((defun nl_os_alloc_chunk (size)
+      ;; Side tables and activation records can touch the entire mapping.
+      ;; MEM_RESERVE|MEM_COMMIT supplies zero-filled, writable pages.
+      (extern-call VirtualAlloc 0 size 12288 4))
+    ;; Raw OS allocation, minimal native surface clause 3. Only arena owners
+    ;; reserve without committing their payload; metadata needs one page.
+    (defun nl_os_reserve_chunk (size)
       (let ((base (extern-call VirtualAlloc 0 size 8192 4)))
         (if (= base 0)
             0
@@ -3566,6 +3573,15 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                                                  chunk-forms)
                                    form)))))
                          (cdr nelisp-standalone--arena-source))))
+       (when try-alloc-form
+         ;; Windows heap growth retains its lazy commit charge. Other
+         ;; platforms keep their original mmap allocation forms verbatim.
+         (setq body
+               (mapcar (lambda (form)
+                         (if (and (consp form) (eq (cadr form) 'nl_chunk_alloc_new))
+                             (cl-subst 'nl_os_reserve_chunk 'nl_os_alloc_chunk form)
+                           form))
+                       body)))
        (setq body
              (if (nelisp-standalone--runtime-reload-enabled-p)
                  (append
@@ -3598,6 +3614,10 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                         (nl_alloc_bytes_slow size align)))))
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
+                          (when try-alloc-form
+                            (list (cl-find-if
+                                   (lambda (form) (eq (cadr form) 'nl_os_reserve_chunk))
+                                   chunk-forms)))
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
@@ -4474,7 +4494,15 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_pool_slots (base i cap)
       (let ((k i))
         (while (< k cap)
-          (nl_seq2 (nl_gc_mark_slot (+ base (* k 32))) (setq k (+ k 1))))
+          (seq
+             (let* ((slot (+ base (* k 32))) (word (ptr-read-u64 slot 0)))
+               ;; Doc 215 reader values are WORDs, while lexer/hash scratch
+               ;; retains physical views. Never interpret a WORD as a tag.
+               (if (= (ptr-read-u64 slot 24) 215)
+                   (if (= (logand word 1) 1) 0
+                     (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))
+                 (nl_gc_mark_slot slot)))
+             (setq k (+ k 1))))
         0))
     (defun nl_gc_mark_pool (base cap)
       (if (= base 0) 0
@@ -6358,8 +6386,14 @@ REPL-facing module it feeds."
     ;; it put (it only flips mark1->3) while its children get forwarded.
     (defun nl_compact_rw_pool_slots (base i cap)
       (if (< i cap)
-          (nl_seq2 (nl_compact_rw_slot (+ base (* i 32)))
-                   (nl_compact_rw_pool_slots base (+ i 1) cap))
+          (seq
+           (let* ((slot (+ base (* i 32))) (word (ptr-read-u64 slot 0)))
+             (if (= (ptr-read-u64 slot 24) 215)
+                 (if (= (logand word 1) 1) 0
+                   (let* ((old (nl_compact_rw_edge slot)))
+                     (seq (nl_compact_rw_block old) (nl_compact_rw_slot old))))
+               (nl_compact_rw_slot slot)))
+           (nl_compact_rw_pool_slots base (+ i 1) cap))
         0))
     (defun nl_compact_rw_pool (base cap)
       (if (= base 0) 0
@@ -7590,7 +7624,9 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
+                              (let* ((b (alloc-bytes 32 8))
+                                     (result-bits (f64-bits (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))))
+                                (seq (sexp-write-float b (bits-to-f64 result-bits)) b))
                             (wf_sum_w args 1 0)))
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))) 0)))
                       (seq (nl_root_release env mark) w))
@@ -7598,7 +7634,9 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
+                              (let* ((b (alloc-bytes 32 8))
+                                     (result-bits (f64-bits (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))))
+                                (seq (sexp-write-float b (bits-to-f64 result-bits)) b))
                             (wf_sum_w args 1 0)))
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))))
     ((:u8 "1-") :word . (if (= (wf_numeric_has_marker args) 1)
@@ -7610,7 +7648,9 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
+                              (let* ((b (alloc-bytes 32 8))
+                                     (result-bits (f64-bits (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))))
+                                (seq (sexp-write-float b (bits-to-f64 result-bits)) b))
                             (let* ((mark (nl_root_mark env))
                                    (one (nl_root_reserve env))
                                    (nil-slot (nl_root_reserve env))
@@ -7628,7 +7668,9 @@ argument (reachability + in-arena bounds checks).")
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
-                              (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_write_float b (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1))) b))
+                              (let* ((b (alloc-bytes 32 8))
+                                     (result-bits (f64-bits (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))))
+                                (seq (sexp-write-float b (bits-to-f64 result-bits)) b))
                             (let* ((mark (nl_root_mark env))
                                    (one (nl_root_reserve env))
                                    (nil-slot (nl_root_reserve env))
@@ -30668,6 +30710,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                     (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
                                       nelisp-standalone--repo-root))
                    (buffer-string)))
+         (source (nelisp-boot-image-prelude source))
          (position (nelisp-standalone--prelude-source-boundary source))
          (source-only
           (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
@@ -31312,17 +31355,15 @@ source."
           result)))))
 
 
-(defun nelisp-standalone--load-path-src (&optional defer-easy-mmode)
+(defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
 feature even when the file was in this tree.
 
-Baked at build time rather than discovered at run time: argv[0] is
-whatever the caller typed, `/proc/self/exe' needs a readlink this runtime
-does not expose, and `getenv' answers nil here.  A guess that picks the
-wrong root resolves a feature to the WRONG FILE, which is worse than not
-resolving it.  A relocated binary keeps paths that no longer exist and
-finds nothing -- no answer rather than a wrong one.
+These search paths retain the build checkout for source development.
+The reader's nine boot providers also have an executable-pinned, relocatable
+fallback; ordinary Linux boot restores the adjacent heap image. Libraries
+outside that bundled set still require a source or installed load path.
 
 One producer, called from every bootstrap, because there is more than one
 and they are maintained separately.  The first version of this was
@@ -31344,9 +31385,9 @@ resolved fine.  Same feature, different answer per entry point."
    ;; has already loaded that exact `subr.el' definition by this point.
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'ignore)
-   ;; GNU Emacs preloads byte-run without providing a feature.  Load its
-   ;; exact source before publishing a standalone feature for `require'.
-   "(load 'byte-run)\n"
+   ;; GNU preloads byte-run without a feature. Embed it before its definers
+   ;; are recorded; startup must not reopen the build checkout.
+   (nelisp-boot-image-provider 'byte-run)
    ;; byte-run.el has just redefined `defun' / `defmacro'.  Record them
    ;; as the definers the native fast path may stand in for: for a body
    ;; without `declare' their expansion installs the same lambda, and a
@@ -31354,16 +31395,13 @@ resolved fine.  Same feature, different answer per entry point."
    ;; `nelisp-standalone--sf-strip-body-declarations').
    "(fset 'nelisp--fd-defun (symbol-function 'defun))\n"
    "(fset 'nelisp--fd-macro (symbol-function 'defmacro))\n"
-   "(provide 'byte-run)\n"
    ;; GNU Emacs 31.1 preloads this special variable from src/lread.c
    ;; (DEFVAR_LISP, initialized to Qnil); macroexp uses it during expansion.
    "(defvar macroexp--dynvars nil \"List of variables declared dynamic in the current scope. Only valid during macro-expansion. Internal use only.\")\n"
-   "(require 'inline)\n"
-   ;; Emacs's json-parse-string is a C subr available without requiring
-   ;; the `json' feature.  Load the standalone's pure-Lisp compatibility
-   ;; implementation at bootstrap too, so its public API has the same
-   ;; availability while continuing to delegate parsing to nelisp-json.
-   "(require 'json)\n"
+   (nelisp-boot-image-provider 'macroexp)
+   ;; Other command bootstraps retain their historical eager providers.
+   ;; The reader installs relocatable autoloads after its matcher is ready.
+   (unless defer-libraries "(require 'inline)\n(require 'json)\n")
    ;; GNU Emacs preloads these password-prompt variables from mule-conf.el;
    ;; comint reads both while defining its prompt regexp. Stage the exact
    ;; Custom forms before any bootstrap consumer loads comint/compile.el.
@@ -31918,9 +31956,8 @@ Relative names and complete bytes are covered; timestamps are irrelevant."
 
 (defun nelisp-standalone--reader-repl-prelude-source ()
   "Return source evaluated once before the standalone reader REPL loop.
-Concatenates the stdlib prelude, installs the pure-elisp regexp matcher
-(Doc 143), then loads easy-mmode, `rx', and `cl-seq' so after-load callbacks
-can use it."
+Concatenates the prelude and GNU preload providers, installs the regexp
+matcher (Doc 143), then registers relocatable, demand-loaded libraries."
   (with-temp-buffer
     (insert (format "(setq nelisp-standalone--backquote-file %S)\n"
                     (expand-file-name
@@ -31931,7 +31968,7 @@ can use it."
                           (nelisp-standalone--native-cache-source-identity))))
     (insert (nelisp-standalone--prelude-source-with-list-accessors))
     (goto-char (point-max))
-    (insert (nelisp-standalone--load-path-src t))
+    (insert (nelisp-standalone--load-path-src t t))
     ;; Doc segI: these libraries are required by unconditional call sites.
     ;; Their notifications execute after-load callbacks that use
     ;; `string-match-p'; defer each require until its genuine provider exists.
@@ -32062,7 +32099,7 @@ can use it."
     ;; It is also safe to load genuine faces.el here (strictly after
     ;; `string-match'; see `nelisp-standalone--faces-src').
     (insert (nelisp-standalone--faces-src))
-    (insert "\n(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n")
+    (insert (nelisp-boot-image-libraries-source))
     ;; Phase 2A (integration/wave6 audit hardening, Doc 184 P1/P2): wire
     ;; the process-adapter fix into the DEFAULT bootstrap instead of
     ;; leaving it an opt-in `--load'.  Before this, `make-process''s
@@ -32089,9 +32126,7 @@ can use it."
                        nelisp-standalone--repo-root))
     (goto-char (point-max))
     (insert "\n;; --- Doc 184 P1/P2: standard-name process API + ONE poll loop ---\n")
-    (insert-file-contents
-     (expand-file-name "packages/nelisp-process-adapter/src/nelisp-process-adapter.el"
-                       nelisp-standalone--repo-root))
+    (insert (nelisp-boot-image-process-source))
     (goto-char (point-max))
     ;; Both inserted files end in a bare `;;; FILE ends here' footer
     ;; comment with no form after it -- fine when loaded standalone (the
@@ -38424,7 +38459,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
   "Return cold-loader definitions without generating the bundled prelude.
 Keep this source-only boundary usable by Windows preflight and host controls."
   `(
-    ;; flat-arena cold-loader gate (default OFF, EXPLICIT-ONLY).
+    ;; Validated flat-arena loader. The driver chooses the image pathname.
     ;;
     ;; SECURITY (2026-09-28): this used to fall back to a FIXED,
     ;; world-writable path (`/tmp/nelisp-cold-image.bin', built here as
@@ -38438,11 +38473,10 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; unrelated `nelisp' process loaded into its live arena, with the
     ;; relocation table's unchecked offsets giving that file an
     ;; arbitrary-offset pointer WRITE relative to a real mmap'd address
-    ;; (image confusion / injection, not just a crash).  There is no longer
-    ;; any default path: cold-load runs ONLY when the caller opts in via
-    ;; `--cold-load-from PATH' (OVERRIDE below is the C-string pointer from
-    ;; that flag; OVERRIDE==0 means "not requested", same as "no marker" in
-    ;; the old code).  Even then, the header and every relocation-table
+    ;; (image confusion / injection, not just a crash). No shared marker is
+    ;; consulted. The driver supplies either --cold-load-from PATH or the
+    ;; companion of the actual process executable, resolved by the OS.
+    ;; OVERRIDE==0 still means "not requested". The header and every relocation-table
     ;; entry are validated before anything is trusted -- an explicitly
     ;; chosen path can still be stale, truncated, or come from a mismatched
     ;; build (docs/design/156-flat-arena-boot-install.org §2 documents the
@@ -38642,10 +38676,9 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; interned bump (+840 = ib+isz).  Returns 1 if loaded, -1 if not
     ;; requested or rejected by validation.
     ;; OVERRIDE: 0 means cold-load was not requested (no `--cold-load-from'
-    ;; flag) -- this is a no-op, exactly like "no marker" in the old
-    ;; default-path code; there is no implicit fallback path any more (see
-    ;; the SECURITY comment above `nl_cold_diag').  A non-zero C-string
-    ;; pointer is the explicit `--cold-load-from PATH' flag's path, and is
+    ;; flag or selected companion) -- this is a no-op. Path selection lives
+    ;; in the driver; this loader never probes a shared marker. A non-zero
+    ;; C-string pointer names the selected image, and is
     ;; validated (`nl_cold_header_invalid_p', `nl_cold_reloc_table_valid_p')
     ;; before any of its contents are trusted.
     ;; Increment 2: the header (header+8 = `slen', the COALESCED total since
@@ -38682,12 +38715,26 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                           (nl_cold_diag_bad_header) -1)
                    (let* (;; required chunk-0 bytes: control block + coalesced
                           ;; region + reloc table (its transient DS+slen
-                          ;; scratch) + 8 MiB slack (room for the boot allocs
-                          ;; that land right after the cursor before the next
-                          ;; natural chunk growth), 64 KiB aligned (matches
+                          ;; scratch) + startup buffers + an ordinary growth
+                          ;; chunk's capacity for runtime work.  The driver
+                          ;; consumes two read buffers and its parse pool;
+                          ;; subsequent --load parsing and worker evaluation
+                          ;; also need bump space while free-list reuse is
+                          ;; inhibited.  The former 8 MiB slack left ~2.4 MiB
+                          ;; at nil startup and BEGIN refused with -ENOMEM.
+                          ;; Preserve the worker's 8 MiB check and no-growth
+                          ;; contract, giving image boot the same 64 MiB work
+                          ;; budget as a fresh growth chunk.  Linux demand-pages
+                          ;; this reservation; Windows commits it up front.
+                          ;; 64 KiB aligned (matches
                           ;; `nl_chunk_size_for's convention).
                           (needed (nl_align_up
-                                   (+ 1024 (+ slen (+ (* tlen 8) 8388608)))
+                                   (+ 1024
+                                      (+ slen
+                                         (+ (* tlen 8)
+                                            (+ (nl_chunk_size_for 8388608)
+                                               ,(+ (* 2 nelisp-standalone--reader-read-cap)
+                                                   (* 32768 32))))))
                                    65536))
                           (cursize (ptr-read-u64 (+ base0 216) 0)))
                      (seq
@@ -38815,6 +38862,7 @@ correctly."
   `(seq
     ,@(nelisp-standalone--reader-os-source-forms)
     ,@(nelisp-standalone--reader-cold-source-forms)
+    ,@(nelisp-boot-image-native-forms)
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -40082,11 +40130,23 @@ correctly."
             (path (nl_argv_word sp0 eff_idx))
             (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
             (arg3 (if (< (+ eff_idx 2) argc) (nl_argv_word sp0 (+ eff_idx 2)) 0))
+            ;; Ordinary commands restore the executable's own companion.
+            ;; Artifact/runtime-image commands own separate bootstrap paths;
+            ;; --embedded intentionally retains its bare-native test context.
+            (cold_image
+             (if (/= cold_override 0) cold_override
+               (if (= path 0) (nl_boot_image_companion)
+                 (if (or (= (nl_cli_help_command_p path) 1)
+                         (= (nl_cstr_eq_embedded path) 1)
+                         (= (nl_cstr_eq_neln_selftest path) 1)
+                         (= (nl_runtime_image_command_p path) 1)
+                         (= (nl_artifact_command_p path) 1))
+                     0 (nl_boot_image_companion)))))
             ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
             ;; exists (or `--cold-load-from PATH' named an image), load it into
             ;; the arena + bump the cursor past it so every following alloc
             ;; lands after the image (no clobber).  -1 = no marker / no flag.
-            (_cl (nl_cold_load_arena cold_override))
+            (_cl (nl_cold_load_arena cold_image))
             ;; A restored image must use this process's signal disposition.
             (_sigpipe_image (nl_os_sigpipe 1))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
@@ -40121,6 +40181,10 @@ correctly."
             ;; same capture for normal (non-cold, non-growing) boot, where
             ;; `nl_arena_base' never changes after `nl_arena_init'.
             (_sptop (ptr-write-u64 268436456 0 (aot-current-sp)))
+            ;; Driver locals are permanent boot storage.  Image holes remain
+            ;; collectable after restore, so do not put these allocations in
+            ;; the restored free lists before freezing the boot watermark.
+            (_boot_bump (ptr-write-u64 268435624 0 1))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 184 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
@@ -40191,7 +40255,8 @@ correctly."
         (nl_bootstrap_make_mirror globals frames unbound)
         ;; cold path: replace the fresh empty globals with the loaded image's
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
-        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_override))
+        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
+        (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ;; PERF (2026-07-03): populate the two shared frame-push-scratch
@@ -40385,6 +40450,7 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        (ptr-write-u64 268435624 0 0)
         ;; Allocation-debt accounting starts after the boot image is frozen.
         ;; Boot allocations are permanent and must not consume the first
         ;; post-boot debt budget or make the first diagnostic form collect
@@ -43404,9 +43470,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_finish_rc (rc r out _pad)
       (if (= r 0) (if (= rc 0) 1 rc) (nl_abi_word_to_rc r out)))
     (defun nl_n4_finish (rc env out frame)
-      (nl_n4_finish_rc rc
-                       (nl_n4_finish_w (if (= rc 0) (nl_val_store_word out) 0) env 0 frame)
-                       out 0))
+      ;; Status-only exits preserve the complete physical OUT. Only a debugger
+      ;; consumes a value WORD, after an activation explicitly requests it.
+      (if (= frame 0) rc
+        (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
+            (nl_n4_finish_rc rc
+              (nl_n4_finish_w (nl_val_store_word out) env 0 frame) out 0)
+          (let* ((state (ptr-read-u64 env 176)))
+            (seq (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1)) rc)))))
     (defun nl_n4_direct_apply_w (function args env _pad)
       ;; The cons evaluator already owns the activation. Keep its original
       ;; operator (including aliases), and replace forms only after evaluation.
@@ -44693,8 +44764,9 @@ The Wine prefix selects the coordinator's target OS and is never dumped."
 (defun nelisp-standalone--build-cold-image (binary)
   "Dump BINARY's post-prelude heap to `nelisp-standalone--cold-image-path'.
 Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0
-skips it.  The image is used only via an explicit `--cold-load-from PATH', and
-only when its trailer carries BINARY's own build digest, so a stale or foreign
+skips it. Ordinary Linux commands discover BINARY.cold through the actual
+executable path; other targets retain explicit `--cold-load-from PATH'.
+The trailer must carry BINARY's own build digest, so a stale or foreign
 file is rejected at load and startup falls back to the normal prelude boot.
 The dump runs in a scrubbed environment and a neutral directory: every
 per-process global the driver sets (argv, environment alist,

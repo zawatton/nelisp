@@ -152,7 +152,7 @@ cmd: timeout 600 "$ABI_BIN" --load test/perf/fx-spike-check.el 2>&1 | grep -q 'F
 #+TIMEOUT: 600
 cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do timeout 600 "$ABI_STATIC_BIN" --load tools/nelisp-thread-$n-smoke.el 2>&1 | grep -q "^nelisp-thread-$n-smoke: PASS" || exit 1; done
 
-* S6 Merge gate into eval/core (no regression against the 9ad3c5588 baseline)
+* S6 Merge gate into eval/core (no regression against the 80902e27f baseline)
 
 # Added 2026-10-19 by the integrator after the first integrated build measured
 # boot 3.56 s vs 3.34 s, regex 759 vs 705 us and census 1824 vs 1669.
@@ -164,9 +164,14 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 # instruction counts (`ir'): wall time on this shared machine moves by ~1%
 # between runs, more than the differences being judged.
 
-** S6.1 Box census TOTAL is below the baseline's (9ad3c5588: 1676)
+# Round 4 criteria change: baseline moves to eval/core 80902e27f. A fresh
+# isolated dynamic build has TOTAL 1681 with the complete conversion walker.
+# S6.1 therefore requires TOTAL < 1681. Boot restores the source-free image;
+# S6.3/S6.4 still include all GC instructions and four layouts. Denominator 21.
+
+** S6.1 Box census TOTAL is below the baseline's (80902e27f: 1681)
 #+REQUIRES: ABI_CENSUS
-cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
+cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1681
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
 # Apply/eval checkpoint: TOTAL1397; S6.2 21 (12direct+6reverse+3inline).

@@ -6,12 +6,18 @@
 cd "$(dirname "$0")/../.." || exit 2
 : "${EVAL_BIN:?set EVAL_BIN to a built nelisp binary}"
 fail=0
+logdir=${STANDALONE_CHECK_LOGDIR:-target/standalone-checks}
+mkdir -p "$logdir" || exit 2
 for f in test/standalone-*-check.el; do
-  if timeout 300 nice -n 10 "$EVAL_BIN" --load "$f" >/dev/null 2>&1; then :;
-  elif grep -q "^$f " test/perf/standalone-checks-known-red.txt; then
-    echo "STANDALONE-CHECK known-red $f"
+  name=$(basename "$f" .el)
+  if timeout 300 nice -n 10 "$EVAL_BIN" --load "$f" >"$logdir/$name.out" 2>"$logdir/$name.err"; then :;
   else
-    echo "STANDALONE-CHECK FAIL $f"; fail=1
+    code=$?
+    if grep -q "^$f " test/perf/standalone-checks-known-red.txt; then
+      echo "STANDALONE-CHECK known-red $f (exit $code; $logdir/$name.err)"
+    else
+      echo "STANDALONE-CHECK FAIL $f (exit $code; $logdir/$name.out, $logdir/$name.err)"; fail=1
+    fi
   fi
 done
 [ $fail = 0 ] && echo "STANDALONE-CHECKS PASS"

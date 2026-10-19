@@ -1,0 +1,28 @@
+#+TITLE: Windows eval/core bringup
+
+* S1 Windows and Linux acceptance
+
+** S1.1 S1 Wine evaluates addition and nil
+#+NOTE: Round 2 permits Wine Unix sockets. f1468f32f reproduces bwc-1+ (2.5) -> (nil nil), exit 42. The four-arm production PE probe fails before the fix (exit 42, 0.904 s) and passes after (exit 0, 0.561 s); the complete reader rebuild costs 284.075 s. These measure different verification scopes, not runtime throughput.
+#+TIMEOUT: 120
+cmd: sh tools/ai/windows-bringup-check.sh S1
+
+** S1.2 S2 Windows build produces its cold image without a dump warning
+#+NOTE: Shipping uses NELISP_STANDALONE_NATIVE_COMPILER_COLD=0 and NELISP_STANDALONE_COLD_IMAGE=1, the same post-prelude image policy as Linux. Compiler-prepared images eagerly load optional libraries and are a separate development configuration.
+cmd: sh tools/ai/windows-bringup-check.sh S2
+
+** S1.3 S3 Explicit cold boot evaluates, preserves exit roots, and requires rx
+#+TIMEOUT: 180
+cmd: sh tools/ai/windows-bringup-check.sh S3
+
+** S1.4 S4 Wine standalone checks pass except documented limitations and known red
+#+NOTE: Run sh tools/ai/windows-bringup-check.sh run-S4 to regenerate both modes sequentially, using separate wine-source-checks and wine-cold-checks directories and a hash-checked receipt. No Wine-specific exemption is added.
+cmd: sh tools/ai/windows-bringup-check.sh S4
+
+** S1.5 S5 Linux dynamic and static builds pass the complete eval/core suite
+#+NOTE: Round 1 allocator change: Linux x86_64, Linux aarch64 and macOS aarch64 arena forms are byte-identical before/after (sha256 bd6f8c89d349c33b5e2b8f94e333847203d2b8facdf614d51d621898dde85033). This does not replace the full Linux execution suite. Round 2 uses the existing typed float writer in four arithmetic arms on every target; GNU/Linux/Windows float results agree.
+#+NOTE: Round 2 final full suite passed after rebuilding dynamic and static Linux: 11 groups, 0 failures; 31 standalone files with only known-red maphash-sparse. Raw logs are in target/codex/round2/S5.log and target/final-verify/checks-windows-round2/. Use the default post-prelude cold images. Compiler-prepared images intentionally preload optional compiler libraries and fail the clean-boot library contract. Raw logs and binary/image/source hashes are rechecked by the receipt command.
+cmd: sh tools/ai/windows-bringup-check.sh S5
+
+** S1.6 S6 Native Windows passes S1 through S3 on the user's machine
+evidence: tools/ai/windows-bringup-native-evidence.txt sha256=9f9e315f689979a66232e6d56cf012e9a790e01ab2e4123b75802ee53142bdff

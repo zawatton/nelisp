@@ -39,7 +39,9 @@ The census also counts =nl_abi_rc_to_word= call sites.  The reader boundary
 currently converts legacy reader results through that helper, whose body
 calls =nl_val_store_word=: these sites are remaining box-to-word work, not
 converted producers.  S6.2 sums both call heads, including the helper's
-own =nl_val_store_word= call.  S6.1 retains its strict TOTAL < 1676 limit.
+own =nl_val_store_word= call.  Round 4 moves the baseline to eval/core =80902e27f= (source-free image
+boot); its fresh dynamic census is 1681. S6.1 requires TOTAL < 1681.
+This changes the baseline and threshold, while retaining 21 criteria.
 
 S6.3 compares total callgrind Ir, including every GC instruction.  Its
 fixed regex workload must execute at least ten GC sweeps on each binary;

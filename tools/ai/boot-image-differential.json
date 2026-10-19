@@ -1,0 +1,1348 @@
+{
+  "schema": 1,
+  "measured": "2026-10-19",
+  "baseline_commit": "9ad3c5588d6f007d081a7497fc699a409ee03b93",
+  "candidate_commit": "dc8284690e366df8cc7b340dc2db8a3593fd680d",
+  "criteria_change": "Round 4 strengthens S5: the full 11-check eval/core suite on the shipping dynamic/static pair must pass, with only the expected sparse-maphash performance failure exempted. All previous six paired comparisons and 40-tool Anvil checks remain required. The denominator remains five.",
+  "baseline_reuse": "base-dynamic matches the original S1 SHA-256 and build log; built before any boot implementation, with the identical dynamic-reader command. Baseline source for host tests and static builds is git archive 9ad3c5588 inside this worktree, not another worktree.",
+  "build_command": "TMPDIR=$PWD/target/tmp XDG_CACHE_HOME=$PWD/target/tmp/cache NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/candidate7 make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "baseline_build_command": "TMPDIR=$PWD/target/tmp NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/base-dynamic make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "static_build_command": "env -u NELISP_READER_DYNAMIC TMPDIR=$PWD/target/tmp XDG_CACHE_HOME=$PWD/target/tmp/cache NELISP_STANDALONE_READER_OUTPUT=$PWD/target/boot-image/round4/static-candidate7 make standalone-reader STANDALONE_GATE_TARGET=linux-x86_64",
+  "harness_overlay": [
+    "For the aligned full ERT run only, copy tools/ai/nelisp-ai.sh and tools/ai/nelisp-ert-collection.el plus test/nelisp-bytecode-logb-provider-test.el from candidate to the extracted baseline. These host-only fixes preload GNU json before package paths, defer standalone ERT driver footers, and defer missing optional logb fixtures until their test bodies. Production baseline runtime/compiler sources remain at 9ad3c5588.",
+    "Both original make test runs are retained unchanged: json-read-file is undefined before ERT collection on both. Both development REPL launchers independently fail at excessive-lisp-nesting 16000.",
+    "Static smoke suite uses the existing nelisp-standalone-reader-test driver with only its builder rebound to return the already built static binary; no runtime is replaced. Both execute the embedded expression, then stop at the first command smoke: missing replace-regexp-in-string. Generated form/byte/line locations differ because embedded source size changed; conditions and full call chains match.",
+    "Repository verify uses separate initially empty gate directories with the unmodified manifest on each source tree. Both report the same missing required gates; the complete inventory is below. Missing gates are unexecuted, not passing tests.",
+    "Both standalone runs use the candidate harness and the same 31 input files. The baseline additionally fails the new feature-parity and library-rollback controls. The existing sparse-maphash performance failure remains on both and is not hidden."
+  ],
+  "artifacts": {
+    "baseline": {
+      "": {
+        "path": "target/boot-image/base-dynamic",
+        "sha256": "03fc02ad0572ae4d98ec5cbbd6ad98b9a36612997566dc4e768c2f716064a07a"
+      },
+      ".cold": {
+        "path": "target/boot-image/base-dynamic.cold",
+        "sha256": "1d4fdbe34b61f0bf987f74cdbd17c3b7c9c10af2a4809c06553c854d1d644b87"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/base-dynamic.native-startup.el",
+        "sha256": "92ba0811c460cef9c8ea19ff1775afeebae6e3722d418493743831426c55abb7"
+      }
+    },
+    "candidate": {
+      "": {
+        "path": "target/boot-image/candidate7",
+        "sha256": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011"
+      },
+      ".cold": {
+        "path": "target/boot-image/candidate7.cold",
+        "sha256": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/candidate7.native-startup.el",
+        "sha256": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+      }
+    }
+  },
+  "static_artifacts": {
+    "baseline": {
+      "": {
+        "path": "target/boot-image/round3/static-baseline",
+        "sha256": "693ceb2b9e618c22b40d2436a9e67ec72af158b8690246eafd2bdcb4f63a497c"
+      },
+      ".cold": {
+        "path": "target/boot-image/round3/static-baseline.cold",
+        "sha256": "90091389b01e7460787b09cbc20fd227032e927fe51847e528ab047b760b8bbf"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/round3/static-baseline.native-startup.el",
+        "sha256": "32d651ce6792f9efc3540858d999b150536ab3da6163072be71a8d644e98fbd0"
+      }
+    },
+    "candidate": {
+      "": {
+        "path": "target/boot-image/round4/static-candidate7",
+        "sha256": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9"
+      },
+      ".cold": {
+        "path": "target/boot-image/round4/static-candidate7.cold",
+        "sha256": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f"
+      },
+      ".native-startup.el": {
+        "path": "target/boot-image/round4/static-candidate7.native-startup.el",
+        "sha256": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+      }
+    }
+  },
+  "harness": [
+    {
+      "path": "lisp/nelisp-boot-libraries.el",
+      "sha256": "0fd76b9e0d69266cd50ccfe3e8b9c1ef19e78a324c5d5d08faf438d6596d9017"
+    },
+    {
+      "path": "test/nelisp-bytecode-logb-provider-test.el",
+      "sha256": "5ed0cf84cca9d9f7bcd20081642d16f6c6dcacb2233bd7af979ae967a2f958dd"
+    },
+    {
+      "path": "test/perf/fx-corpus-check.sh",
+      "sha256": "14553ef1c6c74ba7db96d38f163003e88f101afa6d192639223f49741633801b"
+    },
+    {
+      "path": "test/perf/fx-corpus.el",
+      "sha256": "dd4cccfba9e73ac9a15257b0ca3ff8624b70fac097a2386c43fd77fec88de62b"
+    },
+    {
+      "path": "test/perf/fx-spike-check.el",
+      "sha256": "00fdb8cc63e75cd5da78b72250e2bc2afba2085b24e6d7cb6ce539e3085e7ded"
+    },
+    {
+      "path": "test/perf/standalone-checks-known-red.txt",
+      "sha256": "98a402c5d5cd9606eb88bac857e0f1e950e480be6effdb228fe4d809c72f11c9"
+    },
+    {
+      "path": "test/perf/standalone-checks.sh",
+      "sha256": "ddb0820b09673401789e05e93546a63dcedf5528de3d9d34faaf4c5e4ef0f21c"
+    },
+    {
+      "path": "test/standalone-boot-libraries-check.el",
+      "sha256": "698700a1899dcd6f2a67c5fd01ba71ca95a586d66096765ee7d16857f6b86cc3"
+    },
+    {
+      "path": "test/standalone-boot-library-loader-check.el",
+      "sha256": "988857d9532f115ffaac2a75f8f31ff8f2c1ba224912004645c42baa06791ad6"
+    },
+    {
+      "path": "test/standalone-buffer-list-order-check.el",
+      "sha256": "75608765e77a46a18efbff0b82eca62afa94c51e9f0a866863f2a84b7e472860"
+    },
+    {
+      "path": "test/standalone-bytecode-word-check.el",
+      "sha256": "f4c027b5ca5949aafc8e67aa91dfba42f0b874d57e3a07d9b6d88be4ab06d636"
+    },
+    {
+      "path": "test/standalone-cl-defstruct-lazy-default-check.el",
+      "sha256": "83850c2429ecd2ba4215c4ba26559e5c75e5726671dd4caac1b1a2c8facff27c"
+    },
+    {
+      "path": "test/standalone-cl-destructure-check.el",
+      "sha256": "3e21e1425c3066a3d274571a416a380e706374a3faa69359965b9f9916196bcd"
+    },
+    {
+      "path": "test/standalone-cl-loop-gnu-check.el",
+      "sha256": "b90fcaee550bf6a4d357d31d224492d7b92775170d5f899e1a30a2c8261ebe1c"
+    },
+    {
+      "path": "test/standalone-condition-case-root-check.el",
+      "sha256": "41f40d209a49e7b5d2f631c302a0c6a4fb99dd91211434efa780be54b97c4fbd"
+    },
+    {
+      "path": "test/standalone-dotimes-check.el",
+      "sha256": "185c1969dac93aa55fa97e1d607646dd5f9e6df76b14d156c7ade8e14e58541a"
+    },
+    {
+      "path": "test/standalone-exit-stash-root-check.el",
+      "sha256": "8222271f505c86e2ede528ee48ae1bf4999bb363ea3f6fc094cd40db6e48452c"
+    },
+    {
+      "path": "test/standalone-fx-call-shape-check.el",
+      "sha256": "b592514e3c6dffa190877385af27f4c04d9b137855146888246ef5013272340f"
+    },
+    {
+      "path": "test/standalone-fx-forward-macro-check.el",
+      "sha256": "7a173c954b58e0f30c71065b75b6d19935a5746a20c5087a320609db08d491e9"
+    },
+    {
+      "path": "test/standalone-fx-late-special-check.el",
+      "sha256": "702e64f11d3900553b10dc145c285829f665a326f94db2082509d995219905eb"
+    },
+    {
+      "path": "test/standalone-gc-conservative-cost-check.el",
+      "sha256": "3e13062c4579dd98d1655110fe13d9ebdfd48c684c84a1ae5651af9e63cbf73c"
+    },
+    {
+      "path": "test/standalone-gc-image-hole-check.el",
+      "sha256": "6a2e20cbe2dc02869832a1727e83c9deb282f2d6ccf539b2f73fdbada9e5f54c"
+    },
+    {
+      "path": "test/standalone-gc-pressure-check.el",
+      "sha256": "7e9a70e10aceaeb3e5e69741edff3c4f20e505c050c63cb60a7ce9cc2baf9d81"
+    },
+    {
+      "path": "test/standalone-handler-bind-t-check.el",
+      "sha256": "314d5fb2d660561d6f1c2d5297e38e15fa9ddfd080a765be778ca4c8ec2ea6fb"
+    },
+    {
+      "path": "test/standalone-hash-identity-check.el",
+      "sha256": "f4aefbdbaf2013c65d2edbe8e27562483a8121e3abfdcda3a47015bfddb59dd3"
+    },
+    {
+      "path": "test/standalone-hash-table-growth-check.el",
+      "sha256": "2fdc6a15520db5b3521a69390c2dbdac745d7569249f4fa0e89ecd1d55dbe47e"
+    },
+    {
+      "path": "test/standalone-literal-search-check.el",
+      "sha256": "fb56712f0a94c48460a83e21c2f8e47f036eff689c6f103d1802c32c6a5a1bd0"
+    },
+    {
+      "path": "test/standalone-maphash-sparse-check.el",
+      "sha256": "ed5429198dbcd349c293b6c9a1a0d4a3aa9d3ee8c5dda412ce4fb74d913cce58"
+    },
+    {
+      "path": "test/standalone-prn-string-escape-check.el",
+      "sha256": "84baeb7be50a79a873422cdeb4675997fa477bdfb29229e1104898a7dba30a26"
+    },
+    {
+      "path": "test/standalone-reader-char-literal-check.el",
+      "sha256": "d296a2b44b43b0f03203a1a21eade5ed0acb82cccb0d69e6dbcf36b0bbbf2028"
+    },
+    {
+      "path": "test/standalone-reader-string-escape-check.el",
+      "sha256": "6bf5f52c1dd45d462e71e42c43b9d692599e6bf6ad401e2c2e0decb896614bf3"
+    },
+    {
+      "path": "test/standalone-shallow-binding-check.el",
+      "sha256": "6edf80c691bd51e4104bf7b0d33f0cced8ebbf33a34848f520c49cedc3aea17e"
+    },
+    {
+      "path": "test/standalone-shallow-binding-dyn-check.el",
+      "sha256": "54f30024b64ae8e00edba984ddfcf6e1042015f7e5a08b31f335a9fa25051ff0"
+    },
+    {
+      "path": "test/standalone-string-search-check.el",
+      "sha256": "31c344ad0a8122536330a52063d1d72423751cc08cb3ac18b46bc03959df5a07"
+    },
+    {
+      "path": "test/standalone-string-to-number-check.el",
+      "sha256": "8e0bfac3625c0f2af2d3ec9a85cba217601f0677051e25d6f1cdb166145c985c"
+    },
+    {
+      "path": "test/standalone-substring-check.el",
+      "sha256": "3213b4c949cfbeadb0bfe873001675ecc151b2b422d9c9ce4a4cc2bf0a86c296"
+    },
+    {
+      "path": "test/standalone-syntax-comment-check.el",
+      "sha256": "9c276d516b79ac04ccb1ded4efd164be740a9df9f3191175c046125fa5460dcf"
+    },
+    {
+      "path": "test/standalone-syntax-property-check.el",
+      "sha256": "e646a9fae2623e6f9351b58c8544a42bd5acdde27be5b6229a0a362a68450c16"
+    },
+    {
+      "path": "tools/ai/boot-image-check.py",
+      "sha256": "f920725d4466b9d496f79bbf60910d683a2e0bdf6e5b37c42657e9524185f29e"
+    },
+    {
+      "path": "tools/ai/boot-image-differential.py",
+      "sha256": "3a3d8d8a060de3390e5b6712afde3de3be5d73a8a8861f32ebfec226abd087b6"
+    },
+    {
+      "path": "tools/ai/boot-image-full-suite.sh",
+      "sha256": "3dfa7af96b6cdde420430cd405e137de0a9186c0dffba9c1b971169f6a47e5ea"
+    },
+    {
+      "path": "tools/ai/gates.expected",
+      "sha256": "9165baf693c7c00d66b92cbaea0098290916187f469f9d064371285090ebd979"
+    },
+    {
+      "path": "tools/ai/nelisp-ai.sh",
+      "sha256": "97469429628764f8b4d9fc9c75173964c625caa80463e63caafdacc930ac33d8"
+    },
+    {
+      "path": "tools/ai/nelisp-ert-collection.el",
+      "sha256": "ce64d3f982585d66ead47e0d3a2fb65aa03aa54a76fff8bddca84be71159b903"
+    },
+    {
+      "path": "tools/nelisp-thread-allocating-standalone-smoke.el",
+      "sha256": "7acb72709748595f2229e679001c4aed4da6bf7f2896a5ef6b63515098c73cb2"
+    },
+    {
+      "path": "tools/nelisp-thread-mirror-guard-smoke.el",
+      "sha256": "53a7f99aa682c5ff7c0e90cdedaba9b6b3105fce47c8d49c01963a6443fb1bc8"
+    },
+    {
+      "path": "tools/nelisp-thread-percpu-roots-smoke.el",
+      "sha256": "497af6b9347127610428420e10b96abf91434d729a8231160e065f8e2b26c9ba"
+    },
+    {
+      "path": "tools/nelisp-thread-standalone-smoke.el",
+      "sha256": "d17ce1d5ae662f80266eb73b622f8939622a9b348e0b08688eda5c4f58ba38be"
+    }
+  ],
+  "suites": {
+    "standalone": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic EVAL_BIN=$ROOT/target/boot-image/base-dynamic STANDALONE_CHECK_LOGDIR=$ROOT/target/boot-image/round3/baseline/standalone NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh $ROOT/test/perf/standalone-checks.sh",
+        "cwd": ".",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/standalone.out",
+          "sha256": "e3e07184a2fa60d0c628385e7d810e4ca730562dac9f7fdbea21584bd39d8f4d"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/standalone.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 205.91537372602033
+      },
+      "candidate": {
+        "rc": 0,
+        "cwd": ".",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "command": "EVAL_BIN=$ROOT/target/boot-image/candidate7 STANDALONE_CHECK_LOGDIR=$ROOT/target/boot-image/full-suite-candidate7/standalone test/perf/standalone-checks.sh (first full-suite child)",
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone-checks.log",
+          "sha256": "38e14f7a22262e168f9f90d6265aabc1e6b951590dbbc939a2d6339f74aa6e30"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/standalone.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "ert": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh test",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 255,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/ert-aligned.out",
+          "sha256": "102cd21303bcd9dbf2a207593c60773af995379bafd663bda9acb0fa664be195"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/ert-aligned.err",
+          "sha256": "da3f4f04dda8f9bec2e6d0879f9b92d2fc5f00ffa5dc41f91ab87329918ec8a1"
+        }
+      },
+      "candidate": {
+        "rc": 255,
+        "seconds": 5.1271886129979976,
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate7 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round4/static-candidate7 NELISP_GATE_DIR=$ROOT/target/boot-image/round4/gates sh tools/ai/nelisp-ai.sh test",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "cwd": ".",
+        "stdout": {
+          "path": "target/boot-image/round4/ert.out",
+          "sha256": "e56dd45b2416e72a9007bdb1e080aadb6a3d125760cf457e339c175be88f0087"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/ert.err",
+          "sha256": "98d6c2746a8168b0bf844011377adfa9f2e5db680ce478670026449cb2e7024a"
+        }
+      }
+    },
+    "make-test": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates make test",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 2,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/make-test.out",
+          "sha256": "e251da8912626c8473414ed45d38db0b7fae11ac2057ad3974ec157012e35e96"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/make-test.err",
+          "sha256": "c06177c98729139e969d18460bdd7747e51fd0e28ce5387fc3cfdd21553999c9"
+        },
+        "seconds": 1.4155929100234061
+      },
+      "candidate": {
+        "rc": 2,
+        "seconds": 2.743558109010337,
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate7 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round4/static-candidate7 NELISP_GATE_DIR=$ROOT/target/boot-image/round4/gates make test",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "cwd": ".",
+        "stdout": {
+          "path": "target/boot-image/round4/make-test.out",
+          "sha256": "c24ec55dbd7c626cbecc3528cbcb2c60d630ff8eb18cb78d5b0ece27d36f3e91"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/make-test.err",
+          "sha256": "968117a8c48908be6d165e31a7dd3ac66b9df37a2f8e1c87ea82b8c4b22b73dd"
+        }
+      }
+    },
+    "repl": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh repl --no-prompt",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/repl.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/repl.err",
+          "sha256": "b4d5c2f4b78bd7ad2340d4c64c784a3c6d419b8dc3d321d5a9d039bf98a08629"
+        },
+        "seconds": 32.20241017299122
+      },
+      "candidate": {
+        "rc": 1,
+        "seconds": 38.97468628399656,
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate7 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round4/static-candidate7 NELISP_GATE_DIR=$ROOT/target/boot-image/round4/gates sh tools/ai/nelisp-ai.sh repl --no-prompt",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "cwd": ".",
+        "stdout": {
+          "path": "target/boot-image/round4/repl.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/repl.err",
+          "sha256": "b4d5c2f4b78bd7ad2340d4c64c784a3c6d419b8dc3d321d5a9d039bf98a08629"
+        }
+      }
+    },
+    "static": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round3/static-baseline NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates emacs -Q --batch -L lisp -L src -L scripts -l nelisp-standalone-build --eval '(cl-letf (((symbol-function '\"'\"'nelisp-standalone-build-reader) (lambda () (getenv \"BOOT_IMAGE_STATIC_BIN\")))) (nelisp-standalone-reader-test))'",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/static.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/static.err",
+          "sha256": "a5b66df377c4923d4366b5b878a4db8947de1644d0f03506731b38ebf447c3dc"
+        },
+        "seconds": 18.286875941994367
+      },
+      "candidate": {
+        "rc": 1,
+        "seconds": 21.936754533991916,
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate7 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round4/static-candidate7 NELISP_GATE_DIR=$ROOT/target/boot-image/round4/gates emacs -Q --batch -L lisp -L src -L scripts -l nelisp-standalone-build --eval '(cl-letf (((symbol-function '\"'\"'nelisp-standalone-build-reader) (lambda () (getenv \"BOOT_IMAGE_STATIC_BIN\")))) (nelisp-standalone-reader-test))'",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "cwd": ".",
+        "stdout": {
+          "path": "target/boot-image/round4/static.out",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/static.err",
+          "sha256": "f3636525adcad4146c0f635686f54c0d55c17f3ecb060f57b3a5fcbbe1f12eb9"
+        }
+      }
+    },
+    "verify": {
+      "baseline": {
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/base-dynamic NELISP_GATE_DIR=$ROOT/target/boot-image/round3/baseline/gates sh tools/ai/nelisp-ai.sh verify",
+        "cwd": "target/tmp/boot-image-baseline",
+        "rc": 1,
+        "stdout": {
+          "path": "target/boot-image/round3/baseline/verify.out",
+          "sha256": "8ad1061deb78db40c9e0a6b11b97742bfd753f1e2ba12868932578add2e9c0d1"
+        },
+        "stderr": {
+          "path": "target/boot-image/round3/baseline/verify.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "seconds": 0.11406385898590088
+      },
+      "candidate": {
+        "rc": 1,
+        "seconds": 0.516130517993588,
+        "command": "TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/tmp/cache NELISP_BIN=$ROOT/target/boot-image/candidate7 BOOT_IMAGE_STATIC_BIN=$ROOT/target/boot-image/round4/static-candidate7 NELISP_GATE_DIR=$ROOT/target/boot-image/round4/gates sh tools/ai/nelisp-ai.sh verify",
+        "identities": {
+          "dynamic": {
+            "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+            ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+            ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+          },
+          "static": {
+            "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+            ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+            ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+          }
+        },
+        "cwd": ".",
+        "stdout": {
+          "path": "target/boot-image/round4/verify.out",
+          "sha256": "8ad1061deb78db40c9e0a6b11b97742bfd753f1e2ba12868932578add2e9c0d1"
+        },
+        "stderr": {
+          "path": "target/boot-image/round4/verify.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    }
+  },
+  "known_red": {
+    "standalone": [],
+    "ert": [
+      "error (\"nl-ffi-memory: requires Linux x86_64 syscall-direct\")\ncontext: {\"files\": [\"test/nelisp-eln-registration-vectors-test.el\"], \"frames\": [\"error\", \"nl-ffi-memory-allocate\", \"nelisp-eln-registration-vectors-register\", \"load-with-code-conversion\"]}"
+    ],
+    "make-test": [
+      "void-function (json-read-file)\ncontext: {\"files\": [\"scripts/nelisp-standalone-build.el\", \"test/nelisp-alloc-check-test.el\"], \"frames\": [\"load-with-code-conversion\", \"require\", \"load-with-code-conversion\"]}"
+    ],
+    "repl": [
+      "(excessive-lisp-nesting . 16000)"
+    ],
+    "static": [
+      "command smoke: temp-name child 1 failed rc=1 stderr=\"nelisp: uncaught error: in eval-elisp-source, top-level form <source-location>: void-function: (replace-regexp-in-string)\ncontext: {\"files\": [], \"frames\": [\"signal\", \"progn\", \"if\", \"let\", \"if\", \"let\", \"if\", \"advice-member-p\", \"unless\", \"when\", \"when\", \"apply\", \"if\", \"let\", \"if\", \"let*\", \"if\", \"let\", \"let*\", \"load\"]}"
+    ],
+    "verify": [
+      "artifact-service: no report (the gate never ran)",
+      "bench-aot-checked-arith: no report (the gate never ran)",
+      "binary-size-ratchet: no report (the gate never ran)",
+      "bootstrap-contract: no report (the gate never ran)",
+      "builtin-arity: no report (the gate never ran)",
+      "compile: no report (the gate never ran)",
+      "doc-claims: no report (the gate never ran)",
+      "doc200-census: no report (the gate never ran)",
+      "emacs-compat: no report (the gate never ran)",
+      "emacs-parity: no report (the gate never ran)",
+      "ert-full: no report (the gate never ran)",
+      "fallback-inventory-selftest: no report (the gate never ran)",
+      "fallback-inventory: no report (the gate never ran)",
+      "ffi-dsl: no report (the gate never ran)",
+      "ffi-loader: no report (the gate never ran)",
+      "gate-mutation: no report (the gate never ran)",
+      "gate-selfcheck: no report (the gate never ran)",
+      "generated-source-parse: no report (the gate never ran)",
+      "lisp-byte-compile: no report (the gate never ran)",
+      "lsp-server: no report (the gate never ran)",
+      "macho-acceptance-test: no report (the gate never ran)",
+      "native-symbol-test: no report (the gate never ran)",
+      "native-unit-repl-smoke: no report (the gate never ran)",
+      "nelisp-native-artifact-gate: no report (the gate never ran)",
+      "nelisp-nelix-native-hot-gate: no report (the gate never ran)",
+      "nelisp-performance-gate: no report (the gate never ran)",
+      "nelisp-runtime-image-cache-gate: no report (the gate never ran)",
+      "nelisp-sexp-clone-bind-smoke: no report (the gate never ran)",
+      "nelisp-source-command-substrate-gate: no report (the gate never ran)",
+      "nelisp-thread-allocating-standalone-smoke: no report (the gate never ran)",
+      "nelisp-thread-mirror-guard-standalone-smoke: no report (the gate never ran)",
+      "nelisp-thread-percpu-roots-smoke: no report (the gate never ran)",
+      "nelisp-thread-standalone-smoke: no report (the gate never ran)",
+      "nelisp-toml-standalone-smoke: no report (the gate never ran)",
+      "nl-actor-standalone-smoke: no report (the gate never ran)",
+      "nl-check-gate: no report (the gate never ran)",
+      "nl-condition-standalone-smoke: no report (the gate never ran)",
+      "nl-num-standalone-smoke: no report (the gate never ran)",
+      "nl-resource-standalone-smoke: no report (the gate never ran)",
+      "nl-safe-standalone-smoke: no report (the gate never ran)",
+      "ns-gate: no report (the gate never ran)",
+      "ns-inventory: no report (the gate never ran)",
+      "package-registry: no report (the gate never ran)",
+      "package-resolver: no report (the gate never ran)",
+      "package-store: no report (the gate never ran)",
+      "parens-check: no report (the gate never ran)",
+      "parity-coverage: no report (the gate never ran)",
+      "parity-fuzz: no report (the gate never ran)",
+      "partial-inventory: no report (the gate never ran)",
+      "pkg-graph: no report (the gate never ran)",
+      "pkg-load-lists: no report (the gate never ran)",
+      "precise-root-coverage: no report (the gate never ran)",
+      "prelude-toplevel-check: no report (the gate never ran)",
+      "project-arguments: no report (the gate never ran)",
+      "project-bench: no report (the gate never ran)",
+      "project-build: no report (the gate never ran)",
+      "project-cli-contract: no report (the gate never ran)",
+      "project-cli-integration: no report (the gate never ran)",
+      "project-debug: no report (the gate never ran)",
+      "project-distribution: no report (the gate never ran)",
+      "project-doc: no report (the gate never ran)",
+      "project-manifest: no report (the gate never ran)",
+      "project-packages: no report (the gate never ran)",
+      "project-profile-build: no report (the gate never ran)",
+      "project-test-runner: no report (the gate never ran)",
+      "reader-surface-audit: no report (the gate never ran)",
+      "reference-parity: no report (the gate never ran)",
+      "special-variables: no report (the gate never ran)",
+      "standalone-chunk-growth-test: no report (the gate never ran)",
+      "standalone-eval-test: no report (the gate never ran)",
+      "standalone-midform-gc-bounded: no report (the gate never ran)",
+      "standalone-parallel-compile-test: no report (the gate never ran)",
+      "standalone-reader-buffer-smoke: no report (the gate never ran)",
+      "standalone-reader-smokes: no report (the gate never ran)",
+      "standalone-reader-test: no report (the gate never ran)",
+      "standalone-selfhost-mt-test: no report (the gate never ran)",
+      "standalone-selfhost-test: no report (the gate never ran)",
+      "substrate-parity-smoke: no report (the gate never ran)",
+      "substrate-presence-corpus-check: no report (the gate never ran)",
+      "symbol-identity: no report (the gate never ran)",
+      "unsafe-inventory: no report (the gate never ran)",
+      "vendor-shadow-gate: no report (the gate never ran)",
+      "version-consistency: no report (the gate never ran)",
+      "wasm-dtw-skeleton-smoke: no report (the gate never ran)",
+      "wasm-runtime-image-smoke: no report (the gate never ran)"
+    ]
+  },
+  "anvil": {
+    "baseline": {
+      "tools": 40,
+      "identities": {
+        "": "03fc02ad0572ae4d98ec5cbbd6ad98b9a36612997566dc4e768c2f716064a07a",
+        ".cold": "1d4fdbe34b61f0bf987f74cdbd17c3b7c9c10af2a4809c06553c854d1d644b87",
+        ".native-startup.el": "92ba0811c460cef9c8ea19ff1775afeebae6e3722d418493743831426c55abb7"
+      },
+      "startup_seconds": 6.805542122980114,
+      "stdout": {
+        "path": "target/boot-image/round4-baseline-anvil.out",
+        "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+      },
+      "stderr": {
+        "path": "target/boot-image/round4-baseline-anvil.err",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "BOOT_IMAGE_BIN=$ROOT/target/boot-image/base-dynamic python3 tools/ai/boot-image-check.py smoke --name round4-baseline"
+    },
+    "candidate": {
+      "tools": 40,
+      "identities": {
+        "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+        ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+        ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+      },
+      "startup_seconds": 3.2461192719929386,
+      "stdout": {
+        "path": "target/boot-image/candidate7-anvil.out",
+        "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+      },
+      "stderr": {
+        "path": "target/boot-image/candidate7-anvil.err",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "BOOT_IMAGE_BIN=$ROOT/target/boot-image/candidate7 python3 tools/ai/boot-image-check.py smoke --name candidate7"
+    }
+  },
+  "sparse_maphash": {
+    "baseline": {
+      "path": "target/boot-image/round3/baseline/standalone/standalone-maphash-sparse-check.out",
+      "sha256": "99d9f1898d8fc98b6848270434c488010b92323ed2082cbf532f62a8924ec60f"
+    },
+    "candidate": {
+      "path": "target/boot-image/full-suite-candidate7/standalone/standalone-maphash-sparse-check.out",
+      "sha256": "420c091dfc1879bf43319b03b09a0d53b1b530d06ea90dfe573dbf7682486245"
+    }
+  },
+  "limits": [
+    "Full ERT cannot finish collection on this branch; the aligned run reaches the same Linux syscall-direct FFI requirement on both.",
+    "Static reader smoke suite stops at its first failing command smoke on both. Later smoke bodies were not reached.",
+    "No standalone-eval success is claimed. Its previously reported duplicate nl_apply_do_eval link problem is outside this boot acceptance scope."
+  ],
+  "build_script_hunks": [
+    {
+      "hunk": "@@ -60,0 +61 @@",
+      "purpose": "Import the boot-image helper"
+    },
+    {
+      "hunk": "@@ -30025,0 +30027 @@ keeps this slice independent of caller-scope dynamic-variable semantics.\"",
+      "purpose": "Embed GNU preload providers"
+    },
+    {
+      "hunk": "@@ -30670 +30672 @@ source.\"",
+      "purpose": "Accept optional library deferral"
+    },
+    {
+      "hunk": "@@ -30675,6 +30677,4 @@ feature even when the file was in this tree.",
+      "purpose": "Describe relocatable fallback and source paths"
+    },
+    {
+      "hunk": "@@ -30702,3 +30702,3 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Embed byte-run source"
+    },
+    {
+      "hunk": "@@ -30712 +30711,0 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Do not provide a byte-run feature"
+    },
+    {
+      "hunk": "@@ -30716,6 +30715,4 @@ resolved fine.  Same feature, different answer per entry point.\"",
+      "purpose": "Embed macroexp; defer inline/json for reader"
+    },
+    {
+      "hunk": "@@ -31276,3 +31273,2 @@ Relative names and complete bytes are covered; timestamps are irrelevant.\"",
+      "purpose": "Describe demand-loaded reader libraries"
+    },
+    {
+      "hunk": "@@ -31289 +31285 @@ can use it.\"",
+      "purpose": "Enable reader library deferral"
+    },
+    {
+      "hunk": "@@ -31420 +31416 @@ can use it.\"",
+      "purpose": "Install relocatable lazy library registry"
+    },
+    {
+      "hunk": "@@ -31447,3 +31443 @@ can use it.\"",
+      "purpose": "Defer the process-buffer adapter provider"
+    },
+    {
+      "hunk": "@@ -37773 +37767 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Update cold-loader ownership comment"
+    },
+    {
+      "hunk": "@@ -37787,5 +37781,4 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Describe driver-selected companion policy"
+    },
+    {
+      "hunk": "@@ -37991,4 +37984,3 @@ Keep this source-only boundary usable by Windows preflight and host controls.\"",
+      "purpose": "Keep absent cold selection a no-op"
+    },
+    {
+      "hunk": "@@ -38163,0 +38156 @@ correctly.\"",
+      "purpose": "Splice companion path native helper forms"
+    },
+    {
+      "hunk": "@@ -39430,0 +39424,12 @@ correctly.\"",
+      "purpose": "Select executable-relative cold image for ordinary commands"
+    },
+    {
+      "hunk": "@@ -39435 +39440 @@ correctly.\"",
+      "purpose": "Load the selected cold image"
+    },
+    {
+      "hunk": "@@ -39469,0 +39475,4 @@ correctly.\"",
+      "purpose": "Use bump-only permanent driver initialization"
+    },
+    {
+      "hunk": "@@ -39540 +39549,2 @@ correctly.\"",
+      "purpose": "Restore selected globals and release allocated companion path"
+    },
+    {
+      "hunk": "@@ -39733,0 +39744 @@ correctly.\"",
+      "purpose": "Restore free-list reuse after watermark"
+    },
+    {
+      "hunk": "@@ -43435,2 +43446,3 @@ Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0",
+      "purpose": "Document implicit Linux companion loading"
+    }
+  ],
+  "round3_build_script_changes": "None. The 21 hunks above are the full baseline-to-ee859d559 diff; Round 3 changes only acceptance tooling, its evidence/ledger and deployment documentation.",
+  "development_loop": {
+    "expensive_paired_suite_seconds": 389.27855541498866,
+    "receipt_validation_seconds": 0.959,
+    "negative_controls": "20 built-in controls, six mutated-artifact controls, and seven actual-receipt mutations from the independent Astra ultra audit rejected broken observations. Current receipts have no new failures.",
+    "limitations": "Receipt validation checks immutable prior executions; it is not a fresh execution of the suites. A changed binary, sidecar, harness or raw output invalidates the result.",
+    "round4": {
+      "negative_full_suite_seconds": 87,
+      "negative_threads_only_seconds": 1,
+      "negative_full_suite_failures": 3,
+      "negative_threads_only_failures": 3,
+      "candidate_full_suite_seconds": 93.67654068398406,
+      "candidate_threads_only_seconds": 8,
+      "candidate_full_suite_checks": 11,
+      "candidate_thread_invocations": 14,
+      "corpus_fault_control": "Complete matching VM/interpreter output followed by exit 7: old checker rc=0; repaired checker rc=1, tested.",
+      "headroom_before_bytes": 2466048,
+      "headroom_after_bytes": 70676936,
+      "boot_ir": 1141874917,
+      "notes": "A +9 MiB trial allowed first entry but failed later sections, so normal allocator growth capacity is reserved in addition to driver buffers. Native BEGIN/END contract unchanged."
+    }
+  },
+  "supplementary_check_tier": {
+    "status": "Historical Round 3 evidence: Both optional full check-tier attempts were interrupted during gate-selfcheck after matching preceding static failures. Required standalone/ERT/static/verify/Anvil paired runs completed and are recorded separately; no full check-tier pass is claimed.",
+    "logs": {
+      "baseline": {
+        "path": "target/boot-image/round3/check-baseline.log",
+        "sha256": "bb82f6bc042a51af77e45dcc60388cf9d26ff7e5b43c83d6c18cf441a84211d9"
+      },
+      "candidate": {
+        "path": "target/boot-image/round3/check-candidate.log",
+        "sha256": "5d3654554a9649ddafd8881ee756791274af18e2cf67d4138da5a7737218357c"
+      }
+    },
+    "compile": "All 23 compile error diagnostics match after normalizing source line/column locations.",
+    "census": "The archived baseline lacks a Git index. A focused rerun on each source tree supplied an isolated index made by GIT_INDEX_FILE=... git read-tree COMMIT and rebound only the host census index-path accessor. All census failure rows match; no production source or shared Git index was changed.",
+    "census_outputs": {
+      "baseline": {
+        "out": {
+          "path": "target/boot-image/round3/baseline/census.out",
+          "sha256": "7569b12d1c244d3659fd1fc250c7e121c1bf0219afb6b8d78e2a5c06e84c1d8d"
+        },
+        "err": {
+          "path": "target/boot-image/round3/baseline/census.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "candidate": {
+        "out": {
+          "path": "target/boot-image/round3/candidate/census.out",
+          "sha256": "bac294a7c594a6d734d14bae154fcb57b56de5022b3dcf1b41b98cddaaecf747"
+        },
+        "err": {
+          "path": "target/boot-image/round3/candidate/census.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "cost_not_paid": "The supplementary gate-selfcheck reruns additional whole gates, including its own standalone build/parity paths. Further waiting was not needed for the explicitly requested six completed differential suites; its incomplete result remains visible."
+  },
+  "full_suite": {
+    "rc": 0,
+    "seconds": 93.67654068398406,
+    "command": "bash tools/ai/boot-image-full-suite.sh $ROOT/target/boot-image/candidate7 $ROOT/target/boot-image/round4/static-candidate7 candidate7",
+    "identities": {
+      "dynamic": {
+        "": "51d37f8ce1154d571b9fc168279a9b7832d444fb1c332b54dc41eb7206104011",
+        ".cold": "a57b9dcc81eb753a6dd25a6be7ae3ead348956e4504085e6dff4108cea7a083a",
+        ".native-startup.el": "be5ac8a8bfa7d1905cfcd18096df5da22a0cd37f51200e8b09e651e8532de5d6"
+      },
+      "static": {
+        "": "21c8c35d05fb384c8268ba74609c1682e4420162e2286e2d52d450ea0240a3a9",
+        ".cold": "fdb3116752ea7d23e02315665dd0e86adc308ae1016bdfc995777ed6682f229f",
+        ".native-startup.el": "2178d9647bc7b7d5093f16b68af2e7683f1550c66fb18fb8cbafe41b30c27a6e"
+      }
+    },
+    "cwd": ".",
+    "stdout": {
+      "path": "target/boot-image/round4/full-suite.out",
+      "sha256": "479e44e6d44e3c711906e98a5f720ce73afe47d90a361d8988f03a664f9926dd"
+    },
+    "stderr": {
+      "path": "target/boot-image/round4/full-suite.err",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "results": {
+      "path": "target/boot-image/full-suite-candidate7/results.tsv",
+      "sha256": "1940001a6e838e093e90c460c4b8f3dde8a87829687b5a9848d6abbfcae4c906"
+    },
+    "logs": {
+      "standalone-checks": {
+        "path": "target/boot-image/full-suite-candidate7/standalone-checks.log",
+        "sha256": "38e14f7a22262e168f9f90d6265aabc1e6b951590dbbc939a2d6339f74aa6e30"
+      },
+      "standalone-shallow-binding-check": {
+        "path": "target/boot-image/full-suite-candidate7/standalone-shallow-binding-check.log",
+        "sha256": "da0d9d20a7b2d50261070ffe6e5abd6be832b469aa26354ceb9b9a211ab313ab"
+      },
+      "standalone-shallow-binding-dyn-check": {
+        "path": "target/boot-image/full-suite-candidate7/standalone-shallow-binding-dyn-check.log",
+        "sha256": "fbe92c97c7d22dc94c7e12b6fb795b2c4bfa34045f38fffd652f3f29fc2e7fa3"
+      },
+      "standalone-fx-call-shape-check": {
+        "path": "target/boot-image/full-suite-candidate7/standalone-fx-call-shape-check.log",
+        "sha256": "dbc7fe8e6d35fea139e0ef9784435e339847ce35b636f5e4eae9720c440cba32"
+      },
+      "standalone-bytecode-word-check": {
+        "path": "target/boot-image/full-suite-candidate7/standalone-bytecode-word-check.log",
+        "sha256": "8113559e180cd5a15354a2361ea6bc43ed7fbb27af6857da97d7b209873c3f86"
+      },
+      "fx-spike": {
+        "path": "target/boot-image/full-suite-candidate7/fx-spike.log",
+        "sha256": "1c8e412825555c7bf42a30c542c525bd74a56c00d8bdb546d876d8e1c66662d2"
+      },
+      "fx-corpus": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus.log",
+        "sha256": "65e6612f00fa9ee2b3a03fb153b9c4e20cfbd073175008d6a52693bd42c00d5f"
+      },
+      "thread-standalone": {
+        "path": "target/boot-image/full-suite-candidate7/thread-standalone.log",
+        "sha256": "8f0a9485e785c70b79805397e583ebee9bc993ecc24d31cf20437f18600862c4"
+      },
+      "thread-allocating": {
+        "path": "target/boot-image/full-suite-candidate7/thread-allocating.log",
+        "sha256": "bd8f66af32c6e5491d7b688bda20e7e34a0e25c4f5535472fd4f8d93467ddb98"
+      },
+      "thread-percpu": {
+        "path": "target/boot-image/full-suite-candidate7/thread-percpu.log",
+        "sha256": "7c7a60fb1862c01aa938bfae58f357baf174ca1f1f0b4acef279f9b5dad34606"
+      },
+      "thread-mirror-guard": {
+        "path": "target/boot-image/full-suite-candidate7/thread-mirror-guard.log",
+        "sha256": "4ba97827962a5bc8d4fa171097d6b39c1bfc0c3a6926443a46ce2bb8f7c084e3"
+      }
+    },
+    "standalone_children": {
+      "standalone-condition-case-root-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-condition-case-root-check.out",
+          "sha256": "f3f44b4309358b0288c640c141cffe3defd4230fb74480cd04609d64624a6cf1"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-condition-case-root-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-reader-char-literal-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-reader-char-literal-check.out",
+          "sha256": "b495334191fbd163472c3e49306464cf28d16b4ec1481f6c5a31bd2cc2745749"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-reader-char-literal-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-handler-bind-t-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-handler-bind-t-check.out",
+          "sha256": "579e9ac7eebb73d4ee8ed1eabd5fd90539484532abef699197acf936caab1aae"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-handler-bind-t-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-gc-image-hole-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-image-hole-check.out",
+          "sha256": "687ed9fce513a565a46beab6304d71bb76349732634cde855b25961d283046ce"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-image-hole-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-fx-forward-macro-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-forward-macro-check.out",
+          "sha256": "e8eec831ce927ec4f95263ebc557d84065a8dd6092bc7561b1986903f5f1befa"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-forward-macro-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-exit-stash-root-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-exit-stash-root-check.out",
+          "sha256": "67866875a499f03bc5c6b782a028dbe0186d0041cf27ad43b292523eab634baa"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-exit-stash-root-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-cl-defstruct-lazy-default-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-defstruct-lazy-default-check.out",
+          "sha256": "5b655467e9c7e87ebef3271f4ffa3305a8e113f8d9af8148cffb32d2be017426"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-defstruct-lazy-default-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-fx-late-special-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-late-special-check.out",
+          "sha256": "b780cc827e29d809966c2dc0587207bc43c201a05ba3afd6e8c42a41efbe0885"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-late-special-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-prn-string-escape-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-prn-string-escape-check.out",
+          "sha256": "dfee1adb47d4b7948d2c276cc5387335a00ce10c4d6873493f34b57e5428deb5"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-prn-string-escape-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-gc-conservative-cost-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-conservative-cost-check.out",
+          "sha256": "b41f4c7b422f7385fcf7066a4e210116093abb278154e37b54a1bae141e3cea8"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-conservative-cost-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-buffer-list-order-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-buffer-list-order-check.out",
+          "sha256": "3da13085f7157f2396a8c92fe86d655557f7092903dffe78786f345326755b35"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-buffer-list-order-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-bytecode-word-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-bytecode-word-check.out",
+          "sha256": "8113559e180cd5a15354a2361ea6bc43ed7fbb27af6857da97d7b209873c3f86"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-bytecode-word-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-syntax-comment-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-syntax-comment-check.out",
+          "sha256": "44257dbfe157e6c00d97ed537a89584f565beb9cfad4c5c9a0f22f1d77022d6f"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-syntax-comment-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-substring-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-substring-check.out",
+          "sha256": "6cca037f3f2f2ef431f2a713da9482c3e6a69d819c9817af2fb5577510e96cce"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-substring-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-syntax-property-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-syntax-property-check.out",
+          "sha256": "922d710eba89346d226a9e54818969221e99fecb7edc90c6bcaaf6dfa59b50cd"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-syntax-property-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-string-to-number-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-string-to-number-check.out",
+          "sha256": "428986b52cbedd211ed43b65c3a631f1cb562fec20442d7e2fd562a4ee0a962b"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-string-to-number-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-gc-pressure-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-pressure-check.out",
+          "sha256": "c86fec1974f886d0d60a7ea1ff3abd88a38b45f8d68468531652474247605666"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-gc-pressure-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-boot-libraries-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-boot-libraries-check.out",
+          "sha256": "e0dec63b5872ef0752bae53fa42ef8e651e890babb0275912e6c73302385dc65"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-boot-libraries-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-literal-search-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-literal-search-check.out",
+          "sha256": "b04a25b0fa5be3879e2dde61f814421cf79b240031c54332bd49f9a3502eab8a"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-literal-search-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-hash-table-growth-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-hash-table-growth-check.out",
+          "sha256": "a28536810bd2a73c5ce922a6d06a86d671e65791770b65c3c5b853713ecec59e"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-hash-table-growth-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-cl-loop-gnu-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-loop-gnu-check.out",
+          "sha256": "ead24205de387d5737f38c85294064e4259950785c8108420f26f6a8e399c92b"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-loop-gnu-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-boot-library-loader-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-boot-library-loader-check.out",
+          "sha256": "4093064cdc6c58e7fd191e7eb9d929e8963186e6adaa77bd095878adc8d7de27"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-boot-library-loader-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-reader-string-escape-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-reader-string-escape-check.out",
+          "sha256": "3ff3ca190615fc434d24b5a97703019804eed0f40dd3e1d53503280ea30bddda"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-reader-string-escape-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-cl-destructure-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-destructure-check.out",
+          "sha256": "fbd3eb0eac3eebf6c444abe4d15e0c9962cf648804b02115d1ca0d1d5a44ed06"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-cl-destructure-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-maphash-sparse-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-maphash-sparse-check.out",
+          "sha256": "420c091dfc1879bf43319b03b09a0d53b1b530d06ea90dfe573dbf7682486245"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-maphash-sparse-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-shallow-binding-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-shallow-binding-check.out",
+          "sha256": "da0d9d20a7b2d50261070ffe6e5abd6be832b469aa26354ceb9b9a211ab313ab"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-shallow-binding-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-string-search-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-string-search-check.out",
+          "sha256": "a0320add118f5f3e3d4241d7d726f1ae771c5c8fc2751bd47b54146a831cb3e9"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-string-search-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-shallow-binding-dyn-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-shallow-binding-dyn-check.out",
+          "sha256": "fbe92c97c7d22dc94c7e12b6fb795b2c4bfa34045f38fffd652f3f29fc2e7fa3"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-shallow-binding-dyn-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-hash-identity-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-hash-identity-check.out",
+          "sha256": "d57a7a626d2ffbe3d8fb3e7231a4ec727d11f20b043a49d9373994da22a37a90"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-hash-identity-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-dotimes-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-dotimes-check.out",
+          "sha256": "b96f6f75a7c2f15fea7b1e00303a5e6038a7c8cf1cbbbac349bb2290aaaf6b4b"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-dotimes-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "standalone-fx-call-shape-check": {
+        "stdout": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-call-shape-check.out",
+          "sha256": "dbc7fe8e6d35fea139e0ef9784435e339847ce35b636f5e4eae9720c440cba32"
+        },
+        "stderr": {
+          "path": "target/boot-image/full-suite-candidate7/standalone/standalone-fx-call-shape-check.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "fx_corpus": {
+      "vm1": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/vm1",
+        "sha256": "d07e2cecb62f33f2e65c6ade81ec49e397fa95d1868db4290a50d09a33075f86"
+      },
+      "in1": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/in1",
+        "sha256": "fe48e86abfbfb815eab74c51435e32491f0df9ce1b29d9b1ad4a11f3ddbd1813"
+      },
+      "vm7": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/vm7",
+        "sha256": "ae030a23aeaed832b0ceec0467881ec72cdaa0e950bdb1abad1188c77315838a"
+      },
+      "in7": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/in7",
+        "sha256": "52841cedce8382bfc83391340f772067c7532dd4e562dbdd6232a8d70344900f"
+      },
+      "diff1": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/diff1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "diff7": {
+        "path": "target/boot-image/full-suite-candidate7/fx-corpus/diff7",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "cl_loop_baseline": {
+      "path": "target/boot-image/round3/baseline/standalone/standalone-cl-loop-gnu-check.out",
+      "sha256": "ead24205de387d5737f38c85294064e4259950785c8108420f26f6a8e399c92b"
+    }
+  },
+  "round4_build_script_changes": "One hunk in nelisp-standalone--reader-cold-source-forms: reserve startup buffers plus one normal growth chunk of runtime headroom after cold restore, retaining the 8 MiB worker BEGIN check and END no-growth check.",
+  "round4_build_script_hunks": [
+    {
+      "hunk": "@@ -38023,3 +38023,12 @@",
+      "purpose": "Explain cold-start working capacity and Linux/Windows reservation cost."
+    },
+    {
+      "hunk": "@@ -38028 +38037,6 @@",
+      "purpose": "Add both startup read buffers and parse pool, and derive runtime headroom from nl_chunk_size_for(8 MiB) instead of retaining only 8 MiB."
+    }
+  ],
+  "round4_runtime_evidence": [
+    {
+      "path": "target/boot-image/round4/arena-candidate6.out",
+      "sha256": "8c58df5fb49614e705d68fb849a87717fe6b8d107e1823a5bc40a6f28f569025"
+    },
+    {
+      "path": "target/boot-image/round4/arena-candidate7.out",
+      "sha256": "38cd97b2e71174626ab34e79bd867c2d4437be65ebc7d89923d2d23bc89a503e"
+    },
+    {
+      "path": "target/boot-image/round4/threads-negative.out",
+      "sha256": "ac071a56673fc1f6b2a15fb725f95e7fe53f7dcc9037590aa80d29f501423fa0"
+    },
+    {
+      "path": "target/boot-image/round4/threads-candidate7.out",
+      "sha256": "87497cf297f2c6be712d50ddd2bbeb392a1e8618979cefa8bcac17950a2e1b1a"
+    },
+    {
+      "path": "target/boot-image/round4/full-negative2.out",
+      "sha256": "d0049632ed103ad8ac891ca0ab61823ebacfeaecb7ab932a9e69d9fcf7dbec8d"
+    },
+    {
+      "path": "target/boot-image/round4/fx-old-control.out",
+      "sha256": "f5aec9d35aeebd29d1062b76d7e44ab8943cc1fd0e00f10aec53c74eb2add1aa"
+    },
+    {
+      "path": "target/boot-image/round4/fx-new-control.out",
+      "sha256": "7f3bbf21afb7161fea5b3da3be8e273a5dc74ebe1d20f95689592a14dd5a214e"
+    }
+  ],
+  "candidate_source_state": "Round 4 runtime fix committed; runtime.patch describes its change from the parent.",
+  "candidate_source_patch": {
+    "path": "target/boot-image/round4/runtime.patch",
+    "sha256": "219409bfdc3916cabadddc3116461e491f538fddab2423dba82b8c89987d6900"
+  },
+  "candidate_source_sha256": "410efd63e5660ace7ea95472006876f6dde5ae60ef2604ba291ea503962de6e1",
+  "round4_supplementary_check": {
+    "command": "TMPDIR=$PWD/target/tmp XDG_CACHE_HOME=$PWD/target/tmp/cache NELISP_BIN=$PWD/target/boot-image/candidate7 NELISP_GATE_DIR=$PWD/target/boot-image/round4/check-gates timeout 600 tools/ai/nelisp-ai.sh check",
+    "rc": 124,
+    "status": "Stopped by the timeout in gate-selfcheck after known static failures; no full check-tier pass is claimed. Generated fixture restored from HEAD.",
+    "stdout": {
+      "path": "target/boot-image/round4/check.log",
+      "sha256": "e03635d464efdbeeb9489de92960be871d313e3ec7e2954c62118501bb397ced"
+    },
+    "final_attempt": {
+      "rc": 124,
+      "timeout_seconds": 30,
+      "status": "Repeated pre-commit attempt stopped during generated-source-parse; no pass claimed.",
+      "stdout": {
+        "path": "target/boot-image/round4/final-check.log",
+        "sha256": "f391a32b5d0b80ac3ebe57ac9d66965e0fe6705b8d8a8f8b3c9826c28010e222"
+      }
+    }
+  },
+  "round4_audit": {
+    "status": "Astra ultra completion audit passed. All 23 actual-receipt mutations reject semantically; all 20 built-in controls pass.",
+    "mutations": {
+      "path": "target/tmp/boot-audit-qrv8i6av/final-results.json",
+      "sha256": "2d48c2dcd9815a4f172b098512648cd5f7faa326c99d417fe06fcd11d0d44968"
+    }
+  },
+  "boot_measurements": {
+    "before_ir": 29076707469,
+    "after_ir": 1141874917,
+    "before_wall_seconds": 2.8193043549836148,
+    "before_repeat_wall_seconds": 2.8201107649947517,
+    "after_wall_seconds": 0.16647730700788088,
+    "baseline_repeat_relative_drift": 0.000286032,
+    "condition": "Final wall measurements use fresh processes after supplemental checks ended. Baseline was measured on each side of the candidate; its medians agree within 0.03%. Earlier overlapping wall runs were rejected as noisy.",
+    "receipts": [
+      {
+        "path": "target/boot-image/round4-baseline-wall.json",
+        "sha256": "bd7387b2f380a789adbbf13085c8632844b60666a567c80a2187e37dfeb4dd9b"
+      },
+      {
+        "path": "target/boot-image/round4-baseline-repeat-wall.json",
+        "sha256": "2d8aa0670d07450c3d303b71c23614b1fd6e2a2eb32650a2c6e62af281f92398"
+      },
+      {
+        "path": "target/boot-image/candidate7-wall.json",
+        "sha256": "b7ed148ed8fc0630fc2c9718d743708a589b67a3b210f4fd6dd7c8314b901545"
+      },
+      {
+        "path": "target/boot-image/candidate7-ir.json",
+        "sha256": "a3da5687862255d4ee1d744e57097a48f2a51b4d337c5b7250dab54665a120ac"
+      }
+    ]
+  },
+  "worklog": {
+    "canonical_title": "bootimage20261019round4: static thread recovery and full S5 evidence",
+    "file": "anvil-worklog:db:linux-debian:2026",
+    "start_line": 1781927314,
+    "searchability": "MCP write succeeded; MCP search required unavailable approval. Read-only FTS query of canonical Notes DB found the entry."
+  }
+}

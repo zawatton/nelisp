@@ -50,6 +50,48 @@
     (append (nelisp-standalone--reader-os-source-forms)
             (nelisp-standalone--reader-cold-source-forms))))
 
+(ert-deftest nelisp-windows-allocation-side-tables-fully-committed ()
+  "Side tables, N4 frames and boot scratch may touch every allocated page."
+  (let ((function (nelisp-windows-cold-test--function
+                   (nelisp-standalone--windows-alloc-chunk-form) 'nl_os_alloc_chunk))
+        (calls nil))
+    (cl-letf (((symbol-function 'nelisp-windows-cold-test--extern)
+               (lambda (&rest args) (push args calls) 65536)))
+      (should (= (funcall function 5242912) 65536))
+      (should (equal (reverse calls) '((VirtualAlloc 0 5242912 12288 4)))))))
+
+(ert-deftest nelisp-windows-allocation-arena-remains-reserved ()
+  "Only arena owners reserve space and commit the initial metadata page."
+  (let* ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment))
+         (forms (nelisp-standalone--target-arena-source))
+         (function (nelisp-windows-cold-test--function forms 'nl_os_reserve_chunk))
+         (calls nil) (commit 65536))
+    (dolist (name '(nl_arena_init nl_chunk_alloc_new nl_cold_grow_chunk0))
+      (let ((definition (nelisp-windows-cold-test--definition forms name)))
+        (should (nelisp-windows-cold-test--contains definition 'nl_os_reserve_chunk))
+        (should-not (nelisp-windows-cold-test--contains definition 'nl_os_alloc_chunk))))
+    (cl-letf (((symbol-function 'nelisp-windows-cold-test--extern)
+               (lambda (api &rest args)
+                 (push (cons api args) calls)
+                 (if (equal args '(65536 4096 4096 4)) commit 65536))))
+      (should (= (funcall function 4294967296) 65536))
+      (should (equal (reverse calls)
+                     '((VirtualAlloc 0 4294967296 8192 4)
+                       (VirtualAlloc 65536 4096 4096 4))))
+      (setq calls nil commit 0)
+      (should (= (funcall function 4294967296) 0))
+      (should (eq (caar calls) 'VirtualFree)))))
+
+(ert-deftest nelisp-windows-allocation-coff-emission ()
+  "Both allocation contracts compile through the actual Win64 emitter."
+  (let ((forms (nelisp-standalone--windows-alloc-chunk-form)))
+    (dolist (name '(nl_os_alloc_chunk nl_os_reserve_chunk))
+      (let ((definition (nelisp-windows-cold-test--definition forms name)))
+        (should definition)
+        (should (> (length (plist-get
+                            (nelisp-aot-compile-to-link-unit definition :arch 'x86_64 :format 'coff)
+                            :text)) 0))))))
+
 (ert-deftest nelisp-windows-cold-compiled-stream-order ()
   "Check the real Win64 emission order, not host Elisp's operand order.
 Label only the stream calls so COFF relocation offsets identify each section."
@@ -208,7 +250,7 @@ Feed the header through the actual writer/read loops and both loader entries."
                (lambda (p off) (if (= (+ p off) 1216) size (gethash (+ p off) memory 0))))
               ((symbol-function 'ptr-write-u64)
                (lambda (p off v) (push 'write events) (puthash (+ p off) v memory)))
-              ((symbol-function 'nl_os_alloc_chunk) (lambda (_) (push 'reserve events) 2000))
+              ((symbol-function 'nl_os_reserve_chunk) (lambda (_) (push 'reserve events) 2000))
               ((symbol-function 'nl_os_commit_range) (lambda (&rest _) (push 'commit events) commit))
               ((symbol-function 'nl_os_free_chunk) (lambda (&rest _) (push 'free events) 1))
               ((symbol-function 'nl_cold_realloc_chunk0) (lambda (&rest _) (push 'metadata events) 0)))

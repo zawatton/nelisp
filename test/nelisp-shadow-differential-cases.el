@@ -45,6 +45,10 @@
 ;;; Code:
 
 (list
+ ;; Truth predicates consume the returned WORD after a collecting form.
+ (list (if (progn (garbage-collect) nil) 'wrong 'nil-result)
+       (if (progn (garbage-collect) 0) 'integer-result 'wrong)
+       (catch 'abi-truth-exit (if (throw 'abi-truth-exit 'thrown) t nil)))
  ;; Hash mutators retain the input WORD; nthcdr can return an immediate tail.
  (let ((table (make-hash-table :test 'eq)) (value (vector nil t -7)))
    (list (eq (puthash 'word value table) value)
@@ -104,6 +108,17 @@
          (progn (fset symbol 9) (symbol-function symbol))
          (fboundp symbol)
          (progn (fmakunbound symbol) (symbol-function symbol))))
+ ;; Float steps use the same typed writer as binary float arithmetic.
+ (list (1+ 2.5) (1- 2.5) (1+ -2.5) (1- -2.5))
+ ;; The protected form and handler can both collect. Their error/body slot
+ ;; must remain live through success, a caught signal and a propagated throw.
+ (list
+  (condition-case nil (progn (garbage-collect) 'completed) (error 'unexpected))
+  (condition-case problem (progn (garbage-collect) (signal 'error '(payload)))
+    (error (garbage-collect) problem))
+  (catch 'cc-root-exit
+    (condition-case nil (progn (garbage-collect) (throw 'cc-root-exit 'thrown))
+      (error 'unexpected))))
  ;; A same-face neighbor can still change another property; gaps and reverse
  ;; scans must use the character before POSITION on the backward path.
  (let ((s (make-string 12 ?x)))

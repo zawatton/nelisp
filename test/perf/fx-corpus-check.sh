@@ -5,12 +5,22 @@
 cd "$(dirname "$0")/../.." || exit 2
 : "${EVAL_BIN:?set EVAL_BIN to a built nelisp binary}"
 min=${MIN_COVERED:-60}
-dir=$(mktemp -d) || exit 2
-trap 'rm -rf "$dir"' EXIT
+if [ -n "${FX_CORPUS_LOGDIR:-}" ]; then
+  dir=$FX_CORPUS_LOGDIR
+  mkdir -p "$dir" || exit 2
+else
+  dir=$(mktemp -d) || exit 2
+  trap 'rm -rf "$dir"' EXIT
+fi
 fail=0
 for seed in 1 7; do
-  FX_CORPUS_SEED=$seed timeout 600 "$EVAL_BIN" --load test/perf/fx-corpus.el > "$dir/vm$seed" 2>&1
-  NELISP_FX_DISABLE=1 FX_CORPUS_SEED=$seed timeout 600 "$EVAL_BIN" --load test/perf/fx-corpus.el > "$dir/in$seed" 2>&1
+  if FX_CORPUS_SEED=$seed timeout 600 "$EVAL_BIN" --load test/perf/fx-corpus.el > "$dir/vm$seed" 2>&1; then
+    vm_rc=0
+  else vm_rc=$?; fail=1; fi
+  if NELISP_FX_DISABLE=1 FX_CORPUS_SEED=$seed timeout 600 "$EVAL_BIN" --load test/perf/fx-corpus.el > "$dir/in$seed" 2>&1; then
+    in_rc=0
+  else in_rc=$?; fail=1; fi
+  echo "FX-CORPUS seed $seed: vm_rc=$vm_rc interpreter_rc=$in_rc"
   calls=$(grep -c ' => ' "$dir/vm$seed")
   cov=$(sed -n 's/^FX-CORPUS covered=\([0-9]*\)\/\([0-9]*\)$/\1 \2/p' "$dir/vm$seed")
   set -- $cov

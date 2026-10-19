@@ -178,14 +178,21 @@
 
     (defun nl_sf_cc_after_cdr1_w (cdr1 args env _pad s1 _p6)
       (if (= (sexp-tag cdr1) 7)
-          (nl_sf_cc_with_var_w (extern-call nl_cons_car_ptr args) args cdr1 env 0 s1)
+          (nl_sf_cc_with_var_w (extern-call nl_cons_car_word args) args cdr1 env 0 s1)
         (nl_abi_fail 1 0)))
 
-    ;; `(condition-case VAR)' without a protected form fails the form.
-    (defun nl_sf_condition_case_w (args env _pad s1)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_cc_after_cdr1_w (extern-call nl_cons_cdr_ptr args) args env 0 s1 0)
-        (nl_abi_fail 1 0)))
+    ;; Own the error/body scratch across protected evaluation, clause matching
+    ;; and the handler. Caller scratch is arena storage and may be reused by GC.
+    (defun nl_sf_condition_case_w (args env _pad _caller-scratch)
+      (let* ((mark (nl_root_mark env)) (s1 (nl_root_reserve env)))
+        (if (= s1 0)
+            (seq (nl_root_release env mark) (nl_abi_fail 1 0))
+          (let* ((w (if (= (sexp-tag args) 7)
+                        (nl_sf_cc_after_cdr1_w (nl_cons_cdr_word args) args env 0 s1 0)
+                      (nl_abi_fail 1 0))))
+            ;; Root release has no safepoint. W remains in the return register
+            ;; until the caller publishes it in its own precise root (R2).
+            (seq (nl_root_release env mark) w)))))
 
     ;; (rc, OUT) adapter.
     (defun nl_sf_condition_case (args env out s1)
@@ -193,7 +200,7 @@
 
   "AOT source for `nl_sf_condition_case'.
 
-19 defuns (seq form) — CPS chain implementing args destructuring,
+22 defuns (seq form) — CPS chain implementing args destructuring,
 protected-form eval with err interception, clause matching with var
 binding (both delegated to `nl_cc_match_and_bind' Rust helper), handler
 body progn-eval, and final frame pop.

@@ -1,0 +1,19 @@
+{
+  "listed_blocker": "The bootstrap semantic blocker is resolved. S5 still fails repository verification, including the pre-existing standalone-eval build failure.",
+  "test": "test/standalone-exit-stash-root-check.el",
+  "classification": "Round 2 traced a 32 -> 0 block-header write to nelisp_eval_call_with_err clearing an unrooted condition-case scratch slot after its protected form collected and reused the address. The malformed heap made subsequent GC index preparation fail and left live-byte accounting unchanged. The exit stash was already traced from the current arena base. Rooting the complete condition-case lifetime fixes the original unchanged retention test and a direct regression. Driver setup allocations are also kept out of collectable image holes.",
+  "trigger": "Environment and diagnostic forms change allocation layout and whether the dangling condition-case scratch overwrites a block header. EVAL_BIN itself has no GC-root semantics.",
+  "historical_cases_before_fix": [
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate3", "environment": "EVAL_BIN=$BIN", "exit": 1, "held_bytes": 0, "released_bytes": 0},
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "wrapper": "nice -n 10", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "wrapper": "timeout 300", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "base-dynamic", "environment": "EVAL_BIN=$BIN", "boot": "source", "exit": 0, "held_bytes": 2241536, "released_bytes": 1576},
+    {"binary": "base-dynamic", "environment": "EVAL_BIN=$BIN", "boot": "explicit cold image", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate4", "environment": "EVAL_BIN=$BIN", "exit": 1, "held_bytes": 0, "released_bytes": 0}
+  ],
+  "reproduction": "BOOT_IMAGE_BIN=$BIN python3 tools/ai/boot-root-check.py; the historical reproduce-boot-image-blocker.sh intentionally retains candidate4 as its negative control",
+  "evidence": "tools/ai/boot-root-inventory.json; target/codex/gdb-local3.log; target/boot-image/roots-final.log; final6-standalone.log",
+  "remaining_build_failure": "make standalone-eval: nelisp-link--duplicate-symbol nl_apply_do_eval in combiner-apply.o and shim.o, explicitly identified as pre-existing in the brief",
+  "other_verification": "The original ERT path shadowed GNU json.el, then exited from an embedded standalone driver after only 3255 collected tests. The repaired collector exposes baseline load-time failures: an unconfigured logb lane fixture (now an explicit skip), then nelisp-eln-registration-vectors-test.el requiring Linux syscall-direct in host Emacs. The same latter error is reproduced from an 8dbd495ae source archive with the same host harness adaptations. Existing check-tier parens/partial-inventory/fallback failures are not turned green."
+}
