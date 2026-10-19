@@ -171,28 +171,27 @@
                        (= (nelisp_env_entry_slot_tag entry 5) 8))
                   (let ((redirect (record-slot-ref-ptr entry 5)))
                     (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
-                        (let ((buffer (alloc-bytes 32 8))
-                              (locals (vector-ref-ptr redirect 1)) (found 0))
-                          (sexp-write-nil buffer)
-                          (if (= (nelisp_env_lookup_value
-                                  mirror-ptr frames-ptr (vector-ref-ptr redirect 0) buffer) 0)
+                        (let ((buffer (nelisp_env_lookup_value_w
+                                       mirror-ptr frames-ptr
+                                       (nl_vector_slot_word redirect 0) 0))
+                              (locals (nl_vector_slot_word redirect 1)) (found 0))
+                          (if (and (/= buffer 0) (/= buffer 2))
                               (while (and (= (sexp-tag locals) 7) (= found 0))
                                 (let* ((pair (nl_cons_car_word locals))
                                        (key (nl_cons_car_word pair)))
-                                  (if (and (= (sexp-tag key) (sexp-tag buffer))
-                                           (= (nl_word_payload key) (ptr-read-u64 buffer 8)))
+                                  (if (and (= (nl_val_tag key) (nl_val_tag buffer))
+                                           (= (nl_word_payload key) (nl_word_payload buffer)))
                                       (seq (ptr-write-u64 address 0 (nl_cons_cdr_ptr pair))
                                            (setq found 1))
                                     (setq locals (nl_cons_cdr_ptr locals))))) 0)
-                          (dealloc-bytes buffer 32 8)) 0)) 0)
+                          0) 0)) 0)
               0)
           status)))
 
     ;; Doc 215 word ABI: the value WORD, 2 when NAME is not found (the
     ;; legacy rc 1 without a stash), or 0 with the signal stashed.
-    ;; A plain global (no alias, no buffer-local slot) answers its slot WORD
-    ;; with no box; only the alias / buffer-local path runs the status body
-    ;; against a private box.
+    ;; Alias and buffer-local resolution return borrowed names. The terminal
+    ;; frame cell or mirror slot supplies the result WORD directly.
     (defun nelisp_env_lkv_mirror_with_frames_w
         (mirror-ptr frames-ptr name-ptr _pad frame-mode _pad1 _pad2 _pad3)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
@@ -201,11 +200,23 @@
                    (if (> (record-slot-count entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
               (nl_record_slot_word entry 0)
-            (let* ((out-ptr (alloc-bytes 32 8)))
-              (nl_abi_status_to_word
-               (nelisp_env_lkv_mirror_with_frames_rc
-                mirror-ptr frames-ptr name-ptr out-ptr frame-mode 0 0 0)
-               out-ptr))))))
+            (let* ((address (alloc-bytes 8 8))
+                   (status (nelisp_env_variable_canonicalize
+                            mirror-ptr frames-ptr entry name-ptr address 0)))
+              (if (= status 0)
+                  (let* ((canonical (ptr-read-u64 address 0))
+                         (cell (if (= frames-ptr 0) 0
+                                 (if (= frame-mode 1)
+                                     (extern-call nelisp_frame_stack_find_kind
+                                                  frames-ptr canonical 1 0)
+                                   (extern-call nelisp_frame_stack_find
+                                                frames-ptr canonical)))))
+                    (if (= cell 0)
+                        (let ((terminal (extern-call nelisp_mirror_lookup_entry
+                                                     mirror-ptr canonical)))
+                          (if (= terminal 0) 2 (nl_record_slot_word terminal 0)))
+                      (extern-call nl_cell_get_value_w cell 0)))
+                (nl_abi_miss status 0)))))))
 
     ;; (rc, OUT) form: the status body writes the caller's OUT directly
     ;; (rc 1 on a miss or a stashed signal, as before).

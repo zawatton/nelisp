@@ -95,6 +95,12 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # Mean total Ir: boot 29,062,019,454.25 -> 28,190,659,384.75 (-2.998%, GC 6/6),
 # regex 95,741,355,967.25 -> 93,052,695,484.5 (-2.808%, GC 17/16), files
 # 39,497,825,152.75 -> 38,551,488,098.5 (-2.396%, GC 8/8), output identical.
+# Round 3 environment producers: census 1495; S6.2 75 = 52 direct + 17 reverse
+# + 6 inline. Dynamic lookup retains miss 2; alias/redirect terminal values
+# stay WORDs. Default/alias writes preserve roots and callback ordering.
+# Mean total Ir: boot 29,062,019,454.25 -> 28,218,344,162.25 (-2.903%, GC 6/6),
+# regex 95,741,355,967.25 -> 93,068,131,901.5 (-2.792%, GC 17/16), files
+# 39,497,825,152.75 -> 38,242,027,830.75 (-3.179%, GC 8/8), identical outputs.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).

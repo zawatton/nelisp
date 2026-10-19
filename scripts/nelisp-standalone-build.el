@@ -21437,15 +21437,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= table 0) 0
           (if (= (nl_ht_find_in table name) 0) 0 1))))
     (defun bf_declare_local_value_w (env name _pad)
-      (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16))
-          (let* ((rc (nelisp_frame_local_declare (+ env 32) name)))
-            (seq (wf_dirty)
-                 (if (= rc 0) (nl_val_store_word name) (nl_abi_fail rc 0))))
-        (if (or (= (sexp-tag name) 0) (= (sexp-tag name) 1))
-            (nl_val_store_word name)
-          (nl_abi_fail (bf_wrong_type_symbolp name) 0))))
+  ;; NAME comes directly from the argument list as a canonical WORD.
+  (let* ((rc (bf_declare_local_status env name)))
+    (if (= rc 0) name (nl_abi_fail rc 0))))
+    (defun bf_declare_local_status (env name)
+  (if (or (= (nl_val_tag name) 4) (= (nl_val_tag name) 16))
+      (let* ((rc (nelisp_frame_local_declare (+ env 32) name)))
+        (seq (wf_dirty) rc))
+    (if (or (= (nl_val_tag name) 0) (= (nl_val_tag name) 1)) 0
+      (bf_wrong_type_symbolp name))))
     (defun bf_declare_local_value (env name out)
-      (nl_abi_word_to_rc (bf_declare_local_value_w env name 0) out))
+  (let* ((rc (bf_declare_local_status env name)))
+    (if (= rc 0) (seq (wf_copy32 out name) 0) rc)))
     (defun bf_mark_declared_special (mirror frames name)
       ;; Called only when installing a new local cell.  Captured lexical
       ;; cells are installed separately and retain their original kind.
@@ -21489,26 +21492,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_mark_binding_result (rc mirror frames name)
       (if (= rc 1) (bf_mark_declared_special mirror frames name) rc))
     (defun bf_dynamic_lookup (env name out)
-      (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name))
-             (local-p (if (= entry 0) 0
-                        (if (> (record-slot-count entry) 5)
-                            (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
-             (cell (if (= local-p 1) 0
-                     (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
-        (nl_env_lookup_val_done
-         (if (= cell 0)
-             (nelisp_env_lkv_mirror_with_frames
-              (+ env 0) (+ env 32) name out 1 0 0 0)
-           (nl_cell_get_value cell out))
-         env out 0)))
-    ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
-    ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
-    ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `bf_dynamic_lookup'.
+  (nl_abi_lookup_to_rc (bf_dynamic_lookup_w env name 0) out))
+    ;; Doc 215: preserve a plain lookup miss as WORD 2 without a signal.
     (defun bf_dynamic_lookup_w (env name _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (bf_dynamic_lookup env name out) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  ;; 2 is an unbound miss; 0 preserves an existing nonlocal exit.
+  (let* ((entry (nelisp_mirror_lookup_entry env name))
+         (local-p (if (= entry 0) 0
+                    (if (> (record-slot-count entry) 5)
+                        (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
+         (cell (if (= local-p 1) 0
+                 (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
+    (nl_env_lookup_val_done_w
+      (if (= cell 0)
+          (nelisp_env_lkv_mirror_with_frames_w env (+ env 32) name 0 1 0 0 0)
+        (nl_cell_get_value_w cell 0)) env 0 0)))
     (defun bf_boundp (args env out)
       (nl_abi_word_to_rc (bf_boundp_w args env 0) out))
     (defun bf_boundp_w (args env _pad)
@@ -21929,19 +21926,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (+ env 0) (+ env 32) sym val 0 (+ env 64) 1 0)
                  (seq (cell-set-value cell val) 0))))))
     (defun bf_set_declared_default_w (env sym val _pad)
-      (let* ((scratch (alloc-bytes 32 8))
-             (rc (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
-                     (nl_n3_declared_default_raw env sym val scratch)
-                   (nl_n3_default_write env sym val scratch))))
-        (if (= rc 0) (nl_val_store_word scratch) (nl_abi_fail rc 0))))
+  (if (= (logand (ptr-read-u64 env 112) 1048576) 0)
+      (nl_n3_declared_default_raw_w env sym val 0)
+    (nl_n3_default_write_w env sym val 0)))
     (defun bf_set_declared_default (env sym val out)
       (nl_abi_word_to_rc (bf_set_declared_default_w env sym val 0) out))
+    (defun nl_n3_declared_default_raw_w (env sym val _pad)
+  ;; Successful callers have validated a heap symbol; preserve its identity.
+  (if (= (seq (wf_dirty)
+              (nelisp_env_setv_mirror_lazy env sym val (+ env 64))) 0)
+      (nl_word_clone sym) 0))
     (defun nl_n3_declared_default_raw (env sym val out)
-      ;; Declarations initialize the global default even when the same name
-      ;; has an active lexical or dynamic local binding.
-      (let* ((rc (seq (wf_dirty)
-                      (nelisp_env_setv_mirror_lazy (+ env 0) sym val (+ env 64)))))
-        (if (= rc 0) (seq (nl_sexp_clone_into sym out) 0) rc)))
+  (nl_abi_word_to_rc (nl_n3_declared_default_raw_w env sym val 0) out))
     (defun bf_defvar_init_mode (env sym scratch)
       ;; A void current dynamic binding takes precedence over the global
       ;; default.  Otherwise only an uninitialized global default is filled.
@@ -21952,7 +21948,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_set_defvar_value_w (env sym val _pad mode)
       (if (= mode 1) (bf_set_declared_default_w env sym val 0)
         (let* ((rc (bf_set_dynamic_value env sym val)))
-          (if (= rc 0) (nl_val_store_word sym) (nl_abi_fail rc 0)))))
+          (if (= rc 0) sym (nl_abi_fail rc 0)))))
     (defun bf_set_defvar_value (env sym val out mode)
       (nl_abi_word_to_rc (bf_set_defvar_value_w env sym val 0 mode) out))
     (defun bf_defconst_install_w (env sym val _pad)
@@ -21961,7 +21957,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (or (= (sexp-tag sym) 4) (= (sexp-tag sym) 16))
           (if (= (bf_keyword_raw sym) 1)
               (if (= (bf_eq2 sym val) 1)
-                  (nl_val_store_word sym)
+                  sym
                 (nl_abi_fail (bf_setting_constant sym) 0))
             (let* ((rc (bf_declare_special env sym)))
               (if (= rc 0) (bf_set_defvar_value_w env sym val 0 2) (nl_abi_fail rc 0))))
@@ -22000,9 +21996,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (result
                         (if (= alias-rc 3)
                             (let* ((rc (bf_set_dynamic_value env sym (+ env 64))))
-                              (if (= rc 0) (nl_val_store_word sym) (nl_abi_fail rc 0)))
+                              (if (= rc 0) sym (nl_abi_fail rc 0)))
                           (if (= alias-rc 0)
-                              (nl_val_store_word sym)
+                              sym
                             (if (= alias-rc 4)
                                 (nl_abi_fail (bf_setting_constant sym) 0)
                               (if (= alias-rc 5)
@@ -22025,15 +22021,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; fail the same way.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_symbol_value_w (args env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      (let* ((sym (wf_arg_ptr args 0))
-             ;; Share the unbound-marker check, but exclude lexical cells.
-             (rc (bf_dynamic_lookup env sym out)))
-        (if (= rc 0) 0 (nl_stash_void_variable env sym)))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (let* ((sym (wf_arg_ptr args 0)) (w (bf_dynamic_lookup_w env sym 0)))
+    (if (or (= w 0) (= w 2)) (seq (nl_stash_void_variable env sym) 0) w)))
     ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
     ;; reader, and evaluate it in the caller's ENV.  This intentionally mirrors
@@ -24189,7 +24178,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "symbol-function") :word . (bf_symbol_function_w args env 0))
     ((:lit "boundp")   :word . (bf_boundp_w args env 0))
     ((:lit "nelisp--declare-local-special")
-     :word . (bf_declare_local_value_w env (wf_arg_ptr args 0) 0))
+     :word . (bf_declare_local_value_w env (wf_arg_word args 0) 0))
     ((:lit "featurep") :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) 1
                                  (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 1
                                    (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 1) 1 0)))
@@ -28106,32 +28095,23 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (nl_sp_eq_lit name_ptr 11 7809648991760967012 7561577)))
 
 (defconst nelisp-standalone--sf-defvaralias
-  '((defun nl_sf_defvaralias_apply (alias-sym-ptr base-sym-ptr env out)
-      (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
-          (nl_n3_defvaralias_raw alias-sym-ptr base-sym-ptr env out)
-        (nl_n3_alias_write alias-sym-ptr base-sym-ptr env out)))
-    (defun nl_n3_defvaralias_raw (alias-sym-ptr base-sym-ptr env out)
-      ;; ALIAS-SYM-PTR / BASE-SYM-PTR are already-evaluated Sexp
-      ;; pointers (normally Sexp::Symbol from a `(quote SYM)' arg).
-      ;; mirror-ptr / unbound-ptr: same `env+0' / `env+64' layout
-      ;; `nl_env_set_value' (evalport-env-leaves-bind.o) already relies
-      ;; on for every `setq'.
-      (let* ((mirror-ptr (+ env 0))
-             (unbound-ptr (+ env 64)))
-        (if (and (or (= (sexp-tag alias-sym-ptr) 4)
+  '((defun nl_sf_defvaralias_apply_w (alias base env _pad)
+  (if (= (logand (ptr-read-u64 env 112) 1048576) 0)
+      (nl_n3_defvaralias_raw_w alias base env 0)
+    (nl_n3_alias_write_w alias base env 0)))
+    (defun nl_sf_defvaralias_apply (alias base env out)
+  (nl_abi_word_to_rc (nl_sf_defvaralias_apply_w alias base env 0) out))
+    (defun nl_n3_defvaralias_raw_w (alias-sym-ptr base-sym-ptr env _pad) (let* ((mirror-ptr (+ env 0))
+             (unbound-ptr (+ env 64)))  (if (and (or (= (sexp-tag alias-sym-ptr) 4)
                      (= (sexp-tag alias-sym-ptr) 5)
                      (= (sexp-tag alias-sym-ptr) 14))
                  (or (= (sexp-tag base-sym-ptr) 4)
                      (= (sexp-tag base-sym-ptr) 5)
-                     (= (sexp-tag base-sym-ptr) 14)))
-            (if (= (extern-call nl_thread_mirror_mutation_guard
+                     (= (sexp-tag base-sym-ptr) 14))) (if (= (extern-call nl_thread_mirror_mutation_guard
                                 mirror-ptr alias-sym-ptr)
-                   1)
-                1
-              (let* ((base-entry-hit
+                   1) 0 (let* ((base-entry-hit
                     (extern-call nelisp_mirror_lookup_entry mirror-ptr base-sym-ptr))
-                   (scratch (alloc-bytes 32 8)))
-              (let* ((base-entry
+                   (scratch (alloc-bytes 32 8)))  (let* ((base-entry
                       (if (= base-entry-hit 0)
                           ;; BASE-VARIABLE has no entry yet: auto-vivify one
                           ;; with value=function=unbound (same default a
@@ -28147,37 +28127,18 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                            (extern-call nelisp_mirror_set_value_or_insert
                                         mirror-ptr base-sym-ptr scratch 0)
                            (extern-call nelisp_mirror_lookup_entry mirror-ptr base-sym-ptr))
-                        base-entry-hit)))
-                (let* ((old-alias-entry
-                        (extern-call nelisp_mirror_lookup_entry mirror-ptr alias-sym-ptr)))
-                  (seq
-                   ;; Migration (Emacs's documented defvaralias behaviour):
-                   ;; if ALIAS already had its OWN bound value and BASE is
-                   ;; still unbound (freshly vivified above, or a pre-
-                   ;; existing-but-never-set global), ALIAS's old value
-                   ;; becomes BASE's initial value.  No-op in every other
-                   ;; shape (nothing to migrate, or BASE already has a
-                   ;; value of its own that must not be clobbered).
-                   (if (= old-alias-entry 0)
+                        base-entry-hit)))  (let* ((old-alias-entry
+                        (extern-call nelisp_mirror_lookup_entry mirror-ptr alias-sym-ptr)))  (seq (if (= old-alias-entry 0)
                        0
                      (if (= (symbol-eq (record-slot-ref-ptr old-alias-entry 0) unbound-ptr) 1)
                          0
                        (if (= (symbol-eq (record-slot-ref-ptr base-entry 0) unbound-ptr) 1)
                            (record-slot-set base-entry 0
                                             (nl_record_slot_word old-alias-entry 0))
-                         0)))
-                   ;; Install BASE's entry object under ALIAS's name too --
-                   ;; a bucket-prepend shadow, found first by every future
-                   ;; lookup of ALIAS (head-first walk).  ALIAS's own prior
-                   ;; entry (if any) is left in place, unreachable but
-                   ;; harmless, matching this substrate's append-only
-                   ;; mirror discipline everywhere else.
-                   (extern-call nl_env_build_scratch unbound-ptr unbound-ptr scratch)
-                   (extern-call nelisp_mirror_bucket_prepend
-                                mirror-ptr alias-sym-ptr base-entry scratch)
-                   (nl_sexp_clone_into base-sym-ptr out)
-                   0)))))
-          1)))
+                         0))) (extern-call nl_env_build_scratch unbound-ptr unbound-ptr scratch) (extern-call nelisp_mirror_bucket_prepend
+                                mirror-ptr alias-sym-ptr base-entry scratch) (nl_word_clone base-sym-ptr)))))) 0)))
+    (defun nl_n3_defvaralias_raw (alias-sym-ptr base-sym-ptr env out)
+      (nl_abi_word_to_rc (nl_n3_defvaralias_raw_w alias-sym-ptr base-sym-ptr env 0) out))
     (defun nl_sf_defvaralias (args env out _pad)
       ;; (defvaralias NEW-ALIAS-FORM BASE-VARIABLE-FORM [DOCSTRING-FORM])
       ;; Both NEW-ALIAS-FORM and BASE-VARIABLE-FORM are evaluated
@@ -41229,13 +41190,10 @@ correctly."
 signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 `nl_cc_match_and_bind' can match the handler; the no-error path is unchanged.")
 
-;; CORRECTED closure-capture (Doc 137 M3).  The shipped AOT
-;; `nelisp-cc-evalport-capture-lexical' passes the raw frames-record pointer to
-;; `nl_capture_descend_native', which expects an in-vec ([0]=stack record,
-;; [1]=depth Int, [2]=scratch, [3]=filter list, [4]=filter flag) -- so it misreads the depth and segfaults on every
-;; lambda creation.  (The real Emacs path builds the in-vec in an elisp JIT
-;; wrapper; the AOT port never did.)  This override reads the real depth from
-;; frames.slot1 and builds the proper in-vec; depth 0 (top level) -> nil capture.
+;; Standalone capture (Doc 137 M3, Doc 215): read the real depth from the
+;; frame stack and carry filter/capture lists as WORD accumulators. The host
+;; bridge's nl_capture_descend_native keeps its legacy in-vec/OUT contract;
+;; standalone capture walks the backing frames directly. Depth 0 yields nil.
 ;; Replaces the sf-capture-lexical.o unit in the reader build.
 (defconst nelisp-standalone--reader-capture-source
   '(seq
@@ -41694,29 +41652,28 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (setq rc (nl_n3_notify env sym val operation))
          (if (= rc 0) (setq rc (nl_n3_set_dynamic_raw env sym val)) 0)
          (nl_cons_root_finish env mark rc))))
+    (defun nl_n3_alias_write_w (name base env _pad)
+  (let* ((copies (alloc-bytes 64 8))
+         (mark (seq (nl_sexp_clone_into name copies)
+                    (nl_sexp_clone_into base (+ copies 32)) (nl_root_mark env)))
+         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
+    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+         (if (= (nl_n3_notify env sym val 5) 0)
+             (setq w (nl_n3_defvaralias_raw_w sym val env 0)) 0)
+         (nl_root_release env mark) w)))
     (defun nl_n3_alias_write (name base env out)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into base (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0))
-        (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (setq rc (nl_n3_notify env sym val 5))
-         (if (= rc 0) (setq rc (nl_n3_defvaralias_raw sym val env out)) 0)
-         (nl_cons_root_finish env mark rc))))
+  (nl_abi_word_to_rc (nl_n3_alias_write_w name base env 0) out))
+    (defun nl_n3_default_write_w (env name value _pad)
+  (let* ((copies (alloc-bytes 64 8))
+         (mark (seq (nl_sexp_clone_into name copies)
+                    (nl_sexp_clone_into value (+ copies 32)) (nl_root_mark env)))
+         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
+    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+         (if (= (nl_n3_notify env sym val 1) 0)
+             (setq w (nl_n3_declared_default_raw_w env sym val 0)) 0)
+         (nl_root_release env mark) w)))
     (defun nl_n3_default_write (env name value out)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env)) (val (nl_root_reserve env)))
-        (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (nl_cons_root_finish env mark
-          (if (= (nl_n3_notify env sym val 1) 0)
-              (nl_n3_declared_default_raw env sym val out) 1)))))
+  (nl_abi_word_to_rc (nl_n3_default_write_w env name value 0) out))
     (defun nl_n3_setq (env name value)
       (let* ((copies (alloc-bytes 64 8))
              (mark (seq (nl_sexp_clone_into name copies)

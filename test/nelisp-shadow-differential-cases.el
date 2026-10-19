@@ -2176,6 +2176,15 @@
        (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
                             (prin1-to-string tree))))))
 
+;; Nil and integer defaults survive declaration/alias result transport.
+(progn
+  (makunbound 'par-word-default)
+  (list (defvar par-word-default nil) par-word-default
+        (defvaralias 'par-word-alias 'par-word-default)
+        (set 'par-word-default -7)
+        (symbol-value 'par-word-alias)
+        (makunbound 'par-word-default)
+        (boundp 'par-word-default)))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

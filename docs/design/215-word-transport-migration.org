@@ -313,6 +313,24 @@ direct cell probe checks both evaluation and lookup (16 cases), fails against
 the previous binary, and passes after the fix. A capture mutation control
 that discards writes fails with the shared-cell assertion.
 
+Environment lookup now returns the terminal frame-cell or mirror-slot WORD
+through aliases and buffer-local redirects, with no private result OUT.
+The redirect's current-buffer lookup also stays a WORD. Dynamic lookup keeps
+2 for an unbound miss without stashing a generic error; its legacy entry
+maps that status back to rc 1. Default and alias writers preserve callback
+roots and return their validated heap symbol directly. Local declarations
+share a raw status operation: the WORD builtin returns its original argument,
+while the legacy special form copies its original view.
+
+The environment check covers 102 default/constant/alias identities, nil and
+integer values, voiding, reinitialization, GC and missing variables. It agrees
+with the baseline and GNU Emacs. A mutant that skips voiding fails at the
+bound-state assertion; capture, cleanup and direct cell checks remain green.
+The separate callback check loads the genuine Lisp watcher provider and
+checks default-write/void/reinitialize ordering, alias notification, and
+callback errors. Baseline, candidate and GNU agree; discarding callback events
+must fail its sequence assertion.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
