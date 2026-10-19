@@ -2935,8 +2935,10 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; rc (2 = not handled) + private OUT box -> WORD, 2 passed through.
     (defun nl_abi_rc2_to_word (rc out)
       (if (= rc 2) 2 (nl_abi_rc_to_word rc out)))
-    (defun nl_abi_status_fail (rc out)
-      (if (= rc 0) (nl_val_store_word out) (nl_abi_fail rc 0)))
+    (defun nl_abi_status_fail (rc object)
+      ;; Constructor status: the sole caller builds a Cons object in OBJECT.
+      ;; It is already a heap WORD; never pass an immediate storage view.
+      (if (= rc 0) object (nl_abi_fail rc 0)))
     ;; A lookup's legacy (status, private OUT box) as its word result.
     (defun nl_abi_status_to_word (rc out)
       (if (= rc 0) (nl_val_store_word out) (nl_abi_miss rc 0)))
@@ -27516,13 +27518,14 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
     ;; whose mirror / unbound-marker live at ENV+0 / ENV+64 as in
     ;; `nl_eval_inner_cons').  A found cell is a refcount-sharing copy, so
     ;; its payload word is the object's identity.
-    (defun nl_sf_definer_lookup (lo hi len env out _pad)
-      (let* ((nbuf (alloc-bytes 16 1)) (sym (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 nbuf 0 lo)
-         (ptr-write-u64 (+ nbuf 8) 0 hi)
-         (nl_alloc_symbol nbuf len sym)
-         (nelisp_env_lookup_function (+ env 0) (+ env 64) sym out))))
+    (defun nl_sf_definer_lookup_w (lo hi len env _pad _pad1)
+  (let* ((bytes (alloc-bytes 16 1)) (symbol-view (alloc-bytes 32 8)))
+    (seq (ptr-write-u64 bytes 0 lo) (ptr-write-u64 bytes 8 hi)
+         (nl_alloc_symbol bytes len symbol-view)
+         (nelisp_env_lookup_function_w (+ env 0) (+ env 64) symbol-view 0))))
+
+(defun nl_sf_definer_lookup (lo hi len env out _pad)
+  (nl_abi_lookup_to_rc (nl_sf_definer_lookup_w lo hi len env 0 0) out))
     ;; KIND 0 = `defun' (marker `nelisp--fd-defun'), 1 = `defmacro' (marker
     ;; `nelisp--fd-macro').  Returns 0 for the native fast path, 2 to defer.
     (defun nl_sf_definer_route (kind body_ptr env _pad)

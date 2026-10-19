@@ -437,6 +437,20 @@ completed =round3-callback3= builds are the accepted checkpoint; the first
 build was correctly rejected after an in-flight source change, and callback2
 was superseded by the precise-root correction.
 
+The constructor status gate's only caller builds a Cons object on every
+successful lambda path. It now returns that existing heap object directly,
+without decoding its header. A source caller guard rejects the old decoder;
+eight native checks confirm WORD and legacy constructors produce Cons
+objects. Definer lookup returns the function lookup WORD directly. The legacy
+value-lookup finish returns a status and leaves its already-written OUT
+untouched; its redundant round trip had changed signed 64-bit extrema.
+The 14-case byte-preservation probe passes on the golden baseline, fails on
+the preceding lane at the maximum integer's high byte, and passes after the
+fix. Constructor38 agrees with baseline/GNU; capture/environment/callback,
+batteries/Anvil/arity, static42 and parked-worker3 pass. TOTAL1403; S6.2 27
+(14 direct + 9 reverse + 4 inline). Boot/regex/files means are
+-2.790%/-2.785%/-3.196%, GC6/6,17/16,8/8; every layout output agrees.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

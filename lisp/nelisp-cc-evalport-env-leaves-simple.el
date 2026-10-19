@@ -60,8 +60,9 @@
     ;; across a native call.  Preserve all other lookup failures unchanged.
     ;; Legacy (rc, OUT already holding the value) form of the check above.
     (defun nl_env_lookup_val_done (rc env out _pad)
-      (nl_abi_lookup_to_rc
-       (nl_env_lookup_val_done_w (nl_abi_status_to_word rc out) env 0 0) out)))
+      ;; OUT already contains the physical value. Check the unbound marker
+      ;; in that view and leave all 32 bytes intact; there is no WORD result.
+      (if (= rc 0) (if (= (symbol-eq out (+ env 64)) 1) 1 0) 1)))
   "Doc 135 Stage 135.C AOT source for simple env-leaf ctx-accessors.
 
 One public entry and a lookup-result helper in a `(seq DEFUN ...)' manifest.
