@@ -1,0 +1,112 @@
+;;; standalone-abi-rooted-frame-word-check.el --- raw-v2 result lifetime -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+(defvar abi-frame-count 0)
+
+(defun abi-frame-entry (status)
+  "Return a raw-v2 entry that reports STATUS without changing its roots."
+  (let ((code (syscall-direct 9 0 4096 7 34 -1 0)))
+    ;; x86-64: mov eax, STATUS; ret. The descriptor supplies rooted values.
+    (when (< code 4096) (error "raw-v2 test mmap failed"))
+    (ptr-write-u64 code 0 (+ 184 (lsh status 8) (lsh 195 40)))
+    code))
+
+(defun abi-frame-function (minimum maximum inits constants status &optional counter)
+  (let ((descriptor (vector (abi-frame-entry status) minimum maximum 1 2
+                            inits constants -1 0)))
+    (when counter
+      (setq descriptor (vconcat descriptor (vector counter))))
+    (nelisp--native-subr-create descriptor 'abi-frame-probe 0 nil)))
+
+(let* ((native (fboundp 'nelisp--native-subr-create))
+       (identity (if native (abi-frame-function 1 1 [] [] 513) #'identity))
+       (optional (if native (abi-frame-function 0 1 [] [] 513)
+                   (lambda (&optional x) x)))
+       (rest (if native (abi-frame-function 0 -1 [] [] 513)
+               (lambda (&rest xs) xs)))
+       (checked 0))
+  (dolist (value (list nil t 0 -7 most-positive-fixnum most-negative-fixnum
+                      (1+ most-positive-fixnum) 1.25 "rooted"
+                      '(a . b) [nil t] (make-symbol "rooted")))
+    (let ((result (funcall identity value)))
+      ;; Reuse the released root frame, then collect before inspecting RESULT.
+      (funcall identity 'overwrite)
+      (garbage-collect)
+      (unless (eq result value) (error "raw-v2 result lost identity: %S" value))
+      (unless (eq (apply identity (list value)) value)
+        (error "raw-v2 APPLY result changed: %S" value))
+      (unless (equal (if result 'yes 'no) (if value 'yes 'no))
+        (error "raw-v2 result truth value changed"))
+      (setq checked (+ checked 3))))
+  (unless (null (funcall optional)) (error "raw-v2 omitted optional changed"))
+  (setq checked (+ checked 1))
+  ;; GNU Emacs 31.1 byte-compile of (lambda (fn x) (funcall fn x)).
+  (let ((compiled (make-byte-code 514 (unibyte-string 1 1 33 135) [] 4)))
+    (unless (and (null (funcall compiled identity nil))
+                 (= (funcall compiled identity 17) 17))
+      (error "raw-v2 bytecode call changed"))
+    (setq checked (+ checked 2)))
+  (let* ((tail (list 'a 'b)) (result (apply rest 17 tail)))
+    (unless (equal result '(17 a b)) (error "raw-v2 rest splice changed"))
+    (setcdr result nil)
+    (unless (equal tail '(a b)) (error "raw-v2 rest aliased APPLY tail"))
+    (setq checked (+ checked 2)))
+  (dolist (value (list nil t 29 "constant" '(kept . alive) [nil 17]))
+    (dolist (mode '(0 1))
+      (let* ((fn (if native
+                     (abi-frame-function 0 1
+                                         (vector (vector 0 mode (if (= mode 1) 0 value)))
+                                         (vector value) 512)
+                   (lambda (&optional _x) value)))
+             (result (funcall fn)))
+        (funcall identity 'overwrite)
+        (garbage-collect)
+        (unless (eq result value) (error "raw-v2 constant identity changed"))
+        (setq checked (+ checked 1)))))
+  (let ((fn (if native
+                (abi-frame-function 0 1 (vector (vector 0 2 [nil 17])) [] 512)
+              (lambda (&optional _x) (vector nil 17)))))
+    (let ((first (funcall fn)) (second (funcall fn)))
+      (unless (and (equal first [nil 17]) (equal second [nil 17])
+                   (not (eq first second)))
+        (error "raw-v2 fresh vector initialization changed"))
+      (setq checked (+ checked 1))))
+  (dolist (args '(() (1 2)))
+    (unless (eq (condition-case err (progn (apply identity args) nil)
+                  (error (car err)))
+                'wrong-number-of-arguments)
+      (error "raw-v2 arity signal changed"))
+    (setq checked (+ checked 1)))
+  (dolist (case '((257 wrong-type-argument) (0 invalid-function)))
+    (let ((fn (if native (abi-frame-function 1 1 [] [] (car case))
+                (if (= (car case) 257)
+                    (lambda (x) (car x))
+                  (lambda (_x) (funcall 17))))))
+      (unless (eq (condition-case err (progn (funcall fn 17) nil)
+                    (error (car err)))
+                  (nth 1 case))
+        (error "raw-v2 status signal changed: %S" case))
+      (setq checked (+ checked 1))))
+  (let ((fn (if native
+                (abi-frame-function
+                 0 1 [] [] 513
+                 (vector 'abi-frame-count
+                         (lambda ()
+                           (garbage-collect)
+                           (setq abi-frame-count (1+ abi-frame-count)))))
+              (lambda (&optional x)
+                (setq abi-frame-count (1+ abi-frame-count)) x))))
+    (dolist (start (list 0 1.5 most-positive-fixnum))
+      (setq abi-frame-count start)
+      (unless (and (eq (funcall fn 'counted) 'counted)
+                   (= abi-frame-count (1+ start)))
+        (error "raw-v2 counter result changed"))
+      (setq checked (+ checked 1)))
+    (setq abi-frame-count 'bad-counter)
+    (unless (eq (condition-case err (progn (funcall fn) nil)
+                  (error (car err)))
+                'wrong-type-argument)
+      (error "raw-v2 counter signal changed"))
+    (setq checked (+ checked 1)))
+  (princ (format "ABI-ROOTED-FRAME checked=%d PASS\n" checked))
+  nil)

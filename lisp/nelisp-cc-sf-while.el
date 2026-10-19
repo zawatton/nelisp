@@ -86,7 +86,7 @@
 ;;
 ;; ABI:
 ;;   nl_cons_car_ptr / nl_cons_cdr_ptr: *const Sexp -> i64
-;;   nl_eval_is_truthy: (*const Sexp, *mut c_void) -> i64   (1=truthy/0=nil/-1=err)
+;;   nl_eval_is_truthy: (WORD, *mut c_void) -> i64   (1=truthy/0=nil/-1=err)
 ;;   nelisp_eval_call:  (*const Sexp, *mut c_void, *mut Sexp) -> i64  (0=ok/1=err)
 
 ;;; Code:
@@ -116,7 +116,7 @@
     (defun nl_sf_while_forms (body env _pad _pad1)
       (if (= (nl_val_tag body) 0)
           0
-        (nl_sf_while_form (extern-call nl_cons_car_ptr body) body env 0)))
+        (nl_sf_while_form (extern-call nl_cons_car_word body) body env 0)))
 
     (defun nl_sf_while_cond (truthy args env _pad)
       (if (= truthy 1)
@@ -127,7 +127,7 @@
       (nl_sf_while_cond (extern-call nl_eval_is_truthy test env) args env 0))
 
     (defun nl_sf_while_iter (args env _pad _pad1)
-      (nl_sf_while_test (extern-call nl_cons_car_ptr args) args env 0))
+      (nl_sf_while_test (extern-call nl_cons_car_word args) args env 0))
 
     ;; Doc 152 §11.41 Stage 4b step 2: the gated mid-form collect at the
     ;; backedge, after a complete iteration (status 0), where per-iteration
