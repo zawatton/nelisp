@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "runtime_source_commit": "b409d8ae654042a746e0600fea5fce75025b9b35",
+  "baseline_source_commit": "10beb8a3c",
+  "layouts": [
+    0,
+    700,
+    1400,
+    2100
+  ],
+  "gc_method": "Callgrind nonrecursive entries into nl_gc_sweep_merge_chunks; recursive edges excluded; no explicit GC",
+  "thresholds": {
+    "maximum_mean_ir_ratio": 1.0,
+    "minimum_regex24000_gc_per_binary_per_layout": 10
+  },
+  "elapsed_seconds": 1296.738,
+  "measurement": {
+    "path": "target/abi-ir/ir-21adodvd/measurement.json",
+    "sha256": "5a04c4241280a323a7a3348449670ea9007ce2ec706b39c82747e74aa28dfd8a"
+  },
+  "binary_builds": {
+    "runtime_source_commit": "b409d8ae6",
+    "build_seconds": {
+      "dynamic": 181,
+      "static": 292
+    },
+    "artifacts": {
+      "dynamic": {
+        "target/abi-p2/merged-dyn/nelisp-dynamic": "b3c9d406ced3ac3977921c960a874f6a03085aa04b7ce9effe0eb2d1778d2b15",
+        "target/abi-p2/merged-dyn/nelisp-dynamic.cold": "2ff071e3889a6b68777297af9a6025ecf2b5053aafffbe05ca386dd4f7a82416",
+        "target/abi-p2/merged-dyn/nelisp-dynamic.native-startup.el": "34a01ea6f1f7f300c6589ffded1fc01be26c97a50aeede531f59c0a4b38e3b78"
+      },
+      "static": {
+        "target/abi-p2/merged-static/nelisp-static": "2389421c1ceb018d16d92d6d3bd1e7dceddc75b2f7376f27cb5fe740c7d9d732",
+        "target/abi-p2/merged-static/nelisp-static.cold": "494367b56c73943b5b4e137d856724d5a805842d33d31c8e6359c636cfbe12cd",
+        "target/abi-p2/merged-static/nelisp-static.native-startup.el": "b077537d4a170e592f7401d64ff839dc04d3ececb5bfaa7715d5eb864e9106ad"
+      },
+      "baseline": {
+        "target/abi-final/baseline/nelisp-dyn": "ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a",
+        "target/abi-final/baseline/nelisp-dyn.cold": "6b29b679961be62e1a41489233bf45d6caca2abb814e40d8d407a0389697509e",
+        "target/abi-final/baseline/nelisp-dyn.native-startup.el": "ce3bd70b5a112518ed6a5b42d906e16d15ff6ebe7fe62add1b68dedc376c5633"
+      },
+      "ABI_DUMP": {
+        "path": "target/abi-p2/merged-dyn/dump.jsonl",
+        "sha256": "500c84fa554f0874c93933ed7ef4a9d74c948ec086a0c83264616fbcf4175725"
+      },
+      "ABI_CENSUS": {
+        "path": "target/abi-p2/merged-dyn/census.tsv",
+        "sha256": "4f46676d09169cd98bcc6cdaca53f151ed1cdf0c7485d0b28bea4b228b334274"
+      }
+    }
+  },
+  "workloads": {
+    "boot": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 1215253409,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 627839208,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 1215364459,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 627952748,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 1215472075,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 628057139,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 1215577973,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 628163659,
+            "gc_cycles": 0
+          }
+        }
+      ],
+      "base_mean_ir": 1215416979.0,
+      "candidate_mean_ir": 628003188.5,
+      "change_percent": -48.3302274568603,
+      "identical_outputs": true
+    },
+    "regex6000": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 69804519489,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 67149765988,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 69804755146,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 67148486632,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 69805140567,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 67150230835,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 69804966305,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 67150060821,
+            "gc_cycles": 5
+          }
+        }
+      ],
+      "base_mean_ir": 69804845376.75,
+      "candidate_mean_ir": 67149636069.0,
+      "change_percent": -3.8037607467208523,
+      "identical_outputs": true
+    },
+    "regex24000": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 255222211946,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 255035003426,
+            "gc_cycles": 26
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 255221507280,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 255045473894,
+            "gc_cycles": 26
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 255222604750,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 255042195950,
+            "gc_cycles": 26
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 255222665112,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 255045446133,
+            "gc_cycles": 26
+          }
+        }
+      ],
+      "base_mean_ir": 255222247272.0,
+      "candidate_mean_ir": 255042029850.75,
+      "change_percent": -0.07061195611914872,
+      "identical_outputs": true
+    }
+  },
+  "focused_checks": {
+    "ir_tests": {
+      "path": "target/abi-final/abi-ir-test.log",
+      "sha256": "80e922c10d7781a654e338842d0deb3767e640e739adb55d5a2e56d4828b5557"
+    },
+    "vm_before": {
+      "path": "target/abi-final/vm-before.log",
+      "sha256": "2f9040f744877097d2b391bf50b975ec82bab9b23dec07a45d1385945884e855"
+    },
+    "vm_candidate": {
+      "path": "target/abi-final/vm-candidate.log",
+      "sha256": "a16ded3f945ad649771e4ca8febffe08106ea5d595b756db51a22a02900793f2"
+    },
+    "gc_layout_negative_controls": {
+      "path": "target/abi-final/counter-negative-controls.log",
+      "sha256": "66ae548e6d9199038ab8d6a785e3c75c4b0a20b81c5f217e212169cb81895880"
+    },
+    "cli_negative_control": {
+      "path": "target/abi-final/profile-command-negative-control.log",
+      "sha256": "3275c78d0bdc744b5c9ea9fa42dbf6044ff8b7cfed099dc95fa1bc9d87be9503"
+    }
+  },
+  "normal_check": {
+    "normal-check-core.json": {
+      "commit": "45d970c82",
+      "command": "timeout 60 tools/ai/nelisp-ai.sh check",
+      "exit": 124,
+      "elapsed_seconds": 60.001641703012865
+    },
+    "normal-check-final.json": {
+      "command": "timeout 60 tools/ai/nelisp-ai.sh check",
+      "exit": 124,
+      "elapsed_seconds": 60.00159984297352
+    },
+    "normal-check-comparison.json": {
+      "reference_log": "target/codex/gate/check.log",
+      "baseline_commit": "45d970c82",
+      "reference_findings": 33,
+      "baseline_findings": 33,
+      "identical_diagnostic_lines": false,
+      "baseline_gate_counts": [
+        "GATE-COUNT checked=1158 findings=33"
+      ],
+      "last_stage": "generated-source-parse",
+      "same_finding_subjects_ignoring_positions_and_absorbed_form_list": true,
+      "diagnostic_differences": "Two nelisp-native-load.el diagnostics have shifted positions; the absorbed-form list has 72 versus 73 forms."
+    },
+    "normal-check-core.log": {
+      "path": "target/abi-final/normal-check-core.log",
+      "sha256": "ede391df20257283bb45117f29d5fc980501cedb1df6ba46c224c8d13101ae35"
+    },
+    "normal-check-final.log": {
+      "path": "target/abi-final/normal-check-final.log",
+      "sha256": "1e618e944684f2fc3153532899634c634e90de23e9c0af34d35b17f76cc452ae"
+    }
+  }
+}

@@ -115,9 +115,14 @@ The fixed =d826844bb= workload now passes: boot mean Ir1,215,539,309.75
 to977,237,406.50 (-19.605%, GC0/0), regex6000 mean69,805,864,448.25
 to67,117,509,973.50 (-3.851%, GC4/4), and regex24000 mean255,221,733,196.75
 to247,827,459,048.25 (-2.897%, GC11/15 in every layout). All outputs agree.
-The complete manifest in =target/abi-ir/ir-728ls676/= is pinned by S6.3's
-evidence hash and verified live; no workload or acceptance cap changed after
-the genuine failure. The additional raw-pressure workload remains unmeasured
+Lane A's complete checkpoint manifest is in =target/abi-ir/ir-728ls676/=;
+no workload or acceptance cap changed after the genuine failure. The final
+integration uses the four-layout natural-pressure method recorded in S6.3
+and =tools/ai/abi-final-evidence.json=. Its1296.738-second run pins all24
+successful jobs and counts nonrecursive Callgrind entries into
+=nl_gc_sweep_merge_chunks=, because sweep itself may be inlined. The final
+mean changes are boot-48.330%, regex6000-3.804%, regex24000-0.071%; the
+long workload collects11/26 times (baseline/candidate) in every layout. The additional raw-pressure workload remains unmeasured
 on this corrected binary.
 S6.4 loads five vendored source files in a fixed order from this checkout,
 then runs a fixed builtin micro-suite.  Each process starts with a fresh

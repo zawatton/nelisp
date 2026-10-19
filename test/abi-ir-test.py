@@ -87,6 +87,34 @@ class ProfileCounterTest(unittest.TestCase):
             "cfn=(3) 0x0000000000002000'2\ncalls=20 0\n"))
 
 
+class ProfileCommandTest(unittest.TestCase):
+    def test_command_records_all_layouts_without_forced_collections(self):
+        def profile(directory, mode, who, binary, layout):
+            stem = directory / f"{mode}-{who}-{layout}"
+            for suffix in ("cg", "err"):
+                stem.with_suffix("." + suffix).write_text("fixture\n")
+            stem.with_suffix(".out").write_text({
+                "boot": "", "regex": "ABI-REGEX 6000\n",
+                "regex-gc": "ABI-REGEX-GC 24000\n"}[mode])
+            return (100 if who == "base" else 99), 10
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(gate, "ROOT", root), \
+                    mock.patch.object(gate.sys, "argv", ["abi-ir.py", "ir", "cand", "base"]), \
+                    mock.patch.object(gate, "identities", return_value={}), \
+                    mock.patch.object(gate, "run_one", side_effect=profile) as jobs, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, gate.main())
+            self.assertEqual(24, jobs.call_count)
+            output, = (root / "target/abi-ir").iterdir()
+            gate.validate_record(output, {})
+            for name, iterations in (("regex.el", 20), ("regex-gc.el", 80)):
+                source = (output / name).read_text()
+                self.assertNotIn("garbage-collect", source)
+                self.assertIn(f"(while (< i {iterations})", source)
+
+
 class RecordedEvidenceTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

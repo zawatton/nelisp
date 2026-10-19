@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS = (0, 700, 1400, 2100)

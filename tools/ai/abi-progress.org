@@ -454,12 +454,13 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # All outputs agree. Every raw profile and successful exit is pinned in the
 # manifest; the repeated-regex regression is resolved without changing its
 # workload, Ir cap or GC floor. Additional raw-pressure result remains unmeasured.
-#+NOTE: 2026-10-20 criteria change. Old: mean boot over four layouts and
-# regex over two layouts (0/2100), 6000 matches with an explicit GC every
-# two iterations and >=10 cycles per sample, Ir <= baseline. New: independent
-# boot, regex6000 and repeated regex24000 mean total-Ir caps over all four
-# layouts (0/700/1400/2100), no explicit GC, and >=10 natural GC cycles in
-# every baseline/candidate regex24000 sample. Files also retains four layouts.
+** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
+#+NOTE: 2026-10-20 criteria change. Old wording: "End to end: mean boot
+# (four layouts) and regex (two layouts, >=10 GCs each) Ir <= baseline";
+# 6000 matches with explicit GC every two iterations. New wording: "End to
+# end: mean boot, regex6000 and repeated regex24000 Ir over four layouts
+# <= baseline (callgrind)"; no explicit GC, and >=10 natural cycles in every
+# baseline/candidate regex24000 sample. Files also retains all four layouts.
 # Reason: forced collection of a near-empty heap does not measure natural
 # allocation pressure; -0.131% lies within the +/-1% layout band. Preserve
 # workload and layouts when raising operational timeouts; record elapsed time.
@@ -469,11 +470,26 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # recursive/self edges. No gdb counter or explicit collection is used.
 # Prepare expensive Ir profiles outside the meter's 600-second maximum;
 # the live meter validates pinned artifacts and recomputes all raw verdicts.
-** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
+#+NOTE: Final integration b409d8ae6, measured 2026-10-20: 24/24 jobs pass,
+# elapsed1296.738s (1780s long-process timeout; meter verifier600s).
+# Independent mean total Ir: boot1215416979 ->628003188.5 (-48.330%);
+# regex6000 69804845376.75 ->67149636069 (-3.804%);
+# regex24000 255222247272 ->255042029850.75 (-0.071%). All outputs agree.
+# GC base/candidate in each of0/700/1400/2100: boot0/0, regex6000 4/5,
+# regex24000 11/26. This is natural pressure with no forced collection.
+# Dynamic/static builds181s/292s; focused Ir tests17, VM integer checks104.
+# The old VM binary is red (-120); the inlined-counter/duplicate-layout
+# negative controls are red on lane A and green here. CLI smoke is red on
+# the missing-time-import merge and green after the import correction.
+# Normal check: timeout60 nelisp-ai.sh check exits124 on both this tree and
+# eval/core45d970c82 after33 same-subject parens findings, at generated-source-parse.
+# Two diagnostic locations/absorbed-form lists differ; exact comparison is
+# recorded in tools/ai/abi-final-evidence.json. No acceptance cap changed.
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
-evidence: $ABI_IR_PROFILE/measurement.json sha256=5a51d9a4186343eb19378dc17eec1bcb88a193078b5a6639d8b7cb30477cd158
+evidence: $ABI_IR_PROFILE/measurement.json sha256=5a04c4241280a323a7a3348449670ea9007ce2ec706b39c82747e74aa28dfd8a
+evidence: tools/ai/abi-final-evidence.json sha256=bd4a9676a174df781da6128fb7fd69076ecc0e296133394e70b62573d13ba10c
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
