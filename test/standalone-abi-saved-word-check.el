@@ -1,0 +1,38 @@
+;;; standalone-abi-saved-word-check.el --- Saved WORDs across cleanup/handlers -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+(let ((checks 0))
+  (dolist (value (list nil t 0 -7 "saved" '(a . b) [nil t -7]
+                       (make-symbol "saved-symbol") (make-bool-vector 9 t)))
+    (let ((cleaned nil))
+      (unless (eq value (unwind-protect value (garbage-collect) (setq cleaned t)))
+        (error "unwind-protect changed identity: %S" value))
+      (unless cleaned (error "cleanup skipped"))
+      (unless (eq value (condition-case e value (error 'wrong-handler)))
+        (error "condition-case changed protected WORD: %S" value))
+      (unless (eq value (condition-case e value (:success (garbage-collect) e)))
+        (error ":success lost protected WORD: %S" value))
+      (setq checks (+ checks 3))))
+  (unless (equal (condition-case e (unwind-protect (error "body")
+                                   (garbage-collect)) (error (car e))) 'error)
+    (error "body error lost"))
+  (setq checks (+ checks 1))
+  (unless (equal (condition-case e (unwind-protect 'body (error "cleanup"))
+                   (error (car e))) 'error)
+    (error "cleanup error lost"))
+  (setq checks (+ checks 1))
+  (unless (eq (catch 'saved-tag
+                (unwind-protect (throw 'saved-tag 'saved-value) (garbage-collect)))
+              'saved-value)
+    (error "throw payload lost"))
+  (setq checks (+ checks 1))
+  (unless (eq (condition-case nil (condition-case nil (error "nested"))
+                (error 'caught)) 'caught)
+    (error "nested reraise lost"))
+  (setq checks (+ checks 1))
+  (dolist (value (list #'nil #'t #'0 #'-7 #'saved-symbol))
+    (unless (memq value '(nil t 0 -7 saved-symbol))
+      (error "function literal lost its WORD: %S" value))
+    (setq checks (+ checks 1)))
+  (princ (format "ABI-SAVED-WORD checks=%d PASS\n" checks)))

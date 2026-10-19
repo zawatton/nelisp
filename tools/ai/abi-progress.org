@@ -77,6 +77,12 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # 29,062,019,454.25 -> 28,181,086,827 (-3.031%, GC 6/6), regex
 # 95,741,355,967.25 -> 93,007,337,321 (-2.856%, GC 17/16), files
 # 39,497,825,152.75 -> 38,127,321,573 (-3.470%, GC 8/8); identical outputs.
+# Round 3 special forms: census 1568; S6.2 117 = 84 direct + 27 reverse
+# + 6 inline. Evaluator inline decoding reaches zero (4 -> 0). Saved values
+# stay in traced WORD holders through cleanup and :success. Mean total Ir:
+# boot 29,062,019,454.25 -> 28,196,143,759 (-2.979%, GC 6/6), regex
+# 95,741,355,967.25 -> 93,042,390,179.75 (-2.819%, GC 17/16), files
+# 39,497,825,152.75 -> 38,175,482,664.5 (-3.348%, GC 8/8); identical outputs.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).

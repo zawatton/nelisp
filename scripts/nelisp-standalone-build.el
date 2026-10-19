@@ -41263,9 +41263,9 @@ correctly."
     (defun nl_cce_clear (err_out)
       (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
            (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
-    (defun nelisp_eval_call_with_err (form env out err_out)
-      (let* ((rc (nelisp_eval_call form env out)))
-        (if (= rc 0)
+    (defun nelisp_eval_call_with_err_w (form env _pad err_out)
+      (let* ((w (nelisp_eval_call_w form env 0)))
+        (if (/= w 0)
             ;; A few low-level mirror APIs historically normalise their
             ;; mutation helper's return value to success.  The physical
             ;; mirror guard still stashes the signal and performs no write;
@@ -41273,14 +41273,17 @@ correctly."
             ;; catchable instead of becoming a stale flag.
             (if (= (ptr-read-u64 268435472 0) 1)
                 (if (= (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
-                    (nl_cce_clear err_out)
+                    (seq (nl_cce_clear err_out) w)
                   (seq (nelisp_cons_construct 268435480 268435512 err_out)
-                       1))
-              (nl_cce_clear err_out))
+                       0))
+              (seq (nl_cce_clear err_out) w))
           (if (= (ptr-read-u64 268435472 0) 1)
               (seq (nelisp_cons_construct 268435480 268435512 err_out)
-                   1)
-            (seq (nl_cce_clear err_out) rc))))))
+                   0)
+            ;; Preserve a non-signal abort without inventing an error.
+            (seq (nl_cce_clear err_out) 0)))))
+    (defun nelisp_eval_call_with_err (form env out err_out)
+      (nl_abi_word_to_rc (nelisp_eval_call_with_err_w form env 0 err_out) out)))
   "WAVE-2 condition-case-trapping nelisp_eval_call_with_err (PATCH 1): on a
 signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 `nl_cc_match_and_bind' can match the handler; the no-error path is unchanged.")

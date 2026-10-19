@@ -208,30 +208,29 @@
     ;; Doc 215 word ABI.  `nl_sf_unwind_protect_w' answers the body's value
     ;; WORD, or 0 with the body's (or a cleanup's) signal stashed.  The body
     ;; value must survive the cleanup forms (Doc 215 R2), so it is stored
-    ;; in a root slot VSLOT reserved under a root mark for the whole form;
-    ;; the cleanup chain above only carries VSLOT.  The result is a fresh
-    ;; copy of VSLOT made before the mark is released (no safepoint after).
+    ;; as a cons child WORD in the checked root VSLOT. Cleanup carries that
+    ;; holder; GC traces and updates its child, including the owning header.
+    ;; The final child read happens before releasing the mark (no safepoint
+    ;; between release and the caller publishing the returned WORD).
     (defun nl_sf_uw_stored (w args env vslot)
       (if (= w 0)
           (nl_sf_uw_after_body 1 args env vslot)
-        (nl_sf_uw_after_body (nl_abi_word_to_rc w vslot) args env vslot)))
+        (nl_sf_uw_after_body
+         (nl_abi_word_to_rc (nelisp_cons_construct_w w 3 0) vslot)
+         args env vslot)))
 
     (defun nl_sf_uw_got_car_w (car args env vslot)
       (nl_sf_uw_stored (extern-call nelisp_eval_call_w car env 0) args env vslot))
 
-    (defun nl_sf_uw_value_w (box vslot)
-      (seq (ptr-write-u64 box 0 (ptr-read-u64 vslot 0))
-           (ptr-write-u64 box 8 (ptr-read-u64 vslot 8))
-           (ptr-write-u64 box 16 (ptr-read-u64 vslot 16))
-           (ptr-write-u64 box 24 (ptr-read-u64 vslot 24))
-           (let* ((tg (ptr-read-u8 box 0))) (if (= tg 2) (+ (* (ptr-read-u64 box 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 box))))))
+    (defun nl_sf_uw_value_w (_pad vslot)
+      (nl_cons_car_word vslot))
 
     (defun nl_sf_uw_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
 
     (defun nl_sf_uw_finish_w (rc env mark vslot)
       (nl_sf_uw_release_w
-       (if (= rc 0) (nl_sf_uw_value_w (alloc-bytes 32 8) vslot) (nl_abi_fail rc 0))
+       (if (= rc 0) (nl_sf_uw_value_w 0 vslot) (nl_abi_fail rc 0))
        env mark 0))
 
     (defun nl_sf_uw_slot_w (args env mark vslot)

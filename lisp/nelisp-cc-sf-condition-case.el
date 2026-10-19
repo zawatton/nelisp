@@ -136,39 +136,45 @@
                (nl_sf_cc_body_w s1 env 0 0))
         0))
 
-    ;; No :success clause: the protected value (in the private box PV).
+    ;; No :success clause: read the protected value's WORD from its rooted
+    ;; holder. Matching may allocate views; the original header stays traced.
     (defun nl_sf_cc_after_success_w (succ-rc env pv s1)
       (if (= succ-rc 0)
           (nl_sf_cc_body_w s1 env 0 0)
-        (let* ((tg (ptr-read-u8 pv 0))) (if (= tg 2) (+ (* (ptr-read-u64 pv 8) 4) 1) (if (= tg 0) 3 (if (= tg 1) 7 pv))))))
+        (nl_cons_car_word pv)))
 
     (defun nl_sf_cc_try_success_w (clone-rc clauses-ptr var-ptr env pv s1)
       (nl_sf_cc_after_success_w
        (extern-call nl_cc_success_and_bind clauses-ptr s1 var-ptr env)
        env pv s1))
 
-    (defun nl_sf_cc_after_eval_w (rc clauses-ptr var-ptr env pv s1)
-      (if (= rc 0)
-          (nl_sf_cc_try_success_w (extern-call nl_sexp_clone_into pv s1)
-                                  clauses-ptr var-ptr env pv s1)
+    (defun nl_sf_cc_after_eval_w (w clauses-ptr var-ptr env pv s1)
+      (if (/= w 0)
+          (seq
+           (nl_abi_word_to_rc (nelisp_cons_construct_w w 3 0) pv)
+           (nl_sf_cc_try_success_w (nl_abi_word_to_rc (nl_cons_car_word pv) s1)
+                                   clauses-ptr var-ptr env pv s1))
         (nl_sf_cc_after_match_w
          (extern-call nl_cc_match_and_bind clauses-ptr s1 var-ptr env)
          env 0 s1)))
 
-    ;; The protected form is evaluated through `nelisp_eval_call_with_err'
-    ;; into the private box PV (its error datum goes to S1).
-    (defun nl_sf_cc_dispatch_w (clauses-ptr var-ptr protected-ptr env pv s1)
-      (nl_sf_cc_after_eval_w
-       (extern-call nelisp_eval_call_with_err protected-ptr env pv s1)
-       clauses-ptr var-ptr env pv s1))
+    ;; Keep the saved WORD in a checked root until matching/handler evaluation
+    ;; finishes. Only the error datum remains in the legacy S1 view.
+    (defun nl_sf_cc_dispatch_w (clauses-ptr var-ptr protected-ptr env _pad s1)
+      (let* ((mark (nl_root_mark env)) (pv (nl_root_reserve env)))
+        (if (= pv 0)
+            (seq (nl_root_release env mark) (nl_abi_fail 1 0))
+          (let* ((w (nl_sf_cc_after_eval_w
+                     (extern-call nelisp_eval_call_with_err_w protected-ptr env 0 s1)
+                     clauses-ptr var-ptr env pv s1)))
+            (seq (nl_root_release env mark) w)))))
 
     (defun nl_sf_cc_split_rest_w (protected-ptr cdr1 var-ptr env _pad s1)
-      (let* ((pv (alloc-bytes 32 8)))
-        (nl_sf_cc_dispatch_w (extern-call nl_cons_cdr_word cdr1)
-                             var-ptr protected-ptr env pv s1)))
+      (nl_sf_cc_dispatch_w (extern-call nl_cons_cdr_word cdr1)
+                           var-ptr protected-ptr env 0 s1))
 
     (defun nl_sf_cc_with_var_w (var-ptr args cdr1 env _pad s1)
-      (nl_sf_cc_split_rest_w (extern-call nl_cons_car_ptr cdr1) cdr1 var-ptr env 0 s1))
+      (nl_sf_cc_split_rest_w (extern-call nl_cons_car_word cdr1) cdr1 var-ptr env 0 s1))
 
     (defun nl_sf_cc_after_cdr1_w (cdr1 args env _pad s1 _p6)
       (if (= (sexp-tag cdr1) 7)

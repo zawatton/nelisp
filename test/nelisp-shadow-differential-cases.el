@@ -45,6 +45,11 @@
 ;;; Code:
 
 (list
+ ;; Cleanup and :success evaluation retain the protected object's WORD.
+ (let ((saved (vector nil t -7 "saved")))
+   (list (eq saved (unwind-protect saved (garbage-collect)))
+         (eq saved (condition-case value saved (:success (garbage-collect) value)))
+         #'0 #'-7))
  ;; Canonical names are selected as immediate WORDs before symbol allocation.
  (let ((name (make-symbol "nil")))
    (list (eq (intern "nil") nil) (eq (intern "t") t)

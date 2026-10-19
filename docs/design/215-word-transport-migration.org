@@ -269,6 +269,21 @@ errors. This covers the same read/write producers when network =socket()=
 is denied by the sandbox (EPERM on both baseline and candidate). It does
 not replace the real network round-trip smoke outside that sandbox.
 
+The function special form reads its argument WORD directly. Unwind-protect
+and condition-case retain a saved value as a cons child WORD in a checked
+root. GC therefore traces the value's owning header and can update its
+reference before cleanup/handler evaluation finishes. Final readers use
+=nl_cons_car_word=, then release the mark without a later safepoint before
+the caller publishes the result. This avoids copying a root view into a
+private result box and decoding it. The error-trapping evaluator entry also
+returns the evaluator's WORD directly; it retains the worker mirror-guard
+recovery and preserves a non-signal abort without inventing an error.
+
+=test/standalone-abi-saved-word-check.el= checks 36 cases: saved identities
+through GC, :success, body/cleanup errors, throw payloads, nested reraising,
+and immediate function literals. GNU Emacs and the baseline agree. A GC
+failure injected into cleanup must fail rather than print its PASS marker.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
