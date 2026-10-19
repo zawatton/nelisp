@@ -45,6 +45,12 @@
 ;;; Code:
 
 (list
+ ;; Reader WORDs preserve immediates and read-label identity across recursion.
+ (let* ((values (car (read-from-string "(nil t -7 [nil t 9] . tail)"))))
+   (list (car values) (cadr values) (nth 2 values) (aref (nth 3 values) 2)
+         (cdr (cdr (cdr (cdr values))))))
+ (let* ((values (car (read-from-string "(#1=(a . b) #1#)"))))
+   (list (equal (car values) '(a . b)) (eq (car values) (cadr values))))
  ;; Evaluated arguments preserve order and previously produced values across GC.
  (let ((abi-argument-order nil))
    (list (list (progn (setq abi-argument-order (cons 1 abi-argument-order))

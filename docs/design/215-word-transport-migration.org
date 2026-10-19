@@ -241,6 +241,19 @@ debt until its producers and consumers carry WORDs directly.
 
 ** The three blockers from the dry run
 
+Round 3 reader conversion: the recursive parser carries WORDs directly,
+including list/vector elements, dotted tails, quote wrappers, labels,
+records, hash tables and byte-code literals. The sequence head/tail and
+label value entries in the reader arena contain WORDs, while lexer scratch
+and the cursor retain their distinct storage layouts. The old reader APIs
+only adapt WORDs to their callers' OUT slots. The source-context (#$) view
+is still an explicit box-to-word dependency and remains in S6.2.
+
+=python3 test/abi-reader-word-test.py DUMP= rejects recursion through the
+old producer APIs (27 findings before, zero after, 21 WORD entries checked).
+Do not test WORD validity with numeric ranges: zero and negative fixnums
+are valid WORDs. Test 0 (failure) and 2 (EOF) individually.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes

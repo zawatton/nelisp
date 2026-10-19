@@ -66,6 +66,12 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # 38,383,706,964), GC 8/8 throughout, identical output. Prior binary's
 # mean was -0.312% through the meter (-0.095% in the direct gate).
 # The G4 criteria below remain failing; partial conversion is not completion.
+# Round 3 reader family: genuine recursive WORD producers, sequence and label
+# state as WORDs. Census 1638; S6.2 183 = 91 direct + 78 reverse + 14 inline.
+# Four-layout means: boot 29,062,019,454.25 -> 28,183,348,855 (-3.023%, GC 6/6),
+# regex 95,741,355,967.25 -> 93,000,284,273.25 (-2.863%, GC 17/16), files
+# 39,497,825,152.75 -> 38,128,912,437.75 (-3.466%, GC 8/8); identical output.
+# Source-context decoding remains explicit; no claim of S6.2 completion.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).
