@@ -45,6 +45,12 @@
 ;;; Code:
 
 (list
+ ;; Hash mutators retain the input WORD; nthcdr can return an immediate tail.
+ (let ((table (make-hash-table :test 'eq)) (value (vector nil t -7)))
+   (list (eq (puthash 'word value table) value)
+         (eq (gethash 'word table) value)
+         (puthash 'word 0 table) (gethash 'word table 'missing)
+         (nthcdr 1 '(a . 0)) (butlast '(nil t 0 -7) 2)))
  ;; Cleanup and :success evaluation retain the protected object's WORD.
  (let ((saved (vector nil t -7 "saved")))
    (list (eq saved (unwind-protect saved (garbage-collect)))

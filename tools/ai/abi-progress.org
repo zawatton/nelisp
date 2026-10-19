@@ -83,6 +83,11 @@ cmd: timeout 60 "$ABI_BIN" --eval '(princ (list (car (quote (1 2))) (+ 1 2)))' |
 # boot 29,062,019,454.25 -> 28,196,143,759 (-2.979%, GC 6/6), regex
 # 95,741,355,967.25 -> 93,042,390,179.75 (-2.819%, GC 17/16), files
 # 39,497,825,152.75 -> 38,175,482,664.5 (-3.348%, GC 8/8); identical outputs.
+# Round 3 value consumers: census 1539; S6.2 94 = 61 direct + 27 reverse
+# + 6 inline. Hash mutation returns its input WORD; legacy copies remain
+# views. Mean total Ir: boot 29,062,019,454.25 -> 28,193,502,899.5 (-2.988%,
+# GC 6/6), regex 95,741,355,967.25 -> 93,048,188,406.25 (-2.813%, GC 17/16),
+# files 39,497,825,152.75 -> 38,137,870,602.25 (-3.443%, GC 8/8), output same.
 # Round 2 batch B2: N3 mode/raw/dispatcher now retain WORDs through flag
 # restoration; direct definition WORDs and body reads remove remaining round
 # trips in these paths. Census 1650, S6.2 181 (90 direct + 91 reverse).

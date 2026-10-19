@@ -8496,34 +8496,25 @@ leave symbols unresolved at link time."
             (t (wf_num_eq a b))))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_compare_w returns the result WORD (0 = signal stashed); wf_numeric_marker_compare keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_compare_w (args env mode _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (let* ((abi_rc (seq
-
-      ;; GNU comparisons coerce BOTH markers in the current pair before type
-      ;; validation. They do not visit later pairs after a false comparison,
-      ;; and a unary comparison returns t even for a detached marker.
-      (if (= (wf_cdr_has_more args) 1)
-          (let* ((mark (nl_root_mark env))
-                 (a (nl_root_reserve env)) (b (nl_root_reserve env))
-                 (rest (nl_cons_cdr_word args))
-                 (rc (wf_numeric_marker_value_word (nl_cons_car_word args) a 0)))
-            (seq
-             (if (= rc 0)
-                 (setq rc (wf_numeric_marker_value_word (nl_cons_car_word rest) b 0)) 0)
-             (if (= rc 0)
-                 (setq rc
-                       (if (= (wf_num_pairp a b) 0)
-                           (bf_wrong_type_number_or_marker
-                            (if (= (wf_num_tag_ok (sexp-tag a)) 0) a b))
-                         (if (= (wf_numeric_marker_relation a b mode) 1)
-                             (if (= mode 5) (wf_write_nil out)
-                               (wf_numeric_marker_compare rest env mode out))
-                           (if (= mode 5) (wf_write_t out) (wf_write_nil out))))) 0)
-             (nl_root_release env mark)
-             rc))
-        (wf_write_t out))
-)))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+  (if (= (wf_cdr_has_more args) 1)
+      (let* ((mark (nl_root_mark env))
+             (a (nl_root_reserve env)) (b (nl_root_reserve env))
+             (rest (nl_cons_cdr_word args))
+             (rc (wf_numeric_marker_value_word (nl_cons_car_word args) a 0))
+             (w 0))
+        (if (= rc 0)
+            (setq rc (wf_numeric_marker_value_word (nl_cons_car_word rest) b 0)) 0)
+        (if (= rc 0)
+            (setq w
+                  (if (= (wf_num_pairp a b) 0)
+                      (nl_abi_fail (bf_wrong_type_number_or_marker
+                                    (if (= (wf_num_tag_ok (sexp-tag a)) 0) a b)) 0)
+                    (if (= (wf_numeric_marker_relation a b mode) 1)
+                        (if (= mode 5) 3 (wf_numeric_marker_compare_w rest env mode 0))
+                      (if (= mode 5) 7 3))))
+          (setq w (nl_abi_fail rc 0)))
+        (nl_root_release env mark) w)
+    7))
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
     (defun wf_argval (args n) (nl_word_payload (wf_arg_word args n)))
@@ -11856,10 +11847,8 @@ eval applyfn.")
 ;; M4 hash-table helpers (cons-alist v1).  Reader-only: wf_key_eq uses symbol-eq
 ;; / str-eq grammar ops that lower to extern calls present only in the reader.
 (defconst nelisp-standalone--applyfn-ht-helpers
-  '((defun nl_ht_copy32_w (_pad src)
-      (nl_val_store_word src))
-    (defun nl_ht_copy32 (dst src)
-      (nl_abi_word_to_rc (nl_ht_copy32_w 0 src) dst))
+  '((defun nl_ht_copy32_w (_pad src) src)
+    (defun nl_ht_copy32 (dst src) (wf_copy32 dst src))
     (defun wf_key_eq_depth (ka kb depth)
       ;; Iterative, bounded `equal'-style key comparison for hash lookup.
       ;; When the comparison exceeds the cap, return not-equal: a lookup
@@ -12379,7 +12368,7 @@ eval applyfn.")
              (nl_ht_find_table_h (nl_ht_data_slot table) key_ptr mode
                                  (nl_ht_hash_mode table mode)))))
     (defun nl_ht_put_w (args _pad)
-      (nl_ht_put_values_w (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+      (nl_ht_put_values_w (wf_arg_ptr args 0) (wf_arg_word args 1)
                           (wf_arg_ptr args 2) 0))
     (defun nl_ht_put (args out)
       (nl_abi_word_to_rc (nl_ht_put_w args 0) out))
@@ -12387,10 +12376,12 @@ eval applyfn.")
       (seq (nl_ht_identity_sync table_ptr)
            (nl_ht_put_values_synced_w key_ptr val_ptr table_ptr 0)))
     (defun nl_ht_put_values (key_ptr val_ptr table_ptr out)
-      (nl_abi_word_to_rc (nl_ht_put_values_w key_ptr val_ptr table_ptr 0) out))
-    (defun nl_ht_put_values_synced_w (key_ptr val_ptr table_ptr _pad)
+      (seq (nl_ht_identity_sync table_ptr)
+           (if (= (nl_ht_mutate_values_synced key_ptr val_ptr table_ptr 0) 0)
+               (wf_copy32 out val_ptr) (wf_write_nil out))))
+    (defun nl_ht_mutate_values_synced (key_ptr val_ptr table_ptr _pad)
         (if (= table_ptr 0)
-            3
+            1
           (if (= (ptr-read-u64 table_ptr 0) 7)
               (let* ((data_slot (nl_ht_data_slot table_ptr))
                      (entry_ptr (nl_ht_find_table_h
@@ -12409,7 +12400,7 @@ eval applyfn.")
                            (nelisp_cons_construct pair_s nil_s newhead_s)
                            (cons-set-cdr table_ptr newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
-                           (nl_val_store_word val_ptr)))
+                           0))
                       (if (= (ptr-read-u64 data_slot 0) 8)
                           (let* ((idx (nl_ht_bucket_index data_slot key_ptr
                                                           (nl_ht_hash_mode table_ptr
@@ -12423,20 +12414,22 @@ eval applyfn.")
                              (vector-slot-set data_slot idx newhead_s)
                              (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
                              (nl_ht_maybe_grow table_ptr data_slot (nl_ht_meta_count table_ptr))
-                             (nl_val_store_word val_ptr)))
+                             0))
                         (let* ((pair_s (alloc-bytes 32 8)) (newhead_s (alloc-bytes 32 8)))
                           (seq
                            (nelisp_cons_construct key_ptr val_ptr pair_s)
                            (nelisp_cons_construct pair_s data_slot newhead_s)
                            (nl_ht_copy32 data_slot newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
-                           (nl_val_store_word val_ptr)))))
+                           0))))
                   ;; Overwrite an existing KEY through the cons mutator, as
                   ;; `setcdr' does (a cdr view of an immediate is scratch).
                   (seq
                    (cons-set-cdr entry_ptr val_ptr)
-                   (nl_val_store_word val_ptr))))
-            3)))
+                   0)))
+            1)))
+    (defun nl_ht_put_values_synced_w (key_ptr val_ptr table_ptr _pad)
+      (if (= (nl_ht_mutate_values_synced key_ptr val_ptr table_ptr 0) 0) val_ptr 3))
     (defun nl_ht_get_w (args _pad)
       (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
            (nl_ht_get_synced_w args 0)))
@@ -12621,10 +12614,10 @@ eval applyfn.")
     (defun wf_nthcdr_w (args _pad)
       (let* ((np (wf_arg_word args 0)) (tag (nl_word_tag64 np)))
         (if (= tag 2)
-            (bf_nthcdr_walk_w (nl_word_payload np) (wf_arg_ptr args 1) 0)
+            (bf_nthcdr_walk_w (nl_word_payload np) (wf_arg_word args 1) 0)
           (if (= tag 13)
               (if (= (nl_word_payload np) 0)
-                  (bf_nthcdr_walk_w 4611686018427387903 (wf_arg_ptr args 1) 0)
+                  (bf_nthcdr_walk_w 4611686018427387903 (wf_arg_word args 1) 0)
                 (wf_arg_word args 1))
             (nl_abi_fail (bf_wrong_type_integerp np) 0)))))
     (defun wf_nthcdr (args out)
@@ -12696,7 +12689,7 @@ eval applyfn.")
             (if (and n_given (= (ptr-read-u64 n_ptr 0) 2)
                      (< (ptr-read-u64 n_ptr 8) 0))
                 3
-              (nl_val_store_word list_ptr))
+              (wf_arg_word args 0))
           (let* ((m (if (and n_given (= (ptr-read-u64 n_ptr 0) 2))
                         (ptr-read-u64 n_ptr 8)
                       1))
@@ -12710,6 +12703,10 @@ eval applyfn.")
     ;; guaranteed-proper) list P as a fresh list, via ordinary recursive
     ;; `cons' construction -- the same "recurse then splice" shape
     ;; `nl_apply_list_init' already uses for `apply''s own prefix copy.
+    (defun wf_butlast_collect_w (p i keep _pad)
+  (if (>= i keep) 3
+    (let* ((rest (wf_butlast_collect_w (nl_cons_cdr_word p) (+ i 1) keep 0)))
+      (nelisp_cons_construct_w (nl_cons_car_word p) rest 0))))
     (defun wf_butlast_collect (p i keep nilslot)
       (if (>= i keep)
           nilslot
@@ -12747,7 +12744,7 @@ eval applyfn.")
              (state (wf_butlast_n_state n_given n_ptr)))
         (if (= state 2)
             ;; N a non-positive fixnum: LIST unchanged, never inspected.
-            (nl_val_store_word list_ptr)
+            (wf_arg_word args 0)
           (if (= state 5)
               (nl_abi_fail (bf_wrong_type_number_or_marker n_ptr) 0)
             (let* ((lw (bf_length_checked_w list_ptr 0)))
@@ -12759,9 +12756,7 @@ eval applyfn.")
                            (keep (- len m)))
                       (if (<= keep 0)
                           3
-                        (let* ((nilslot (alloc-bytes 32 8)))
-                          (seq (wf_write_nil nilslot)
-                               (nl_val_store_word (wf_butlast_collect list_ptr 0 keep nilslot))))))
+                        (wf_butlast_collect_w list_ptr 0 keep 0)))
                   ;; LIST is a vector/string/etc.: `length' succeeded but the
                   ;; walk signals listp on it.
                   (nl_abi_fail (bf_wrong_type_listp list_ptr) 0))))))))
@@ -12817,16 +12812,12 @@ eval applyfn.")
     ;; that branch is unexercised anywhere else and, measured here,
     ;; does not actually resolve a plain fbound symbol.
     (defun wf_append_slow_w (args env _pad)
-      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8))
-             (out (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 8299400113624739937)
-         (ptr-write-u64 (+ buf 16) 0 7827308)
-         (nl_alloc_symbol buf 19 sym_slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
-             (let* ((rcw (nl_apply_function fn_slot args env out))) (if (= rcw 0) (nl_val_store_word out) (nl_abi_fail rcw 0)))
-           (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8299400113624739937) (ptr-write-u64 (+ buf 16) 0 7827308) (nl_alloc_symbol buf 19 sym_slot)
+          (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+            (if (and (/= function-word 0) (/= function-word 2))
+                (nl_apply_function_w function-word args env 0)
+              (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
     (defun wf_append_w (args env _pad)
       (if (= (ptr-read-u64 args 0) 0)
           3
@@ -12853,16 +12844,12 @@ eval applyfn.")
               w))
         (nl_abi_fail (bf_wrong_type_listp (wf_arg_word args 1)) 0)))
     (defun wf_assoc_slow_w (args env _pad)
-      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8))
-             (out (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 7814639683512791905)
-         (ptr-write-u64 (+ buf 16) 0 30575)
-         (nl_alloc_symbol buf 18 sym_slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
-             (let* ((rcw (nl_apply_function fn_slot args env out))) (if (= rcw 0) (nl_val_store_word out) (nl_abi_fail rcw 0)))
-           (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 7814639683512791905) (ptr-write-u64 (+ buf 16) 0 30575) (nl_alloc_symbol buf 18 sym_slot)
+          (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+            (if (and (/= function-word 0) (/= function-word 2))
+                (nl_apply_function_w function-word args env 0)
+              (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
     (defun wf_assoc_dispatch_w (args env _pad)
       (let* ((argc (m5_list_len args 0)))
         (if (<= argc 2)
@@ -12881,16 +12868,12 @@ eval applyfn.")
             0)
         0))
     (defun wf_plist_get_slow_w (args env _pad)
-      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8))
-             (out (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 7306858898607664240)
-         (ptr-write-u64 (+ buf 16) 0 131320444562804)
-         (nl_alloc_symbol buf 22 sym_slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
-             (let* ((rcw (nl_apply_function fn_slot args env out))) (if (= rcw 0) (nl_val_store_word out) (nl_abi_fail rcw 0)))
-           (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 7306858898607664240) (ptr-write-u64 (+ buf 16) 0 131320444562804) (nl_alloc_symbol buf 22 sym_slot)
+          (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+            (if (and (/= function-word 0) (/= function-word 2))
+                (nl_apply_function_w function-word args env 0)
+              (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
     (defun wf_plist_get_dispatch_w (args env _pad)
       (let* ((argc (m5_list_len args 0)))
         (if (<= argc 2)
@@ -12953,16 +12936,12 @@ eval applyfn.")
             0
           (bf_wrong_type_listp rest_slot))))
     (defun wf_mapcar_slow_w (args env _pad)
-      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8))
-             (out (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 8299415450919395693)
-         (ptr-write-u64 (+ buf 16) 0 7827308)
-         (nl_alloc_symbol buf 19 sym_slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
-             (let* ((rcw (nl_apply_function fn_slot args env out))) (if (= rcw 0) (nl_val_store_word out) (nl_abi_fail rcw 0)))
-           (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8299415450919395693) (ptr-write-u64 (+ buf 16) 0 7827308) (nl_alloc_symbol buf 19 sym_slot)
+          (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+            (if (and (/= function-word 0) (/= function-word 2))
+                (nl_apply_function_w function-word args env 0)
+              (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
     ;; FN itself needs the SAME explicit resolve as the delegate helpers
     ;; above -- it can arrive as a bare symbol (`(mapcar 'foo LIST)') or
     ;; already a callable value (a closure; `#\\='foo' evaluates to the
@@ -19129,7 +19108,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (seq (mut-str-push-byte ms b) (setq i (+ i 1))))))
                (mut-str-finalize ms out) 0)))
         ) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_string_to_unibyte_w (sx _pad)
@@ -19151,7 +19130,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (bf_cannot_convert_unibyte
                    (bf_read_one_bytes_to_chars sx 0 bad) out)))))
         ) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
     (defun bf_external_sequence_width (sx i n)
       ;; GNU string-as-multibyte disallows internal C0/C1 byte8 sequences,
@@ -19191,7 +19170,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (setq i (+ i 1))))))
                (m5_finish_string ms out 1) 0)))
         ) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_string_to_multibyte_w (sx _pad)
@@ -19204,7 +19183,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (m5_finish_string ms out 1) 0))
         (seq (wf_copy32 out sx) 0))
         ) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_w (sx _pad)
@@ -19622,7 +19601,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (nl_root_release env mark)
                                (bf_signal_memory_full)))))))))))))))
 )))
-          (if (= abi_rc 0) (nl_val_store_word out) (nl_abi_fail abi_rc 0)))))
+          (if (= abi_rc 0) out (nl_abi_fail abi_rc 0)))))
     ;; ---------------------------------------------------------------
     ;; Doc 186 P0/P1/P2 -- char-table Elisp-visible constructor/accessor
     ;; layer.  `nl_char_table_get_raw'/`nl_char_table_set_raw' (the
@@ -20460,7 +20439,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= (nl_val_tag p) 0)
                  3
                (nl_abi_fail (bf_wrong_type_listp node) 0))
-           (if (= (logand p 1) 1) p (nl_val_store_word p))))))
+           p))))
     ;; Fixnum counts only (tag 2).  A bignum count is left to the prelude's
     ;; own loop, which is where it was: reading a bignum's magnitude here
     ;; would be guessing at a representation this arm has no other reason to
@@ -20680,20 +20659,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
             0)
         0))
     (defun bf_nemacs_char_table_call_w (args env _pad final-word)
-      (let* ((name-buf (alloc-bytes 24 1))
-             (symbol-slot (alloc-bytes 32 8))
-             (function-slot (alloc-bytes 32 8))
-             (out (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 name-buf 0 7521905776250678629)
-         (ptr-write-u64 (+ name-buf 8) 0 7308324466015957601)
-         (ptr-write-u64 (+ name-buf 16) 0 final-word)
-         (nl_alloc_symbol name-buf 21 symbol-slot)
-         (if (= (nelisp_env_lookup_function
-                 (+ env 0) (+ env 64) symbol-slot function-slot)
-                0)
-             (let* ((rcw (nl_apply_function function-slot args env out))) (if (= rcw 0) (nl_val_store_word out) (nl_abi_fail rcw 0)))
-           (nl_abi_fail (nl_cons_stash_void_function env symbol-slot) 0)))))
+      (let* ((name-buf (alloc-bytes 24 1)) (symbol-slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 name-buf 0 7521905776250678629) (ptr-write-u64 (+ name-buf 8) 0 7308324466015957601) (ptr-write-u64 (+ name-buf 16) 0 final-word) (nl_alloc_symbol name-buf 21 symbol-slot)
+          (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) symbol-slot 0)))
+            (if (and (/= function-word 0) (/= function-word 2))
+                (nl_apply_function_w function-word args env 0)
+              (nl_abi_fail (nl_cons_stash_void_function env symbol-slot) 0))))))
     (defun bf_nemacs_char_table_call (args env out final-word)
       (nl_abi_word_to_rc (bf_nemacs_char_table_call_w args env 0 final-word) out))
     (defun bf_aref_nemacs_bridge_w (args env _pad)
@@ -21574,32 +21545,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (nl_abi_word_to_rc (bf_features_symbol_w 0) out))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_features_get_w (env _pad)
-      (let* ((out (alloc-bytes 32 8)))
-        (if (= (seq
-      ;; Frame stack first, then the mirror -- the same lookup
-      ;; `bf_load_path_get' does two definitions below, and the same fix the
-      ;; comment on `bf_symbol_value' describes for reading a special
-      ;; variable.  Reading the mirror alone made `provide' and `featurep'
-      ;; answer about different lists whenever `features' was dynamically
-      ;; bound: `provide' writes the innermost binding, so
-      ;;
-      ;;   (let ((features (list 'aa)))
-      ;;     (provide 'x)        ; -> x
-      ;;     (featurep 'x))      ; -> nil
-      ;;
-      ;; and `require', which checks the same way `featurep' does, raised
-      ;; `file-missing' for a file it had just loaded and whose `(provide ...)'
-      ;; had just run.
-      (let* ((sym (alloc-bytes 32 8)))
-        (seq
-         (bf_features_symbol sym)
-         (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) sym out) 0)
-             0
-           (wf_write_nil out))
-         0))
-        ) 0)
-            (nl_val_store_word out)
-          (nl_abi_fail 1 0))))
+  (let* ((sym (alloc-bytes 32 8)))
+    (bf_features_symbol sym)
+    (let* ((w (nelisp_env_lookup_value_w (+ env 0) (+ env 32) sym 0)))
+      ;; Preserve the legacy nil result on a miss, leaving any signal intact.
+      (if (or (= w 0) (= w 2)) 3 w))))
     (defun bf_features_get (env out)
       (nl_abi_word_to_rc (bf_features_get_w env 0) out))
     (defun bf_feature_member_p (feature features)
@@ -23250,7 +23200,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= sig 2) (nl_abi_fail (bf_signal_circular_list orig) 0)
            (if (= sig 1) (nl_abi_fail (bf_wrong_type_plistp orig) 0)
              (if (= result 0) 3
-               (if (= (logand result 1) 1) result (nl_val_store_word result))))))))
+               result))))))
     (defun bf_plist_member_eq_w (args _pad)
       (bf_plist_member_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0
                               (wf_arg_word args 0)))
@@ -26270,7 +26220,7 @@ POSIX-style child-fd setup step (see
 	       (nl_bi_process_set_int out 5 infd)
 	       0)
         ) 0)
-            (nl_val_store_word out)
+            out
           (nl_abi_fail 1 0))))
     (defun nl_bi_process_make_object (pid outfd infd out)
       (nl_abi_word_to_rc (nl_bi_process_make_object_w pid outfd infd 0) out))

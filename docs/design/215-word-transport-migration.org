@@ -284,6 +284,21 @@ through GC, :success, body/cleanup errors, throw payloads, nested reraising,
 and immediate function literals. GNU Emacs and the baseline agree. A GC
 failure injected into cleanup must fail rather than print its PASS marker.
 
+Hash mutation is separated from its result: the shared mutator accepts the
+setters' WORD/view inputs and returns raw status (1 is a missing table, not
+an error). WORD entries receive the original value WORD and return it;
+legacy OUT entries copy the original view. The legacy copy helper similarly
+copies views, while its WORD entry is an identity operation on a WORD.
+Neither result path decodes a private output. List slow paths use autoload
+lookup/application WORD producers directly and explicitly handle 0/2 lookup
+answers. Nthcdr carries WORDs, butlast has a WORD collector, and numeric
+comparison produces nil/t WORDs before releasing its roots.
+
+Validated string conversions and native-subr/process construction already
+write heap objects; their fresh headers are returned directly. The consumer
+check covers 55 cases, including nil/t/zero hash values, growth, immediate
+list tails, numeric comparison, string lifetime through GC and table parents.
+
 1. Callers branching on the status (191 sites).  They keep calling the old
    name through its adapter until converted.  Converting one is a local
    rewrite: =(if (= (F a out) 0) OK ERR)= becomes
