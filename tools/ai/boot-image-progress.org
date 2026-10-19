@@ -4,10 +4,11 @@
 
 ** S1.1 S1 Apportionment: trace all nine loads and measure their instruction costs
 #+NOTE: Evidence must include GNU feature parity and the cold/startup/C-core image contracts.
-evidence: tools/ai/boot-image-apportionment.json sha256=097c038b068194e97d5073c4a61225304e3e335b7cf713475b5a7456c976b074
+evidence: tools/ai/boot-image-apportionment.json sha256=199bd9ffee1b86b224b923c7e92440ad007e94a99bd052cc8cb3c32b6e2ed7c0
 
 ** S1.2 S2 Boot opens zero .el or .elc files
 #+REQUIRES: BOOT_IMAGE_BIN
+#+NOTE: strace is denied PTRACE_TRACEME: Operation not permitted. The command falls back to Valgrind's actual in-process syscall trace, and rejects empty traces and source-open attempts. Baseline is red.
 cmd: python3 tools/ai/boot-image-check.py opens
 
 ** S1.3 S3 Boot costs at most 2.0G instructions
@@ -18,9 +19,11 @@ cmd: BOOT_IMAGE_IR_CAP=2000000000 python3 tools/ai/boot-image-check.py ir
 
 ** S1.4 S4 Nil and on-demand rx work with the build worktree hidden
 #+REQUIRES: BOOT_IMAGE_BIN
+#+NOTE: bwrap overlays the complete checkout with tmpfs. The binary and sidecars are copied outside it; nil, explicit rx and the 23-check demanded-library corpus run as fresh processes.
 cmd: python3 tools/ai/boot-image-check.py isolated
 
 ** S1.5 S5 Standalone checks, repository verification and 40-tool Anvil MCP smoke pass
 #+REQUIRES: BOOT_IMAGE_BIN
+#+NOTE: STOPPED at the brief's semantic-difference blocker: EVAL_BIN=$BOOT_IMAGE_BIN makes standalone-exit-stash-root-check retain 0 bytes rather than >= 1048576. The baseline source and baseline cold boots pass with that variable. See tools/ai/boot-image-blocker.json. Keep this command red; baseline repository verifier failures are also not counted as a pass.
 #+TIMEOUT: 600
 cmd: python3 tools/ai/boot-image-check.py e2e

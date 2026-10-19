@@ -2,6 +2,7 @@
   "schema": 1,
   "measured": "2026-10-19",
   "base_commit": "9ad3c5588",
+  "reproduce_at_commit": "8dbd495ae (measurement helpers before the boot implementation)",
   "reference_sha256": "6c89b5990383ef1ceaf76d05bc96b855718622cc0a5d44c47080515e616a922c",
   "local_dynamic_sha256": "03fc02ad0572ae4d98ec5cbbd6ad98b9a36612997566dc4e768c2f716064a07a",
   "instrumented_sha256": "71d58f47ba33d076632c7818a7d0dcd15f786ed234560c819fec28e36707c2e3",
@@ -21,6 +22,7 @@
   "feature_parity": {
     "gnu_Q_batch": {"backquote": true, "byte-run": false, "macroexp": true, "inline": false, "json": false, "easy-mmode": false, "rx": false, "cl-seq": false, "nelisp-process-buffer": false},
     "before": "All nine featurep results are true. GNU byte-run is preloaded without providing a feature.",
+    "after": "The final candidate matches all nine GNU featurep results. The 23-check library corpus passes both normally and with the entire build worktree hidden by bwrap; the 8-check override/failed-autoload/retry corpus also matches GNU.",
     "acceptance": "test/standalone-boot-libraries-check.el passes on clean GNU Emacs 31.1, fails with 8 findings on the baseline NeLisp, and exercises demanded providers after checking clean-start feature parity."
   },
   "sidecars": {

@@ -58,6 +58,7 @@
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-runtime-reload-telemetry)
 (require 'nelisp-vendor-source)
+(require 'nelisp-boot-image)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -30023,6 +30024,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                     (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
                                       nelisp-standalone--repo-root))
                    (buffer-string)))
+         (source (nelisp-boot-image-prelude source))
          (position (nelisp-standalone--prelude-source-boundary source))
          (source-only
           (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
@@ -30667,17 +30669,15 @@ source."
           result)))))
 
 
-(defun nelisp-standalone--load-path-src (&optional defer-easy-mmode)
+(defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
 feature even when the file was in this tree.
 
-Baked at build time rather than discovered at run time: argv[0] is
-whatever the caller typed, `/proc/self/exe' needs a readlink this runtime
-does not expose, and `getenv' answers nil here.  A guess that picks the
-wrong root resolves a feature to the WRONG FILE, which is worse than not
-resolving it.  A relocated binary keeps paths that no longer exist and
-finds nothing -- no answer rather than a wrong one.
+These search paths retain the build checkout for source development.
+The reader's nine boot providers also have an executable-pinned, relocatable
+fallback; ordinary Linux boot restores the adjacent heap image. Libraries
+outside that bundled set still require a source or installed load path.
 
 One producer, called from every bootstrap, because there is more than one
 and they are maintained separately.  The first version of this was
@@ -30699,9 +30699,9 @@ resolved fine.  Same feature, different answer per entry point."
    ;; has already loaded that exact `subr.el' definition by this point.
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'ignore)
-   ;; GNU Emacs preloads byte-run without providing a feature.  Load its
-   ;; exact source before publishing a standalone feature for `require'.
-   "(load 'byte-run)\n"
+   ;; GNU preloads byte-run without a feature. Embed it before its definers
+   ;; are recorded; startup must not reopen the build checkout.
+   (nelisp-boot-image-provider 'byte-run)
    ;; byte-run.el has just redefined `defun' / `defmacro'.  Record them
    ;; as the definers the native fast path may stand in for: for a body
    ;; without `declare' their expansion installs the same lambda, and a
@@ -30709,16 +30709,13 @@ resolved fine.  Same feature, different answer per entry point."
    ;; `nelisp-standalone--sf-strip-body-declarations').
    "(fset 'nelisp--fd-defun (symbol-function 'defun))\n"
    "(fset 'nelisp--fd-macro (symbol-function 'defmacro))\n"
-   "(provide 'byte-run)\n"
    ;; GNU Emacs 31.1 preloads this special variable from src/lread.c
    ;; (DEFVAR_LISP, initialized to Qnil); macroexp uses it during expansion.
    "(defvar macroexp--dynvars nil \"List of variables declared dynamic in the current scope. Only valid during macro-expansion. Internal use only.\")\n"
-   "(require 'inline)\n"
-   ;; Emacs's json-parse-string is a C subr available without requiring
-   ;; the `json' feature.  Load the standalone's pure-Lisp compatibility
-   ;; implementation at bootstrap too, so its public API has the same
-   ;; availability while continuing to delegate parsing to nelisp-json.
-   "(require 'json)\n"
+   (nelisp-boot-image-provider 'macroexp)
+   ;; Other command bootstraps retain their historical eager providers.
+   ;; The reader installs relocatable autoloads after its matcher is ready.
+   (unless defer-libraries "(require 'inline)\n(require 'json)\n")
    ;; GNU Emacs preloads these password-prompt variables from mule-conf.el;
    ;; comint reads both while defining its prompt regexp. Stage the exact
    ;; Custom forms before any bootstrap consumer loads comint/compile.el.
@@ -31273,9 +31270,8 @@ Relative names and complete bytes are covered; timestamps are irrelevant."
 
 (defun nelisp-standalone--reader-repl-prelude-source ()
   "Return source evaluated once before the standalone reader REPL loop.
-Concatenates the stdlib prelude, installs the pure-elisp regexp matcher
-(Doc 143), then loads easy-mmode, `rx', and `cl-seq' so after-load callbacks
-can use it."
+Concatenates the prelude and GNU preload providers, installs the regexp
+matcher (Doc 143), then registers relocatable, demand-loaded libraries."
   (with-temp-buffer
     (insert (format "(setq nelisp-standalone--backquote-file %S)\n"
                     (expand-file-name
@@ -31286,7 +31282,7 @@ can use it."
                           (nelisp-standalone--native-cache-source-identity))))
     (insert (nelisp-standalone--prelude-source-with-list-accessors))
     (goto-char (point-max))
-    (insert (nelisp-standalone--load-path-src t))
+    (insert (nelisp-standalone--load-path-src t t))
     ;; Doc segI: these libraries are required by unconditional call sites.
     ;; Their notifications execute after-load callbacks that use
     ;; `string-match-p'; defer each require until its genuine provider exists.
@@ -31417,7 +31413,7 @@ can use it."
     ;; It is also safe to load genuine faces.el here (strictly after
     ;; `string-match'; see `nelisp-standalone--faces-src').
     (insert (nelisp-standalone--faces-src))
-    (insert "\n(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n")
+    (insert (nelisp-boot-image-libraries-source))
     ;; Phase 2A (integration/wave6 audit hardening, Doc 184 P1/P2): wire
     ;; the process-adapter fix into the DEFAULT bootstrap instead of
     ;; leaving it an opt-in `--load'.  Before this, `make-process''s
@@ -31444,9 +31440,7 @@ can use it."
                        nelisp-standalone--repo-root))
     (goto-char (point-max))
     (insert "\n;; --- Doc 184 P1/P2: standard-name process API + ONE poll loop ---\n")
-    (insert-file-contents
-     (expand-file-name "packages/nelisp-process-adapter/src/nelisp-process-adapter.el"
-                       nelisp-standalone--repo-root))
+    (insert (nelisp-boot-image-process-source))
     (goto-char (point-max))
     ;; Both inserted files end in a bare `;;; FILE ends here' footer
     ;; comment with no form after it -- fine when loaded standalone (the
@@ -37770,7 +37764,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
   "Return cold-loader definitions without generating the bundled prelude.
 Keep this source-only boundary usable by Windows preflight and host controls."
   `(
-    ;; flat-arena cold-loader gate (default OFF, EXPLICIT-ONLY).
+    ;; Validated flat-arena loader. The driver chooses the image pathname.
     ;;
     ;; SECURITY (2026-09-28): this used to fall back to a FIXED,
     ;; world-writable path (`/tmp/nelisp-cold-image.bin', built here as
@@ -37784,11 +37778,10 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; unrelated `nelisp' process loaded into its live arena, with the
     ;; relocation table's unchecked offsets giving that file an
     ;; arbitrary-offset pointer WRITE relative to a real mmap'd address
-    ;; (image confusion / injection, not just a crash).  There is no longer
-    ;; any default path: cold-load runs ONLY when the caller opts in via
-    ;; `--cold-load-from PATH' (OVERRIDE below is the C-string pointer from
-    ;; that flag; OVERRIDE==0 means "not requested", same as "no marker" in
-    ;; the old code).  Even then, the header and every relocation-table
+    ;; (image confusion / injection, not just a crash). No shared marker is
+    ;; consulted. The driver supplies either --cold-load-from PATH or the
+    ;; companion of the actual process executable, resolved by the OS.
+    ;; OVERRIDE==0 still means "not requested". The header and every relocation-table
     ;; entry are validated before anything is trusted -- an explicitly
     ;; chosen path can still be stale, truncated, or come from a mismatched
     ;; build (docs/design/156-flat-arena-boot-install.org §2 documents the
@@ -37988,10 +37981,9 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; interned bump (+840 = ib+isz).  Returns 1 if loaded, -1 if not
     ;; requested or rejected by validation.
     ;; OVERRIDE: 0 means cold-load was not requested (no `--cold-load-from'
-    ;; flag) -- this is a no-op, exactly like "no marker" in the old
-    ;; default-path code; there is no implicit fallback path any more (see
-    ;; the SECURITY comment above `nl_cold_diag').  A non-zero C-string
-    ;; pointer is the explicit `--cold-load-from PATH' flag's path, and is
+    ;; flag or selected companion) -- this is a no-op. Path selection lives
+    ;; in the driver; this loader never probes a shared marker. A non-zero
+    ;; C-string pointer names the selected image, and is
     ;; validated (`nl_cold_header_invalid_p', `nl_cold_reloc_table_valid_p')
     ;; before any of its contents are trusted.
     ;; Increment 2: the header (header+8 = `slen', the COALESCED total since
@@ -38161,6 +38153,7 @@ correctly."
   `(seq
     ,@(nelisp-standalone--reader-os-source-forms)
     ,@(nelisp-standalone--reader-cold-source-forms)
+    ,@(nelisp-boot-image-native-forms)
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -39428,11 +39421,23 @@ correctly."
             (path (nl_argv_word sp0 eff_idx))
             (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
             (arg3 (if (< (+ eff_idx 2) argc) (nl_argv_word sp0 (+ eff_idx 2)) 0))
+            ;; Ordinary commands restore the executable's own companion.
+            ;; Artifact/runtime-image commands own separate bootstrap paths;
+            ;; --embedded intentionally retains its bare-native test context.
+            (cold_image
+             (if (/= cold_override 0) cold_override
+               (if (= path 0) (nl_boot_image_companion)
+                 (if (or (= (nl_cli_help_command_p path) 1)
+                         (= (nl_cstr_eq_embedded path) 1)
+                         (= (nl_cstr_eq_neln_selftest path) 1)
+                         (= (nl_runtime_image_command_p path) 1)
+                         (= (nl_artifact_command_p path) 1))
+                     0 (nl_boot_image_companion)))))
             ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
             ;; exists (or `--cold-load-from PATH' named an image), load it into
             ;; the arena + bump the cursor past it so every following alloc
             ;; lands after the image (no clobber).  -1 = no marker / no flag.
-            (_cl (nl_cold_load_arena cold_override))
+            (_cl (nl_cold_load_arena cold_image))
             ;; A restored image must use this process's signal disposition.
             (_sigpipe_image (nl_os_sigpipe 1))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
@@ -39537,7 +39542,8 @@ correctly."
         (nl_bootstrap_make_mirror globals frames unbound)
         ;; cold path: replace the fresh empty globals with the loaded image's
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
-        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_override))
+        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
+        (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ;; PERF (2026-07-03): populate the two shared frame-push-scratch
@@ -43432,8 +43438,9 @@ The Wine prefix selects the coordinator's target OS and is never dumped."
 (defun nelisp-standalone--build-cold-image (binary)
   "Dump BINARY's post-prelude heap to `nelisp-standalone--cold-image-path'.
 Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0
-skips it.  The image is used only via an explicit `--cold-load-from PATH', and
-only when its trailer carries BINARY's own build digest, so a stale or foreign
+skips it. Ordinary Linux commands discover BINARY.cold through the actual
+executable path; other targets retain explicit `--cold-load-from PATH'.
+The trailer must carry BINARY's own build digest, so a stale or foreign
 file is rejected at load and startup falls back to the normal prelude boot.
 The dump runs in a scrubbed environment and a neutral directory: every
 per-process global the driver sets (argv, environment alist,

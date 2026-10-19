@@ -158,6 +158,11 @@ def main():
                 run = execute(["bwrap", "--ro-bind", "/", "/", "--tmpfs", ROOT,
                                "--chdir", directory, deployed, "--eval", expression], args.name + "-isolated")
                 assert run["rc"] == 0 and run["stdout"] == expected and not run["stderr"], run
+            script = Path(directory) / "boot-libraries-check.el"
+            shutil.copy2(ROOT / "test/standalone-boot-libraries-check.el", script)
+            run = execute(["bwrap", "--ro-bind", "/", "/", "--tmpfs", ROOT,
+                           "--chdir", directory, deployed, "--load", script], args.name + "-isolated-libraries")
+            assert run["rc"] == 0 and "checks=23 failures=0 PASS" in run["stdout"] and not run["stderr"], run
         result.update(mechanism="bwrap --tmpfs over build worktree; executable and sidecars copied to /tmp")
     elif args.mode == "smoke":
         result.update(smoke(binary, args.name + "-anvil"))
@@ -199,7 +204,10 @@ def main():
                                        env=dict(ENV, EVAL_BIN=str(binary)), timeout=540)
         result["verify"] = execute(["sh", "tools/ai/nelisp-ai.sh", "verify"], args.name + "-verify")
         result["anvil"] = smoke(binary, args.name + "-anvil")
-        assert result["standalone"]["rc"] == result["verify"]["rc"] == 0, result
+        (OUT / (args.name + "-e2e.json")).write_text(json.dumps(result, indent=2) + "\n")
+        if result["standalone"]["rc"] or result["verify"]["rc"]:
+            raise RuntimeError("S5 failed: standalone rc=%s, verify rc=%s; see target/boot-image/%s-e2e.json" %
+                               (result["standalone"]["rc"], result["verify"]["rc"], args.name))
     (OUT / (args.name + "-" + args.mode + ".json")).write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({k: v for k, v in result.items() if k not in ("rows", "baseline", "samples", "standalone", "verify", "stdout", "stderr")}))
 

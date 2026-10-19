@@ -1,0 +1,18 @@
+{
+  "listed_blocker": "A semantic difference that cannot yet be explained",
+  "test": "test/standalone-exit-stash-root-check.el",
+  "classification": "Unresolved regression in the new bootstrap. Stop at the brief's semantic-difference boundary; S5 remains FAIL. This is not classified as a GC implementation defect without further evidence.",
+  "trigger": "Adding EVAL_BIN=<candidate executable path> to the environment changes the result of the precise-root retention test, even without nice or timeout.",
+  "cases": [
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate3", "environment": "EVAL_BIN=$BIN", "exit": 1, "held_bytes": 0, "released_bytes": 0},
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "wrapper": "nice -n 10", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate3", "environment": "EVAL_BIN unset", "wrapper": "timeout 300", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "base-dynamic", "environment": "EVAL_BIN=$BIN", "boot": "source", "exit": 0, "held_bytes": 2241536, "released_bytes": 1576},
+    {"binary": "base-dynamic", "environment": "EVAL_BIN=$BIN", "boot": "explicit cold image", "exit": 0, "held_bytes": 2241200, "released_bytes": 1240},
+    {"binary": "candidate4", "environment": "EVAL_BIN=$BIN", "exit": 1, "held_bytes": 0, "released_bytes": 0}
+  ],
+  "reproduction": "sh tools/ai/reproduce-boot-image-blocker.sh",
+  "evidence": "target/boot-image/{new-plain,new-env,new-nice,new-timeout,base-source-env,base-cold-env}-stash.{out,err}; exit-stash-candidate4-env.{out,err}",
+  "other_verification": "The original ERT path shadowed GNU json.el, then exited from an embedded standalone driver after only 3255 collected tests. The repaired collector exposes baseline load-time failures: an unconfigured logb lane fixture (now an explicit skip), then nelisp-eln-registration-vectors-test.el requiring Linux syscall-direct in host Emacs. The same latter error is reproduced from an 8dbd495ae source archive with the same host harness adaptations. Existing check-tier parens/partial-inventory/fallback failures are not turned green."
+}

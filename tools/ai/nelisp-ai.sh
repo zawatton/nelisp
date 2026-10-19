@@ -255,11 +255,13 @@ run_ert_gate() {
     started=$(date +%s)
     set +e
     # shellcheck disable=SC2046,SC2086
+    # Keep GNU's host tooling API before standalone packages shadow json.el.
     NELISP_GATE_NAME="$gate_name" \
     NELISP_GATE_COMMAND="tools/ai/nelisp-ai.sh $gate_name" \
-        "$EMACS" --batch -Q $(load_path_args) \
+        "$EMACS" --batch -Q -l json $(load_path_args) \
             --eval '(setq load-prefer-newer t)' \
-            -l ert $loads \
+            -l ert -l "$here/nelisp-ert-collection.el" $loads \
+            --eval '(nelisp-ert-collection-finish)' \
             -l "$here/nelisp-ert-gate.el" -f nelisp-ert-gate-run
     code=$?
     set -e
