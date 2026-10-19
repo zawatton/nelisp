@@ -45,6 +45,8 @@
 ;;; Code:
 
 (list
+ ;; Float steps use the same typed writer as binary float arithmetic.
+ (list (1+ 2.5) (1- 2.5) (1+ -2.5) (1- -2.5))
  ;; The protected form and handler can both collect. Their error/body slot
  ;; must remain live through success, a caught signal and a propagated throw.
  (list
