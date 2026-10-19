@@ -15,6 +15,92 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 SUITES = {"standalone", "ert", "make-test", "repl", "static", "verify"}
+FULL_CHECKS = {
+    "standalone-checks": ("STANDALONE-CHECKS PASS", 1),
+    "standalone-shallow-binding-check": ("SHALLOW-BINDING failures=0 PASS", 1),
+    "standalone-shallow-binding-dyn-check": ("SHALLOW-BINDING-DYN failures=0 PASS", 1),
+    "standalone-fx-call-shape-check": ("FX-CALL-SHAPE failures=0 PASS", 1),
+    "standalone-bytecode-word-check": ("BYTECODE-WORD PASS 145/145", 1),
+    "fx-spike": ("FX-SPIKE failures=0 PASS", 1),
+    "fx-corpus": ("FX-CORPUS PASS", 1),
+    "thread-standalone": ("nelisp-thread-standalone-smoke: PASS", 1),
+    "thread-allocating": ("nelisp-thread-allocating-standalone-smoke: PASS", 6),
+    "thread-percpu": ("nelisp-thread-percpu-roots-smoke: PASS", 6),
+    "thread-mirror-guard": ("nelisp-thread-mirror-guard-smoke: PASS", 1),
+}
+
+
+def full_suite_inputs():
+    paths = {"tools/ai/boot-image-full-suite.sh", "tools/ai/boot-image-differential.py",
+             "tools/ai/boot-image-check.py", "test/perf/standalone-checks.sh",
+             "test/perf/standalone-checks-known-red.txt", "test/perf/fx-corpus-check.sh",
+             "test/perf/fx-corpus.el", "test/perf/fx-spike-check.el", "lisp/nelisp-boot-libraries.el"}
+    paths.update(str(p.relative_to(ROOT)) for p in (ROOT / "test").glob("standalone-*-check.el"))
+    paths.update("tools/" + name for name in ("nelisp-thread-standalone-smoke.el",
+                 "nelisp-thread-allocating-standalone-smoke.el", "nelisp-thread-percpu-roots-smoke.el",
+                 "nelisp-thread-mirror-guard-smoke.el"))
+    return paths
+
+
+def check_full_suite(receipt):
+    """Require all eval/core checks, including every constrained repetition."""
+    require(receipt["rc"] == 0 and not receipt.get("timed_out"), "Full suite did not finish")
+    output = read_artifact(receipt["stdout"])
+    require(not read_artifact(receipt["stderr"]).strip(), "Full suite stderr")
+    require("BOOT-IMAGE-FULL-SUITE mode=full checked=11 findings=0" in output,
+            "Missing full-suite completion")
+    rows = [line.split("\t") for line in read_artifact(receipt["results"]).splitlines()]
+    require(len(rows) == 11 and {r[0] for r in rows} == set(FULL_CHECKS), "Incomplete full suite")
+    require(all(len(r) == 3 and r[1] == "0" for r in rows), "Failed full-suite child")
+    require(set(receipt["logs"]) == set(FULL_CHECKS), "Missing full-suite logs")
+    logs = {name: read_artifact(item) for name, item in receipt["logs"].items()}
+    for name, (marker, count) in FULL_CHECKS.items():
+        # Some standalone drivers also print their returned string.  Count
+        # only the anchored success line, never that quoted return value.
+        hits = sum(line.startswith(marker) for line in logs[name].splitlines())
+        require(hits == count, "Incomplete full-suite check: " + name)
+        require(not re.search(r"nelisp: uncaught|^backtrace|\bFAIL\b", logs[name], re.M),
+                "Error hidden in full-suite check: " + name)
+        if name.startswith("thread-"):
+            counts = re.findall(r"^GATE-COUNT checked=([1-9][0-9]*) findings=0$", logs[name], re.M)
+            require(len(counts) == count, "Missing thread case counts: " + name)
+    statuses = known_red_children(logs["standalone-checks"])
+    require(statuses <= {("test/standalone-maphash-sparse-check.el", "1")},
+            "Only sparse-maphash's semantic failure may be exempted")
+    expected = {p.stem for p in (ROOT / "test").glob("standalone-*-check.el")}
+    require(len(expected) >= 31, "Standalone case inventory shrank")
+    require(set(receipt["standalone_children"]) == expected, "Incomplete standalone children")
+    for name, streams in receipt["standalone_children"].items():
+        out, err = read_artifact(streams["stdout"]), read_artifact(streams["stderr"])
+        require(not err.strip(), "Standalone child stderr: " + name)
+        if name == "standalone-maphash-sparse-check" and statuses:
+            require("order=t update=t FAIL" in out and "(limit 5)" in out,
+                    "Sparse-maphash failure changed")
+        elif name == "standalone-cl-loop-gnu-check":
+            require(out == read_artifact(receipt["cl_loop_baseline"]) and len(out.splitlines()) >= 35,
+                    "CL loop output changed or incomplete")
+        else:
+            marker = {"standalone-handler-bind-t-check": "HANDLER-BIND-T-OK",
+                      "standalone-cl-defstruct-lazy-default-check": "CL-DEFSTRUCT-LAZY-DEFAULT-OK"}.get(name, "PASS")
+            require(marker in out and not re.search(r"\bFAIL\b", out),
+                    "Missing standalone child verdict: " + name)
+    corpus = receipt["fx_corpus"]
+    require(set(corpus) == {"vm1", "in1", "vm7", "in7", "diff1", "diff7"},
+            "Incomplete FX corpus raw outputs")
+    for seed in (1, 7):
+        require("FX-CORPUS seed %d: vm_rc=0 interpreter_rc=0" % seed in logs["fx-corpus"],
+                "FX corpus child exit missing")
+        vm, interp = (read_artifact(corpus[k + str(seed)]) for k in ("vm", "in"))
+        require(not read_artifact(corpus["diff" + str(seed)]), "FX corpus differs")
+        calls = lambda text: [line for line in text.splitlines() if " => " in line]
+        require(len(calls(vm)) >= 600 and calls(vm) == calls(interp), "FX corpus calls incomplete")
+        coverage = re.findall(r"^FX-CORPUS covered=(\d+)/(\d+)$", vm, re.M)
+        require(len(coverage) == 1 and int(coverage[0][1]) > 0 and
+                int(coverage[0][0]) * 100 >= int(coverage[0][1]) * 60, "FX coverage missing or low")
+        interpreter_coverage = re.findall(r"^FX-CORPUS covered=(\d+)/(\d+)$", interp, re.M)
+        require(len(interpreter_coverage) == 1 and interpreter_coverage[0][1] == coverage[0][1],
+                "FX interpreter completion missing")
+        require(not re.search(r"nelisp: uncaught|^backtrace", vm + interp, re.M), "FX corpus error")
 
 
 def require(value, message):
@@ -115,7 +201,15 @@ def compare(pairs):
 def check(evidence):
     require(evidence["baseline_commit"] == "9ad3c5588d6f007d081a7497fc699a409ee03b93",
             "Unexpected baseline commit")
+    read_artifact(evidence["candidate_source_patch"])
+    require(digest(ROOT / "scripts/nelisp-standalone-build.el") == evidence["candidate_source_sha256"],
+            "Candidate build source changed")
+    for artifact in evidence["round4_runtime_evidence"]:
+        read_artifact(artifact)
+    read_artifact(evidence["round4_audit"]["mutations"])
+    read_artifact(evidence["round4_supplementary_check"]["stdout"])
     binary = Path(os.environ["BOOT_IMAGE_BIN"]).resolve()
+    require(set(evidence["artifacts"]) == {"baseline", "candidate"}, "Missing dynamic side")
     require(digest(binary) == evidence["artifacts"]["candidate"][""]["sha256"],
             "BOOT_IMAGE_BIN differs from measured candidate")
     for side, artifacts in evidence["artifacts"].items():
@@ -123,11 +217,19 @@ def check(evidence):
         for suffix, artifact in artifacts.items():
             path = Path(str(binary) + suffix) if side == "candidate" else ROOT / artifact["path"]
             require(digest(path) == artifact["sha256"], "Changed build artifact: " + str(path))
+    require(set(evidence["static_artifacts"]) == {"baseline", "candidate"}, "Missing static side")
     for artifacts in evidence["static_artifacts"].values():
+        require(set(artifacts) == {"", ".cold", ".native-startup.el"}, "Incomplete static trio")
         for artifact in artifacts.values():
             require(digest(ROOT / artifact["path"]) == artifact["sha256"], "Changed static artifact")
+    require(full_suite_inputs() <= {item["path"] for item in evidence["harness"]}, "Missing full-suite input hashes")
     for artifact in evidence["harness"]:
         read_artifact(artifact)
+    identities = {"dynamic": {suffix: item["sha256"] for suffix, item in evidence["artifacts"]["candidate"].items()},
+                  "static": {suffix: item["sha256"] for suffix, item in evidence["static_artifacts"]["candidate"].items()}}
+    for receipt in [evidence["full_suite"]] + [sides["candidate"] for sides in evidence["suites"].values()]:
+        require(receipt["identities"] == identities, "Suite ran on a different candidate trio")
+    check_full_suite(evidence["full_suite"])
     supplementary = evidence["supplementary_check_tier"]
     compile_errors = {}
     census_errors = {}
@@ -162,6 +264,8 @@ def check(evidence):
                 "Sparse-maphash failure differs from baseline")
     for side in ("baseline", "candidate"):
         smoke = evidence["anvil"][side]
+        require(smoke["identities"] == {suffix: item["sha256"] for suffix, item in evidence["artifacts"][side].items()},
+                "Anvil smoke ran on a different dynamic trio: " + side)
         require(smoke["tools"] == 40 and smoke["startup_seconds"] > 0, "Anvil smoke failed")
         messages = []
         for line in read_artifact(smoke["stdout"]).splitlines():
@@ -251,7 +355,7 @@ def main():
         return
     started = time.monotonic()
     count = check(json.loads(args.evidence.read_text()))
-    print("S5 DIFFERENTIAL PASS suites=6 known-red=%d new-failures=0 tools=40 seconds=%.3f" %
+    print("S5 DIFFERENTIAL PASS suites=6 full-checks=11 thread-runs=14 known-red=%d new-failures=0 tools=40 seconds=%.3f" %
           (count, time.monotonic() - started))
 
 

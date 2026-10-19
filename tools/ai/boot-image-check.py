@@ -18,7 +18,8 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/boot-image"
 OUT.mkdir(parents=True, exist_ok=True)
-ENV = dict(os.environ, TMPDIR=str(ROOT / "target/tmp"), PYTHONDONTWRITEBYTECODE="1")
+ENV = dict(os.environ, TMPDIR=str(ROOT / "target/tmp"),
+           XDG_CACHE_HOME=str(ROOT / "target/tmp/cache"), PYTHONDONTWRITEBYTECODE="1")
 Path(ENV["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
 
@@ -165,7 +166,12 @@ def main():
             assert run["rc"] == 0 and "checks=23 failures=0 PASS" in run["stdout"] and not run["stderr"], run
         result.update(mechanism="bwrap --tmpfs over build worktree; executable and sidecars copied to /tmp")
     elif args.mode == "smoke":
+        identities = {suffix: hashlib.sha256(Path(str(binary) + suffix).read_bytes()).hexdigest()
+                      for suffix in ("", ".cold", ".native-startup.el")}
         result.update(smoke(binary, args.name + "-anvil"))
+        assert identities == {suffix: hashlib.sha256(Path(str(binary) + suffix).read_bytes()).hexdigest()
+                              for suffix in identities}, "Anvil build changed during smoke"
+        result["identities"] = identities
     elif args.mode == "apportion":
         rows = []
         receipt = OUT / "apportion.json"
@@ -200,9 +206,9 @@ def main():
                 print(row["feature"], row["ir"], flush=True)
         result.update(rows=rows, baseline=baseline)
     else:
-        # Round 3 explicitly changes S5 to differential acceptance. These
-        # receipts retain both complete outputs and build identities; do not
-        # mistake a shared repository failure for repository-wide green.
+        # Round 4 requires the full eval/core suite as well as the paired
+        # comparisons. Receipts retain raw outputs and build identities;
+        # shared repository failures are not repository-wide green.
         result["differential"] = execute(
             ["python3", "tools/ai/boot-image-differential.py"],
             args.name + "-differential", env=dict(ENV, BOOT_IMAGE_BIN=str(binary)))
