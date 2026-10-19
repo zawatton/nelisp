@@ -2268,6 +2268,13 @@
                           (vector index '(a . b)) 2)
              (error e)) answers))
    (nreverse answers))
+ ;; WORD-valued capture traversal keeps shared cells and excludes formals.
+ (eval '(let ((saved (list 'capture)))
+          (let ((read (lambda (&rest args) (list saved args)))
+                (write (lambda (value) (setq saved value))))
+            (funcall write '(updated))
+            (garbage-collect)
+            (funcall read 'first 'second))) t)
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here
