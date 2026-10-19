@@ -219,6 +219,17 @@ censuses without these rows cannot pass S6.2. This Round 3 criteria change
 keeps the denominator at 21. The reader's pool-slot reverse adapters remain
 debt until its producers and consumers carry WORDs directly.
 
+The conversion-call counters use a complete expression walk as well. The
+historical general census walk skipped the first binding initializer; this
+hid =m5_fx_slot_word='s direct decode. Direct/reverse conversion calls now
+visit every initializer, including extern calls, while binding names and
+quoted data remain excluded. Non-conversion idioms retain their historical
+baseline. Both build and from-dump use the same conversion walker and emit a
+zero =conversion-walk-v2= certificate per unit; S6.2 rejects older records.
+This criteria correction adds one dependency to the array checkpoint:
+TOTAL 1486 -> 1487 and S6.2 66 -> 67. Earlier checkpoint numbers use the old
+walk. The denominator and threshold remain 21 and zero respectively.
+
 - Every converted =F= keeps its old name and (rc, OUT) ABI as a one-line
   adapter: =(defun F (.. out) (nl_abi_word_to_rc (F_w .. 0) out))=.
   =nl_abi_word_to_rc= stores an immediate with =nl_sci_store_imm= and a

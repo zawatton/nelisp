@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Controls for inline box decoding, independent of adapter call names."""
+"""Controls for conversion calls, inline decoding and census certificates."""
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location(
@@ -11,6 +15,64 @@ spec.loader.exec_module(census)
 
 
 class InlineCensusTest(unittest.TestCase):
+    def idioms(self, body):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=root / "target/tmp") as directory:
+            directory = Path(directory)
+            source = directory / "dump.jsonl"
+            output = directory / "census.tsv"
+            source.write_text(json.dumps({"unit": "synthetic.o", "source": [
+                "seq", ["defun", "synthetic", [], body]]}) + "\n")
+            subprocess.run([sys.executable, str(root / "tools/ai/box-census.py"),
+                            "from-dump", str(source), str(output)], check=True)
+            return census.tally(census.load(output))[0]["idioms"]
+
+    def test_direct_conversion_in_first_binding(self):
+        self.assertEqual(1, self.idioms([
+            "let*", [["word", ["nl_val_store_word", "view"]]], "word"
+        ]).get("nl_val_store_word", 0))
+
+    def test_reverse_conversion_in_first_binding(self):
+        self.assertEqual(1, self.idioms([
+            "let*", [["word", ["nl_abi_rc_to_word", ["producer", "out"], "out"]]], "word"
+        ]).get("nl_abi_rc_to_word", 0))
+
+    def test_external_conversion_in_first_binding(self):
+        self.assertEqual(1, self.idioms([
+            "let*", [["word", ["extern-call", "nl_val_store_word", "view"]]], "word"
+        ]).get("nl_val_store_word", 0))
+
+    def test_binding_name_and_quoted_data_are_not_calls(self):
+        idioms = self.idioms([
+            "let*", [["nl_val_store_word", 3]],
+            ["quote", ["nl_abi_rc_to_word", "rc", "out"]]])
+        self.assertEqual(0, idioms.get("nl_val_store_word", 0))
+        self.assertEqual(0, idioms.get("nl_abi_rc_to_word", 0))
+
+    def test_gate_rejects_older_conversion_walk(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=root / "target/tmp") as directory:
+            source = Path(directory) / "old.tsv"
+            source.write_text("synthetic.o\tf\tdefun\t1\n"
+                              "synthetic.o\tf\tinline-box-to-word\t0\n")
+            result = subprocess.run([str(root / "tools/ai/abi-merge-gate.sh"),
+                                     "store-word", str(source), "0"], capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn(b"regenerate", result.stderr)
+
+    def test_gate_accepts_a_certified_zero_source(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=root / "target/tmp") as directory:
+            source = Path(directory) / "dump.jsonl"
+            output = Path(directory) / "census.tsv"
+            source.write_text(json.dumps({"unit": "synthetic.o", "source": [
+                "seq", ["defun", "f", [], 3]]}) + "\n")
+            subprocess.run([sys.executable, str(root / "tools/ai/box-census.py"),
+                            "from-dump", str(source), str(output)], check=True)
+            result = subprocess.run([str(root / "tools/ai/abi-merge-gate.sh"),
+                                     "store-word", str(output), "0"], capture_output=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+
     def count(self, body):
         return census.inline_conversions(["defun", "synthetic", [], body])["synthetic"]
 

@@ -1687,11 +1687,12 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
 (defconst nelisp-standalone--box-census-idioms
   '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
     nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
-    wf_copy32 nl_root_reserve nl_val_store_word nl_sci_store_imm nl_abi_rc_to_word)
+    wf_copy32 nl_root_reserve nl_sci_store_imm)
   "Call heads counted by the box-migration census (see
 `nelisp-standalone--box-census-record').  `(alloc-bytes 32 8)' is counted
 separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here
-are counted under their own names.")
+are counted under their own names. Conversion call heads use the shared
+complete Python walk, which also visits first binding initializers.")
 
 (defun nelisp-standalone--box-dump-json (x)
   "X as a JSON-encodable value for the Doc 215 rewrite engine.
@@ -1784,16 +1785,16 @@ twice appears twice; readers keep the last occurrence of each unit."
         (with-temp-buffer
           (dolist (r (nreverse rows))
             (insert (format "%s\t%s\t%s\t%d\n" name (nth 0 r) (nth 1 r) (nth 2 r))))
-          ;; Use the same structural detector as from-dump. Zero rows certify
-          ;; that inline conversions were checked, even after the last removal.
+          ;; Use the shared complete conversion walk and inline detector.
+          ;; Zero certificate rows distinguish this from older partial walks.
           (let ((dest (current-buffer))
                 (script (expand-file-name "tools/ai/box-census.py"
                                           nelisp-standalone--repo-root)))
             (with-temp-buffer
               (insert (json-encode (nelisp-standalone--box-dump-json source)))
               (unless (= 0 (call-process-region (point-min) (point-max) "python3"
-                                                nil dest nil script "inline-rows" name))
-                (error "Inline box census failed for %s" name))))
+                                                nil dest nil script "conversion-rows" name))
+                (error "Conversion census failed for %s" name))))
           (let ((coding-system-for-write 'utf-8-unix))
             (write-region (point-min) (point-max) file t 'silent)))))))
 

@@ -91,6 +91,8 @@ s, _ = c.tally(c.load(sys.argv[1]))
 keys = ("nl_val_store_word", "nl_abi_rc_to_word", "inline-box-to-word")
 if not all(any(k == "inline-box-to-word" for _, k, _ in rows) for rows in c.load(sys.argv[1]).values()):
     sys.exit("census predates inline-conversion checking; regenerate from the build dump")
+if not all(any(k == c.CONVERSION_WALK_VERSION for _, k, _ in rows) for rows in c.load(sys.argv[1]).values()):
+    sys.exit("census predates complete conversion walking; regenerate from the build dump")
 for family, counts in s["families"].items():
     print("family", family, " ".join(f"{k}={counts.get(k, 0)}" for k in keys))
 n = sum(s["idioms"].get(k, 0) for k in keys)

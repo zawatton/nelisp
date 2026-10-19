@@ -26,6 +26,8 @@ DEBT = ["alloc-bytes-32-8", "nl_cons_car_ptr", "nl_cons_cdr_ptr",
         "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word",
         "inline-box-to-word"]
 CONS = ["nl_cons_car_ptr", "nl_cons_cdr_ptr"]
+CONVERSION_CALLS = ("nl_val_store_word", "nl_abi_rc_to_word")
+CONVERSION_WALK_VERSION = "conversion-walk-v2"
 
 # Order matters: first match wins.  Stage 1 = the first five.
 FAMILIES = [
@@ -112,17 +114,69 @@ def inline_conversions(source):
     return result
 
 
+def conversion_rows(source):
+    """Complete conversion-call walk, plus the shared inline detector.
+
+    Binding initializers are expressions; binding names are not call heads.
+    Keep the historical traversal for the other census idioms so their
+    baseline is unchanged. The zero certificate lets S6.2 reject old scans.
+    """
+    rows = {}
+
+    def visit(x, fn="-"):
+        if not isinstance(x, list) or not x:
+            return
+        head = x[0]
+        if head in ("quote", "$str", "$vec"):
+            return
+        if head == "defun":
+            for body in x[3:]:
+                visit(body, x[1])
+            return
+        if head in ("let", "let*"):
+            if isinstance(x[1], list):
+                for binding in x[1]:
+                    if isinstance(binding, list):
+                        for value in binding[1:]:
+                            visit(value, fn)
+            for body in x[2:]:
+                visit(body, fn)
+            return
+        if head == "cond":
+            for clause in x[1:]:
+                if isinstance(clause, list):
+                    for expression in clause:
+                        visit(expression, fn)
+            return
+        call = x[1] if head == "extern-call" and len(x) > 1 else head
+        if isinstance(call, str) and call in CONVERSION_CALLS:
+            key = (fn, call)
+            rows[key] = rows.get(key, 0) + 1
+        for child in x:
+            visit(child, fn)
+
+    visit(source)
+    inline = inline_conversions(source)
+    for fn, count in inline.items():
+        rows[(fn, "inline-box-to-word")] = count
+    if not inline:
+        rows[("-", "inline-box-to-word")] = 0
+    rows[("-", CONVERSION_WALK_VERSION)] = 0
+    return rows
+
+
 def load(path):
     units, last = {}, None
-    for line in open(path, encoding="utf-8"):
-        parts = line.rstrip("\n").split("\t")
-        if len(parts) != 4:
-            continue
-        unit, fn, idiom, n = parts
-        if unit != last:
-            units[unit] = []          # a new record of UNIT replaces the old one
-            last = unit
-        units[unit].append((fn, norm(idiom), int(n)))
+    with open(path, encoding="utf-8") as source:
+        for line in source:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) != 4:
+                continue
+            unit, fn, idiom, n = parts
+            if unit != last:
+                units[unit] = []      # a new record of UNIT replaces the old one
+                last = unit
+            units[unit].append((fn, norm(idiom), int(n)))
     return units
 
 
@@ -137,6 +191,8 @@ def tally(units):
     by_idiom, by_family, by_unit, by_fn, defuns = {}, {}, {}, {}, 0
     for unit, rows in units.items():
         for fn, idiom, n in rows:
+            if idiom == CONVERSION_WALK_VERSION:
+                continue
             if idiom == "defun":
                 defuns += 1
                 continue
@@ -161,6 +217,10 @@ def main(a):
         for fn, n in inline_conversions(d).items():
             print(f"{path}\t{fn}\tinline-box-to-word\t{n}")
         return
+    if cmd == "conversion-rows":
+        for (fn, idiom), n in conversion_rows(json.load(sys.stdin)).items():
+            print(f"{path}\t{fn}\t{idiom}\t{n}")
+        return
     if cmd == "from-dump":
         units = {}
         for line in open(path, encoding="utf-8"):
@@ -184,17 +244,16 @@ def main(a):
                         idiom = "alloc-bytes-32-8"
                     elif isinstance(head, str) and (head in DEBT or head.endswith("_clone_into")):
                         idiom = norm(head)
-                    if idiom:
+                    if idiom and idiom not in CONVERSION_CALLS:
                         key = (fn, idiom)
                         rows[key] = rows.get(key, 0) + 1
                     # Match the build recorder's cdr traversal, including its
-                    # handling of binding lists. Changing that is a separate
-                    # census definition change requiring a new baseline.
+                    # handling of binding lists, for non-conversion idioms.
+                    # Critical conversion calls use the complete walk below.
                     for y in x[1:]:
                         walk(y, fn)
                 walk(source)
-                for fn, n in inline_conversions(source).items():
-                    rows[(fn, "inline-box-to-word")] = n
+                rows.update(conversion_rows(source))
                 for (fn, idiom), n in rows.items():
                     out.write(f"{unit}\t{fn}\t{idiom}\t{n}\n")
         return

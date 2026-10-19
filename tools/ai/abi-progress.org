@@ -169,6 +169,14 @@ cmd: for n in standalone allocating-standalone percpu-roots mirror-guard; do tim
 cmd: tools/ai/abi-merge-gate.sh census "$ABI_CENSUS" 1676
 
 ** S6.2 No box-to-word dependency left (direct stores, reverse adapters and inline decoding)
+# conversion-walk-v2: complete initializer traversal and per-unit certificate.
+# Array checkpoint restated under this definition: TOTAL 1487; S6.2 67
+# (45 direct + 17 reverse + 5 inline). The previously missed direct call is
+# m5_fx_slot_word. Other idioms retain their original traversal/baseline;
+# historical entries above retain the values measured by the older walker.
+# 12 controls pass; three initializer cases and the stale-zero census gate
+# are red before the correction. Runtime sources differ only in two build
+# provenance hashes; a body mutation is rejected by the equality check.
 #+REQUIRES: ABI_CENSUS
 cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 
