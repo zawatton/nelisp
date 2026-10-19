@@ -2941,6 +2941,11 @@ directory tracks the tree rather than accumulating every key ever built."
       (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
       (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 32) (* idx 8)) 0))
+    ;; The permanent trailing WORD retains the type before its legacy view
+    ;; is made. Public slot indexes and the inline type view stay unchanged.
+    (defun nl_record_type_word (record)
+      (let* ((box (ptr-read-u64 record 8)))
+        (ptr-read-u64 (+ (ptr-read-u64 box 32) (* (ptr-read-u64 box 48) 8)) 0)))
     (defun nl_word_int (w) (sar w 2))
     ;; Doc 146 §3.0 step 3/4: store a 32-byte storage Sexp at SLOT into a passing
     ;; value WORD.  Immediate tags collapse to their word (Int -> (n<<2)|1, Nil
@@ -6455,7 +6460,7 @@ REPL-facing module it feeds."
                       (seq (nl_compact_rw_slot old)
                            (nl_compact_rw_edge (+ old 32))
                            (nl_compact_rw_block data_old)
-                           (nl_compact_rw_vec_slots data_old 0 len)))))
+                           (nl_compact_rw_vec_slots data_old 0 (+ len 1))))))
               (if (= tag 11)
                   ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged).
                   ;; rw_edge(old+0) rewrites the box+0 value-word to
@@ -9029,7 +9034,7 @@ leave symbols unresolved at link time."
       (let* ((tag (ptr-read-u8 v 0)))
         (if (or (= tag 12) (= tag 17))
             (let* ((box (ptr-read-u64 v 8))
-                   (typ (bf_expand_slot_w box 0))   ; type_tag @ box+0 (box viewed as a Sexp slot)
+                   (typ (bf_expand_word_w (nl_record_type_word v) 0))
                    (sl (bf_expand_words_list_w (ptr-read-u64 box 32) 0 (ptr-read-u64 box 48) 0))
                    (cell (alloc-bytes 32 8)))
               (seq
@@ -9046,7 +9051,7 @@ leave symbols unresolved at link time."
                   (seq
                    (nelisp_cons_construct ca cd cell)
                    cell))
-              (nl_val_store_word v))))))
+              v)))))
     (defun bf_record_expand_w (args _pad)
       (bf_expand_word_w (nl_cons_car_word args) 0))
     ;; Portable arena telemetry:
@@ -11213,7 +11218,10 @@ leave symbols unresolved at link time."
                       (let ((data_ptr (ptr-read-u64 box 32)) (len (ptr-read-u64 box 48)))
                         (nl_seq2 (nl_fa_slot box ds span dest cin cout dir)
                           (nl_seq2 (nl_fa_field (+ box 32) data_ptr ds span dest cin cout dir)
-                                   (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir)))))))
+                                   ;; The trailing canonical type WORD is an
+                                   ;; image edge too, even when it points back
+                                   ;; into the already visited record payload.
+                                   (nl_fa_vec_slots data_ptr 0 (+ len 1) ds span dest cin cout dir)))))))
               (if (= tag 11)
                   (let ((box (ptr-read-u64 sp 8)))
                     (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
@@ -18015,8 +18023,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; STK[SP-1].  Answers the result as a word in *RESW, or a non-zero rc
     ;; with the signal stashed.  FSLOT and OSLOT are the running activation's
     ;; two rooted scratch slots (`m5_fx_run_body'): the callee's definition
-    ;; and its result.  OSLOT is reused by the next call-out, so a heap result
-    ;; is moved into a fresh box before its word is answered.
+    ;; and its legacy scratch. Results go directly to the rooted RESW word;
+    ;; reusing OSLOT on a later call cannot overwrite an earlier result.
     (defun m5_fx_callout (env sym stk sp argc resw fslot oslot nslot _pad)
       (let* ((rc (nelisp_env_lookup_function (+ env 0) (+ env 64) sym fslot)))
         (if (/= rc 0) (nl_cons_stash_void_function env sym)
@@ -18030,17 +18038,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; The backtrace frame names SYM, as the interpreter's frame for a call
     ;; form names its operator (`nl_apply_function' would name FN's value).
     (defun m5_fx_call_list (sym fn lst env oslot resw)
-      (let* ((arc (nl_n4_named_apply sym fn lst env oslot)))
-        (if (/= arc 0) arc (m5_fx_take oslot resw))))
+      (m5_fx_take (nl_n4_named_apply_w sym fn lst env 0) resw))
     ;; An argument list WORD as the Sexp slot the apply path still takes:
     ;; a cons WORD is its own 32-byte box; nil is written into NSLOT.
     (defun m5_fx_list_slot (w nslot)
       (if (= w 3) (seq (wf_write_nil nslot) nslot) w))
-    ;; The value in result slot OSLOT as a durable word in *RESW.  A heap
-    ;; value is copied into a fresh box: the apply path still answers through
-    ;; an out slot, and OSLOT is reused by the next call-out (Doc 215 shim).
-    (defun m5_fx_take (oslot resw)
-      (seq (ptr-write-u64 resw 0 (m5_fx_slot_word oslot 0)) 0))
+    ;; Publish an already canonical result into the VM's rooted result word.
+    (defun m5_fx_take (word resw)
+      (if (= word 0) 1 (seq (ptr-write-u64 resw 0 word) 0)))
     ;; A fresh list of the ARGC words ending at STK[SP-1], as a WORD (nil 3).
     ;; Each cons holds the word itself: an immediate is not boxed, and a heap
     ;; word (a durable 32-byte box, as every VM word is) is shared rather than
@@ -18237,28 +18242,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (setq done (if (= (ptr-read-u64 cur 0) 0) 1 2)))))
          (if (= done 1) (if (> n 255) -1 n) -1))))
     (defun m5_fx_interp_run_w (rec fn tail env argc code scratch)
-      (let* ((base (m5_fx_root_block env argc)))
-        (if (and (= base 0) (> argc 0)) 2
+      (let* ((base (m5_fx_arg_words env argc)))
+        (if (and (= base 0) (> argc 0)) 0
           (let* ((rc (m5_fx_eval_forms tail env base 0)))
             (if (/= rc 0) 0
               (seq
                (m5_fx_frame_lazy env base argc 0)
                (let* ((word (m5_fx_run_w (nl_vector_slot_word rec 0)
                               (sar (nl_vector_slot_word rec 1) 2)
-                              env 0 0 code (if (= argc 0) 0 (+ base 1)) 0)))
+                              env 0 0 code (if (= argc 0) 0 base) 0)))
                  (if (= word 2)
                      (nl_n4_direct_apply_w fn
                       (m5_fx_list_slot (m5_fx_slot_list base argc) scratch) env 0)
                    word))))))))
     (defun m5_fx_interp_run (rec fn tail env out argc code scratch)
-      (let* ((base (m5_fx_root_block env argc)))
-        (if (if (= base 0) (> argc 0) 0) -3
+      (let* ((base (m5_fx_arg_words env argc)))
+        (if (if (= base 0) (> argc 0) 0) 1
           (let* ((rc (m5_fx_eval_forms tail env base 0)))
             (if (/= rc 0) rc
               (seq (m5_fx_frame_lazy env base argc 0)
                    (m5_fx_interp_run_done
                     (m5_fx_run (nl_vector_slot_word rec 0) (sar (nl_vector_slot_word rec 1) 2)
-                               env out 0 code (if (= argc 0) 0 (+ base 1)) 0)
+                               env out 0 code (if (= argc 0) 0 base) 0)
                     fn base argc env out scratch 0)))))))
     ;; -3 from the run (declined at entry, no effect yet): apply FN to the
     ;; already evaluated arguments as the interpreter would have.
@@ -18277,20 +18282,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (if (/= s (+ first (* k 32))) (setq ok 0) 0))
                 (setq k (+ k 1))))
          (if (= ok 1) first 0))))
-    ;; Evaluate the forms of TAIL into the slots from BASE, as
-    ;; `nl_eval_arg_list_drive' does each element.  Answers 0 or the rc.
+    ;; One rooted vector owns the evaluated argument WORDs. It remains rooted
+    ;; through VM execution, fallback apply and lazy backtrace materialization.
+    (defun m5_fx_arg_words (env n)
+      (if (= n 0) 0
+        (let* ((root (nl_root_reserve_checked env)))
+          (if (= root 0) 0
+            (seq (vector-make n root)
+                 (ptr-read-u64 (ptr-read-u64 root 8) 8))))))
+    ;; Evaluate forms once and publish each WORD before the next evaluation.
     (defun m5_fx_eval_forms (tail env base _pad)
       (let* ((cur tail) (k 0) (rc 0) (w 0))
         (seq
          (while (if (= rc 0) (if (= (logand cur 1) 0) (= (ptr-read-u64 cur 0) 7) 0) 0)
-           (seq (setq w (ptr-read-u64 (ptr-read-u64 cur 8) 0))
-                (if (< (nl_val_tag w) 4) (nl_sexp_clone_into w (+ base (* k 32)))
-                  (let ((ew (nelisp_eval_call_w w env 0)))
-                    (if (= ew 0) (setq rc 1)
-                      (if (= (logand ew 1) 0) (wf_copy32 (+ base (* k 32)) ew)
-                        (nl_sci_store_imm ew (+ base (* k 32)))))))
+           (seq (setq w (nl_cons_car_word cur))
+                (let* ((ew (if (< (nl_val_tag w) 4) w (nelisp_eval_call_w w env 0))))
+                  (if (= ew 0) (setq rc 1)
+                    (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
-                (setq cur (ptr-read-u64 (ptr-read-u64 cur 8) 8))))
+                (setq cur (nl_cons_cdr_word cur))))
          rc)))
     ;; The cons evaluator's frame for this call (the top one, as
     ;; `nl_n4_direct_apply' assumes) now holds evaluated arguments.
@@ -18301,14 +18311,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((frame (nl_n4_record state (- (ptr-read-u64 state 0) 1))))
               (seq (wf_write_nil (+ frame 32))
                    (ptr-write-u64 frame 112 1)
-                   (ptr-write-u64 frame 152 (if (= argc 0) 0 (+ (* (+ base 1) 256) argc)))
+                   (ptr-write-u64 frame 152 (if (= argc 0) 0 (+ (* base 256) argc)))
                    0))))))
-    ;; A fresh list of the values in the N slots from BASE, as a WORD.
+    ;; A fresh list of the N argument WORDs from BASE.
     (defun m5_fx_slot_list (base n)
       (let* ((lst 3) (k (- n 1)))
         (seq
          (while (>= k 0)
-           (let* ((w (m5_fx_slot_word (+ base (* k 32)) 0))
+           (let* ((w (m5_fx_slot_word (+ base (* k 8)) 0))
                   (box (nl_alloc_consbox)) (cell (alloc-bytes 32 8)))
              (seq (ptr-write-u64 box 0 w)
                   (ptr-write-u64 box 8 lst)
@@ -18319,13 +18329,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (setq lst cell)
                   (setq k (- k 1)))))
          lst)))
-    ;; The value in SLOT as a durable word: a heap value is copied into a
-    ;; fresh box, since SLOT is a reused rooted slot, not the object's box.
+    ;; SLOT addresses a WORD in the rooted argument vector, never a view.
     (defun m5_fx_slot_word (slot _pad)
-      (let* ((w (nl_val_store_word slot)))
-        (if (= w slot)
-            (let* ((box (alloc-bytes 32 8))) (seq (wf_copy32 box slot) box))
-          w)))
+      (ptr-read-u64 slot 0))
     (defun m5_fx_call_words (rec fn argp argc env oslot resw _pad)
       (let* ((frame (nl_n4_push_words env fn argp argc)))
         (m5_fx_call_words_done
@@ -18334,14 +18340,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
          env oslot resw frame 0)))
     (defun m5_fx_call_words_done (st env oslot resw frame _pad)
       (if (= st -1)
-          (if (= frame 0) 0
-            (if (= (ptr-read-u64 frame 120) 0) (nl_n4_finish 0 env oslot frame)
-              ;; debug-on-exit: the debugger sees, and may replace, the value.
-              (seq (m5_fx_word_out (ptr-read-u64 resw 0) oslot)
-                   (m5_fx_finish_take (nl_n4_finish 0 env oslot frame) oslot resw 0))))
-        (nl_seq2 (nl_n4_finish 1 env oslot frame) st)))
-    (defun m5_fx_finish_take (rc oslot resw _pad)
-      (if (/= rc 0) rc (m5_fx_take oslot resw)))
+          (m5_fx_take (nl_n4_finish_w (ptr-read-u64 resw 0) env 0 frame) resw)
+        (nl_seq2 (nl_n4_finish_w 0 env 0 frame) st)))
     ;; The frame (locals, operand stack, result word) is the data of a fresh
     ;; Lisp vector held in a rootstack slot for the run, so the collector
     ;; traces every word precisely -- an alloc-bytes block was protected
@@ -18425,15 +18425,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (setq n (logand nparams 65535))
          (setq b (- (sar nparams 16) 1))
          (setq r (if (< b 0) n (if (< n b) n b)))
-         ;; ARGW with its low bit set: rooted 32-byte slots from ARGW - 1.
+         ;; ARGW is the data of a rooted WORD vector.
          (if (/= argw 0)
-             (if (= (logand argw 1) 1)
-                 (while (< i r)
-                   (seq (ptr-write-u64 (+ mem (* i 8)) 0 (m5_fx_slot_word (+ (- argw 1) (* i 32)) 0))
-                        (setq i (+ i 1))))
-               (while (< i r)
-                 (seq (ptr-write-u64 (+ mem (* i 8)) 0 (ptr-read-u64 (+ argw (* i 8)) 0))
-                      (setq i (+ i 1)))))
+             (while (< i r)
+               (seq (ptr-write-u64 (+ mem (* i 8)) 0 (m5_fx_slot_word (+ argw (* i 8)) 0))
+                    (setq i (+ i 1))))
            (while (< i r)
              (seq (ptr-write-u64 (+ mem (* i 8)) 0 (ptr-read-u64 (ptr-read-u64 a 8) 0))
                   (setq a (ptr-read-u64 (ptr-read-u64 a 8) 8))
@@ -18442,9 +18438,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (<= n b) 0
              (ptr-write-u64 (+ mem (* b 8)) 0
                             (if (/= argw 0)
-                                (if (= (logand argw 1) 1)
-                                    (m5_fx_slot_list (+ (- argw 1) (* b 32)) (- n b))
-                                  (m5_fx_word_list (+ argw (* b 8)) (- n b) (- n b) 0))
+                                (m5_fx_slot_list (+ argw (* b 8)) (- n b))
                               (m5_fx_list_copy a 0)))))
          (while (= status 0)
            (seq
@@ -19474,7 +19468,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (bf_record_fill rec (+ i 1) (nl_cons_cdr_ptr node)))
         0))
     (defun bf_record_w (args _pad)
-      (let* ((tag (nl_cons_car_ptr args))
+      (let* ((tag (nl_cons_car_word args))
              (slots (nl_cons_cdr_ptr args))
              (n (bf_record_count slots 0))
              (out (alloc-bytes 32 8)))
@@ -19493,7 +19487,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (record-slot-set rec i init)
              (bf_mkrec_fill rec (+ i 1) n init))))
     (defun bf_make_record_w (args _pad)
-      (let* ((tag (wf_arg_ptr args 0))
+      (let* ((tag (wf_arg_word args 0))
              (n (nl_word_payload (wf_arg_word args 1)))
              (init (wf_arg_word args 2))
              (out (alloc-bytes 32 8)))
@@ -19541,7 +19535,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_abi_fail
              (bf_wrong_number_of_args (bf_byte_code_name_w 0) (if (< count 0) 0 count))
              0)
-          (let* ((arglist (nl_cons_car_ptr args))
+          (let* ((arglist (nl_cons_car_word args))
                  (rest1 (nl_cons_cdr_word args))
                  (code (nl_cons_car_word rest1))
                  (rest2 (nl_cons_cdr_word rest1))
@@ -20174,8 +20168,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (if (< idx 0)
                     3
                   (if (= idx 0)
-                      (let* ((tt (alloc-bytes 32 8)))
-                        (seq (record-type-tag arr tt) (nl_val_store_word tt)))
+                      (nl_record_type_word arr)
                     (nl_record_slot_word arr (- idx 1))))
               ;; CharTable(9): raw kernel, no bounds check (a miss yields the default).
               (if (= tg 9)
@@ -43714,15 +43707,13 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (ptr-write-u64 frame 128 (ptr-read-u64 state 8))
              (ptr-write-u64 state 0 (+ depth 1))
              frame)))))
-    ;; +152 holds ADDR*256 + N: N words at ADDR, or, when ADDR's low bit is
-    ;; set, N rooted 32-byte slots at ADDR - 1 (`m5_fx_frame_lazy').
+    ;; +152 holds ADDR*256 + N: N words in a rooted vector at ADDR.
     (defun nl_n4_materialize (frame)
       (let* ((lazy (ptr-read-u64 frame 152)) (addr (sar lazy 8)) (n (logand lazy 255)))
         (if (= lazy 0) 0
           (seq (ptr-write-u64 frame 152 0)
                (nl_n4_store_args frame
-                                 (if (= (logand addr 1) 1) (m5_fx_slot_list (- addr 1) n)
-                                   (m5_fx_word_list addr n n 0)))))))
+                                 (m5_fx_word_list addr n n 0))))))
     (defun nl_n4_store_args (frame w)
       (if (= w 3) (wf_write_nil (+ frame 32)) (wf_copy32 (+ frame 32) w)))
     (defun nl_n4_exit_debug_w (w env)

@@ -604,6 +604,13 @@
  (length [1 2 3])
  (length "abc")
  (length (record 'a 1 2))
+ ;; Doc 215: retain record type WORDs before materializing the inline view.
+ (mapcar (lambda (type) (aref (record type nil) 0)) '(nil t 0 -7 abi-type))
+ (let* ((type (list 'abi-type)) (object (record type nil))
+        (saved (aref object 0)))
+   (setq object nil)
+   (garbage-collect)
+   (equal saved type))
  (condition-case e (length '(1 2 . 3)) (error e))
  (condition-case e (length 'foo) (error e))
  (condition-case e (length 5) (error e))

@@ -82,11 +82,14 @@
                (nl_alloc_record_fill data-ptr (+ i 1) n))
         data-ptr))
 
-    ;; Write all NlRecord fields and return box-ptr.
+    ;; Write all NlRecord fields and return box-ptr. TAG-PTR is a WORD;
+    ;; heap callers may supply a borrowed view, which is cloned inline.
+    ;; The slot array owns one extra, non-public element containing the type
+    ;; WORD. Existing header offsets and the inline type view are preserved.
     ;;
     ;;   [box-ptr +  0..32] = clone of *tag-ptr  (type_tag Sexp, 32 bytes)
     ;;   [box-ptr + 32] = data-ptr — Vec<Sexp>.data_ptr
-    ;;   [box-ptr + 40] = n        — Vec<Sexp>.capacity (element count)
+    ;;   [box-ptr + 40] = n + 1    — capacity, including the trailing type WORD
     ;;   [box-ptr + 48] = n        — Vec<Sexp>.len
     ;;   [box-ptr + 56] = 1        — NlRecord.refcount
     ;;
@@ -96,9 +99,14 @@
     (defun nl_alloc_record_build (box-ptr data-ptr tag-ptr n)
       (and (or (extern-call nl_sexp_clone_into tag-ptr box-ptr) 1)
            (ptr-write-u64 box-ptr 32 data-ptr)
-           (ptr-write-u64 box-ptr 40 n)
+           (ptr-write-u64 box-ptr 40 (+ n 1))
            (ptr-write-u64 box-ptr 48 n)
            (ptr-write-u64 box-ptr 56 1)
+           ;; Persistent type WORD, selected before any storage view is read.
+           ;; A heap type owns its inline header in BOX-PTR; immediates keep
+           ;; their original WORD. No transient input view escapes.
+           (ptr-write-u64 (+ data-ptr (* n 8)) 0
+                          (if (= (logand tag-ptr 1) 1) tag-ptr box-ptr))
            box-ptr))
 
     ;; Bridge: fill slots buffer, then build the struct.
@@ -116,7 +124,7 @@
     (defun nl_alloc_record (type-tag-ptr slot-count)
       (nl_alloc_record_with_data
        (alloc-bytes 64 8)
-       (alloc-bytes (* (if (< slot-count 0) 0 slot-count) 8) 8)
+       (alloc-bytes (* (+ (if (< slot-count 0) 0 slot-count) 1) 8) 8)
        type-tag-ptr
        (if (< slot-count 0) 0 slot-count))))
   "AOT source for the `nl_alloc_record' allocator swap.

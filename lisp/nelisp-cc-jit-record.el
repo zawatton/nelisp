@@ -173,12 +173,12 @@ bit-for-bit.  Returns 0 / 1 per TRAMPOLINE_{OK,ERR}.")
       ;; Returns: i64 = 0 on OK, 1 on invalid tag / improper list.
       (if (= (sexp-tag tag) 0)
           (if (= (sexp-tag list) 0)
-              (and (record-make tag 0 out) 0)
+              (and (record-make 3 0 out) 0)
             (if (= (sexp-tag list) 7)
                 (if (< (nl_jit_record_alloc_count (sexp-payload-ptr list) 0) 0)
                     1
                   (and
-                   (record-make tag
+                   (record-make 3
                                 (nl_jit_record_alloc_count (sexp-payload-ptr list) 0)
                                 out)
                    (nl_jit_record_alloc_fill (sexp-payload-ptr list) 0 out)
