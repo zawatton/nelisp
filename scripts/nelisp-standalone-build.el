@@ -7529,10 +7529,9 @@ argument (reachability + in-arena bounds checks).")
              (ptr-write-u64 (+ tag_buf 8) 0 7939125359116299621)
              (ptr-write-u64 (+ tag_buf 16) 0 113723913302885)
              (nl_alloc_symbol tag_buf 22 268435480)
-             (ptr-write-u64 268435512 0 2)
-             (ptr-write-u64 (+ 268435512 8) 0 (+ rec_max 1))
-             (ptr-write-u64 (+ 268435512 16) 0 0)
-             (ptr-write-u64 (+ 268435512 24) 0 0)
+             ;; Signal data is the singleton list (limit+1), as in GNU.
+             ;; Both the symbol and result slot are the existing exit roots.
+             (nelisp_cons_construct (+ (* (+ rec_max 1) 4) 1) 3 268435512)
              (ptr-write-u64 268435472 0 1)
              (atomic-fetch-add 268435544 1)
              1)))
@@ -44588,42 +44587,89 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
            (if (and (= emit 1) (= tag 7)) (nl_n4_local_pair_word item holder) 0))
          (nl_n4_local_history_word (nl_cons_cdr_word names) holder shadow env emit))) 0))
 
+(defun nl_frame_stack_locals_lexical_chain_p (frame chain)
+  (if (= (nl_val_tag chain) 7)
+      (let* ((pair (nl_cons_car_word chain)))
+        (if (and (= (nl_val_tag pair) 7)
+                 (= (nelisp_frame_binding_dynamic_p frame (nl_cons_car_word pair)) 0))
+            1
+          (nl_frame_stack_locals_lexical_chain_p frame (nl_cons_cdr_word chain))))
+    0))
+
+(defun nl_frame_stack_locals_lexical_p (frame _pad)
+  (let* ((table (nl_record_slot_word frame 0)))
+    (if (= (nl_val_tag table) 12)
+        (let* ((buckets (nl_record_slot_word table 1))
+               (count (nl_word_payload (nl_record_slot_word table 0)))
+               (i 0) (found 0))
+          (seq
+           (while (and (< i count) (= found 0))
+             (seq (setq found (nl_frame_stack_locals_lexical_chain_p
+                               frame (nl_vector_slot_word buckets i)))
+                  (setq i (+ i 1))))
+           found))
+      (nl_frame_stack_locals_lexical_chain_p frame table))))
+
+(defun nl_n4_local_bucket_kind_word (frame bucket holder dynamic)
+  (if (= (nl_val_tag bucket) 7)
+      (let* ((pair (nl_cons_car_word bucket)))
+        (seq
+         (if (and (= (nl_val_tag pair) 7)
+                  (= (nelisp_frame_binding_dynamic_p frame (nl_cons_car_word pair)) dynamic))
+             (nl_n4_local_pair_word pair holder) 0)
+         (nl_n4_local_bucket_kind_word frame (nl_cons_cdr_word bucket) holder dynamic)))
+    0))
+
+(defun nl_n4_local_frame_kind_word (frame holder dynamic _pad)
+  (let* ((table (nl_record_slot_word frame 0)))
+    (if (= (nl_val_tag table) 12)
+        (let* ((buckets (nl_record_slot_word table 1))
+               (count (nl_word_payload (nl_record_slot_word table 0))) (j 0))
+          (while (< j count)
+            (seq (nl_n4_local_bucket_kind_word frame (nl_vector_slot_word buckets j) holder dynamic)
+                 (setq j (+ j 1)))))
+      (nl_n4_local_bucket_kind_word frame table holder dynamic))))
+
 (defun nl_n4_locals_w (env index _pad)
-      (seq (nl_frame_stack_promote_env env 0)
-  (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
-         (start (nl_frame_stack_locals_start frame 0))
-         (depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
-         (end (if (< (+ index 1) (heap-read-u64 state 0))
-                  (heap-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
-         (backing (nl_record_slot_word (+ frame 64) 0))
-         (mark (nl_root_mark env)) (result (nl_root_reserve env))
-         (shadow (nl_root_reserve env)) (i (- depth 1)))
-    (seq
-     (wf_word_store_out result (nelisp_cons_construct_w 3 3 0))
-     (wf_word_store_out shadow (nelisp_cons_construct_w 3 3 0))
-     ;; Observe younger shallow bindings without including them in the result.
-     (while (>= i end)
-       (seq (nl_n4_local_history_word
-             (nl_record_slot_word (nl_vector_slot_word backing i) 1) result shadow env 0)
-            (setq i (- i 1))))
-     (while (>= i start)
-       (let* ((local (nl_vector_slot_word backing i))
-              (table (nl_record_slot_word local 0)))
-         (seq
-          ;; Small lexical frames contain nil/alists; promoted frames contain
-          ;; a bucket-table Record. The pre-existing walker indexed both as
-          ;; Records and crashed on the locals-parameter reference case.
-          (if (= (nl_val_tag table) 12)
-              (let* ((buckets (nl_record_slot_word table 1))
-                     (count (nl_word_payload (nl_record_slot_word table 0))) (j 0))
-                (while (< j count)
-                  (seq (nl_n4_local_bucket_word (nl_vector_slot_word buckets j) result)
-                       (setq j (+ j 1)))))
-            (nl_n4_local_bucket_word table result))
-          (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env 1)))
-       (setq i (- i 1)))
-     (let* ((word (nl_cons_car_word result)))
-       (seq (nl_root_release env mark) word))))))
+  (seq (nl_frame_stack_promote_env env 0)
+   (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
+          (entry (heap-read-u64 frame 96))
+          (depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+          (end (if (< (+ index 1) (heap-read-u64 state 0))
+                   (heap-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
+          (start (nl_frame_stack_locals_start frame end))
+          (backing (nl_record_slot_word (+ frame 64) 0))
+          (mark (nl_root_mark env)) (result (nl_root_reserve env))
+          (shadow (nl_root_reserve env)) (i (- end 1)) (lexical-index -1))
+     (seq
+      (wf_word_store_out result (nelisp_cons_construct_w 3 3 0))
+      (wf_word_store_out shadow (nelisp_cons_construct_w 3 3 0))
+      (while (and (>= i entry) (= lexical-index -1))
+        (seq
+         (if (= (nl_frame_stack_locals_lexical_p (nl_vector_slot_word backing i) 0) 1)
+             (setq lexical-index i) 0)
+         (setq i (- i 1))))
+      (setq i (- depth 1))
+      ;; Younger shallow bindings provide restored values, but no locals.
+      (while (>= i end)
+        (seq (nl_n4_local_history_word
+              (nl_record_slot_word (nl_vector_slot_word backing i) 1) result shadow env 0)
+             (setq i (- i 1))))
+      (while (>= i entry)
+        (let* ((local (nl_vector_slot_word backing i)))
+          (seq
+           ;; Emit the complete lexical environment at its latest change.
+           ;; Dynamic binding events retain their relative ordering.
+           (if (/= i lexical-index) 0
+             (let* ((j lexical-index))
+               (while (>= j start)
+                 (seq (nl_n4_local_frame_kind_word (nl_vector_slot_word backing j) result 0 0)
+                      (setq j (- j 1))))))
+           (nl_n4_local_frame_kind_word local result 1 0)
+           (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env 1)))
+        (setq i (- i 1)))
+      (let* ((word (nl_cons_car_word result)))
+        (seq (nl_root_release env mark) word))))))
 
 (defun nl_n4_frame_op_w (args env _pad)
   (let* ((code (sexp-int-unwrap (nl_apply_list_nth args 1)))
@@ -45600,17 +45646,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (setq i (+ i 1))))
          (let* ((word (+ (nl_word_payload out) 6)))
            (seq (nl_root_release env mark) word)))))
-    (defun nl_frame_stack_locals_start (frame _pad)
-      (let* ((start (heap-read-u64 frame 96))
-             (backing (nl_record_slot_word (+ frame 64) 0)) (done 0))
-        (seq
-         (if (/= (heap-read-u64 frame 112) 0) 0
-           (while (and (> start 0) (= done 0))
-             (seq (setq start (- start 1))
-                  (if (= (nelisp_frame_scope_boundary_p
-                           (nl_vector_slot_word backing start)) 1)
-                      (setq done 1) 0))))
-         start)))
+    (defun nl_frame_stack_locals_start (frame end)
+  (let* ((start (heap-read-u64 frame 96))
+         (backing (nl_record_slot_word (+ frame 64) 0))
+         (i start) (lexical 0) (done 0))
+    (seq
+     ;; A new lexical environment includes the enclosing lexical prefix.
+     ;; Empty forms and dynamic-only bindings never acquire that prefix.
+     (if (/= (heap-read-u64 frame 112) 0) 0
+       (seq
+        (while (and (< i end) (= lexical 0))
+          (seq (setq lexical (nl_frame_stack_locals_lexical_p (nl_vector_slot_word backing i) 0))
+               (setq i (+ i 1))))
+        (if (= lexical 0) 0
+          (while (and (> start 0) (= done 0))
+            (seq (setq start (- start 1))
+                 (if (= (nelisp_frame_scope_boundary_p (nl_vector_slot_word backing start)) 1)
+                     (setq done 1) 0))))))
+     start)))
     ;; The effective recursion knob is an ordinary special variable. Cache
     ;; its entry per EvalCtx; binding and setq update that same entry. Worker
     ;; dynamic bindings are private cells and take precedence over the mirror.

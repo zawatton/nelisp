@@ -2388,6 +2388,17 @@
 ;; N4 locals must handle the small alist frame as well as promoted tables.
 ((lambda (par-n4-local) (backtrace--locals 1 'backtrace--locals)) 7)
 
+;; Doc 216 S4.2: unevaluated callers own no enclosing activation locals.
+((lambda (par-frame-owner)
+   (list par-frame-owner (backtrace--locals 1 'backtrace--locals))) 17)
+
+;; Recursion errors carry a singleton DATA list, not a dotted condition pair.
+(let ((max-lisp-eval-depth 100))
+  (condition-case par-depth-data
+      ((lambda (self) (funcall self self))
+       (lambda (self) (1+ (funcall self self))))
+    (error par-depth-data)))
+
 ;; Char-table getters preserve canonical children across collection and cycles.
 (progn
   (put 'par-char-word 'char-table-extra-slots 1)
