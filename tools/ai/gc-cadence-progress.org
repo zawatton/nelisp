@@ -1,0 +1,40 @@
+#+TITLE: GC cadence: restore fb54c401f's collection cadence on large restored heaps without retaining garbage
+
+# Library census (notes-65, 2026-10-20) of eval/core candidate 2 (0a8db3f6c):
+# functional PASS, but S1.3 (the user's init in the library image) is +3.5%
+# slower than fb54c401f in alternating runs (1225.5 s vs 1184 s).
+# GC statistics from the coordinator's gdb exit probe, eat preloaded,
+# 100 insert-file-contents:
+#                  collections  allocated   live    threshold
+#   0a8db3f6c          16        7.69 GB    191 MB   573 MB
+#   fb54c401f          13        7.87 GB    283 MB   849 MB
+# Candidate 2 collects 23% more often while allocating 2% less. The regex and
+# win-ffi lanes collect before the cold dump, so the restored heap holds less
+# garbage. The debt trigger, bytes allocated >= max(16 MiB, 3 x live), then
+# fires sooner. One full collection costs about 1 s on this heap.
+# Debt-trigger code: scripts/nelisp-standalone-build.el (nl_gc_debt_floor,
+# nl_gc_debt_pct, nl_gc_debt_rearm_for, nl_gc_stats at +0/+8/+16/+24/+32).
+# Env (set by whoever runs the meter):
+#   GC_BIN, GC_STATIC   dynamic/static builds of HEAD
+#   GC_OLD_BIN          dynamic build of fb54c401f
+#   GC_BASE_BIN         dynamic build of 50a75cbcb
+
+* S1 Reproduce on the bare runtime
+** S1.1 A pinned bare-runtime workload holding at least 150 MB live and allocating repeatedly reproduces the gap: GC_BASE_BIN collects more often than GC_OLD_BIN at equal or lower allocation
+pending
+** S1.2 Per-collection cost on that workload is attributed (mark, sweep, roots and conservative stack, restored-image handling) with Ir per collection for both binaries
+pending
+
+* S2 Policy and cost
+** S2.1 On the S1.1 workload, GC_BIN collects no more often than GC_OLD_BIN at equal allocation, and its peak arena bytes are no higher than GC_OLD_BIN's
+pending
+** S2.2 Per-collection Ir on the S1.1 workload on GC_BIN is no higher than on GC_BASE_BIN, with any avoidable fixed per-collection work removed
+pending
+** S2.3 End to end: ABI S6.3/S6.4 still pass against 10beb8a3c (pressure keeps >= 10 natural collections per sample and every Ir cap); census S6.2 = 0; COMMON.md final verification green
+pending
+
+* S3 Library evidence (notes-65)
+** S3.1 S1.3 alternating A/B on HEAD is at or below fb54c401f (notes-65 measurement)
+pending
+** S3.2 insert-file-contents on a 15 KB file with tramp loaded takes at most 49 ms (notes-65 measurement; moved here from regex-tramp S4.2)
+pending
