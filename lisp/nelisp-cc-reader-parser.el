@@ -312,6 +312,15 @@
     ;; nelisp-sexp-layout.el for the offsets 16 / 24.
     ;; ===========================================================
 
+    (defun nelisp_reader_p_symbol_name_kind (source name)
+      ;; Symbol names inherit the reader input's representation, including
+      ;; multibyte ASCII. Set it before the canonical name is registered.
+      (if (or (= (ptr-read-u8 source 0) 14) (= (ptr-read-u8 source 0) 15))
+          (ptr-write-u8 name 0 14)
+        (seq (ptr-write-u8 name 0 5)
+             (ptr-write-u64 name 8
+               (logior (ptr-read-u64 name 8) 4611686018427387904)))))
+
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
       ;; The direct allocator also installs a stable name-Sexp edge for the
       ;; interned symbol; the reader token slot itself is scratch storage.
@@ -1116,12 +1125,20 @@
        ;; `#:' token creates a fresh identity each time, even when names
        ;; match an interned symbol or another uninterned occurrence.
        ((= kind 29)
-        (nelisp_reader_p_make_uninterned_symbol
-         result-slot (nelisp_reader_p_slot slot-pool 1)))
+        (seq
+         (nelisp_reader_p_symbol_name_kind
+          str-ptr (nelisp_reader_p_slot slot-pool 1))
+         (nelisp_reader_p_make_uninterned_symbol
+          result-slot (nelisp_reader_p_slot slot-pool 1))))
        ;; Leaf payloads.
        ((>= kind 20)
-        (nelisp_reader_p_leaf kind result-slot
-                              (nelisp_reader_p_slot slot-pool 1)))
+        (seq
+         (if (= kind 23)
+             (nelisp_reader_p_symbol_name_kind
+              str-ptr (nelisp_reader_p_slot slot-pool 1))
+           0)
+         (nelisp_reader_p_leaf kind result-slot
+                               (nelisp_reader_p_slot slot-pool 1))))
        ;; EOF: there is no form here, and that is not an error.  It used to
        ;; share the `(t -1)' arm below with stray close, stray dot and the
        ;; literals this reader does not support, so every top-level caller

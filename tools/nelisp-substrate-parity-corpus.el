@@ -431,6 +431,21 @@
           (if (and (equal before shared)
                    (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
                                         (prin1-to-string tree))))) 1 0)))
+    ;; Byte builders used by SQLite/worklog must remain unibyte after aset.
+    (64 shared
+        (let ((s (string-as-unibyte (make-string 1 0))))
+          (aset s 0 233)
+          (if (and (= (aref s 0) 233) (= (length s) 1)
+                   (= (string-bytes s) 1) (not (multibyte-string-p s))
+                   (= (aref (string-to-multibyte s) 0) 4194281)) 1 0)))
+    (65 shared
+        (let* ((raw (symbol-name (read (string-as-unibyte "#:raw-byte-name"))))
+               (multi (symbol-name (read (string-to-multibyte "#:multi-name")))))
+          (aset raw 0 233)
+          (if (and (= (aref raw 0) 233) (not (multibyte-string-p raw))
+                   (multibyte-string-p multi)
+                   (condition-case nil (progn (aset multi 0 233) nil)
+                     (error t))) 1 0)))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)
