@@ -4254,7 +4254,7 @@ REPL-facing module it feeds."
     (defun nl_gc_index_end ()
       (ptr-write-u64 (data-addr nl_gc_start_index) 16 0))
     (defun nl_gc_index_bytes (start end)
-      (nl_align_up (/ (+ (- end start) 63) 64) 8))
+      (nl_align_up (sar (+ (- end start) 63) 6) 8))
     ;; The header word is decoded inline (`nl_hdr_bt' / `nl_gc_bt_ok', whose
     ;; alignment test the 32-bit size mask already satisfies): this walk
     ;; visits every block of the heap once per collection.
@@ -4263,29 +4263,35 @@ REPL-facing module it feeds."
              (end (ptr-read-u64 entry 8))
              (bits (ptr-read-u64 entry 16))
              (prefix (+ bits (nl_gc_index_bytes start end)))
-             (prefix-bytes (* (/ (+ (- end start) 4095) 4096) 8))
-             (page 0) (previous 0) (hdr start) (ok 1) (bt 0) (slot 0) (byte 0))
+             (prefix-end (+ prefix (* (sar (+ (- end start) 4095) 12) 8)))
+             (page prefix) (boundary start) (previous 0)
+             (hdr start) (obj 0) (ok 1) (bt 0) (slot 0) (byte 0))
         (seq
          (while (and (= ok 1) (< hdr end))
            (setq bt (logand (ptr-read-u64 hdr 0) 4294967288))
            (if (if (< bt 16) 1 (if (< end (+ hdr bt)) 1 0))
                (setq ok 0)
              (seq
-              (setq slot (/ (- (+ hdr 8) start) 8))
-              (setq byte (+ bits (/ slot 8)))
+              ;; All offsets are nonnegative after the header-chain bounds
+              ;; check.  Shift instead of signed division, and advance the
+              ;; page boundary once per page rather than multiply it again
+              ;; for every block of the (mostly restored) heap.
+              (setq obj (+ hdr 8))
+              (setq slot (sar (- obj start) 3))
+              (setq byte (+ bits (sar slot 3)))
               ;; The predecessor before each 4 KiB page is derived only
               ;; from the same validated header chain as the start bitmap.
-              (while (and (< page prefix-bytes)
-                          (<= (+ start (* page 512)) (+ hdr 8)))
-                (ptr-write-u64 prefix page previous)
-                (setq page (+ page 8)))
-              (setq previous (+ hdr 8))
+              (while (and (< page prefix-end) (<= boundary obj))
+                (ptr-write-u64 page 0 previous)
+                (setq page (+ page 8))
+                (setq boundary (+ boundary 4096)))
+              (setq previous obj)
               (ptr-write-u8 byte 0
                             (logior (ptr-read-u8 byte 0)
                                     (shl 1 (logand slot 7))))
               (setq hdr (+ hdr bt)))))
-         (while (and (= ok 1) (< page prefix-bytes))
-           (ptr-write-u64 prefix page previous)
+         (while (and (= ok 1) (< page prefix-end))
+           (ptr-write-u64 page 0 previous)
            (setq page (+ page 8)))
          ok)))
     (defun nl_gc_index_prepare ()
@@ -4351,8 +4357,8 @@ REPL-facing module it feeds."
         (if (< obj (+ (ptr-read-u64 entry 0) 8)) 0
           (if (< obj (ptr-read-u64 entry 8)) 1 0))))
     (defun nl_gc_index_test (entry obj)
-      (let ((slot (/ (- obj (ptr-read-u64 entry 0)) 8)))
-        (if (= (logand (ptr-read-u8 (ptr-read-u64 entry 16) (/ slot 8))
+      (let ((slot (sar (- obj (ptr-read-u64 entry 0)) 3)))
+        (if (= (logand (ptr-read-u8 (ptr-read-u64 entry 16) (sar slot 3))
                       (shl 1 (logand slot 7))) 0) 0 1)))
     (defun nl_gc_object_start_p (obj)
       (if (= (logand obj 7) 0)
@@ -5186,6 +5192,51 @@ REPL-facing module it feeds."
             (nl_gc_reclaim_empty_one
              prev chunk (ptr-read-u64 (+ chunk 48) 0)
              (ptr-read-u64 chunk 0) (ptr-read-u64 (+ chunk 8) 0))))))
+    ;; Only the sweep and a successful recorded sweep call this entry.
+    ;; Their lists were cleared and rebuilt from the coalesced header walk:
+    ;; an empty chunk contributes exactly one node to its own size bin.
+    ;; Keep the generic all-bin purge for noncoalesced diagnostic fixtures.
+    (defun nl_gc_freelist_purge_swept_chunk (chunk base size)
+      (let* ((hdr (ptr-read-u64 chunk 24)) (bt (nl_hdr_bt hdr)))
+        (if (= (+ hdr bt) (nl_gc_chunk_end chunk))
+            (if (< bt 473)
+                (let ((head (+ 268435696 (- bt 16))))
+                  (seq (nl_gc_freelist_purge_chain head base size bt)
+                       (nl_freelist_small_mask_sync_head bt head)))
+              (let* ((bin (nl_freelist_large_bin bt))
+                     (head (nl_freelist_large_head bin)))
+                (seq (nl_gc_freelist_purge_chain head base size 0)
+                     (nl_freelist_large_mask_sync bin head))))
+          (nl_gc_freelist_purge_chunk base size))))
+    (defun nl_gc_reclaim_swept_chunks (previous current)
+      (let* ((prev previous) (chunk current) (next 0) (base 0) (size 0))
+        (while (and (> chunk 0)
+                    (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 0)
+                    (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 0))
+          (setq next (ptr-read-u64 (+ chunk 48) 0))
+          (if (or (= chunk (ptr-read-u64 268436160 0))
+                  (= chunk (ptr-read-u64 268436168 0))
+                  (= (nl_gc_chunk_all_free chunk) 0))
+              (setq prev chunk)
+            (seq
+             (setq base (ptr-read-u64 chunk 0))
+             (setq size (ptr-read-u64 (+ chunk 8) 0))
+             (nl_gc_freelist_purge_swept_chunk chunk base size)
+             (ptr-write-u64 (data-addr nl_mxcache_epoch) 0
+                            (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+             (ptr-write-u64 (+ prev 48) 0 next)
+             (if (= (nl_os_reclaim_empty_chunk base size) 0)
+                 ;; CHUNK's descriptor was inside the unmapped region.
+                 (seq
+                  (ptr-write-u64 268436176 0 (- (ptr-read-u64 268436176 0) 1))
+                  (ptr-write-u64 268436184 0 (- (ptr-read-u64 268436184 0) size))
+                  (ptr-write-u64 268436200 0 (+ (ptr-read-u64 268436200 0) size))
+                  (nl_alloc_diag_chunk_reclaimed size))
+               (seq (ptr-write-u64 (+ prev 48) 0 chunk)
+                    (nl_alloc_diag_release_failed)
+                    (setq prev chunk)))))
+          (setq chunk next))
+        0))
     ;; ===== Doc 201 §6.14 follow-up: allocation-debt trigger =====
     ;; The collector used to run only when `chunk-bytes-reserved' (268436184)
     ;; crossed a watermark re-armed at reserved+16 MiB -- i.e. once per 64 MiB
@@ -5197,8 +5248,10 @@ REPL-facing module it feeds."
     ;; The debt trigger fires on bytes allocated since the last collection
     ;; (nl_gc_stats+0, counted in `nl_alloc_bytes_uncheck') crossing a
     ;; threshold armed from the live bytes the last sweep counted:
-    ;;     threshold = max(FLOOR, live * PCT / 100)
-    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them
+    ;;     threshold = max(FLOOR, live * PCT / 100 + cold-image credit)
+    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them.
+    ;; The bounded credit below applies only to large restored heaps with
+    ;; the default percentage; diagnostic percentages select the plain ratio.
     ;; (`nelisp--debug-switch' 30/31).  300 % is the ratio the form-boundary
     ;; re-arm has always written as `live*3 + 1 MiB'; it never took effect
     ;; because `live' was advisory 0.  With the debt due before the free
@@ -5214,31 +5267,61 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_pct ()
       (if (= (ptr-read-u64 (data-addr nl_gc_stats) 48) 0) 300
         (ptr-read-u64 (data-addr nl_gc_stats) 48)))
+    ;; A collected cold image keeps less permanent garbage.  Give large
+    ;; restored heaps an allocation credit, capped by the image byte span
+    ;; beyond 96 MiB AND 1.5 live sets.  Reserving that image headroom keeps
+    ;; the old peak bound while recovering cadence without retaining garbage.
+    ;; Both uncapped 450% and credit for the whole image exceeded that bound.
+    ;; Small/source heaps and explicit diagnostic percentages stay unchanged.
+    ;; Only requested allocation and byte counts schedule GC; addresses,
+    ;; reservation size, free-list success and time are not scheduling clocks.
+    (defun nl_gc_debt_limit_for (live)
+      (let* ((fl (nl_gc_debt_floor)) (eligible live)
+             (pct (nl_gc_debt_pct))
+             (image-end (ptr-read-u64 (data-addr nl_gc_stats) 56))
+             (large (if (and (>= live 134217728) (> image-end 0)
+                             (= (ptr-read-u64 (data-addr nl_gc_stats) 48) 0)) 1 0))
+             (scaled 0) (credit 0))
+        ;; The opaque queue's payload bytes plus its headers are precisely
+        ;; the bytes conservatively pinned this collection. Keep those blocks,
+        ;; but do not reward transient raw roots with a larger debt budget.
+        ;; Explicit diagnostic percentages continue to use total live bytes.
+        (if (and (= large 1)
+                 (= (logand (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 4) 4))
+            (let ((pinned (+ (ptr-read-u64 (data-addr nl_gc_conserv_state) 40)
+                             (* (ptr-read-u64 (data-addr nl_gc_conserv_state) 48) 8))))
+              (if (< pinned live) (setq eligible (- live pinned)) 0))
+          0)
+        (setq scaled (/ (* eligible pct) 100))
+        (if (= large 1)
+            (let* ((start (ptr-read-u64 268435568 0))
+                   (span (if (< start image-end) (- image-end start) 0))
+                   (room (if (< 100663296 span) (- span 100663296) 0))
+                   (extra (/ (* eligible 150) 100)))
+              (setq credit (if (< extra room) extra room)))
+          0)
+        (setq scaled (+ scaled credit))
+        (if (< scaled fl) fl scaled)))
     ;; Recompute the armed limit after a diagnostic override.  The override
     ;; switches are used by the GC gate to separate the normal debt/reuse
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (let* ((fl (nl_gc_debt_floor))
-             (scaled (/ (* (ptr-read-u64 (data-addr nl_gc_stats) 16)
-                           (nl_gc_debt_pct))
-                        100)))
-        (ptr-write-u64 (data-addr nl_gc_stats) 8
-                       (if (< scaled fl) fl scaled))))
+      (ptr-write-u64 (data-addr nl_gc_stats) 8
+                     (nl_gc_debt_limit_for
+                      (ptr-read-u64 (data-addr nl_gc_stats) 16))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
     (defun nl_gc_debt_rearm_for (live)
-      (let* ((fl (nl_gc_debt_floor))
-             (scaled (/ (* live (nl_gc_debt_pct)) 100)))
-        (seq
-         (ptr-write-u64 268435576 0 live)
-         (ptr-write-u64 (data-addr nl_gc_stats) 8 (if (< scaled fl) fl scaled))
-         (ptr-write-u64 (data-addr nl_gc_stats) 32
-                        (+ (ptr-read-u64 (data-addr nl_gc_stats) 32)
-                           (ptr-read-u64 (data-addr nl_gc_stats) 0)))
-         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
-         0)))
+      (seq
+       (ptr-write-u64 268435576 0 live)
+       (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
+       (ptr-write-u64 (data-addr nl_gc_stats) 32
+                      (+ (ptr-read-u64 (data-addr nl_gc_stats) 32)
+                         (ptr-read-u64 (data-addr nl_gc_stats) 0)))
+       (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+       0))
     (defun nl_gc_debt_rearm ()
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 24
@@ -5391,7 +5474,7 @@ REPL-facing module it feeds."
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (ptr-read-u64 268436160 0))
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
-           (nl_gc_reclaim_empty_chunks
+           (nl_gc_reclaim_swept_chunks
             (ptr-read-u64 268436160 0)
             (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
          0)
@@ -5620,29 +5703,40 @@ REPL-facing module it feeds."
       (let ((owner (nl_gc_conserv_resolve w)))
         (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
     (defun nl_gc_conserv_scan (p0 top)
-      (let ((p p0))
+      (let* ((index (data-addr nl_gc_start_index))
+             (active (ptr-read-u64 index 16))
+             (bounds (+ (ptr-read-u64 index 0) (* (ptr-read-u64 index 24) 24)))
+             (lo (if (= active 1) (ptr-read-u64 bounds 0) 0))
+             (hi (if (= active 1) (ptr-read-u64 bounds 8) 0))
+             (p p0) (word 0))
         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
-          (nl_gc_conserv_word (ptr-read-u64 p 0))
+          (setq word (ptr-read-u64 p 0))
+          (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+              (nl_gc_conserv_word word) 0)
           (setq p (+ p 8)))
         0))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
-             (head (ptr-read-u64 state 16)))
+             (index (data-addr nl_gc_start_index))
+             (active (ptr-read-u64 index 16))
+             (bounds (+ (ptr-read-u64 index 0) (* (ptr-read-u64 index 24) 24)))
+             (lo (if (= active 1) (ptr-read-u64 bounds 0) 0))
+             (hi (if (= active 1) (ptr-read-u64 bounds 8) 0))
+             (head (ptr-read-u64 state 16)) (word 0))
         (while (and (< head (ptr-read-u64 state 24))
                     (= (nl_gc_conserv_failed_p) 0))
-          ;; queue_grow may replace and unmap the old queue while a previous
-          ;; entry is being scanned.  Reload the published base for every
-          ;; dequeue; retaining it in the outer let would dereference the
-          ;; freed mapping on the next iteration.
+          ;; Queue growth can unmap the previous queue, but cannot mutate the
+          ;; stopped heap's index or envelope. Reload the queue base each time.
           (let* ((base (ptr-read-u64 state 0))
                  (w (ptr-read-u64 base (* head 8)))
                  (hdr (- w 8))
                  (end (+ hdr (nl_hdr_bt hdr)))
                  (p w))
             (while (and (< p end) (= (nl_gc_conserv_failed_p) 0))
-              (nl_gc_conserv_word (ptr-read-u64 p 0))
-              (ptr-write-u64 state 40
-                             (+ (ptr-read-u64 state 40) 8))
+              (setq word (ptr-read-u64 p 0))
+              (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+                  (nl_gc_conserv_word word) 0)
+              (ptr-write-u64 state 40 (+ (ptr-read-u64 state 40) 8))
               (setq p (+ p 8)))
             (setq head (+ head 1))
             (ptr-write-u64 state 16 head)))
@@ -6888,27 +6982,28 @@ REPL-facing module it feeds."
     ;; never compaction.
     (defun nl_gc_midform_collect ()
       (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
-          ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
           (if (if (< (ptr-read-u64 268436184 0)
                      (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                  (if (= (nl_gc_debt_due) 0) 1 0)
-                0)
+                  (if (= (nl_gc_debt_due) 0) 1 0) 0)
               0
-             (nl_seq2 (nl_gc_collect_from_recorded_roots 0)
-             ;; Recorded collection holds ctx+24 while it marks/sweeps, so its
-             ;; embedded reclaim traversal must refuse.  Once the collector
-             ;; returns and clears ctx+24, perform the same Stage-4c traversal
-             ;; here; Tier 3a's +16 guard still blocks it under live workers.
-             (nl_seq2
-              (if (= (nl_os_empty_chunk_reclaim_p) 1)
-                  (nl_gc_reclaim_empty_chunks
-                   (ptr-read-u64 268436160 0)
-                   (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
-                0)
-              (nl_seq2 (nl_gc_growth_rearm)
-                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
-                                      (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
+            (let ((before (ptr-read-u64 (data-addr nl_gc_stats) 24)))
+              (seq
+               (nl_gc_collect_from_recorded_roots 0)
+               ;; Inhibit was cleared on return. Only a completed sweep has
+               ;; rebuilt the lists; failed index/OOM/park paths cannot use
+               ;; the single-bin empty-chunk shortcut.
+               (if (= (nl_os_empty_chunk_reclaim_p) 1)
+                   (if (> (ptr-read-u64 (data-addr nl_gc_stats) 24) before)
+                       (nl_gc_reclaim_swept_chunks
+                        (ptr-read-u64 268436160 0)
+                        (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
+                     (nl_gc_reclaim_empty_chunks
+                      (ptr-read-u64 268436160 0)
+                      (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0)))
+                 0)
+               (nl_gc_growth_rearm)
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
+                              (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
         0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps

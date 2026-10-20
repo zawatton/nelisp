@@ -871,6 +871,8 @@ the heap and all mark decisions remain native production code."
                   nl_gc_index_prepare nl_gc_index_contains nl_gc_index_test
                   nl_gc_object_start_p nl_gc_mark_block nl_gc_mark_buf
                   nl_gc_symname_mark_one nl_gc_block_elem_cap nl_gc_mark_vec_slots
+                  nl_gc_typed_probe nl_gc_typed_grow nl_gc_typed_add nl_gc_typed_slot
+                  nl_gc_mark_char_table_word
                   nl_gc_mark_cons nl_gc_mark_slot nl_gc_conserv_state_clear
                   nl_gc_mark_char_table_slots nl_gc_mark_char_table_box
                   nl_gc_mark_bool_vector_box
@@ -899,6 +901,9 @@ the heap and all mark decisions remain native production code."
                                :test #'equal))
                (setq form
                      (cl-subst (+ test-flag 64) '(data-addr nl_symbol_name_state)
+                               form :test #'equal))
+               (setq form
+                     (cl-subst (+ test-flag 128) '(data-addr nl_gc_typed_state)
                                form :test #'equal))
                form))
            names)))

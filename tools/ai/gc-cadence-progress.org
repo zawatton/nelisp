@@ -14,24 +14,50 @@
 # fires sooner. One full collection costs about 1 s on this heap.
 # Debt-trigger code: scripts/nelisp-standalone-build.el (nl_gc_debt_floor,
 # nl_gc_debt_pct, nl_gc_debt_rearm_for, nl_gc_stats at +0/+8/+16/+24/+32).
-# Env (set by whoever runs the meter):
+# Binary roles (cmd checks read paths and hashes from the pinned manifests;
+# final.json also pins the source and both final builds):
 #   GC_BIN, GC_STATIC   dynamic/static builds of HEAD
 #   GC_OLD_BIN          dynamic build of fb54c401f
 #   GC_BASE_BIN         dynamic build of 50a75cbcb
 
+#+NOTE: 2026-10-20: Preserve the seven criteria and S3 pending items specified by BRIEF.md. S1.2 includes the end-to-end reproduction and attribution; S2.3 is the final end-to-end check. Checks fail until raw pinned evidence exists.
+
+#+NOTE: 2026-10-20: Calibrate workload before final measurement: 20x500 temporary entries gives old9/base8 collections and does NOT reproduce S1.1. The 100x1000 native pilot reproduces the gap (at round39: old19/base21 at 15.315/14.640 GB allocated). Pin 20x1000 for the four-layout final workload; keep 150 MiB plus 10000 retained hash entries. No acceptance cap changed.
+#+NOTE: 2026-10-20: Reject uncapped 450% policy: the 100x1000 pilot reaches 1557987328 peak arena bytes vs old1423572992 by round39. Final policy adds min(1.5*live, max(0, restored-image byte span - 96 MiB)) to the normal 3*live budget on restored heaps with >=128 MiB live, and preserves all explicit diagnostic percentages. Old garbage is not retained.
+
+#+NOTE: 2026-10-20: Whole-span credit also fails the peak cap: old1423572992 vs candidate1490878464 bytes, despite12 vs11 collections. Diagnostic headroom calibration16/32/48/64 MiB still reaches1423769600 (>old);96/112/128 MiB gives11 collections and1356660736 peak. Initially select128 MiB headroom and remeasure shipping binaries with the unmodified workload and default settings. No criterion was relaxed.
+
+#+NOTE: 2026-10-20: The actual128 MiB-headroom binary passes peak1356660736 but has12 collections at7674840488 allocated bytes versus old12 at8071388520. Enforce byte-normalized frequency as well as counts; this is FAIL. Qualify96 MiB headroom next under the same unmodified workload and all original caps.
+
+#+NOTE: 2026-10-20 S1.2 old: mean total GC Ir/collection=1638787900.48; index_ir=547802894.33; sweep_ir=846176539.83; mark_roots_ir=240681421.48; conserv_ir=4127044.83; roots_self_ir=514072.42. roots_self_ir is contained in mark_roots_ir. Mean cold-loader Ir=852942080.00, once at startup, outside collection cost.
+#+NOTE: 2026-10-20 S1.2 base: mean total GC Ir/collection=1179651779.27; index_ir=295066618.48; sweep_ir=547255983.88; mark_roots_ir=333383916.38; conserv_ir=3945260.52; roots_self_ir=472633.23. roots_self_ir is contained in mark_roots_ir. Mean cold-loader Ir=505240714.00, once at startup, outside collection cost.
+#+NOTE: 2026-10-20 S1.2 restored-image handling: both exact-start index construction and sweep revisit the restored header chain each collection; boot blocks remain permanent but their marks reset, and mutable references still require precise marking. The smaller collected image reduces this fixed work. Sweep attribution includes the second chunk-release traversal after mid-form GC clears its inhibit flag. All workload/boot Ir remains in the full profile total; no collection instructions are subtracted from a gate.
+
+#+NOTE: 2026-10-20: The four-layout 96 MiB-headroom candidate is FAIL: layout1400 reaches1625096192 peak bytes and mean GC Ir/collection1474112450.97 (>base1179651779.27). Retain its raw profiles in target/gc-cadence/failed-96. Its transient conservative pins raised the live-derived debt budget; scanning opaque payloads and repeated all-bin purges dominate the excess. Do not average away the failing peak or weaken either cap.
+#+NOTE: 2026-10-20: Refine default large-restored budgeting to eligible=live minus this collection's conservatively pinned payload+header bytes (existing queue counters). All pinned blocks remain live; only their feedback into scheduling is removed. Add min(1.5*eligible, max(0,image byte span-96 MiB)) to 3*eligible, with the original16 MiB floor. Source/small heaps and diagnostic percentages preserve their original rules. No heap/shared-state layout or public builtin surface is added.
+#+NOTE: 2026-10-20: Cost changes preserve header/owner validation: cache stopped-heap bounds before scanning raw words, use nonnegative shifts in exact-start bitmap access, and release fully swept/coalesced empty chunks through their own validated size bin. The generic all-bin purge remains for noncoalesced fixtures and skipped collections. Native tests exercise real munmap, failed-release link restoration, current-chunk/inhibit/parallel guards, mask repair, and a completed-sweep witness; all30 pass, including executable mutations.
+
 * S1 Reproduce on the bare runtime
+#+NOTE: 2026-10-20 qualification: Four-layout means old/base/HEAD: collections12/13/11; allocated8071179496/7674679322/7674701900 bytes; peak1423572992/1222443008/1356660736 bytes; live254805256/209686410/209615618 bytes. Every HEAD layout passes the original peak cap and the stronger byte-normalized frequency check. Mean GC Ir/collection1638787900.48/1179651779.27/1049743268.00; HEAD is11.0% below base. Mean total workload Ir397785065941.5/381842857221/377520644675; all boot/GC instructions included.
+#+NOTE: 2026-10-20 qualified HEAD attribution per collection: index300860459.75, sweep+release422347075.77, conservative2292827.59, mark+roots324242904.89 Ir. The single-bin release path removes repeated all-bin work; no immutable-image marking exemption is assumed. Raw profiles and hash-pinned inputs are under target/gc-cadence/pinned; report is target/gc-cadence/qualified-report.json.
+#+NOTE: 2026-10-20 development efficiency: Simulate interruption after four real layout checkpoints but before the group manifest. Fresh profiling costs1446.734 s and4 profiler processes; resume reconstructs the identical manifest in0.503 s with0 profiler processes, with every raw file hash and mtime unchanged. Corrupted outputs/checkpoints are rejected. Recipe/result: target/gc-cadence/resume-real.{log,json}; focused Python verifier tests23/23 PASS.
+#+NOTE: 2026-10-20 extra namespace check: zero production findings, six pre-existing private accesses in the original GC fixture and one deliberate private-source access in the new native fixture. Do not bypass private access through computed symbol names. Changed Elisp parens and all30 executable native tests pass; retain the namespace report at target/gc-cadence/changed-ns.log.
+#+NOTE: 2026-10-20: The meter exports LC_ALL=C for its own formatting. Profiles were measured with LC_ALL=C.UTF-8 (LANG=en_DK.UTF-8, LC_CTYPE=C.UTF-8, LC_TIME=en_DK.UTF-8); commands restore LC_ALL=C.UTF-8 to reproduce that input. Keep locale in the provenance hash rather than silently ignoring it. No workload, threshold, criterion or denominator changed.
 ** S1.1 A pinned bare-runtime workload holding at least 150 MB live and allocating repeatedly reproduces the gap: GC_BASE_BIN collects more often than GC_OLD_BIN at equal or lower allocation
-pending
+cmd: env LC_ALL=C.UTF-8 python3 tools/ai/gc-cadence.py verify S1.1 target/gc-cadence
 ** S1.2 Per-collection cost on that workload is attributed (mark, sweep, roots and conservative stack, restored-image handling) with Ir per collection for both binaries
-pending
+cmd: env LC_ALL=C.UTF-8 python3 tools/ai/gc-cadence.py verify S1.2 target/gc-cadence
 
 * S2 Policy and cost
+#+NOTE: 2026-10-20 final end-to-end PASS: original ABI S6.3/S6.4 all five caps pass against10beb8a3c: boot-56.057%, regex-91.233%, regex-gc-92.825%, pressure-3.727%, files-58.052% mean Ir. Every pressure sample has11/16 natural collections (base/HEAD), all outputs identical. All20 HEAD jobs are fresh; the20 baseline jobs are from the validated complete prior run (all60 raw baseline files hash-identical), recorded at target/gc-cadence/abi-baseline-reuse.json. Census S6.2=0. Final Linux dynamic/static verification executes11 groups/0 failures, standalone checks PASS (maphash-sparse remains the specified known-red), GNU checksum identical, Anvil tools/list40. Native GC30/30 and Python verifier23/23 pass; same-process cold REPL publication generation4 and restoration generation5 preserve150 MiB and Lisp state. Final manifest: target/gc-cadence/final.json. Noncached default meter executes all five commands: S1=2/2, S2=3/3, S3=0/2 pending;71.4% of7 defined criteria. No criterion, threshold or denominator changed; leave both S3 rows pending.
+#+NOTE: 2026-10-20 ABI operations: the eight-worker run caused host memory pressure (available7.7 GiB, swap12 GiB); interrupt it with all child groups reaped and preserve raw data at target/gc-cadence/abi-full-interrupted. At four workers, available memory recovers to43-45 GiB. The final run uses the original ABI functions/caps/timeouts/layouts, fresh candidate profiles, and baseline artifacts reused only after validating the complete prior40-job record and every input/artifact hash. No partial baseline is accepted. Cache mutations for binary, workload and profile are rejected (checked4/failures0). Reuse recipe: target/gc-cadence/abi-requalify.py; final log: abi-qualified.log; final raw profiles: abi-cost/. Leave ABI source unchanged so its strict provenance remains valid; changing it would require remeasuring all20 baseline jobs.
+#+NOTE: 2026-10-20 supplemental native ABI pressure run: fixed240-round workload completes on 10beb8a3c/HEAD in110.157/112.379 s (wall time informational), with11/16 natural collections. Both outputs exactly match GNU31.1's ABI-PRESSURE60240 1082974320. GNU emits only the original pressure file's missing lexical-binding-cookie warning, preserved verbatim; neither native emits stderr. Corrupted checksum and nine-cycle negative controls fail. Evidence: target/gc-cadence/native-abi-pressure/. The four-layout original ABI Callgrind run remains the gate.
 ** S2.1 On the S1.1 workload, GC_BIN collects no more often than GC_OLD_BIN at equal allocation, and its peak arena bytes are no higher than GC_OLD_BIN's
-pending
+cmd: env LC_ALL=C.UTF-8 python3 tools/ai/gc-cadence.py verify S2.1 target/gc-cadence
 ** S2.2 Per-collection Ir on the S1.1 workload on GC_BIN is no higher than on GC_BASE_BIN, with any avoidable fixed per-collection work removed
-pending
+cmd: env LC_ALL=C.UTF-8 python3 tools/ai/gc-cadence.py verify S2.2 target/gc-cadence
 ** S2.3 End to end: ABI S6.3/S6.4 still pass against 10beb8a3c (pressure keeps >= 10 natural collections per sample and every Ir cap); census S6.2 = 0; COMMON.md final verification green
-pending
+cmd: env LC_ALL=C.UTF-8 python3 tools/ai/gc-cadence.py verify S2.3 target/gc-cadence
 
 * S3 Library evidence (notes-65)
 ** S3.1 S1.3 alternating A/B on HEAD is at or below fb54c401f (notes-65 measurement)
