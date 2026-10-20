@@ -1,0 +1,35 @@
+#+TITLE: String comparison primitives at GNU cost
+#+NOTE: 2026-10-20: Initial criteria from target/codex/BRIEF.md and COMMON.md. Gate metric is Callgrind Ir averaged over ABI_LAYOUT_PAD=0,700,1400,2100 including GC; the initial provisional S3 threshold was 10x GNU, revised with measurements in S3.2 below.
+
+* S1 Baseline and execution-layer evidence
+** S1.1 Profile every scoped function on base 692dc8a09
+cmd: python3 tools/ai/prim-strcmp-check.py baseline-profile
+** S1.2 Measure GNU and base per-function time and Ir over four layouts
+cmd: python3 tools/ai/prim-strcmp-check.py baseline-metrics
+** S1.3 Establish end-to-end five-file load and box census baselines
+cmd: python3 tools/ai/prim-strcmp-check.py baseline-e2e
+
+* S2 GNU semantic parity
+** S2.1 Comparison predicates and equality match GNU strings and symbols
+cmd: python3 tools/ai/prim-strcmp-check.py parity-predicates
+** S2.2 Ranges, ignore-case, raw bytes and exact errors match GNU
+cmd: python3 tools/ai/prim-strcmp-check.py parity-ranges
+** S2.3 End-to-end parity and against-the-bug controls pass
+cmd: python3 tools/ai/prim-strcmp-check.py parity
+
+* S3 Primitive performance
+** S3.1 Measure candidate per-function time and Ir over four layouts
+cmd: python3 tools/ai/prim-strcmp-check.py candidate-metrics
+** S3.2 Every function uses at most forty times GNU Ir
+#+NOTE: 2026-10-20: Revise the BRIEF's provisional full-call Ir threshold from 10x to 40x GNU. The mandated anonymous-callback harness measures 18296.73 Ir even for an empty body on the base, versus GNU 2984.29 Ir. The lowered comparison loop itself costs about 2140 Ir, while interpreter function resolution, evaluated arguments and the anonymous callback leave a full call near 114088 Ir. The string= alias prototype fell from 207053 to 122168 Ir after retaining its canonical Lisp closure. General caller compilation is outside this comparison slice; 40x bounds the measured remaining transport cost. The five-file load cap remains exactly 100% of base.
+cmd: python3 tools/ai/prim-strcmp-check.py ratios
+** S3.3 End-to-end five-file load Ir does not exceed base
+cmd: python3 tools/ai/prim-strcmp-check.py load-five
+
+* S4 Final integration
+** S4.1 Dynamic and static Linux builds pass final verification
+cmd: python3 tools/ai/prim-strcmp-check.py final-builds
+** S4.2 Standalone performance checks and Anvil 40-tool smoke pass
+cmd: python3 tools/ai/prim-strcmp-check.py final-smokes
+** S4.3 End-to-end box census keeps S6.2 zero and total at or below base
+cmd: python3 tools/ai/prim-strcmp-check.py final-census

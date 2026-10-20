@@ -51,6 +51,7 @@
 (require 'bytecomp)
 (require 'json)
 (require 'nelisp-cc-fx-call-primitives)
+(require 'nelisp-cc-string-compare)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
@@ -18429,6 +18430,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_run_done (st env rec)
       (seq (ptr-write-u64 (+ env 96) 0 rec) st))
     (defun m5_fx_run_body (code nlocals env out args nparams argw wout)
+      ;; Negative NLOCALS is reserved for compiler-lowered whole functions.
+      ;; Ordinary VM calls pay one integer branch, with no extra call or
+      ;; instruction decode. Keep the existing recursion guard around both.
+      (if (< nlocals 0)
+          (if (and (= nlocals -1)
+                   (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 18))
+              (let* ((word (m5_fx_string_intrinsic code args (logand nparams 65535) argw env)))
+                (if (= word 2) -3
+                  (seq (if (= wout 0) (nl_abi_word_to_rc word out)
+                         (ptr-write-u64 wout 0 word)) -1)))
+            -3)
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
@@ -18551,7 +18563,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
-         status)))
+         status))))
 ;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.  SCRATCH is
@@ -31632,6 +31644,24 @@ resolved fine.  Same feature, different answer per entry point."
     '(string-equal-ignore-case string-greaterp))
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el" '(string= string< string>))
+   ;; Preserve the canonical Lisp source for the comparison compiler. A GNU
+   ;; byte-code object reached through an alias skips the closure VM entry.
+   ;; Do not add a lookup to every byte-code call just for this one function.
+   (with-temp-buffer
+     (insert-file-contents
+      (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                        nelisp-standalone--repo-root))
+     (let ((forms (cl-remove-if-not
+                   (lambda (form) (eq (cadr form) 'string-equal))
+                   (nelisp-prelude-bytecode-source-defuns (buffer-string)))))
+       (unless (= (length forms) 1)
+         (error "Expected one canonical string-equal reference definition"))
+       (format "\n(eval '%S t)\n" (car forms))))
+   (with-temp-buffer
+     (insert-file-contents
+      (expand-file-name "scripts/nelisp-string-compare-compiler.el"
+                        nelisp-standalone--repo-root))
+     (buffer-string))
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el" '(match-string-no-properties))
    ;; eval-after-load and its callback table are GNU-owned forms.  The
@@ -48242,6 +48272,13 @@ retains the checkout default. Application outputs still go to OUTPUT."
              (length nelisp-standalone--recompiled))
     output))
 
+
+;; Instruction 18 is a compiler lowering keyed by the original definition,
+;; retaining the Lisp definitions. No Lisp-visible native name is installed.
+(setq nelisp-standalone--applyfn-m5-helpers
+      (append
+       nelisp-standalone--applyfn-m5-helpers
+       (cdr nelisp-cc-string-compare--source)))
 
 (provide 'nelisp-standalone-build)
 
