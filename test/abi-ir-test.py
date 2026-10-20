@@ -20,7 +20,7 @@ spec.loader.exec_module(gate)
 
 
 class LayoutVerdictTest(unittest.TestCase):
-    def verdict(self, samples, mode="regex-gc"):
+    def verdict(self, samples, mode="pressure"):
         with contextlib.redirect_stdout(io.StringIO()):
             return gate.summarize(mode, samples)
 
@@ -132,7 +132,8 @@ class ProfileCommandTest(unittest.TestCase):
                 stem.with_suffix("." + suffix).write_text("fixture\n")
             stem.with_suffix(".out").write_text({
                 "boot": "", "regex": "ABI-REGEX 6000\n",
-                "regex-gc": "ABI-REGEX-GC 24000\n"}[mode])
+                "regex-gc": "ABI-REGEX-GC 24000\n",
+                "pressure": "ABI-PRESSURE 60080 360991440\n"}[mode])
             return (100 if who == "base" else 99), 10
 
         with tempfile.TemporaryDirectory() as directory:
@@ -143,13 +144,19 @@ class ProfileCommandTest(unittest.TestCase):
                     mock.patch.object(gate, "run_one", side_effect=profile) as jobs, \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(0, gate.main())
-            self.assertEqual(24, jobs.call_count)
+            self.assertEqual(32, jobs.call_count)
             output, = (root / "target/abi-ir").iterdir()
             gate.validate_record(output, {})
             for name, iterations in (("regex.el", 20), ("regex-gc.el", 80)):
                 source = (output / name).read_text()
                 self.assertNotIn("garbage-collect", source)
                 self.assertIn(f"(while (< i {iterations})", source)
+            pressure = (output / "pressure.el").read_text()
+            self.assertNotIn("garbage-collect", pressure)
+            self.assertIn(f"(dotimes (round {gate.PRESSURE_ROUNDS})", pressure)
+            self.assertIn("(dotimes (i 60000)", pressure)
+            self.assertIn("(dotimes (i 3000)", pressure)
+            gate.check_marker(output / "pressure-cand-0", "pressure")
 
 
 class ProfileCancellationTest(unittest.TestCase):
@@ -279,7 +286,8 @@ class RecordedEvidenceTest(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.inputs = {"candidate-path": "candidate", "baseline-path": "baseline"}
         for name in gate.ir_artifacts():
-            (self.directory / name).write_text("ABI-REGEX 6000\nABI-REGEX-GC 24000\n")
+            (self.directory / name).write_text(
+                "ABI-REGEX 6000\nABI-REGEX-GC 24000\nABI-PRESSURE 60080 360991440\n")
         self.record = {"schema": 1, "modes": list(gate.IR_MODES),
                        "layouts": list(gate.LAYOUTS), "identities": self.inputs,
                        "completed_jobs": gate.completed_jobs(),
@@ -293,9 +301,41 @@ class RecordedEvidenceTest(unittest.TestCase):
     def test_complete_unchanged_record_is_accepted(self):
         gate.validate_record(self.directory, self.inputs)
 
+    def replay_with_counts(self, mode, who, layout, cycles):
+        def counts(path, binary):
+            return (100 if Path(binary).name == "baseline" else 99), (
+                cycles if path.name == f"{mode}-{who}-{layout}.cg" else 10)
+        with mock.patch.object(gate, "identities", return_value=self.inputs), \
+                mock.patch.object(gate, "profile_counts", side_effect=counts), \
+                mock.patch.object(gate.sys, "argv", [
+                    "abi-ir.py", "verify-ir", "candidate", "baseline", str(self.directory)]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return gate.main()
+
+    def test_verify_ir_pressure_floor_applies_to_each_binary_and_layout(self):
+        for who in ("base", "cand"):
+            for layout in gate.LAYOUTS:
+                with self.subTest(who=who, layout=layout):
+                    self.assertEqual(1, self.replay_with_counts("pressure", who, layout, 9))
+        self.assertEqual(0, self.replay_with_counts("pressure", "cand", 0, 10))
+
+    def test_verify_ir_regex_gc_accepts_two_cycles(self):
+        self.assertEqual(0, self.replay_with_counts("regex-gc", "cand", 1400, 2))
+
+    def test_pressure_workload_is_fingerprinted(self):
+        self.assertIn("pressure.el", gate.ir_artifacts())
+        before = {n: gate.fingerprint(self.directory / n)
+                  for n in ("regex.el", "regex-gc.el", "pressure.el")}
+        gate.verify_workloads(self.directory, before)
+        (self.directory / "pressure.el").write_text("different pressure")
+        with self.assertRaises(ValueError):
+            gate.verify_workloads(self.directory, before)
+        with self.assertRaises(ValueError):
+            gate.validate_record(self.directory, self.inputs)
+
     def test_workload_mutation_during_measurement_is_rejected(self):
         before = {n: gate.fingerprint(self.directory / n)
-                  for n in ("regex.el", "regex-gc.el")}
+                  for n in gate.WORKLOAD_NAMES}
         gate.verify_workloads(self.directory, before)
         (self.directory / "regex-gc.el").write_text("different workload")
         with self.assertRaises(ValueError):
@@ -322,12 +362,18 @@ class RecordedEvidenceTest(unittest.TestCase):
             gate.validate_record(self.directory, self.inputs)
 
     def test_missing_marker_fails_even_if_its_hash_is_updated(self):
-        name = "regex-gc-cand-0.out"
-        (self.directory / name).write_text("incomplete")
-        self.record["artifacts"][name] = gate.fingerprint(self.directory / name)
-        self.write_record()
-        with self.assertRaises(ValueError):
-            gate.validate_record(self.directory, self.inputs)
+        for mode in ("regex-gc", "pressure"):
+            with self.subTest(mode=mode):
+                name = f"{mode}-cand-0.out"
+                original = (self.directory / name).read_text()
+                (self.directory / name).write_text("incomplete")
+                self.record["artifacts"][name] = gate.fingerprint(self.directory / name)
+                self.write_record()
+                with self.assertRaises(ValueError):
+                    gate.validate_record(self.directory, self.inputs)
+                (self.directory / name).write_text(original)
+                self.record["artifacts"][name] = gate.fingerprint(self.directory / name)
+                self.write_record()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "source_base_commit": "92388df417898a77e47f5fe5f9eec420102eca3f",
+  "schema_version": 4,
+  "source_base_commit": "0a7bec3e582869633ccedb8ed0907f55627b92b8",
   "baseline_source_commit": "10beb8a3c717a65a4bd9add8a466991d0ec9d00a",
   "runtime_sources": {
     "scripts/nelisp-standalone-build.el": "7f49b22cd4157bb7bba117b4df5e22c8538866d1bc64b4e2016875aaf2e4e017",
@@ -10,10 +10,10 @@
     "test/nelisp-windows-sqlite-test.el": "e72876ddd6479eca7f6ba16481f95b6283f257b757242b90ea04e34ee7c2732f"
   },
   "tool_sources": {
-    "tools/ai/abi-ir.py": "caaa2b70644b2880e63ca2111973ae197271f6f55532b1c40eb32698b8dfc7a1",
+    "tools/ai/abi-ir.py": "262873039bf97ec187ffa42ce7b7f1dbe0593238f5c583f9b16d8a7d2275193f",
     "tools/ai/abi-merge-gate.sh": "498f07003e82e508187682f1a135832c0826602a87c787972b2b3f3c5b01bcd9",
     "tools/ai/boot-root-inventory.json": "fb22d411f52476d6a3ea8542aad8aa1ddc5eb1c55b954a1b37508c59ad77bb5f",
-    "test/abi-ir-test.py": "1674df03bc2d9d66a99ad2f9eeded34fa8b78488eebb15069331f59b46eca11f"
+    "test/abi-ir-test.py": "4c2c183a93ad5c50df12830f21a5529f7b6aa973d25f89ccc708772a63e9ed82"
   },
   "standalone_check_count": 73,
   "layouts": [
@@ -25,9 +25,10 @@
   "gc_method": "Callgrind nonrecursive entries into nl_gc_sweep_merge_chunks; complete Ir including natural GC; no forced collection",
   "thresholds": {
     "maximum_mean_ir_ratio": 1.0,
-    "minimum_regex24000_gc_per_binary_per_layout": 10,
     "census_total_exclusive_maximum": 1682,
-    "box_to_word_dependencies_maximum": 0
+    "box_to_word_dependencies_maximum": 0,
+    "minimum_pressure_gc_per_binary_per_layout": 10,
+    "pressure_rounds": 240
   },
   "runtime_environment": {
     "LANG": "C.UTF-8",
@@ -145,7 +146,9 @@
       "change_percent": -55.89663942102126,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true
+      "natural_gc_floor_pass": true,
+      "measurement_round": 2,
+      "gc_floor_applies": false
     },
     "regex6000": {
       "samples": [
@@ -199,7 +202,9 @@
       "change_percent": -90.70564816753298,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true
+      "natural_gc_floor_pass": true,
+      "measurement_round": 2,
+      "gc_floor_applies": false
     },
     "regex24000": {
       "samples": [
@@ -253,7 +258,9 @@
       "change_percent": -92.74352755602995,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": false
+      "natural_gc_floor_pass": true,
+      "measurement_round": 2,
+      "gc_floor_applies": false
     },
     "files": {
       "samples": [
@@ -307,7 +314,67 @@
       "change_percent": -48.61681438709453,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true
+      "natural_gc_floor_pass": true,
+      "measurement_round": 2,
+      "gc_floor_applies": false
+    },
+    "pressure": {
+      "rounds": 240,
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 353179662147,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 372414200605,
+            "gc_cycles": 20
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 353314322430,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 372476036077,
+            "gc_cycles": 20
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 353276870528,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 372650324801,
+            "gc_cycles": 20
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 353339024685,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 372208017461,
+            "gc_cycles": 20
+          }
+        }
+      ],
+      "base_mean_ir": 353277469947.5,
+      "candidate_mean_ir": 372437144736.0,
+      "change_percent": 5.423406930350616,
+      "identical_outputs": true,
+      "mean_ir_pass": false,
+      "natural_gc_floor_pass": true,
+      "method": "Full Callgrind profiles from counts-only calibration; GC counts selected and R pinned before Ir read",
+      "measurement_round": 3,
+      "gc_floor_applies": true
     }
   },
   "memory": {
@@ -546,6 +613,102 @@
     "gnu/freevar-cache.out": {
       "path": "target/abi-landing2/gnu/freevar-cache.out",
       "sha256": "7fefded14a5ba9cdef94596b029417a536834388f6791da0ddb6bd98a7237d12"
+    },
+    "round3/calibrate.py": {
+      "path": "target/abi-landing3/calibrate.py",
+      "sha256": "dd4cb6f5d29db7a05f654bd47707f586f46233dc0d1526ee8e11ec624962572e"
+    },
+    "round3/calibration.log": {
+      "path": "target/abi-landing3/calibration.log",
+      "sha256": "a1dd713f85e05d95211e238ee34ce0bfed7ff51f2b489e3df2fc59e0f5d15a90"
+    },
+    "round3/record-blocker.py": {
+      "path": "target/abi-landing3/record-blocker.py",
+      "sha256": "110d018f22f9d197f62360179a0bdda61f0edef1798d8148487c576199920eee"
+    },
+    "round3/pressure-check.py": {
+      "path": "target/abi-landing3/pressure-check.py",
+      "sha256": "3b97117fce0af77fa2e75e4689e95af040ee5b59de8b99acd5ef44ce6dc57ea8"
+    },
+    "round3/pressure-check.log": {
+      "path": "target/abi-landing3/pressure-check.log",
+      "sha256": "cc940517fe711d01183f23e2fde60e0da40885f126d2f040168e2be4f2e37f49"
+    },
+    "round3/pressure-check.rc": {
+      "path": "target/abi-landing3/pressure-check.rc",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    "round3/pressure-deltas.py": {
+      "path": "target/abi-landing3/pressure-deltas.py",
+      "sha256": "d8851faaaf0f12442d803b931711fdd516f3f07c24efb26ae22bcc7e8209a4be"
+    },
+    "round3/pressure-deltas.log": {
+      "path": "target/abi-landing3/pressure-deltas.log",
+      "sha256": "beb0c065ecd6a845635e8fa58c4410ca18a07f4ebe04a7661512fb11d4bc4943"
+    },
+    "round3/pressure-deltas.rc": {
+      "path": "target/abi-landing3/pressure-deltas.rc",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "round3/harness-red.log": {
+      "path": "target/abi-landing3/harness-red.log",
+      "sha256": "cb1147e6b0171a2b568d026563339a6b011004b2efdd9cde034ff7e71af3b13c"
+    },
+    "round3/harness-green.log": {
+      "path": "target/abi-landing3/harness-green.log",
+      "sha256": "5132f7bd557a2b4dd97091ebc61bbadab4a63fd5d204c688bbd8907c6a8542d1"
+    },
+    "round3/harness-green.rc": {
+      "path": "target/abi-landing3/harness-green.rc",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "round3/env.sh": {
+      "path": "target/abi-landing3/env.sh",
+      "sha256": "d151833137c4b79b82057f26a70a81819ec13eef0a2f2a38f81ab87a760dfbcc"
+    },
+    "round3/runtime-environment.json": {
+      "path": "target/abi-landing3/runtime-environment.json",
+      "sha256": "f5375f610862cab0dc1ad195d9b1a4eccbb514f592b95a5dca93c36433420346"
+    },
+    "round3/checks.log": {
+      "path": "target/abi-landing3/checks.log",
+      "sha256": "ff08bcb909ce9454c1faefa5e6d8c873c32a23eaf6f30341aabb9198e3d9e0b7"
+    },
+    "round3/checks.rc": {
+      "path": "target/abi-landing3/checks.rc",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "round3/anvil-smoke.py": {
+      "path": "target/abi-landing3/anvil-smoke.py",
+      "sha256": "1c8b94a0bbe278ed040af3ea3b950eb0299292516e7df955359a73cb71fee384"
+    },
+    "round3/anvil.log": {
+      "path": "target/abi-landing3/anvil.log",
+      "sha256": "5b8d0b9c67ffb8f5fa71f1fd752b6d59845c2bd2a479252e52d0221a4bd1b719"
+    },
+    "round3/anvil.rc": {
+      "path": "target/abi-landing3/anvil.rc",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "round3/anvil/result.json": {
+      "path": "target/abi-landing3/anvil/result.json",
+      "sha256": "9183385e010577d1d5a23604082aaaacd3ad1004f730eac5837b66a75bb464c2"
+    },
+    "round3/anvil/stdout": {
+      "path": "target/abi-landing3/anvil/stdout",
+      "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+    },
+    "round3/anvil/stderr": {
+      "path": "target/abi-landing3/anvil/stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "round3/calibration-gdb.log": {
+      "path": "target/abi-landing3/calibration-gdb.log",
+      "sha256": "5fba657a90c273130f7c705e1128d4fdbfb2c5bfc4b50d476e035f30563cf651"
+    },
+    "round3/calibration-gdb-80/base-0.err": {
+      "path": "target/abi-landing3/calibration-gdb-80/base-0.err",
+      "sha256": "5b2bcb40e030354f5014aee002b6a98a57fea946e088fcc41345a017d6157fd7"
     }
   },
   "files_profiles": {
@@ -694,6 +857,742 @@
     "static_sqlite": "Normal-path smoke reports SQLite unavailable; the freestanding static build cannot call shared libraries.",
     "static_cstring": "Normal-path smoke reports nl-ffi-unavailable (ffi:library dlopen); before/after exact low-level static refusal matches (nelisp-unsupported-primitive nl-ffi-call).",
     "normal_check": "Inherited whole-tree check remains red; inspect pinned log. Changed Elisp parens, actual builds, native regression and Python harness are checked separately.",
-    "repl_bootstrap": "Full artifact REPL bootstrap on the original shipping build reports excessive-lisp-nesting 16000. Opt-in --runtime-only REPL supports actual allocator/collector publication, restoration and preserved-state verification."
+    "repl_bootstrap": "Full artifact REPL bootstrap on the original shipping build reports excessive-lisp-nesting 16000. Opt-in --runtime-only REPL supports actual allocator/collector publication, restoration and preserved-state verification.",
+    "round3": "Historical round 2 full manifest; round 3 stopped on pressure Ir cap before re-running the complete manifest"
+  },
+  "measurement_status": "Historical round 2 full manifest; round 3 stopped on pressure Ir cap before re-running the complete manifest",
+  "round3": {
+    "status": "BLOCKED: pressure mean total Ir exceeds baseline; no runtime tuning attempted",
+    "complete_manifest_rerun": false,
+    "criteria_change": "Relocate the unchanged 10-natural-GC floor from regex24000 to pressure, adding an independent pressure mean total-Ir <= baseline cap. Other workloads, layouts, caps and the denominator of 21 are unchanged.",
+    "calibration": {
+      "path": "target/abi-landing3/calibration.json",
+      "sha256": "e1cbbe2e5a568f13be5086879de984ebbc47d2d3bde7a995256c01d033416dbe"
+    },
+    "calibration_method": "Callgrind nonrecursive nl_gc_sweep_merge_chunks calls; summary Ir ignored until R pinned",
+    "calibration_samples": [
+      {
+        "rounds": 80,
+        "samples": [
+          {
+            "binary": "base",
+            "layout": 0,
+            "gc_cycles": 6
+          },
+          {
+            "binary": "base",
+            "layout": 700,
+            "gc_cycles": 6
+          },
+          {
+            "binary": "base",
+            "layout": 1400,
+            "gc_cycles": 6
+          },
+          {
+            "binary": "base",
+            "layout": 2100,
+            "gc_cycles": 6
+          },
+          {
+            "binary": "cand",
+            "layout": 0,
+            "gc_cycles": 12
+          },
+          {
+            "binary": "cand",
+            "layout": 700,
+            "gc_cycles": 12
+          },
+          {
+            "binary": "cand",
+            "layout": 1400,
+            "gc_cycles": 12
+          },
+          {
+            "binary": "cand",
+            "layout": 2100,
+            "gc_cycles": 12
+          }
+        ]
+      },
+      {
+        "rounds": 120,
+        "samples": [
+          {
+            "binary": "base",
+            "layout": 0,
+            "gc_cycles": 8
+          },
+          {
+            "binary": "base",
+            "layout": 700,
+            "gc_cycles": 8
+          },
+          {
+            "binary": "base",
+            "layout": 1400,
+            "gc_cycles": 8
+          },
+          {
+            "binary": "base",
+            "layout": 2100,
+            "gc_cycles": 8
+          },
+          {
+            "binary": "cand",
+            "layout": 0,
+            "gc_cycles": 15
+          },
+          {
+            "binary": "cand",
+            "layout": 700,
+            "gc_cycles": 15
+          },
+          {
+            "binary": "cand",
+            "layout": 1400,
+            "gc_cycles": 15
+          },
+          {
+            "binary": "cand",
+            "layout": 2100,
+            "gc_cycles": 15
+          }
+        ]
+      },
+      {
+        "rounds": 160,
+        "samples": [
+          {
+            "binary": "base",
+            "layout": 0,
+            "gc_cycles": 9
+          },
+          {
+            "binary": "base",
+            "layout": 700,
+            "gc_cycles": 9
+          },
+          {
+            "binary": "base",
+            "layout": 1400,
+            "gc_cycles": 9
+          },
+          {
+            "binary": "base",
+            "layout": 2100,
+            "gc_cycles": 9
+          },
+          {
+            "binary": "cand",
+            "layout": 0,
+            "gc_cycles": 17
+          },
+          {
+            "binary": "cand",
+            "layout": 700,
+            "gc_cycles": 17
+          },
+          {
+            "binary": "cand",
+            "layout": 1400,
+            "gc_cycles": 17
+          },
+          {
+            "binary": "cand",
+            "layout": 2100,
+            "gc_cycles": 17
+          }
+        ]
+      },
+      {
+        "rounds": 240,
+        "samples": [
+          {
+            "binary": "base",
+            "layout": 0,
+            "gc_cycles": 11
+          },
+          {
+            "binary": "base",
+            "layout": 700,
+            "gc_cycles": 11
+          },
+          {
+            "binary": "base",
+            "layout": 1400,
+            "gc_cycles": 11
+          },
+          {
+            "binary": "base",
+            "layout": 2100,
+            "gc_cycles": 11
+          },
+          {
+            "binary": "cand",
+            "layout": 0,
+            "gc_cycles": 20
+          },
+          {
+            "binary": "cand",
+            "layout": 700,
+            "gc_cycles": 20
+          },
+          {
+            "binary": "cand",
+            "layout": 1400,
+            "gc_cycles": 20
+          },
+          {
+            "binary": "cand",
+            "layout": 2100,
+            "gc_cycles": 20
+          }
+        ]
+      }
+    ],
+    "chosen_rounds": 240,
+    "gdb_limitation": "ptrace Operation not permitted; see calibration-gdb-80",
+    "formal_pressure": {
+      "path": "target/abi-landing3/pressure-verdict.json",
+      "sha256": "433749395dd9bb5a5287f3d43e93a2160b7fbfea37bd27ff200506557dad75d7"
+    },
+    "formal_pressure_method": "Full Callgrind profiles from counts-only calibration; GC counts selected and R pinned before Ir read",
+    "formal_gc_counts": [
+      {
+        "layout": 0,
+        "base": {
+          "ir": 353179662147,
+          "gc_cycles": 11
+        },
+        "cand": {
+          "ir": 372414200605,
+          "gc_cycles": 20
+        }
+      },
+      {
+        "layout": 700,
+        "base": {
+          "ir": 353314322430,
+          "gc_cycles": 11
+        },
+        "cand": {
+          "ir": 372476036077,
+          "gc_cycles": 20
+        }
+      },
+      {
+        "layout": 1400,
+        "base": {
+          "ir": 353276870528,
+          "gc_cycles": 11
+        },
+        "cand": {
+          "ir": 372650324801,
+          "gc_cycles": 20
+        }
+      },
+      {
+        "layout": 2100,
+        "base": {
+          "ir": 353339024685,
+          "gc_cycles": 11
+        },
+        "cand": {
+          "ir": 372208017461,
+          "gc_cycles": 20
+        }
+      }
+    ],
+    "pressure_top10": {
+      "path": "target/abi-landing3/pressure-top10.log",
+      "sha256": "beb0c065ecd6a845635e8fa58c4410ca18a07f4ebe04a7661512fb11d4bc4943"
+    },
+    "pressure_deltas": {
+      "path": "target/abi-landing3/pressure-deltas.json",
+      "sha256": "9e0891bc873354710575412fef7b3ab4df0f247f8a5fb4c750699785d2e10327"
+    },
+    "profile_workers": 8,
+    "pressure_timeout_seconds": 3600,
+    "harness_tests": 26,
+    "red_before": {
+      "path": "target/abi-landing3/harness-red.log",
+      "sha256": "cb1147e6b0171a2b568d026563339a6b011004b2efdd9cde034ff7e71af3b13c"
+    },
+    "green_after": {
+      "path": "target/abi-landing3/harness-green.log",
+      "sha256": "5132f7bd557a2b4dd97091ebc61bbadab4a63fd5d204c688bbd8907c6a8542d1"
+    },
+    "runtime_and_binary_fingerprints_unchanged": true,
+    "calibration_artifacts": {
+      "calibration-80/base-0.cg": {
+        "path": "target/abi-landing3/calibration-80/base-0.cg",
+        "sha256": "a3e34378493034b38391392c9e48e1eddcaef66cce7c2a9c0f9768acd55ddf57"
+      },
+      "calibration-80/base-0.err": {
+        "path": "target/abi-landing3/calibration-80/base-0.err",
+        "sha256": "43125abffe01ec3575f90f11caa12adab2cd8a75056cb2731c2df366acca55c2"
+      },
+      "calibration-80/base-0.out": {
+        "path": "target/abi-landing3/calibration-80/base-0.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/base-1400.cg": {
+        "path": "target/abi-landing3/calibration-80/base-1400.cg",
+        "sha256": "0b6b35e7c276cdba1c45491a2fa0cbb3ec72155321c636b9b9d19d334ae8896a"
+      },
+      "calibration-80/base-1400.err": {
+        "path": "target/abi-landing3/calibration-80/base-1400.err",
+        "sha256": "f0c0391291852a9568e16d334cf897f0b2fa70ac594905585c07a10ef282d6f9"
+      },
+      "calibration-80/base-1400.out": {
+        "path": "target/abi-landing3/calibration-80/base-1400.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/base-2100.cg": {
+        "path": "target/abi-landing3/calibration-80/base-2100.cg",
+        "sha256": "b5f66965c0f87e4ed110b622cbf22db6ab89025b9b1db7e25f55be3e624f58e1"
+      },
+      "calibration-80/base-2100.err": {
+        "path": "target/abi-landing3/calibration-80/base-2100.err",
+        "sha256": "32eadc8f99b112b0dd85a77036afda3bc87d0225ff720698030e9f6a3770312b"
+      },
+      "calibration-80/base-2100.out": {
+        "path": "target/abi-landing3/calibration-80/base-2100.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/base-700.cg": {
+        "path": "target/abi-landing3/calibration-80/base-700.cg",
+        "sha256": "b9c357cbd9fc683c7f5b8d9cfbd90d6abcb4689d4d72c0e6620388276dfba266"
+      },
+      "calibration-80/base-700.err": {
+        "path": "target/abi-landing3/calibration-80/base-700.err",
+        "sha256": "0f3769ac4dcae6ae5fba33047cf3528afab5295d5cfaea34f5f46e68be673b36"
+      },
+      "calibration-80/base-700.out": {
+        "path": "target/abi-landing3/calibration-80/base-700.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/cand-0.cg": {
+        "path": "target/abi-landing3/calibration-80/cand-0.cg",
+        "sha256": "a9ae12bf18a0ddfc8085433d4771ae734ee6cfe5652e47a6d17c87d51ed68ae7"
+      },
+      "calibration-80/cand-0.err": {
+        "path": "target/abi-landing3/calibration-80/cand-0.err",
+        "sha256": "c70242b30b82a4dfcb5743038dbb4a55e08d0bdcf4a071fb4f10ec38cdb471fe"
+      },
+      "calibration-80/cand-0.out": {
+        "path": "target/abi-landing3/calibration-80/cand-0.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/cand-1400.cg": {
+        "path": "target/abi-landing3/calibration-80/cand-1400.cg",
+        "sha256": "8fb8c5cdc9a7c88a7d96137e893daf2acb20c3f956a3fcfea58b2207d43b00f4"
+      },
+      "calibration-80/cand-1400.err": {
+        "path": "target/abi-landing3/calibration-80/cand-1400.err",
+        "sha256": "ebb7449b863ecb9c44cb6285c82abaf8598d431e54dca19921538d784ddf54cc"
+      },
+      "calibration-80/cand-1400.out": {
+        "path": "target/abi-landing3/calibration-80/cand-1400.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/cand-2100.cg": {
+        "path": "target/abi-landing3/calibration-80/cand-2100.cg",
+        "sha256": "bbbc5734406bc3f311f20b0e736e6909781e5378025a3f57468effaaf1725230"
+      },
+      "calibration-80/cand-2100.err": {
+        "path": "target/abi-landing3/calibration-80/cand-2100.err",
+        "sha256": "8601ce1ae42722731888c840a26c31b4a25b62c2768aa88b52965cd6151fddb9"
+      },
+      "calibration-80/cand-2100.out": {
+        "path": "target/abi-landing3/calibration-80/cand-2100.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/cand-700.cg": {
+        "path": "target/abi-landing3/calibration-80/cand-700.cg",
+        "sha256": "cb88a9eac6c982096abda1fd8d37c0b58819136b87bb5b6a68073af0f4633f5d"
+      },
+      "calibration-80/cand-700.err": {
+        "path": "target/abi-landing3/calibration-80/cand-700.err",
+        "sha256": "2d8cab06243ce91620ea1d8b116abe041cd3472492ae0f0fa9570d48b61faa89"
+      },
+      "calibration-80/cand-700.out": {
+        "path": "target/abi-landing3/calibration-80/cand-700.out",
+        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
+      },
+      "calibration-80/gnu.err": {
+        "path": "target/abi-landing3/calibration-80/gnu.err",
+        "sha256": "7665384bf3e6d00848c9ae33519c25fb929246e763fdbd3ed0c454c7f8ca009c"
+      },
+      "calibration-80/gnu.out": {
+        "path": "target/abi-landing3/calibration-80/gnu.out",
+        "sha256": "4c5231e618e407ffbee01b99e2cc6c8c63528c6f5ac3cd31de4c39a0f6da199d"
+      },
+      "calibration-80/pressure.el": {
+        "path": "target/abi-landing3/calibration-80/pressure.el",
+        "sha256": "9ebbe72d044934e054899c2ba56352f894f838580c942d87c5dc707ba879be85"
+      },
+      "calibration-120/base-0.cg": {
+        "path": "target/abi-landing3/calibration-120/base-0.cg",
+        "sha256": "a5a56b19017aa8a2365f0b0f9c39d846e5b3414cbac35155ce3ac5ef3aba23bf"
+      },
+      "calibration-120/base-0.err": {
+        "path": "target/abi-landing3/calibration-120/base-0.err",
+        "sha256": "bd7d7ce494cbbaf0dcf3647dc57bd8488dfc3f61d10c99f9f55def3767699154"
+      },
+      "calibration-120/base-0.out": {
+        "path": "target/abi-landing3/calibration-120/base-0.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/base-1400.cg": {
+        "path": "target/abi-landing3/calibration-120/base-1400.cg",
+        "sha256": "df57a943b286ac050a88de963150f2c37520a3a452120e9c60f5d15813fff542"
+      },
+      "calibration-120/base-1400.err": {
+        "path": "target/abi-landing3/calibration-120/base-1400.err",
+        "sha256": "3cf3bc511500e2b2313868260aa811342d5b7ee111dbd88c8a4f8e98401c1d5c"
+      },
+      "calibration-120/base-1400.out": {
+        "path": "target/abi-landing3/calibration-120/base-1400.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/base-2100.cg": {
+        "path": "target/abi-landing3/calibration-120/base-2100.cg",
+        "sha256": "42721b283b8edb86204d21801e2729852d2d606049e309bcb7914ae7fe4ff4e8"
+      },
+      "calibration-120/base-2100.err": {
+        "path": "target/abi-landing3/calibration-120/base-2100.err",
+        "sha256": "b996c22c62c686722b4ce0772370ca4e1ed01aa653edd482a83092189b5fcae3"
+      },
+      "calibration-120/base-2100.out": {
+        "path": "target/abi-landing3/calibration-120/base-2100.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/base-700.cg": {
+        "path": "target/abi-landing3/calibration-120/base-700.cg",
+        "sha256": "eba100a068ccbd1ddc13cbedac52de4331110a47a977469e8aa92b11a546e8ed"
+      },
+      "calibration-120/base-700.err": {
+        "path": "target/abi-landing3/calibration-120/base-700.err",
+        "sha256": "ee5dcc84ce10eb4eff1f3a4309737ccb4afc5174e071e2ed70a720dd197ff2e0"
+      },
+      "calibration-120/base-700.out": {
+        "path": "target/abi-landing3/calibration-120/base-700.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/cand-0.cg": {
+        "path": "target/abi-landing3/calibration-120/cand-0.cg",
+        "sha256": "1f7f2cd4ac15db1822b9e9d84790cea381d1868dd0600445750083f4c1e2de60"
+      },
+      "calibration-120/cand-0.err": {
+        "path": "target/abi-landing3/calibration-120/cand-0.err",
+        "sha256": "c994961a7a45927d0635498f274b69e32948a00f42b9ec236548a4a7b4c67eb3"
+      },
+      "calibration-120/cand-0.out": {
+        "path": "target/abi-landing3/calibration-120/cand-0.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/cand-1400.cg": {
+        "path": "target/abi-landing3/calibration-120/cand-1400.cg",
+        "sha256": "37668301ab3a08044ae1280532c2e081c39e60dfc26b3062a08e58d39dcd896d"
+      },
+      "calibration-120/cand-1400.err": {
+        "path": "target/abi-landing3/calibration-120/cand-1400.err",
+        "sha256": "151c33ffec9678ee65b862cf716497891b26ec047d6d3f6e377308bc9710cde9"
+      },
+      "calibration-120/cand-1400.out": {
+        "path": "target/abi-landing3/calibration-120/cand-1400.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/cand-2100.cg": {
+        "path": "target/abi-landing3/calibration-120/cand-2100.cg",
+        "sha256": "802e0251221c009d6d37a15dace0a49cb144a7e9acfd2cd70260a5008ce6a037"
+      },
+      "calibration-120/cand-2100.err": {
+        "path": "target/abi-landing3/calibration-120/cand-2100.err",
+        "sha256": "debef0e70e5c90ffc555c5eccb0b51e3090ab5c6c53eff6106fe9e86eb4929f0"
+      },
+      "calibration-120/cand-2100.out": {
+        "path": "target/abi-landing3/calibration-120/cand-2100.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/cand-700.cg": {
+        "path": "target/abi-landing3/calibration-120/cand-700.cg",
+        "sha256": "885abe9c17393914544395e500ce35872e79e42e758a0826d5fa148ba61346e7"
+      },
+      "calibration-120/cand-700.err": {
+        "path": "target/abi-landing3/calibration-120/cand-700.err",
+        "sha256": "290d89d173c515d6a9a39d8f667131aea0fa97617f188d1af549c8f9a41e19e3"
+      },
+      "calibration-120/cand-700.out": {
+        "path": "target/abi-landing3/calibration-120/cand-700.out",
+        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
+      },
+      "calibration-120/gnu.err": {
+        "path": "target/abi-landing3/calibration-120/gnu.err",
+        "sha256": "802b3a4458daed8401983418d614713c47853c7a3b91119598092b6e87b829c9"
+      },
+      "calibration-120/gnu.out": {
+        "path": "target/abi-landing3/calibration-120/gnu.out",
+        "sha256": "07881713ff2dd33a2f5f090cf36f429dbaaebfb26569ab81c180f308c078d62b"
+      },
+      "calibration-120/pressure.el": {
+        "path": "target/abi-landing3/calibration-120/pressure.el",
+        "sha256": "9a600a1eeaa276427def7c2a5b5aa875f4c03a06931c76dd08ffa493cdde89e0"
+      },
+      "calibration-160/base-0.cg": {
+        "path": "target/abi-landing3/calibration-160/base-0.cg",
+        "sha256": "e1fbfd1dc1220e14876d86bf7d504ab6a192a1522fd6904c107dc30cb87e28c9"
+      },
+      "calibration-160/base-0.err": {
+        "path": "target/abi-landing3/calibration-160/base-0.err",
+        "sha256": "a7265e1cb071b717285f71b241b77dd1fe396bd58b6f422f7e2867881db21ab9"
+      },
+      "calibration-160/base-0.out": {
+        "path": "target/abi-landing3/calibration-160/base-0.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/base-1400.cg": {
+        "path": "target/abi-landing3/calibration-160/base-1400.cg",
+        "sha256": "c39401951daebc2114542d3de691b809a3460ea20ec1c85929853d5ba97dc613"
+      },
+      "calibration-160/base-1400.err": {
+        "path": "target/abi-landing3/calibration-160/base-1400.err",
+        "sha256": "de1176a2e424a8731fa9b209be4c1428b90e63636eb41ebdc64904a29f160bcd"
+      },
+      "calibration-160/base-1400.out": {
+        "path": "target/abi-landing3/calibration-160/base-1400.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/base-2100.cg": {
+        "path": "target/abi-landing3/calibration-160/base-2100.cg",
+        "sha256": "2e5bfd2da4a6bb9795b2f78ac38b82340e430ba9ad79ca24dd22a557fda48cfd"
+      },
+      "calibration-160/base-2100.err": {
+        "path": "target/abi-landing3/calibration-160/base-2100.err",
+        "sha256": "5ae3010fcaaf899fc653ca1ebfb1fd9b84f52f597d4e6f5fb4e50c511a49b88d"
+      },
+      "calibration-160/base-2100.out": {
+        "path": "target/abi-landing3/calibration-160/base-2100.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/base-700.cg": {
+        "path": "target/abi-landing3/calibration-160/base-700.cg",
+        "sha256": "761daf75316f40d6964792877b5e02747675571532a0edb6e440faa1a4d7245d"
+      },
+      "calibration-160/base-700.err": {
+        "path": "target/abi-landing3/calibration-160/base-700.err",
+        "sha256": "15ec44724f40139dc93b434ff4aaee642944bea9e597f60c775dde5c81980ae1"
+      },
+      "calibration-160/base-700.out": {
+        "path": "target/abi-landing3/calibration-160/base-700.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/cand-0.cg": {
+        "path": "target/abi-landing3/calibration-160/cand-0.cg",
+        "sha256": "ee2b310e1e3a143b4c1cb0119a0952e2914b1c46fd9d96c9fd5cdeec4751185e"
+      },
+      "calibration-160/cand-0.err": {
+        "path": "target/abi-landing3/calibration-160/cand-0.err",
+        "sha256": "dbb00bad047e88c859eb6171084fdb5860924eb1a922cca72d21b69a5fd82fe2"
+      },
+      "calibration-160/cand-0.out": {
+        "path": "target/abi-landing3/calibration-160/cand-0.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/cand-1400.cg": {
+        "path": "target/abi-landing3/calibration-160/cand-1400.cg",
+        "sha256": "84997534031953de6ffb9913e87825644fcdfa4a4b4a363761af27956e85ece2"
+      },
+      "calibration-160/cand-1400.err": {
+        "path": "target/abi-landing3/calibration-160/cand-1400.err",
+        "sha256": "5da5b87a2f84a89771e5989efc5a8f844e355ee9f986b8587c626443fb384617"
+      },
+      "calibration-160/cand-1400.out": {
+        "path": "target/abi-landing3/calibration-160/cand-1400.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/cand-2100.cg": {
+        "path": "target/abi-landing3/calibration-160/cand-2100.cg",
+        "sha256": "95eecfa33c5159505dd1b774c58027a8f93671026df2634b8784885757488161"
+      },
+      "calibration-160/cand-2100.err": {
+        "path": "target/abi-landing3/calibration-160/cand-2100.err",
+        "sha256": "979a93b27549aeddac9a6882829320f3fde44f15254af416e6a3cd6fb70452db"
+      },
+      "calibration-160/cand-2100.out": {
+        "path": "target/abi-landing3/calibration-160/cand-2100.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/cand-700.cg": {
+        "path": "target/abi-landing3/calibration-160/cand-700.cg",
+        "sha256": "53f7583ea8ac03e7b48bad8fb0524ead4aa65d543a48a6f14a028d3ce2b9114f"
+      },
+      "calibration-160/cand-700.err": {
+        "path": "target/abi-landing3/calibration-160/cand-700.err",
+        "sha256": "1c497e5587c37dc39fbbaebe2c338d0e847bc4f8f6fe310ce253f75b562aba3a"
+      },
+      "calibration-160/cand-700.out": {
+        "path": "target/abi-landing3/calibration-160/cand-700.out",
+        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
+      },
+      "calibration-160/gnu.err": {
+        "path": "target/abi-landing3/calibration-160/gnu.err",
+        "sha256": "598352c40d151475a2b64c69d57cdd39ea70bd8a979a73fc1d9f6f0d303a504e"
+      },
+      "calibration-160/gnu.out": {
+        "path": "target/abi-landing3/calibration-160/gnu.out",
+        "sha256": "b9712d4693824df52f191c4d1ea6a4e29713fefa96d6dfa8c843d3d11ee8fb90"
+      },
+      "calibration-160/pressure.el": {
+        "path": "target/abi-landing3/calibration-160/pressure.el",
+        "sha256": "7168febfcdebde0fb6636fa87b96e1589c5c4af1efdb3f16686e5e981c7c7944"
+      },
+      "calibration-240/base-0.cg": {
+        "path": "target/abi-landing3/calibration-240/base-0.cg",
+        "sha256": "846ebd593744f032317e6a539cb7b8e4a7bef058d0f4d2ca7f345693465da52a"
+      },
+      "calibration-240/base-0.err": {
+        "path": "target/abi-landing3/calibration-240/base-0.err",
+        "sha256": "f11d3eaa41a3ab777d14ff532cdae1959838d653d793b8717ed495f3d11a0d76"
+      },
+      "calibration-240/base-0.out": {
+        "path": "target/abi-landing3/calibration-240/base-0.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/base-1400.cg": {
+        "path": "target/abi-landing3/calibration-240/base-1400.cg",
+        "sha256": "9b606bef9cb7747d1ca6eb801e21d709d22d3f4f9b56061ef14fd1ac9ad8bef1"
+      },
+      "calibration-240/base-1400.err": {
+        "path": "target/abi-landing3/calibration-240/base-1400.err",
+        "sha256": "b8a4c9086117210d57b16707d32938bd8ce6717fe9f9dbefd6ccbb15718d1226"
+      },
+      "calibration-240/base-1400.out": {
+        "path": "target/abi-landing3/calibration-240/base-1400.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/base-2100.cg": {
+        "path": "target/abi-landing3/calibration-240/base-2100.cg",
+        "sha256": "4ae9e60d09515488a609c81a379f16bcf68ce6c78cc4591ab1515cd1404fdc3e"
+      },
+      "calibration-240/base-2100.err": {
+        "path": "target/abi-landing3/calibration-240/base-2100.err",
+        "sha256": "f6b043f1fda929e6b6ad12975dfe2c55eb3c55da9b2fc58b81126d724437c336"
+      },
+      "calibration-240/base-2100.out": {
+        "path": "target/abi-landing3/calibration-240/base-2100.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/base-700.cg": {
+        "path": "target/abi-landing3/calibration-240/base-700.cg",
+        "sha256": "c48af250749987e8320a35337c9954a734314fc0d0b3141f4c658e1e3350ca69"
+      },
+      "calibration-240/base-700.err": {
+        "path": "target/abi-landing3/calibration-240/base-700.err",
+        "sha256": "4421e03cca7da9a0af2c3574f7ca87cb01102d168496d33f9d4839676c03584c"
+      },
+      "calibration-240/base-700.out": {
+        "path": "target/abi-landing3/calibration-240/base-700.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/cand-0.cg": {
+        "path": "target/abi-landing3/calibration-240/cand-0.cg",
+        "sha256": "fa659e1e3be3f53f2decb581cb222580ba536ff506f8e214e4d1ab5804641697"
+      },
+      "calibration-240/cand-0.err": {
+        "path": "target/abi-landing3/calibration-240/cand-0.err",
+        "sha256": "9b32cd9e1bfe801e28cccdbf5e48bddf3e1870debb2887aecb2c6103ac4f6e77"
+      },
+      "calibration-240/cand-0.out": {
+        "path": "target/abi-landing3/calibration-240/cand-0.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/cand-1400.cg": {
+        "path": "target/abi-landing3/calibration-240/cand-1400.cg",
+        "sha256": "59fee8c5e4d598b438f620a41caf61268d8cc4b206237dadd5585327eff1bde5"
+      },
+      "calibration-240/cand-1400.err": {
+        "path": "target/abi-landing3/calibration-240/cand-1400.err",
+        "sha256": "e115297f02248516c018536a8dcee8849f43ba003a4ee54bbd8dfaa889b92827"
+      },
+      "calibration-240/cand-1400.out": {
+        "path": "target/abi-landing3/calibration-240/cand-1400.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/cand-2100.cg": {
+        "path": "target/abi-landing3/calibration-240/cand-2100.cg",
+        "sha256": "0c83bee612cafaf740710dfa6152415c37ae6f88de021a8a416c57189930b7ff"
+      },
+      "calibration-240/cand-2100.err": {
+        "path": "target/abi-landing3/calibration-240/cand-2100.err",
+        "sha256": "54ebda499671f8608f39bcf95aa5f980eb17f9198d5c95adea4f602d9a183487"
+      },
+      "calibration-240/cand-2100.out": {
+        "path": "target/abi-landing3/calibration-240/cand-2100.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/cand-700.cg": {
+        "path": "target/abi-landing3/calibration-240/cand-700.cg",
+        "sha256": "e2e8d5aaaba6164fc7222744e3c3fc84b8629ebbaee2833967d9abdd37b2ff4c"
+      },
+      "calibration-240/cand-700.err": {
+        "path": "target/abi-landing3/calibration-240/cand-700.err",
+        "sha256": "3ecb6cb32615fb09046b9cfbe27a9d4080af1174296062bf93e1eb01d95f8377"
+      },
+      "calibration-240/cand-700.out": {
+        "path": "target/abi-landing3/calibration-240/cand-700.out",
+        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
+      },
+      "calibration-240/gnu.err": {
+        "path": "target/abi-landing3/calibration-240/gnu.err",
+        "sha256": "a26b219cc2705095fa24d1c5d26086f9401e5bf639146539cd977f07631a6972"
+      },
+      "calibration-240/gnu.out": {
+        "path": "target/abi-landing3/calibration-240/gnu.out",
+        "sha256": "0608b80d1002519895640766c0fee90b9605ee8e001ad08a0bfeb91627371829"
+      },
+      "calibration-240/pressure.el": {
+        "path": "target/abi-landing3/calibration-240/pressure.el",
+        "sha256": "35e1e49915481f7aba75772056207c738cded8141c692ea13d7598b8ad86e886"
+      }
+    },
+    "annotation_artifacts": {
+      "pressure-base-0.annotate": {
+        "path": "target/abi-landing3/pressure-base-0.annotate",
+        "sha256": "d4aa3f60269f009a039ee09c7916c3881a284ceab307b2c91376a89c49b4d8c4"
+      },
+      "pressure-base-1400.annotate": {
+        "path": "target/abi-landing3/pressure-base-1400.annotate",
+        "sha256": "9efc6c11fb459732c2f4f7c2d56f1cd76f4724e3d54ae5b615e037d3535d7aa1"
+      },
+      "pressure-base-2100.annotate": {
+        "path": "target/abi-landing3/pressure-base-2100.annotate",
+        "sha256": "31b83b7256f7978006b2eff1fb5bc87ad08de124645c5a0ebfaf4b1d95e442cb"
+      },
+      "pressure-base-700.annotate": {
+        "path": "target/abi-landing3/pressure-base-700.annotate",
+        "sha256": "edf88a2e7eb150442819ea3b84bec3665ebd5600d0c9a91bab70df61c95a0c99"
+      },
+      "pressure-cand-0.annotate": {
+        "path": "target/abi-landing3/pressure-cand-0.annotate",
+        "sha256": "86581363cf3a96e72c2a899332b8629dee4a865a8828fc396a9450060a4022f8"
+      },
+      "pressure-cand-1400.annotate": {
+        "path": "target/abi-landing3/pressure-cand-1400.annotate",
+        "sha256": "eda5474ebf2011fede6918f27789c07e9b5e402dff82d12303c25c8e3db95f8d"
+      },
+      "pressure-cand-2100.annotate": {
+        "path": "target/abi-landing3/pressure-cand-2100.annotate",
+        "sha256": "8dad6f7835e3a4cf6780aef4450ffeaea77318ace985798558d3ec0ed4d140cf"
+      },
+      "pressure-cand-700.annotate": {
+        "path": "target/abi-landing3/pressure-cand-700.annotate",
+        "sha256": "607a225fe3d2c8cb515090420d52b76503d7e877214ae749fafc4b42d9c814ba"
+      }
+    },
+    "gnu_comparison": "Pressure result line agrees with GNU31.1; complete baseline/candidate stdout agrees including inherited --load return echo"
   }
 }

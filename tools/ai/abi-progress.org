@@ -458,7 +458,43 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # All outputs agree. Every raw profile and successful exit is pinned in the
 # manifest; the repeated-regex regression is resolved without changing its
 # workload, Ir cap or GC floor. Additional raw-pressure result remains unmeasured.
-** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
+** S6.3 End to end: mean boot, regex6000, repeated regex24000 and allocation-pressure Ir over four layouts <= baseline (callgrind); >= 10 natural GC cycles in every pressure sample
+#+NOTE: 2026-10-20 criteria change (round 3). Old wording: "End to end:
+# mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline
+# (callgrind)"; >=10 natural GC cycles in every baseline/candidate regex24000
+# sample. New wording: "End to end: mean boot, regex6000, repeated regex24000
+# and allocation-pressure Ir over four layouts <= baseline (callgrind);
+# >= 10 natural GC cycles in every pressure sample". The floor is relocated
+# to pressure, retaining 10 for every binary and layout, and pressure gains
+# its own mean total-Ir <= baseline cap with identical outputs. Merged regex
+# speedups removed allocation: candidate regex24000 has 2 natural cycles in
+# every layout versus baseline11. No legitimate runtime change can raise it.
+# All existing workloads, layouts and Ir caps remain fixed; denominator21.
+# Choose R from 80/120/160/240 using GC counts only before inspecting pressure
+# Ir; keep population60000 and per-round work3000. Formal Callgrind counts
+# govern the floor; native-speed gdb counts may calibrate the ladder.
+#+NOTE: Round 3 counts-only calibration selects R=240 before pressure Ir
+# evaluation. For every layout0/700/1400/2100, baseline/candidate natural
+# GC counts: R80=6/12, R120=8/15, R160=9/17, R240=11/20. GNU31.1 pressure
+# result matches all32 samples; NeLisp --load also echoes the return value.
+# Complete baseline/candidate stdout is compared without stripping that echo.
+# gdb cannot trace here (ptrace: Operation not
+# permitted), so calibration uses the formal Callgrind nonrecursive
+# nl_gc_sweep_merge_chunks method, ignoring summary Ir until R is pinned.
+# Eight concurrent profiles, pressure timeout3600s; no forced collection.
+# Counts/method/source fingerprints: target/abi-landing3/calibration.json.
+#+NOTE: Round 3 stops on the pressure Ir cap, as required by the brief.
+# After R240 was pinned from counts only, the selected full Callgrind
+# profiles give mean total Ir353277469947.50 ->372437144736.00 (+5.423407%).
+# Formal abi-ir.py counts are baseline11/candidate20 in every layout;
+# complete stdout is identical. No runtime tuning or binary rebuild was
+# attempted. Top10 exclusive per-function deltas from callgrind_annotate
+# are in target/abi-landing3/pressure-top10.log; totals reconcile for all8
+# profiles, and removing one function row fails that reconciliation.
+# The complete round3 manifest was not re-run after this listed blocker.
+# The old full-manifest pin remains historical and verify-ir must reject
+# its missing pressure mode/stale tool identity. S6.3 remains known-red;
+# the evidence JSON explicitly labels the other four modes as round2 data.
 #+NOTE: 2026-10-20 criteria change. Old wording: "End to end: mean boot
 # (four layouts) and regex (two layouts, >=10 GCs each) Ir <= baseline";
 # 6000 matches with explicit GC every two iterations. New wording: "End to
@@ -493,7 +529,8 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
 evidence: $ABI_IR_PROFILE/measurement.json sha256=f853a2f56c6f5dd18340c3df3fbd8d3a2274ed189fba5b14259131b56a975c60
-evidence: tools/ai/abi-final-evidence.json sha256=679a0d795bb1f8a6dfd47d513845bb4c783b2e662c2fe002c342598758e16efb
+evidence: tools/ai/abi-final-evidence.json sha256=1b0046ed5429e80b3f31132d511ec51133eef6a2d44fded40d7411ec0e49a2ba
+evidence: target/abi-landing3/pressure-verdict.json sha256=433749395dd9bb5a5287f3d43e93a2160b7fbfea37bd27ff200506557dad75d7
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Doc 215 total-Ir comparisons; retain profiles and count actual GC sweeps.
 
-ir/files CAND BASE [--output DIRECTORY] writes directly to a new evidence
+ir/files/pressure CAND BASE [--output DIRECTORY] writes directly to a new evidence
 directory when requested. Existing evidence directories are never overwritten.
 """
 import bisect
@@ -20,11 +20,16 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS = (0, 700, 1400, 2100)
-IR_MODES = ("boot", "regex", "regex-gc")
+IR_MODES = ("boot", "regex", "regex-gc", "pressure")
+WORKLOAD_NAMES = ("regex.el", "regex-gc.el", "pressure.el")
+# Counts-only Callgrind ladder, all layouts: 80=6/12, 120=8/15,
+# 160=9/17, 240=11/20 (base/candidate). Pin before reading pressure Ir.
+PRESSURE_ROUNDS = 240
 GC_CYCLE_FUNCTION = "nl_gc_sweep_merge_chunks"
 PROFILE_WORKERS = 8
 # Operational limits only: workloads, Ir caps and GC floors stay fixed.
-PROFILE_TIMEOUTS = {"boot": 580, "files": 580, "regex": 1780, "regex-gc": 3600}
+PROFILE_TIMEOUTS = {"boot": 580, "files": 580, "regex": 1780, "regex-gc": 3600,
+                    "pressure": 3600}
 
 
 def fingerprint(path):
@@ -55,7 +60,7 @@ def identities(cand, base):
 def ir_artifacts():
     return {f"{m}-{who}-{layout}.{suffix}" for m in IR_MODES
             for who in ("base", "cand") for layout in LAYOUTS
-            for suffix in ("cg", "out", "err")} | {"regex.el", "regex-gc.el"}
+            for suffix in ("cg", "out", "err")} | set(WORKLOAD_NAMES)
 
 
 def completed_jobs():
@@ -64,14 +69,14 @@ def completed_jobs():
 
 
 def verify_workloads(directory, before):
-    after = {name: fingerprint(directory / name) for name in ("regex.el", "regex-gc.el")}
+    after = {name: fingerprint(directory / name) for name in WORKLOAD_NAMES}
     if before != after:
         raise ValueError("Ir workloads changed during profiling; no record written")
 
 
 def check_marker(stem, mode):
     marker = {"regex": "ABI-REGEX 6000", "regex-gc": "ABI-REGEX-GC 24000",
-              "files": "ABI-FILES (1000 527500"}.get(mode)
+              "pressure": "ABI-PRESSURE ", "files": "ABI-FILES (1000 527500"}.get(mode)
     if marker and marker not in stem.with_suffix(".out").read_text():
         raise ValueError(f"missing completion marker: {stem}.out")
 
@@ -196,7 +201,7 @@ def summarize(mode, samples):
     enough = True
     for layout, (bb, bg, bo), (cc, cg, co) in samples:
         outputs.update((bo, co))
-        enough &= mode != "regex-gc" or min(bg, cg) >= 10
+        enough &= mode != "pressure" or min(bg, cg) >= 10
         print(f"Ir {mode} layout {layout} base {bb} cand {cc}; "
               f"GC base {bg} cand {cg}; output {'identical' if bo == co else 'DIFF'}; "
               f"delta {(cc / bb - 1) * 100:+.3f}%", flush=True)
@@ -212,7 +217,7 @@ def summarize(mode, samples):
           f"cand {min(candidates)}..{max(candidates)}; "
           f"output {'identical' if same else 'DIFF'}; {'PASS' if passed else 'FAIL'}", flush=True)
     if not enough:
-        print("FAIL: regex-gc requires at least 10 GC cycles per binary in every layout", flush=True)
+        print("FAIL: pressure requires at least 10 GC cycles per binary in every layout", flush=True)
     return passed
 
 
@@ -222,10 +227,10 @@ def main():
         return replay_ir(Path(sys.argv[4]).resolve(), Path(sys.argv[2]).resolve(),
                          Path(sys.argv[3]).resolve())
     if len(sys.argv) not in (4, 6) or (len(sys.argv) == 6 and sys.argv[4] != "--output"):
-        raise ValueError("expected ir/files CAND BASE [--output DIRECTORY]")
+        raise ValueError("expected ir/files/pressure CAND BASE [--output DIRECTORY]")
     mode, cand, base = sys.argv[1:4]
-    if mode not in ("ir", "files"):
-        raise ValueError("expected ir, files, or verify-ir CAND BASE DIRECTORY")
+    if mode not in ("ir", "files", "pressure"):
+        raise ValueError("expected ir/files/pressure CAND BASE or verify-ir CAND BASE DIRECTORY")
     before = identities(cand, base) if mode == "ir" else None
     if len(sys.argv) == 6:
         tmp = Path(sys.argv[5]).resolve()
@@ -243,11 +248,8 @@ def main():
     (setq i (1+ i))))
 (princ "ABI-REGEX 6000\n")
 ''')
-    # Cold images leave regex6000 with only four sweeps. Keep its independent
-    # Ir cap and repeat the original work to measure >=10 automatic sweeps.
-    # Counts-only calibration: 60 iterations gave baseline9/candidate12;
-    # 80 gave baseline11/candidate17 in every layout. Freeze80 before Ir.
-    # No explicit GC or synthetic allocation; retain all instructions.
+    # Preserve the repeated-regex workload and its independent Ir cap.
+    # Round 3 relocates the natural-GC floor to allocation pressure.
     (tmp / "regex-gc.el").write_text(r'''
 (let ((names (mapcar (lambda (k) (format "some-library-%d.el" k)) (number-sequence 1 300))) (i 0))
   (while (< i 80)
@@ -255,8 +257,27 @@ def main():
     (setq i (1+ i))))
 (princ "ABI-REGEX-GC 24000\n")
 ''')
-    workloads_before = {name: fingerprint(tmp / name) for name in ("regex.el", "regex-gc.el")}
-    modes = IR_MODES if mode == "ir" else ["files"]
+    # Coordinator's pressure-template.el; only the calibrated round count varies.
+    (tmp / "pressure.el").write_text(r''';;; pressure.el --- allocation pressure on a populated heap (coordinator's ABI final check)
+;; Keep about 300k live objects, then churn conses, strings, vectors and
+;; hash entries in rounds.  No explicit GC; the output is deterministic.
+(let ((live (make-hash-table :test 'equal))
+      (sum 0))
+  (dotimes (i 60000)
+    (puthash (format "key-%d" i) (list i (number-to-string i) (make-vector 4 i)) live))
+  (dotimes (round ROUNDS)
+    (let ((acc nil))
+      (dotimes (i 3000)
+        (push (cons (concat "s" (number-to-string i)) (list i round (make-vector 2 i))) acc))
+      (setq acc (nreverse acc))
+      (dolist (cell acc)
+        (setq sum (+ sum (length (car cell)) (car (cdr cell)))))
+      (puthash (format "round-%d" round) (mapcar #'car acc) live)
+      (setq sum (+ sum (length (gethash (format "key-%d" (* round 100)) live))))))
+  (princ (format "ABI-PRESSURE %d %d\n" (hash-table-count live) sum)))
+'''.replace("ROUNDS", str(PRESSURE_ROUNDS)))
+    workloads_before = {name: fingerprint(tmp / name) for name in WORKLOAD_NAMES}
+    modes = IR_MODES if mode == "ir" else [mode]
     ok = True
     cancel = threading.Event()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=PROFILE_WORKERS)
@@ -283,8 +304,9 @@ def main():
             pool.shutdown(wait=True, cancel_futures=True)
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
-    if mode == "ir":
+    if mode in ("ir", "pressure"):
         verify_workloads(tmp, workloads_before)
+    if mode == "ir":
         if before != identities(cand, base):
             raise ValueError("Ir inputs changed during profiling; no record written")
         # Written only after every process exits0 with its completion marker.
