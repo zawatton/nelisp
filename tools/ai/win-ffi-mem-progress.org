@@ -1,0 +1,35 @@
+#+TITLE: Windows owned FFI memory and SQLite
+
+* S1 Windows owned FFI memory, SQLite and Anvil
+
+** S1.1 Design and mandatory-owner root cause are recorded
+#+NOTE: Reuse the existing raw OS FFI (minimal native surface clause 3); no new Lisp builtin. Share ownership/validation and keep Linux mmap semantics, including static readers. Windows SQLite also requires explicit initialization: the supplied DLL reports OMIT_AUTOINIT=1.
+evidence: target/win-ffi-mem/design.json sha256=f28acf57cf6056488ceeae6dd91fa07c7f78716eeadc0a6cf4b502ed4ce9fbcd
+
+** S1.2 Original Windows failure and repaired persistent session are recorded
+#+NOTE: The same Windows REPL retains the caller and state 73 across ordinary package source load, then verifies real mapped bytes across GC. Full artifact REPL bootstrap hits the documented fixed native recursion ceiling 16000; its unavailable publication metadata and the consciously unmodified core limit are recorded in repair.json. No native direct-caller replacement is claimed.
+evidence: target/win-ffi-mem/repair.json sha256=cb91270c7f800fd12f6275b3095c341a7325bad5fbede27b05b6647d4ae287e6
+
+** S1.3 Existing Linux nl-ffi ownership and lifetime tests pass
+#+NOTE: Existing ownership/loader and forced-GC CString lifetime smokes pass on the final dynamic reader. Host ERT: 44/44. Linux before/after comparison: 24 identical results/errors/syscall traces; an injected wrong unmap size is rejected.
+evidence: target/win-ffi-mem/linux-tests.json sha256=cf4f14d1544b5d01998980def4c213c6fb6ca6120032f23feb6f1673516cfd5d
+
+** S1.4 Portable ownership tests pass on Linux and Windows
+#+NOTE: 58 checks on each platform, identical stdout and empty stderr; Windows PE runs under Wine with its own cold image. Covers real allocations, bytes, GC, CString, double release, low-address cleanup, failed-release liveness/retry and error/throw cleanup.
+evidence: target/win-ffi-mem/memory-parity.json sha256=729073ef901bffaad51b8fb0300fc806949610592948370e4ccdf9a12ea553ae
+
+** S1.5 SQLite Japanese bind and select match Linux, Windows and GNU
+#+NOTE: GNU Emacs 31.1, Linux and Wine stdout match completely. The standalone scenario counts successful opens/closes and prepare/finalize calls, including the binding-error cleanup path. Native Windows commands are in packages/nl-ffi/test/verify-windows.ps1; a native Windows host was not available here.
+evidence: target/win-ffi-mem/sqlite-parity.json sha256=60fe6bea5a4b8351144a8ed5549e056d900e96c58841871539b038a61443a789
+
+** S1.6 Linux dynamic and static final verification passes all eleven groups
+#+NOTE: Final dynamic/static builds pass checks.sh: 11 groups, zero failures. Its standalone-checks invocation includes the new SQLite check: 37 cases, zero failures; maphash-sparse remains the explicitly accepted known-red. Changed package/test files and the changed FFI generator function pass strict compilation; pre-existing whole-build-script warnings are recorded without changing the warning contract.
+evidence: target/win-ffi-mem/final-verify.json sha256=526624373bd9b617b0467a045295253b5ab9fabd7a3816cce8b49616c652f379
+
+** S1.7 Development loop improvement has a measured negative control
+#+NOTE: Measured 2026-10-20: malformed PE import detection took 367 seconds through a full build; the four host checks take 0.458 seconds, and the new import check was shown red on that actual malformed import. Portable memory smoke requires zero compiler fixtures versus the old Linux runner's two. These are verification-loop measurements, not runtime performance claims; no acceptance threshold was revised.
+evidence: target/win-ffi-mem/development-loop.json sha256=63f412b8132a5df64bd59d7879386da6d4e408af51b4e448d9dce0b51e9ff619
+
+** S1.8 Anvil end-to-end: forty tools and identical ASCII and Japanese search rows
+#+NOTE: Both final binaries initialize Anvil, wait with stdin open for 25 seconds, list exactly 40 tools, and return identical complete payloads for memory-search/worklog-search with nelisp and Japanese text. Four searches, three rows each. Invocation records prove equal snapshot hashes and private DB/runtime/cache paths; Wine never opens a live DB. A temporary child cwd also contains the Windows cold-start fallback cache without polluting the checkout.
+evidence: target/win-ffi-mem/anvil-parity.json sha256=c9198baed308f304b23ee305798df438a364127663d6237d96b971223195b7a4

@@ -199,6 +199,65 @@ unibyte Lisp string (nil for a NULL address); =ptr-read-u8=/=alloc-bytes=/
 =ptr-write-u8= are the reader's own minimal raw memory primitives this
 package builds string marshalling from -- no new ones were needed.
 
+* Owned external byte buffers
+
+=nl-ffi-memory-allocate= and =nl-ffi-memory-cstring= return an explicit
+owner. Obtain its address with =nl-ffi-memory-address= and release it with
+=nl-ffi-memory-release= in =unwind-protect= after native use. These mappings
+are outside the managed arena and survive GC. Release is checked exactly
+once; an OS release failure leaves the owner live for retry. Low addresses
+are released before rejection, and an interrupted CString fill releases its
+owner on both errors and throws. Sizes, page rounding and byte validation
+are shared on Linux x86_64 and Windows x86_64.
+
+The two OS adapters retain Linux's mmap/munmap arguments and result
+conventions. Windows uses the already imported fixed-table =VirtualAlloc=
+(MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) and =VirtualFree= (MEM_RELEASE,
+zero size); NULL/BOOL failures become negative GetLastError values. This
+keeps one ownership implementation and adds no runtime builtin. A new
+portable native allocation primitive would duplicate the existing fixed FFI
+surface and expand the native ABI for two short adapters. A managed
+=alloc-bytes= address cannot replace an external owner across GC.
+Keeping =syscall-direct= on Linux also preserves static readers, where
+=nl-ffi-call= is intentionally unsupported.
+
+The original backend was introduced Linux-only in NeLisp =3edc5b180=
+(2026-09-29). In nelisp-emacs-lib =5f8dfc8c= (2026-09-29), SQLite moved its
+out-pointer slots, SQL, paths and bound text from managed raw addresses to
+these owners. That made the Linux-only support check mandatory for every
+=sqlite-open= on Windows; kernel32 imports themselves were already present.
+
+SQLite is also initialized at the Windows fixed FFI boundary before
+=sqlite3_open_v2=. The DLL supplied for Wine reports =OMIT_AUTOINIT= from
+=sqlite3_compileoption_used=: open otherwise reaches a NULL allocator
+function pointer. The idempotent initializer runs before the open call, and
+its failure code is returned without opening a handle. This works with
+ordinary automatically initialized SQLite builds as well. Linux retains its
+original direct FFI call. No new Lisp builtin is involved.
+
+The portable ownership smoke requires no C compiler or ELF fixture:
+
+#+begin_src sh
+target/nelisp --load packages/nl-ffi/test/nl-ffi-memory-platform-smoke.el
+# Or run the Windows reader with the same --load argument.
+#+end_src
+
+It covers real OS allocation and GC plus injected Win32 error paths. The
+optional =NL_FFI_MEMORY_SOURCE= environment variable selects an exact source
+file for a before/after control using the same executable, without rebuilding
+the runtime or compiling ELF fixtures.
+The older =nl-ffi-memory-standalone-smoke.sh= additionally checks the Linux ELF
+loader. =anvil-memory-parity.py --help= describes the end-to-end MCP check;
+it uses private SQLite backups and can compare all four search replies
+against another platform's saved JSON.
+
+On native Windows, run the full check from the repository root (Python is
+required; Notes and Anvil paths are discovered or supplied as parameters):
+
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packages/nl-ffi/test/verify-windows.ps1 -Binary target/nelisp.exe
+#+end_src
+
 * Errors
 
 =ffi:defun= signals one of six named conditions instead of ever returning

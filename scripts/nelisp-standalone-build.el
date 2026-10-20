@@ -24761,7 +24761,11 @@ families.")
     ;; SQLITE_* code is never read zero-extended.  SQLITE_TRANSIENT for
     ;; bind_text is (void*)-1, passed as the i64 -1.
     ("sqlite3_libversion"        "libsqlite3.so.0" 0)
-    ("sqlite3_open_v2"           "libsqlite3.so.0" 4 (:windows-ret s32))
+    ;; Some Windows SQLite builds omit automatic initialization. Keep this
+    ;; idempotent library setup at the fixed FFI boundary, before open can
+    ;; reach an uninitialized allocator; Linux keeps its direct call.
+    ("sqlite3_open_v2"           "libsqlite3.so.0" 4
+     (:windows-ret s32 :windows-initialize sqlite3_initialize))
     ("sqlite3_close_v2"          "libsqlite3.so.0" 1 (:windows-ret s32))
     ("sqlite3_errmsg"            "libsqlite3.so.0" 1)
     ("sqlite3_exec"              "libsqlite3.so.0" 5 (:windows-ret s32))
@@ -24820,6 +24824,7 @@ decisions, not accidental loader requirements of every Windows reader.")
   '(("VirtualAlloc" "kernel32.dll" 4)
     ("VirtualProtect" "kernel32.dll" 4)
     ("VirtualFree" "kernel32.dll" 3)
+    ("sqlite3_initialize" "libsqlite3.so.0" 0 (:windows-ret s32))
     ("FlushInstructionCache" "kernel32.dll" 3)
     ("GetModuleFileNameW" "kernel32.dll" 3)
     ("GetModuleHandleW" "kernel32.dll" 1)
@@ -24849,7 +24854,7 @@ decisions, not accidental loader requirements of every Windows reader.")
     ("GetAce" "advapi32.dll" 3)
     ("ConvertStringSecurityDescriptorToSecurityDescriptorW" "advapi32.dll" 4)
     ("SetSecurityInfo" "advapi32.dll" 7))
-  "Raw OS FFI through the existing dispatcher; no new Lisp builtin entries.")
+  "OS and target-only library FFI; no new Lisp builtin entries.")
 
 (defun nelisp-standalone--windows-reader-extern-table ()
   "Return TABLE rows whose SONAME has a Windows DLL mapping.
@@ -24893,6 +24898,8 @@ into double-precision (f64) marshalling:
 
   * :windows-ret s32, when TARGET is `windows-x86_64', sign-extends the low
     32 bits returned in EAX before boxing.  Other targets ignore this override.
+  * :windows-initialize SYMBOL calls a zero-argument C initializer first on
+    Windows. A nonzero result is returned without calling the main entry.
 
 This is what lets the reader call libm/UCRT (sqrt/pow/...) and any other
 fixed-table shared-library entry point directly from elisp."
@@ -24939,6 +24946,11 @@ fixed-table shared-library entry point directly from elisp."
              (arm (if f64-binds
                       `(let* ,(nreverse f64-binds) ,body)
                     body)))
+        (when (and (eq target 'windows-x86_64)
+                   (plist-get sig :windows-initialize))
+          (setq arm
+                `(let ((initrc (extern-call ,(plist-get sig :windows-initialize))))
+                   (if (= initrc 0) ,arm (wf_write_int out initrc)))))
         (setq chain
               `(if (= (sexp-name-eq nm ,sym) 1)
                    ,arm
@@ -30792,6 +30804,13 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                    (buffer-string)))
          (source (nelisp-boot-image-prelude source))
          (position (nelisp-standalone--prelude-source-boundary source))
+         (source (concat (substring source 0 position)
+                         (with-temp-buffer
+                           (insert-file-contents
+                            (expand-file-name "lisp/nelisp-stdlib-unicode.el"
+                                              nelisp-standalone--repo-root))
+                           (buffer-string))
+                         "\n" (substring source position)))
          (source-only
           (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
          ;; Source-only builds stay pure source: no vendor bake.
@@ -32073,13 +32092,15 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             "  (when start\n"
             "    (unless (integerp start)\n"
             "      (signal 'wrong-type-argument (list 'fixnump start)))\n"
-            "    (when (or (< start 0) (> start (length s)))\n"
-            "      (signal 'args-out-of-range (list s start))))\n"
+            "    (when (or (< start (- (length s))) (> start (length s)))\n"
+            "      (signal 'args-out-of-range (list s start)))\n"
+            "    (when (< start 0) (setq start (+ (length s) start))))\n"
             "  (if inhibit-modify\n"
-            "      (let ((nlre--smd-saved nlre--last-caps))\n"
+            "      (let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
             "        (unwind-protect (nlre-string-match re s start)\n"
-            "          (setq nlre--last-caps nlre--smd-saved)))\n"
-            "    (nlre-string-match re s start)))\n"
+            "          (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer)))\n"
+            "    (prog1 (nlre-string-match re s start)\n"
+            "      (setq nlre--last-buffer nil))))\n"
             ;; string-match-p must not disturb match-data (that is the whole
             ;; reason it exists over string-match): save/restore
             ;; `nlre--last-caps' around the call rather than sharing
@@ -32095,11 +32116,12 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             "  (when start\n"
             "    (unless (integerp start)\n"
             "      (signal 'wrong-type-argument (list 'fixnump start)))\n"
-            "    (when (or (< start 0) (> start (length s)))\n"
-            "      (signal 'args-out-of-range (list s start))))\n"
-            "  (let ((nlre--smd-saved nlre--last-caps))\n"
+            "    (when (or (< start (- (length s))) (> start (length s)))\n"
+            "      (signal 'args-out-of-range (list s start)))\n"
+            "    (when (< start 0) (setq start (+ (length s) start))))\n"
+            "  (let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
             "    (unwind-protect (nlre-string-match re s start)\n"
-            "      (setq nlre--last-caps nlre--smd-saved))))\n"
+            "      (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer))))\n"
             "(defun match-beginning (n) (nlre-match-beginning n))\n"
             "(defun match-end (n) (nlre-match-end n))\n"
             "(defun match-string (n &optional str)\n"
@@ -32113,19 +32135,12 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             ;; evaluated eagerly; it snapshots/restores the same vector
             ;; via `unwind-protect' so an error inside BODY still restores
             ;; the caller's match state, matching host Emacs semantics.
-            "(defun match-data (&optional _integers _reuse _reseat)\n"
-            "  (if (null nlre--last-caps)\n"
-            "      nil\n"
-            "    (let ((i 0) (n (length nlre--last-caps)) (out nil))\n"
-            "      (while (< i n)\n"
-            "        (let ((c (aref nlre--last-caps i)))\n"
-            "          (setq out (cons (if c (cdr c) nil) (cons (if c (car c) nil) out))))\n"
-            "        (setq i (1+ i)))\n"
-            "      (nreverse out))))\n"
+            "(defun match-data (&optional integers reuse reseat)\n"
+            "  (nlre-match-data integers reuse reseat))\n"
             "(defmacro save-match-data (&rest body)\n"
-            "  `(let ((nlre--smd-saved nlre--last-caps))\n"
+            "  `(let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
             "     (unwind-protect (progn ,@body)\n"
-            "       (setq nlre--last-caps nlre--smd-saved))))\n"
+            "       (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer))))\n"
             ;; TRIM was accepted and dropped: (split-string " a , b " ","
             ;; nil " +") kept the spaces.  Emacs trims each piece with TRIM
             ;; as a regexp anchored at both ends, and drops a piece that
@@ -33417,13 +33432,15 @@ src', defensively, even though that path never actually loads
    "    (when start\n"
    "      (unless (integerp start)\n"
    "        (signal 'wrong-type-argument (list 'fixnump start)))\n"
-   "      (when (or (< start 0) (> start (length s)))\n"
-   "        (signal 'args-out-of-range (list s start))))\n"
+   "      (when (or (< start (- (length s))) (> start (length s)))\n"
+   "        (signal 'args-out-of-range (list s start)))\n"
+   "      (when (< start 0) (setq start (+ (length s) start))))\n"
    "    (if inhibit-modify\n"
-   "        (let ((nlre--smd-saved nlre--last-caps))\n"
+   "        (let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
    "          (unwind-protect (nlre-string-match re s start)\n"
-   "            (setq nlre--last-caps nlre--smd-saved)))\n"
-   "      (nlre-string-match re s start))))\n"
+   "            (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer)))\n"
+   "      (prog1 (nlre-string-match re s start)\n"
+   "        (setq nlre--last-buffer nil)))))\n"
    ;; string-match-p must not disturb match-data -- save/restore
    ;; `nlre--last-caps' around the call instead of sharing `string-match''s
    ;; body (see the reader-repl-prelude copy above for the same fix).
@@ -33434,11 +33451,12 @@ src', defensively, even though that path never actually loads
    "    (when start\n"
    "      (unless (integerp start)\n"
    "        (signal 'wrong-type-argument (list 'fixnump start)))\n"
-   "      (when (or (< start 0) (> start (length s)))\n"
-   "        (signal 'args-out-of-range (list s start))))\n"
-   "    (let ((nlre--smd-saved nlre--last-caps))\n"
+   "      (when (or (< start (- (length s))) (> start (length s)))\n"
+   "        (signal 'args-out-of-range (list s start)))\n"
+   "      (when (< start 0) (setq start (+ (length s) start))))\n"
+   "    (let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
    "      (unwind-protect (nlre-string-match re s start)\n"
-   "        (setq nlre--last-caps nlre--smd-saved)))))\n"
+   "        (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer)))))\n"
    "(unless (fboundp 'match-beginning)\n"
    "  (defun match-beginning (n) (nlre-match-beginning n)))\n"
    "(unless (fboundp 'match-end)\n"
@@ -33448,20 +33466,13 @@ src', defensively, even though that path never actually loads
    "    (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
    "      (if (and b e) (if str (substring str b e) (buffer-substring b e)) nil))))\n"
    "(unless (fboundp 'match-data)\n"
-   "  (defun match-data (&optional _integers _reuse _reseat)\n"
-   "    (if (null nlre--last-caps)\n"
-   "        nil\n"
-   "      (let ((i 0) (n (length nlre--last-caps)) (out nil))\n"
-   "        (while (< i n)\n"
-   "          (let ((c (aref nlre--last-caps i)))\n"
-   "            (setq out (cons (if c (cdr c) nil) (cons (if c (car c) nil) out))))\n"
-   "          (setq i (1+ i)))\n"
-   "        (nreverse out)))))\n"
+   "  (defun match-data (&optional integers reuse reseat)\n"
+   "    (nlre-match-data integers reuse reseat)))\n"
    "(unless (fboundp 'save-match-data)\n"
    "  (defmacro save-match-data (&rest body)\n"
-   "    `(let ((nlre--smd-saved nlre--last-caps))\n"
+   "    `(let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
    "       (unwind-protect (progn ,@body)\n"
-   "         (setq nlre--last-caps nlre--smd-saved)))))\n"
+   "         (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer)))))\n"
    "(unless (fboundp 'current-time)\n"
    "  (defun current-time ()\n"
    "    (let* ((ft (float-time)) (secs (floor ft))\n"
@@ -45244,8 +45255,10 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
                 ;; functions go into the image already compiled for the VM.
-                ;; Match the compiler image path: do not freeze transient
-                ;; bootstrap allocations into every subsequent cold start.
+                ;; Match the compiler image path: reclaim registration and
+                ;; bootstrap temporaries before the cold loader makes the
+                ;; image permanent, so later sweeps do not scan them and
+                ;; they are not frozen into every subsequent cold start.
                 (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                         (nelisp-standalone--cold-target-path image))))
              (process-environment (nelisp-standalone--cold-build-environment))
