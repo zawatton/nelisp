@@ -78,10 +78,13 @@
     ;; slots 4 (alias target) and 5 (buffer-local redirect) are nil for
     ;; almost every variable.  Tags: 0 nil, 1 t, 2 fixnum, else the box's tag.
     (defun nelisp_env_entry_slot_tag (rec k)
-      (let ((w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 rec 8) 32) (* k 8)) 0)))
-        (if (= (logand w 1) 0)
-            (sexp-tag w)
-          (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))))
+      ;; Keep this small tagged-slot accessor eligible for the general source
+      ;; inliner.  Nil metadata is the common case, so classify it first.
+      (let* ((w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 rec 8) 32) (* k 8)) 0)))
+        (if (= w 3) 0
+          (if (= (logand w 1) 0)
+              (sexp-tag w)
+            (if (= (logand w 3) 1) 2 1)))))
 
     (defun nelisp_env_alias_slot_candidate (entry-ptr _pad)
       ;; Allocation-free classification for ordinary value reads/writes.
@@ -92,7 +95,7 @@
             3
           (let ((tg (nelisp_env_entry_slot_tag entry-ptr 4)))
             (if (= tg 0) 3
-              (if (= tg 4) 0 1))))))
+              (if (or (= tg 4) (= tg 16)) 0 1))))))
 
     (defun nelisp_env_alias_canonicalize
         (mirror-ptr entry-ptr name-ptr result-address-ptr)
@@ -108,52 +111,26 @@
           (let ((target-tag (nelisp_env_entry_slot_tag entry-ptr 4)))
             (if (= target-tag 0)
                 3
-              (if (/= target-tag 4)
+              (if (and (/= target-tag 4) (/= target-tag 16))
                   1
-                (let ((env-tag (alloc-bytes 32 8))
-                      (table-tag (alloc-bytes 32 8))
-                      (entry-tag (alloc-bytes 32 8))
-                      (table-ptr 0)
-                      (status 1))
-                  (sexp-write-nil env-tag)
-                  (sexp-write-nil table-tag)
-                  (sexp-write-nil entry-tag)
-                  (if (and (= (sexp-tag mirror-ptr) 12)
-                           (> (record-slot-count mirror-ptr) 0))
-                      (seq
-                       (record-type-tag mirror-ptr env-tag)
-                       (if (= (nl_sp_eq_lit env-tag 10
-                                           7290607012774962542 30318) 1)
-                           (seq
-                            (setq table-ptr
-                                  (record-slot-ref-ptr mirror-ptr 0))
-                            (if (and (= (sexp-tag table-ptr) 12)
-                                     (> (record-slot-count table-ptr) 1))
-                                (seq
-                                 (record-type-tag table-ptr table-tag)
-                                 (if (= (nl_sp_eq_lit table-tag 15
-                                                     8314040931539181926
-                                                     28548142445374824) 1)
-                                     (seq
-                                      (record-type-tag entry-ptr entry-tag)
-                                      (if (= (nl_sp_eq_lit entry-tag 12
-                                                          7290602597431212403
-                                                          2037544046) 1)
-                                          (setq status
-                                                (extern-call
-                                                 nelisp_mirror_alias_resolve_borrowed
-                                                 mirror-ptr name-ptr env-tag
-                                                 table-tag entry-tag
-                                                 result-address-ptr))
-                                        0))
-                                   0))
-                              0))
-                         0))
-                    0)
-                  (dealloc-bytes entry-tag 32 8)
-                  (dealloc-bytes table-tag 32 8)
-                  (dealloc-bytes env-tag 32 8)
-                  status)))))))
+                ;; Authenticate borrowed WORD tags without transport boxes.
+                (if (and (= (sexp-tag mirror-ptr) 12)
+                         (> (record-slot-count mirror-ptr) 0)
+                         (= (nl_sp_eq_lit (nl_record_type_word mirror-ptr) 10
+                                         7290607012774962542 30318) 1))
+                    (let ((table (nl_record_slot_word mirror-ptr 0)))
+                      (if (and (= (nl_val_tag table) 12)
+                               (= (nl_sp_eq_lit (nl_record_type_word table) 15
+                                               8314040931539181926 28548142445374824) 1)
+                               (= (nl_sp_eq_lit (nl_record_type_word entry-ptr) 12
+                                               7290602597431212403 2037544046) 1))
+                          (let ((terminal (extern-call nl_pa_terminal
+                                           mirror-ptr entry-ptr name-ptr 0)))
+                            (if (= terminal 0)
+                                (if (= (sexp-name-eq 268435480 "cyclic-variable-indirection") 1) 2 1)
+                              (seq (ptr-write-u64 result-address-ptr 0 terminal) 0)))
+                        1))
+                  1)))))))
 
     (defun nelisp_env_variable_canonicalize
         (mirror-ptr frames-ptr entry-ptr name-ptr address _pad)
@@ -200,23 +177,22 @@
                    (if (> (record-slot-count entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
               (nl_record_slot_word entry 0)
+            (let ((fast (extern-call nl_pa_alias_read_w mirror-ptr frames-ptr entry frame-mode)))
+            (if (/= fast 6) fast
             (let* ((address (alloc-bytes 8 8))
                    (status (nelisp_env_variable_canonicalize
                             mirror-ptr frames-ptr entry name-ptr address 0)))
               (if (= status 0)
                   (let* ((canonical (ptr-read-u64 address 0))
                          (cell (if (= frames-ptr 0) 0
-                                 (if (= frame-mode 1)
-                                     (extern-call nelisp_frame_stack_find_kind
-                                                  frames-ptr canonical 1 0)
-                                   (extern-call nelisp_frame_stack_find
-                                                frames-ptr canonical)))))
+                                 (extern-call nelisp_frame_stack_find_kind
+                                              frames-ptr canonical 1 0))))
                     (if (= cell 0)
                         (let ((terminal (extern-call nelisp_mirror_lookup_entry
                                                      mirror-ptr canonical)))
                           (if (= terminal 0) 2 (nl_record_slot_word terminal 0)))
                       (extern-call nl_cell_get_value_w cell 0)))
-                (nl_abi_miss status 0)))))))
+                (nl_abi_miss status 0)))))))))
 
     ;; (rc, OUT) form: the status body writes the caller's OUT directly
     ;; (rc 1 on a miss or a stashed signal, as before).
@@ -241,9 +217,8 @@
             (if (= status 0)
                 (let* ((canonical (ptr-read-u64 address 0))
                        (cell (if (= frames-ptr 0) 0
-                               (if (= frame-mode 1)
-                                   (extern-call nelisp_frame_stack_find_kind frames-ptr canonical 1 0)
-                                 (extern-call nelisp_frame_stack_find frames-ptr canonical)))))
+                               (extern-call nelisp_frame_stack_find_kind
+                                            frames-ptr canonical 1 0))))
                   (if (= cell 0)
                       (let ((terminal (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
                         (if (= terminal 0) (setq status 1)

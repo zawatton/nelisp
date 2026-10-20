@@ -314,7 +314,11 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 353
+ns-collision 354
+# 353 -> 354 on 2026-10-20 (prim-alias): the baked explicit-local provider
+# initializes enable-multibyte-characters to t before reporting it local.
+# emacs-parity-core-vars keeps the same guarded t initializer for library boot.
+# The exact duplicate is pinned below; unrelated collision debt is unchanged.
 # 344 -> 353 on 2026-09-21, same day (Doc segI decoded-time accessors,
 # coordinator-approved): the nine `decoded-time-*' accessors for real
 # Emacs's `decoded-time' struct (simple.el, not vendored -- see the
@@ -447,7 +451,12 @@ ns-collision 353
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 133
+ns-collision-divergent 135
+# 133 -> 135 on 2026-10-20 (prim-alias): indirect-variable and
+# internal-delete-indirect-variable gain native-only standalone facades;
+# foundation retains fboundp-gated registry fallbacks. defvaralias already
+# collided; its provider set is refreshed below. GNU 31.1 corpus and the
+# native feature guard cover coexistence; no unrelated baseline is raised.
 # 128 -> 133 on 2026-09-21 (segment F): +7 divergent collisions --
 # cl-count/cl-remove/cl-delete/cl-assoc/cl-sort/cl-remove-duplicates,
 # new in lisp/nelisp-cl-macros.el, diverge from an older, now-dead-code
@@ -825,7 +834,9 @@ ns-collision-divergent 133
 # used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
 # `ns-collision' pin for these two names) rather than diverging the name
 # to fit each file's local convention.
-ns-prefix-violation 328
+ns-prefix-violation 329
+# 328 -> 329 on 2026-10-20 (prim-alias): the same GNU public built-in
+# variable is intentionally initialized in the buffer-local provider.
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
 # `rx--tr-*' family added to scripts/nelisp-stdlib-prelude.el and
 # lisp/nelisp-stdlib-misc.el -- an `rx-'-prefixed name in a file whose
@@ -1764,3 +1775,9 @@ pinned-collision ns-collision-divergent	file-name-nondirectory	lisp/nelisp-stdli
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	c0cf8ac830a8
 pinned-collision ns-collision-divergent	string-equal	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	244c8723adb9
 pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	23425a8d9d04
+# 2026-10-20 native alias facades versus the legacy library providers.
+pinned-collision ns-collision-divergent	defvaralias	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	7737c4e742ad
+pinned-collision ns-collision-divergent	indirect-variable	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	126e2a4d8ba0
+pinned-collision ns-collision-divergent	internal-delete-indirect-variable	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	a3973f3ad4af
+# Same t initializer, guarded on native-provider / library startup respectively.
+pinned-collision ns-collision	enable-multibyte-characters	lisp/nelisp-buffer-local.el packages/nelisp-emacs-foundation/src/emacs-parity-core-vars.el

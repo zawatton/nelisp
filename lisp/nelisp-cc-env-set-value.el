@@ -141,14 +141,13 @@
                   (if (= status 0)
                       (let* ((canonical-ptr (ptr-read-u64 canonical-address 0))
                              (cell-ptr
-                              (if (= dynamic-only-p 1)
-                                  (extern-call nelisp_frame_stack_find_kind
-                                               frames-ptr canonical-ptr 1 0)
-                                (extern-call nelisp_frame_stack_find
-                                             frames-ptr canonical-ptr))))
+                              (extern-call nelisp_frame_stack_find_kind
+                                           frames-ptr canonical-ptr 1 0)))
+                        ;; TODO(prim-globals watcher): notify using CANONICAL-PTR.
                         (if (= (extern-call nelisp_mirror_is_constant
                                             mirror-ptr canonical-ptr) 1)
-                            (setq status 1)
+                            (seq (extern-call bf_setting_constant name-ptr)
+                                 (setq status 1))
                           (if (= cell-ptr 0)
                               (if (= scratch-ptr 0)
                                   (setq status

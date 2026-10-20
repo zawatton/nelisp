@@ -26,7 +26,7 @@ eq	native-must-stay	type predicate on tag bits
 null	native-must-stay	type predicate on tag bits
 not	native-review	No classification row; review against Doc 211 §6.
 special-form-p	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
-nelisp--env-globals-op	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nelisp--env-globals-op	native-must-stay	Minimal native surface clauses 1/2: symbol-entry access and N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/, lisp/nelisp-buffer-local.el (legacy entry reader) and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation. variable-entry returns an existing mirror-owned record through WORD transport without exposing raw pointers.
 make-hash-table	native-review	No classification row; review against Doc 211 §6.
 puthash	native-must-stay	hash-table core
 gethash	native-must-stay	Minimal native surface clause 1: tagged hash-table buckets; eq/eql string identity fallback after byte mutation (GNU reference test/nelisp-n2-reference.el)

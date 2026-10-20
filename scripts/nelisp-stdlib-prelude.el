@@ -26771,3 +26771,43 @@ are skipped.")
             (when (and (eq (car-safe definition) 'macro) (nelisp--fx-active-p))
               (nelisp--fx-check-macro symbol)
               (nelisp--fx-retry-waiters symbol))))))
+
+;; Policy stays in Lisp; the existing globals operation reaches symbol-entry
+;; redirects. Library compatibility providers must retain these native cells.
+(defvar nelisp--native-variable-aliases (fboundp 'nelisp--native-env))
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'indirect-variable))
+  (defun indirect-variable (object)
+    "Return OBJECT's terminal variable symbol, preserving non-symbols."
+    (nelisp--env-globals-op 'indirect-variable object)))
+
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'defvaralias))
+ (defun defvaralias (new-alias base-variable &optional docstring)
+  "Make NEW-ALIAS refer to BASE-VARIABLE's value cell."
+  (unless (symbolp new-alias)
+    (signal 'wrong-type-argument (list 'symbolp new-alias)))
+  (unless (symbolp base-variable)
+    (signal 'wrong-type-argument (list 'symbolp base-variable)))
+  (when (or (null new-alias) (eq new-alias t) (keywordp new-alias)
+            (nelisp--env-globals-op 'constant-variable-p new-alias))
+    (error "Cannot make a constant an alias: %s" new-alias))
+  (let ((kind (nelisp--env-globals-op 'variable-alias-source-kind new-alias)))
+    (cond ((eq kind 1) (error "Don’t know how to make a let-bound variable an alias: %s" new-alias))
+          ((eq kind 2) (error "Don’t know how to make a buffer-local variable an alias: %s" new-alias))))
+  (nelisp--env-globals-op 'variable-alias-set new-alias base-variable)
+  ;; TODO(prim-globals watcher): discard NEW-ALIAS's former watchers.
+  (put new-alias 'variable-documentation docstring)
+  base-variable))
+
+(when nelisp--native-variable-aliases
+  (defun nelisp--native-variable-alias-pairs ()
+    "Return a fresh alist of native (ALIAS . BASE) redirects."
+    (nelisp--env-globals-op 'variable-aliases nil)))
+
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'internal-delete-indirect-variable))
+  (defun internal-delete-indirect-variable (variable)
+    "Remove VARIABLE's alias redirect and unbind only that variable."
+    (unless (symbolp variable)
+      (signal 'wrong-type-argument (list 'symbolp variable)))
+    (when (eq (indirect-variable variable) variable)
+      (signal 'error (list "Cannot undeclare a variable that is not an alias" variable)))
+    (makunbound variable)))

@@ -170,6 +170,15 @@
             0 (unibyte-string 192 49 8 0 193 32 48 135 135)
             (vector 'no-catch (lambda () (throw nil 'missing))) 1)))
    (equal (funcall fn) '(no-catch nil missing)))
+ ;; Native variable redirects preserve constants and uninterned identity.
+ (let ((alias (make-symbol "nil-target")))
+   (list (defvaralias alias nil) (boundp alias) (symbol-value alias)
+         (indirect-variable alias)))
+ (let ((a (make-symbol "same")) (b (make-symbol "same")) (other (make-symbol "same")))
+   (set b 7) (defvaralias a b) (set a 9)
+   (list (eq (indirect-variable a) b) (symbol-value b) (boundp other)
+         (condition-case e (defvaralias b a)
+           (cyclic-variable-indirection (eq (cadr e) a)))))
  ;; U7a: aliases bind the canonical dynamic cell, including a void target.
  (let ((target (intern "u7a-shadow-target"))
        (alias (intern "u7a-shadow-alias")))
