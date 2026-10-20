@@ -547,6 +547,10 @@ def check_delivery():
     commits = sorted((ROOT / "target/codex/commit-done").glob("*.sha"))
     assert commits, "coordinator has not committed the lane"
     commit = commits[-1].read_text().strip().split()[0]
+    assert re.fullmatch(r"[0-9a-f]{7,40}", commit), "invalid relay commit ID"
+    resolved = run(["git", "rev-parse", "--verify", commit + "^{commit}"])
+    assert resolved.returncode == 0, "relay commit is missing"
+    commit = resolved.stdout.decode().strip()
     assert run(["git", "rev-parse", "HEAD"]).stdout.decode().strip() == commit
     assert not run(["git", "status", "--porcelain"]).stdout
     assert (OUT / "design.md").is_file()
