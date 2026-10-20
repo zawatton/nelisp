@@ -1,18 +1,18 @@
 {
   "interpreter": {
-    "funcall": 30,
-    "builtin": 70
+    "funcall": 10,
+    "builtin": 10
   },
   "vm": {
-    "funcall": 20,
-    "builtin": 45,
+    "funcall": 5,
+    "builtin": 5,
     "let": 5,
-    "while": 12
+    "while": 5
   },
   "bytecode": {
-    "funcall": 140,
-    "builtin": 50,
-    "let": 70,
-    "while": 110
+    "funcall": 5,
+    "builtin": 5,
+    "let": 5,
+    "while": 5
   }
 }

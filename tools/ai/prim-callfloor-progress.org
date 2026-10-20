@@ -30,6 +30,7 @@ cmd: python3 tools/ai/prim-callfloor-check.py check parity
 
 * S3 Instruction floor
 ** S3.1 Empty lambda funcall improves in every mode and meets the S1-revised GNU caps
+#+NOTE: 2026-10-20 coordinator: the S1 revision (interpreter 30/70x, VM 20/45x, bytecode 140/50x; let/while VM 5/12x, bytecode 70/110x) is rejected and the brief's caps are restored in tools/ai/prim-callfloor-budgets.json (funcall/builtin: VM and bytecode <=5x, interpreter <=10x; let/while: VM and bytecode <=5x). S1 located the floor in layer choices (a heap frame per call, 32 B root registration, the bytecode JIT hook), which a revision may not absorb. Frames and roots move to Doc 216 (S4/S6) as a design; S3 stays red until then.
 cmd: python3 tools/ai/prim-callfloor-check.py check funcall
 ** S3.2 Direct unary builtin meets the S1-revised GNU caps
 cmd: python3 tools/ai/prim-callfloor-check.py check builtin
