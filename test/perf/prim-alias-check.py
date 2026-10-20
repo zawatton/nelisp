@@ -74,7 +74,10 @@ def parity():
         outputs.append(stdout.read_bytes())
     assert outputs[0] == outputs[1], "GNU/native stdout differs; inspect target/prim-alias/*.stdout"
     assert len(outputs[0].splitlines()) == 14 + EXTRA.read_text().count("(pa-case '")
-    assert not (OUT / "native.stderr").read_bytes(), "unexpected native stderr"
+    # Warning rendering uses different blank-line spacing. Require the exact
+    # GNU warning messages, including warnings preceding failed alias installs.
+    assert ([x for x in (OUT / "native.stderr").read_bytes().splitlines() if x] ==
+            [x for x in (OUT / "gnu.stderr").read_bytes().splitlines() if x]), "unexpected native stderr"
     host = run(["emacs", "-Q", "--batch", "--eval", r'''
 (let ((original (symbol-function 'defvaralias)) (count 0))
   (with-temp-buffer
@@ -169,12 +172,24 @@ def load_counts(path, binary):
     symbols, addresses = symbol_table(str(binary), sha(binary))
     selected = {"nelisp_env_lookup_value_w", "bf_dynamic_lookup_w", "wf_bytecode_w_varref",
                 "nelisp_mirror_lookup_entry", "nl_pa_alias_read_w",
-                "nelisp_env_lkv_mirror_with_frames_w", "nl_gc_sweep", "nl_sb_plain_entry_p"}
+                "nelisp_env_lkv_mirror_with_frames_w", "nl_gc_sweep", "nl_sb_plain_entry_p",
+                "m5_fx_alias_ref", "nelisp_env_alias_slot_candidate"}
     # varref is inlined in the baseline bytecode executor. Its original
     # checkpoint remains one call per varref; terminal alias checks have a
     # different caller and must not be counted as additional variable reads.
     edges = {f"{caller}->nl_sb_plain_entry_p"
              for caller in ("wf_bytecode_execute_frame", "wf_bytecode_w_varref")}
+    # The general inliner can absorb the VM varref into these callers.
+    # Count its remaining entry-classification call, once per read, rather
+    # than requiring a function boundary that optimized code no longer has.
+    edges.update(f"{caller}->nl_sb_plain_entry_p"
+                 for caller in ("m5_fx_globals_word", "m5_fx_run_body"))
+    # Bytecode can retain the shared slot-4 result directly, eliminating
+    # the plain wrapper. Only source-read callers count, never the alias
+    # helper's terminal classification.
+    edges.update(f"{caller}->nelisp_env_alias_slot_candidate"
+                 for caller in ("wf_bytecode_execute_frame", "wf_bytecode_w_varref",
+                                "m5_fx_globals_word", "m5_fx_run_body"))
     counts = dict.fromkeys(selected, 0)
     counts.update(dict.fromkeys(edges, 0))
     names, target, caller = {}, None, None
@@ -208,9 +223,21 @@ def read_witness(mode, counts):
     if mode == "interpreter":
         return counts["nelisp_env_lookup_value_w"]
     if mode == "vm":
-        return counts["nelisp_env_lkv_mirror_with_frames_w"]
-    return sum(counts[f"{caller}->nl_sb_plain_entry_p"]
-               for caller in ("wf_bytecode_execute_frame", "wf_bytecode_w_varref"))
+        # Uniform alias workloads can retain the guarded opcode's helper
+        # instead of inlining it. Count that boundary once, not its callees.
+        if counts["m5_fx_alias_ref"]:
+            return counts["m5_fx_alias_ref"]
+        if counts["wf_bytecode_w_varref"]:
+            return counts["wf_bytecode_w_varref"]
+        return counts["nelisp_env_lkv_mirror_with_frames_w"] + sum(
+            counts[f"{caller}->{checkpoint}"]
+            for caller in ("m5_fx_globals_word", "m5_fx_run_body")
+            for checkpoint in ("nl_sb_plain_entry_p", "nelisp_env_alias_slot_candidate"))
+    if counts["wf_bytecode_w_varref"]:
+        return counts["wf_bytecode_w_varref"]
+    return sum(counts[f"{caller}->{checkpoint}"]
+               for caller in ("wf_bytecode_execute_frame", "wf_bytecode_w_varref")
+               for checkpoint in ("nl_sb_plain_entry_p", "nelisp_env_alias_slot_candidate"))
 
 
 def record_cost():

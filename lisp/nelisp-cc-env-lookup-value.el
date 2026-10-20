@@ -148,9 +148,14 @@
                        (= (nelisp_env_entry_slot_tag entry 5) 8))
                   (let ((redirect (record-slot-ref-ptr entry 5)))
                     (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
-                        (let ((buffer (nelisp_env_lookup_value_w
-                                       mirror-ptr frames-ptr
-                                       (nl_vector_slot_word redirect 0) 0))
+                        (let ((buffer (if (= frames-ptr 0)
+                                          ;; Mirror-only callers (notably
+                                          ;; unlet) have no frame record.
+                                          (nelisp_env_lkv_mirror_w
+                                           mirror-ptr (nl_vector_slot_word redirect 0) 0 0)
+                                        (nelisp_env_lookup_value_w
+                                         mirror-ptr frames-ptr
+                                         (nl_vector_slot_word redirect 0) 0)))
                               (locals (nl_vector_slot_word redirect 1)) (found 0))
                           (if (and (/= buffer 0) (/= buffer 2))
                               (while (and (= (sexp-tag locals) 7) (= found 0))
@@ -170,14 +175,19 @@
     ;; Alias and buffer-local resolution return borrowed names. The terminal
     ;; frame cell or mirror slot supplies the result WORD directly.
     (defun nelisp_env_lkv_mirror_with_frames_w
-        (mirror-ptr frames-ptr name-ptr _pad frame-mode _pad1 _pad2 _pad3)
-      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (mirror-ptr frames-ptr name-ptr known-entry frame-mode _pad1 _pad2 _pad3)
+      ;; Callers that already classified the redirect pass the same entry.
+      (let ((entry (if (= known-entry 0)
+                       (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)
+                     known-entry)))
         (if (= entry 0) 2
-          (if (and (= (nelisp_env_alias_slot_candidate entry 0) 3)
+          (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
+          (if (and (= candidate 3)
                    (if (> (record-slot-count entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
               (nl_record_slot_word entry 0)
-            (let ((fast (extern-call nl_pa_alias_read_w mirror-ptr frames-ptr entry frame-mode)))
+            (let ((fast (extern-call nl_pa_alias_read_w mirror-ptr frames-ptr entry
+                                     (= candidate 0))))
             (if (/= fast 6) fast
             (let* ((address (alloc-bytes 8 8))
                    (status (nelisp_env_variable_canonicalize
@@ -192,7 +202,7 @@
                                                      mirror-ptr canonical)))
                           (if (= terminal 0) 2 (nl_record_slot_word terminal 0)))
                       (extern-call nl_cell_get_value_w cell 0)))
-                (nl_abi_miss status 0)))))))))
+                (nl_abi_miss status 0))))))))))
 
     ;; (rc, OUT) form: the status body writes the caller's OUT directly
     ;; (rc 1 on a miss or a stashed signal, as before).
@@ -262,7 +272,7 @@
         (if (= cell-ptr 0)
             ;; Frame miss: check mirror.
             (nelisp_env_lkv_mirror_with_frames_w
-             mirror-ptr frames-ptr name-ptr 0 0 0 0 0)
+             mirror-ptr frames-ptr name-ptr entry 0 0 0 0)
           ;; Frame hit: the cell's value WORD itself (Doc 215: a WORD may be
           ;; the object's own box; no private box, no clone).
           (extern-call nl_cell_get_value_w cell-ptr 0)))))

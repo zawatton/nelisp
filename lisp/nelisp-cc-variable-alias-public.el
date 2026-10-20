@@ -46,13 +46,16 @@
     (defun nl_pa_public_name (name _pad)
       (if (and (= (nl_val_tag name) 4) (= (sexp-name-eq name "nil") 1)) 3
         (if (and (= (nl_val_tag name) 4) (= (sexp-name-eq name "t") 1)) 7 name)))
-    (defun nl_pa_alias_read_w (mirror frames entry frame-mode)
+    (defun nl_pa_alias_read_w (mirror frames entry validated)
       ;; The usual single redirect needs one additional hash, not a full
       ;; canonicalization followed by two more terminal lookups. 6 requests
       ;; the general chain/local resolver; it is not a valid Lisp WORD.
       ;; Use the same mirror entry-identity trust as the plain path; keep
       ;; full record/type-name authentication in the general resolver.
-      (if (and (= (nl_val_tag entry) 12) (> (record-slot-count entry) 4))
+      ;; VALIDATED is set only by the shared slot-4 checkpoint. Both read
+      ;; paths retain full validation when that checkpoint rejects ENTRY.
+      (if (or (= validated 1)
+              (and (= (nl_val_tag entry) 12) (> (record-slot-count entry) 4)))
           (let ((target (nl_record_slot_word entry 4)))
             (if (or (= (nl_val_tag target) 4) (= (nl_val_tag target) 16))
                 (let ((terminal (nelisp_mirror_lookup_entry mirror target)))
@@ -62,8 +65,8 @@
                       ;; Alias bases are declared special. Their dynamic
                       ;; bindings are shallow outside workers; pre-existing
                       ;; lexical bindings of the base do not bind the alias.
-                      (let ((cell (if (= frames 0) 0
-                                    (if (= (nl_sb_worker_p mirror) 0) 0
+                      (let ((cell (if (= (nl_sb_worker_p mirror) 0) 0
+                                    (if (= frames 0) 0
                                       (nelisp_frame_stack_find_kind frames target 1 0)))))
                         (if (= cell 0)
                             (if (= terminal 0) 2 (nl_record_slot_word terminal 0))
@@ -100,6 +103,15 @@
                         (setq kind 1) 0))
                   (setq names (nl_cons_cdr_word names))))
               (setq depth (- depth 1)))))
+        (if (and (= kind 0) (/= (nl_ps_outer_saved env name) 0))
+            (setq kind 1) 0)
+        ;; GNU considers the target let-bound while its pre-write watcher
+        ;; runs. Each raw link points to a rooted canonical symbol view.
+        (let ((pending (ptr-read-u64 (nl_n4_state env) 24)))
+          (while (and (= kind 0) (/= pending 0))
+            (if (= (nelisp_symbol_key_equal (ptr-read-u64 pending 8) name) 1)
+                (setq kind 1) 0)
+            (setq pending (ptr-read-u64 pending 0))))
         (+ (* kind 4) 1)))
     (defun nl_pa_entry (env name)
       (let ((entry (nelisp_mirror_lookup_entry env name)))
@@ -138,11 +150,26 @@
                (nelisp_mirror_bucket_prepend env name entry scratch)
                entry))))))))
     (defun nl_n3_defvaralias_raw_w (alias base env _pad)
+      ;; Callbacks can replace either cell and collect. Root all borrowed
+      ;; operands, including private nil/t keys and the migrating old value.
+      (let* ((mark (nl_root_mark env))
+             (roots (wf_bytecode_w_roots env 5)) (result 0))
+        (seq
+         (if (= roots 0) (wf_bytecode_root_exhausted)
+           (seq (wf_word_store_out roots alias)
+                (wf_word_store_out (+ roots 32) base)
+                (setq result (nl_pa_install_w roots (+ roots 32) env roots))))
+         (nl_root_release env mark)
+         result)))
+    (defun nl_pa_install_w (alias base env roots)
       (if (and (/= (nl_val_tag alias) 4) (/= (nl_val_tag alias) 16))
           (seq (bf_wrong_type_symbolp alias) 0)
         (if (= (nl_thread_mirror_mutation_guard env alias) 1) 0
-          (let* ((base-name (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1))
-                                (nl_pa_constant_name base) base))
+          (let* ((base-name
+                  (seq (wf_word_store_out (+ roots 64)
+                         (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1))
+                             (nl_pa_constant_name base) base))
+                       (+ roots 64)))
                  (terminal (nl_pa_terminal env (nelisp_mirror_lookup_entry env base-name)
                                            base-name alias)))
             (if (= terminal 0) 0
@@ -151,6 +178,11 @@
                      (saved (bf_dynamic_lookup_w env alias 0))
                      (migration 0))
                 (seq
+                 (wf_word_store_out (+ roots 96) terminal)
+                 (setq terminal (+ roots 96))
+                 (if (and (/= saved 0) (/= saved 2))
+                     (seq (wf_word_store_out (+ roots 128) saved)
+                          (setq saved (+ roots 128))) 0)
                  (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1)
                          (= (bf_keyword_raw base-name) 1))
                      (seq (record-slot-set base-entry 0 base)
@@ -159,11 +191,15 @@
                           (= (bf_dynamic_lookup_w env terminal 0) 2))
                      (seq
                       ;; GNU calls this initialization a let notification.
-                      ;; TODO(prim-globals watcher): notify the canonical base.
                       (if (/= (logand (ptr-read-u64 env 112) 1048576) 0)
-                          (setq migration (nl_n3_notify env terminal saved 2)) 0)
+                          ;; GNU calls this `let', but it installs a value,
+                          ;; not a dynamic binding. Its watcher may alias BASE.
+                          (setq migration (nl_n3_notify env terminal saved 7)) 0)
                       (if (= migration 0)
                           (setq migration (nl_n3_set_dynamic_raw env terminal saved)) 0)) 0)
+                 (if (and (= migration 0)
+                          (/= (logand (ptr-read-u64 env 112) 1048576) 0))
+                     (setq migration (nl_n3_notify env alias base 5)) 0)
                  (if (/= migration 0) 0
                    ;; A watcher can reenter, resize the source entry or alter
                    ;; the proposed chain. Never publish through a cached record.
@@ -176,7 +212,10 @@
                             (record-slot-set alias-entry 5 3) 0)
                         (bf_declare_special env alias)
                         (bf_declare_special env base-name)
-                        base))))))))))
+                        ;; The result outlives the wrapper's temporary roots.
+                        (if (= (nl_val_tag base) 0) 3
+                          (if (= (nl_val_tag base) 1) 7
+                            (nl_word_clone base)))))))))))))
     (defun nl_pa_alias_pairs_w (env _pad)
       ;; Read native routing, including uninterned names. Shadowed entries
       ;; from a five-to-six-slot upgrade must not appear twice.
@@ -214,13 +253,40 @@
                   (if (= (nelisp_mirror_is_constant env canonical) 1)
                       (seq (bf_setting_constant name) 0)
                     (if (= (nl_thread_mirror_mutation_guard env canonical) 1) 0
-                      (seq (wf_dirty)
-                           ;; TODO(prim-globals watcher): default write notification.
-                           (if (/= cell 0) (cell-set-value cell value)
-                             (nelisp_env_setv_mirror_lazy env canonical value (+ env 64)))
-                           value)))
+                      (if (/= (logand (ptr-read-u64 env 112) 1048576) 0)
+                          ;; Preserve the source across callbacks: GNU set
+                          ;; follows a watcher-retargeted alias afterwards.
+                          (nl_pa_watched_default_w env name value 0)
+                        (seq (wf_dirty)
+                             (if (/= cell 0) (cell-set-value cell value)
+                               (nelisp_env_setv_mirror_lazy env canonical value (+ env 64)))
+                             value))))
                 (if (= void 1)
                     (seq (nl_stash_void_variable env name) 0) old)))))))
+    (defun nl_pa_watched_default_w (env name value _pad)
+      (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_w_roots env 2))
+             (result (alloc-bytes 8 8)))
+        (seq
+         (ptr-write-u64 result 0 0)
+         (if (= roots 0) (wf_bytecode_root_exhausted)
+           (seq
+            (wf_word_store_out roots name)
+            (wf_word_store_out (+ roots 32) value)
+            (if (= (nl_n3_notify env roots (+ roots 32) 6) 0)
+                (let* ((canonical (nl_pa_canonical env roots))
+                       (cell (if (= canonical 0) 0
+                               (nelisp_frame_stack_find_kind (+ env 32) canonical 1 0))))
+                  (if (= canonical 0) 0
+                    (if (= (nelisp_mirror_is_constant env canonical) 1)
+                        (bf_setting_constant roots)
+                      (if (= (nl_thread_mirror_mutation_guard env canonical) 1) 0
+                        (seq (wf_dirty)
+                             (if (= (if (/= cell 0)
+                                        (seq (cell-set-value cell (+ roots 32)) 0)
+                                      (nelisp_env_setv_mirror_lazy env canonical (+ roots 32) (+ env 64))) 0)
+                                 (nl_val_clone_into (+ roots 32) result) 0)))))) 0)))
+         (nl_root_release env mark)
+         (ptr-read-u64 result 0))))
     (defun nl_pa_operation_w (args env _pad)
       (let* ((op (nl_apply_list_nth args 0)) (name (nl_apply_list_nth args 1)))
         (if (= (sexp-name-eq op "variable-aliases") 1) (nl_pa_alias_pairs_w env 0)
@@ -240,11 +306,14 @@
         (if (= (sexp-name-eq op "variable-alias-set") 1)
             (nl_sf_defvaralias_apply_w name (nl_apply_list_nth args 2) env 0)
           (if (= (sexp-name-eq op "variable-alias-delete") 1)
-              (let ((entry (nelisp_mirror_lookup_entry env name)))
+              (let* ((entry (nelisp_mirror_lookup_entry env name))
+                     (was-alias (if (= entry 0) 0
+                                  (= (nelisp_env_alias_slot_candidate entry 0) 0))))
                 (if (= (nl_thread_mirror_mutation_guard env name) 1) 0
                   (seq (if (/= entry 0)
                            (seq (wf_dirty) (record-slot-set entry 4 3)
-                                (record-slot-set entry 0 (+ env 64))) 0)
+                                (record-slot-set entry 0 (+ env 64))
+                                (if (= was-alias 1) (bf_fx_special_bump env) 0)) 0)
                        name)))
             (let ((canonical (if (or (= (nl_val_tag name) 4) (= (nl_val_tag name) 16))
                                  (nl_pa_canonical env name) name)))

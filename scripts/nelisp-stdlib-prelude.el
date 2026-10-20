@@ -1157,6 +1157,8 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
+(defvar enable-multibyte-characters t)
+
 (defun nelisp--buffer-multibyte-p (buffer)
   "Return BUFFER's local multibyte flag, defaulting to t."
   ;; Every `insert' consults this with the CURRENT buffer.  Selecting a
@@ -11404,18 +11406,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; Classification is stored when a binding is created, so later declarations
 ;; cannot reclassify an existing lexical binding.
 (fset 'boundp '(builtin boundp))
-(defun set (sym val)
-    ;; t, nil and every keyword are self-evaluating in Emacs and cannot be
-    ;; assigned; `symbolp' was the wrong complaint (they ARE symbols) and a
-    ;; keyword was assigned outright.
-    (when (or (eq sym t) (null sym) (keywordp sym))
-      (signal 'setting-constant (list sym)))
-    ;; Keep validation at this Lisp-owned semantic boundary without entering
-    ;; a second function scope for the same symbol predicate.
-    (unless (symbolp sym)
-      (signal 'wrong-type-argument (list 'symbolp sym)))
-  (funcall '(builtin set) sym val)
-  val)
+;; The existing symbol-cell entry validates types and constants, including
+;; GNU's keyword self-assignment exception. A second scope here duplicated
+;; validation, rejected that exception and hid the entry from the word VM.
+(fset 'set '(builtin set))
 (unless (fboundp 'defalias)
   (defun defalias (sym def &rest _)
     (when (and (null sym) def) (signal 'setting-constant (list sym)))
@@ -25994,6 +25988,11 @@ a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
 ;; effect and the interpreter evaluates the call.
 (defvar nelisp--fx-special-gen (vector 0))
 
+(defvar nelisp--fx-alias-hints nil
+  "Names successfully installed by the Lisp alias facade.
+This only selects a compiler optimization. Missing hints keep the normal
+runtime lookup; stale hints still require authoritative alias resolution.")
+
 (defvar nelisp--fx-expand t
   "Nil while compiling a body known to name no macro: `macroexpand-all'
 would return it unchanged, and expanding is most of a compilation's cost.")
@@ -26002,14 +26001,14 @@ would return it unchanged, and expanding is most of a compilation's cost.")
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
   (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
-        (depth 0) (maxdepth 0) (lexlets nil)
+        (depth 0) (maxdepth 0) (lexlets nil) (alias-hints nelisp--fx-alias-hints)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
         ((emit (&rest items)
            ;; Track the operand-stack depth along the code as laid out; at a
            ;; label the real depth is never larger, so MAXDEPTH bounds it.
            (let ((op (car items)))
-             (setq depth (+ depth (cond ((memq op '(1 2 12)) 1)
+             (setq depth (+ depth (cond ((memq op '(1 2 12 18)) 1)
                                         ((memq op '(3 9 11 4 5 6 13 14 0)) -1)
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
@@ -26032,7 +26031,17 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
             ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
              (let ((c (assq x vars)))
                (if c (emit 2 (cdr c))
-                 (emit 1 x) (emit 16 'symbol-value 1))))
+                 (if (not (and alias-hints (memq x alias-hints)
+                               (fboundp 'nelisp--env-globals-op)))
+                     (progn (emit 1 x) (emit 16 'symbol-value 1))
+                 (let* ((gen-cell nelisp--fx-special-gen)
+                        (snapshot (aref gen-cell 0))
+                        (base (nelisp--env-globals-op 'indirect-variable x)))
+                   ;; Cache a name, never a cell or value. Every read checks
+                   ;; the generation, including after arbitrary callouts.
+                   (if (or (eq base x) (null base) (eq base t) (keywordp base))
+                       (progn (emit 1 x) (emit 16 'symbol-value 1))
+                     (emit 18 (vector x base gen-cell snapshot))))))))
             ((not (consp x)) (emit 1 x))
             (t
              (let ((op (car x)))
@@ -26735,6 +26744,8 @@ are skipped.")
               ;; The compiler's garbage stays out of the image.
               (garbage-collect)))
           (nelisp--fx-plain-dump-image-stream path))))
+;; nl-afset is freshly reset at the start of every source reload. Capture
+;; that new raw definition every time, independently of the stable fset cell.
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
   (fset 'nl-afset
@@ -26763,7 +26774,8 @@ are skipped.")
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
             (nelisp--fx-defer w)))))))
-(when (fboundp 'nl-afset)
+(when (and (fboundp 'nl-afset)
+           (not (fboundp 'nelisp--fx-plain-fset)))
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
   (fset 'fset
         (lambda (symbol definition)
@@ -26791,10 +26803,21 @@ are skipped.")
             (nelisp--env-globals-op 'constant-variable-p new-alias))
     (error "Cannot make a constant an alias: %s" new-alias))
   (let ((kind (nelisp--env-globals-op 'variable-alias-source-kind new-alias)))
-    (cond ((eq kind 1) (error "Don’t know how to make a let-bound variable an alias: %s" new-alias))
-          ((eq kind 2) (error "Don’t know how to make a buffer-local variable an alias: %s" new-alias))))
+    (when (eq kind 2)
+      (error "Don’t know how to make a buffer-local variable an alias: %s" new-alias))
+    (when (and (boundp new-alias) (boundp base-variable)
+               (not (eq (symbol-value new-alias) (symbol-value base-variable))))
+      (display-warning (list 'defvaralias 'losing-value new-alias)
+                       (format "Overwriting value of ‘%s’ by aliasing to ‘%s’"
+                               new-alias base-variable)))
+    (when (eq kind 1)
+      (error "Don’t know how to make a let-bound variable an alias: %s" new-alias)))
   (nelisp--env-globals-op 'variable-alias-set new-alias base-variable)
-  ;; TODO(prim-globals watcher): discard NEW-ALIAS's former watchers.
+  (unless (memq new-alias nelisp--fx-alias-hints)
+    (push new-alias nelisp--fx-alias-hints))
+  (when (boundp 'emacs-parity-misc--variable-watchers)
+    (remhash new-alias emacs-parity-misc--variable-watchers)
+    (emacs-parity-misc--watcher-flag))
   (put new-alias 'variable-documentation docstring)
   base-variable))
 
