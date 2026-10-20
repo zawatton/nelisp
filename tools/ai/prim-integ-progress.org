@@ -1,0 +1,41 @@
+#+TITLE: Prim integration: land the per-function primitive lanes on the WORD ABI landing
+
+# Base: eval/abi-integ-20261019 at 0a7bec3e5 (WORD ABI landing; runtime final,
+# landing round 3 changes measurement tooling only).
+# Inputs, all forked from 692dc8a09:
+#   prim-callfloor 5ba6dae48 (contains prim-globals 2f653ed62 and prim-strcmp)
+#   prim-sort      d3421a201 (contains prim-strcmp)
+#   prim-shadow    748392459 (contains prim-alias 3feab7e35 and prim-globals f3cc03146)
+#   prim-strcmp    fd9e8222b (ledger note marking its S3 cap as interim)
+# The interim notes in prim-strcmp and prim-globals say this integration
+# restores their brief caps (strcmp 10x GNU; globals 3x GNU in every mode) and
+# re-measures; those checks stay red until they pass (owner: Doc 216 S4.2/S6.3).
+# Env (set by whoever runs the meter):
+#   PRIM_INTEG_DYN     dynamic build of HEAD
+#   PRIM_INTEG_STATIC  static build of HEAD
+#   PRIM_INTEG_CENSUS  NELISP_BOX_CENSUS output of that dynamic build
+#   PRIM_INTEG_BASE    the landed ABI dynamic binary (0a7bec3e5)
+
+* S1 Merge
+** S1.1 All four inputs are ancestors of HEAD
+cmd: for c in 5ba6dae48 d3421a201 748392459 fd9e8222b; do git merge-base --is-ancestor $c HEAD || exit 1; done
+** S1.2 Interim caps removed: prim-strcmp S3 back to 10x GNU, prim-globals S3 back to 3x GNU in every mode
+pending
+** S1.3 End to end: dynamic and static builds of HEAD; box census S6.2 = 0 and TOTAL < 1682
+pending
+
+* S2 Prim criteria on the integrated build
+** S2.1 prim-strcmp, prim-sort, prim-alias, prim-globals and prim-shadow: every criterion that passed on its branch passes on the integrated build (the restored caps may stay red)
+pending
+** S2.2 prim-callfloor: the 11 criteria that passed on 5ba6dae48 pass (S3 original caps stay red, owned by Doc 216)
+pending
+** S2.3 End to end: the GNU 31.1 parity cases of all six prim lanes pass on dynamic and static
+pending
+
+* S3 Non-regression and delivery
+** S3.1 boot, files and regex6000 mean total Ir over four layouts <= PRIM_INTEG_BASE, outputs identical (callgrind, GC included)
+pending
+** S3.2 Final verification: COMMON.md 11 groups with 0 failures (maphash-sparse known-red), standalone-checks, anvil MCP smoke with 40 tools
+pending
+** S3.3 End to end: coordinator's Windows wine smoke on the integrated build (eval, bytecode 145/145, printer, unibyte and SQLite against .expected)
+pending
