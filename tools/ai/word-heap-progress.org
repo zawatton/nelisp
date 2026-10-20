@@ -5,20 +5,22 @@
 ** S0.1 Per-type bytes/object table (objsize probe) for cons, float, string, symbol, vector, record, bignum, marker
 #+NOTE: Baseline cons=72 B (2026-10-19, dc8284690). Evidence: probe source + output, sha-pinned.
 #+NOTE: 2026-10-20: 48 successful fresh-process populations, two sizes, three runtimes. Candidate retained constructor slopes include alias/view overhead: cons=152 B; original make-list=112 B; structural cons minimum remains 72 B. GNU DWARF references and GC-accounted slopes are distinguished in Doc 216.
+#+NOTE: 2026-10-20 Run2: preserved original row; added16 isolated populations on the frozen abi-cons final-dyn executable c41e9f88317c819d plus pinned cold image. Fixed cons=72 B, record=128 B, marker=264 B (still above baseline144 B); all8 types measured, no generalized marker fix claimed.
 cmd: python3 tools/ai/word-heap-evidence.py check S0.1
 
 ** S0.2 Heap composition by type (bytes, count) for anvil after startup, the library base image, and a .cold image
 #+NOTE: Decides the stage order. If cons is not at least 60% of live bytes, reorder S2-S5 and report the change.
-#+NOTE: 2026-10-20 KNOWN INCOMPLETE: identified cons shares are 31.58%/54.61%/28.35% for post-GC anvil/archived library/cold, but 47.70%/21.07%/50.09% remain unclassified. Actual cons >=60% is not decided. Need embedded root/parse-pool/frame owner traversal and the library session's current image identity. Proposed S1,S6,S2,S4,S3,S5,S7,S8 order is not adopted.
+#+NOTE: 2026-10-20 Run2: physical storage census separates scalar and unrelocated views, embedded slots, zero/text/WORD reservations and remaining auxiliary allocations. Semantic unresolved storage stays explicit; exhaustive BT32 plus every8-aligned tag-byte7 view bounds cons independently. Anvil/cold upper bounds are below60%; library is reported as an interval crossing60%, not asserted below. Adopt S1,S4,S2,S3,S5,S6,S7,S8; preserve27 criteria. Old-address adjacency is ambiguous and must never confer payload ownership.
 cmd: python3 tools/ai/word-heap-evidence.py check S0.2
 
 ** S0.3 callgrind attribution of Ir spent in header loads and *_ptr materialisers for the boot, files and regex workloads
 #+NOTE: The only basis for any speed claim.
-#+NOTE: 2026-10-20 KNOWN INCOMPLETE: 20/24 completed profiles (baseline regex missing), interrupted at S0.4 blocker. Instruction attribution records confirmed header-load lower bounds and unassigned data loads; no speed multiplier is claimed.
+#+NOTE: 2026-10-20 Run2: completed24/24 profiles, including baseline regex over all4 layouts. Instruction attribution records confirmed inlined/helper header-load lower bounds and other data loads; self costs exclude call edges, columns overlap, and no speed multiplier is claimed.
 cmd: python3 tools/ai/word-heap-evidence.py check S0.3
 
-** S0.4 Design decision record: tag scheme, alignment, coexistence of legacy =000= boxes, cons refcount removal; all existing WORD decoders proven unchanged
-#+NOTE: 2026-10-20 BLOCKER: GNU contradicts the unchanged-decoder requirement. A scratch direct cons with car=t/cdr=nil gives existing (tag,bytecode-tag,car,payload)=(0,844424930131968,0,0), versus expected tag=7/car=7 and GNU (t t). Legacy control gives (7 7). Native return code is 0. Requires decoder/accessor dispatch changes or a different representation; no runtime source was changed. Full decision/proof families and live refcount RMW caveat are in Doc 216.
+** S0.4 Design decision record: preserve every existing encoding through each decoder; identify every new-tag recipient requiring the S1 accessor layer before S2
+#+NOTE: 2026-10-20 criteria clarification (Run 2, not a weakened threshold): fixnum 01, nil 3, t 7 and legacy 000 boxes must decode unchanged. New-tag pointers are deliberately not accepted by today's decoders; every possible recipient must move behind the S1 accessor layer before S2. The earlier direct-cons counterexample demonstrates this migration prerequisite, not a GNU contradiction or a blocker. No runtime source changes are authorized by S0.
+#+NOTE: 2026-10-20 Run2 audit: distinct ELF dynamic/static identities and both companion images are sha-pinned; canonical7-case expectations match raw stdout/DONE/stderr/exit. Duplicate dynamic-for-static and jointly falsified nil actual/expected must both be rejected, alongside the per-criterion mutations and ambiguous stale-pointer fixture.
 cmd: python3 tools/ai/word-heap-evidence.py check S0.4
 
 ** S0.5 GC trigger determinism: explain why GC cycle counts differ between builds of one commit
@@ -27,13 +29,13 @@ cmd: python3 tools/ai/word-heap-evidence.py check S0.4
 cmd: python3 tools/ai/word-heap-evidence.py check S0.5
 
 ** S0.6 End to end: S1+ thresholds revised from S0 data and the revision reported (criteria-change record)
-#+NOTE: 2026-10-20 KNOWN INCOMPLETE: S0 stops at the listed GNU contradiction in S0.4. Unit corrections and reviewable S1-S8 proposals follow; incomplete composition/Ir evidence is not converted to passing evidence. Denominator stays 27.
+#+NOTE: 2026-10-20 Run2: all S1-S8 revisions below are accepted S0 design decisions, checked together with measurements and decoder verdicts. They complete no S1+ implementation. Denominator stays27. Read-only measurements only; worklog persistence belongs to the coordinator under COMMON.md.
 cmd: python3 tools/ai/word-heap-evidence.py check S0.6
 
 * S1 Accessor layer (no layout change)
 
 ** S1.1 box-census counts raw header reads outside the accessor module, with a negative control that must count
-#+NOTE: 2026-10-20: old 0-outside-accessor target -> unchanged. Scope proposal: decoder dispatch, codegen, GC/image/FFI boundaries and source/instruction provenance must be included before any speed claim; resolving the unchanged-decoder contradiction is prerequisite.
+#+NOTE: 2026-10-20 S0 revision S1: old raw reads outside accessor=0 -> same0; include all WORD/view, GC/image/FFI/codegen boundaries, failing mutation and instruction-provenance limits. Reason: all new-tag recipients must move before S2; S0.4 is clarified, not blocked.
 pending
 
 ** S1.2 Raw header reads outside the accessor module = 0
@@ -45,7 +47,7 @@ pending
 * S2 cons header-less
 
 ** S2.1 arena bytes/cons <= 32 (payload <=24) by the objsize probe
-#+NOTE: 2026-10-20 unit correction: old <=24 arena B -> <=32 arena B with rc retained, because every allocation adds 8 B BLOCK_TOTAL. Payload limit stays 24 B. Exercise make-list and individually retained populations to expose alias overhead.
+#+NOTE: 2026-10-20 S0 revision S2: old <=24/16 arena B with/without rc -> <=32/24 arena B; payload limits remain24/16 B. Reason: every allocation adds8 B BLOCK_TOTAL. Exercise make-list and individually retained populations to expose alias overhead; remove every linked rc reader/writer before shrinking.
 pending
 
 ** S2.2 cons refcount removed: arena bytes/cons <=24 (payload <=16)
@@ -58,7 +60,7 @@ pending
 * S3 strings and symbols header-less
 
 ** S3.1 bytes per 8-char string and per uninterned symbol at or below the S0-revised thresholds
-#+NOTE: 2026-10-20 proposal: unspecified thresholds -> string8 <=48 arena B; symbol handle <=32 arena B, shared name charged explicitly. Preserve GNU name identity/eq and mutation. Not an accepted S0.6 outcome while blocked.
+#+NOTE: 2026-10-20 S0 revision S3: old unspecified limits -> string8<=48 arena B; symbol handle<=32 arena B with shared name charged separately. Reason: tagged payload plus allocator prefix; preserve GNU name identity/eq and mutation without hiding name storage.
 pending
 
 ** S3.2 End to end: full suite, GC-root checks, image round-trip, reader/printer parity with GNU 31.1, wine smoke
@@ -67,7 +69,7 @@ pending
 * S4 vectors, records, char-tables and frames header-less (vectorlike header word)
 
 ** S4.1 vector/record/char-table objects carry no 32 B header box (probe plus census)
-#+NOTE: 2026-10-20 proposal: keep no-legacy-header requirement; vector slot remains 8 B and one-user-slot record <=32 arena B. Vectorlike kind/size word replaces the 32 B Sexp; require closure/frame/char-table tracing and mixed identity.
+#+NOTE: 2026-10-20 S0 revision S4: old zero-header requirement -> same0 plus vector slot8 B, one-user-slot record<=32 arena B, closure/frame/char-table tracing and mixed identity; move S4 before S2. Reason: primary cons shares are below60%, and container/frame alias ownership must be explicit before cons-only forecasts.
 pending
 
 ** S4.2 End to end: full suite, GC-root checks, image round-trip, closure/frame parity cases, wine smoke
@@ -76,7 +78,7 @@ pending
 * S5 floats, bignums, markers and remaining types header-less
 
 ** S5.1 No object type allocates a 32 B header box (census of allocation sites by type)
-#+NOTE: 2026-10-20 proposal: keep zero legacy-header target; add float <=24, specified bignum <=32, detached two-field marker <=40 arena B, derived from payload plus allocator prefix, with GNU numeric/error parity. Not implemented.
+#+NOTE: 2026-10-20 S0 revision S5: old zero-header target -> same0 plus float<=24, measured one-limb bignum<=32, detached two-field marker<=40 arena B, with GNU numeric/error parity. Reason: payload plus allocator prefix and measured40/64/272 B constructor slopes need separate limits.
 pending
 
 ** S5.2 End to end: full suite, GC-root checks, image round-trip, numeric parity cases, wine smoke
@@ -84,8 +86,8 @@ pending
 
 * S6 Roots and copies retired
 
-** S6.1 Census: alloc-bytes-32-8 = 0, *_ptr materialisers = 0, clone_into = 0, wf_copy32 = 0
-#+NOTE: 2026-10-20 proposal: distinguish legacy 32 B headers/views/roots (target 0) from legitimate new 32 B payload allocations, instead of counting every literal size as header debt. Refine unknown storage before adopting S6-first sequencing; exact literal-zero criterion remains pending.
+** S6.1 Census: legacy 32 B headers/views/root allocations = 0, *_ptr materialisers = 0, clone_into = 0, wf_copy32 = 0
+#+NOTE: 2026-10-20 S0 revision S6: old literal alloc-bytes32-8=0 -> classified legacy headers/views/root allocations=0, materialisers/copies=0, roots8 B; legitimate32 B payloads counted separately. Reason: an allocation size is not an object kind. Keep S6 after object conversions; its zero-header end state cannot precede them.
 pending
 
 ** S6.2 Precise roots are WORD slots: nl_root_reserve 32 B slots = 0
@@ -97,7 +99,7 @@ pending
 * S7 Image format and platforms
 
 ** S7.1 .cold image format version bumped; a stale image is rejected with a clear error (test)
-#+NOTE: 2026-10-20: old format/platform acceptance -> unchanged; both relocation/restore paths must preserve pointer tags after untagged bounds checks. Library rebuild and native Windows remain separate future evidence.
+#+NOTE: 2026-10-20 S0 revision S7: old format/platform acceptance -> unchanged; both loader/relocator paths preserve pointer tags after untagged bounds checks. Reason: aligned addition preserves000 only. Independently rebuilt library images and native Windows remain required future evidence.
 pending
 
 ** S7.2 Native Windows acceptance on the user's machine (auto-discovered .cold, eval, GC root, bytecode 145/145)
@@ -109,7 +111,7 @@ pending
 * S8 Final
 
 ** S8.1 Live bytes after a fixed vendor load are at most 50% of the pinned ABI candidate (provisional until complete S0 evidence)
-#+NOTE: 2026-10-20: keep old 50% limit; replace date-only baseline identity with the supplied ABI candidate and its companion-image hash to isolate representation changes from old image garbage. Freeze and measure the fixed vendor load before S1. Partial snapshots do not justify lowering 50%; S0.6 remains red.
+#+NOTE: 2026-10-20 S0 revision S8: old provisional<=50% vendor-load limit -> retain<=50%; pin ABI executable+image and freeze the fixed vendor-load recipe before S1; unchanged4-layout total-Ir caps including GC and400-call soak. Reason: these physical snapshots are not the fixed-load experiment, and different permanent generations invalidate date-only baselines. Any later threshold change requires a new dated NOTE.
 pending
 
 ** S8.2 Ir gates: files and regex at or below the baseline, boot not slower (four address layouts, total Ir including GC)

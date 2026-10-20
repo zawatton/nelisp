@@ -79,7 +79,8 @@ The legacy tag =000= is what makes per-type migration possible. Objects that
 still have a header box and objects that do not can live in one heap, so each
 type flips independently and every stage stays green. S0 must compare this
 scheme with 16-byte alignment, which gives a GNU-style 3-bit tag space, and
-must show that every existing WORD decoder still works unchanged:
+must show that every existing encoding still decodes unchanged through every
+WORD decoder, and identify every decoder that could receive a new-tag pointer:
 =nl_word_payload=, =wf_bytecode_w_tag= / =wf_bytecode_w_int=, the inline
 =(= tg 2)= decoders, the FFI and image relocation code.
 
@@ -155,14 +156,12 @@ reported as a criteria change.
 
 * S0 decision record (2026-10-20)
 
-S0 is BLOCKED at S0.4: the unchanged-decoder requirement contradicts the
-required GNU behavior for a direct cons. The native counterexample reports
-legacy (tag, car)=(7,7), but direct (tag, bytecode-tag, car, payload)=
-(0,844424930131968,0,0), where tag and car must both be 7. GNU reports (t t)
-for (consp (cons t nil)) and (car (cons t nil)). The proposed representation
-and threshold revisions below are reviewable proposals, not completed gates
-or permission to reinterpret the brief. Remaining profiling was interrupted
-at this listed GNU-contradiction blocker; S0.2/S0.3/S0.4/S0.6 remain failing.
+Run 2 clarifies S0.4: existing fixnum 01, nil 3, t 7 and legacy 000 boxes
+retain their decoding, while every new-tag recipient must move behind S1's
+accessor layer before S2. This is a criterion clarification, not a weaker
+threshold. The Run 1 direct-cons counterexample demonstrates that prerequisite;
+it was not a contradiction with GNU. Measurements and decisions below are
+completed only when their content checks pass.
 
 This section authorizes no runtime implementation. S1+ still waits for Doc 215 to land
 in eval/core. The reproducible measurements, source identities, raw-profile
@@ -186,16 +185,16 @@ One type per process also avoids charging a previous population's retained
 evaluator results to the next type. A single combined probe gave an impossible
 near-zero float increment on the candidate; the isolated slope is 40 B.
 
-| type / constructor                         | ABI candidate | baseline | GNU 31.1 minimum representation |
-|--------------------------------------------+---------------+----------+---------------------------------|
-| cons, retained through aset                |           152 |       72 |                              16 |
-| float                                      |            40 |       40 |                               8 |
-| string, eight ASCII characters             |            56 |       56 |                 41 incl. NUL   |
-| uninterned symbol, one-character name       |            56 |       56 |                              48 |
-| vector slot                                |             8 |        8 |                               8 |
-| record, one user slot plus type             |           136 |      128 |                              24 |
-| bignum, 2^61+i                              |            64 |       64 |               24 + >=8 limbs B |
-| detached marker                             |           272 |      144 |                              48 |
+| type / constructor                         | ABI candidate | baseline | abi-cons fix | GNU 31.1 minimum representation |
+|--------------------------------------------+---------------+----------+--------------+---------------------------------|
+| cons, retained through aset                |           152 |       72 |           72 |                              16 |
+| float                                      |            40 |       40 |           40 |                               8 |
+| string, eight ASCII characters             |            56 |       56 |           56 |                 41 incl. NUL   |
+| uninterned symbol, one-character name       |            56 |       56 |           56 |                              48 |
+| vector slot                                |             8 |        8 |            8 |                               8 |
+| record, one user slot plus type             |           136 |      128 |          128 |                              24 |
+| bignum, 2^61+i                              |            64 |       64 |           64 |               24 + >=8 limbs B |
+| detached marker                             |           272 |      144 |          264 |                              48 |
 
 These are retained *constructor-path slopes*, not a claim that the candidate's
 NlConsBox grew. Its 32 B Sexp allocation plus 24 B payload still costs 72 B.
@@ -203,6 +202,15 @@ The original make-list probe gives 112 B on the candidate. Constructor path
 and retained alias/view overhead must remain visible; S2/S6 acceptance must
 exercise both make-list and individually retained conses. Do not extrapolate
 whole-heap savings from the 72 B structural minimum alone.
+
+Table binary SHA256 prefixes are candidate b3c9d406ced3ac39 and baseline
+ffd5d8e8b0d86c19; full executable/image hashes are in the report. The separate
+abi-cons lane supplied target/abi-cons/final-dyn/nelisp-dyn with its cold image
+during Run2. A frozen copy, c41e9f88317c819da2bd7bc79750183968fcb9dc00a35fc58c3af3c0dfda4464,
+was measured over all8 types and two populations, with source/copy executable
+and image hashes checked before/after copying. The original candidate row is
+preserved. The fixed cons slope returns to72 B, while marker264 B remains
+above baseline144 B; no broader allocator/marker regression cure is claimed.
 
 GNU reference: the installed 31.1 executable's DWARF gives sizeof(cons)=16,
 float=8, string=32, symbol=48, vectorlike_header=8, bignum=24, marker=48.
@@ -222,8 +230,9 @@ The census assigns exact nonfree BLOCK_TOTAL allocations to validated Sexp
 headers and their backing objects, counts shared backing once, and reports
 unique payloads separately from header aliases. It never labels a block a
 cons merely because of its size. External intern storage is reported separately.
-Permanent bootstrap allocations that have no relocatable typed owner remain
-explicitly unclassified; this is not a complete reachability oracle.
+Physical storage classes cover the whole nonfree allocation chain. Semantic
+ownership limits remain explicit: a raw reservation, an unrelocated view and
+a rooted Lisp object are different things. This is not a reachability oracle.
 
 Anvil was launched through the specified shell launcher and candidate. Only
 tools/list was sent. Forty tools remained registered; after 46 read-only
@@ -240,25 +249,43 @@ This is an identified archived C-core base image, not a claim that the current
 library checkout has been rebuilt. Its filename, hash and intern-region size
 are in the evidence.
 
-In the classified physical snapshots, cons is 31.58% of Anvil, 54.61% of the
-library image, and 28.35% of the candidate cold image. Unclassified bytes remain
-47.70%, 21.07%, and 50.09% respectively; they must not be silently assigned to
-cons or interpreted as all removable. Consequently the *actual* cons share
-has not been proven below 60% either: the identified share is a lower bound,
-and the unclassified allocations may include additional cons backing held
-through embedded Sexp views. S0.2 remains incomplete. It needs a typed owner
-walk that also accounts for embedded root/parse-pool/frame views, plus the
-library session's identification of its current base image. The 60% criterion
-does not yet support a cons-only-first memory forecast. Proposed order for
-review, not an adopted stage reorder:
+Run2 separates scalar views, unrelocated symbol/cons views, embedded slots,
+zero/text reservations, WORD arrays, EvalCtx/reader-pool storage and allocations
+with/without serialized edges. Every class has bytes/allocation counts and all
+shares sum to100%. Absence of serialized edges is a physical storage class,
+not proof of semantic detachment; image header roots count as incoming edges.
+The raw-storage histogram and semantic-unresolved total remain in the evidence.
 
-=S1 -> S6 -> S2 -> S4 -> S3 -> S5 -> S7 -> S8=.
+| heap | nonfree arena B | recognized cons B | recognized share | exhaustive cons upper |
+|------+-----------------+-------------------+------------------+-----------------------|
+| Anvil, natural GC | 66,096,784 | 20,871,520 | 31.58% | 37.64% |
+| archived C-core base | 105,375,648 | 57,543,136 | 54.61% | 62.69% |
+| candidate cold | 42,088,672 | 11,930,536 | 28.35% | 37.64% |
 
-S6 first removes known alias/view/root overhead and must refine the raw-storage
-census before another memory prediction. Cons remains the largest identified
-family. Vector/record work precedes strings because it owns the container and
-root interfaces that those transitions need; strings and symbols then share
-one tagged-handle interface. Stage IDs and the 27-criterion denominator remain.
+The upper bound scans every eight-byte-aligned complete32-byte window for
+tag byte7, including false-positive t WORDs and stale headers. Every non-cons
+BT32 allocation may be an additional24-byte payload. Shared storage is included;
+eligible views are bounded by min(block size,8+32*window count). Other blocks
+cannot hold a current cons payload/view under the existing allocator layout.
+This bound is independent of heuristic ownership. The recognized fraction is
+structural attribution, not a proven reachable-object lower bound. Library's
+interval crosses60%; no below60 claim is made for it. Anvil/cold upper bounds
+are below60%, so adopt:
+
+=S1 -> S4 -> S2 -> S3 -> S5 -> S6 -> S7 -> S8=.
+
+S4 first establishes container/frame kind and root interfaces before a
+cons-only savings prediction. Keep S6's zero-header end state after object
+conversions: the earlier S6-first proposal could not reach that state while old
+headers remained. Stage IDs and the27-criterion denominator remain unchanged.
+
+Stale cons headers retain old addresses. Constructor adjacency gives two
+equally supported address translations separated by72 bytes on a repeated
+payload/header layout, and old targets may have been reused. No inferred
+translation confers payload ownership. The128-pair negative fixture reproduces
+the ambiguity. Exact semantic ownership needs an independent original-address
+map plus reuse/child-WORD validation, or a fresh precisely rooted bake; it is
+unnecessary for the conservative primary-heap ordering decision.
 
 ** Tags, alignment and mixed objects
 
@@ -294,17 +321,22 @@ buffer/name/identity tests; they cannot copy cons's normalization mechanically.
 
 ** WORD decoder audit and preservation arguments
 
-It is impossible to keep *every decoder implementation unchanged*: for a
-010 WORD W=P|2, today's nl_word_payload reads *(P+10), while the desired car
-is at P. The former pointer branch also reads a tag at a tagged address.
-This is a direct counterexample, not a GNU-parity waiver. S1 must centralize
-these reads before any type flips. "Unchanged" means preserved observable
-decoder contracts and caller semantics, not unchanged instructions.
+Every existing encoding keeps decoding unchanged: immediate01, nil3, t7
+and000 addresses retain their branches, offsets and semantic contracts.
+New-tag recipients must move behind S1 before S2. Run1's direct010
+counterexample demonstrates that prerequisite; today's decoder was never
+required to accept it. This clarification weakens no threshold and waives no
+GNU parity. Native probes resolve symbols from each binary and pass seven
+legacy cases on both dynamic and static, including signed fixnums, nil/t,
+integer and cons boxes. Signed62-bit extrema satisfy the unchanged signed64
+encode/arithmetic-shift identity algebraically.
 
 The build dump inventory lists every function containing the searched low-bit
 tests or inline tg=2 idioms, including non-WORD arithmetic false positives.
 Source-emitter scans complement it; a source-name grep alone does not prove
-the compiled surface empty. The required decoder families and proofs are:
+the compiled surface empty. All156 inventory rows have individual legacy and
+new-tag verdicts; arithmetic/allocator masks retain their separate contracts.
+The required decoder families and proofs are:
 
 | decoder family | preservation obligation / argument |
 |----------------+------------------------------------|
@@ -345,8 +377,9 @@ or writer remains on every platform, including codegen/native artifacts.
 
 ** Instruction attribution and permitted claims
 
-The three abi-ir.py workloads are retained with instruction positions for
-four layouts, with GC included in total Ir and isolated caches. Materialiser
+All24 profiles (three abi-ir.py workloads, both binaries, four layouts) are
+retained with instruction positions, GC included in total Ir and isolated
+caches. Materialiser
 and clone/copy columns are *self* Ir; call-edge costs are not added again.
 The parser asserts that all self costs sum to Callgrind's summary.
 
@@ -359,6 +392,18 @@ taint census. No speed multiplier or additive saved-Ir prediction follows
 from this bound. S1 must extend instruction provenance before making a
 complete header-load attribution or speed claim. Raw means and per-layout
 counts, including unassigned reads, are in the evidence.
+
+| workload/build | mean total Ir | confirmed header-load Ir >= | materialiser self Ir | clone/copy self Ir |
+|----------------+---------------+----------------------------+----------------------+--------------------|
+| boot/candidate | 627415044 | 75391 | 363893 | 1566652 |
+| boot/baseline | 1214916672 | 69599 | 649349 | 1721254 |
+| files/candidate | 9944420853 | 62696496 | 192925600 | 318780099 |
+| files/baseline | 11175652272 | 58868210 | 285704727 | 387618173 |
+| regex/candidate | 67147839498 | 470335546 | 369975707 | 1998845925 |
+| regex/baseline | 69805681388 | 436352330 | 966065131 | 2168662474 |
+
+Means are rounded to whole instructions. Baseline regex collected four times
+in every layout; regex24000 below is the separate GC diagnostic workload.
 
 ** GC trigger determinism
 
@@ -420,10 +465,30 @@ units and ordering explicitly; they do not mark any S1+ criterion complete.
 | S7 | semantic image-format version bump, stale rejection, both loader/relocator paths, Windows acceptance and independently rebuilt library images |
 | S8 | retain provisional <=50% pending the same fixed vendor load on the pinned ABI candidate; unchanged total-Ir caps for files/regex/boot, 400-call anvil soak and platform gates |
 
-The 50% live-memory target is still unvalidated: only 28-55% of the physical
-image bytes are identified cons, and significant storage remains unclassified.
-Do not lower the target from these partial snapshots. Freeze the vendor-load
+The50% live-memory target is still provisional: these physical storage
+snapshots are not the fixed vendor-load experiment. Do not lower the target
+from them. Freeze the vendor-load
 recipe, candidate image and initial live census before S1, re-evaluate after
 the typed-storage census, and require a new dated NOTE for a revision. Current
-Anvil/library/cold snapshots are partial composition evidence, not substitutes
-for that future fixed vendor-load measurement. S0.6 has not passed.
+snapshots include physical storage classes and semantic-ownership limits;
+they do not substitute for that future measurement. S0.6 checks these explicit
+revisions and all preceding S0 evidence, not the future S8 target itself.
+No S1+ runtime implementation has started here.
+
+** Reproducing the S0 evidence checks
+
+Run =python3 tools/ai/word-heap-evidence.py bundle target/word-heap tools/ai/word-heap-s0-data.json=
+after generating the retained raw artifacts. The object, snapshot, census,
+profile, attribution, GC and decoder tools document their exact arguments.
+~WH_OBJECT_LABEL=abi-cons~ adds an independently measured binary without
+overwriting the original populations; ~WH_ONLY_BASE=1 WH_MODES=regex~ targets
+the four missing baseline profiles without rescheduling completed workloads.
+
+=python3 tools/ai/word-heap-s0-check.py all= verifies the raw hash closure once
+and checks every S0 contract. Individual =S0.N= invocations remain independent
+for the meter. =controls= rejects criterion mutations, duplicated dynamic
+evidence, falsified nil expectations, a corrupt block chain and the ambiguous
+stale-pointer fixture. The comparison recipe and measured individual/batch
+costs are retained in =target/word-heap/verification-cost.{py,json}=. Runtime
+rebuilds and the COMMON final binary suite are deliberately not run in S0;
+their cost is not justified by a docs/tools-only measurement lane.

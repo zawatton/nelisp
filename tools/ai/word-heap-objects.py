@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run each object population in a fresh process and retain GNU evidence."""
+"""Run each object population in a fresh process and retain GNU evidence.
+
+WH_OBJECT_LABEL limits a run to argv[2] with that label, for an additional
+binary without overwriting the original candidate/baseline/GNU evidence.
+"""
 import concurrent.futures
 import hashlib
 import json
@@ -20,6 +24,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     bins = dict(cand=Path(sys.argv[2]).resolve(), base=Path(sys.argv[3]).resolve(),
                 gnu=Path(os.environ.get("WH_GNU_EMACS", shutil.which("emacs"))).resolve())
+    gnu = bins["gnu"]
+    if os.environ.get("WH_OBJECT_LABEL"):
+        bins = {os.environ["WH_OBJECT_LABEL"]: bins["cand"]}
     probe = ROOT / "tools/ai/word-heap-objsize.el"
     started = time.monotonic()
 
@@ -52,7 +59,7 @@ def main():
     result = dict(table=table, populations=rows, seconds=time.monotonic() - started,
                   probe_sha256=digest(probe), binaries={k: dict(path=str(p), sha256=digest(p)) for k, p in bins.items()},
                   method="(delta4000 - delta2000)/2000; keeper slots excluded; two GCs, conservative scanning disabled",
-                  gnu_version=subprocess.check_output([str(bins["gnu"]), "-Q", "--batch", "--eval", "(princ emacs-version)"], text=True))
+                  gnu_version=subprocess.check_output([str(gnu), "-Q", "--batch", "--eval", "(princ emacs-version)"], text=True))
     (out.parent / "objsize.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(table))
 

@@ -48,6 +48,11 @@ def main():
     modes = ("boot", "files", "regex")
     if os.environ.get("WH_PROFILE_GC") == "1":
         modes += ("regex-gc",)
+    if os.environ.get("WH_MODES"):
+        selected = tuple(os.environ["WH_MODES"].split(","))
+        if not selected or not set(selected) <= set(modes):
+            raise ValueError("WH_MODES must select boot,files,regex (or enabled regex-gc)")
+        modes = selected
 
     def run(who, binary, mode, layout):
         stem = output / f"{mode}-{who}-{layout}"

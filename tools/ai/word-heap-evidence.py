@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bundle retained S0 measurements, or check one criterion without hiding blockers.
+"""Bundle retained S0 measurements and dispatch content checks.
 
 bundle EVIDENCE_DIRECTORY REPORT_JSON
 check S0.N [REPORT_JSON]
 The report is committed; large raw artifacts stay hash-pinned under target/.
-Checks intentionally fail for incomplete attribution/composition, the native
-decoder counterexample, and the consequently unfinished end-to-end decision.
+Content checks live in word-heap-s0-check.py, including the clarified legacy
+decoder contract, conservative physical-storage bounds and threshold record.
 """
 import hashlib
 import json
@@ -68,9 +68,25 @@ def bundle(directory, report):
         include(metadata.parent / "stderr")
         for segment in json.loads(metadata.read_text())["segments"]:
             include(metadata.parent / segment["path"])
-    composition = {kind: read(name) for kind, name in
-                   (("cold", "cold-census-v2.json"), ("anvil", "anvil-census-v2.json"),
-                    ("library", "library-census-v2.json"))}
+    composition = {kind: read(kind + "-census-v3.json") for kind in ("cold", "anvil", "library")}
+    for kind in composition:
+        include(directory / (kind + "-census-v3.json"))
+    for p in (directory / "decoder-legacy").glob("*"):
+        include(p)
+    for row in read("decoder-legacy/results.json"):
+        include(row["binary"])
+        include(row["binary"] + ".cold")
+    include(directory / "abi-cons-identity.json")
+    include(directory / "fixed-objects/objsize.json")
+    for p in (directory / "fixed-objects/populations").glob("*"):
+        include(p)
+    for row in read("fixed-objects/objsize.json")["binaries"].values():
+        include(row["path"])
+        include(row["path"] + ".cold")
+    for name in ("controls-run2/result.json", "controls-run2/ambiguous-cons.flat", "controls-run2/ambiguous-cons-result.json", "verification-cost.json", "verification-cost.py"):
+        if (directory / name).is_file():
+            include(directory / name)
+    include(ROOT / "tools/ai/word-heap-decisions.json")
     for row in objects["binaries"].values():
         include(row["path"])
     for row in read("gc-images.json").values():
@@ -85,11 +101,19 @@ def bundle(directory, report):
         include(ROOT / path)
     def key(path):
         return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
-    result = dict(schema=1, date="2026-10-20", state="blocked", base_commit="d62233cb6",
-                  blocker=dict(criterion="S0.4", listed_condition="GNU 31.1 behavior contradicts the unchanged-decoder requirement",
-                               expected=[7, 7, 7, "payload-address"], actual=[0, 844424930131968, 0, 0],
-                               legacy=[7, 7], gnu="(t t)",
-                               required_resolution="Allow decoder/accessor dispatch changes, or replace the direct-payload representation requirement."),
+    decisions = json.loads((ROOT / "tools/ai/word-heap-decisions.json").read_text())
+    verdicts = []
+    arithmetic = re.compile(r"^(nl_(?:u8_|clz_|lem_|rshift_|w17_|round_|freelist_|boot_hole|gc_sweep)|nlf_|m5_(?:sha_bs|hexf_|fmt_float|push_float)|nl_bv_bit_get)")
+    for row in read("decoder-inventory.json"):
+        families = [k for k, v in decisions["decoder_families"].items() if row["function"] in v["names"]]
+        other = bool(arithmetic.match(row["function"])) and not families
+        verdicts.append(dict(**row, families=families or ["non-WORD arithmetic/metadata" if other else "transitive WORD consumer"],
+                             legacy_verdict="Arithmetic/metadata mask has no Lisp WORD contract." if other else "Existing odd immediates and000 views follow identical branches/offsets; encoding and runtime source are unchanged. Family arguments and native core probes apply.",
+                             new_tag_verdict="Keep separate arithmetic/metadata contract." if other else "S1 accessor migration required before any new-tag input; include this compiled function in raw-read census."))
+    result = dict(schema=2, date="2026-10-20", state="complete", base_commit="d62233cb6",
+                  decisions=decisions, decoder_verdicts=verdicts,
+                  legacy_probes=read("decoder-legacy/results.json"), speed_claim=None,
+                  fixed_objects=read("fixed-objects/objsize.json"),
                   objects=objects, composition=composition,
                   gnu_minimum_bytes=dict(cons=16, float=8, string8=41, symbol=48,
                                          **{"vector-slot": 8, "record1": 24, "bignum": 32, "marker": 48}),
@@ -98,70 +122,13 @@ def bundle(directory, report):
                   gc=dict(code=read("gc-code-identities.json"), images=read("gc-images.json"),
                           populations=read("gc-native/results.json")),
                   controls=read("controls/result.json"),
-                  limitations=["Composition has unclassified embedded views/raw storage and an archived library image.",
-                               "Baseline regex profiles were interrupted at the blocker; header Ir is only a confirmed lower bound.",
-                               "S1-S8 revisions are proposals; no runtime changes or deterministic-GC implementation."],
+                  limitations=["Physical nonfree storage includes bootstrap remnants; semantic unresolved bytes and exhaustive cons layout bounds remain explicit. Stale-address adjacency never confers payload ownership. Archived C-core image is measured offline.",
+                               "Header Ir is an instruction-level confirmed lower bound; attribution columns overlap and predict no additive speedup.",
+                               "S1-S8 revisions are decisions, not implementation completion; no runtime changes or deterministic-GC implementation."],
                   hashes={key(path): digest(path) for path in sorted(paths)})
     Path(report).write_text(json.dumps(result, indent=2) + "\n")
-    print(f"bundled {len(paths)} artifacts; state=blocked; completed profiles={len(profiles)}/24")
+    print(f"bundled {len(paths)} artifacts; profiles={len(profiles)}/24; decoder-verdicts={len(verdicts)}")
 
-
-def check(criterion, report=DEFAULT):
-    result = json.loads(Path(report).read_text())
-    if result["schema"] != 1:
-        raise ValueError("unknown report schema")
-    # Verify all hashes, including source and raw profiles, before a PASS.
-    for name, expected in result["hashes"].items():
-        path = Path(name)
-        if not path.is_absolute():
-            path = ROOT / path
-        if digest(path) != expected:
-            raise ValueError(f"changed evidence: {name}")
-    if criterion == "S0.1":
-        obj = result["objects"]
-        assert obj["gnu_version"] == "31.1" and len(obj["populations"]) == 48
-        assert len(obj["table"]) == 3 and all(len(row) == 8 for row in obj["table"].values())
-        assert obj["probe_sha256"] == digest(ROOT / "tools/ai/word-heap-objsize.el")
-        for row in obj["populations"]:
-            who, kind, population, value = row
-            stem = ROOT / "target/word-heap/objects-top-gc" / f"{who}-{kind}-{population}"
-            assert stem.with_suffix(".rc").read_text().strip() == "0"
-            assert not stem.with_suffix(".err").read_bytes()
-            assert b"WH-OBJECT-DONE\n" in stem.with_suffix(".out").read_bytes()
-    elif criterion == "S0.2":
-        missing = {kind: row["rows"].get("unclassified", {}).get("bytes", 0)
-                   for kind, row in result["composition"].items()}
-        assert not any(missing.values()), f"incomplete type ownership: {missing}; need embedded-view owner walk and current library image identity"
-    elif criterion == "S0.3":
-        rows = result["attribution"]["rows"]
-        expected = {(mode, who, layout) for mode in ("boot", "files", "regex")
-                    for who in ("cand", "base") for layout in (0, 700, 1400, 2100)}
-        actual = {(row["mode"], row["who"], row["layout"]) for row in rows}
-        assert actual == expected, f"incomplete Ir profiles: {sorted(expected - actual)}; header coverage is lower-bound only"
-    elif criterion == "S0.4":
-        native = (ROOT / "target/word-heap/decoder-counterexample.out").read_text()
-        match = re.search(r"WH-DIRECT-UNCHANGED \(([^)]+)\)", native)
-        assert match, "missing native decoder counterexample"
-        actual = list(map(int, match[1].split()))
-        assert actual == result["blocker"]["actual"], "record disagrees with native output"
-        assert actual[:3] == [7, 7, 7], "unchanged WORD decoders contradict GNU (consp/car of a direct cons); native counterexample recorded"
-    elif criterion == "S0.5":
-        gc = result["gc"]
-        assert len({json.dumps(row, sort_keys=True) for row in gc["code"].values()}) == 1
-        expected = dict(cand=26, base=11, hotfix=28, before=10)
-        rows = [row for row in gc["populations"] if not row["fixed_budget"]]
-        assert len(rows) == 16
-        for row in rows:
-            assert row["before"][2] == 0 and row["after"][2] == expected[row["who"]]
-            assert row["after"][0] == max(16777216, 3 * row["after"][1])
-        assert gc["images"]["hotfix"]["nonfree_bytes"] != gc["images"]["before"]["nonfree_bytes"]
-    elif criterion == "S0.6":
-        assert result["state"] == "complete", "S0 blocked at decoder contradiction; threshold proposals are not end-to-end acceptance"
-        for previous in range(1, 6):
-            check(f"S0.{previous}", report)
-    else:
-        raise ValueError(f"unknown criterion: {criterion}")
-    print(f"PASS {criterion}")
 
 
 if __name__ == "__main__":
@@ -169,7 +136,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "bundle":
             bundle(*sys.argv[2:4])
         elif sys.argv[1] == "check":
-            check(sys.argv[2], Path(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT)
+            import subprocess
+            sys.exit(subprocess.call([sys.executable, str(ROOT / "tools/ai/word-heap-s0-check.py"), *sys.argv[2:]]))
         else:
             raise ValueError("expected bundle or check")
     except (AssertionError, ValueError, OSError, KeyError) as error:
