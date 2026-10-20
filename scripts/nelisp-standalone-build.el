@@ -45293,7 +45293,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 
 ;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
 ;; EvalCtx+176 points to a per-context transient mmap: a 64-byte header with depth,
-;; serial and typed recursion-variable caches, then 32768 160-byte records. Each record owns copied Sexp root views for
+;; serial, raw lean/pending binding links at +16/+24, and typed recursion-variable
+;; caches at +32/+40/+48, then 32768 160-byte records. Each record owns copied Sexp root views for
 ;; function, arguments and shared frame stack; remaining words are entry
 ;; binding depth, eval mode, evaluated, exit-debug and generation. No handles
 ;; contain arena addresses. Cold restore creates a fresh EvalCtx and rebuilds
@@ -45622,25 +45623,25 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (ptr-write-u64 bytes 8 7306014439016654125)
          (ptr-write-u64 bytes 16 6845552)
          (nl_alloc_symbol bytes 19 name)
-         (ptr-write-u64 state 32 (nl_word_clone name))
+         (ptr-write-u64 state 48 (nl_word_clone name))
          (let* ((entry (nelisp_mirror_lookup_entry env name)))
-           (ptr-write-u64 state 16
+           (ptr-write-u64 state 32
              (if (= entry 0) 0 (+ (nl_word_payload entry) 6))))
-         (ptr-write-u64 state 24 (+ (nl_word_payload env) 6))
+         (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
          (nl_root_release env mark) 0)))
     (defun nl_frame_stack_limit (env _pad)
       (let* ((state (nl_n4_state env)))
         (seq
-         (if (or (= (heap-read-u64 state 16) 0)
-                 (/= (heap-read-u64 state 24) (+ (nl_word_payload env) 6)))
+         (if (or (= (heap-read-u64 state 32) 0)
+                 (/= (heap-read-u64 state 40) (+ (nl_word_payload env) 6)))
              (nl_frame_stack_limit_setup env state) 0)
-         (let* ((entry (heap-read-u64 state 16))
+         (let* ((entry (heap-read-u64 state 32))
                 (value (if (= entry 0) 3 (nl_record_slot_word entry 0))))
            (seq
             (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
               (if (= (nl_thread_registry_find env) 0) 0
                 (let* ((cell (nelisp_frame_stack_find_kind
-                              (+ env 32) (heap-read-u64 state 32) 1 0)))
+                              (+ env 32) (heap-read-u64 state 48) 1 0)))
                   (if (= cell 0) 0 (setq value (nl_cell_get_value_w cell 0))))))
             (if (and (= (logand value 3) 1) (> (sar value 2) 0))
                 (sar value 2) (heap-read-u64 env 104)))))))
@@ -45809,9 +45810,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= (heap-read-u64 env 176) 0) 0
         (let* ((state (heap-read-u64 env 176)) (i 0))
           (seq
-           (nl_gc_mark_word (heap-read-u64 state 16))
-           (nl_gc_mark_word (heap-read-u64 state 24))
            (nl_gc_mark_word (heap-read-u64 state 32))
+           (nl_gc_mark_word (heap-read-u64 state 40))
+           (nl_gc_mark_word (heap-read-u64 state 48))
            (while (< i (heap-read-u64 state 0))
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_gc_mark_slot frame)
@@ -45822,9 +45823,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= (heap-read-u64 env 176) 0) 0
         (let* ((state (heap-read-u64 env 176)) (i 0))
           (seq
-           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 16)))
-           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 24)))
            (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 32)))
+           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 40)))
+           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 48)))
            (while (< i (heap-read-u64 state 0))
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_compact_rw_slot frame)
