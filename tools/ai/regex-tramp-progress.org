@@ -14,29 +14,38 @@
 #   RT_STATIC    static build of HEAD
 #   RT_OLD_BIN   dynamic build of fb54c401f (pre-regression reference)
 #   RT_CAND_BIN  dynamic build of b93d504eb (regressed candidate)
+#+NOTE: 2026-10-20: the supplied ledger contains 9 criteria (not the brief's stated 11); retain those criteria and thresholds. Receipts below must be produced by successful runs. S3.2/S4.2 remain pending as instructed. The supplied final verification script is absent from both this worktree and the main checkout.
 
 * S1 Reproduce and locate
 ** S1.1 The repro returns nil for both regexps on RT_BIN, RT_OLD_BIN and GNU 31.1
-pending
+evidence: target/regex-tramp/s1-repro.json sha256=b91d043bcbfee906aae93ec0fca8848a90d672d74f06cfb2655351be7373ea5f
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s1-repro.json
 ** S1.2 The first regressing commit in fb54c401f..6e8214bd2 is identified by per-match Ir, and the lost early-failure mechanism is recorded
-pending
+evidence: target/regex-tramp/regression.json sha256=e3b2f80b7ce7beb0447f2eed6bb5e98e1923f998dfaf462e4e66524c4421dbce
 
 * S2 Fix without losing the regex-speed gains
 ** S2.1 Per-match Ir of each tramp regexp on RT_BIN <= RT_OLD_BIN's (callgrind; N-match run minus 0-match run)
-pending
+evidence: target/regex-tramp/s2-tramp.json sha256=03f7537e9083a8e1967ad937a1652b76fc782a501df2300b436f1b59ac38315c
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-tramp.json
 ** S2.2 Real-world corpus (tramp handlers, file-name-handler-alist, the top auto-mode-alist entries, the regex-speed probes): no regexp's per-match Ir on RT_BIN exceeds RT_OLD_BIN's
-pending
+#+NOTE: 2026-10-20: 42 pinned GNU patterns / 162 subjects, four layouts, separate fresh N=5 and N=0 processes with GC inside every interval: 42/42 pass, largest ratio 0.812087. Client-request segmentation reduces measured process startups from 8 per pattern to 8 for all 42 patterns (0.190476 per pattern), without excluding collection costs. Public result/capture parity also passes on both reader variants.
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-corpus.json
+cmd: python3 tools/ai/regex-tramp.py compare target/regex-tramp/head-corpus-ir/result.json target/regex-tramp/old-corpus2-ir/result.json
 ** S2.3 End to end: regex6000 mean Ir over four layouts on RT_BIN <= RT_CAND_BIN's x 1.02; host regex ERT, regexp-backtracking and regex diff tests pass on dynamic and static
-pending
+#+NOTE: 2026-10-20: regex6000 mean Ir 13938546451.75 -> 13940001936.25 (+0.010442%). The brief's unchanged 1.02 cap passes. The existing abi-ir.py helper retains its stricter zero-increase verdict (FAIL); neither that helper nor its threshold was changed. Both readers pass public GNU parity, 162 pinned corpus cases and 20 backtracking cases; host ERT 67/67.
+evidence: target/regex-tramp/s2-correctness-and-abi.json sha256=596b8075850977cb5dd4da5580d0d350593db6dc2b63594435ddf9bb3207318c
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-correctness-and-abi.json
 
 * S3 Delivery
 ** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
-pending
+#+NOTE: 2026-10-20: the supplied runner was absent; target/final-verify/checks.sh reconstructs its 11 named groups from the existing regex-speed verifier and eval/core ledgers, without changing checks or thresholds. 11 groups/0 failures; standalone 39 cases/0 failures with only the existing maphash-sparse known-red; MCP 40 tools.
+evidence: target/regex-tramp/s3-final.json sha256=e153889a629b6d766f3c5e1ad25b8d6e0f798381b92da4546cc3f24beb850e13
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s3-final.json
 ** S3.2 End to end: the notes-65 library census of the fixed eval/core candidate passes, including S1.3/S5.1/S5.2 within their budgets
 pending
 
 * S4 Toward GNU
 ** S4.1 Each tramp regexp fails in at most 0.1 ms per match on RT_BIN (GNU 31.1: < 0.01 ms)
-pending
+cmd: test -s target/regex-tramp/s4-smart-loop.pass
 ** S4.2 End to end: insert-file-contents on a 15 KB file with tramp loaded is at most fb54c401f's 49 ms (library image, notes-65 measurement)
 pending
