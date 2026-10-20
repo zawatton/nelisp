@@ -5775,14 +5775,9 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
 `aset' mutated the original / a string literal)."
   (cond
    ((null seq) nil)
-   ((consp seq)
-    (let ((acc nil) (cur seq))
-      (while (consp cur)
-        (setq acc (cons (car cur) acc))
-        (setq cur (cdr cur)))
-      (when cur
-        (signal 'wrong-type-argument (list 'listp cur)))
-      (nreverse acc)))
+   ;; Reuse the existing spine copier. Besides avoiding a second reversal,
+   ;; APPEND preserves fresh cons identity and the improper-tail condition.
+   ((consp seq) (append seq nil))
    ((stringp seq) (concat seq))
    ;; Records are sequences in host Emacs.  The standalone record length
    ;; includes the type tag, while `nelisp--record-ref' indexes payload
@@ -16326,7 +16321,7 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
           (setq run (1+ run))))
       items)))
 
-(defun sort (sequence &rest arguments)
+(defun nelisp--sort-reference (sequence &rest arguments)
   "Sort SEQUENCE stably using GNU Emacs 31 keyword or legacy options."
   (let ((key-function nil)
         (lessp #'value<)
@@ -16418,6 +16413,10 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
                   (setq values (cdr values)))
                 sequence))
              (t values)))))))
+
+(unless (fboundp 'sort)
+  (defalias 'sort #'nelisp--sort-reference))
+(defconst nelisp--sort-value<-definition (symbol-function 'value<))
 
 ;; --- Wave-2 (C): define-error ------------------------------------------
 ;; define-error NAME MESSAGE &optional PARENT: register an error symbol.  In

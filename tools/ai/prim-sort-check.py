@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/prim-sort"
 BENCH = ROOT / "test/perf/prim-sort-bench.el"
 LAYOUTS = (0, 700, 1400, 2100)
-CAPS = {"strings": 200, "integers": 120}
+CAPS = {"strings": 20, "integers": 10}
 
 
 def sha(path):
@@ -181,20 +181,22 @@ def check(action, binary=None):
     elif action == "parity":
         binary = str(Path(binary).resolve()) if binary else read("after")["binary"]
         source = "test/standalone-prim-sort-check.el"
-        reference = run([os.environ.get("GNU_EMACS", "emacs"), "-Q", "--batch", "--load", source],
+        reference = run([os.environ.get("GNU_EMACS", "emacs"), "-Q", "--batch", "--load", "test/standalone-prim-sort-native-check.el", "--load", "test/standalone-prim-sort-number-check.el", "--load", source],
                         "gnu-parity", marker=b"PRIM-SORT COMPLETE\n")
-        output = run([binary, "--load", source], "parity-" + sha(binary)[:12],
+        output = run([binary, "--load", "test/standalone-prim-sort-native-check.el", "--load", "test/standalone-prim-sort-number-check.el", "--load", source], "parity-" + sha(binary)[:12],
                      marker=b"PRIM-SORT COMPLETE\n")
         count = len(re.findall(r"^PS-CASE \d+ ", reference, re.M))
         if count != 76:
             raise RuntimeError(f"Incomplete parity corpus: {count} cases")
+        require(len(re.findall(r"^PS-NATIVE \d+ ", reference, re.M)) == 31, "incomplete native corpus")
+        require(len(re.findall(r"^PS-NUMBER \d+ ", reference, re.M)) == 1444, "incomplete numeric corpus")
         mixed = len(re.findall(r"^PS-MIXED \d+ ", reference, re.M))
         if mixed != 512:
             raise RuntimeError(f"Incomplete mixed-type corpus: {mixed} cases")
         if output != reference:
             difference = list(difflib.unified_diff(reference.splitlines(), output.splitlines()))
             raise RuntimeError("GNU parity differs:\n" + "\n".join(difference[:14]))
-        print(f"GNU parity: {count} cases + {mixed} mixed triples")
+        print(f"GNU parity: {count} cases + {mixed} mixed triples + 31 native cases + 1444 numeric pairs")
     elif action == "cost":
         candidate, gnu = read("after"), read("gnu")
         require(candidate["binary_sha256"] != gnu["binary_sha256"], "self-comparison")
