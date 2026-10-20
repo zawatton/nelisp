@@ -450,6 +450,35 @@
         (let ((s (format (string-as-unibyte "key-%d/%s")
                          42 (number-to-string 123))))
           (if (and (equal s "key-42/123") (not (multibyte-string-p s))) 1 0)))
+    ;; WORD global reads retain the owned object across the next callout.
+    (67 shared
+        (let* ((pg-word-cell (make-symbol "global-word-cell"))
+               (pg-word-other (make-symbol "global-word-other"))
+               (pg-word-value (vector 'global-word-value)))
+          (set pg-word-cell pg-word-value)
+          (set pg-word-other (vector 'scratch))
+          (let ((pg-word-held (symbol-value pg-word-cell))
+                (pg-word-observed (symbol-value pg-word-other)))
+            (if (and (eq pg-word-held pg-word-value)
+                     (eq (aref pg-word-observed 0) 'scratch)
+                     (eq (symbol-value pg-word-cell) pg-word-value)) 1 0))))
+    (68 shared
+        (progn
+          (makunbound 'ps-corpus-shadow)
+          (let ((ps-corpus-current
+                 (eval '(let ((ps-corpus-shadow 7))
+                          (defvar ps-corpus-shadow 9)
+                          ps-corpus-shadow) nil)))
+            (if (and (= ps-corpus-current 7)
+                     (boundp 'ps-corpus-shadow)
+                     (= ps-corpus-shadow 9)) 1 0))))
+    (69 shared
+        (if (equal (condition-case e (eval '(setq :prim-integ-keyword 9))
+                     (error e))
+                   '(setting-constant :prim-integ-keyword)) 1 0))
+    (70 shared
+        (if (equal (condition-case e (sort (list 2 1) 12) (error e))
+                   '(invalid-function 12)) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

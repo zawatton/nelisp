@@ -10,16 +10,20 @@ This is source provenance, not an instruction-level pointer-taint oracle.
 census [DUMP]       report canonical source and optional linked-source counts
 check-source       reject any raw read outside the accessor module
 controls           inject one raw read and demonstrate rejecting checks
-check              recheck the complete, hash-bound S1.2 evidence
+check [--source-revision REV --linked DUMP]
+                   recheck hash-bound S1.2 evidence; integration replay pins
+                   historical source and requires the current linked census
 migrate            mechanical call-head/assembler-reference migration
 """
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/word-heap-s1"
@@ -429,14 +433,37 @@ def migrate():
     print(json.dumps(counts, indent=2))
 
 
-def check():
+def check(revision=None, linked=None):
     check_source()
     manifest = json.loads((OUT / "s1-evidence.json").read_text())
     need(manifest["schema"] == 1 and manifest["baseline_commit"] == "50a75cbcb",
          "wrong S1 baseline/schema")
+    historical = {}
+    if revision:
+        need(linked is not None, "historical S1 replay requires a current linked dump")
+        ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", revision, "HEAD"], cwd=ROOT)
+        need(ancestor.returncode == 0, "S1 source revision is not an ancestor of HEAD")
+        paths = [name for name in manifest["hashes"] if not name.startswith("target/")]
+        archive = subprocess.run(["git", "archive", revision, "--", *paths],
+                                 cwd=ROOT, capture_output=True)
+        need(archive.returncode == 0, "cannot read pinned S1 source revision")
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as members:
+            for member in members:
+                if member.isfile():
+                    historical[member.name] = hashlib.sha256(members.extractfile(member).read()).hexdigest()
+        units = dump_units(linked)
+        need(len(units) == 114, "incomplete current linked-source input")
+        current = dump_counts(linked)
+        need(current["raw-header-read"] == 0 and current["header-accessor"] > 0,
+             "current linked source bypasses the accessor layer")
+        for name in (ACCESSORS, "tools/ai/box-census.py", "tools/ai/word-heap-accessor-code.el"):
+            need(sha(ROOT / name) == manifest["hashes"][name], f"changed S1 accessor contract: {name}")
     for name, expected in manifest["hashes"].items():
-        need(sha(ROOT / name) == expected, f"changed S1 evidence: {name}")
+        actual = historical.get(name) if revision and not name.startswith("target/") else sha(ROOT / name)
+        need(actual == expected, f"changed S1 evidence: {name}")
     need(manifest["facts"] == facts(), "S1 measured facts changed")
+    if revision:
+        print(f"Retained accessor-only S1 source={revision}; current linked raw=0")
     print("PASS S1.2 raw=0 ABI-S6.2=0; 51 identical-code cases; 24 Ir profiles <=+0.5%")
 
 
@@ -522,7 +549,21 @@ def facts():
     baseline = OUT / "base/nelisp-dynamic"
     need(sha(candidate) != sha(baseline), "candidate reused as baseline")
     directory = OUT / "ir"
-    abi.validate_record(directory, abi.identities(candidate, baseline), abi.ACCESSOR_MODES)
+    identities = abi.identities(candidate, baseline)
+    # Retained evidence may be copied into an integration worktree. Preserve
+    # every measured hash and the runtime-environment identity; translate only
+    # the checkout prefix before comparing the immutable provenance record.
+    measured = json.loads((directory / "measurement.json").read_text())["identities"]
+    suffix = "target/word-heap-s1/dynamic/nelisp-dynamic"
+    measured_candidate = measured["candidate-path"]
+    need(measured_candidate.endswith("/" + suffix), "unexpected S1 candidate provenance")
+    measured_root = measured_candidate[:-len(suffix)].rstrip("/")
+    def original_path(value):
+        prefix = str(ROOT) + "/"
+        return measured_root + "/" + value[len(prefix):] if value.startswith(prefix) else value
+    identities = {original_path(k): original_path(v) if k in ("candidate-path", "baseline-path") else v
+                  for k, v in identities.items()}
+    abi.validate_record(directory, identities, abi.ACCESSOR_MODES)
     ir = {}
     for mode in abi.ACCESSOR_MODES:
         rows, outputs = [], set()
@@ -592,7 +633,11 @@ def main(args):
     elif cmd == "migrate":
         migrate()
     elif cmd == "check":
-        check()
+        if len(args) == 5 and args[1] == "--source-revision" and args[3] == "--linked":
+            check(revision=args[2], linked=Path(args[4]))
+        else:
+            need(len(args) == 1, "check [--source-revision REV --linked DUMP]")
+            check()
     elif cmd == "seal":
         seal()
     else:

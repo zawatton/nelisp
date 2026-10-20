@@ -498,11 +498,9 @@
             (let* ((frame (vector-ref-ptr (nl_record_slot_word frames-ptr 0)
                                          (- depth 1))))
               (if (> (record-slot-count frame) 2)
-                  ;; Immediate slot reads can be materialized scratch views.
-                  ;; Publish through the record setter, not that borrowed view.
-                  (let* ((marker (alloc-bytes 32 8)))
-                    (seq (sexp-int-make marker 1)
-                         (record-slot-set frame 2 marker) 0))
+                  ;; Publish the fixnum WORD through the ordinary setter.
+                  ;; The scope marker needs no materialized Sexp box.
+                  (seq (record-slot-set frame 2 5) 0)
                 1))
           1)))
 

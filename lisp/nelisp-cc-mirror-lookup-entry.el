@@ -147,6 +147,25 @@
        (+ (heap-read-u64 (heap-read-u64 rec-ptr 8) 32) (* idx 8))
        0))
 
+    (defun nelisp_mirror_lookup_entry_owned (mirror-ptr name)
+      ;; Clause 1: NAME is a live value from an owning/rooted container,
+      ;; not an arbitrary borrowed address. As in frame-stack-find's WORD
+      ;; walk, its owner makes a tag check sufficient. No allocation or
+      ;; safepoint occurs here. Reject non-key values before hashing; the
+      ;; generic entry below retains full address authentication for callers
+      ;; without this ownership proof (including its cold-load hardening).
+      (if (if (= name 0) 1 (= (logand name 1) 1)) 0
+        (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16)
+                (= (sexp-tag name) 5) (= (sexp-tag name) 14))
+            (let* ((ht (nl_record_slot_word mirror-ptr 0))
+                   (head (heap-read-u64
+                          (+ (heap-read-u64 (nl_word_payload (nl_record_slot_word ht 1)) 8)
+                             (* (logand (extern-call nelisp_fnv1a name)
+                                        (- (sar (nelisp_mirror_slot_raw_word ht 0) 2) 1)) 8)) 0)))
+              (if (= (logand head 1) 1) 0
+                (nelisp_mirror_walk_bucket head name)))
+          0)))
+
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
       ;;             (= `globals_record', tag `nelisp-env').

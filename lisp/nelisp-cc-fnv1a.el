@@ -182,14 +182,25 @@
       ;; mask `(- (shl 1 32) 1)' is computed once in the caller and
       ;; threaded through both recursions as an explicit arg, avoiding
       ;; the repeated `(shl 1 32)' shift in every inner step.
-      (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
-                          (if (= (sexp-tag str-ptr) 16)
-                              (heap-sexp-data str-ptr)
-                            (str-bytes-ptr str-ptr)) 0
-                          (if (= (sexp-tag str-ptr) 16)
-                              (heap-sexp-length str-ptr)
-                            (str-len str-ptr))
-                          (- (shl 1 32) 1))))
+      ;; Keep the scalar step/step4 definitions above as the reference.
+      ;; The compiler lowers this Lisp loop; one bounded raw load supplies
+      ;; four bytes, avoiding four cross-unit byte-access calls per group.
+      (let* ((bytes (if (= (sexp-tag str-ptr) 16)
+                        (heap-sexp-data str-ptr) (str-bytes-ptr str-ptr)))
+             (n (if (= (sexp-tag str-ptr) 16)
+                    (heap-sexp-length str-ptr) (str-len str-ptr)))
+             (h (+ (shl 1 31) 18652613)) (mask (- (shl 1 32) 1))
+             (i 0) (quad 0))
+        (seq
+         (while (<= (+ i 4) n)
+           (seq
+            (setq quad (nl_bytes_u32_at bytes i))
+            (setq h (logand (* (logxor h (logand quad 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 8) 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 16) 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 24) 255)) 16777619) mask))
+            (setq i (+ i 4))))
+         (nelisp_fnv1a_step h bytes i n mask)))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.
 

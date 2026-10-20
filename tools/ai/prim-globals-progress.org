@@ -1,0 +1,48 @@
+#+TITLE: Plain globals and call floor at GNU cost
+#+NOTE: 2026-10-20 Run 2 resumes from 27f115d7a. The four recorded baseline semantic differences are in-scope work under the revised COMMON.md, not blockers. Preserve the original 13 criteria and evidence. Watcher APIs and notifications for set, let/unlet, makunbound and defvaralias are included in S2.3. The S1 revision below supersedes the historical Run 1 threshold.
+#+NOTE: 2026-10-20 S1 threshold revision: the old S3 limit was 3 times GNU total Ir in each mode. The new fixed budget is the measured base funcall floor plus 13 times GNU total Ir for setq, and the measured base funcall floor plus 6 times GNU total Ir for symbol-value. S1's base call floors alone exceed the old whole-operation budget (interpreter 118962 Ir, VM 25801 Ir, bytecode 50797 Ir); charging the plain lookup/setter for eliminating the general evaluator's floor conflicts with the separately ungated call floor. The read allowance bounds the profiled mirror/frame/dispatch work; setq pays a read, increment and write. The baseline floor is frozen, so a candidate cannot relax its budget by slowing funcall. Full Ir includes GC, averaged over all four layouts. Ir is measured without clock reads or float formatting; a separate identical loop measures informational wall time. No criteria were added or removed (13 total). The original 3-times-GNU total budget remains unmet.
+#+NOTE: 2026-10-20. Base 692dc8a09. Ir is the gate; microseconds are informational. Four ABI_LAYOUT_PAD layouts: 0,700,1400,2100. Includes GC and the existing slot-4 alias redirect check. No alias implementation belongs to this lane.
+#+NOTE: 2026-10-20 STOPPED before runtime implementation: the freshly built base differs from GNU 31.1 in interpreter 6/19, VM 4/19 (four core functions verified on VM), and bytecode 3/19. setq nil/t loses setting-constant data in the interpreter; keyword self-assignment, buffer-local default preservation, and variable watchers also differ. Minimal fresh-symbol reproduction excludes cross-case contamination. No provisional threshold was revised.
+#+NOTE: Blocker evidence target/prim-globals/blocker.json sha256=965db6d74bf51a6fc1a98a2b87c451e906b14ea8195a21249f5da245957239c7. No runtime/build/prelude hunks changed; the existing slot-4 alias redirect checkpoint is retained. S1/S3/S4 costs were deliberately not paid after the COMMON.md stopping condition fired.
+#+NOTE: The check tier was attempted with local writable TMPDIR/XDG_CACHE_HOME. Unmodified baseline files fail compile and parens (33 findings/1158 files). Interrupted during generated-source-parse after the semantic stopping condition; no final-verification receipt is claimed.
+#+NOTE: 2026-10-20 Run 2 evidence: base-calls3, gnu-calls3 and final3-calls contain the same harness's 12 profiles each, all five operations, four layouts and three modes. Exact executed source versions are retained by SHA256 in target/prim-globals/source-archive. The WIP globals/call-transport-only overlay reduces five-file mean Ir by 5.31%; it does not reproduce the full WIP's reported 8.6% increase. The final3 five-file mean is 6465574308.75 versus base 6483571962.75 (ratio 0.9972241144).
+#+NOTE: 2026-10-20 Run 2 semantics: final3/parity.json records 27 cases in all three modes (81 comparisons, zero differences), with actual VM registration verified. The single notification entry is emacs-parity-misc--notify, called by nl_n3_notify; prim-alias can call it with the canonical base symbol. Alias ownership stays outside this lane; nelisp_env_alias_slot_candidate still checks slot 4. No Lisp-visible native entry or :lit arm is added. Existing cell/evaluator entry points remain the boundary (minimal-native clauses 1 and 2).
+#+NOTE: 2026-10-20 Development evidence: checked root API access removes accidental compiler bootstrap from buffer-local predicates (49.291 to 0.145 seconds, run3/local-p-cost.json). controls2/standalone-contract/comparison.json demonstrates the old shell check falsely passes an exit-0 uncaught error and the new check rejects it; verifier-controls2.json records five rejected broken measurement fixtures and a valid positive control. Corpus case 64 verifies vector identity across another global read in GNU, interpreter, VM and bytecode.
+#+NOTE: 2026-10-20 Integration finding: GNU 31.1 notifies the alias's old watcher with (alias base defvaralias nil), contrary to CONTRACT-alias-watchers.md item 2's base-watcher wording. target/prim-globals/gnu-alias-notification-contract.out and .json retain the independent GNU observation. This lane matches GNU; the out-of-scope alias implementation/contract reconciliation belongs to prim-alias. VM special let remains the existing interpreter fallback, with its global reads/writes exercised through five authenticated compiled helpers; bytecode executes the binding bodies as bytecode.
+#+NOTE: 2026-10-20 Final verification: final3/final-run.json records dynamic/static checks with 11 groups and zero failures, followed by an independent 67-case standalone run with zero failures (only the specified maphash-sparse known-red excluded). Both runs execute the added 14-assertion globals check. Census is 1362 before and after, S6.2 zero; Anvil lists 40 tools. The same final dynamic binary is used for parity, performance, load and smoke evidence. Changed-file nl-parens scans 11 files with zero findings. Informational microseconds are refreshed in adjacent base/GNU/candidate trials after the entire final suite and all profilers finish; original wall samples/reports remain archived, and no Ir sample changes.
+
+* S1 Baseline diagnosis
+** S1.1 Profile each operation in interpreter, VM and bytecode on the base
+cmd: python3 tools/ai/prim-globals-check.py check baseline-profile
+** S1.2 Isolate the globals contribution to the reference WIP load regression
+cmd: python3 tools/ai/prim-globals-check.py check wip-load
+** S1.3 End-to-end baseline uses a measured binary from 692dc8a09 and GNU 31.1
+cmd: python3 tools/ai/prim-globals-check.py check baseline
+
+* S2 GNU semantics
+** S2.1 Interpreter matches GNU values, error symbols and error data
+cmd: python3 tools/ai/prim-globals-check.py check parity-interpreter
+** S2.2 VM matches GNU values, error symbols and error data
+cmd: python3 tools/ai/prim-globals-check.py check parity-vm
+** S2.3 End-to-end bytecode and both source modes match GNU, including watchers
+cmd: python3 tools/ai/prim-globals-check.py check parity-all
+
+* S3 Primitive instruction cost
+** S3.1 Global setq uses at most three times GNU Ir in each mode
+#+NOTE: 2026-10-20 WORD ABI integration restores the original 3x GNU cap in every mode for setq and symbol-value. No base funcall-floor allowance remains; checks stay executable and red until met. Remaining call-floor ownership: Doc 216 S4.2/S6.3. S3.3 authenticates complete measurements without imposing a cap on the explicitly ungated floor.
+#+NOTE: Interim (coordinator, 2026-10-20): the S1 revision (base funcall floor + 13x setq / 6x symbol-value) is accepted only for this branch. The floor is owned by Doc 216 S4.2/S6.3; the prim integration restores the brief cap (3x GNU in every mode) and re-measures; the check stays red until it passes.
+cmd: python3 tools/ai/prim-globals-check.py check setq
+** S3.2 Symbol-value uses at most three times GNU Ir in each mode
+cmd: python3 tools/ai/prim-globals-check.py check symbol-value
+** S3.3 End-to-end all operations and modes measured, including the ungated funcall floor
+cmd: python3 tools/ai/prim-globals-check.py check measurements
+
+* S4 Integrated verification
+** S4.1 Box census S6.2 stays zero and total does not exceed the measured base
+cmd: python3 tools/ai/prim-globals-check.py check census
+** S4.2 Five-file load averages no more Ir than base over four layouts
+cmd: python3 tools/ai/prim-globals-check.py check load
+** S4.3 Anvil MCP reports exactly 40 tools
+cmd: python3 tools/ai/prim-globals-check.py check anvil
+** S4.4 End-to-end dynamic/static final verification and standalone checks pass
+cmd: python3 tools/ai/prim-globals-check.py check final

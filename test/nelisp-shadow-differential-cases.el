@@ -194,6 +194,15 @@
             0 (unibyte-string 192 49 8 0 193 32 48 135 135)
             (vector 'no-catch (lambda () (throw nil 'missing))) 1)))
    (equal (funcall fn) '(no-catch nil missing)))
+ ;; Native variable redirects preserve constants and uninterned identity.
+ (let ((alias (make-symbol "nil-target")))
+   (list (defvaralias alias nil) (boundp alias) (symbol-value alias)
+         (indirect-variable alias)))
+ (let ((a (make-symbol "same")) (b (make-symbol "same")) (other (make-symbol "same")))
+   (set b 7) (defvaralias a b) (set a 9)
+   (list (eq (indirect-variable a) b) (symbol-value b) (boundp other)
+         (condition-case e (defvaralias b a)
+           (cyclic-variable-indirection (eq (cadr e) a)))))
  ;; U7a: aliases bind the canonical dynamic cell, including a void target.
  (let ((target (intern "u7a-shadow-target"))
        (alias (intern "u7a-shadow-alias")))
@@ -330,6 +339,13 @@
  ;; every result derived: returning a raw-byte string here would compare the
  ;; two printers instead of the string semantics.
  (equal (unibyte-string 227 129 130) "あ")
+ ;; Mixed byte representations use distinct ordering/equality contracts.
+ (let ((u (unibyte-string 233))
+       (r (string-as-multibyte (unibyte-string 233))))
+   (list (compare-strings u nil nil "é" nil nil)
+         (compare-strings u nil nil r nil nil)
+         (string-lessp u "é") (string-lessp "é" u)
+         (string= u r) (string-prefix-p u r)))
  (append (unibyte-string 200 201 202) nil)
  (append "あ" nil)
  (list (multibyte-string-p (unibyte-string 200 201))
@@ -2364,6 +2380,60 @@
 (let ((f (eval '(let ((f nil)) (setq f (lambda () f)) f) t)))
   (list (let ((print-circle t)) (prin1-to-string f))
         (let ((print-circle nil)) (format "%S" f))))
+
+ ;; Literal-only nullary closures preserve heap identity and captured values;
+ ;; executable forms and wrong arity still take the ordinary call path.
+ (eval '(let ((reader (lambda () [1 "callfloor"])) (events nil))
+          (let ((object (funcall reader)))
+            (garbage-collect)
+            (list ((lambda ())) ((lambda () nil t 17))
+                  (funcall (lambda (a &optional b &rest rest) 17) 1)
+                  (funcall (lambda (a &optional b &rest rest) 17) 1 2 3 4)
+                  (eq object (funcall reader))
+                  (let ((captured 23)) (funcall (lambda () captured)))
+                  (funcall (lambda () (push 'executed events) 31)) events
+                  (let ((empty (lambda () nil)))
+                    (condition-case e (funcall empty 1)
+                      (wrong-number-of-arguments (list (car e) (nth 2 e)))))))) t)
+ ;; Sort skips callbacks for singleton keys and preserves list/vector identity
+ ;; according to the GNU 31 keyword and legacy interfaces.
+ (list (sort (list 1) :key 12)
+       (sort [1] :lessp 12 :key 12)
+       (sort (list '(2 a) '(1 b) '(2 c) '(1 d)) :key #'car :reverse t)
+       (let* ((items (list 3 1 2)) (result (sort items #'<)))
+         (list items result (eq items result)))
+       (let* ((items (vector 3 1 2)) (result (sort items :lessp #'<)))
+         (list items result (eq items result)))
+       (condition-case e
+           (sort (list 2 1) (lambda (_a _b) (signal 'arith-error '(sort-predicate))))
+         (error e)))
+ ;; Native sorting retains values through allocating callbacks, and freezes
+ ;; the comparator before the key function can redefine its symbol.
+ (list (sort (list 3 1 2) (lambda (a b) (garbage-collect) (< a b)))
+       (let ((original (symbol-function '<)))
+         (unwind-protect
+             (sort (list 3 1 2) :lessp '<
+                   :key (lambda (x) (fset '< (lambda (_a _b) nil)) x))
+           (fset '< original)))
+       (let* ((source (list 3 1 2)) (copy (copy-sequence source)))
+         (list (equal source copy) (eq source copy)
+               (eq (cdr source) (cdr copy)))))
+
+ ;; Numeric comparison must not round a fixnum through f64 before ordering.
+ (let* ((integer (1+ (ash 1 60))) (floating (float (ash 1 60)))
+        (result (sort (list integer floating))))
+   (list (eq (car result) floating) (eq (cadr result) integer)
+         (> integer floating) (value< floating integer)))
+
+ ;; Integration boundaries accept immediate values before inspecting them.
+ (condition-case e (eval '(setq :prim-integ-keyword 9)) (error e))
+ (condition-case e (sort (list 2 1) 12) (error e))
+ (progn
+   (defvaralias 'prim-integ-optional-constant 't)
+   (eval '(defun prim-integ-optional-formal (&optional prim-integ-optional-constant)
+            'body-must-not-run) nil)
+   (list (condition-case e (prim-integ-optional-formal) (error e))
+         (condition-case e (prim-integ-optional-formal 9) (error e))))
 
 )
 

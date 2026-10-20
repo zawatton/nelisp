@@ -136,6 +136,10 @@ value form using the `ptr-read-u64' grammar op in nested position.")
     ;; deliberately kept out of the raw-memory kernel inventory.
     (defun nl_bytes_byte_at (bytes i)
       (heap-read-u8 bytes i))
+    ;; Raw memory transport (clause 3), not a Lisp-visible native. Callers
+    ;; establish that four bytes remain, including for unaligned buffers.
+    (defun nl_bytes_u32_at (bytes i)
+      (heap-read-u32 bytes i))
     ;; The reader's scratch builder is already an owning MutStr.  Numeric
     ;; escapes only change its representation flag; the boxed NlStr layout and
     ;; byte buffer remain untouched.
