@@ -16369,7 +16369,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                (setq last-slots
                                                      (record-slot-count
                                                       last-entry))
-                                               (if (< last-slots 6)
+                                               (if (< last-slots 4)
                                                    (setq go 0)
                                                  (seq
                                                   (setq last-index index)
@@ -16396,16 +16396,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                              last-count)
                                             (setq go 0)
                                           (if
-                                              (/=
-                                               (heap-read-u64
-                                                last-entry-data 48)
-                                               3)
+                                              (if (> last-slots 4)
+                                                  (/= (heap-read-u64 last-entry-data 48) 3)
+                                                0)
                                               (setq go 0)
                                             (if
-                                                (/=
-                                                 (heap-read-u64
-                                                  last-entry-data 56)
-                                                 3)
+                                                (if (> last-slots 5)
+                                                  (/= (heap-read-u64 last-entry-data 56) 3)
+                                                0)
                                                 (setq go 0)
                                               (seq
                                                (setq value
@@ -17201,8 +17199,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (= done 0)))
            (seq
             (if (and (<= code-len 2147483647) (>= sp 0) (<= sp depth))
-                (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env)))
-                  (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))) 0)
+                (let* ((first-op (heap-read-u8 code-data pc)))
+                  ;; Skip an unsupported batch starter without changing PC/SP.
+                  ;; Masks: 0..5,8..13; 83..90,92; 130..134,136,137.
+                  ;; Constants 192..255 also enter the existing batch runner.
+                  (if (= (if (< first-op 64)
+			     (if (/= (logand 16191 (shl 1 first-op)) 0) 1 0)
+			   (if (< first-op 128)
+			       (if (/= (logand 402128896 (shl 1 (- first-op 64))) 0) 1 0)
+			     (if (< first-op 192)
+				 (if (/= (logand 892 (shl 1 (- first-op 128))) 0) 1 0)
+			       1))) 1)
+                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env)))
+                        (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))) 0)) 0)
            (let* ((offset pc) (raw (heap-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0)
                   (top (+ mem (* (- sp 1) 8)))
