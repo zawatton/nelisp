@@ -4,6 +4,7 @@
 (defun nelisp-cc-variable-watchers-source (root)
   "Return the foundation's watcher forms, without loading unrelated shims."
   (let ((names '(emacs-parity-misc--variable-watchers
+                 emacs-parity-misc--has-user-watchers
                  nelisp--defvaralias-notifications emacs-parity-misc--watching
                  emacs-parity-misc--inhibit-watchers emacs-parity-misc--remove-equal
                  emacs-parity-misc--watcher-flag emacs-parity-misc--watcher-symbol

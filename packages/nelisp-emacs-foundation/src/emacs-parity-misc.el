@@ -697,6 +697,8 @@ returns nil (no asynchronous compilation is scheduled)."
 
 (defvar emacs-parity-misc--variable-watchers (make-hash-table :test 'eq)
   "SYMBOL -> watch functions, most recently added first.")
+(defvar emacs-parity-misc--has-user-watchers nil
+  "Non-nil when user callbacks require private local-cell name resolution.")
 (defvar nelisp--defvaralias-notifications (make-hash-table :test 'eq)
   "Alias/base names mapped to their canonical copied-cell variable.")
 (defvar emacs-parity-misc--watching nil
@@ -712,9 +714,11 @@ returns nil (no asynchronous compilation is scheduled)."
 
 (defun emacs-parity-misc--watcher-flag ()
   "Enable write notifications for user watchers or copied variable aliases."
+  (setq emacs-parity-misc--has-user-watchers
+        (> (hash-table-count emacs-parity-misc--variable-watchers) 0))
   (when (fboundp 'nelisp--env-globals-op)
     (nelisp--env-globals-op 'variable-watchers nil
-                           (or (> (hash-table-count emacs-parity-misc--variable-watchers) 0)
+                           (or emacs-parity-misc--has-user-watchers
                                (and (boundp 'nelisp--defvaralias-registry)
                                     nelisp--defvaralias-registry t)))))
 
@@ -731,12 +735,34 @@ Private lexical names avoid collisions with a consumer's dynamic bindings."
   ;; Most writes are unrelated to either registry. Do not resolve variable
   ;; aliases or scan the registry for those writes: this callback is also on
   ;; the evaluator's hot dynamic-binding path during real package loading.
+  ;; Alias bookkeeping alone must not make unrelated writes inspect symbol
+  ;; properties. Public registry matches retain their existing fast path;
+  ;; only a user-watched private local cell needs its logical name resolved.
   (when (and (not emacs-parity-misc--inhibit-watchers)
              ;; Canonical names are symbols, including nil.  A numeric missing
              ;; value distinguishes an alias to nil from an unrelated write.
              (or (symbolp (gethash emacs-watch--symbol nelisp--defvaralias-notifications 0))
-                 (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)))
-    (let ((emacs-watch--written-symbol emacs-watch--symbol))
+                 (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)
+                 (and emacs-parity-misc--has-user-watchers
+                      (let ((emacs-watch--local-variable
+                             (get emacs-watch--symbol 'nelisp--buffer-local-variable)))
+                        (and emacs-watch--local-variable
+                             (gethash emacs-watch--local-variable
+                                      emacs-parity-misc--variable-watchers))))))
+    ;; Keep the physical written cell for copied-alias mirroring. Watchers
+    ;; receive the public variable and the local cell's owning buffer instead.
+    (let ((emacs-watch--written-symbol emacs-watch--symbol)
+          (emacs-watch--local-variable
+           (and emacs-parity-misc--has-user-watchers
+                (not (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers))
+                (not (symbolp (gethash emacs-watch--symbol
+                                       nelisp--defvaralias-notifications 0)))
+                (get emacs-watch--symbol 'nelisp--buffer-local-variable))))
+      (when emacs-watch--local-variable
+        (unless emacs-watch--where
+          (setq emacs-watch--where
+                (get emacs-watch--symbol 'nelisp--buffer-local-buffer)))
+        (setq emacs-watch--symbol emacs-watch--local-variable))
       (setq emacs-watch--symbol
             (if (eq emacs-watch--operation 'defvaralias) emacs-watch--symbol
               (emacs-parity-misc--watcher-symbol emacs-watch--symbol)))

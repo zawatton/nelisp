@@ -6,6 +6,8 @@
 (defun u7a-phase (name)
   (princ (format "U7A-PHASE %s seconds=%.3f\n" name (- (float-time) u7a-origin))))
 (load "test/support/native-frame-u7a-fixtures.el" nil t t)
+;; The fixture is loaded at run time; declare its mode special to the compiler.
+(defvar u7a-mode nil)
 (defun u7a-assert (value label) (unless value (error "U7a: %s" label)))
 (let* ((nelisp-native-cache-backend (intern (getenv "U7A_BACKEND")))
        (phase (or (getenv "U7A_PHASE") "compile"))
@@ -99,13 +101,59 @@
             (kill-buffer other)))
         (setq u7a-mode nil))
       (when (eq name 'watcher)
-        ;; GNU 31.1's ordered oracle is asserted in host ERT. This interpreter
-        ;; has no add-variable-watcher, so qualify that limitation explicitly
-        ;; and compare native behavior with the actual interpreter, not GNU.
-        (u7a-assert (not (fboundp 'add-variable-watcher)) "watcher limitation changed; extend parity")
-        (dolist (mode '(throw signal)) (setq u7a-mode mode) (compare))
+        ;; The embedded Lisp watcher provider is present. Require its exact
+        ;; GNU 31.1 observations on both VM and native entries, including
+        ;; operation, new value, order and current-buffer identity.
+        (u7a-assert (and (fboundp 'add-variable-watcher)
+                        (fboundp 'remove-variable-watcher))
+                    "watcher providers present")
+        (let ((watch-events nil))
+          (let ((watcher (lambda (symbol new operation where)
+                           (push (list symbol new operation where) watch-events))))
+            (cl-labels
+                ((watched (mode wanted-value wanted-events)
+                   (setq watch-events nil)
+                   (let* ((u7a-mode mode)
+                          (expected (native-frame-u7a-observe fn args)))
+                     (u7a-assert (equal expected wanted-value)
+                                 "GNU31 watcher interpreter value")
+                     (u7a-assert (equal (reverse watch-events) wanted-events)
+                                 "GNU31 watcher interpreter ordered events")
+                     (setq watch-events nil)
+                     (u7a-assert (equal (run) wanted-value)
+                                 "GNU31 watcher native value")
+                     (u7a-assert (equal (reverse watch-events) wanted-events)
+                                 "GNU31 watcher native ordered events"))
+                   (setq cases (1+ cases))
+                   (princ (format "U7A-PARITY fixture=%S case=%d\n" name cases))))
+              (unwind-protect
+                  (progn
+                    (add-variable-watcher 'u7a-special watcher)
+                    (watched nil '((returned inside) (inside) outside)
+                             '((u7a-special inside let nil)
+                               (u7a-special outside unlet nil)))
+                    (watched 'throw '(inside (inside) outside)
+                             '((u7a-special inside let nil)
+                               (u7a-special outside unlet nil)))
+                    (watched 'signal '((signal (error "u7a" inside)) (inside) outside)
+                             '((u7a-special inside let nil)
+                               (u7a-special outside unlet nil)))
+                    (with-temp-buffer
+                      (set (make-local-variable 'u7a-special) 'local)
+                      (let ((buffer (current-buffer)))
+                        (watched 'throw '(inside (inside) local)
+                                 (list (list 'u7a-special 'inside 'let buffer)
+                                       (list 'u7a-special 'local 'unlet buffer))))
+                      (u7a-assert (eq (default-value 'u7a-special) 'outside)
+                                  "GNU31 watcher local default preserved"))
+                    ;; GNU keeps a localized redirect after its buffer dies.
+                    ;; Restoring that default uses set; a fresh global uses unlet.
+                    (watched 'throw '(inside (inside) outside)
+                             '((u7a-special inside let nil)
+                               (u7a-special outside set nil))))
+                (remove-variable-watcher 'u7a-special watcher)))))
         (setq u7a-mode nil)
-        (princ "U7A-WATCHER unsupported-interpreter GNU31.1-normal-and-throw=(let set)\n"))
+        (princ "U7A-WATCHER GNU31.1 ordered-values-and-locality cases=5 PASS\n"))
       (when (eq name 'alias)
         (u7a-assert (eq u7a-target 'outside) "canonical alias target restored")
         (defvaralias 'u7a-middle 'u7a-target)

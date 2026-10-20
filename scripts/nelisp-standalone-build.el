@@ -14378,7 +14378,48 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            ;; Constants, identity-symbol keys,
                                            ;; structural errors and stack growth
                                            ;; retain the frozen reference path.
-                                           (if (and (= rc 0) (= (sexp-tag payload) 4)
+                                           (if (and (= rc 0)
+                                                (/= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
+                                                (or (= (sexp-tag payload) 16)
+                                                    (and (= (sexp-tag payload) 4)
+                                                         (or (= (heap-sexp-length payload) 0)
+                                                             (/= (heap-read-u8 (heap-sexp-data payload) 0) 58)))))
+(seq
+                                                (setq direct 1)
+                                                ;; Generic watched specbind keeps identity symbols intact.
+                                                ;; The ordinary string-key fast path below is unchanged.
+                                                (setq hash (logand (heap-read-u64 (+ env 112) 0) 2097152))
+                                                (setq address (nelisp_frame_push_direct (+ env 32) (nl_frame_push_sym0_ptr)
+                                                                                       (nl_frame_push_sym1_ptr) scratch))
+                                                (setq cleanup-rc 0)
+                                                (if (= address 1)
+                                                    (seq
+                                                     ;; Force this opcode's unconditional dynamic binding,
+                                                     ;; restoring only its mode bit after callback reentry.
+                                                     (ptr-write-u64 (+ env 112) 0
+                                                                    (logior (heap-read-u64 (+ env 112) 0) 2097152))
+                                                     (setq cleanup-rc (nl_n3_bind env (+ env 32) payload arg2))
+                                                     (ptr-write-u64 (+ env 112) 0
+                                                                    (logior (logand (heap-read-u64 (+ env 112) 0) -2097153) hash))) 0)
+                                                ;; N3 bind succeeds with 1. A watcher veto returns 0 and
+                                                ;; leaves the precise pending signal/throw in place.
+                                                (if (/= (heap-read-u64 268435472 0) 0) (setq rc 1)
+                                                  (if (and (= address 1) (= cleanup-rc 1)) (setq rc 0) (setq rc 2)))
+                                                ;; Check the parent ticket before publishing any frame.
+                                                (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
+                                                        (/= state (nl_root_pin_slot_v2 env ticket s))
+                                                        (/= output (nl_root_pin_slot_v2 env ticket r))) (setq rc 2) 0)
+                                                (if (= rc 0)
+                                                    (seq
+                                                     (wf_bytecode_copy result (wf_bytecode_current_frame (+ env 32)))
+                                                (nl_sexp_clone_into (nl_frame_stack_promote result 0) result)
+                                                (wf_bytecode_copy event (vector-ref-ptr state 3))
+                                                (nelisp_cons_construct result event scratch)
+                                                (vector-slot-set state 3 scratch))
+                                                  ;; Notification veto installed no binding. Raw rollback
+                                                  ;; retires only a successfully pushed, unpublished frame.
+                                                  (if (= address 1) (nl_n3_pop_raw env) 0)))
+(if (and (= rc 0) (= (sexp-tag payload) 4)
                                                     (or (= (heap-sexp-length payload) 0)
                                                         (/= (heap-read-u8 (heap-sexp-data payload) 0) 58))
                                                     (< (sexp-int-unwrap depth)
@@ -14408,7 +14449,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                 (setq direct 1) (setq rc 0))
                                              ;; The reference publishes precise
                                              ;; conditions for resolver errors.
-                                             (ptr-write-u64 268435472 0 0))) 0)
+                                             (ptr-write-u64 268435472 0 0)))) 0)
                                     (if (or (= action 2) (= action 3))
                                         (if (or (= action 3)
                                                 (and (= (sexp-tag arg1) 2)
@@ -14470,7 +14511,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (nl_frame_stack_install_captured env result scratch 0)
                               (if (or (= action 2) (= action 3)) (seq
                                 (setq i (sexp-int-unwrap result))
-                                (wf_write_nil cell) (ptr-write-u64 268435472 0 0)
+                                (wf_write_nil cell)
+                                ;; Pending exits survive ordinary unlets and successful cleanup callbacks.
                                 (while (> i 0)
                                   (seq
                                    ;; State, entry and payload are full roots;
@@ -14499,8 +14541,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                       (wf_write_int scratch (- (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2) 1))
                                       ;; Binding removal has reached its original shallow-binding
                                       ;; point; retire raw metadata before clearing its owner slot.
-                                      (nelisp_frame_pop_inner (+ env 32) 0 (sexp-int-unwrap scratch) 0)))
+                                      (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
+                                          (nelisp_frame_pop_inner (+ env 32) 0 (sexp-int-unwrap scratch) 0)
+                                        (seq
+                                         (setq cleanup-rc (nl_n3_pop env))
+                                         ;; N3 pop returns 1/-1, but the shallow-vector path
+                                         ;; can leave an exit while returning 1. Pending state wins.
+                                         (if (= rc 2) 0
+                                           (if (/= (heap-read-u64 268435472 0) 0) (setq rc 1)
+                                             (if (= cleanup-rc 1) 0 (setq rc 2))))))))
                                    (setq i (- i 1))))
+                                (if (and (= rc 0) (/= (heap-read-u64 268435472 0) 0)) (setq rc 1) 0)
                                 (if (= action 3) (seq (if (= (nl_native_handlers_cross env ticket state 1) 0) 0 (setq rc 2))
                                                         (vector-slot-set state 1 cell)) 0)) 0)))
                           (if (= action 8)
@@ -15940,7 +15991,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; shallow-bound: its mirror entry holds the current value word.
       ;; NAME is a live WORD from a rooted constants/operand vector. The
       ;; owned lookup retains type checks and needs no heap-membership scan.
-      (let* ((entry (if (= (nl_sb_worker_p env) 1) 0
+      (let* ((entry (if (or (= (nl_sb_worker_p env) 1)
+                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
                       (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
              (w (if (= entry 0) 0
                   ;; Retain the common slot-4 classification for the alias
@@ -16220,7 +16274,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (logand name 1) 1) 1
         (if (/= (heap-sexp-tag-word name) 4) 1
           (if (= (bf_keyword_raw name) 1) 1
-            (if (= (nl_sb_worker_p env) 1) 1
+            (if (or (= (nl_sb_worker_p env) 1)
+                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 1
               (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
                 (if (= entry 0) 1
                   (if (= (nl_sb_plain_entry_p entry) 0) 1
@@ -16283,7 +16340,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; occurs in one batch. Cached mirror entries expire on every return.
     (defun wf_bytecode_w_fast_entry (env name)
       (if (= env 0) 0
-        (if (= (nl_sb_worker_p env) 1) 0
+        (if (or (= (nl_sb_worker_p env) 1)
+                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
           (let* ((entry (nelisp_mirror_lookup_entry_owned env name)))
             (if (= entry 0) 0
               (if (= (nl_sb_plain_entry_p entry) 1) entry 0))))))
@@ -16296,6 +16356,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; completed pure instructions retain their rooted active stack.
     ;; Leave the final instruction and invalid targets to the ordinary
     ;; dispatcher so malformed bytecode keeps its exact error offset.
+    ;; Mirror identities are checked after each lookup in this pure batch.
+    ;; No allocation or callout occurs; registered workers cannot mutate
+    ;; the shared mirror. Every return drops the cache before mutation,
+    ;; parking or GC. Slot 0 remains a live read on every hit.
     (defun wf_bytecode_w_fast_run
         (data length mem depth constants nconst pc sp env)
       (let*
@@ -16371,12 +16435,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                       last-entry))
                                                (if (< last-slots 4)
                                                    (setq go 0)
-                                                 (seq
-                                                  (setq last-index index)
-                                                  (setq last-value 0)))))))))))
-                                0)
-                              (if (> go 0)
-                                  (if
+                                                 (if
                                       (/= (heap-read-u64 env 8) last-owner)
                                       (setq go 0)
                                     (if
@@ -16406,6 +16465,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                 0)
                                                 (setq go 0)
                                               (seq
+                                                  (setq last-index index)
+                                                  (setq last-value 0)))))))))))))))))
+                                0)
+                              (if (> go 0)
+(seq
                                                (setq value
                                                      (heap-read-u64
                                                       last-entry-data 16))
@@ -16426,10 +16490,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                    length))
                                                              (let*
                                                                  ((tail-op
-                                                                   (heap-read-u8
-                                                                    data
-                                                                    (+ pc
-                                                                       2)))
+                                                                   (heap-read-u32 data (+ pc 1)))
                                                                   (tail-slot
                                                                    (+ mem
                                                                       (*
@@ -16442,39 +16503,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                     tail-slot
                                                                     0))
                                                                   (tail-target
-                                                                   (+
-                                                                    (heap-read-u8
-                                                                     data
-                                                                     (+ pc
-                                                                        4))
-                                                                    (shl
-                                                                     (heap-read-u8
-                                                                      data
-                                                                      (+
-                                                                       pc
-                                                                       5))
-                                                                     8))))
-                                                               (if
-                                                                   (if
-                                                                       (<
-                                                                        tail-op
-                                                                        83)
-                                                                       0
-                                                                     (if
-                                                                         (>
-                                                                          tail-op
-                                                                          84)
-                                                                         0
-                                                                       1))
-                                                                   (if
-                                                                       (=
-                                                                        (heap-read-u8
-                                                                         data
-                                                                         (+
-                                                                          pc
-                                                                          3))
-                                                                        130)
-                                                                       (if
+                                                                   (heap-read-u16 data (+ pc 4))))
+                                                               (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
+(if
                                                                            (=
                                                                             (logand
                                                                              tail-value
@@ -16486,9 +16517,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                                 length)
                                                                                (if
                                                                                    (if
-                                                                                       (=
-                                                                                        tail-op
-                                                                                        84)
+                                                                                       (= (logand tail-op 65535) 21640)
                                                                                        (=
                                                                                         tail-value
                                                                                         9223372036854775805)
@@ -16505,9 +16534,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                                    tail-slot
                                                                                    0
                                                                                    (if
-                                                                                       (=
-                                                                                        tail-op
-                                                                                        84)
+                                                                                       (= (logand tail-op 65535) 21640)
                                                                                        (+
                                                                                         tail-value
                                                                                         4)
@@ -16527,12 +16554,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                           (+
                                                                            pc
                                                                            2)))
-                                                                     (setq
-                                                                      pc
-                                                                      (+
-                                                                       pc
-                                                                       2)))
-                                                                 (setq pc
+(setq pc
                                                                        (+
                                                                         pc
                                                                         2))))
@@ -16568,10 +16590,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                   length))
                                                               (let*
                                                                   ((tail-op
-                                                                    (heap-read-u8
-                                                                     data
-                                                                     (+ pc
-                                                                        2)))
+                                                                    (heap-read-u32 data (+ pc 1)))
                                                                    (tail-slot
                                                                     (+ mem
                                                                        (*
@@ -16584,40 +16603,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                      tail-slot
                                                                      0))
                                                                    (tail-target
-                                                                    (+
-                                                                     (heap-read-u8
-                                                                      data
-                                                                      (+
-                                                                       pc
-                                                                       4))
-                                                                     (shl
-                                                                      (heap-read-u8
-                                                                       data
-                                                                       (+
-                                                                        pc
-                                                                        5))
-                                                                      8))))
-                                                                (if
-                                                                    (if
-                                                                        (<
-                                                                         tail-op
-                                                                         83)
-                                                                        0
-                                                                      (if
-                                                                          (>
-                                                                           tail-op
-                                                                           84)
-                                                                          0
-                                                                        1))
-                                                                    (if
-                                                                        (=
-                                                                         (heap-read-u8
-                                                                          data
-                                                                          (+
-                                                                           pc
-                                                                           3))
-                                                                         130)
-                                                                        (if
+                                                                    (heap-read-u16 data (+ pc 4))))
+                                                                (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
+(if
                                                                             (=
                                                                              (logand
                                                                               tail-value
@@ -16629,9 +16617,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                                  length)
                                                                                 (if
                                                                                     (if
-                                                                                        (=
-                                                                                         tail-op
-                                                                                         84)
+                                                                                        (= (logand tail-op 65535) 21640)
                                                                                         (=
                                                                                          tail-value
                                                                                          9223372036854775805)
@@ -16648,9 +16634,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                                     tail-slot
                                                                                     0
                                                                                     (if
-                                                                                        (=
-                                                                                         tail-op
-                                                                                         84)
+                                                                                        (= (logand tail-op 65535) 21640)
                                                                                         (+
                                                                                          tail-value
                                                                                          4)
@@ -16670,12 +16654,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                            (+
                                                                             pc
                                                                             2)))
-                                                                      (setq
-                                                                       pc
-                                                                       (+
-                                                                        pc
-                                                                        2)))
-                                                                  (setq pc
+(setq pc
                                                                         (+
                                                                          pc
                                                                          2))))
@@ -16686,8 +16665,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                           (+ mem (* sp 8))
                                                           0 value)
                                                          (setq sp (+ sp 1))
-                                                         (setq pc (+ pc 1)))))))))))))))
-                                0))))
+                                                         (setq pc (+ pc 1)))))))))))))
                        (if (< raw 6)
                            (seq
                             (if (or (>= sp depth) (<= sp raw)) (setq go 0)
@@ -45349,7 +45327,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 ;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
 ;; EvalCtx+176 points to a per-context transient mmap: a 64-byte header with depth,
 ;; serial, raw lean/pending binding links at +16/+24, and typed recursion-variable
-;; caches at +32/+40/+48, then 32768 160-byte records. Each record owns copied Sexp root views for
+;; caches at +32/+40/+48 and a raw redirect flag at +56, then 32768 160-byte records. Each record owns copied Sexp root views for
 ;; function, arguments and shared frame stack; remaining words are entry
 ;; binding depth, eval mode, evaluated, exit-debug and generation. No handles
 ;; contain arena addresses. Cold restore creates a fresh EvalCtx and rebuilds
@@ -45687,26 +45665,54 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (nl_alloc_symbol bytes 19 name)
          (ptr-write-u64 state 48 (nl_word_clone name))
          (let* ((entry (nelisp_mirror_lookup_entry env name)))
-           (ptr-write-u64 state 32
-             (if (= entry 0) 0 (+ (nl_word_payload entry) 6))))
+           (seq
+             (ptr-write-u64 state 32
+               (if (= entry 0) 0 (+ (nl_word_payload entry) 6)))
+             ;; Six-slot metadata can acquire a local redirect after setup.
+             (ptr-write-u64 state 56
+               (if (and (/= entry 0) (> (record-slot-count entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
          (nl_root_release env mark) 0)))
     (defun nl_frame_stack_limit (env _pad)
-      (let* ((state (nl_n4_state env)))
+      ;; ENV is an aligned EvalCtx; existing compact WORD roots stay at32/40/48.
+      (let* ((state (heap-read-u64 env 176)))
         (seq
-         (if (or (= (heap-read-u64 state 32) 0)
-                 (/= (heap-read-u64 state 40) (+ (nl_word_payload env) 6)))
-             (nl_frame_stack_limit_setup env state) 0)
-         (let* ((entry (heap-read-u64 state 32))
-                (value (if (= entry 0) 3 (nl_record_slot_word entry 0))))
+         (if (= state 0) (setq state (nl_n4_state env)) 0)
+         (let* ((entry (heap-read-u64 state 32)))
            (seq
-            (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
-              (if (= (nl_thread_registry_find env) 0) 0
+            (if (or (= entry 0)
+                    (/= (heap-read-u64 state 40) (+ (heap-read-u64 env 8) 6)))
+                (seq (nl_frame_stack_limit_setup env state)
+                     (setq entry (heap-read-u64 state 32))) 0)
+            (let* ((value 3))
+              (seq
+               (if (or (= (heap-read-u64 state 56) 1)
+                       ;; A registered worker can retain a pre-publication entry.
+                       ;; Resolve the shared mirror afresh without cross-thread writes.
+                       (and (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                            (/= (nl_thread_registry_find env) 0)))
+                   ;; Native redirect resolution observes the selected buffer.
+                   ;; Its selected-cell answer also owns dynamic binding order.
+                   (setq value (bf_dynamic_lookup_w env (heap-read-u64 state 48) 0))
+                 (seq
+                  ;; Setup stores payload+6; slot0 is at WORD+10.
+                  (setq value (if (= entry 0) 3 (heap-read-u64 entry 10)))
+                  (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                           (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                           (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))
                 (let* ((cell (nelisp_frame_stack_find_kind
-                              (+ env 32) (heap-read-u64 state 48) 1 0)))
-                  (if (= cell 0) 0 (setq value (nl_cell_get_value_w cell 0))))))
-            (if (and (= (logand value 3) 1) (> (sar value 2) 0))
-                (sar value 2) (heap-read-u64 env 104)))))))
+                                 (+ env 32) (heap-read-u64 state 48) 1 0)))
+                     (if (= cell 0) 0 (setq value (nl_cell_get_value_w cell 0))))
+              0)))
+               (if (= (logand value 3) 1)
+                   (if (> (sar value 2) 0) (sar value 2) (heap-read-u64 env 104))
+                 ;; Physical scalar views are also valid retained WORDs.
+                 ;; Miss/signal sentinels and compact objects are not Int views.
+                 (if (and (/= value 0) (= (logand value 7) 0)
+                          (= (heap-read-u8 value 0) 2))
+                     (let* ((number (heap-read-u64 value 8)))
+                       (if (> number 0) number (heap-read-u64 env 104)))
+                   (heap-read-u64 env 104))))))))))
 
     (defun nl_n4_state (env)
       (if (= (heap-read-u64 env 176) 0)
@@ -46058,7 +46064,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; overwrote the next binding's value (each variable got its
     ;; predecessor's).  Scratch blocks, as the frame-cell binder uses.
     (defun nl_sb_bind (env frames name value)
-      (if (= (nl_sb_worker_p env) 1) -1
+      (if (or (= (nl_sb_worker_p env) 1)
+                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) -1
         (let* ((copies (alloc-bytes 64 8)))
           (seq
            (nl_sexp_clone_into name copies)
@@ -46090,7 +46099,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; 1 when NAME's dynamic bindings are all shallow (mirror-held): a
     ;; plain variable outside a worker.
     (defun nl_sb_mirror_only_p (env name)
-      (if (= (nl_sb_worker_p env) 1) 0
+      (if (or (= (nl_sb_worker_p env) 1)
+                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
         (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
           (if (= (nl_sb_plain_entry_p entry) 1) 1
             ;; Aliases bind their terminal name, never a source dynamic

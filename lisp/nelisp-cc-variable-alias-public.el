@@ -54,7 +54,12 @@
       ;; full record/type-name authentication in the general resolver.
       ;; VALIDATED is set only by the shared slot-4 checkpoint. Both read
       ;; paths retain full validation when that checkpoint rejects ENTRY.
-      (if (or (= validated 1)
+      ;; Raw-v2 frame bindings remain deep through every callback.
+      (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) mirror))
+          6
+        (if (or (= validated 1)
               (and (= (nl_val_tag entry) 12) (> (record-slot-count entry) 4)))
           (let ((target (nl_record_slot_word entry 4)))
             (if (or (= (nl_val_tag target) 4) (= (nl_val_tag target) 16))
@@ -75,7 +80,7 @@
                           (nl_cell_get_value_w cell 0)))
                     6))
               6))
-        6))
+        6)))
     (defun nl_pa_binding_name (env frames name)
       (let ((entry (nelisp_mirror_lookup_entry env name)))
         (if (= entry 0) name
@@ -150,6 +155,12 @@
                  (setq i (+ i 1)))
                (nl_env_build_scratch (+ env 64) (+ env 64) scratch)
                (nelisp_mirror_bucket_prepend env name entry scratch)
+               ;; A shadow entry replaces the exact cached record identity.
+               ;; Do not allocate N4 state for unrelated local creation.
+               (let ((state (heap-read-u64 env 176)))
+                 (if (and (/= state 0)
+                          (= (heap-read-u64 state 32) (+ (nl_word_payload old) 6)))
+                     (ptr-write-u64 state 32 0) 0))
                entry))))))))
     (defun nl_n3_defvaralias_raw_w (alias base env _pad)
       ;; Callbacks can replace either cell and collect. Root all borrowed

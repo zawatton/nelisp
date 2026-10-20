@@ -99,8 +99,11 @@
                                  (setq nelisp-buffer-local--serial
                                        (1+ nelisp-buffer-local--serial))))))
         (eval (list 'defvar cell))
-        (put cell 'nelisp--buffer-local-variable (indirect-variable variable))
+        ;; Populate the private cell before publishing its watcher identity:
+        ;; make-local-variable itself must not notify public variable watchers.
         (when (boundp variable) (set cell (symbol-value variable)))
+        (put cell 'nelisp--buffer-local-buffer buffer)
+        (put cell 'nelisp--buffer-local-variable (indirect-variable variable))
         (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))))
     variable))
 (defun nelisp-buffer-local-p (variable &optional buffer)
