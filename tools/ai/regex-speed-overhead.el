@@ -1,8 +1,11 @@
 ;;; regex-speed-overhead.el --- Repeatable hot-path attribution -*- lexical-binding: nil; -*-
 ;; Prepare with regex-speed.py; load after the candidate regexp module.
+;; Set REGEX_OVERHEAD_METRIC to one label below: one measurement per process.
 ;; Each raw cost includes the same loop.  Subtract control for exclusive
 ;; component costs; public minus direct is the wrapper/return cost.
 (defvar rs-overhead-global 0)
+(defvar rs-overhead-selected-metric (getenv "REGEX_OVERHEAD_METRIC"))
+(defvar rs-overhead-measurements 0)
 (defun rs-overhead-return () nil)
 (defun rs-overhead-global-return () rs-overhead-global)
 (defun rs-overhead-four-args (a b c d) a)
@@ -10,19 +13,26 @@
   (vector case-fold-search search-spaces-regexp nlre--compiled-cache-last))
 (defun rs-overhead-state-control () (vector nil nil nil))
 (defmacro rs-overhead-time (label &rest body)
-  `(progn (garbage-collect)
-	  (let ((rs-overhead-t0 (float-time)))
-	    (dotimes (rs-overhead-i 2000) ,@body)
-	    (princ (format "%s %.3f us\n" ,label
-			   (* 500.0 (- (float-time) rs-overhead-t0)))))))
+  `(when (equal rs-overhead-selected-metric ,label)
+     (setq rs-overhead-measurements (1+ rs-overhead-measurements))
+     (dotimes (rs-overhead-warm 200) ,@body)
+     (garbage-collect)
+     (let ((rs-overhead-t0 (float-time)))
+       (dotimes (rs-overhead-i 2000) ,@body)
+       (princ (format "%s %.3f us\n" ,label
+                      (* 500.0 (- (float-time) rs-overhead-t0)))))
+     (let ((rs-overhead-gc0 (float-time)))
+       (garbage-collect)
+       (princ (format "post-gc %.3f us\n"
+                      (* 1000000.0 (- (float-time) rs-overhead-gc0)))))))
 (defun rs-overhead-run ()
-  (let* ((case-fold-search nil)
-	 (pat "\\`\\(.*\\)\\(\\.el\\)\\'")
+  (let* ((pat "\\`\\(.*\\)\\(\\.el\\)\\'")
 	 (text "some-package-file-1999.el")
 	 (n (length text))
 	 (compiled (nlre--compiled-pattern pat))
 	 (plan (aref compiled 2))
-	 (nlre--fold nil) (nlre--translate-table nil))
+	 (nlre--fold case-fold-search)
+         (nlre--translate-table (and case-fold-search (nlre--current-translate-table))))
     (garbage-collect)
     (rs-overhead-time "control" nil)
     (rs-overhead-time "call-0" (rs-overhead-return))
@@ -37,7 +47,8 @@
     (rs-overhead-time "capture-data" (vector (cons 0 n) (cons 0 (- n 3)) (cons (- n 3) n)))
     (rs-overhead-time "return-and-clear-buffer" (setq nlre--last-buffer nil) 0)
     (rs-overhead-time "direct" (nlre-string-match pat text))
-    (rs-overhead-time "public" (string-match pat text)))
-  )
+    (rs-overhead-time "public" (string-match pat text))))
 (rs-overhead-run)
+(unless (= rs-overhead-measurements 1)
+  (error "Select exactly one REGEX_OVERHEAD_METRIC; measured %s" rs-overhead-measurements))
 (princ "REGEX-OVERHEAD-DONE\n")
