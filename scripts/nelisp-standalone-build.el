@@ -9058,14 +9058,19 @@ leave symbols unresolved at link time."
         ;; single-argument call signal where Emacs succeeds.
         1))
     (defun wf_copy32 (dst_ptr src)
-      ;; This is a transient view copy, not an ownership clone. Preserve
-      ;; legacy payload/name/buffer identity and its allocation-free path.
-      (if (or (= (logand src 1) 1) (= (logand src 7) 6))
-          (seq (nl_sexp_clone_into src dst_ptr) 0)
-        (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 src 0))
+      ;; An aligned physical view is the common transient copy path.
+      ;; Preserve WORD materialization and its allocation-free view copy.
+      (if (= (logand src 7) 0)
+          (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 src 0))
              (ptr-write-u64 dst_ptr 8 (heap-read-u64 src 8))
              (ptr-write-u64 dst_ptr 16 (heap-read-u64 src 16))
-             (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)) 0)))
+             (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)) 0)
+        (if (or (= (logand src 1) 1) (= (logand src 7) 6))
+            (seq (nl_sexp_clone_into src dst_ptr) 0)
+          (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 src 0))
+             (ptr-write-u64 dst_ptr 8 (heap-read-u64 src 8))
+             (ptr-write-u64 dst_ptr 16 (heap-read-u64 src 16))
+             (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)) 0))))
     ;; Doc 215 builtin word ABI: wf_write_int_w returns the result WORD (0 = signal stashed); wf_write_int keeps the (rc, OUT) ABI.
     (defun wf_write_int_w (_pad v)
       (if (if (< v -2305843009213693952) 1 (if (> v 2305843009213693951) 1 0))
@@ -10774,7 +10779,14 @@ leave symbols unresolved at link time."
     ;; with no scratch box: copy a pointed-to box, or store an immediate
     ;; in place.
     (defun wf_word_store_out (dst_ptr w)
-      (if (= (logand w 1) 0) (wf_copy32 dst_ptr w) (extern-call nl_val_load w dst_ptr)))
+      ;; Copy a physical view once; only WORDs need materialization.
+      (if (= (logand w 7) 0)
+          (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 w 0))
+             (ptr-write-u64 dst_ptr 8 (heap-read-u64 w 8))
+             (ptr-write-u64 dst_ptr 16 (heap-read-u64 w 16))
+             (ptr-write-u64 dst_ptr 24 (heap-read-u64 w 24)) 0)
+        (if (= (logand w 1) 0) (wf_copy32 dst_ptr w)
+          (extern-call nl_val_load w dst_ptr))))
     ;; The car of W as a view, or 0 when W is not a cons (the contract of
     ;; nl_cons_car_ptr, which also accepted a nil view).
     (defun wf_word_car_view (w)
@@ -16346,7 +16358,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
           (let* ((entry (nelisp_mirror_lookup_entry_owned env name)))
             (if (= entry 0) 0
-              (if (= (nl_sb_plain_entry_p entry) 1) entry 0))))))
+              ;; The sole caller checks the raw alias/redirect slots after
+              ;; lookup. Retain its record-kind requirement here.
+              (if (= (sexp-tag entry) 12) entry 0))))))
 
 
     ;; Run at most 128 groups (at most 512 original instructions), then
@@ -45747,7 +45761,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_push (env function args evaluated)
       (let* ((state (nl_n4_state env)) (depth (heap-read-u64 state 0)))
         (if (>= depth 32768) 0
-          (let* ((frame (nl_n4_record state depth)))
+          (let* ((frame (nl_n4_record state depth))
+                 (frames-data (heap-read-u64 env 40)))
             (seq
              ;; The canonical evaluator can pass an immediate operator (for
              ;; example (nil)). Frames retain a diagnostic view of that WORD.
@@ -45756,9 +45771,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              ;; The shared stack is a Record view with zero hint words.
              ;; mmap initialized its words 16/24; only its payload changes.
              (ptr-write-u64 frame 64 12)
-             (ptr-write-u64 frame 72 (heap-read-u64 env 40))
+             (ptr-write-u64 frame 72 frames-data)
              (ptr-write-u64 frame 96
-                            (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+                            (sar (heap-read-u64 frames-data 24) 2))
              (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
              (ptr-write-u64 frame 112 evaluated)
              (ptr-write-u64 frame 120 0)
@@ -45785,14 +45800,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_push_nil (env function)
       (let* ((state (nl_n4_state env)) (depth (heap-read-u64 state 0)))
         (if (>= depth 32768) 0
-          (let* ((frame (nl_n4_record state depth)))
+          (let* ((frame (nl_n4_record state depth))
+                 (frames-data (heap-read-u64 env 40)))
             (seq
              (wf_copy32 frame function)
              (wf_write_nil (+ frame 32))
              (ptr-write-u64 frame 64 12)
-             (ptr-write-u64 frame 72 (heap-read-u64 env 40))
+             (ptr-write-u64 frame 72 frames-data)
              (ptr-write-u64 frame 96
-                            (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+                            (sar (heap-read-u64 frames-data 24) 2))
              (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
              (ptr-write-u64 frame 112 1)
              (ptr-write-u64 frame 120 0)
