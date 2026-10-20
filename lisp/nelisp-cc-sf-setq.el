@@ -76,13 +76,6 @@
           (ptr-read-u64 (ptr-read-u64 val-cdr 8) 8)
         0))
 
-    ;; `nl_env_set_value' reads a 32-byte view: a pointer WORD is its own
-    ;; box; an immediate is materialised into SCRATCH.
-    (defun nl_sf_setq_view_into (scratch w)
-      (extern-call nl_val_load w scratch))
-    (defun nl_sf_setq_view (w _pad)
-      (if (= (logand w 1) 0) w (nl_sf_setq_view_into (alloc-bytes 32 8) w)))
-
     ;; Next pair, or W (the value just assigned) at the end.  W is
     ;; referenced from the variable's cell by now, so it stays reachable.
     (defun nl_sf_setq_step_w (rest env w _pad)
@@ -93,17 +86,16 @@
     (defun nl_sf_setq_set_w (set-rc rest env w)
       (if (= set-rc 0) (nl_sf_setq_step_w rest env w 0) (nl_abi_fail set-rc 0)))
 
-    (defun nl_sf_setq_rest_w (rest view sym env w _pad)
-      (nl_sf_setq_set_w (extern-call nl_env_set_value env sym view) rest env w))
+    (defun nl_sf_setq_rest_w (rest w sym env _pad _pad6)
+      (nl_sf_setq_set_w (extern-call nl_env_set_value env sym w) rest env w))
 
     (defun nl_sf_setq_evaled_w (w sym val-cdr env _pad _pad6)
       (if (= w 0)
           0
-        (nl_sf_setq_viewed_w (nl_sf_setq_view w 0) w sym val-cdr env 0)))
-
-    ;; One nested call per argument list, in first position.
-    (defun nl_sf_setq_viewed_w (view w sym val-cdr env _pad)
-      (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) view sym env w 0))
+        ;; The setter and its cell/mirror writers accept WORDs. A view
+        ;; here would be cloned into the binding and then retained by
+        ;; every cons/record that reads that scalar variable.
+        (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) w sym env 0 0)))
 
     (defun nl_sf_setq_val_w (val-form sym val-cdr env _pad _pad6)
       (nl_sf_setq_evaled_w (extern-call nelisp_eval_call_w val-form env 0)

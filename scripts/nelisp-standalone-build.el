@@ -2938,11 +2938,11 @@ directory tracks the tree rather than accumulating every key ever built."
       (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
       (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 32) (* idx 8)) 0))
-    ;; The permanent trailing WORD retains the type before its legacy view
-    ;; is made. Public slot indexes and the inline type view stay unchanged.
+    ;; The fixed-size record's former capacity field retains its type WORD.
+    ;; Public slot indexes and the inline type view stay unchanged.
     (defun nl_record_type_word (record)
       (let* ((box (ptr-read-u64 record 8)))
-        (ptr-read-u64 (+ (ptr-read-u64 box 32) (* (ptr-read-u64 box 48) 8)) 0)))
+        (ptr-read-u64 box 40)))
     (defun nl_word_int (w) (sar w 2))
     ;; Doc 215 builtin word ABI adapters.  A WORD is never 0, so 0 carries
     ;; "failed, signal stashed"; 2 (never a WORD either) is reserved for
@@ -7741,8 +7741,10 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "not")  :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) 7 3))
     ((:u8 "car")  :word . (bf_car_w args 0))
     ((:u8 "cdr")  :word . (bf_cdr_w args 0))
-    ((:u8 "cons") :word . (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1)
-                                                 (alloc-bytes 32 8)))
+    ;; Keep immediate fields as WORDs: a materialized nil/int view would be
+    ;; retained by nl_val_clone_into as an unnecessary owned child box.
+    ((:u8 "cons") :word . (nelisp_cons_construct_w (wf_arg_word args 0)
+                                                 (wf_arg_word args 1) 0))
     ((:u8 "list") :word . (nl_g4arm_copy_w 0 (if (= (nl_val_tag args) 0) 3 args)))
     ;; --- list search hot paths ---
     ;; `memq' walked with the cons accessors and stopped at a non-list,
@@ -11212,10 +11214,11 @@ leave symbols unresolved at link time."
                       (let ((data_ptr (ptr-read-u64 box 32)) (len (ptr-read-u64 box 48)))
                         (nl_seq2 (nl_fa_slot box ds span dest cin cout dir)
                           (nl_seq2 (nl_fa_field (+ box 32) data_ptr ds span dest cin cout dir)
-                                   ;; The trailing canonical type WORD is an
-                                   ;; image edge too, even when it points back
-                                   ;; into the already visited record payload.
-                                   (nl_fa_vec_slots data_ptr 0 (+ len 1) ds span dest cin cout dir)))))))
+                                   ;; The canonical type WORD is an image edge,
+                                   ;; including its self-reference to BOX.
+                                   (nl_seq2
+                                    (nl_fa_vec_slots (+ box 40) 0 1 ds span dest cin cout dir)
+                                    (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir))))))))
               (if (= tag 11)
                   (let ((box (ptr-read-u64 sp 8)))
                     (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
@@ -12969,17 +12972,22 @@ eval applyfn.")
             (seq
              (wf_word_store_out elt_slot elt)
              (wf_write_nil nil_slot)
-             (nelisp_cons_construct elt_slot nil_slot arglist_slot)
-             (let* ((rc (nl_apply_function fn_slot arglist_slot env result_slot)))
-               (if (= rc 0)
+             (nelisp_cons_construct (if (= (logand elt 1) 1) elt elt_slot) 3 arglist_slot)
+             (let* ((word (nl_apply_function_w fn_slot arglist_slot env 0)))
+               (if (/= word 0)
                    (let* ((new_acc acc_slot))
                      (seq
-                      (nelisp_cons_construct result_slot acc_slot new_acc)
+                      ;; Keep the callback's original immediate; the root
+                      ;; view protects heap payloads while their owned copy
+                      ;; is made. Macro-generated defaults use this path.
+                      (wf_word_store_out result_slot word)
+                      (nelisp_cons_construct
+                       (if (= (logand word 1) 1) word result_slot) acc_slot new_acc)
                       0
                       (wf_word_store_out rest_slot (nl_cons_cdr_word rest_slot))
                       (nl_root_release env mark)
                       (wf_mapcar_step rest_slot acc_slot fn_slot env)))
-                 (seq (nl_root_release env mark) rc)))))
+                 (seq (nl_root_release env mark) 1)))))
         (if (= (ptr-read-u64 rest_slot 0) 0)
             0
           (bf_wrong_type_listp rest_slot))))
@@ -14498,9 +14506,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (canonical (nl_root_reserve env)) (rooted-value (nl_root_reserve env))
                (scratch (nl_root_reserve env)) (address (alloc-bytes 8 8))
                (entry (nelisp_mirror_lookup_entry (+ env 0) name))
+               (saved (if (= (logand value 1) 1) value rooted-value))
                (rc 0))
           (seq
-           (wf_bytecode_copy canonical name) (wf_bytecode_copy rooted-value value)
+           (wf_bytecode_copy canonical name) (wf_word_store_out rooted-value value)
            (if (= entry 0) 0
              (let ((status (nelisp_env_variable_canonicalize (+ env 0) (+ env 32) entry name address 0)))
                (if (= status 0) (wf_bytecode_copy canonical (ptr-read-u64 address 0))
@@ -14512,10 +14521,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq
                   (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
                                             (nl_frame_push_sym1_ptr) scratch)
-                  (if (= (nl_sb_bind env frames canonical rooted-value) 0) 0
+                  (if (= (nl_sb_bind env frames canonical saved) 0) 0
                     (seq
                      (wf_bytecode_mark_dynamic frames canonical)
-                     (nl_bind_frame_fast frames canonical rooted-value))))) 0)
+                     (nl_bind_frame_fast frames canonical saved))))) 0)
            (nl_root_release env mark) rc))))
     (defun wf_bytecode_unbind (frames n)
       (if (= n 0)
@@ -15251,7 +15260,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (value (nl_root_reserve env))
              (params formals)
              (arg-cursor args)
-             (index 0) (state 0) (bound 0) (done 0))
+             (index 0) (state 0) (bound 0) (done 0) (word 3))
         (seq
          (wf_write_nil value)
          (while (if (= done 0) (wf_bytecode_w_consp params) 0)
@@ -15268,11 +15277,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (setq done 1)))
                  (seq
                   (if (< index argc)
-                      (seq (wf_bytecode_w_load value (ptr-read-u64 (ptr-read-u64 arg-cursor 8) 0))
+                      (seq (setq word (ptr-read-u64 (ptr-read-u64 arg-cursor 8) 0))
+                           (wf_bytecode_w_load value word)
                            (setq arg-cursor (ptr-read-u64 (ptr-read-u64 arg-cursor 8) 8))
                            (setq index (+ index 1)))
-                    (wf_write_nil value))
-                  (wf_bytecode_varbind env name value)
+                    (seq (setq word 3) (wf_write_nil value)))
+                  (wf_bytecode_varbind env name
+                    (if (= (logand word 1) 1) word value))
                   (setq bound (+ bound 1))
                   (setq params tail))))))
          (nl_root_release env mark)
@@ -15729,9 +15740,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (if (= (nl_sb_plain_entry_p entry) 1) (nl_record_slot_word entry 0) 0))))
         (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
             (seq (ptr-write-u64 dst 0 w) 0)
-          (if (= (bf_dynamic_lookup env name tmp) 0)
-              (seq (nl_val_clone_into tmp dst) 0)
-            (seq (nl_stash_void_variable env name) 1)))))
+          ;; The fallback lookup also has a WORD ABI. A legacy OUT view
+          ;; followed by nl_val_clone_into turned every dynamic nil/t/int
+          ;; reference into a retained scalar box.
+          (let* ((value (bf_dynamic_lookup_w env name 0)))
+            (if (or (= value 0) (= value 2))
+                (seq (nl_stash_void_variable env name) 1)
+              (seq (ptr-write-u64 dst 0 value) 0))))))
     (defun wf_bytecode_w_memq (mem sp scratch)
       (let* ((x (ptr-read-u64 (+ mem (* (- sp 2) 8)) 0))
              (l (ptr-read-u64 (+ mem (* (- sp 1) 8)) 0))
@@ -15822,14 +15837,47 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            2)))
             (if (/= status 2)
                 status
-              (let* ((mark (nl_root_mark env))
+              ;; Ordinary calls already own rooted WORD operands and return
+              ;; a WORD. Staging them as legacy views retained scalar boxes
+              ;; in every constructor called from bytecode. Keep the special
+              ;; throw/flat-OS adapters on their existing view protocol.
+              (if (if (= (sexp-tag fview) 4)
+                      (= (symbol-name-eq fview "throw") 1) 0)
+                  (wf_bytecode_w_call_views env fview mem fi argc out)
+                (if (if (and (= argc 3) (= lookup 0))
+                        (wf_bytecode_flat_path_int_cell cell) 0)
+                    (wf_bytecode_w_call_views env fview mem fi argc out)
+                  (wf_bytecode_w_call_words env fw mem fi argc out))))))))
+    (defun wf_bytecode_w_call_views (env fview mem fi argc out)
+      (let* ((mark (nl_root_mark env))
                      (st (wf_bytecode_w_stage env mem (+ fi 1) argc)))
                 (if (= st 0)
                     (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
                   (let* ((rc (wf_bytecode_call_interpreted_gateway env fview st 0 argc out)))
                     (seq (if (= rc 0) (wf_bytecode_w_store mem fi out) 0)
                          (nl_root_release env mark)
-                         rc)))))))))
+                         rc)))))
+    (defun wf_bytecode_w_call_words (env function mem fi argc _tmp)
+      ;; MEM is the VM's rooted WORD vector. Build a private argument spine,
+      ;; sharing its rooted values, and publish each partial list in ARGS.
+      ;; There is no evaluator safepoint between a new wrapper and its next
+      ;; cons edge; only the head payload is needed by the rooted list view.
+      (let* ((mark (nl_root_mark env))
+             (args (nl_root_reserve_checked env))
+             (tail 3) (i (- argc 1)) (word 0))
+        (if (= args 0)
+            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
+          (seq
+           (wf_write_nil args)
+           (while (>= i 0)
+             (seq (setq tail (wf_bytecode_w_cons
+                              (ptr-read-u64 (+ mem (* (+ fi (+ 1 i)) 8)) 0)
+                              tail args))
+                  (setq i (- i 1))))
+           (setq word (nl_apply_function_w function args env 0))
+           (if (= word 0) 0 (ptr-write-u64 (+ mem (* fi 8)) 0 word))
+           (nl_root_release env mark)
+           (if (= word 0) 1 0)))))
     (defun wf_bytecode_w_boxed (env mem sp k opcode bx)
       ;; Run a still-boxed opcode body (`wf_bytecode_boxed_op') on the K
       ;; operands ending at SP-1, staged as views in K contiguous roots; its
@@ -16007,7 +16055,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (if (= (wf_bytecode_w_lean_bind env name (ptr-read-u64 wtmp 0) unwinds tmp) 0)
                    0
                  (if (= (wf_bytecode_varbind
-                         env name (wf_bytecode_w_view (ptr-read-u64 wtmp 0) tmp)) 0)
+                         env name (ptr-read-u64 wtmp 0)) 0)
                      (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
                           (setq bound (+ bound 1)))
                    (seq (setq rc 1) (setq stop 1))))))))
@@ -24296,11 +24344,11 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
     ;; Installs V (possibly a box) into a PRE-EXISTING cons -> persistent escape
     ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
-    ((:lit "setcar")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+    ((:lit "setcar")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_word args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
                                   (seq (wf_dirty) (cons-set-car c v) (nl_g4arm_copy_w 0 (wf_arg_word args 1)))
                                 (nl_abi_fail (bf_wrong_type_consp c) 0))))
-    ((:lit "setcdr")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+    ((:lit "setcdr")      :word . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_word args 1)))
                               (if (= (ptr-read-u64 c 0) 7)
                                   (seq (wf_dirty) (cons-set-cdr c v) (nl_g4arm_copy_w 0 (wf_arg_word args 1)))
                                 (nl_abi_fail (bf_wrong_type_consp c) 0))))
@@ -28329,11 +28377,11 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
   '(defun nl_sf_dolist_w (args env _pad cache_key)
      (if (= (sexp-tag args) 7)
          (let* ((spec (nl_cons_car_word args))
-                (body_ptr (nl_cons_cdr_ptr args)))
+                (body_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag spec) 7)
                (let* ((var_ptr (nl_cons_car_ptr spec))
                       (spec_cdr (nl_cons_cdr_word spec))
-                      (list_ptr (nl_cons_car_ptr spec_cdr))
+                      (list_ptr (nl_cons_car_word spec_cdr))
                       (spec_cddr (nl_cons_cdr_word spec_cdr))
                       (tail_identity (nl_next_symbol_identity))
                       (pbuf (alloc-bytes 8 1)) (progn_sym (alloc-bytes 32 8))
@@ -28348,8 +28396,12 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                       (tail_c (alloc-bytes 32 8)) (tail_d (alloc-bytes 32 8))
                       (tail_e (alloc-bytes 32 8))
                       (var1 (alloc-bytes 32 8))
-                      (list_clone (alloc-bytes 32 8)) (body_clone (alloc-bytes 32 8))
-                      (result_slot (alloc-bytes 32 8)) (niln (alloc-bytes 32 8))
+                      (list_clone list_ptr) (body_clone body_ptr)
+                      ;; Generated source owns WORDs too: retain the original
+                      ;; result expression and immediate nil list terminators.
+                      (result_slot (if (= (nl_val_tag spec_cddr) 7)
+                                       (nl_cons_car_word spec_cddr) 3))
+                      (niln 3)
                       (car_inner (alloc-bytes 32 8)) (car_form (alloc-bytes 32 8))
                       (varbind_inner (alloc-bytes 32 8)) (varbind (alloc-bytes 32 8)) (varbinds (alloc-bytes 32 8))
                       (cdr_inner (alloc-bytes 32 8)) (cdr_form (alloc-bytes 32 8))
@@ -28382,12 +28434,6 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (nl_sexp_clone_into tail_orig tail_d)
                   (nl_sexp_clone_into tail_orig tail_e)
                   (nl_sexp_clone_into var_ptr var1)
-                  (nl_sexp_clone_into list_ptr list_clone)
-                  (nl_sexp_clone_into body_ptr body_clone)
-                  (nl_cons_write_nil niln)
-                  (if (= (sexp-tag spec_cddr) 7)
-                      (nl_sexp_clone_into (nl_cons_car_ptr spec_cddr) result_slot)
-                    (nl_cons_write_nil result_slot))
                   ;; (car tail)
                   (nelisp_cons_construct tail_c niln car_inner)
                   (nelisp_cons_construct car_sym car_inner car_form)
@@ -41512,9 +41558,10 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_alloc_symbol buf 11 op))
                  (seq (ptr-write-u64 buf 0 8462090451408347501)
                       (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol buf 10 op))))))
-         (nelisp_cons_construct nilp nilp tail)
+         (nelisp_cons_construct 3 3 tail)
          (nelisp_cons_construct op tail tail)
-         (nelisp_cons_construct (if (= operation 4) nilp result) tail tail)
+         (nelisp_cons_construct
+          (if (= operation 4) 3 (if (= (logand value 1) 1) value result)) tail tail)
          (nelisp_cons_construct roots tail args)
          (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name fn) 0)
              (setq rc (nl_apply_function fn args env result)) 0)
@@ -41532,15 +41579,16 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_sexp_clone_into value (+ copies 32))
                         (nl_root_mark env)))
              (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0))
+             (val (nl_root_reserve env)) (rc 0)
+             (saved (if (= (logand value 1) 1) value val)))
         (seq
          (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
          (if (or (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                  (= (bf_declared_special_p (+ env 0) sym) 1)
                  (= (nelisp_frame_local_special_p frames sym) 1))
-             (setq rc (nl_n3_notify env sym val 2)) 0)
+             (setq rc (nl_n3_notify env sym saved 2)) 0)
          (if (= rc 0)
-             (setq rc (nl_n4_bind_declared env frames sym val))
+             (setq rc (nl_n4_bind_declared env frames sym saved))
            (setq rc 0))
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_dynamic_write (env name value operation)
@@ -41549,11 +41597,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_sexp_clone_into value (+ copies 32))
                         (nl_root_mark env)))
              (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0))
+             (val (nl_root_reserve env)) (rc 0)
+             (saved (if (= (logand value 1) 1) value val)))
         (seq
          (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (setq rc (nl_n3_notify env sym val operation))
-         (if (= rc 0) (setq rc (nl_n3_set_dynamic_raw env sym val)) 0)
+         (setq rc (nl_n3_notify env sym saved operation))
+         (if (= rc 0) (setq rc (nl_n3_set_dynamic_raw env sym saved)) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_alias_write_w (name base env _pad)
   (let* ((copies (alloc-bytes 64 8))
@@ -41570,10 +41619,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   (let* ((copies (alloc-bytes 64 8))
          (mark (seq (nl_sexp_clone_into name copies)
                     (nl_sexp_clone_into value (+ copies 32)) (nl_root_mark env)))
-         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
+         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0)
+         (saved (if (= (logand value 1) 1) value val)))
     (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nl_n3_notify env sym val 1) 0)
-             (setq w (nl_n3_declared_default_raw_w env sym val 0)) 0)
+         (if (= (nl_n3_notify env sym saved 1) 0)
+             (setq w (nl_n3_declared_default_raw_w env sym saved 0)) 0)
          (nl_root_release env mark) w)))
     (defun nl_n3_default_write (env name value out)
   (nl_abi_word_to_rc (nl_n3_default_write_w env name value 0) out))
@@ -41583,12 +41633,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_sexp_clone_into value (+ copies 32))
                         (nl_root_mark env)))
              (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0))
+             (val (nl_root_reserve env)) (rc 0)
+             (saved (if (= (logand value 1) 1) value val)))
         (seq
          (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
          (if (= (nelisp_frame_stack_find_kind (+ env 32) sym 0 0) 0)
-             (setq rc (nl_n3_notify env sym val 1)) 0)
-         (if (= rc 0) (setq rc (nl_n3_setq_raw env sym val)) 0)
+             (setq rc (nl_n3_notify env sym saved 1)) 0)
+         (if (= rc 0) (setq rc (nl_n3_setq_raw env sym saved)) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n4_pop_names_raw (env names depth status)
       (if (= (sexp-tag names) 7)
@@ -41822,14 +41873,40 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   '(nl_bind_formals_impl formals_ptr args_list_ptr env 0)
                   form :test #'equal) :test #'equal) out))
          ((eq name 'nl_let_collect_with_slot)
-          ;; Clause 2: parallel initializers remain live through callback
-          ;; reentry. Integer pointer pairs do not themselves trace values.
-          ;; The setup owner releases this entire root range after binding.
-          (push (cl-subst
-                 '(if (= (logand (ptr-read-u64 (+ env_ptr 112) 0) 1048576) 0)
-                      (nl_root_release env_ptr root_mark) 0)
-                 '(nl_root_release env_ptr root_mark)
-                 form :test #'equal) out))
+          ;; Preserve initializer WORDs. The root view protects heap payloads
+          ;; during later initializers; the pair owns a durable value copy.
+          (push '(defun nl_let_collect_with_slot
+                     (bindings_ptr b_ptr name_ptr env_ptr root_mark val_slot)
+                   (let* ((word (nl_let_parse_val_w b_ptr env_ptr 0)) (answer 1))
+                     (seq
+                      (if (= word 0) 0
+                        (seq
+                         (wf_word_store_out val_slot word)
+                         (let* ((rest_pairs (nl_let_collect_walk
+                                             (nl_cons_cdr_word bindings_ptr) env_ptr)))
+                           (if (= rest_pairs 1) 0
+                             (let* ((pair_slot (alloc-bytes 32 8))
+                                    (node_slot (alloc-bytes 32 8)))
+                               (seq
+                                (nelisp_cons_construct (+ (* name_ptr 4) 1)
+                                  (if (= (logand word 1) 1) word val_slot) pair_slot)
+                                (nelisp_cons_construct pair_slot rest_pairs node_slot)
+                                (setq answer node_slot)))))))
+                      (if (= (logand (ptr-read-u64 (+ env_ptr 112) 0) 1048576) 0)
+                          (nl_root_release env_ptr root_mark) 0)
+                      answer))) out))
+         ((eq name 'nl_let_parse_val)
+          (push '(defun nl_let_parse_val_w (binding env _pad)
+                   (let* ((tag (nl_val_tag binding)))
+                     (if (or (= tag 4) (= tag 16)) 3
+                       (if (= tag 7)
+                           (let* ((tail (nl_cons_cdr_word binding)))
+                             (if (= (nl_val_tag tail) 7)
+                                 (nelisp_eval_call_w (nl_cons_car_word tail) env 0)
+                               3))
+                         0)))) out)
+          (push '(defun nl_let_parse_val (b_ptr env_ptr val_slot)
+                   (nl_abi_word_to_rc (nl_let_parse_val_w b_ptr env_ptr 0) val_slot)) out))
          ((eq name 'nl_let_parse_name)
           ;; A binding naming nil, t or a non-symbol answered 0 with no
           ;; signal stashed, so `let' aborted the whole top-level form
@@ -41853,11 +41930,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                          (seq (nl_let_bad_name b_ptr) 0)))))
                 out))
          ((eq name 'nl_let_bind_walk)
-          (push (cl-subst
-                 '(if (= (nl_logic_bind_local env name_ptr val_slot) 0) 1
-                    (nl_let_bind_walk rest_ptr env))
-                 '(seq (nl_logic_bind_local env name_ptr val_slot)
-                       (nl_let_bind_walk rest_ptr env)) form :test #'equal) out))
+          (push '(defun nl_let_bind_walk (pairs_ptr env)
+                   (if (= (nl_val_tag pairs_ptr) 7)
+                       (let* ((pair (nl_cons_car_word pairs_ptr))
+                              (name (sar (nl_cons_car_word pair) 2))
+                              (value (nl_cons_cdr_word pair)))
+                         (if (= (nl_logic_bind_local env name value) 0) 1
+                           (nl_let_bind_walk (nl_cons_cdr_word pairs_ptr) env)))
+                     0)) out))
          ((eq name 'nl_let_setup)
           (push '(defun nl_let_setup (bindings_list env sequential)
                    (let* ((frames_ptr (+ env 32)) (push_scratch (alloc-bytes 32 8)))
@@ -41885,15 +41965,18 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                               (nl_frame_push_sym1_ptr) push_scratch)
                             (nl_let_star_walk bindings_list env frames_ptr))))) out))
          ((eq name 'nl_let_star_walk)
-          (push (cl-subst
-                 '(if (= (nl_logic_bind_local env name_ptr val_slot) 0)
-                      (seq (nl_env_pop_frame env) 1)
-                    (nl_let_star_walk (nl_cons_cdr_ptr bindings_ptr) env frames_ptr))
-                 '(seq (nl_logic_bind_local env name_ptr val_slot)
-                       (nl_let_star_walk (nl_cons_cdr_ptr bindings_ptr) env frames_ptr))
-                 (cl-subst '(nl_env_pop_frame env)
-                           '(nl_logic_pop_frame frames_ptr) form :test #'equal)
-                 :test #'equal) out))
+          (push '(defun nl_let_star_walk (bindings_ptr env frames_ptr)
+                   (if (= (nl_val_tag bindings_ptr) 7)
+                       (let* ((binding (nl_cons_car_word bindings_ptr))
+                              (name (nl_let_parse_name binding)))
+                         (if (= name 0) (seq (nl_env_pop_frame env) 1)
+                           (let* ((word (nl_let_parse_val_w binding env 0)))
+                             (if (= word 0) (seq (nl_env_pop_frame env) 1)
+                               (if (= (nl_logic_bind_local env name word) 0)
+                                   (seq (nl_env_pop_frame env) 1)
+                                 (nl_let_star_walk (nl_cons_cdr_word bindings_ptr)
+                                                   env frames_ptr))))))
+                     0)) out))
          ((memq name '(nl_sf_let_ret nl_sf_let_star_ret))
           (push `(defun ,name ,(caddr form) (if (= pop-rc -1) 1 body-rc)) out))
          ((eq name 'nl_ali_done)
@@ -42217,7 +42300,7 @@ match a special-form name tested in FORM."
         (nl_sexp_clone_into src_ptr cur)
         (while (= (sexp-tag cur) 7)
           (seq
-           (nelisp_cons_construct (nl_cons_car_word cur) nil_slot node_slot)
+           (nelisp_cons_construct (nl_cons_car_word cur) 3 node_slot)
            (let* ((durable-node (alloc-bytes 32 8)))
              (seq
               (nl_sexp_clone_into node_slot durable-node)
@@ -42293,6 +42376,14 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
                           ((and (consp form) (eq (car form) 'defun)
                                 (eq (cadr form) 'nl_env_stash_signal))
                            (list nelisp-standalone--reader-env-stash-signal-fixed))
+                          ((eq (cadr form) 'nl_bf_bind_opt_walk)
+                           (list (cl-subst 'nl_cons_car_word 'nl_cons_car_ptr form)))
+                          ((eq (cadr form) 'nl_bf_bind_optional)
+                           (list '(defun nl_bf_bind_optional (env name_ptr args_ptr idx)
+                                    (let* ((word (nl_bf_bind_opt_walk args_ptr idx)))
+                                      (if (= word 0)
+                                          (seq (nl_bf_bind_sym env name_ptr 3) idx)
+                                        (seq (nl_bf_bind_sym env name_ptr word) (+ idx 1)))))))
                           (t (list form))))
                        (cdr src)))))
 
@@ -43957,9 +44048,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (let* ((copies (alloc-bytes 64 8)))
           (seq
            (nl_sexp_clone_into name copies)
-           (nl_sexp_clone_into value (+ copies 32))
-           (if (= (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) copies)) 0) -1
-             (nl_sb_bind_plain env frames copies (+ copies 32)))))))
+           (let* ((saved (if (= (logand value 1) 1) value
+                          (seq (nl_sexp_clone_into value (+ copies 32))
+                               (+ copies 32)))))
+             (if (= (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) copies)) 0) -1
+               (nl_sb_bind_plain env frames copies saved)))))))
     (defun nl_sb_bind_plain (env frames sym val)
       (let* ((old (alloc-bytes 32 8)) (rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8)))
         (seq
@@ -44028,8 +44121,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_bind_declared (env frames name value)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
-             (nl_sexp_clone_into value (+ copies 32))
-             (nl_n4_bind_declared_1 env frames copies (+ copies 32)))))
+             (nl_n4_bind_declared_1 env frames copies
+               (if (= (logand value 1) 1) value
+                 (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))
     (defun nl_n4_bind_declared_1 (env frames name value)
       (if (= (nl_sb_dynamic_p env frames name) 1)
           (if (= (nl_sb_bind env frames name value) 0) 1

@@ -609,6 +609,14 @@
  (length (record 'a 1 2))
  ;; Doc 215: retain record type WORDs before materializing the inline view.
  (mapcar (lambda (type) (aref (record type nil) 0)) '(nil t 0 -7 abi-type))
+ ;; Fixed record headers retain the type WORD without a trailing data slot.
+ (mapcar (lambda (type)
+           (mapcar (lambda (count)
+                     (let* ((r (make-record type count nil)) (copy (copy-sequence r)))
+                       (garbage-collect)
+                       (list (aref r 0) (aref copy 0) (length copy))))
+                   '(0 1 8)))
+         '(nil t 17 abi-type))
  (let* ((type (list 'abi-type)) (object (record type nil))
         (saved (aref object 0)))
    (setq object nil)

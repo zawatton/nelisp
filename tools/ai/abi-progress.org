@@ -455,6 +455,15 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # manifest; the repeated-regex regression is resolved without changing its
 # workload, Ir cap or GC floor. Additional raw-pressure result remains unmeasured.
 ** S6.3 End to end: mean boot, regex6000 and repeated regex24000 Ir over four layouts <= baseline (callgrind)
+#+NOTE: 2026-10-20 runtime cons repair. boot 1215407840.50->562592281.50 Ir (-53.712%), GC 0/0; regex6000 69805862686.00->66199190042.25 Ir (-5.167%), GC 4/5; regex24000 255222631154.00->252117103037.00 Ir (-1.217%), GC 11/27; files 11177428066.00->9402092679.25 Ir (-15.883%), GC 2/2
+# GC27 vs baseline11 is retained honestly: allocation-debt diagnostics show
+# live135263824 ->47773328 bytes and the default3x-live threshold
+# 405791472 ->143319984 bytes. Total allocation4061946432 ->4224361976;
+# no GC-scheduling override. The accepted total Ir still includes every GC.
+# Fresh dynamic/static binaries and cold images; final11 groups/0failures,
+# standalone67 (only maphash-sparse known-red), Anvil40 and GNU31.1 parity pass.
+# Locale is C.UTF-8 (LC_ALL was C); this follows the brief and matches the
+# measured environment. Workloads, four layouts, Ir caps and GC floor unchanged.
 #+NOTE: 2026-10-20 criteria change. Old wording: "End to end: mean boot
 # (four layouts) and regex (two layouts, >=10 GCs each) Ir <= baseline";
 # 6000 matches with explicit GC every two iterations. New wording: "End to
@@ -487,11 +496,11 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 # recorded in tools/ai/abi-final-evidence.json. No acceptance cap changed.
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
-cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
-evidence: $ABI_IR_PROFILE/measurement.json sha256=5a04c4241280a323a7a3348449670ea9007ce2ec706b39c82747e74aa28dfd8a
-evidence: tools/ai/abi-final-evidence.json sha256=bd4a9676a174df781da6128fb7fd69076ecc0e296133394e70b62573d13ba10c
+cmd: LANG=C.UTF-8 LC_ALL=C.UTF-8 python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
+evidence: $ABI_IR_PROFILE/measurement.json sha256=abaa157e9a90a9bae6276436ac2f5c1dddbf2a2cfa90ae298d78dc85bafb6051
+evidence: tools/ai/abi-cons-evidence.json sha256=aaa5562afc35ba5340c19babf341375b16e82ffd501bfa6892f1ecd20493711e
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
-cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
+cmd: LANG=C.UTF-8 LC_ALL=C.UTF-8 tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
