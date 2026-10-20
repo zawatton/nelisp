@@ -254,17 +254,17 @@ lifetime of a Sexp value.  No `let' binding needed.")
 
     ;; Canonical mutable name objects are kept in an external open-addressed
     ;; table.  It is outside the moving Lisp heap; values at entry+40 are
-    ;; traced explicitly by the collector. Entry layout (80 bytes): state,
-    ;; key-kind, key, byte-length, hash, name-Sexp, last-mark-epoch.
+    ;; traced explicitly by the collector. Entry layout (88 bytes): state,
+    ;; key-kind, key, byte-length, hash, name-Sexp, last-mark-epoch, canonical record-type WORD.
     ;; Key-kind 1 is an interned/tag-4 name buffer; 2 is a tag-16 identity.
     (defun nl_symname_copy32 (src to off)
       (if (>= off 32) 1
         (seq (ptr-write-u64 to off (heap-read-u64 src off))
              (nl_symname_copy32 src to (+ off 8)))))
-    (defun nl_symname_copy80 (src dst_ptr off)
-      (if (>= off 80) 1
+    (defun nl_symname_copy88 (src dst_ptr off)
+      (if (>= off 88) 1
         (seq (ptr-write-u64 dst_ptr off (heap-read-u64 src off))
-             (nl_symname_copy80 src dst_ptr (+ off 8)))))
+             (nl_symname_copy88 src dst_ptr (+ off 8)))))
     (defun nl_symname_entry_match (entry kind key len hash)
       (if (or (/= (heap-read-u64 entry 8) kind)
               (/= (heap-read-u64 entry 32) hash)) 0
@@ -274,7 +274,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
             (nl_intern_eq (heap-read-u64 entry 16) key 0 len)))))
     (defun nl_symname_probe (table cap kind key len hash step first-tomb)
       (if (>= step cap) first-tomb
-        (let* ((entry (+ table (* (logand (+ hash step) (- cap 1)) 80)))
+        (let* ((entry (+ table (* (logand (+ hash step) (- cap 1)) 88)))
                (state (heap-read-u64 entry 0)))
           (if (= state 0)
               (if (= first-tomb 0) entry first-tomb)
@@ -307,15 +307,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symname_reinsert (new-table new-cap old-entry)
       (let* ((hash (heap-read-u64 old-entry 32)) (step 0) (done 0))
         (while (and (< step new-cap) (= done 0))
-          (let* ((entry (+ new-table (* (logand (+ hash step) (- new-cap 1)) 80))))
+          (let* ((entry (+ new-table (* (logand (+ hash step) (- new-cap 1)) 88))))
             (if (= (heap-read-u64 entry 0) 0)
-                (seq (nl_symname_copy80 old-entry entry 0) (setq done 1))
+                (seq (nl_symname_copy88 old-entry entry 0) (setq done 1))
               (setq step (+ step 1)))))
         done))
     (defun nl_symname_rehash_walk (old-table old-cap new-table new-cap)
       (let* ((i 0) (valid 1))
         (while (and (< i old-cap) (= valid 1))
-          (let* ((entry (+ old-table (* i 80))))
+          (let* ((entry (+ old-table (* i 88))))
             (if (and (= (heap-read-u64 entry 0) 1)
                      (= (nl_symname_reinsert new-table new-cap entry) 0))
                 (setq valid 0) 0)
@@ -331,10 +331,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (let* ((state (data-addr nl_symbol_name_state))
              (old (heap-read-u64 state 0))
              (cap (heap-read-u64 state 8)))
-        ;; Power-of-two capacity and 80-byte entries must remain in signed
+        ;; Power-of-two capacity and 88-byte entries must remain in signed
         ;; i64 range. Allocation failure leaves the old table untouched.
         (if (or (< cap 0) (>= new-cap 72057594037927936)) 0
-          (let* ((bytes (* new-cap 80)) (new (nl_os_alloc_chunk bytes)))
+          (let* ((bytes (* new-cap 88)) (new (nl_os_alloc_chunk bytes)))
             (if (< new 4096) 0
               (if (= (nl_os_commit_range new 0 bytes) 0)
                   (seq (nl_os_free_chunk new bytes) 0)
@@ -345,7 +345,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                        ;; Publication is complete before reclaim. If the OS
                        ;; refuses this valid unmap, the old table leaks but
                        ;; the new live table remains fully usable.
-                       (if (> old 0) (nl_os_free_chunk old (* cap 80)) 0)
+                       (if (> old 0) (nl_os_free_chunk old (* cap 88)) 0)
                        1))))))))
     (defun nl_symname_entry (kind key len hash)
       (let* ((state (data-addr nl_symbol_name_state))
@@ -385,6 +385,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                  (ptr-write-u64 entry 32 hash)
                  (nl_symname_copy32 name-slot (+ entry 40) 0)
                  (ptr-write-u64 entry 72 (heap-read-u64 (data-addr nl_symbol_name_state) 24))
+                 (ptr-write-u64 entry 80 0)
                  (ptr-write-u64 entry 0 1)
                  (ptr-write-u64 (data-addr nl_symbol_name_state) 16
                                 (+ (heap-read-u64 (data-addr nl_symbol_name_state) 16) 1))
@@ -401,6 +402,48 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (/= (nl_symbol_name_copy_out entry out) 0)
             out
           (nl_abi_fail 1 0))))
+
+    ;; A record must own a transient type view. Interned symbols share one
+    ;; owned Sexp per name in the existing sidecar, rather than a fresh 32B
+    ;; alias in every record. Identity-bearing symbols never use this cache.
+    (defun nl_record_type_intern_own (word)
+      (let* ((key (heap-read-u64 word 16))
+             (len (heap-read-u64 word 24))
+             (entry (nl_symbol_name_entry_for 1 key len)))
+        (if (if (= entry 0) 0 (/= (heap-read-u64 entry 80) 0))
+            (heap-read-u64 entry 80)
+          (let* ((mark (nl_root_mark 0))
+                 (symbol-root (nl_root_reserve_checked 0))
+                 (name-root (nl_root_reserve_checked 0))
+                 (result 0))
+            (if (or (= symbol-root 0) (= name-root 0))
+                (seq (nl_root_release 0 mark) 0)
+              (seq
+               (nl_symname_copy32 word symbol-root 0)
+               ;; Use the ordinary name constructor: its independently owned
+               ;; mutable string must not alias the immutable intern key.
+               (if (= (nl_symbol_name_value 0 symbol-root name-root) 0) 0
+                 (let* ((owned (alloc-bytes 32 8)))
+                   ;; The root is reread after allocation/possible compaction.
+                   ;; Symbol identity is its interned name; this shallow owned
+                   ;; view retains that name without another byte allocation.
+                   (nl_symname_copy32 symbol-root owned 0)
+                   (let* ((row (nl_symbol_name_entry_for
+                                1 (heap-read-u64 owned 16)
+                                (heap-read-u64 owned 24))))
+                     (if (= row 0) 0
+                       (seq (if (= (heap-read-u64 row 80) 0)
+                                (ptr-write-u64 row 80 owned) 0)
+                            (setq result (heap-read-u64 row 80)))))))
+               (nl_root_release 0 mark)
+               result))))))
+
+    (defun nl_record_type_own (word)
+      (if (or (= (logand word 1) 1) (= (logand word 7) 6)) word
+        (if (= (nl_val_tag word) 4)
+            (nl_record_type_intern_own word)
+          (let* ((storage (alloc-bytes 8 8)))
+            (nl_val_clone_into word storage)))))
 
     (defun nl_next_symbol_identity ()
       ;; Shared with the reader and C-ABI producer. The mutation epoch is

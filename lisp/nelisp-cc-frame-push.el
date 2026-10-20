@@ -111,9 +111,7 @@
     ;; of caching once: each site below still re-reads FRESH, only the
     ;; read itself no longer allocates.
     (defun nelisp_frame_push_depth_word (frames-ptr)
-      (heap-read-u64
-       (+ (heap-read-u64 (heap-read-u64 frames-ptr 8) 32) 8)
-       0))
+      (nl_record_slot_word frames-ptr 1))
     (defun nelisp_frame_push_ensure_now (frames-ptr scratch-slot)
       ;; Do not accept a caller-computed `needed' value here.  The AOT
       ;; allocator has miscompiled call-crossing locals in

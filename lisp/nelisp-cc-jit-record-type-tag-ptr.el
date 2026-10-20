@@ -46,17 +46,11 @@
 
 (defconst nelisp-cc-jit-record-type-tag-ptr--source
   (quote (defun nl_record_type_tag_ptr (arg)
-     ;; arg: *const Sexp.
-     ;; Returns: i64 = NlRecord* (= &type_tag as *const Sexp) when
-     ;;          tag == 12 (Sexp::Record), else 0 (null).
-     ;;
-     ;; sexp-payload-ptr-record reads the NonNull<NlRecord> box
-     ;; pointer stored at SEXP_PAYLOAD_OFFSET=8 inside the Sexp
-     ;; enum.
-     ;; Since NlRecord::type_tag is at offset 0, the
-     ;; box pointer IS *const Sexp for the type_tag field.
+     ;; Compatibility entry point: callers consume the type's semantic
+     ;; WORD through sexp-tag / nl_sexp_clone_into, never a borrowed
+     ;; inline Sexp address. No persistent type alias is allocated.
      (if (= (sexp-tag arg) 12)
-         (sexp-payload-ptr-record arg)
+         (nl_record_type_word arg)
        0)))
   "AOT source for nl_record_type_tag_ptr (jit/box_accessor.rs to elisp).
 

@@ -549,10 +549,111 @@ The +0.5% cap is unchanged; these totals support no additive header-load speed
 claim. =tools/ai/abi-ir.py accessors= measures the specified 24 profiles;
 =verify-accessors= rechecks the raw evidence. The full ABI mode still requires
 40 profiles and its original cap.
-=LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check=
+=LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check-historical=
 rechecks the hash-bound source, census, code and profile evidence under
 =target/word-heap-s1/=. The locale matches the recorded runtime-environment
 hash, even when the meter sets its own locale. Linux acceptance passed 11 groups, 75 standalone cases
 (maphash-sparse remains known-red), the shared-identity GC case against GNU
 31.1, 14 decoder cases on both linkages and the 40-tool Anvil smoke. S1.3 stays
 pending until the coordinator supplies Wine acceptance.
+
+* S4.1 compact vectorlike implementation (2026-10-20)
+
+A retained vector, record or char-table WORD has low bits =110=. Subtracting
+six gives the allocation's backing address. Its first word contains kind in
+bits 0--5 and length above bit 7; bits 6 and 7 preserve the existing protected
+and shared frame flags. They do not add a frame stack or change the logical
+closure/frame schema (S4.2 remains separate).
+
+| kind | backing fields | arena charge, including allocator prefix |
+|------+----------------+------------------------------------------|
+| vector | header, inline element WORDs | 16 + 8N |
+| record | header, type WORD, inline user WORDs | 24 + 8N |
+| char-table | header, purpose/default WORDs, interval storage, parent, extras | 88 plus child storage |
+
+The char-table body is 80 bytes. Existing interval entries and extra cells
+keep their 48-byte and 32-byte strides. Parent pointers address another
+backing object; purpose, default and stored values are WORD edges. Interned
+record types reuse an owned symbol view in the existing symbol-name sidecar;
+uninterned types retain identity through the ordinary clone boundary. This
+avoids charging each record another 40-byte symbol alias. Symbol layout is
+unchanged; the sidecar row grows from 80 to 88 bytes.
+
+Logical =heap-sexp-*= compiler forms now dispatch through WORD-aware helpers.
+Raw storage accessors still address physical memory. A transient 32-byte
+Sexp view remains available to FFI/codegen clients, but storing a vectorlike
+view canonicalizes its backing address instead of retaining that view. Mark,
+compaction and image relocation distinguish tagged WORD edges from raw
+pointer fields and preserve tag 110 after checking the untagged address.
+The reader's marker-215 pool slots use the same WORD tracing path. Hash-table
+identity stamps use metadata backing addresses rather than temporary view
+addresses, so repeated access does not spuriously rebuild the buckets. An
+actual-code native fixture checks 14 cases and rejects the old view-address
+stamp. No new reader builtin or native Lisp API is introduced.
+
+=tools/ai/word-heap-vectorlike.py= captures retained populations and an
+independent raw allocation-chain census on both linkages. Replay requires
+all binary/image/startup/probe/raw hashes, 16 distinct roots of each kind,
+inline slot structure, and no separately allocated 32-byte header alias for
+those payload identities. =check-baseline= applies the same requirements to
+S1 and must fail. GNU's GC-accounted slopes and DWARF structural minima are
+reported separately. =word-heap-vectorlike-boundaries.py= independently
+checks codegen and both image relocation paths, including rejecting tag
+mutations; =word-heap-vectorlike-image.py= checks a saved cyclic/shared graph
+in a fresh process and rejects a foreign build digest. These are evidence
+for S4.1 and the Linux portion of S4.3, not completion of S4.2 or Wine.
+
+The fresh S1 and candidate measurements use the same two-population harness
+(2,000 and 4,000 objects), precise GC, and both Linux linkages. Retained
+arena slopes agree with the compact allocation-chain census; all 96
+sampled candidate roots have no separately allocated legacy header alias.
+GNU GC-accounted bytes and structural minima are distinct references:
+
+| object | S1 retained B | S4 retained B | GNU minimum B | GNU GC-accounted B |
+|--------+---------------+---------------+---------------+--------------------|
+| one-slot vector | 96 | 24 | 16 | 32 |
+| one-user-slot record | 128 | 32 | 24 | 40 |
+| default char-table | 544 | 416 | 552 | 568 |
+| vector element | 8 | 8 | 8 | 8 |
+
+The S1 char-table census accounts for 504 structural bytes plus a retained
+40-byte purpose-symbol view; the S4 retained charge is 416 bytes in total.
+The same default constructor retains NeLisp's preallocated ten-cell extra
+buffer, while GNU allocates zero extra cells for this purpose symbol.
+The GNU structural minima exclude allocator overhead, while NeLisp arena
+bytes include its eight-byte allocation prefix. Raw results and replay
+manifests are under =target/word-heap-s4v/=.
+
+Mean Callgrind Ir over =ABI_LAYOUT_PAD= 0/700/1400/2100 follows. These are
+fresh S1 and candidate runs of the same boot/files/regex6000 recipes; totals
+include GC. Complete stdout agrees for all 48 profiles. Every linkage and
+layout records 0/2/2 collections for boot/files/regex6000.
+
+| linkage | recipe | S1 mean Ir | S4 mean Ir | change |
+|---------+--------+------------+------------+--------|
+| dynamic | boot | 534584503.25 | 557415599.25 | +4.271% |
+| dynamic | files | 4670505295.25 | 5647323732.00 | +20.915% |
+| dynamic | regex6000 | 6154751672.00 | 7071736240.25 | +14.899% |
+| static | boot | 527677923.25 | 549923952.50 | +4.216% |
+| static | files | 4663071481.75 | 5634616861.75 | +20.835% |
+| static | regex6000 | 6148010077.50 | 7062188488.50 | +14.870% |
+
+The inherited no-regression comparison remains at 1.0 and fails all six
+rows. S4.1's object-size/census gate passes; this does not satisfy S8's speed
+criterion. No performance threshold is revised. Profiles, provenance and
+the failing comparison remain under =target/word-heap-s4v/ir/=.
+
+Linux validation: the standard =checks.sh DYN STATIC= run passes 11 groups,
+the separate dynamic standalone runner passes 76 cases, and Anvil lists 40
+tools after stdin remains open for 25 seconds. Both linkages pass precise-GC
+closure/frame parity, first-call regressions and image round-trips. Raw
+header reads and ABI S6.2 dependencies are zero on both linkages.
+
+An additional =checks.sh STATIC STATIC= run records one failed group:
+=standalone-sqlite-owned-check= reports SQLite unavailable. The pinned S1
+static binary fails the exact same case; GNU31.1 and the candidate dynamic
+binary pass with identical output. Existing freestanding static builds
+exclude the external FFI dispatcher. Extending the static loader/SQLite
+facility is outside S4.1, so this failure remains visible and S4.3 is not
+claimed complete. Wine is also outstanding with the coordinator. No
+known-red exemption or assertion is changed for the static failure.

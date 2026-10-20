@@ -9,8 +9,8 @@
       (let* ((best 4194304) (walk box) (len 0) (entries 0)
              (i 0) (candidate 0))
         (while (/= walk 0)
-          (setq len (heap-read-u64 (+ walk 80) 0))
-          (setq entries (heap-read-u64 (+ walk 64) 0))
+          (setq len (heap-read-u64 (+ walk 40) 0))
+          (setq entries (heap-read-u64 (+ walk 24) 0))
           (setq i (nl_ct_lower_end entries len cursor))
           (if (< i len)
               (seq
@@ -20,10 +20,10 @@
                  0)
                (if (< candidate best) (setq best candidate) 0))
             0)
-          (setq walk (heap-read-u64 (+ walk 88) 0)))
+          (setq walk (heap-read-u64 (+ walk 48) 0)))
         best))
     (defun nl_ct_map_parent_next (box)
-      (if (= box 0) 0 (heap-read-u64 (+ box 88) 0)))
+      (if (= box 0) 0 (heap-read-u64 (+ box 48) 0)))
     (defun nl_ct_map_parent_cycle_p (box)
       (let* ((slow box) (fast box) (cycle 0))
         (while (and (/= fast 0) (= cycle 0))
@@ -113,7 +113,7 @@
          (while (and (<= cursor 4194303) (= done 0) (= rc 0))
            ;; Reload from the rooted Sexp after every callback; this remains
            ;; correct if a future collector moves the table box.
-           (setq box (heap-read-u64 (+ table-slot 8) 0))
+           (setq box (nl_word_payload table-slot))
            (nl_char_table_get_raw table-slot cursor value-slot)
            (setq end (nl_ct_map_run_end table-slot box cursor value-slot probe-slot))
            (if (= cursor end)

@@ -10,10 +10,12 @@ This is source provenance, not an instruction-level pointer-taint oracle.
 census [DUMP]       report canonical source and optional linked-source counts
 check-source       reject any raw read outside the accessor module
 controls           inject one raw read and demonstrate rejecting checks
-check              recheck the complete, hash-bound S1.2 evidence
+check              recheck S1.2 against live source (for the S1 tree)
+check-historical   recheck committed S1 sources and raw evidence after S2+ edits
 migrate            mechanical call-head/assembler-reference migration
 """
 import hashlib
+import io
 import importlib.util
 import json
 from pathlib import Path
@@ -429,14 +431,40 @@ def migrate():
     print(json.dumps(counts, indent=2))
 
 
-def check():
+def historical_source_hashes(names):
+    """Authenticate S1's frozen sources without rebinding any measured bytes.
+
+    S4 deliberately changes the representation that S1 proved unchanged.
+    Artifact paths still name the original on-disk evidence; source paths
+    name exactly the committed S1 tree, never a caller-selected revision.
+    """
+    revision = "b51fe66f4bb7fbac31d4ce44796f1f074c85d17b"
+    names = [name for name in names if not name.startswith("target/")]
+    request = "".join(f"{revision}:{name}\n" for name in names).encode()
+    run = subprocess.run(["git", "cat-file", "--batch"], input=request,
+                         cwd=ROOT, capture_output=True, check=True)
+    stream, result = io.BytesIO(run.stdout), {}
+    for name in names:
+        header = stream.readline().split()
+        need(len(header) == 3 and header[1] == b"blob",
+             f"S1 source absent from pinned revision: {name}")
+        data = stream.read(int(header[2]))
+        need(stream.read(1) == b"\n", "invalid git blob framing")
+        result[name] = hashlib.sha256(data).hexdigest()
+    need(not stream.read(), "unexpected S1 source blobs")
+    return result
+
+
+def check(historical=False):
     check_source()
     manifest = json.loads((OUT / "s1-evidence.json").read_text())
     need(manifest["schema"] == 1 and manifest["baseline_commit"] == "50a75cbcb",
          "wrong S1 baseline/schema")
+    frozen = historical_source_hashes(manifest["hashes"]) if historical else {}
     for name, expected in manifest["hashes"].items():
-        need(sha(ROOT / name) == expected, f"changed S1 evidence: {name}")
-    need(manifest["facts"] == facts(), "S1 measured facts changed")
+        actual = frozen[name] if name in frozen else sha(ROOT / name)
+        need(actual == expected, f"changed S1 evidence: {name}")
+    need(manifest["facts"] == facts(historical=historical), "S1 measured facts changed")
     print("PASS S1.2 raw=0 ABI-S6.2=0; 51 identical-code cases; 24 Ir profiles <=+0.5%")
 
 
@@ -496,7 +524,7 @@ def abi_tool():
     return module
 
 
-def facts():
+def facts(historical=False):
     result = dict(source=source_proof())
     for name in ("dynamic", "static"):
         dump = OUT / name / "dump.jsonl"
@@ -522,7 +550,24 @@ def facts():
     baseline = OUT / "base/nelisp-dynamic"
     need(sha(candidate) != sha(baseline), "candidate reused as baseline")
     directory = OUT / "ir"
-    abi.validate_record(directory, abi.identities(candidate, baseline), abi.ACCESSOR_MODES)
+    identities = abi.identities(candidate, baseline)
+    if historical:
+        # Copies of the S1 evidence keep their original path labels. Compare
+        # exactly the same file/environment hashes under those labels; never
+        # rewrite the recorded manifest or accept a changed artifact.
+        recorded = json.loads((directory / "measurement.json").read_text())["identities"]
+        suffix = "/tools/ai/abi-ir.py"
+        origins = [name[:-len(suffix)] for name in recorded if name.endswith(suffix)]
+        need(len(origins) == 1, "ambiguous S1 measurement origin")
+        prefix = str(ROOT) + "/"
+        identities = {(origins[0] + "/" + name[len(prefix):]
+                       if name.startswith(prefix) else name): digest
+                      for name, digest in identities.items()}
+        for key in ("candidate-path", "baseline-path"):
+            value = identities[key]
+            need(value.startswith(prefix), f"S1 executable outside evidence copy: {key}")
+            identities[key] = origins[0] + "/" + value[len(prefix):]
+    abi.validate_record(directory, identities, abi.ACCESSOR_MODES)
     ir = {}
     for mode in abi.ACCESSOR_MODES:
         rows, outputs = [], set()
@@ -593,6 +638,8 @@ def main(args):
         migrate()
     elif cmd == "check":
         check()
+    elif cmd == "check-historical":
+        check(historical=True)
     elif cmd == "seal":
         seal()
     else:
