@@ -1,6 +1,7 @@
 #+TITLE: Header-less heap (Doc 216): tagged WORDs address the payload directly
 
 * S0 Measure and predict before any implementation
+#+NOTE: 2026-10-20 S1 prerequisite: bind measured runtime sources to d62233cb6 and the S0 decision/measurement record to 00e5a3e40, not the evolving implementation tree. Before: S0.1 rejects changed Doc 216; after: all six historical checks pass. All recorded hashes, including every measurement artifact, remain unchanged. Source identity checking is now independent of S1 edits (development-loop improvement: 6/6 historical checks reusable instead of 0/6 after unrelated source edits).
 
 ** S0.1 Per-type bytes/object table (objsize probe) for cons, float, string, symbol, vector, record, bignum, marker
 #+NOTE: Baseline cons=72 B (2026-10-19, dc8284690). Evidence: probe source + output, sha-pinned.
@@ -36,12 +37,13 @@ cmd: python3 tools/ai/word-heap-evidence.py check S0.6
 
 ** S1.1 box-census counts raw header reads outside the accessor module, with a negative control that must count
 #+NOTE: 2026-10-20 S0 revision S1: old raw reads outside accessor=0 -> same0; include all WORD/view, GC/image/FFI/codegen boundaries, failing mutation and instruction-provenance limits. Reason: all new-tag recipients must move before S2; S0.4 is clarified, not blocked.
-pending
+cmd: python3 tools/ai/word-heap-accessors.py controls
 
 ** S1.2 Raw header reads outside the accessor module = 0
-pending
+cmd: python3 tools/ai/word-heap-accessors.py check
 
 ** S1.3 End to end: eval/core full suite (dyn+static), standalone-checks, wine Windows smoke on the accessor-only tree
+#+NOTE: 2026-10-20 lane scope: Linux dynamic/static 11-group verification, standalone checks and 40-tool Anvil MCP smoke are required here; Wine remains pending for the coordinator, as BRIEF.md requires.
 pending
 
 * S2 cons header-less

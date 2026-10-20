@@ -12,12 +12,23 @@ from pathlib import Path
 import re
 import sys
 import struct
+import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT = ROOT / "tools/ai/word-heap-s0-data.json"
 TYPES = {"cons", "float", "string8", "symbol", "vector-slot", "record1", "bignum", "marker"}
 LAYOUTS = {0, 700, 1400, 2100}
+# Runtime inputs were measured before the S0 report existed. The report and
+# tools themselves were committed with the completed S0 decision record.
+# Neither identity follows HEAD: S1 must be free to change the same sources.
+RUNTIME_REVISION = "d62233cb6"
+RECORD_REVISION = "00e5a3e40"
+RUNTIME_SOURCES = {
+    "scripts/nelisp-standalone-build.el", "lisp/nelisp-cc-nlconsbox-clone.el",
+    "lisp/nelisp-cc-nlconsbox-drop.el", "lisp/nelisp-cc-val-load.el",
+    "lisp/nelisp-sexp-layout.el",
+}
 
 
 def need(ok, message):
@@ -25,12 +36,33 @@ def need(ok, message):
         raise ValueError(message)
 
 
+def evidence_key(r, path):
+    """Resolve copied bundle paths without changing their recorded hashes."""
+    path = Path(path)
+    original_root = Path(r["legacy_probes"][0]["binary"]).parents[3]
+    if path.is_absolute() and path.is_relative_to(original_root):
+        return str(path.relative_to(original_root))
+    return str(path)
+
+
+def evidence_path(r, path):
+    path = Path(evidence_key(r, path))
+    return path if path.is_absolute() else ROOT / path
+
+
 def verify_hashes(r):
     need(len(r["hashes"]) >= 100, "missing raw evidence")
+    need(r["base_commit"] == RUNTIME_REVISION, "changed S0 runtime revision")
     for name, expected in r["hashes"].items():
         path = Path(name)
-        if not path.is_absolute():
-            path = ROOT / path
+        if not path.is_absolute() and not name.startswith("target/"):
+            revision = RUNTIME_REVISION if name in RUNTIME_SOURCES else RECORD_REVISION
+            content = subprocess.check_output(
+                ["git", "show", f"{revision}:{name}"], cwd=ROOT)
+            need(hashlib.sha256(content).hexdigest() == expected,
+                 f"changed historical source: {revision}:{name}")
+            continue
+        path = evidence_path(r, name)
         with path.open("rb") as stream:
             need(hashlib.file_digest(stream, "sha256").hexdigest() == expected, f"changed evidence: {name}")
 
@@ -121,13 +153,13 @@ def check(criterion, r):
                     "legacy-int": [0, 2, 2, 2, -17, -17], "legacy-cons": [7, 7, 7, 7, 3]}
         for x in probes:
             need(x["returncode"] == 0 and x["cases"] == x["expected"] == expected, "noncanonical legacy decode")
-            stem = Path(x["probe"])
+            stem = evidence_path(r, x["probe"])
             raw = stem.with_suffix(".out").read_text()
             actual = {k: list(map(int, v.split())) for k, v in re.findall(r"WH-DECODE (\S+) \(([^)]+)\)", raw)}
             need(actual == expected and raw.count("WH-DECODE-DONE\n") == 1
                  and not stem.with_suffix(".err").read_bytes() and stem.with_suffix(".rc").read_text().strip() == "0", "native legacy stdout/stderr/exit mismatch")
             for p, value in ((Path(x["binary"]), x["sha256"]), (Path(x["binary"] + ".cold"), x["cold_sha256"])):
-                key = str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+                key = evidence_key(r, p)
                 need(r["hashes"].get(key) == value, "native binary/companion outside pinned closure")
     elif criterion == "S0.5":
         gc, d = r["gc"], r["decisions"]["gc"]
