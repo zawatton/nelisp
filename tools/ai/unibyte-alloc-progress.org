@@ -16,17 +16,34 @@
 #   UA_POST_BIN  dynamic build of fb54c401f (with bcbabb4bd)
 
 * S1 Locate
+#+NOTE: 2026-10-20: ASCII producer normalization makes format templates carry tag14. bf_format_simple rejected every tag14 template, forcing the full Lisp formatter. Per100 isolated calls: number-to-string -15 allocation calls, concat -15, format +30949; R80 full profiles show 64459771 -> 83057056 allocator calls. Raw high-byte cases retain the Lisp representation layer.
 ** S1.1 The producer paths that account for the extra allocation are identified, with per-path counts or bytes on UA_PRE_BIN vs UA_POST_BIN
-pending
+#+TIMEOUT: 600
+cmd: python3 test/perf/unibyte-alloc-check.py locate
 
 * S2 Fix
+#+NOTE: 2026-10-20: Directly publishing the numeric builder saved bytes/calls but added a ninth GC and exceeded the unchanged Ir cap (~1.0199x). Reverted that layer choice. Reusing the formatter output slot also produced nine GCs; revert both optional allocation optimizations and measure the minimal admission/semantic fix with the original producer allocation shape. No cap is revised.
 ** S2.1 Allocator calls on the R=80 workload on UA_BIN <= UA_PRE_BIN's (Callgrind call counts into the allocator entry)
-pending
+#+REQUIRES: UA_BIN,UA_PRE_BIN
+#+TIMEOUT: 600
+cmd: python3 test/perf/unibyte-alloc-check.py calls
+#+NOTE: 2026-10-20: The unchanged static SQLite golden fails SQLite unavailable. Static nl-ffi-call is an explicit unsupported primitive; loading packages cannot enable its build-time fixed table, and the alternative ELF loader rejects host dependencies with DT_RELR. No threshold or check is relaxed. The original S2.2 cmd remains failing while acceptance clarification is pending; all dynamic golden checks and both Doc200 runs are retained separately.
 ** S2.2 GNU 31.1 semantics kept on dynamic and static: standalone-unibyte-aset-check and standalone-sqlite-owned-check match their .expected; Doc200 12/12
-pending
+#+REQUIRES: UA_BIN,UA_STATIC
+#+TIMEOUT: 600
+cmd: python3 test/perf/unibyte-alloc-check.py semantics
+#+NOTE: 2026-10-20: gdb execution is sandbox-blocked; pressure writes/runs the gdb condition when UA_GDB=1, otherwise validates the same allocation cap with the Callgrind allocator proxy. The coordinator runs the gdb half. No threshold is revised.
+#+NOTE: Set UA_GDB=1 outside the sandbox to execute gdb -q -batch -x target/codex/gcstats.gdb --args "$UA_BIN" --load test/unibyte-alloc-pressure80.el, then require debt+total <= 2558239688. The same pressure cmd also checks the four-layout mean Ir <= pre x 1.01.
+#+NOTE: Profiles started before cold-image build completion are excluded. Final profiles require a complete cold image and verify executable/image identity at both boundaries. The matched byte-statistics proxy subtracts only the same CLI observation overhead, calibrated by the supplied exact pre total.
+#+NOTE: Final measured result (2026-10-20): calls64459819 <= pre64459835; allocation projection2558233136 <= cap2558239688; mean Ir148780927545.25 / pre145224181901 = 1.0244914146, above unchanged cap1.01. S2.3 remains FAIL. Final workload performs9 GCs vs pre8; largest self-Ir growth is nl_gc_in_arena (+1156428118), followed by allocator/freelist/sweep work. No failing check is hidden.
 ** S2.3 End to end: total allocated bytes on the R=80 workload on UA_BIN <= 2,558,239,688 (collector statistics at exit), and the mean Ir over four layouts <= UA_PRE_BIN's x 1.01
-pending
+#+REQUIRES: UA_BIN,UA_PRE_BIN
+#+TIMEOUT: 600
+cmd: python3 test/perf/unibyte-alloc-check.py pressure
 
 * S3 Delivery
+#+NOTE: Development-tool calibration: retaining allocator/GC entries while collapsing private Callgrind edges preserves Ir943015090 and calls54871 exactly; profile size224300 -> 94876 bytes, measured3.524 -> 3.103 seconds (wall time informational). Hash-verified profile summaries are recomputed; altered count, empty inventory, and wrong binary identity controls are rejected.
 ** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
-pending
+#+REQUIRES: UA_BIN,UA_STATIC
+#+TIMEOUT: 600
+cmd: python3 test/perf/unibyte-alloc-check.py final
