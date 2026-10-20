@@ -24147,7 +24147,11 @@ families.")
     ;; SQLITE_* code is never read zero-extended.  SQLITE_TRANSIENT for
     ;; bind_text is (void*)-1, passed as the i64 -1.
     ("sqlite3_libversion"        "libsqlite3.so.0" 0)
-    ("sqlite3_open_v2"           "libsqlite3.so.0" 4 (:windows-ret s32))
+    ;; Some Windows SQLite builds omit automatic initialization. Keep this
+    ;; idempotent library setup at the fixed FFI boundary, before open can
+    ;; reach an uninitialized allocator; Linux keeps its direct call.
+    ("sqlite3_open_v2"           "libsqlite3.so.0" 4
+     (:windows-ret s32 :windows-initialize sqlite3_initialize))
     ("sqlite3_close_v2"          "libsqlite3.so.0" 1 (:windows-ret s32))
     ("sqlite3_errmsg"            "libsqlite3.so.0" 1)
     ("sqlite3_exec"              "libsqlite3.so.0" 5 (:windows-ret s32))
@@ -24206,6 +24210,7 @@ decisions, not accidental loader requirements of every Windows reader.")
   '(("VirtualAlloc" "kernel32.dll" 4)
     ("VirtualProtect" "kernel32.dll" 4)
     ("VirtualFree" "kernel32.dll" 3)
+    ("sqlite3_initialize" "libsqlite3.so.0" 0 (:windows-ret s32))
     ("FlushInstructionCache" "kernel32.dll" 3)
     ("GetModuleFileNameW" "kernel32.dll" 3)
     ("GetModuleHandleW" "kernel32.dll" 1)
@@ -24235,7 +24240,7 @@ decisions, not accidental loader requirements of every Windows reader.")
     ("GetAce" "advapi32.dll" 3)
     ("ConvertStringSecurityDescriptorToSecurityDescriptorW" "advapi32.dll" 4)
     ("SetSecurityInfo" "advapi32.dll" 7))
-  "Raw OS FFI through the existing dispatcher; no new Lisp builtin entries.")
+  "OS and target-only library FFI; no new Lisp builtin entries.")
 
 (defun nelisp-standalone--windows-reader-extern-table ()
   "Return TABLE rows whose SONAME has a Windows DLL mapping.
@@ -24279,6 +24284,8 @@ into double-precision (f64) marshalling:
 
   * :windows-ret s32, when TARGET is `windows-x86_64', sign-extends the low
     32 bits returned in EAX before boxing.  Other targets ignore this override.
+  * :windows-initialize SYMBOL calls a zero-argument C initializer first on
+    Windows. A nonzero result is returned without calling the main entry.
 
 This is what lets the reader call libm/UCRT (sqrt/pow/...) and any other
 fixed-table shared-library entry point directly from elisp."
@@ -24325,6 +24332,11 @@ fixed-table shared-library entry point directly from elisp."
              (arm (if f64-binds
                       `(let* ,(nreverse f64-binds) ,body)
                     body)))
+        (when (and (eq target 'windows-x86_64)
+                   (plist-get sig :windows-initialize))
+          (setq arm
+                `(let ((initrc (extern-call ,(plist-get sig :windows-initialize))))
+                   (if (= initrc 0) ,arm (wf_write_int out initrc)))))
         (setq chain
               `(if (= (sexp-name-eq nm ,sym) 1)
                    ,arm
