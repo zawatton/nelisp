@@ -8,6 +8,12 @@
 
 ;;; Commentary:
 
+;; Doc 216 S4 contract: pointer slots return their canonical WORD unchanged,
+;; including tag-6 vectorlikes. Read through semantic accessors; callers
+;; needing physical storage explicitly materialise it with nl_val_load.
+;; Immediate slots still receive fresh 32-byte views. The Phase 2 background
+;; below describes the earlier physical-view transport.
+
 ;; Doc 147 Phase 2 — the word->32B-slot materialiser for the Vector
 ;; `vector-ref-ptr' / `vector-slot-ptr-core' read path.
 ;;
@@ -63,8 +69,9 @@
     (defun nl_vector_slot_ptr (sexp-ptr idx)
       (let ((word (nl_vector_slot_word sexp-ptr idx)))
         (if (= (logand word 1) 0)
-            (if (= (logand word 7) 6)
-                (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)) word)
+            ;; Semantic accessors accept the canonical vectorlike WORD.
+            ;; Keep it intact instead of allocating a compatibility view.
+            word
           (extern-call nl_val_load word (alloc-bytes 32 8))))))
   "AOT source for the `nl_vector_slot_ptr' Doc 147 Phase 2 helper.
 

@@ -15845,27 +15845,13 @@ deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
 ;; ---- Doc 111 §111.B Record read+write ops emit ----
 
 (defun nelisp-aot-compiler--emit-record-slot-ptr-core (ptr idx buf)
-  "Leave a `*const Sexp' 32B-slot VIEW for record slot IDX in rax.
-
-Doc 147 Phase 2: the NlRecord SLOTS BUFFER now holds one 8-byte
-tagged WORD per slot (was a 32B inline `Sexp'); the inline `type_tag'
-@ box+0 stays 32B (header offsets unchanged).  The prior inline
-`data_ptr + idx*32' address would be wrong on two counts (stride 32
-not 8; the slot is an 8B word, not a 32B Sexp the consumer can read
-tag/payload from).  Delegate to the ABI-stable `nl_record_slot_ptr
-(rec_ptr, idx) -> *const Sexp' .o helper, which:
-  - reads slots Vec.data_ptr from rec_ptr+32,
-  - loads the 8B tagged WORD at data_ptr + idx*8,
-  - returns a 32B-slot VIEW: a pointer WORD (low bit 0) passes
-    through (already a 32B child box); an immediate WORD (low bit 1)
-    is materialised into a FRESH 32B box via `nl_val_load' (the Phase 0
-    keystone).  A fresh box PER immediate slot keeps two+
-    concurrently-live slot-ptr results from aliasing one scratch (=
-    the SCRATCH-LIFETIME HAZARD: e.g. `nl_jit_sxhash' /
-    `nl_fmt_sexp_dispatch' recursion, frame-pop's depth reads).
-
-Returns the view pointer in rax (matches the prior op's contract:
-every `record-slot-ref-ptr' consumer reads a 32B `Sexp' from it)."
+  "Return the semantic value of record slot IDX in rax.
+The helper reads an inline eight-byte WORD through its storage accessor.
+Pointer WORDs, including tag-6 vectorlikes, pass through unchanged; immediate
+WORDs receive independent fresh 32-byte views. Consumers use semantic field
+accessors. A caller requiring physical storage must explicitly materialise
+the result with `nl_val_load'. Preserve the helper call's ABI and stack
+alignment, including the target-specific register convention."
   (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-aot-compiler--emit-temp-push buf 'rax)
   (nelisp-aot-compiler--emit-value idx buf)
@@ -16050,28 +16036,13 @@ undefined-rax behaviour."
 ;; ---- Doc 111 §111.C Vector read ops emit ----
 
 (defun nelisp-aot-compiler--emit-vector-slot-ptr-core (ptr idx buf)
-  "Leave a `*const Sexp' 32B-slot VIEW for vector element IDX in rax.
-
-Doc 147 Phase 2: the NlVector DATA BUFFER now holds one 8-byte tagged
-WORD per element (was a 32B inline `Sexp').  The prior inline
-`data_ptr + idx*32' address would be wrong on two counts (stride 32
-not 8; the slot is an 8B word, not a 32B Sexp the consumer reads
-tag/payload from).  Delegate to the ABI-stable `nl_vector_slot_ptr
-(vec_ptr, idx) -> *const Sexp' .o helper, which reads Vec.data_ptr
-from vec_ptr+8, loads the 8B tagged WORD at data_ptr + idx*8, and
-returns a 32B-slot VIEW (pointer WORD passes through; immediate WORD
-materialised into a FRESH 32B box via `nl_val_load' — one box per
-immediate slot so two+ concurrently-live slot-ptr results never alias
-one scratch, the SCRATCH-LIFETIME HAZARD = e.g. meta-walk's
-`(... (vector-ref-ptr srcs i) (vector-ref-ptr outs i) ...)' and
-env-bind-local's three `(vector-ref-ptr scratch-ptr N)' args).
-
-Returns the view pointer in rax (every `vector-ref-ptr' consumer
-reads a 32B `Sexp' from it).  Dynamic rsp alignment via rbx (=
-`record-slot-set's idiom): `slot-ptr-core' runs at a statically-
-unknown alignment, so save rsp / `and rsp,-16' / restore around the
-`call'.  rbx is callee-saved (preserved by the helper) and unused
-elsewhere in AOT."
+  "Return the semantic value of vector slot IDX in rax.
+The helper reads an inline eight-byte WORD through its storage accessor.
+Pointer WORDs, including tag-6 vectorlikes, pass through unchanged; immediate
+WORDs receive independent fresh 32-byte views. Consumers use semantic field
+accessors. A caller requiring physical storage must explicitly materialise
+the result with `nl_val_load'. Preserve the helper call's ABI and stack
+alignment, including the target-specific register convention."
   (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-aot-compiler--emit-temp-push buf 'rax)
   (nelisp-aot-compiler--emit-value idx buf)

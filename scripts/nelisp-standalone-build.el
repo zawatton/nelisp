@@ -1566,8 +1566,8 @@ standalone units can call each other."
           (append (nelisp-asm-arm64-buffer-relocs buf)
                   (nreverse generated-relocs)))))
 
-;; Source-level inlining of small leaf helpers.  On by default, two levels
-;; deep (NELISP_INLINE=2); NELISP_INLINE=1 inlines one level, 0 turns it off.
+;; Source-level inlining of small leaf helpers. On by default, four levels
+;; deep (NELISP_INLINE=4); values 1/2/3 retain their pass counts, 0 turns it off.
 ;;
 ;; The AOT compiler emits every call as a call: `nl_cons_car_ptr',
 ;; `nl_seq2', `nl_alloc_check_enabled' and the other two- and three-form
@@ -1576,8 +1576,9 @@ standalone units can call each other."
 ;; Within one unit, a call to a small non-recursive defun whose body uses
 ;; only the plain operators below and calls to other functions is replaced
 ;; by its body under a `let*' binding fresh names to the arguments, in
-;; order -- the call's own evaluation order.  One level only: candidates'
-;; bodies are spliced as written.  Bodies using `alloc-bytes' are left
+;; order -- the call's own evaluation order. Each bounded pass splices its
+;; candidates as written; three passes cover WORD -> tag alias -> decoder.
+;; Bodies using `alloc-bytes' are left
 ;; alone (the expansion would allocate in the caller's frame, and inside
 ;; a loop on every iteration), as are calls whose arity differs.
 (defconst nelisp-standalone--inline-pure-ops
@@ -1589,6 +1590,12 @@ standalone units can call each other."
     sexp-tag data-addr record-slot-ref-ptr record-slot-count
     sexp-int-unwrap)
   "Operators an inlined body may use besides calls to `_'-named functions.")
+
+(defconst nelisp-standalone--inline-boundaries
+  '(nl_apply_function nl_apply_function_w)
+  "Authenticated evaluator entries whose calls must survive inlining.
+The F1 source/binary proof binds these entries as evaluator terminals.
+Inlining them into a caller would erase that ownership boundary.")
 
 (defvar nelisp-standalone--inline-max-nodes
   (string-to-number (or (getenv "NELISP_INLINE_MAX_NODES") "80"))
@@ -1636,7 +1643,7 @@ position and under `data-addr'."
    (t (cons (car body) (mapcar (lambda (f) (nelisp-standalone--inline-rename f alist)) (cdr body))))))
 
 (defun nelisp-standalone--inline-level ()
-  (or (getenv "NELISP_INLINE") "2"))
+  (or (getenv "NELISP_INLINE") "4"))
 
 (defvar nelisp-standalone--inline-counter 0)
 (defvar nelisp-standalone--inline-stats nil)
@@ -1644,8 +1651,37 @@ position and under `data-addr'."
   "Normalized dependency sources visible only while compiling their caller.")
 (defconst nelisp-standalone--unit-inline-dependencies
   '(("arena.o" "reader-gc.o")
-    ("mirror-lookup.o" "reader-gc.o")
-    ("val-load.o" "reader-gc.o")
+    ("mirror-lookup.o" "reader-gc.o" "arena.o")
+    ("val-load.o" "reader-gc.o" "arena.o")
+    ("car-ptr.o" "arena.o")
+    ("cdr-ptr.o" "arena.o")
+    ("vec-slot-ptr.o" "arena.o")
+    ("record-slot-ptr.o" "arena.o")
+    ("sf-frame-stack-find.o" "arena.o")
+    ("fnv1a.o" "arena.o")
+    ("str-bytes.o" "arena.o")
+    ("rootstack.o" "arena.o")
+    ("applyfn-reader.o" "arena.o")
+    ("combiner-apply-fix.o" "arena.o")
+    ("combiner-cons-mxcache.o" "arena.o")
+    ("reader-catch-throw.o" "arena.o")
+    ("reader-fileio.o" "arena.o")
+    ("reader-gc.o" "arena.o")
+    ("arglist.o" "arena.o")
+    ("lookup-fn.o" "arena.o")
+    ("sf-frame-bind.o" "arena.o")
+    ("sf-env-lookup-value.o" "arena.o")
+    ("frame-pop-epoch.o" "arena.o")
+    ("frame-push-epoch.o" "arena.o")
+    ("sf-let-setup.o" "arena.o")
+    ("shim.o" "arena.o")
+    ("apply-lambda-inner.o" "arena.o")
+    ("sf-progn.o" "arena.o")
+    ("reader-capture.o" "arena.o")
+    ("sf-eval-is-truthy.o" "arena.o")
+    ("sf-while.o" "arena.o")
+    ("sf-setq.o" "arena.o")
+    ("reader-parser.o" "arena.o")
     ("driver.o" "arena.o"))
   "Explicit unit dependencies available to the general small-function inliner.")
 
@@ -1687,11 +1723,43 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
         (t (or (nelisp-standalone--inline-clone-p (car body))
                (nelisp-standalone--inline-clone-p (cdr body))))))
 
+(defun nelisp-standalone--inline-constant-base-case (definition args)
+  "Select a bounded nonrecursive IF branch for literal integer arguments.
+All call arguments still pass through the ordinary ordered fresh bindings.
+Neither the discarded branch nor a recursive call is expanded."
+  (pcase definition
+    (`(defun ,name ,params (if (,op ,left ,right) ,yes ,no))
+     (when (and (symbolp name) (listp params) (cl-every #'symbolp params)
+                (not (memq '&optional params)) (not (memq '&rest params))
+                          (not (memq '&c-varargs params))
+                (= (length params) (length args))
+                (memq op '(= /= < > <= >=)))
+       (cl-labels ((literal (operand)
+                     (let ((value (if (integerp operand) operand
+                                    (let ((position (cl-position operand params :test #'eq)))
+                                      (and position (nth position args))))))
+                       ;; The native comparisons are signed i64.
+                       (and (integerp value) (<= (- (expt 2 63)) value)
+                            (< value (expt 2 63)) (cons t value)))))
+         (let ((a (literal left)) (b (literal right)))
+           (when (and a b
+                      ;; Walk a definition only after proving the tiny guard.
+                      ;; Retain the complete original size/operator cap.
+                      (nelisp-standalone--inline-body-ok-p (nth 3 definition) nil)
+                      (not (nelisp-standalone--inline-clone-p (nth 3 definition))))
+             (let ((branch (if (funcall op (cdr a) (cdr b)) yes no)))
+               (when (nelisp-standalone--inline-body-ok-p branch name)
+                 (cons params branch))))))))))
+
 (defun nelisp-standalone--inline-small-defuns (source &optional imports)
   "Inline small functions in SOURCE, optionally using normalized IMPORTS.
 Every local defun shadows imports, including locals that cannot be inlined.
 Only SOURCE's own forms are emitted; conflicting imported definitions fail."
-  (if (not (and (member (nelisp-standalone--inline-level) '("1" "2")) (eq (car-safe source) 'seq)))
+  ;; Some linked helper units contain just one definition. Preserve that
+  ;; outer shape while giving them the same optimizer as sequence units.
+  (if (eq (car-safe source) 'defun)
+      (cadr (nelisp-standalone--inline-small-defuns (list 'seq source) imports))
+  (if (not (and (member (nelisp-standalone--inline-level) '("1" "2" "3" "4")) (eq (car-safe source) 'seq)))
       source
     (let ((cands (make-hash-table :test 'eq))
           (imported (make-hash-table :test 'eq))
@@ -1699,7 +1767,7 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
           (private (make-hash-table :test 'eq))
           (seen (make-hash-table :test 'eq)) (count 0))
       (dolist (form (cdr source))
-        (when (eq (car-safe form) 'defun) (puthash (cadr form) t locals)))
+        (when (eq (car-safe form) 'defun) (puthash (cadr form) form locals)))
       (dolist (library imports)
         (when (eq (car-safe library) :source)
           (dolist (name (plist-get library :private)) (puthash name t private))))
@@ -1717,16 +1785,20 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
             (`(defun ,name ,params ,body)
              (unless (gethash name locals)
                (when (and (not (gethash name private))
+                          (not (memq name nelisp-standalone--inline-boundaries))
                           (symbolp name) (listp params) (cl-every #'symbolp params)
                           (not (memq '&optional params)) (not (memq '&rest params))
+                          (not (memq '&c-varargs params))
                           (nelisp-standalone--inline-body-ok-p body name))
                  (puthash name (cons params body) cands)
                  (puthash name t imported)))))))
       (dolist (form (cdr source))
         (pcase form
           (`(defun ,name ,params ,body)
-           (when (and (symbolp name) (listp params) (cl-every #'symbolp params)
+           (when (and (not (memq name nelisp-standalone--inline-boundaries))
+                      (symbolp name) (listp params) (cl-every #'symbolp params)
                       (not (memq '&optional params)) (not (memq '&rest params))
+                          (not (memq '&c-varargs params))
                       (nelisp-standalone--inline-body-ok-p body name))
              (puthash name (cons params body) cands)))))
       (cl-labels
@@ -1735,6 +1807,18 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
               ((not (consp x)) x)
               ((eq (car x) 'quote) x)
               ((eq (car x) 'data-addr) x)
+              ((memq (car x) '(let let*))
+               ;; A binding list is data structure, not a call whose first
+               ;; element is an operator. Visit every initializer, retaining
+               ;; the original parallel/sequential binding form and names.
+               (cons (car x)
+                     (cons (mapcar (lambda (binding)
+                                     (if (consp binding)
+                                         (cons (car binding)
+                                               (mapcar #'expand (cdr binding)))
+                                       binding))
+                                   (cadr x))
+                           (mapcar #'expand (cddr x)))))
               (t
                (let* ((external (eq (car x) 'extern-call))
                       (name (if external (cadr x) (car x)))
@@ -1749,10 +1833,18 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
                                                 (lambda (arg)
                                                   (keywordp (car-safe arg)))
                                                 raw-args))))
-                                 (gethash name cands))))
+                                 (or (gethash name cands)
+                                     (and (not external)
+                                          (let ((definition (or (gethash name locals)
+                                                                (gethash name seen))))
+                                            (and definition
+                                                 (not (memq name nelisp-standalone--inline-boundaries))
+                                                 (or (gethash name locals) (not (gethash name private)))
+                                                 (nelisp-standalone--inline-constant-base-case
+                                                  definition args))))))))
                  (if (and cand (= (length args) (length (car cand))))
                      (let ((alist (mapcar (lambda (p)
-                                            (cons p (intern (format "%s__i%d"
+                                            (cons p (make-symbol (format "%s__i%d"
                                                                     p (cl-incf nelisp-standalone--inline-counter)))))
                                           (car cand))))
                        (setq count (1+ count))
@@ -1774,7 +1866,14 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
           (push (list (hash-table-count cands) count) nelisp-standalone--inline-stats)
           (message "nelisp-inline: %d candidates, %d call sites inlined"
                    (hash-table-count cands) count)
-          out)))))
+          out))))))
+
+(defun nelisp-standalone--inline-source (source imports)
+  "Expand SOURCE through the configured, bounded number of inline passes."
+  (dotimes (_ (pcase (nelisp-standalone--inline-level)
+                ("4" 4) ("3" 3) ("2" 2) (_ 1)))
+    (setq source (nelisp-standalone--inline-small-defuns source imports)))
+  source)
 
 (defconst nelisp-standalone--box-census-idioms
   '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
@@ -1906,10 +2005,7 @@ twice appears twice; readers keep the last occurrence of each unit."
          (source (nelisp-standalone-arena-rewrite-source source))
          (source (nelisp-heap-accessors-lower source))
          (imports (bound-and-true-p nelisp-standalone--inline-import-sources))
-         (source (nelisp-standalone--inline-small-defuns source imports))
-         (source (if (equal (nelisp-standalone--inline-level) "2")
-                     (nelisp-standalone--inline-small-defuns source imports)
-                   source))
+         (source (nelisp-standalone--inline-source source imports))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-aot-compiler--label-counter 0)
@@ -2242,7 +2338,12 @@ commit; they carry the old dependency lists, which are now inert.
 
 Stale entries for the same NAME are removed on a miss, so the cache
 directory tracks the tree rather than accumulating every key ever built."
-  (let* ((source (nelisp-standalone--abi-box-split-source source))
+  (let* (;; Reader-only units bypass `--unit-for'. Resolve their same
+         ;; explicit imports before both cache-key generation and compiling.
+         (nelisp-standalone--inline-import-sources
+          (or nelisp-standalone--inline-import-sources
+              (nelisp-standalone--unit-inline-imports name)))
+         (source (nelisp-standalone--abi-box-split-source source))
          (name (nelisp-standalone--target-object-name name))
          (nelisp-standalone--build-trace-unit name)
          (cache-dir (nelisp-standalone--target-cache-dir))
@@ -3012,9 +3113,14 @@ directory tracks the tree rather than accumulating every key ever built."
           (if (= (logand w 3) 1) (sar w 2) 0)
         (if (= (logand w 7) 6) (- w 6) (heap-read-u64 w 8))))
     (defun nl_word_data (w)
-      (let ((kind (nl_val_tag w)))
+      ;; Legacy strings/symbols keep their physical +16 field. A compact
+      ;; vectorlike or its physical view keeps flags in the backing header;
+      ;; never cache those flags in a transient view.
+      (let* ((direct (= (logand w 7) 6))
+             (kind (if direct (logand (heap-read-u8 (- w 6) 0) 63)
+                     (heap-read-u8 w 0))))
         (if (or (= kind 8) (= kind 9) (= kind 12) (= kind 17) (= kind 18))
-            (let ((bits (heap-read-u64 (nl_word_payload w) 0)))
+            (let* ((bits (heap-read-u64 (if direct (- w 6) (heap-read-u64 w 8)) 0)))
               (if (/= (logand bits 128) 0) 13110
                 (if (/= (logand bits 64) 0) 13109 0)))
           (heap-read-u64 w 16))))
@@ -3025,8 +3131,9 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_record_length (v)
       (sar (heap-read-u64 (nl_word_payload v) 0) 8))
     (defun nl_record_payload (v)
-      (if (or (= (nl_val_tag v) 12) (= (nl_val_tag v) 17) (= (nl_val_tag v) 18))
-          (nl_word_payload v) 0))
+      (let* ((tag (nl_val_tag v)))
+        (if (or (= tag 12) (= tag 17) (= tag 18))
+            (nl_word_payload v) 0)))
     ;; A 32-byte Sexp slot or view as a WORD, cloning a heap value into a
     ;; fresh box exactly as nl_sexp_clone_into into a caller box did.
 
@@ -10838,14 +10945,15 @@ leave symbols unresolved at link time."
          (while (< i tlen)
            (let* ((f (heap-read-u64 (+ tbl (* i 8)) 0))
                   (ptag (logand f 7))
-                  (faddr (+ ds (- f ptag)))
+                  (faddr (+ ds (logand f -8)))
                   (o (heap-read-u64 faddr 0))
                   (raw (- o ptag)))
              (nl_seq2
               (ptr-write-u64 faddr 0
-                (+ ptag (if (< raw slen)
-                            (+ ds raw)
-                          (+ ib (- raw slen)))))
+                ;; Keep RAW for the exact existing boundary comparison,
+                ;; including malformed unaligned SLEN. The relocation bases
+                ;; cancel the subtract/add of PTAG in the stored address.
+                (if (< raw slen) (+ ds o) (+ ib (- o slen))))
               (setq i (+ i 1)))))
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_stream_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_stream keeps the (rc, OUT) ABI.
@@ -12119,7 +12227,7 @@ eval applyfn.")
     ;; (ptr@16, len@24), so this is a byte compare with no allocation --
     ;; `wf_name_is' would cost a symbol allocation per lookup.
     (defun nl_ht_test_mode (table_ptr)
-      (let* ((meta_ptr (nl_ht_meta_slot table_ptr)))
+      (let* ((meta_ptr (nl_cons_car_word table_ptr)))
         (if (= (heap-sexp-tag-word meta_ptr) 8)
             (if (< (vector-len meta_ptr) 3)
                 0
@@ -12447,7 +12555,7 @@ eval applyfn.")
     ;; identity table, else 0 (content hash).
     (defun nl_ht_hash_mode (table_ptr mode)
       (if (= mode 0) 0
-        (let* ((meta (nl_ht_meta_slot table_ptr)))
+        (let* ((meta (nl_cons_car_word table_ptr)))
           (if (= (heap-sexp-tag-word meta) 8)
               (if (>= (vector-len meta) 8) mode 0)
             0))))
@@ -12470,8 +12578,8 @@ eval applyfn.")
         (if (/= (heap-sexp-tag-word table_ptr) 7) 0
           (let* ((mode (nl_ht_test_mode table_ptr)))
             (if (= mode 0) 0
-              (let* ((meta (nl_ht_meta_slot table_ptr))
-                     (data (nl_ht_data_slot table_ptr)))
+              (let* ((meta (nl_cons_car_word table_ptr))
+                     (data (nl_cons_cdr_word table_ptr)))
                 (if (/= (heap-sexp-tag-word meta) 8) 0
                   (if (/= (nl_val_tag data) 8) 0
                     (if (< (vector-len meta) 8) 0
@@ -24376,8 +24484,8 @@ into that constant unconditionally is what broke every aarch64 build."
 (defconst nelisp-standalone--applyfn-bf-arms
   (append
    '(;; --- predicates ---
-    ((:lit "consp")    :word . (if (= (heap-read-u64 (wf_arg_ptr args 0) 0) 7) 7 3))
-    ((:lit "atom")     :word . (if (= (heap-read-u64 (wf_arg_ptr args 0) 0) 7) 3 7))
+    ((:lit "consp")    :word . (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 7) 7 3))
+    ((:lit "atom")     :word . (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 7) 3 7))
     ;; NativeSubr has its own tag; the legacy builtin cons remains accepted.
     ((:lit "subrp")    :word . (let* ((obj (wf_arg_ptr args 0)))
                            (if (= (heap-read-u8 obj 0) 18)
@@ -24386,7 +24494,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                (if (= (let* ((carw (nl_cons_car_word obj))) (if (= (logand carw 1) 0) (nl_sp_eq_lit carw 7 31078196194145634 0) 0)) 1)
                                    7 3)
                              3))))
-    ((:lit "stringp")  :word . (let* ((tg (heap-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "stringp")  :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 5) 7 (if (= tg 6) 7
                              (if (= tg 14) 7 (if (= tg 15) 7
                                3))))))
@@ -24452,24 +24560,24 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; this is what makes `type-of' (an elisp `cond' over `integerp' et al,
     ;; `scripts/nelisp-stdlib-prelude.el') answer `integer' for a bignum,
     ;; with no separate change needed there.
-    ((:lit "integerp") :word . (let* ((tg (heap-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "integerp") :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 2) 7 (if (= tg 13) 7 3))))
     ((:lit "natnump")  :word . (let* ((p (wf_arg_ptr args 0)))
                            (if (= (heap-read-u64 p 0) 2)
                                (if (>= (heap-read-u64 p 8) 0) 7 3)
                              3)))
-    ((:lit "numberp")  :word . (let* ((tg (heap-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "numberp")  :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 2) 7 (if (= tg 3) 7 (if (= tg 13) 7 3)))))
-    ((:lit "floatp")   :word . (if (= (heap-read-u64 (wf_arg_ptr args 0) 0) 3) 7 3))
+    ((:lit "floatp")   :word . (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 3) 7 3))
     ;; Doc 201 §6.17: `sxhash-eq' hashes what `eq' compares -- identity --
     ;; so two equal-content strings hash apart as they do in Emacs, while
     ;; `(eq a b)' still implies equal hashes (`bf_identity_hash').
     ((:lit "sxhash-eq") :word . (wf_write_int_w 0 (bf_identity_hash (wf_arg_ptr args 0))))
-    ((:lit "vectorp")  :word . (if (= (heap-read-u64 (wf_arg_ptr args 0) 0) 8) 7 3))
-    ((:lit "listp")    :word . (let* ((tg (heap-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "vectorp")  :word . (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 8) 7 3))
+    ((:lit "listp")    :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 7) 7 (if (= tg 0) 7 3))))
     ;; GNU Emacs C primitive `nlistp': every non-cons object except nil.
-    ((:lit "nlistp")   :word . (let* ((tg (heap-read-u64 (wf_arg_ptr args 0) 0)))
+    ((:lit "nlistp")   :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (or (= tg 7) (= tg 0))
                                3
                              7)))
@@ -39246,16 +39354,38 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; written at DS+F (a single relocated u64 pointer field), hence the
     ;; `+8' in the upper-bound check.
     (defun nl_cold_reloc_table_valid_p (tbl tlen slen)
-      (let ((i 0) (ok 1))
+      (let* ((i 0) (ok 1))
         (seq
+         ;; Preserve short-circuit order within each bounded four-entry group.
+         (while (and (= ok 1) (<= (+ i 4) tlen))
+           (seq (setq ok (and (let* ((entry (heap-read-u64 (+ tbl (* i 8)) 0))
+                         (ptag (logand entry 7))
+                         (f (- entry ptag)))
+                    (if (or (and (/= ptag 0) (/= ptag 6))
+                            (< f 0) (> (+ f 8) slen)) 0 1))
+                              (let* ((entry (heap-read-u64 (+ tbl (* (+ i 1) 8)) 0))
+                         (ptag (logand entry 7))
+                         (f (- entry ptag)))
+                    (if (or (and (/= ptag 0) (/= ptag 6))
+                            (< f 0) (> (+ f 8) slen)) 0 1))
+                              (let* ((entry (heap-read-u64 (+ tbl (* (+ i 2) 8)) 0))
+                         (ptag (logand entry 7))
+                         (f (- entry ptag)))
+                    (if (or (and (/= ptag 0) (/= ptag 6))
+                            (< f 0) (> (+ f 8) slen)) 0 1))
+                              (let* ((entry (heap-read-u64 (+ tbl (* (+ i 3) 8)) 0))
+                         (ptag (logand entry 7))
+                         (f (- entry ptag)))
+                    (if (or (and (/= ptag 0) (/= ptag 6))
+                            (< f 0) (> (+ f 8) slen)) 0 1))))
+                (setq i (+ i 4))))
          (while (and (= ok 1) (< i tlen))
-           (let* ((entry (heap-read-u64 (+ tbl (* i 8)) 0))
-                  (ptag (logand entry 7))
-                  (f (- entry ptag)))
-             (if (or (and (/= ptag 0) (/= ptag 6))
-                     (< f 0) (> (+ f 8) slen))
-                 (setq ok 0)
-               (setq i (+ i 1)))))
+           (seq (setq ok (let* ((entry (heap-read-u64 (+ tbl (* i 8)) 0))
+                         (ptag (logand entry 7))
+                         (f (- entry ptag)))
+                    (if (or (and (/= ptag 0) (/= ptag 6))
+                            (< f 0) (> (+ f 8) slen)) 0 1)))
+                (setq i (+ i 1))))
          ok)))
     ;; Apply the relocation table to the freshly-loaded chunk-0 region (at DS):
     ;; each field at DS+F holds an image offset O; relocate to DS+O (chunk-0
@@ -39282,14 +39412,12 @@ Keep this source-only boundary usable by Windows preflight and host controls."
          (while (< i tlen)
            (let* ((f (heap-read-u64 (+ tbl (* i 8)) 0))
                   (ptag (logand f 7))
-                  (faddr (+ ds (- f ptag)))
+                  (faddr (+ ds (logand f -8)))
                   (o (heap-read-u64 faddr 0))
                   (raw (- o ptag)))
              (nl_seq2
               (ptr-write-u64 faddr 0
-                (+ ptag (if (< raw slen)
-                            (+ ds raw)
-                          (+ ib (- raw slen)))))
+                (if (< raw slen) (+ ds o) (+ ib (- o slen))))
               (setq i (+ i 1)))))
          0)))
     ;; Relocate the open-addressing intern table's name-buffer pointers.  The

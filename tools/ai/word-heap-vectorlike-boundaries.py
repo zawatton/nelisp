@@ -117,7 +117,10 @@ int main(void) {
 }
 """
 
-IMAGE_C = r"""#include <stdint.h>
+IMAGE_C = r"""#define _GNU_SOURCE
+#include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <stdio.h>
 extern uint64_t nl_cold_reloc(uintptr_t,uint64_t,uintptr_t,uint64_t,uintptr_t);
 extern uint64_t nl_cold_reloc_table_valid_p(uintptr_t,uint64_t,uint64_t);
@@ -136,6 +139,33 @@ int main(void) {
 #ifndef ONLY_RELOCATION
   CK(1,nl_cold_reloc_table_valid_p((uintptr_t)table,3,100)==1);
   CK(2,nl_cold_reloc_table_valid_p((uintptr_t)bad,1,100)==0);
+
+  uint64_t batch[9];
+  for (int n=0;n<=9;n++) {
+    for (int j=0;j<n;j++) batch[j]=(uint64_t)j*8+(j%2?6:0);
+    CK(100+n,nl_cold_reloc_table_valid_p((uintptr_t)batch,n,100)==1);
+    for (int j=0;j<n;j++) {
+      uint64_t saved=batch[j];
+      batch[j]=4;
+      CK(200+n*10+j,nl_cold_reloc_table_valid_p((uintptr_t)batch,n,100)==0);
+      batch[j]=(uint64_t)-8;
+      CK(300+n*10+j,nl_cold_reloc_table_valid_p((uintptr_t)batch,n,100)==0);
+      batch[j]=96;
+      CK(400+n*10+j,nl_cold_reloc_table_valid_p((uintptr_t)batch,n,100)==0);
+      batch[j]=saved;
+    }
+  }
+  long page=sysconf(_SC_PAGESIZE);
+  if (page<=0) return 500;
+  char *guard=mmap(NULL,(size_t)page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+  CK(501,guard!=MAP_FAILED);
+  CK(502,mprotect(guard+page,(size_t)page,PROT_NONE)==0);
+  uint64_t *last=(uint64_t *)(guard+page)-1;
+  *last=4;
+  CK(503,nl_cold_reloc_table_valid_p((uintptr_t)last,4,100)==0);
+  last[-2]=0;last[-1]=8;last[0]=16;
+  CK(504,nl_cold_reloc_table_valid_p((uintptr_t)(last-2),3,100)==1);
+  CK(505,munmap(guard,(size_t)page*2)==0);
 
 #endif
   for (int which=0;which<3;which++) {
@@ -357,7 +387,7 @@ def main():
             results[mode + "-" + kind] = {
                 "exit": result.returncode, "stdout": result.stdout.decode().strip(),
                 "stderr": result.stderr.decode().strip(), "sha256": digest(binary)}
-    expected = {"codegen": "CODEGEN checks=17 PASS", "image": "IMAGE-RELOCATION checks=11 PASS",
+    expected = {"codegen": "CODEGEN checks=17 PASS", "image": "IMAGE-RELOCATION checks=161 PASS",
                 "relocation": "IMAGE-RELOCATION checks=9 PASS",
                 "copy32": "COPY32 checks=42 PASS"}
     passed = all(results["base-" + kind]["exit"] != 0 and

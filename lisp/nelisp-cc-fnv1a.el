@@ -73,23 +73,23 @@
     (defun nelisp_symbol_key_equal (left right)
       ;; Frame/mirror keys preserve uninterned identity. Ordinary symbols
       ;; and string keys retain their historical name-based interoperability.
-      (if (= (sexp-tag left) 16)
-          (if (= (sexp-tag right) 16)
-              (if (= (heap-sexp-payload left) (heap-sexp-payload right)) 1 0)
-            0)
-        (if (= (sexp-tag right) 16) 0
-          ;; Interned symbols share their name buffer, so two tag-4 keys
-          ;; with the same buffer and length name the same symbol: answer
-          ;; without the byte compare.  Any other pair still compares names.
-          (if (if (= (sexp-tag left) 4)
-                  (if (= (sexp-tag right) 4)
-                      (if (= (heap-sexp-data left) (heap-sexp-data right))
-                          (= (heap-sexp-length left) (heap-sexp-length right))
-                        0)
-                    0)
-                0)
-              1
-            (str-eq left right)))))
+      (let* ((left-tag (sexp-tag left)) (right-tag (sexp-tag right)))
+        (if (= left-tag 16)
+            (if (= right-tag 16)
+                (if (= (heap-read-u64 left 8) (heap-read-u64 right 8)) 1 0)
+              0)
+          (if (= right-tag 16) 0
+            ;; Interned symbols share their name buffer. Other string keys
+            ;; retain the existing byte comparison fallback.
+            (if (if (= left-tag 4)
+                    (if (= right-tag 4)
+                        (if (= (heap-read-u64 left 16) (heap-read-u64 right 16))
+                            (= (heap-read-u64 left 24) (heap-read-u64 right 24))
+                          0)
+                      0)
+                  0)
+                1
+              (str-eq left right))))))
     (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the
@@ -185,10 +185,13 @@
       ;; Keep the scalar step/step4 definitions above as the reference.
       ;; The compiler lowers this Lisp loop; one bounded raw load supplies
       ;; four bytes, avoiding four cross-unit byte-access calls per group.
-      (let* ((bytes (if (= (sexp-tag str-ptr) 16)
-                        (heap-sexp-data str-ptr) (str-bytes-ptr str-ptr)))
-             (n (if (= (sexp-tag str-ptr) 16)
-                    (heap-sexp-length str-ptr) (str-len str-ptr)))
+      (let* ((kind (sexp-tag str-ptr))
+             ;; These classes have physical inline String fields. Mutable
+             ;; and unsupported kinds retain the existing bytes fallback.
+             (bytes (if (or (= kind 4) (= kind 5) (= kind 14) (= kind 16))
+                        (heap-read-u64 str-ptr 16)
+                      (str-bytes-ptr str-ptr)))
+             (n (heap-read-u64 str-ptr 24))
              (h (+ (shl 1 31) 18652613)) (mask (- (shl 1 32) 1))
              (i 0) (quad 0))
         (seq

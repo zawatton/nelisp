@@ -76,20 +76,23 @@
       ;; under the recursive descent).
       (if (= cell-ptr 0)
           0
-        ;; Doc 215: walk by WORD.  Cells, pairs, keys and entries are all
-        ;; boxed, so their WORDs are the same pointers the views were; an
-        ;; immediate key or entry (malformed bucket) is rejected, not boxed.
         (if (= (nl_val_tag cell-ptr) 7)
-            (let* ((pair (nl_cons_car_word cell-ptr))
-                   (key (if (= (nl_val_tag pair) 7) (nl_cons_car_word pair) 3)))
-              (if (if (= (logand key 1) 0)
-                      (= (extern-call nelisp_symbol_key_equal key sym-ptr) 1)
-                    0)
-                  (let ((entry (nl_cons_cdr_word pair)))
-                    (if (= (logand entry 1) 0) entry 0))
+            ;; The validated Cons payload is physical storage. Read each
+            ;; edge directly instead of repeating its WORD tag/payload decode.
+            (let* ((cell-box (nl_word_payload cell-ptr))
+                   (pair (heap-read-u64 cell-box 0)))
+              (if (= (nl_val_tag pair) 7)
+                  (let* ((pair-box (nl_word_payload pair))
+                         (key (heap-read-u64 pair-box 0)))
+                    (if (if (= (logand key 1) 0)
+                            (= (extern-call nelisp_symbol_key_equal key sym-ptr) 1)
+                          0)
+                        (let ((entry (heap-read-u64 pair-box 8)))
+                          (if (= (logand entry 1) 0) entry 0))
+                      (nelisp_mirror_walk_bucket
+                       (heap-read-u64 cell-box 8) sym-ptr)))
                 (nelisp_mirror_walk_bucket
-                 (nl_cons_cdr_word cell-ptr)
-                 sym-ptr)))
+                 (heap-read-u64 cell-box 8) sym-ptr)))
           0)))
     (defun nelisp_mirror_lookup_entry_valid_key (sym-ptr)
       ;; Cold-load hardening (segfault fix, 2026-07): a caller-supplied

@@ -122,16 +122,14 @@ value form using the `ptr-read-u64' grammar op in nested position.")
      ;;
      ;; Returns: *const u8 data pointer (i64); 0 on non-string variant.
      ;;
-     ;; Note: `sexp-tag' is evaluated at most 3 times; it is a pure
-     ;; grammar op (single load from [sexp+0]) so repeated evaluation
-     ;; is safe and avoids the `let' restriction.
-     (if (or (= (sexp-tag sexp) 6) (= (sexp-tag sexp) 15))
-         (heap-read-u64 (heap-sexp-payload sexp) 8)
-       (if (or (= (sexp-tag sexp) 5) (= (sexp-tag sexp) 14))
-           (heap-sexp-data sexp)
-         (if (= (sexp-tag sexp) 4)
-             (heap-sexp-data sexp)
-           0))))
+     ;; Cache the semantic tag once. Every branch keeps its existing
+     ;; physical field ABI; unsupported kinds still return null.
+     (let* ((kind (sexp-tag sexp)))
+       (if (or (= kind 6) (= kind 15))
+           (heap-read-u64 (heap-sexp-payload sexp) 8)
+         (if (or (= kind 5) (= kind 14))
+             (heap-read-u64 sexp 16)
+           (if (= kind 4) (heap-read-u64 sexp 16) 0)))))
     ;; Raw-pointer byte access shared by AOT consumers whose source files are
     ;; deliberately kept out of the raw-memory kernel inventory.
     (defun nl_bytes_byte_at (bytes i)
@@ -275,7 +273,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= kind 2)
             (if (= (heap-read-u64 entry 16) key) 1 0)
           (if (/= (heap-read-u64 entry 24) len) 0
-            (nl_intern_eq (heap-read-u64 entry 16) key 0 len)))))
+            ;; Kind-1 keys are immutable name buffers. Pointer identity is
+            ;; sufficient after the kind/hash/length guards above.
+            (if (= (heap-read-u64 entry 16) key) 1
+              (nl_intern_eq (heap-read-u64 entry 16) key 0 len))))))
     (defun nl_symname_probe (table cap kind key len hash step first-tomb)
       (if (>= step cap) first-tomb
         (let* ((entry (+ table (* (logand (+ hash step) (- cap 1)) 88)))
@@ -373,10 +374,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= base 0) 0
           (let* ((hash (nl_symname_hash kind key len))
                  (entry (nl_symname_probe base cap kind key len hash 0 0)))
-            (if (if (= entry 0) 1
-                  (if (= (heap-read-u64 entry 0) 1)
-                      (if (= (nl_symname_entry_match entry kind key len hash) 1) 0 1)
-                    1)) 0 entry)))))
+            ;; Probe already validated every occupied row it returns.
+            ;; Empty/tombstone insertion positions are never lookup hits.
+            (if (= entry 0) 0
+              (if (= (heap-read-u64 entry 0) 1) entry 0))))))
     ;; First insertion wins: an intern hit must retain the original name Sexp.
     (defun nl_symbol_name_register (kind key len name-slot)
       (let* ((hash (nl_symname_hash kind key len))
