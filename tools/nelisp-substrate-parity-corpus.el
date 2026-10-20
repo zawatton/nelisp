@@ -458,6 +458,16 @@
             (if (and (eq pg-word-held pg-word-value)
                      (eq (aref pg-word-observed 0) 'scratch)
                      (eq (symbol-value pg-word-cell) pg-word-value)) 1 0))))
+    (65 shared
+        (progn
+          (makunbound 'ps-corpus-shadow)
+          (let ((ps-corpus-current
+                 (eval '(let ((ps-corpus-shadow 7))
+                          (defvar ps-corpus-shadow 9)
+                          ps-corpus-shadow) nil)))
+            (if (and (= ps-corpus-current 7)
+                     (boundp 'ps-corpus-shadow)
+                     (= ps-corpus-shadow 9)) 1 0))))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

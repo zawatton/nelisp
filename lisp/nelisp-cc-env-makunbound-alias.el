@@ -51,6 +51,7 @@
                               ;; Both slot writes follow all read-only checks.
                               (record-slot-set entry 0 unbound-ptr)
                               (record-slot-set entry 4 nil-scratch)
+                              (extern-call bf_fx_special_bump mirror-ptr)
                               (setq status 0)))))
                     (if (= status 2)
                         (setq status 2)

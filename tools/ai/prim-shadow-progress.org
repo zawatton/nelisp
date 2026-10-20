@@ -1,0 +1,99 @@
+#+TITLE: Variable aliases, watchers and shadow smoke (prim-shadow)
+#+NOTE: 2026-10-20 Acceptance caps and GNU 31.1 reference are unchanged. COMMON.md explicitly assigns worklog persistence to the coordinator. Evidence lives under target/prim-shadow.
+#+NOTE: 2026-10-20 Cost repair uses evaluator-internal FX guarded nonlocal references (minimal-native clause 2), not a public native or a new reader builtin. Each alias read checks the declaration/alias generation and falls back at that reference on invalidation; it never restarts a partially executed function. Dynamic formal binding resolves the authoritative alias before shallow/deep binding, permitting the source lookup to omit an impossible dynamic source cell while retaining lexical precedence. The original unoptimized reference path remains the fallback and reference implementation.
+#+NOTE: 2026-10-20 Run 2 resumes after the coordinator corrected the contract to GNU: notify the alias former watchers, discard them, resolve subsequent watcher access and writes to the base. No performance threshold changed.
+#+NOTE: Inventory justification per name: indirect-variable keeps a native-backed prelude facade and an fboundp-guarded Lisp fallback in emacs-cc-variable-alias-1.el for nonnative substrates; the extra divergent provider is intentional.
+#+NOTE: Inventory justification per name: internal-delete-indirect-variable keeps a native-backed prelude facade and the guarded source-only fallback; the second extra divergent provider is intentional.
+#+NOTE: Inventory justification per name: defvaralias retains its existing provider set, with native routing selected by the capability guard; its changed identity pin describes a facade, not an additional runtime primitive.
+#+NOTE: Inventory justification per name: enable-multibyte-characters is initialized to t by the explicit-local provider, prelude and foundation variable catalog; the duplicate declaration supplies the GNU default before insertion. Its GNU public name also accounts for the one prefix allowance.
+#+NOTE: Inventory justification per name: set no longer has a duplicate prelude definition in the native configuration; source inventory sees the remaining legacy library providers. No definition or allowance was added for set in this lane.
+#+NOTE: Inventory justification per name: save-excursion loses its obsolete eval-special stub; the remaining library provider set is unchanged.
+#+NOTE: Inventory justification per name: save-restriction loses its obsolete eval-special stub; the remaining library provider set is unchanged.
+#+NOTE: Inventory justification per name: save-current-buffer loses its obsolete eval-special stub; its divergent collision disappears.
+#+NOTE: Inventory justification per name: with-current-buffer loses its obsolete eval-special stub; the remaining library provider set is unchanged.
+#+NOTE: Inventory justification per name: with-temp-buffer loses its obsolete eval-special stub, which destroyed buffer scoping before shadow case 422; the remaining library provider set is unchanged.
+#+NOTE: Inventory justification per name: nelisp--native-variable-alias-pairs is the requested internal native-registry enumerator; it reads the authoritative graph without creating a second registry.
+#+NOTE: Inventory justification per name: emacs-parity-misc--inhibit-watchers is imported solely to embed the existing shared watcher policy at build time.
+#+NOTE: Inventory justification per name: emacs-parity-misc--notify is imported solely to embed the shared callback dispatcher; no second watcher implementation is added.
+#+NOTE: Inventory justification per name: emacs-parity-misc--remove-equal is imported with the shared watcher API for removal semantics.
+#+NOTE: Inventory justification per name: emacs-parity-misc--variable-watchers is imported by the provider builder and used by the alias facade to discard the source's former watchers.
+#+NOTE: Inventory justification per name: emacs-parity-misc--watcher-flag is embedded and refreshed after discarding the source watchers.
+#+NOTE: Inventory justification per name: emacs-parity-misc--watcher-symbol is embedded with the shared canonical watcher policy.
+#+NOTE: Inventory justification per name: emacs-parity-misc--watching is embedded to preserve the shared recursion guard.
+#+NOTE: Inventory justification per name: nelisp--native-variable-aliases is the existing capability flag read by the buffer-local facade, legacy fallback guard and build provider selection.
+#+NOTE: Inventory justification per name: nelisp-buffer-local--entry is inspected as a source form by the native buffer-local provider builder.
+#+NOTE: Inventory justification per name: nelisp-buffer-local--legacy-entry is inspected as a source form by the same builder; no public export is added.
+#+NOTE: Inventory justification per name: nelisp-buffer-local--mirror is inspected with the existing local provider source forms.
+#+NOTE: Inventory justification per name: nelisp-cc-variable-alias-public--source is the required private DSL input consumed by the standalone builder.
+#+NOTE: Inventory justification per name: nelisp-env--make-symbol-entry remains the legacy buffer-local source fallback's entry constructor, selected only outside the native registry path.
+#+NOTE: Inventory justification per name: lisp/nelisp-cc-variable-alias-public.el is the one added unsafe kernel file (118 to119), for WORD symbol-entry, alias and evaluator access under minimal-native clauses 1/2; no new reader builtin or public native arm is introduced.
+#+NOTE: 2026-10-20 GNU correction: defvar of the alias name under its dynamic let leaves the base void after unlet. Saved-binding lookup deliberately retains the original symbol; canonicalizing it incorrectly initializes the base. New corpus case ps-shadow-alias authenticates this distinction.
+#+NOTE: 2026-10-20 The Anvil dependency tool was rejected by automatic approval review under policy never; it is not an unresponsive connection. Bounded local source caller analysis replaces the unavailable read-only operation. Worklog and memory writes remain assigned to the coordinator by COMMON.md.
+#+NOTE: 2026-10-20 Guard regression corpus also checks mid-call retarget, both detach APIs, one execution of effects, buffer-local switching, source/base lexical precedence, nil/t, void offender, uninterned identity, dynamic required/optional/rest errors and unwinding earlier formals. The pre-change r6 binary reads (77 11) instead of GNU (77 77), and executes all three constant-alias bodies instead of signaling; evidence target/prim-shadow/r6/guard-red.stdout.
+#+NOTE: 2026-10-20 Watcher rebinding audit found a pre-existing pending-let hole and demonstrated that skipping the source dynamic walk exposed it in bytecode. A raw per-context pending-let chain (header +24, names retained in existing checked roots) now makes source-kind reject aliasing during the callback, as GNU does. Both interpreted and manual bytecode bindings have red r7 witnesses in target/prim-shadow/r7/guard-pending-red.stdout. No second alias registry or public native is added.
+#+NOTE: 2026-10-20 Source-only alias compiler hints select the guarded optimization; absent or stale hints retain authoritative runtime semantics. They avoid querying every unrelated variable while loading libraries. Cost witness parsing now counts the same 32 reads at the surviving nl_sb_plain_entry_p edge when the general inliner removes the original VM varref boundary; the benchmark workload and instruction-count caps are unchanged.
+#+NOTE: 2026-10-20 Migration's GNU let notification uses internal operation 7 without a pending dynamic binding; a nested alias creation there is permitted. The final guard corpus checks 18 cases, including GC/throw cleanup of pending binding metadata. The op18 scratch block reuses the existing checked contiguous root allocator, releasing partial reservations before memory-full and removing three duplicate static reservation call sites from the census.
+#+NOTE: 2026-10-20 The executed native startup uses GNU vendor macroexp.el, not the older stdlib expander. The producer fix preserves native defvar/defconst cells when eval-special reloads, using the prelude's existing special-form-p guard. Frozen producer red/green evidence is target/prim-shadow/r10/declaration-guard-proof.json; no GNU vendor file or inactive expander is modified.
+#+NOTE: 2026-10-20 A deliberately disabled generation guard exposed raw-WORD comparison of equal boxed/immediate integers. Both operands are now decoded numerically, and the generation producer accepts boxed integers and writes a canonical result. r10 fails target/prim-shadow/generation.el with "Alias generation did not advance from Lisp integer zero"; all four install/detach producer transitions are checked. The regression executes inspected FX records directly rather than relying on first-call table publication.
+#+NOTE: 2026-10-20 Raw namespace and unsafe inventories are already red on fresh base (565 collisions, 921 divergent, 1576 prefix, 1941 private escapes; unsafe 1930 operations/122 kernel files). Current differences are enumerated by identity in target/prim-shadow/ns-delta.json and justified above; no numerical allowance is raised in this lane. This criterion claims no unexplained increase, not a green repository-wide legacy inventory.
+#+NOTE: 2026-10-20 Final Astra audit found the complementary watcher retarget case: a let watcher may retarget the original alias while the pending canonical base stays bound. nl_n3_bind now roots that canonical name before notification and uses it for the actual binding; lexical bindings retain their original name. The 20-case guard corpus includes interpreter/bytecode comparisons. Frozen r13 interpreter red (77 11 77), GNU (22 77 22), and the already-correct bytecode result are in target/prim-shadow/static-r13/guard-source-retarget-{red,gnu}.stdout.
+#+NOTE: 2026-10-20 Interpreter and bytecode reads reuse the shared slot-4 candidate result without duplicating record/slot-count validation. Target and terminal checks remain authoritative, malformed/local cases keep the resolver fallback, and no new native entry is added. Actual bytecode profiles now retain wf_bytecode_w_varref; witness parsing counts that boundary once or its surviving caller-qualified shared checkpoint, excluding terminal checks. Actual 31-reference negative profiles cover both VM and bytecode, and their receipts pin the parser source. Workload, four layouts, GC-inclusive Ir and all original caps remain unchanged.
+#+NOTE: 2026-10-20 The final guard corpus has 24 rows, adding GC during set/set-default source retarget and detach. GNU set/default resolves the original alias again after the callback, unlike let's fixed pending base. The watched default path now roots the original name rather than discarding it before notification; post-callback canonical, constant and worker checks remain intact. The r14 red is target/prim-shadow/r14/guard-default-red.log and its saved stdout. GNU itself corrupts nil when a set watcher retargets an alias to nil (then printer wrong-type-argument(consp77), rc255); exact input/invocation/stdout/stderr are under target/prim-shadow/gnu-defects/watcher-retarget-nil.* and the case is excluded under COMMON's GNU-defect rule.
+
+* S1 Merge and alias contract
+** S1.1 Both merge conflicts are resolved
+cmd: ! rg -n '^(<<<<<<<|=======|>>>>>>>)' lisp/nelisp-buffer-local.el scripts/nelisp-standalone-build.el
+** S1.2 GNU watcher reference is reproduced exactly
+cmd: python3 tools/ai/prim-shadow-check.py gnu-watchers
+** S1.3 End-to-end alias parity and all watcher contract items pass
+#+NOTE: Development-efficiency improvement: the focused GNU/native runner diagnoses the frozen r13 binding defect and r15 fix directly; the native guard takes 1.554540s versus 139.395844s for the previous full standalone run. Their scopes differ: this is a safe adjacent diagnostic path, while the complete mandatory suite remains unchanged. target/prim-shadow/efficiency.json records both measurements. Running the old witness parser against the same final raw profiles gives 0 reads (false red) in VM/bytecode; the repaired parser gives the required32, and actual31-reference workloads still fail. target/prim-shadow/witness-parser-red-green.json records the executed old/new checks.
+cmd: LC_ALL=C.UTF-8 python3 test/perf/prim-alias-check.py parity
+cmd: python3 tools/ai/prim-shadow-check.py contract
+cmd: python3 tools/ai/prim-shadow-check.py guard
+cmd: python3 tools/ai/prim-shadow-check.py guard-negative
+cmd: python3 tools/ai/prim-shadow-check.py witness-negative
+
+* S2 Defvar under dynamic binding
+** S2.1 Interpreter preserves the current value and initializes the outermost saved binding
+cmd: python3 tools/ai/prim-shadow-check.py defvar-interpreter
+** S2.2 VM matches GNU values, error symbols and data
+cmd: python3 tools/ai/prim-shadow-check.py defvar-vm
+** S2.3 End-to-end bytecode matches GNU including activation-local lean unwind roots
+cmd: python3 tools/ai/prim-shadow-check.py defvar-all
+cmd: python3 tools/ai/prim-shadow-check.py corpus
+
+* S3 Prelude reload
+** S3.1 Repeated reload preserves the plain fset implementation
+cmd: python3 tools/ai/prim-shadow-check.py reload-fset
+** S3.2 Reload handles the earlier nl-afset reset independently
+cmd: python3 tools/ai/prim-shadow-check.py reload-afset
+** S3.3 End-to-end source-prelude reload is idempotent with FX enabled
+cmd: python3 tools/ai/prim-shadow-check.py reload
+
+* S4 Shadow smoke
+** S4.1 Dynamic and static WORD builds succeed
+cmd: python3 tools/ai/prim-shadow-check.py builds
+** S4.2 target/nelisp resolves to the measured dynamic binary
+cmd: python3 tools/ai/prim-shadow-check.py dynamic-link
+** S4.3 End-to-end standalone reader shadow smoke passes
+#+TIMEOUT: 600
+cmd: python3 tools/ai/prim-shadow-check.py shadow-smoke
+
+* S5 Inventory and costs
+** S5.1 Every inventory increase is removed or individually justified
+cmd: python3 tools/ai/prim-shadow-check.py inventory
+** S5.2 Plain reference Ir does not regress and all three alias ratios are no worse than prim-alias
+#+NOTE: Final r15 all-GC four-layout Ir/reference: interpreter plain5631.282105->4257.443945, alias5966.442258, ratio1.4014141664464261<=1.4080376860804409; VM plain10564.913285->3674.843398, alias3551.437309, ratio0.9664186806174595<=1.2030556582422351; bytecode plain1676.866109->1656.615520, alias3271.615520, ratio1.974879192521977<=1.9966804792689519. Fresh BASE692dc8a09 is measured with the same unchanged workload/parser. All32 reads are authenticated at every layout. Census dynamic1361/static1359, S6.2=0 on both. LOAD6487805012->6482106403 Ir. No cap is revised.
+#+NOTE: Informational raw ns/reference BASE->r15 (32 ordered reads per call): interpreter plain838.51->737.44/alias836.63->877.09; VM plain1286.00->624.76/alias1283.84->627.82; bytecode plain595.99->579.39/alias595.95->734.63. Corpus S1.4 command0.613309s, four-layout five-file wall mean0.851498->0.849214s (both below55s); source-prelude reload stays enabled. Wall time is informational only. target/prim-shadow/{timings,wall}.json and target/prim-alias/us.json bind binaries and raw outputs.
+cmd: python3 tools/ai/prim-shadow-check.py reference-costs
+** S5.3 End-to-end census S6.2 is zero and total does not exceed 1362
+cmd: python3 tools/ai/prim-shadow-check.py census
+
+* S6 Final integrated verification and delivery
+** S6.1 Four-layout five-file load Ir does not exceed measured base 692dc8a09
+cmd: python3 tools/ai/prim-shadow-check.py load-five
+** S6.2 Final suite has 11 groups/zero failures, standalone checks pass and Anvil exposes 40 tools
+#+NOTE: Final r15 dynamic/static verification11groups/0failures in176.532260s; independent standalone69checks/0failures in153.084186s, with only the prescribed known-red maphash-sparse exception. Anvil tools/list after25s exposes exactly40tools. target/prim-shadow/final.json authenticates the actual logs, both ELF/cold artifacts and tool output. Changed Elisp17files pass parens with0findings; the pre-existing whole-tree normal lint and raw inventory failures are not reported as green. Worklog remains assigned to the coordinator by COMMON.md.
+cmd: python3 tools/ai/prim-shadow-check.py final
+** S6.3 End-to-end delivery includes successful relay commit receipts and authenticated binaries
+cmd: python3 tools/ai/prim-shadow-check.py delivery

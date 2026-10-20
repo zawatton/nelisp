@@ -148,20 +148,8 @@ of TEST itself is returned."
               (cons (cons 'prog1 (cons form2 rest))
                     nil))))
 
-;;;; --- buffer-state stubs ---------------------------------------------
-
-(defmacro save-excursion (&rest body)
-  "Stub: NeLisp has no buffer concept, so this is just `progn'.
-Reserved for future nemacs layer parity."
-  (cons 'progn body))
-
-(defmacro save-restriction (&rest body)
-  "Stub: NeLisp has no narrowing, so this is just `progn'."
-  (cons 'progn body))
-
-(defmacro save-current-buffer (&rest body)
-  "Stub: NeLisp has no current buffer, so this is just `progn'."
-  (cons 'progn body))
+;; The core prelude supplies real buffer-state macros. Do not replace them
+;; on source reload: later forms may insert text, narrow or switch buffers.
 
 ;;;; --- declarations (no-op in interpreter mode) ------------------------
 
@@ -187,20 +175,7 @@ Reserved for future nemacs layer parity."
 
 ;;;; --- buffer/syntax `with-*' family (interpreter-mode stubs) ----------
 
-;; NeLisp has no buffer / syntax-table concept.  These macros' BODY
-;; runs without the buffer-context save/restore that host Emacs would
-;; install — sufficient for tree-walker loading of vendor files; if a
-;; vendor function actually depends on the buffer context at call
-;; time, the call site will fail later (= deferred to a more specific
-;; blocker).
-
-(defmacro with-current-buffer (_buffer &rest body)
-  "Stub: ignore BUFFER, run BODY in current context."
-  (cons 'progn body))
-
-(defmacro with-temp-buffer (&rest body)
-  "Stub: ignore temp-buffer scoping, run BODY in current context."
-  (cons 'progn body))
+;; Buffer scoping is provided by the core prelude, including on reload.
 
 (defmacro with-syntax-table (_table &rest body)
   "Stub: ignore TABLE, run BODY in current context."
@@ -224,7 +199,10 @@ Reserved for future nemacs layer parity."
   "NeLisp has no buffer-local; equivalent to `setq'."
   (cons 'setq pairs))
 
-(defmacro defvar (name &rest args)
+;; Preserve native declaration cells on reload. GNU's macro expander sees
+;; their special-form identity; fallback macro bodies cannot replace them.
+(unless (and (fboundp 'special-form-p) (special-form-p 'defvar))
+ (defmacro defvar (name &rest args)
   "Define NAME as a global variable, set initial VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
 declared, NOT bound — matching Emacs `defvar' so that a later
@@ -238,13 +216,14 @@ tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
                   (list 'set (list 'quote name) (car args)))
             (list 'quote name))
     (list 'funcall '(quote (builtin nelisp--declare-local-special))
-          (list 'quote name))))
+          (list 'quote name)))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
-(defmacro defconst (name value &optional _docstring)
+(unless (and (fboundp 'special-form-p) (special-form-p 'defconst))
+ (defmacro defconst (name value &optional _docstring)
   "Define NAME as a constant whose initial value is VALUE.
 DOCSTRING is currently ignored.  Returns NAME.
 
@@ -256,7 +235,7 @@ slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
         (list 'puthash (list 'quote name) t 'nelisp--special-variables)
         (list 'set (list 'quote name) value)
         (list 'nelisp--env-globals-set-constant (list 'quote name) t)
-        (list 'quote name)))
+        (list 'quote name))))
 
 ;; Reloading this source replaces the bootstrap macro identities. Keep the
 ;; standalone's native-declaration dispatch attached to these new definitions;

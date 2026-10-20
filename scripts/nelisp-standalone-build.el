@@ -55,6 +55,7 @@
 (require 'nelisp-cc-string-compare)
 (require 'nelisp-cc-sort)
 (require 'nelisp-cc-number-order)
+(require 'nelisp-cc-variable-alias-public)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
@@ -1635,6 +1636,38 @@ position and under `data-addr'."
 
 (defvar nelisp-standalone--inline-counter 0)
 (defvar nelisp-standalone--inline-stats nil)
+(defvar nelisp-standalone--inline-import-sources nil
+  "Normalized dependency sources visible only while compiling their caller.")
+(defconst nelisp-standalone--unit-inline-dependencies
+  '(("arena.o" "reader-gc.o")
+    ("mirror-lookup.o" "reader-gc.o")
+    ("val-load.o" "reader-gc.o"))
+  "Explicit unit dependencies available to the general small-function inliner.")
+
+(defun nelisp-standalone--inline-static-data-p (form)
+  "Non-nil when FORM refers directly to a source unit's static data."
+  (and (consp form)
+       (or (eq (car form) 'data-addr)
+           (nelisp-standalone--inline-static-data-p (car form))
+           (nelisp-standalone--inline-static-data-p (cdr form)))))
+
+(defun nelisp-standalone--prepare-inline-import (source)
+  "Normalize SOURCE's defuns without importing donor-private data identities.
+The target rewrite may introduce the shared, externally linked arena-base
+symbol.  Those references are valid in every unit; source data addresses are
+excluded before that rewrite.  No imported definition is emitted."
+  (let* ((split (nelisp-standalone--abi-box-split-source source))
+         (functions (cl-remove-if-not (lambda (form) (eq (car-safe form) 'defun))
+                                      (cdr split)))
+         (private (mapcar #'cadr
+                          (cl-remove-if-not
+                           (lambda (form) (nelisp-standalone--inline-static-data-p (cdddr form)))
+                           functions))))
+    ;; Keep excluded definitions for ambiguity checks, but never inline them.
+    (list :source
+          (nelisp-standalone-arena-rewrite-source
+           (nelisp-standalone--rebase-arena-source (cons 'seq functions)))
+          :private private)))
 
 (defun nelisp-standalone--inline-clone-p (body)
   "Non-nil when BODY makes syscall 56 (clone on x86_64).
@@ -1648,11 +1681,41 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
         (t (or (nelisp-standalone--inline-clone-p (car body))
                (nelisp-standalone--inline-clone-p (cdr body))))))
 
-(defun nelisp-standalone--inline-small-defuns (source)
-  "SOURCE (a (seq FORM...) unit) with calls to small leaf defuns inlined."
+(defun nelisp-standalone--inline-small-defuns (source &optional imports)
+  "Inline small functions in SOURCE, optionally using normalized IMPORTS.
+Every local defun shadows imports, including locals that cannot be inlined.
+Only SOURCE's own forms are emitted; conflicting imported definitions fail."
   (if (not (and (member (nelisp-standalone--inline-level) '("1" "2")) (eq (car-safe source) 'seq)))
       source
-    (let ((cands (make-hash-table :test 'eq)) (count 0))
+    (let ((cands (make-hash-table :test 'eq))
+          (imported (make-hash-table :test 'eq))
+          (locals (make-hash-table :test 'eq))
+          (private (make-hash-table :test 'eq))
+          (seen (make-hash-table :test 'eq)) (count 0))
+      (dolist (form (cdr source))
+        (when (eq (car-safe form) 'defun) (puthash (cadr form) t locals)))
+      (dolist (library imports)
+        (when (eq (car-safe library) :source)
+          (dolist (name (plist-get library :private)) (puthash name t private))))
+      (dolist (library imports)
+        (dolist (form (cdr (if (eq (car-safe library) :source)
+                              (plist-get library :source) library)))
+          (when (eq (car-safe form) 'defun)
+            (let ((name (cadr form)))
+              (unless (gethash name locals)
+                (when (and (gethash name seen)
+                           (not (equal (gethash name seen) form)))
+                  (error "Ambiguous inline import: %S" name))
+                (puthash name form seen))))
+          (pcase form
+            (`(defun ,name ,params ,body)
+             (unless (gethash name locals)
+               (when (and (not (gethash name private))
+                          (symbolp name) (listp params) (cl-every #'symbolp params)
+                          (not (memq '&optional params)) (not (memq '&rest params))
+                          (nelisp-standalone--inline-body-ok-p body name))
+                 (puthash name (cons params body) cands)
+                 (puthash name t imported)))))))
       (dolist (form (cdr source))
         (pcase form
           (`(defun ,name ,params ,body)
@@ -1667,8 +1730,20 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
               ((eq (car x) 'quote) x)
               ((eq (car x) 'data-addr) x)
               (t
-               (let* ((args (mapcar #'expand (cdr x)))
-                      (cand (and (symbolp (car x)) (gethash (car x) cands))))
+               (let* ((external (eq (car x) 'extern-call))
+                      (name (if external (cadr x) (car x)))
+                      (raw-args (if external (cddr x) (cdr x)))
+                      (args (mapcar #'expand raw-args))
+                      ;; Typed arguments and varargs carry ABI semantics beyond
+                      ;; the ordinary integer call convention.  Leave them alone.
+                      (cand (and (symbolp name)
+                                 (or (not external)
+                                     (and (gethash name imported)
+                                          (not (cl-some
+                                                (lambda (arg)
+                                                  (keywordp (car-safe arg)))
+                                                raw-args))))
+                                 (gethash name cands))))
                  (if (and cand (= (length args) (length (car cand))))
                      (let ((alist (mapcar (lambda (p)
                                             (cons p (intern (format "%s__i%d"
@@ -1679,7 +1754,8 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
                            `(let* ,(cl-mapcar (lambda (c a) (list (cdr c) a)) alist args)
                               ,(nelisp-standalone--inline-rename (cdr cand) alist))
                          (cdr cand)))
-                   (cons (car x) args)))))))
+                   (if external (cons 'extern-call (cons name args))
+                     (cons (car x) args))))))))
         (let ((out (cons 'seq
                          (mapcar (lambda (form)
                                    (pcase form
@@ -1822,9 +1898,10 @@ twice appears twice; readers keep the last occurrence of each unit."
          (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone-arena-rewrite-source source))
-         (source (nelisp-standalone--inline-small-defuns source))
+         (imports (bound-and-true-p nelisp-standalone--inline-import-sources))
+         (source (nelisp-standalone--inline-small-defuns source imports))
          (source (if (equal (nelisp-standalone--inline-level) "2")
-                     (nelisp-standalone--inline-small-defuns source)
+                     (nelisp-standalone--inline-small-defuns source imports)
                    source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
@@ -2007,7 +2084,10 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
-                               (prin1-to-string source)))))
+                               (prin1-to-string source)
+                               (when (bound-and-true-p nelisp-standalone--inline-import-sources)
+                                 (concat "\0imports="
+                                         (prin1-to-string nelisp-standalone--inline-import-sources)))))))
 
 ;; Doc 215 builtin word ABI, private-box coexistence for build-script defuns
 ;; whose OUT is the object they construct or a value they compute through
@@ -14461,8 +14541,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (if (= status 3) 0 (setq rc 1)))))
            (if (= rc 0)
                (if (or (= (sexp-tag canonical) 0) (= (sexp-tag canonical) 1)
-                       (= (bf_keyword_raw canonical) 1))
-                   (setq rc (bf_setting_constant canonical))
+                       (= (bf_keyword_raw canonical) 1)
+                       ;; Private nil/t alias keys carry a constant flag.
+                       ;; Ordinary bindings retain the original checks above.
+                       (and (/= entry 0)
+                            (= (nelisp_env_alias_slot_candidate entry 0) 0)
+                            (= (nelisp_mirror_is_constant env canonical) 1)))
+                   (setq rc (bf_setting_constant (nl_pa_public_name canonical 0)))
                  (seq
                   (if (= (logand (ptr-read-u64 env 112) 1048576) 0) 0
                     (setq rc (nl_n3_notify env canonical rooted-value 2)))
@@ -15722,7 +15807,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((entry (if (= (nl_sb_worker_p env) 1) 0
                       (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
              (w (if (= entry 0) 0
-                  (if (= (nl_sb_plain_entry_p entry) 1) (nl_record_slot_word entry 0) 0))))
+                  ;; Retain the common slot-4 classification for the alias
+                  ;; reader, just as the interpreter does. The plain test
+                  ;; is identical to nl_sb_plain_entry_p after ENTRY != 0.
+                  (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
+                    (if (and (= candidate 3)
+                             (if (> (record-slot-count entry) 5)
+                                 (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
+                        (nl_record_slot_word entry 0)
+                      (let ((alias (nl_pa_alias_read_w env (+ env 32) entry
+                                                      (= candidate 0))))
+                        (if (or (= alias 2) (= alias 6)) 0 alias)))))))
         (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
             (seq (ptr-write-u64 dst 0 w) 0)
           ;; The fallback lookup also has a WORD ABI. A legacy OUT view
@@ -16065,7 +16160,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (cdata (ptr-read-u64 (ptr-read-u64 constants 8) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 13)))
+             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 14)))
              (vbox (if (= roots 0) 0 (nl_alloc_vector (+ depth 1))))
              (mem (if (= roots 0) 0 (ptr-read-u64 vbox 8)))
              (handlers (+ roots 32))
@@ -16078,6 +16173,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (catch-pool (+ roots 256))
              (bx (+ roots 288))
              (bt (+ roots 384))
+             (binding-link (+ roots 416))
+             (binding-state (if (= roots 0) 0 (nl_n4_state env)))
              (resw (+ mem (* depth 8)))
              (initial-slots (+ initial-maxargs initial-rest))
              (arg-cursor initial-args) (arg-index 0)
@@ -16097,6 +16194,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_int catch-pool 0)
          (wf_write_nil unwinds)
          (wf_write_nil nil-unwinds)
+         ;; Metadata is an integer root; the separate unwind root owns data.
+         (sexp-int-make binding-link (ptr-read-u64 binding-state 16))
+         (ptr-write-u64 binding-link 16 unwinds)
+         (ptr-write-u64 binding-link 24
+                        (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+         (ptr-write-u64 binding-state 16 binding-link)
          (wf_write_int unwind-bindings 0)
          (wf_write_nil resume-dest)
          (wf_write_nil resume-sp)
@@ -16650,6 +16753,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (setq sp (- sp 1))))
                      (t (seq (setq bad-op raw) (setq done 2))))))))))))))
          (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
+         (ptr-write-u64 binding-state 16 (ptr-read-u64 binding-link 8))
          (if (= done 5)
              (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
            (if (= done 1)
@@ -18530,6 +18634,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (ptr-write-u64 wout 0 literal)) -1)
           ;; Mutation of code or exit debugging restores the ordinary frame.
           (m5_fx_run_body code 0 env out args 0 argw wout))))
+    (defun m5_fx_alias_ref (desc env dst tmp)
+      ;; DESC is rooted by CODE: [SOURCE BASE GEN-CELL SNAPSHOT]. Invalid
+      ;; metadata falls back at this reference, never by replaying effects.
+      ;; The cached base still uses normal dynamic and buffer-local lookup.
+      (let* ((source (nl_vector_slot_word desc 0))
+             (cell (nl_vector_slot_word desc 2)))
+        ;; Equal Lisp integers may have different WORD representations.
+        (if (/= (wf_bytecode_w_int (nl_vector_slot_word cell 0))
+                (wf_bytecode_w_int (nl_vector_slot_word desc 3)))
+            (wf_bytecode_w_varref env source dst tmp)
+          (let* ((w (bf_dynamic_lookup_w env (nl_vector_slot_word desc 1) 0)))
+            (if (= w 0) 1
+              (if (or (= w 2) (= (wf_bytecode_w_unbound_p env w) 1))
+                  (seq (nl_stash_void_variable env source) 1)
+                (seq (ptr-write-u64 dst 0 w) 0)))))))
     (defun m5_fx_run_body (code nlocals env out args nparams argw wout)
       ;; Negative NLOCALS is reserved for compiler-lowered whole functions.
       ;; Ordinary VM calls pay one integer branch, with no extra call or
@@ -18661,11 +18780,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (if (= wout 0) (nl_abi_word_to_rc (ptr-read-u64 (+ stk (* sp 8)) 0) out)
                        (ptr-write-u64 wout 0 (ptr-read-u64 (+ stk (* sp 8)) 0)))
                      (setq status -1))
-              (setq status -2)))))))))))))))
+              (if (= op 18)
+                  (seq (if (= fslot 0)
+                           (seq (setq fslot (wf_bytecode_w_roots env 3))
+                                (if (= fslot 0) (setq status -4)
+                                  (seq (setq oslot (+ fslot 32))
+                                       (setq nslot (+ fslot 64))))) 0)
+                       (if (= status 0)
+                           (seq (setq r (m5_fx_alias_ref
+                                         (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0) env resw oslot))
+                                (if (/= r 0) (setq status r)
+                                  (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (ptr-read-u64 resw 0))
+                                       (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
+                (setq status -2))))))))))))))))
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
-         ;; of a call-out, its signal already stashed.
-         status))))
+         ;; of a call-out, its signal already stashed. Checked root failure
+         ;; signals only after releasing the activation's partial reserves.
+         (if (= status -4) (wf_bytecode_root_exhausted) status)))))
 ;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.  SCRATCH is
@@ -21587,8 +21719,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (record-slot-ref entry 0 val)
               (if (= (ptr-read-u64 val 0) 8)
                   (let* ((w (nl_vector_slot_word val 0)))
-                    (if (= (logand w 3) 1)
-                        (seq (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 val 8) 8) 0 (+ w 4)) 0)
+                    (if (= (nl_val_tag w) 2)
+                        (seq (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 val 8) 8) 0
+                                            (wf_write_int_w 0 (+ (wf_bytecode_w_int w) 1))) 0)
                       0))
                 0)))))))
     (defun bf_declared_special_p (mirror name)
@@ -21637,12 +21770,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
         ;; longer filled (`nl_push_and_bind').
         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
             (if (= (nl_sb_bind env frames name value) 0) 1
-              (seq
-               (nl_bind_frame_fast frames name value)
-               (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
-                 (let* ((names (alloc-bytes 32 8)))
-                   (seq (cons-make-with-clone name (nl_record_slot_word frame 1) names)
-                        (record-slot-set frame 1 names) (wf_dirty) 1)))))
+              (let* ((canonical (nl_pa_binding_name env frames name)))
+                (if (= canonical 0) 0
+                  (if (= (nl_sb_bind env frames canonical value) 0) 1
+                    (seq
+                     (nl_bind_frame_fast frames canonical value)
+                     (if (= (nelisp_frame_binding_dynamic_p frame canonical) 1) 1
+                       (let* ((names (alloc-bytes 32 8)))
+                         (seq (cons-make-with-clone canonical (nl_record_slot_word frame 1) names)
+                              (record-slot-set frame 1 names) (wf_dirty) 1))))))))
           (seq (nl_bind_frame_fast frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
@@ -22067,11 +22203,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n3_set_dynamic_raw env sym val)
         (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))))
+
     (defun nl_n3_set_dynamic_raw (env sym val)
-      (if (= (nelisp_mirror_is_constant (+ env 0) sym) 1)
+      (let* ((entry (nelisp_mirror_lookup_entry env sym)))
+      (if (if (= entry 0) 0 (= (nl_val_tag (nl_record_slot_word entry 3)) 1))
           (bf_setting_constant sym)
-        (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym))
-               (local-p (if (= entry 0) 0
+        (let* ((local-p (if (= entry 0) 0
                           (if (> (record-slot-count entry) 5)
                               (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                (cell (if (= local-p 1) 0
@@ -22082,9 +22219,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    ;; target. Preserve the dynamic-cell fast path above, then
                    ;; use the alias-aware route with dynamic-only lookup on a
                    ;; miss; direct `set' must ignore lexical target bindings.
-                   (nelisp_env_setv_alias_or_mirror
-                    (+ env 0) (+ env 32) sym val 0 (+ env 64) 1 0)
-                 (seq (cell-set-value cell val) 0))))))
+                   (if (= (nl_sb_plain_entry_p entry) 1)
+                       (nelisp_env_setv_mirror_lazy env sym val (+ env 64))
+                     (nelisp_env_setv_alias_or_mirror
+                      (+ env 0) (+ env 32) sym val 0 (+ env 64) 1 0))
+                 (seq (cell-set-value cell val) 0)))))))
     (defun bf_set_declared_default_w (env sym val _pad)
   (if (= (logand (ptr-read-u64 env 112) 1048576) 0)
       (nl_n3_declared_default_raw_w env sym val 0)
@@ -22098,17 +22237,80 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (nl_word_clone sym) 0))
     (defun nl_n3_declared_default_raw (env sym val out)
   (nl_abi_word_to_rc (nl_n3_declared_default_raw_w env sym val 0) out))
+    (defun nl_ps_outer_saved (env sym)
+      ;; Return the oldest shallow save, as its existing vector or lean cons.
+      ;; Deep bindings leave the mirror default intact. Lean activations are
+      ;; linked through n4 state's reserved header word +16; their unwind
+      ;; roots already own every cons, so this walk neither allocates nor
+      ;; retains interior pointers across collection.
+      (let* ((frames (+ env 32))
+             (depth (sar (nelisp_frame_slot_raw_word frames 1) 2))
+             (backing (nl_record_slot_word frames 0)) (i 0)
+             (found 0) (oldest 2147483647)
+             (state (ptr-read-u64 env 176))
+             (link (if (= state 0) 0 (ptr-read-u64 state 16))))
+        (seq
+         (while (and (< i depth) (= found 0))
+           (let* ((frame (nl_vector_slot_word backing i))
+                  (names (nl_record_slot_word frame 1)))
+             (while (= (nl_val_tag names) 7)
+               (let* ((item (nl_cons_car_word names)))
+                 (if (and (= (nl_val_tag item) 8)
+                          (= (nelisp_symbol_key_equal (nl_vector_slot_word item 0) sym) 1))
+                     (seq (setq found item) (setq oldest i)) 0))
+               (setq names (nl_cons_cdr_word names))))
+           (setq i (+ i 1)))
+         (while (/= link 0)
+           (let* ((at-depth (ptr-read-u64 link 24))
+                  (events (ptr-read-u64 link 16))
+                  (cursor events))
+             ;; General binding events push actual frames. Count them before
+             ;; comparing a lean event with a shallow frame in this same
+             ;; activation; entry depth alone loses their temporal order.
+             (while (= (nl_val_tag cursor) 7)
+               (let* ((event (nl_cons_car_word cursor)))
+                 (if (and (= (nl_val_tag (nl_cons_car_word event)) 2)
+                          (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                     (setq at-depth (+ at-depth 1)) 0))
+               (setq cursor (nl_cons_cdr_word cursor)))
+             (if (<= (ptr-read-u64 link 24) oldest)
+                 (while (= (nl_val_tag events) 7)
+                   (let* ((event (nl_cons_car_word events)))
+                     (if (and (= (nl_val_tag (nl_cons_car_word event)) 2)
+                              (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                         (setq at-depth (- at-depth 1)) 0)
+                     (if (and (= (nl_val_tag event) 7)
+                              (<= at-depth oldest)
+                              (or (= (nl_val_tag (nl_cons_car_word event)) 4)
+                                  (= (nl_val_tag (nl_cons_car_word event)) 16))
+                              (= (nelisp_symbol_key_equal (nl_cons_car_word event) sym) 1))
+                         (seq (setq found event) (setq oldest at-depth)) 0))
+                   (setq events (nl_cons_cdr_word events))) 0))
+           (setq link (ptr-read-u64 link 8)))
+         found)))
     (defun bf_defvar_init_mode (env sym scratch)
-      ;; A void current dynamic binding takes precedence over the global
-      ;; default.  Otherwise only an uninitialized global default is filled.
-      ;; 0: skip, 1: global default, 2: current dynamic value.
-      (if (= (bf_dynamic_lookup env sym scratch) 0)
-          (if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)
-        2))
+      ;; A void current binding is initialized in place. Otherwise defvar
+      ;; consults the outermost save, unlike public default-value/set-default.
+      (if (/= (bf_dynamic_lookup env sym scratch) 0) 2
+        (let* ((saved (nl_ps_outer_saved env sym)))
+          (if (/= saved 0)
+              (if (= (wf_bytecode_w_unbound_p env
+                      (if (= (nl_val_tag saved) 8) (nl_vector_slot_word saved 1)
+                        (nl_cons_cdr_word saved))) 1) 3 0)
+            (if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)))))
     (defun bf_set_defvar_value_w (env sym val _pad mode)
-      (if (= mode 1) (bf_set_declared_default_w env sym val 0)
-        (let* ((rc (bf_set_dynamic_value env sym val)))
-          (if (= rc 0) sym (nl_abi_fail rc 0)))))
+      (if (= mode 3)
+          ;; The initializer may reenter and collect. Reacquire the live save.
+          (let* ((saved (nl_ps_outer_saved env sym)))
+            (seq (wf_dirty)
+                 (if (= saved 0) (bf_set_declared_default_w env sym val 0)
+                   (seq (if (= (nl_val_tag saved) 8)
+                            (vector-slot-set saved 1 val)
+                          (cons-set-cdr saved val))
+                        (nl_word_clone sym)))))
+        (if (= mode 1) (bf_set_declared_default_w env sym val 0)
+          (let* ((rc (bf_set_dynamic_value env sym val)))
+            (if (= rc 0) sym (nl_abi_fail rc 0))))))
     (defun bf_set_defvar_value (env sym val out mode)
       (nl_abi_word_to_rc (bf_set_defvar_value_w env sym val 0 mode) out))
     (defun bf_defconst_install_w (env sym val _pad)
@@ -28165,6 +28367,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
   '((defun nl_sf_defvaralias_apply_w (alias base env _pad)
   (if (= (logand (ptr-read-u64 env 112) 1048576) 0)
       (nl_n3_defvaralias_raw_w alias base env 0)
+    ;; TODO(prim-globals watcher): native defvaralias notification entry point.
     (nl_n3_alias_write_w alias base env 0)))
     (defun nl_sf_defvaralias_apply (alias base env out)
   (nl_abi_word_to_rc (nl_sf_defvaralias_apply_w alias base env 0) out))
@@ -29889,6 +30092,25 @@ with `nelisp-standalone--compile-to-unit' rather than the (package
 source-fn) shape every other entry in this list and the base/reader-extra
 manifests use.")
 
+(defun nelisp-standalone--glue-source (name source)
+  "Return the target-selected glue SOURCE for unit NAME."
+  (cond ((and (equal name "arena.o") (eq source 'nelisp-standalone--arena-source))
+         (nelisp-standalone--target-arena-source))
+        ((eq source 'nelisp-standalone--gc-source)
+         (nelisp-standalone--target-gc-source))
+        (t (symbol-value source))))
+
+(defun nelisp-standalone--unit-inline-imports (name)
+  "Resolve and normalize NAME's explicit linked-unit dependencies."
+  (mapcar
+   (lambda (donor)
+     (let ((entry (assoc donor nelisp-standalone--manifest)))
+       (unless (eq (cadr entry) :glue)
+         (error "Inline donor is not a linked glue unit: %S" donor))
+       (nelisp-standalone--prepare-inline-import
+        (nelisp-standalone--glue-source donor (nth 2 entry)))))
+   (cdr (assoc name nelisp-standalone--unit-inline-dependencies))))
+
 (defun nelisp-standalone--unit-for (entry)
   "Produce the link-unit for a manifest ENTRY."
   (pcase-let ((`(,name ,kind ,src) entry))
@@ -29899,22 +30121,20 @@ manifests use.")
                       (src (nelisp-standalone--driver-source))
                       (u (nelisp-standalone--compile-to-unit name src)))
                  (push name nelisp-standalone--recompiled) u))
-      (:glue (nelisp-standalone--cached-unit
-              name
-              (if (and (string= name "arena.o")
-                       (eq src 'nelisp-standalone--arena-source))
-                  (nelisp-standalone--target-arena-source)
-                (if (eq src 'nelisp-standalone--gc-source)
-                    (nelisp-standalone--target-gc-source)
-                  (symbol-value src)))
-              nelisp-standalone--this-file))
+      (:glue (let ((nelisp-standalone--inline-import-sources
+                    (nelisp-standalone--unit-inline-imports name)))
+               (nelisp-standalone--cached-unit
+                name (nelisp-standalone--glue-source name src)
+                nelisp-standalone--this-file)))
       ;; Already a built link unit (hand-assembled bytes); nothing to compile
       ;; or cache, unlike :glue/feature units above.
       (:raw (funcall src))
       (_ ;; feature unit
        (require kind)
-       (nelisp-standalone--cached-unit name (symbol-value src)
-                                       (locate-library (symbol-name kind)))))))
+       (let ((nelisp-standalone--inline-import-sources
+              (nelisp-standalone--unit-inline-imports name)))
+         (nelisp-standalone--cached-unit name (symbol-value src)
+                                         (locate-library (symbol-name kind))))))))
 
 (defun nelisp-standalone--reader-driver-unit ()
   "Return the cached link-unit for the reader's driver.
@@ -30896,6 +31116,34 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                    (insert-file-contents
                     (expand-file-name "scripts/nelisp-stdlib-prelude.el"
                                       nelisp-standalone--repo-root))
+                   ;; These native-backed Lisp policies need no legacy
+                   ;; provider at runtime. Compile their own source with the
+                   ;; existing core-module compiler, retaining every guard.
+                   (unless (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+                     (goto-char (point-min))
+                     (unless (search-forward "(defvar nelisp--native-variable-aliases" nil t)
+                       (error "Native variable-alias provider boundary missing"))
+                     (let* ((begin (match-beginning 0))
+                            (alias-source (buffer-substring-no-properties begin (point-max)))
+                            (compiled
+                             (nelisp-prelude-bytecode-transform
+                              alias-source "scripts/nelisp-stdlib-prelude.el" nil t)))
+                       (unless (equal
+                                (sort (mapcar (lambda (row) (symbol-name (nth 2 row)))
+                                              (cl-remove-if-not
+                                               (lambda (row) (equal (nth 3 row) "adopt"))
+                                               (nth 2 compiled))) #'string<)
+                                '("defvaralias" "indirect-variable"
+                                  "internal-delete-indirect-variable"
+                                  "nelisp--native-variable-alias-pairs"))
+                         (error "Native variable-alias bytecode selection drift"))
+                       (nelisp-prelude-bytecode-write-report
+                        (concat (nelisp-standalone--output-path t)
+                                ".variable-alias-bytecode.tsv")
+                        (nth 2 compiled))
+                       (delete-region begin (point-max))
+                       (goto-char begin)
+                       (insert (car compiled))))
                    (goto-char (point-max))
                    (insert "\n")
                    (insert-file-contents
@@ -30908,24 +31156,137 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                    (goto-char (point-max))
                    (insert "\n" (nelisp-cc-variable-watchers-source
                                   nelisp-standalone--repo-root))
-                   ;; Use the existing checked root API without bootstrapping
-                   ;; the artifact compiler on the first buffer-local query.
-                   (require 'nelisp-native-load)
-                   (insert
-                    (prin1-to-string
-                     (list 'defconst 'nelisp-buffer-local--root-api-indices
-                           (list 'quote
-                                 (mapcar
-                                  (lambda (name)
-                                    (or (cl-position name nelisp-native-load-bridgeable-symbols
-                                                     :test #'equal)
-                                        (error "Missing root API: %s" name)))
-                                  '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2"
-                                    "nl_root_pin_slot_v2" "nl_root_pin_end_v2")))))
-                    "\n")
-                   (insert-file-contents
-                    (expand-file-name "lisp/nelisp-buffer-local.el"
-                                      nelisp-standalone--repo-root))
+                   ;; Ship the existing explicit-local provider with the
+                   ;; alias-aware globals API; callers need no source load.
+                   ;; Its compiler/bootstrap helpers are unreachable under
+                   ;; the native feature flag. Keep their source reference,
+                   ;; but do not retain those closures in the frozen heap.
+                   (insert "\n")
+                   (let ((provider
+                          (with-temp-buffer
+                            (insert-file-contents
+                             (expand-file-name "lisp/nelisp-buffer-local.el"
+                                               nelisp-standalone--repo-root))
+                            (goto-char (point-min))
+                            (let (forms)
+                              (condition-case nil
+                                  (while t (push (read (current-buffer)) forms))
+                                (end-of-file nil))
+                              (nreverse forms)))))
+                     (let* ((wrapper-report nil)
+                            (native-source
+                             (with-temp-buffer
+                               ;; Preserve the provider's lexical mode and
+                               ;; top-level special declarations for the
+                               ;; existing general bytecode compiler.
+                               (insert ";;; -*- lexical-binding: t; -*-\n")
+			       (dolist (form provider)
+				 (unless (and (eq (car-safe form) 'defun)
+					      (memq (cadr form)
+						    '(nelisp-buffer-local--mirror
+						      nelisp-buffer-local--legacy-entry)))
+				   (when (and (eq (car-safe form) 'defun)
+					      (memq (cadr form)
+						    '(nelisp-buffer-local--entry
+						      nelisp-buffer-local-default)))
+				     ;; This binary establishes the native flag before
+				     ;; installing the provider. Remove only its exact
+				     ;; feature guard, never a quoted form or another
+				     ;; conditional. Source drift must fail the build.
+				     (let ((guard '(and (boundp 'nelisp--native-variable-aliases)
+							nelisp--native-variable-aliases))
+					   (folded 0))
+				       (cl-labels
+					((native-form (node)
+					   (cond
+					    ((atom node) node)
+					    ((eq (car node) 'quote) node)
+					    ((and (eq (car node) 'if)
+						  (or (equal (cadr node) guard)
+						      (equal (cadr node) (list 'not guard))))
+					     (cl-incf folded)
+					     (native-form
+					      (if (equal (cadr node) guard)
+						  (nth 2 node)
+						(cons 'progn (cdddr node)))))
+					    (t (cons (native-form (car node))
+						     (native-form (cdr node)))))))
+					(setq form (native-form form)))
+				       (unless (= folded 1)
+					 (error "Native buffer-local guard drift: %S (%d)"
+						(cadr form) folded))))
+                                   ;; Compile the provider's anonymous public
+                                   ;; wrappers through the same compiler, then
+                                   ;; retain their original fset publication.
+                                   (unless (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+                                     (cl-labels
+                                         ((compile-wrapper (node)
+                                            (cond
+                                             ((atom node) node)
+                                             ((eq (car node) 'quote) node)
+                                             ((and (eq (car node) 'fset)
+                                                   (eq (car-safe (nth 2 node)) 'lambda))
+                                              (let* ((name (cadr (cadr node)))
+                                                     (lambda-form (nth 2 node))
+                                                     (result
+                                                      (nelisp-prelude-bytecode-transform
+                                                       (concat ";;; -*- lexical-binding: t; -*-\n"
+                                                               (prin1-to-string
+                                                                (cons 'defun (cons name (cdr lambda-form)))))
+                                                       "lisp/nelisp-buffer-local.el" nil t))
+                                                     (replacement (car (read-from-string (car result)))))
+                                                (unless (and (equal (mapcar (lambda (row) (nth 3 row))
+                                                                           (nth 2 result)) '("adopt"))
+                                                             (eq (car-safe replacement) 'prog1)
+                                                             (eq (car-safe (nth 2 replacement)) 'fset))
+                                                  (error "Native buffer-local wrapper compile drift: %S" name))
+                                                (setq wrapper-report (append wrapper-report (nth 2 result)))
+                                                (nth 2 replacement)))
+                                             (t (cons (compile-wrapper (car node))
+                                                      (compile-wrapper (cdr node)))))))
+                                       (setq form (compile-wrapper form))))
+				   (prin1 form (current-buffer))
+				   (insert "\n")))
+                               (buffer-string)))
+                            (compiled
+                             (unless (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+                               ;; The VM supports ordinary CALL, but not GNU's
+                               ;; current-buffer opcode.  Select the compiler's
+                               ;; general call lowering only for this provider.
+                               (let ((handler (get 'current-buffer 'byte-compile)))
+                                 (unwind-protect
+                                     (progn
+                                       (put 'current-buffer 'byte-compile
+                                            'byte-compile-normal-call)
+                                       (nelisp-prelude-bytecode-transform
+                                        native-source "lisp/nelisp-buffer-local.el" nil t))
+                                   (put 'current-buffer 'byte-compile handler))))))
+                       (when compiled
+                         (unless (and (= (nth 1 compiled) 6)
+                                      (equal
+                                       (sort (mapcar (lambda (row) (symbol-name (nth 2 row)))
+                                                     (cl-remove-if-not
+                                                      (lambda (row) (equal (nth 3 row) "adopt"))
+                                                      (nth 2 compiled)))
+                                             #'string<)
+                                       '("nelisp-buffer-local--entry"
+                                         "nelisp-buffer-local--redirect"
+                                         "nelisp-buffer-local-default"
+                                         "nelisp-buffer-local-kill"
+                                         "nelisp-buffer-local-make"
+                                         "nelisp-buffer-local-p"))
+                                      (equal (sort (mapcar (lambda (row) (symbol-name (nth 2 row)))
+                                                          wrapper-report) #'string<)
+                                             '("default-boundp" "default-value" "set-default")))
+                           (error "Native buffer-local bytecode selection drift")))
+                       (nelisp-prelude-bytecode-write-report
+                        (concat (nelisp-standalone--output-path t)
+                                ".buffer-local-bytecode.tsv")
+                        (append (nth 2 compiled) wrapper-report))
+                       (message "[standalone-reader] native buffer-local byte-code: %d defuns/wrappers"
+                                (+ (if compiled (nth 1 compiled) 0) (length wrapper-report)))
+                       (insert (if compiled (car compiled) native-source))))
+
                    (buffer-string)))
          (source (nelisp-boot-image-prelude source))
          (position (nelisp-standalone--prelude-source-boundary source))
@@ -41591,6 +41952,22 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
               ((eq (cadr form) 'nl_bf_bind_sym)
                (cl-subst 'bf_bind_frame_silent 'bf_bind_frame_declared
                          (replace-call form)))
+              ((memq (cadr form) '(nl_bf_after_required nl_bf_rest))
+               ;; Formal binding can now reject a constant alias. Preserve
+               ;; its signal and let the existing activation pop unwind.
+               `(defun ,(cadr form) ,(caddr form)
+                  (if (= rc 0) 1 ,(cadddr form))))
+              ((eq (cadr form) 'nl_bf_optional)
+               `(defun ,(cadr form) ,(caddr form)
+                  (if (< new-idx 0) 1 ,(cadddr form))))
+              ((eq (cadr form) 'nl_bf_bind_optional)
+               '(defun nl_bf_bind_optional (env name_ptr args_ptr idx)
+                  (let* ((elem_ptr (nl_bf_bind_opt_walk args_ptr idx)))
+                    (if (= elem_ptr 0)
+                        (let* ((nil_slot (alloc-bytes 32 8)))
+                          (seq (wf_write_nil nil_slot)
+                               (if (= (nl_bf_bind_sym env name_ptr nil_slot) 0) -1 idx)))
+                      (if (= (nl_bf_bind_sym env name_ptr elem_ptr) 0) -1 (+ idx 1))))))
               ((eq (cadr form) 'nl_push_captured_walk)
                '(defun nl_push_captured_walk (alist_ptr mirror_ptr frames_ptr unbound_ptr)
                   (if (= (sexp-tag alist_ptr) 7)
@@ -41737,11 +42114,16 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (name (nl_root_reserve env)) (fn (nl_root_reserve env))
              (args (nl_root_reserve env)) (tail (nl_root_reserve env))
              (op (nl_root_reserve env)) (nilp (nl_root_reserve env))
+             (where (nl_root_reserve env))
              (tag-save (nl_root_reserve env)) (val-save (nl_root_reserve env))
              (flag (ptr-read-u64 268435472 0))
+             ;; Raw pending-binding links hold only pointers to live roots.
+             ;; Header +24 is per EvalCtx, separate from lean unwind +16.
+             (state (nl_n4_state env)) (pending (alloc-bytes 16 8))
              (buf (alloc-bytes 32 1)) (result (nl_root_reserve env)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies roots)
+         (nl_sexp_clone_into
+          (if (= operation 5) copies (nl_pa_canonical env copies)) roots)
          (nl_sexp_clone_into (+ copies 32) result)
          ;; GNU restores a localized variable through `set', even when the
          ;; buffer that originally localized it has since been killed.
@@ -41760,8 +42142,16 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (ptr-write-u64 (+ buf 24) 0 121) ; y
          (nl_alloc_symbol buf 25 name)
          (wf_write_nil nilp)
-         (if (= operation 1) (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol buf 3 op))
-           (if (= operation 2) (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol buf 3 op))
+         (wf_write_nil where)
+         ;; The dispatcher suppresses local-buffer inference for this token,
+         ;; then presents GNU's nil WHERE for a default-cell write.
+         (if (= operation 6)
+             (seq (ptr-write-u64 buf 0 32770348699510116)
+                  (nl_alloc_symbol buf 7 where)) 0) ; default
+         (if (or (= operation 1) (= operation 6))
+             (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol buf 3 op))
+           (if (or (= operation 2) (= operation 7))
+               (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol buf 3 op))
              (if (= operation 3) (seq (ptr-write-u64 buf 0 499917811317) (nl_alloc_symbol buf 5 op))
                (if (= operation 5)
                    (seq (ptr-write-u64 buf 0 7809648991760967012)
@@ -41769,13 +42159,17 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                         (nl_alloc_symbol buf 11 op))
                  (seq (ptr-write-u64 buf 0 8462090451408347501)
                       (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol buf 10 op))))))
-         (nelisp_cons_construct 3 3 tail)
+         (nelisp_cons_construct (if (= operation 6) where 3) 3 tail)
          (nelisp_cons_construct op tail tail)
          (nelisp_cons_construct
           (if (= operation 4) 3 (if (= (logand value 1) 1) value result)) tail tail)
          (nelisp_cons_construct roots tail args)
+         (ptr-write-u64 pending 0 (ptr-read-u64 state 24))
+         (ptr-write-u64 pending 8 roots)
+         (if (= operation 2) (ptr-write-u64 state 24 pending) 0)
          (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name fn) 0)
              (setq rc (nl_apply_function fn args env result)) 0)
+         (if (= operation 2) (ptr-write-u64 state 24 (ptr-read-u64 pending 0)) 0)
          (if (= rc 0)
              (seq (nl_sexp_clone_into tag-save 268435480)
                   (nl_sexp_clone_into val-save 268435512)
@@ -41797,7 +42191,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (if (or (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                  (= (bf_declared_special_p (+ env 0) sym) 1)
                  (= (nelisp_frame_local_special_p frames sym) 1))
-             (setq rc (nl_n3_notify env sym saved 2)) 0)
+             ;; A watcher may retarget the original alias. Bind the same
+             ;; canonical name whose pending binding the watcher observed,
+             ;; retaining it in the existing root across the callback.
+             (let ((canonical (nl_pa_binding_name env frames sym)))
+               (if (= canonical 0) (setq rc 1)
+                 (seq (nl_sexp_clone_into canonical sym)
+                      (setq rc (nl_n3_notify env sym saved 2))))) 0)
          (if (= rc 0)
              (setq rc (nl_n4_bind_declared env frames sym saved))
            (setq rc 0))
@@ -41821,8 +42221,9 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                     (nl_sexp_clone_into base (+ copies 32)) (nl_root_mark env)))
          (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
     (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nl_n3_notify env sym val 5) 0)
-             (setq w (nl_n3_defvaralias_raw_w sym val env 0)) 0)
+         ;; Installation owns ordering: migrate the base before notifying
+         ;; the former alias watchers, then revalidate before publication.
+         (setq w (nl_n3_defvaralias_raw_w sym val env 0))
          (nl_root_release env mark) w)))
     (defun nl_n3_alias_write (name base env out)
   (nl_abi_word_to_rc (nl_n3_alias_write_w name base env 0) out))
@@ -43130,11 +43531,22 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
             (nl_n3_globals_read_w op name env)))))))
 
 (defun nl_apply_do_globals_op_w (args env _pad)
+  (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-aliases") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-value") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-boundp") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-set-default") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-set") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-delete") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-source-kind") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1))
+      (nl_pa_operation_w args env 0)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
       (nl_n3_globals_mode_w args env 0)
     (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
         (nl_n4_frame_op_w args env 0)
-      (nl_n3_globals_raw_w args env 0))))
+      (nl_n3_globals_raw_w args env 0)))))
 
 (defun nl_n4_snapshot_w (env _pad)
   (let* ((mark (nl_root_mark env)) (list-root (nl_root_reserve env))
@@ -44298,7 +44710,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; plain variable outside a worker.
     (defun nl_sb_mirror_only_p (env name)
       (if (= (nl_sb_worker_p env) 1) 0
-        (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) name))))
+        (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+          (if (= (nl_sb_plain_entry_p entry) 1) 1
+            ;; Aliases bind their terminal name, never a source dynamic
+            ;; cell. The caller has already searched source lexical cells.
+            (= (nelisp_env_alias_slot_candidate entry 0) 0)))))
     ;; Restore every shallow binding of the top frame of FRAMES (env+32),
     ;; called by `nelisp_frame_pop' before the frame is dropped.
     ;; Every frame pop passes here, so the common no-binding case reads raw
@@ -44348,7 +44764,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_bind_declared_1 (env frames name value)
       (if (= (nl_sb_dynamic_p env frames name) 1)
           (if (= (nl_sb_bind env frames name value) 0) 1
-            (nl_n4_bind_declared_deep env frames name value))
+            (let* ((canonical (nl_pa_binding_name env frames name)))
+              (if (= canonical 0) 0
+                (if (= (nl_sb_bind env frames canonical value) 0) 1
+                  (nl_n4_bind_declared_deep env frames canonical value)))))
         (nl_n4_bind_declared_deep env frames name value)))
     (defun nl_n4_bind_declared_deep (env frames name value)
       (let* ((frame (vector-ref-ptr (nl_record_slot_word frames 0)
@@ -48561,6 +48980,14 @@ retains the checkout default. Application outputs still go to OUTPUT."
        nelisp-standalone--applyfn-m5-helpers
        (cdr nelisp-cc-string-compare--source)
        (cdr nelisp-cc-sort--source)))
+;; Retain the old record-sharing body above as a reference only. The live
+;; entry and globals dispatcher exchange tagged WORDs, never reverse adapters.
+(setq nelisp-standalone--sf-defvaralias
+      (cl-remove-if (lambda (form) (memq (cadr form) '(nl_n3_defvaralias_raw_w nl_n3_defvaralias_raw)))
+                    nelisp-standalone--sf-defvaralias))
+(setq nelisp-standalone--shim-source
+      (append nelisp-standalone--shim-source
+              (cdr nelisp-cc-variable-alias-public--source)))
 
 (provide 'nelisp-standalone-build)
 

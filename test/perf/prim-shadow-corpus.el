@@ -1,0 +1,108 @@
+;;; prim-shadow-corpus.el --- Alias/watcher integration -*- lexical-binding: t; -*-
+(defvar ps-events nil)
+(defvar ps-count 0)
+(defun ps-watch (symbol value operation where)
+  (push (list symbol value operation (and where (buffer-name where))) ps-events))
+(defun ps-former-watch (symbol value operation where)
+  (push (list 'former symbol value operation where) ps-events))
+(defun ps-case (name thunk)
+  (setq ps-count (1+ ps-count))
+  (princ (format "SHADOW %S %S\n" name
+                 (condition-case e (funcall thunk) (error (cons 'error e))))))
+(ps-case 'watchers
+ (lambda ()
+   (set 'ps-base 11)
+   (add-variable-watcher 'ps-base #'ps-watch)
+   (add-variable-watcher 'ps-alias #'ps-former-watch)
+   (setq ps-events nil)
+   (let ((result (defvaralias 'ps-alias 'ps-base)))
+     (list result (reverse ps-events)
+           (get-variable-watchers 'ps-alias) (get-variable-watchers 'ps-base)))))
+(ps-case 'chain
+ (lambda ()
+   (defvaralias 'ps-alias2 'ps-alias)
+   (setq ps-events nil)
+   (set 'ps-alias2 12)
+   (setq ps-alias 13)
+   (list ps-base ps-alias2 (default-value 'ps-alias2) (reverse ps-events))))
+(ps-case 'binding
+ (lambda ()
+   (setq ps-events nil)
+   (list (let ((ps-alias2 17)) (setq ps-alias 18) (list ps-base ps-alias2))
+         ps-base (reverse ps-events))))
+(ps-case 'watcher-api
+ (lambda ()
+   (remove-variable-watcher 'ps-alias2 #'ps-watch)
+   (list (get-variable-watchers 'ps-base) (get-variable-watchers 'ps-alias))))
+(ps-case 'former-discarded
+ (lambda ()
+   (internal-delete-indirect-variable 'ps-alias)
+   (list (boundp 'ps-alias) (get-variable-watchers 'ps-alias)
+         (indirect-variable 'ps-alias) ps-base)))
+(ps-case 'warning
+ (lambda ()
+   (set 'ps-warning-alias 1) (set 'ps-warning-base 2)
+   (let ((old (symbol-function 'display-warning)) (warnings nil))
+     (unwind-protect
+         (progn (fset 'display-warning (lambda (&rest args) (push args warnings)))
+                (defvaralias 'ps-warning-alias 'ps-warning-base)
+                (list ps-warning-alias (reverse warnings)))
+       (fset 'display-warning old)))))
+(ps-case 'base-only
+ (lambda ()
+   (set 'ps-only-base 21)
+   (add-variable-watcher 'ps-only-base #'ps-watch)
+   (setq ps-events nil)
+   (defvaralias 'ps-only-alias 'ps-only-base)
+   (prog1 (list ps-only-base (reverse ps-events))
+     (remove-variable-watcher 'ps-only-base #'ps-watch))))
+(ps-case 'migration
+ (lambda ()
+   (set 'ps-migrate-alias 31)
+   (add-variable-watcher 'ps-migrate-base #'ps-watch)
+   (add-variable-watcher 'ps-migrate-alias #'ps-former-watch)
+   (setq ps-events nil)
+   (defvaralias 'ps-migrate-alias 'ps-migrate-base)
+   (prog1 (list ps-migrate-base (reverse ps-events))
+     (remove-variable-watcher 'ps-migrate-base #'ps-watch))))
+(ps-case 'alias-makunbound
+ (lambda ()
+   (set 'ps-unbind-base 41)
+   (defvaralias 'ps-unbind-alias 'ps-unbind-base)
+   (add-variable-watcher 'ps-unbind-base #'ps-watch)
+   (setq ps-events nil)
+   (makunbound 'ps-unbind-alias)
+   (prog1 (list (boundp 'ps-unbind-alias) ps-unbind-base (reverse ps-events))
+     (remove-variable-watcher 'ps-unbind-base #'ps-watch))))
+(ps-case 'callback-gc
+ (lambda ()
+   (set 'ps-gc-alias 51)
+   (add-variable-watcher
+    'ps-gc-alias
+    (lambda (symbol _value operation _where)
+      (when (eq operation 'defvaralias)
+        (set symbol 52)
+        (garbage-collect))))
+   (defvaralias 'ps-gc-alias 'ps-gc-base)
+   (list ps-gc-alias ps-gc-base (get-variable-watchers 'ps-gc-alias))))
+(ps-case 'default-watcher
+ (lambda ()
+   (set 'ps-default-base 61)
+   (defvaralias 'ps-default-alias 'ps-default-base)
+   (add-variable-watcher 'ps-default-base #'ps-watch)
+   (unwind-protect
+       (with-temp-buffer
+         (make-local-variable 'ps-default-alias)
+         (set 'ps-default-alias 62)
+         (setq ps-events nil)
+         (list (set-default 'ps-default-alias 63) ps-default-alias
+               (default-value 'ps-default-alias) (reverse ps-events)))
+     (remove-variable-watcher 'ps-default-base #'ps-watch))))
+(ps-case 'lean-source-refusal
+ (lambda ()
+   (defvar ps-lean-source 1)
+   (defvar ps-lean-base 2)
+   (funcall (make-byte-code 0 (unibyte-string 194 24 195 192 193 34 41 135)
+                           [ps-lean-source ps-lean-base 7 defvaralias] 3))))
+(princ (format "SHADOW-CONTRACT-COMPLETE %d\n" ps-count))
+(kill-emacs 0)
