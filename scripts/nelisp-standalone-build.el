@@ -570,7 +570,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -907,6 +907,10 @@ storage — not an arena reservation."
       (list (nelisp-link-symbol "nl_win_cold_io"
                                 (- (nelisp-standalone--driver-bss-size) 176)
                                 :section 'bss :bind 'global :type 'object)))
+    ;; Doc 216 S4.2: transient descriptor registry and opt-in counters.
+    (list (nelisp-link-symbol "nl_frame_stack_registry"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
                               :section 'bss :bind 'global :type 'object))
@@ -6718,6 +6722,7 @@ REPL-facing module it feeds."
                (setq i (+ i 1))))
            (nl_gc_symname_sweep_all)))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
+      (seq (nl_frame_stack_rewrite 0 0)
       (seq (nl_n4_rewrite_env ctx)
            (nl_compact_rw_slot (+ ctx 0))
            (nl_compact_rw_slot (+ ctx 32))
@@ -6740,7 +6745,7 @@ REPL-facing module it feeds."
            (if (= (heap-read-u64 268436328 0) 0) 0
              (let ((old (nl_compact_rw_edge 268436328)))
                (nl_seq2 (nl_compact_rw_block old)
-                        (nl_compact_rw_slot old))))))
+                        (nl_compact_rw_slot old)))))))
     ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
@@ -7030,8 +7035,9 @@ REPL-facing module it feeds."
            (nl_gc_mark_recorded_contexts_from (+ i 1) depth))
         0))
     (defun nl_gc_mark_recorded_contexts ()
+      (seq (nl_frame_stack_mark 0 0)
       (nl_gc_mark_recorded_contexts_from
-       0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 0)))
+       0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))))
     ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
     ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
     (defun nl_gc_mark_symentry ()
@@ -7524,7 +7530,7 @@ argument (reachability + in-arena bounds checks).")
              (ptr-write-u64 (+ tag_buf 16) 0 113723913302885)
              (nl_alloc_symbol tag_buf 22 268435480)
              (ptr-write-u64 268435512 0 2)
-             (ptr-write-u64 (+ 268435512 8) 0 rec_max)
+             (ptr-write-u64 (+ 268435512 8) 0 (+ rec_max 1))
              (ptr-write-u64 (+ 268435512 16) 0 0)
              (ptr-write-u64 (+ 268435512 24) 0 0)
              (ptr-write-u64 268435472 0 1)
@@ -7575,7 +7581,7 @@ argument (reachability + in-arena bounds checks).")
           (seq
            (nl_rootstack_init)
            (nl_thread_park_safepoint env)
-           (let* ((rec_cur_addr (+ env 96)) (rec_max (heap-read-u64 env 104))
+           (let* ((rec_cur_addr (+ env 96)) (rec_max (nl_frame_stack_limit env 0))
                   (rec_cur (heap-read-u64 rec_cur_addr 0)))
              (if (>= rec_cur rec_max)
                  (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
@@ -7617,7 +7623,7 @@ argument (reachability + in-arena bounds checks).")
            ;; receives FORM's original WORD, including immediate literals.
            (let* ((form_ptr (wf_word_view form))
                   (rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
-             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (heap-read-u64 rec_max_addr 0)))
+             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_frame_stack_limit env 0)))
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
@@ -9150,13 +9156,17 @@ leave symbols unresolved at link time."
     ;; scalar @env+112.  Records/Symbol roots are returned as their Sexp value (slot
     ;; copy); the two scalars as Int Sexps.  Returns nil if no frame is recorded.
     (defun bf_env_capture_roots_w (_pad)
-  (let* ((env (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
-    (if (= env 0) 3
-      (nelisp_cons_construct_w (nl_word_clone env)
-        (nelisp_cons_construct_w (nl_word_clone (+ env 32))
-          (nelisp_cons_construct_w (nl_word_clone (+ env 64))
-            (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
-              (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
+      (let* ((env (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+        (if (= env 0) 3
+          (let* ((mark (nl_root_mark env)) (snapshot (nl_root_reserve env)))
+            (seq
+             (nl_frame_stack_snapshot env snapshot)
+             (let* ((word (nelisp_cons_construct_w (nl_word_clone env)
+                    (nelisp_cons_construct_w (+ (nl_word_payload snapshot) 6)
+                     (nelisp_cons_construct_w (nl_word_clone (+ env 64))
+                      (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
+                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
+               (seq (nl_root_release env mark) word))))))
     (defun bf_env_capture_roots (out)
   (nl_abi_word_to_rc (bf_env_capture_roots_w 0) out))
     ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
@@ -9572,6 +9582,7 @@ leave symbols unresolved at link time."
     ;; pass (step 3b) and file emit are deferred.
     ;; Doc 215 builtin word ABI: bf_arena_dump_copy_verify_w returns the result WORD (0 = signal stashed).
     (defun bf_arena_dump_copy_verify_w (_pad)
+      (seq (nl_frame_stack_export_all 0 0)
       (let* ((head (heap-read-u64 268436160 0))
              (sstart (heap-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -9593,7 +9604,7 @@ leave symbols unresolved at link time."
          (wf_write_nil nil-slot)
          (wf_cons_int dest nil-slot s2)
          (wf_cons_int mism s2 s1)
-         (wf_cons_int_w slen s1 0))))
+         (wf_cons_int_w slen s1 0)))))
     ;; flat-arena spike step 3b-i (root-reachability precondition for the
     ;; pointer swizzle): prove the recorded root set reaches the whole live
     ;; object set, so a from-roots per-type walk that records pointer fields
@@ -10861,6 +10872,7 @@ leave symbols unresolved at link time."
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_to_file_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_to_file keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_to_file_w (args _pad)
+      (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (heap-read-u64 268436160 0))
              (sstart (heap-read-u64 (+ head 24) 0))
@@ -10919,7 +10931,7 @@ leave symbols unresolved at link time."
             (nl_fa_write_all fd tbl (* tlen 8) 0)
             (nl_fa_write_all fd dest (+ slen isz) 0)
             (nl_os_close_handle fd)
-            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz))))))))))
     (defun bf_arena_dump_image_to_file (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_to_file_w args 0) out))
     ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
@@ -10958,6 +10970,7 @@ leave symbols unresolved at link time."
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_stream_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_stream keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_stream_w (args _pad)
+      (seq (nl_frame_stack_export_all 0 0)
       (seq
 
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
@@ -11075,7 +11088,7 @@ leave symbols unresolved at link time."
                                  '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
                                       written -1)
                                '(+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
-))
+)))
     (defun bf_arena_dump_image_stream (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_stream_w args 0) out))
     ;; Doc 215 builtin word ABI: bf_arena_load_image_from_file_w returns the result WORD (0 = signal stashed); bf_arena_load_image_from_file keeps the (rc, OUT) ABI.
@@ -11636,6 +11649,7 @@ leave symbols unresolved at link time."
     ;; the boot can relocate + reinstall it as `newbase + offset'.  READ-ONLY.
     ;; Doc 215 builtin word ABI: bf_arena_dump_table_verify_w returns the result WORD (0 = signal stashed).
     (defun bf_arena_dump_table_verify_w (_pad)
+      (seq (nl_frame_stack_export_all 0 0)
       (let* ((head (heap-read-u64 268436160 0))
              (sstart (heap-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
@@ -11692,7 +11706,7 @@ leave symbols unresolved at link time."
          (wf_cons_int (heap-read-u64 cwf 0) nil-slot s3)
          (wf_cons_int (heap-read-u64 cnblk 0) s3 s2)
          (wf_cons_int (heap-read-u64 cout 0) s2 s1)
-         (wf_cons_int_w (heap-read-u64 cin 0) s1 0))))
+         (wf_cons_int_w (heap-read-u64 cin 0) s1 0)))))
     ;; flat-arena FILE persistence (nl_fa_write_all/nl_fa_read_all,
     ;; bf_arena_dump_image_to_file/_stream, bf_arena_load_image_from_file,
     ;; bf_arena_boot_load_verify, bf_arena_load_split_verify,
@@ -14371,38 +14385,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                     (< (sexp-int-unwrap depth)
                                                        (vector-len (record-slot-ref-ptr frames 0))))
                                                (seq
-                                                ;; This is the same four-slot
-                                                ;; lexframe and 16-bucket table
-                                                ;; as the reference/evaluator.
-                                                ;; All construction intermediates
-                                                ;; are full roots; no vector or
-                                                ;; cons interior crosses a call.
+                                                ;; Same binding semantics, with the frame owned
+                                                ;; by the activation reserve until captured.
                                                 (cell-make arg2 cell)
-                                                (record-make (data-addr nl_frame_push_sym1) 3 operands)
-                                                (vector-make 16 scratch)
-                                                (record-slot-set operands 1 scratch)
-                                                (wf_write_int saved-tag 16)
-                                                (record-slot-set operands 0 saved-tag)
-                                                (wf_write_int saved-tag 0)
-                                                (record-slot-set operands 2 saved-tag)
-                                                (record-make (data-addr nl_frame_push_sym0) 4 result)
-                                                (record-slot-set result 0 operands)
                                                 (nl_alloc_str (heap-sexp-data payload) (heap-sexp-length payload) event)
-                                                (setq hash (logand (nelisp_fnv1a event) 15))
+                                                (nelisp_frame_push_direct (+ env 32) (nl_frame_push_sym0_ptr)
+                                                                          (nl_frame_push_sym1_ptr) scratch)
+                                                (wf_bytecode_copy result (wf_bytecode_current_frame (+ env 32)))
+                                                (wf_write_nil saved-tag)
+                                                (wf_write_nil payload)
+                                                (wf_write_nil operands)
+                                                (nelisp_frame_bind (+ env 32) event cell saved-tag payload operands)
                                                 (wf_write_nil saved-value)
                                                 (nelisp_cons_construct event saved-value saved-tag)
                                                 (record-slot-set result 1 saved-tag)
-                                                (nelisp_cons_construct event cell saved-tag)
-                                                (nelisp_cons_construct saved-tag saved-value payload)
-                                                (vector-slot-set scratch hash payload)
-                                                (wf_write_int saved-tag 1)
-                                                (record-slot-set operands 2 saved-tag)
+                                                ;; The reference contract exports this frame through
+                                                ;; the state event chain and action result. That is
+                                                ;; capture: publish one stable heap frame first.
+                                                (nl_sexp_clone_into (nl_frame_stack_promote result 0) result)
                                                 (wf_bytecode_copy event (vector-ref-ptr state 3))
                                                 (nelisp_cons_construct result event scratch)
                                                 (vector-slot-set state 3 scratch)
-                                                (vector-slot-set (record-slot-ref-ptr frames 0) (sexp-int-unwrap depth) result)
-                                                (wf_write_int saved-tag (+ (sexp-int-unwrap depth) 1))
-                                                (record-slot-set frames 1 saved-tag)
                                                 (setq direct 1) (setq rc 0))
                                              ;; The reference publishes precise
                                              ;; conditions for resolver errors.
@@ -14465,11 +14468,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (seq
                           (if (= action 0) (wf_bytecode_copy state result)
                             (if (and (= action 1) (= direct 0))
-                                (seq
-                                 (wf_write_int scratch (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
-                                 (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)
-                                 (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
-                                 (record-slot-set (+ env 32) 1 scratch))
+                                (nl_frame_stack_install_captured env result scratch 0)
                               (if (or (= action 2) (= action 3)) (seq
                                 (setq i (sexp-int-unwrap result))
                                 (wf_write_nil cell) (ptr-write-u64 268435472 0 0)
@@ -14499,8 +14498,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                           (setq rc 1)))
                                      (seq
                                       (wf_write_int scratch (- (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2) 1))
-                                      (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) cell)
-                                      (record-slot-set (+ env 32) 1 scratch)))
+                                      ;; Binding removal has reached its original shallow-binding
+                                      ;; point; retire raw metadata before clearing its owner slot.
+                                      (nelisp_frame_pop_inner (+ env 32) 0 (sexp-int-unwrap scratch) 0)))
                                    (setq i (- i 1))))
                                 (if (= action 3) (seq (if (= (nl_native_handlers_cross env ticket state 1) 0) 0 (setq rc 2))
                                                         (vector-slot-set state 1 cell)) 0)) 0)))
@@ -16280,6 +16280,785 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (setq bound (+ bound 1)))
                    (seq (setq rc 1) (setq stop 1))))))))
          (+ (* bound 2) rc))))
+    ;; Private evaluator transport: no allocation, callback or safepoint
+    ;; occurs in one batch. Cached mirror entries expire on every return.
+    (defun wf_bytecode_w_fast_entry (env name)
+      (if (= env 0) 0
+        (if (= (nl_sb_worker_p env) 1) 0
+          (let* ((entry (nelisp_mirror_lookup_entry_owned env name)))
+            (if (= entry 0) 0
+              (if (= (nl_sb_plain_entry_p entry) 1) entry 0))))))
+
+
+    ;; Run at most 128 groups (at most 512 original instructions), then
+    ;; restore the ordinary pending-exit and code-boundary checks.
+    ;; Fusion guards capacity, types, overflow and branch bounds before
+    ;; stores. A declined opcode keeps its original PC/SP and operands;
+    ;; completed pure instructions retain their rooted active stack.
+    ;; Leave the final instruction and invalid targets to the ordinary
+    ;; dispatcher so malformed bytecode keeps its exact error offset.
+    (defun wf_bytecode_w_fast_run
+        (data length mem depth constants nconst pc sp env)
+      (let*
+          ((last-owner 0) (last-table 0) (last-table-data 0)
+           (last-buckets 0) (last-count 0) (last-entry-data 0)
+           (last-slots 0) (last-index -1) (last-entry 0) (last-value 0)
+           (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
+           (ref 0) (cmp 0) (branch 0))
+        (while (> go 0)
+          (setq go (- go 1))
+          (if (or (< pc 0) (>= pc (- length 1))) (setq go 0)
+            (seq (setq raw (heap-read-u8 data pc))
+                 (if (= raw 84)
+                     (if (<= sp 0) (setq go 0)
+                       (seq
+                        (setq a (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                        (if (/= (logand a 3) 1) (setq go 0)
+                          (if (= a 9223372036854775805) (setq go 0)
+                            (seq
+                             (ptr-write-u64 (+ mem (* (- sp 1) 8)) 0
+                                            (+ a 4))
+                             (setq pc (+ pc 1)))))))
+                   (if (= raw 130)
+                       (if (>= (+ pc 2) length) (setq go 0)
+                         (seq
+                          (setq target
+                                (+ (heap-read-u8 data (+ pc 1))
+                                   (shl (heap-read-u8 data (+ pc 2)) 8)))
+                          (if (< target length) (setq pc target)
+                            (setq go 0))))
+                     (if (and (>= raw 8) (< raw 14))
+                         (let* ((index (- raw 8)) (value 0))
+                           (if (>= sp depth) (setq go 0)
+                             (seq
+                              (if (/= index last-index)
+                                  (if (= env 0) (setq go 0)
+                                    (if (>= index nconst) (setq go 0)
+                                      (seq
+                                       (setq last-owner
+                                             (heap-read-u64 env 8))
+                                       (setq last-table
+                                             (heap-read-u64 last-owner 16))
+                                       (if (/= (logand last-table 7) 6)
+                                           (setq go 0)
+                                         (seq
+                                          (setq last-table-data
+                                                (logand last-table -8))
+                                          (setq last-buckets
+                                                (heap-read-u64
+                                                 last-table-data 24))
+                                          (setq last-count
+                                                (heap-read-u64
+                                                 last-table-data 32))
+                                          (setq last-entry
+                                                (wf_bytecode_w_fast_entry
+                                                 env
+                                                 (heap-read-u64
+                                                  (+ constants (* index 8))
+                                                  0)))
+                                          (if
+                                              (/= (logand last-buckets 7)
+                                                  6)
+                                              (setq go 0)
+                                            (if
+                                                (/= (logand last-entry 7)
+                                                    6)
+                                                (setq go 0)
+                                              (seq
+                                               (setq last-entry-data
+                                                     (logand last-entry -8))
+                                               (setq last-slots
+                                                     (record-slot-count
+                                                      last-entry))
+                                               (if (< last-slots 6)
+                                                   (setq go 0)
+                                                 (seq
+                                                  (setq last-index index)
+                                                  (setq last-value 0)))))))))))
+                                0)
+                              (if (> go 0)
+                                  (if
+                                      (/= (heap-read-u64 env 8) last-owner)
+                                      (setq go 0)
+                                    (if
+                                        (/= (heap-read-u64 last-owner 16)
+                                            last-table)
+                                        (setq go 0)
+                                      (if
+                                          (/=
+                                           (heap-read-u64 last-table-data
+                                                          24)
+                                           last-buckets)
+                                          (setq go 0)
+                                        (if
+                                            (/=
+                                             (heap-read-u64
+                                              last-table-data 32)
+                                             last-count)
+                                            (setq go 0)
+                                          (if
+                                              (/=
+                                               (heap-read-u64
+                                                last-entry-data 48)
+                                               3)
+                                              (setq go 0)
+                                            (if
+                                                (/=
+                                                 (heap-read-u64
+                                                  last-entry-data 56)
+                                                 3)
+                                                (setq go 0)
+                                              (seq
+                                               (setq value
+                                                     (heap-read-u64
+                                                      last-entry-data 16))
+                                               (if (= value 0) (setq go 0)
+                                                 (if (= value last-value)
+                                                     (if
+                                                         (and
+                                                          (< (+ pc 2)
+                                                             length)
+                                                          (=
+                                                           (heap-read-u8
+                                                            data (+ pc 1))
+                                                           136))
+                                                         (if
+                                                             (and (> sp 0)
+                                                                  (<
+                                                                   (+ pc 6)
+                                                                   length))
+                                                             (let*
+                                                                 ((tail-op
+                                                                   (heap-read-u8
+                                                                    data
+                                                                    (+ pc
+                                                                       2)))
+                                                                  (tail-slot
+                                                                   (+ mem
+                                                                      (*
+                                                                       (-
+                                                                        sp
+                                                                        1)
+                                                                       8)))
+                                                                  (tail-value
+                                                                   (heap-read-u64
+                                                                    tail-slot
+                                                                    0))
+                                                                  (tail-target
+                                                                   (+
+                                                                    (heap-read-u8
+                                                                     data
+                                                                     (+ pc
+                                                                        4))
+                                                                    (shl
+                                                                     (heap-read-u8
+                                                                      data
+                                                                      (+
+                                                                       pc
+                                                                       5))
+                                                                     8))))
+                                                               (if
+                                                                   (if
+                                                                       (<
+                                                                        tail-op
+                                                                        83)
+                                                                       0
+                                                                     (if
+                                                                         (>
+                                                                          tail-op
+                                                                          84)
+                                                                         0
+                                                                       1))
+                                                                   (if
+                                                                       (=
+                                                                        (heap-read-u8
+                                                                         data
+                                                                         (+
+                                                                          pc
+                                                                          3))
+                                                                        130)
+                                                                       (if
+                                                                           (=
+                                                                            (logand
+                                                                             tail-value
+                                                                             3)
+                                                                            1)
+                                                                           (if
+                                                                               (<
+                                                                                tail-target
+                                                                                length)
+                                                                               (if
+                                                                                   (if
+                                                                                       (=
+                                                                                        tail-op
+                                                                                        84)
+                                                                                       (=
+                                                                                        tail-value
+                                                                                        9223372036854775805)
+                                                                                     (=
+                                                                                      tail-value
+                                                                                      -9223372036854775807))
+                                                                                   (setq
+                                                                                    pc
+                                                                                    (+
+                                                                                     pc
+                                                                                     2))
+                                                                                 (seq
+                                                                                  (ptr-write-u64
+                                                                                   tail-slot
+                                                                                   0
+                                                                                   (if
+                                                                                       (=
+                                                                                        tail-op
+                                                                                        84)
+                                                                                       (+
+                                                                                        tail-value
+                                                                                        4)
+                                                                                     (-
+                                                                                      tail-value
+                                                                                      4)))
+                                                                                  (setq
+                                                                                   pc
+                                                                                   tail-target)))
+                                                                             (setq
+                                                                              pc
+                                                                              (+
+                                                                               pc
+                                                                               2)))
+                                                                         (setq
+                                                                          pc
+                                                                          (+
+                                                                           pc
+                                                                           2)))
+                                                                     (setq
+                                                                      pc
+                                                                      (+
+                                                                       pc
+                                                                       2)))
+                                                                 (setq pc
+                                                                       (+
+                                                                        pc
+                                                                        2))))
+                                                           (setq pc
+                                                                 (+ pc 2)))
+                                                       (seq
+                                                        (ptr-write-u64
+                                                         (+ mem (* sp 8))
+                                                         0 value)
+                                                        (setq sp (+ sp 1))
+                                                        (setq pc (+ pc 1))))
+                                                   (if
+                                                       (=
+                                                        (wf_bytecode_w_unbound_p
+                                                         env value)
+                                                        1)
+                                                       (setq go 0)
+                                                     (seq
+                                                      (setq last-value
+                                                            value)
+                                                      (if
+                                                          (and
+                                                           (< (+ pc 2)
+                                                              length)
+                                                           (=
+                                                            (heap-read-u8
+                                                             data (+ pc 1))
+                                                            136))
+                                                          (if
+                                                              (and
+                                                               (> sp 0)
+                                                               (< (+ pc 6)
+                                                                  length))
+                                                              (let*
+                                                                  ((tail-op
+                                                                    (heap-read-u8
+                                                                     data
+                                                                     (+ pc
+                                                                        2)))
+                                                                   (tail-slot
+                                                                    (+ mem
+                                                                       (*
+                                                                        (-
+                                                                         sp
+                                                                         1)
+                                                                        8)))
+                                                                   (tail-value
+                                                                    (heap-read-u64
+                                                                     tail-slot
+                                                                     0))
+                                                                   (tail-target
+                                                                    (+
+                                                                     (heap-read-u8
+                                                                      data
+                                                                      (+
+                                                                       pc
+                                                                       4))
+                                                                     (shl
+                                                                      (heap-read-u8
+                                                                       data
+                                                                       (+
+                                                                        pc
+                                                                        5))
+                                                                      8))))
+                                                                (if
+                                                                    (if
+                                                                        (<
+                                                                         tail-op
+                                                                         83)
+                                                                        0
+                                                                      (if
+                                                                          (>
+                                                                           tail-op
+                                                                           84)
+                                                                          0
+                                                                        1))
+                                                                    (if
+                                                                        (=
+                                                                         (heap-read-u8
+                                                                          data
+                                                                          (+
+                                                                           pc
+                                                                           3))
+                                                                         130)
+                                                                        (if
+                                                                            (=
+                                                                             (logand
+                                                                              tail-value
+                                                                              3)
+                                                                             1)
+                                                                            (if
+                                                                                (<
+                                                                                 tail-target
+                                                                                 length)
+                                                                                (if
+                                                                                    (if
+                                                                                        (=
+                                                                                         tail-op
+                                                                                         84)
+                                                                                        (=
+                                                                                         tail-value
+                                                                                         9223372036854775805)
+                                                                                      (=
+                                                                                       tail-value
+                                                                                       -9223372036854775807))
+                                                                                    (setq
+                                                                                     pc
+                                                                                     (+
+                                                                                      pc
+                                                                                      2))
+                                                                                  (seq
+                                                                                   (ptr-write-u64
+                                                                                    tail-slot
+                                                                                    0
+                                                                                    (if
+                                                                                        (=
+                                                                                         tail-op
+                                                                                         84)
+                                                                                        (+
+                                                                                         tail-value
+                                                                                         4)
+                                                                                      (-
+                                                                                       tail-value
+                                                                                       4)))
+                                                                                   (setq
+                                                                                    pc
+                                                                                    tail-target)))
+                                                                              (setq
+                                                                               pc
+                                                                               (+
+                                                                                pc
+                                                                                2)))
+                                                                          (setq
+                                                                           pc
+                                                                           (+
+                                                                            pc
+                                                                            2)))
+                                                                      (setq
+                                                                       pc
+                                                                       (+
+                                                                        pc
+                                                                        2)))
+                                                                  (setq pc
+                                                                        (+
+                                                                         pc
+                                                                         2))))
+                                                            (setq pc
+                                                                  (+ pc 2)))
+                                                        (seq
+                                                         (ptr-write-u64
+                                                          (+ mem (* sp 8))
+                                                          0 value)
+                                                         (setq sp (+ sp 1))
+                                                         (setq pc (+ pc 1)))))))))))))))
+                                0))))
+                       (if (< raw 6)
+                           (seq
+                            (if (or (>= sp depth) (<= sp raw)) (setq go 0)
+                              (seq
+                               (ptr-write-u64 (+ mem (* sp 8)) 0
+                                              (heap-read-u64
+                                               (+ mem (* (- sp raw 1) 8))
+                                               0))
+                               (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
+                         (if (= raw 137)
+                             (seq
+                              (seq (setq fused 0)
+                                   (if
+                                       (and (> sp 0) (<= (+ sp 2) depth)
+                                            (< (+ pc 6) length))
+                                       (seq
+                                        (setq ref
+                                              (heap-read-u8 data (+ pc 1)))
+                                        (setq cmp
+                                              (heap-read-u8 data (+ pc 2)))
+                                        (setq branch
+                                              (heap-read-u8 data (+ pc 3)))
+                                        (if
+                                            (and (< ref 6)
+                                                 (< ref (+ sp 1))
+                                                 (>= cmp 85) (<= cmp 89)
+                                                 (>= branch 131)
+                                                 (<= branch 134))
+                                            (seq
+                                             (setq a
+                                                   (heap-read-u64
+                                                    (+ mem (* (- sp 1) 8))
+                                                    0))
+                                             (setq b
+                                                   (if (= ref 0) a
+                                                     (heap-read-u64
+                                                      (+ mem
+                                                         (* (- sp ref) 8))
+                                                      0)))
+                                             (if
+                                                 (and (= (logand a 3) 1)
+                                                      (= (logand b 3) 1))
+                                                 (seq
+                                                  (setq word
+                                                        (if (= cmp 87)
+                                                            (if (< a b) 7
+                                                              3)
+                                                          (if (= cmp 85)
+                                                              (if (= a b)
+                                                                  7
+                                                                3)
+                                                            (if (= cmp 86)
+                                                                (if
+                                                                    (> a b)
+                                                                    7
+                                                                  3)
+                                                              (if
+                                                                  (= cmp
+                                                                     88)
+                                                                  (if
+                                                                      (<=
+                                                                       a b)
+                                                                      7
+                                                                    3)
+                                                                (if
+                                                                    (>= a
+                                                                        b)
+                                                                    7
+                                                                  3))))))
+                                                  (setq target
+                                                        (+
+                                                         (heap-read-u8
+                                                          data (+ pc 4))
+                                                         (shl
+                                                          (heap-read-u8
+                                                           data (+ pc 5))
+                                                          8)))
+                                                  (if (< target length)
+                                                      (seq
+                                                       (if (= branch 131)
+                                                           (setq pc
+                                                                 (if
+                                                                     (=
+                                                                      word
+                                                                      3)
+                                                                     target
+                                                                   (+ pc 6)))
+                                                         (if
+                                                             (= branch 132)
+                                                             (setq pc
+                                                                   (if
+                                                                       (=
+                                                                        word
+                                                                        3)
+                                                                       (+
+                                                                        pc
+                                                                        6)
+                                                                     target))
+                                                           (if
+                                                               (= branch
+                                                                  133)
+                                                               (if
+                                                                   (= word
+                                                                      3)
+                                                                   (seq
+                                                                    (ptr-write-u64
+                                                                     (+
+                                                                      mem
+                                                                      (*
+                                                                       sp
+                                                                       8))
+                                                                     0
+                                                                     word)
+                                                                    (setq
+                                                                     sp
+                                                                     (+ sp
+                                                                        1))
+                                                                    (setq
+                                                                     pc
+                                                                     target))
+                                                                 (setq pc
+                                                                       (+
+                                                                        pc
+                                                                        6)))
+                                                             (if
+                                                                 (= word 3)
+                                                                 (setq pc
+                                                                       (+
+                                                                        pc
+                                                                        6))
+                                                               (seq
+                                                                (ptr-write-u64
+                                                                 (+ mem
+                                                                    (* sp
+                                                                       8))
+                                                                 0 word)
+                                                                (setq sp
+                                                                      (+
+                                                                       sp
+                                                                       1))
+                                                                (setq pc
+                                                                      target))))))
+                                                       (setq fused 1))
+                                                    0))
+                                               0))
+                                          0))
+                                     0)
+                                   (if (= fused 0)
+                                       (if (or (<= sp 0) (>= sp depth))
+                                           (setq go 0)
+                                         (seq
+                                          (ptr-write-u64 (+ mem (* sp 8))
+                                                         0
+                                                         (heap-read-u64
+                                                          (+ mem
+                                                             (* (- sp 1) 8))
+                                                          0))
+                                          (setq sp (+ sp 1))
+                                          (setq pc (+ pc 1))))
+                                     0)))
+                           (if (>= raw 192)
+                               (seq
+                                (if
+                                    (or (>= sp depth)
+                                        (>= (- raw 192) nconst))
+                                    (setq go 0)
+                                  (seq
+                                   (ptr-write-u64 (+ mem (* sp 8)) 0
+                                                  (heap-read-u64
+                                                   (+ constants
+                                                      (* (- raw 192) 8))
+                                                   0))
+                                   (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
+                             (if (= raw 136)
+                                 (seq
+                                  (if (<= sp 0) (setq go 0)
+                                    (seq (setq sp (- sp 1))
+                                         (setq pc (+ pc 1)))))
+                               (if (= raw 130)
+                                   (seq
+                                    (if (>= (+ pc 2) length) (setq go 0)
+                                      (seq
+                                       (setq target
+                                             (+
+                                              (heap-read-u8 data (+ pc 1))
+                                              (shl
+                                               (heap-read-u8 data (+ pc 2))
+                                               8)))
+                                       (if (< target length)
+                                           (setq pc target)
+                                         (setq go 0)))))
+                                 (if (and (>= raw 131) (<= raw 134))
+                                     (seq
+                                      (if
+                                          (or (<= sp 0)
+                                              (>= (+ pc 2) length))
+                                          (setq go 0)
+                                        (seq
+                                         (setq a
+                                               (heap-read-u64
+                                                (+ mem (* (- sp 1) 8)) 0))
+                                         (if (= (logand a 1) 0)
+                                             (setq go 0)
+                                           (seq
+                                            (setq target
+                                                  (+
+                                                   (heap-read-u8 data
+                                                                 (+ pc 1))
+                                                   (shl
+                                                    (heap-read-u8 data
+                                                                  (+ pc 2))
+                                                    8)))
+                                            (if
+                                                (and (< target length)
+                                                     (< (+ pc 3) length))
+                                                (if (= raw 131)
+                                                    (seq
+                                                     (setq sp (- sp 1))
+                                                     (setq pc
+                                                           (if (= a 3)
+                                                               target
+                                                             (+ pc 3))))
+                                                  (if (= raw 132)
+                                                      (seq
+                                                       (setq sp (- sp 1))
+                                                       (setq pc
+                                                             (if (= a 3)
+                                                                 (+ pc 3)
+                                                               target)))
+                                                    (if (= raw 133)
+                                                        (if (= a 3)
+                                                            (setq pc
+                                                                  target)
+                                                          (seq
+                                                           (setq sp
+                                                                 (- sp 1))
+                                                           (setq pc
+                                                                 (+ pc 3))))
+                                                      (if (= a 3)
+                                                          (seq
+                                                           (setq sp
+                                                                 (- sp 1))
+                                                           (setq pc
+                                                                 (+ pc 3)))
+                                                        (setq pc target)))))
+                                              (setq go 0)))))))
+                                   (if
+                                       (and (>= raw 83) (<= raw 92)
+                                            (/= raw 91))
+                                       (seq
+                                        (if (< sp (if (< raw 85) 1 2))
+                                            (setq go 0)
+                                          (seq
+                                           (setq a
+                                                 (heap-read-u64
+                                                  (+ mem
+                                                     (*
+                                                      (- sp
+                                                         (if (< raw 85) 1
+                                                           2))
+                                                      8))
+                                                  0))
+                                           (setq b
+                                                 (heap-read-u64
+                                                  (+ mem (* (- sp 1) 8)) 0))
+                                           (if
+                                               (or (/= (logand a 3) 1)
+                                                   (/= (logand b 3) 1))
+                                               (setq go 0)
+                                             (seq
+                                              (setq word
+                                                    (if (= raw 87)
+                                                        (seq
+                                                         (if (< a b) 7 3))
+                                                      (if (= raw 84)
+                                                          (seq
+                                                           (if
+                                                               (= a
+                                                                  9223372036854775805)
+                                                               -1
+                                                             (+ a 4)))
+                                                        (if (= raw 83)
+                                                            (seq
+                                                             (if
+                                                                 (= a
+                                                                    -9223372036854775807)
+                                                                 -1
+                                                               (- a 4)))
+                                                          (if (= raw 85)
+                                                              (seq
+                                                               (if (= a b)
+                                                                   7
+                                                                 3))
+                                                            (if (= raw 86)
+                                                                (seq
+                                                                 (if
+                                                                     (> a
+                                                                        b)
+                                                                     7
+                                                                   3))
+                                                              (if
+                                                                  (= raw
+                                                                     88)
+                                                                  (seq
+                                                                   (if
+                                                                       (<=
+                                                                        a
+                                                                        b)
+                                                                       7
+                                                                     3))
+                                                                (if
+                                                                    (= raw
+                                                                       89)
+                                                                    (seq
+                                                                     (if
+                                                                         (>=
+                                                                          a
+                                                                          b)
+                                                                         7
+                                                                       3))
+                                                                  (seq
+                                                                   (let*
+                                                                       ((n
+                                                                         (if
+                                                                             (=
+                                                                              raw
+                                                                              92)
+                                                                             (+
+                                                                              (sar
+                                                                               a
+                                                                               2)
+                                                                              (sar
+                                                                               b
+                                                                               2))
+                                                                           (-
+                                                                            (sar
+                                                                             a
+                                                                             2)
+                                                                            (sar
+                                                                             b
+                                                                             2)))))
+                                                                     (if
+                                                                         (or
+                                                                          (>
+                                                                           n
+                                                                           2305843009213693951)
+                                                                          (<
+                                                                           n
+                                                                           -2305843009213693952))
+                                                                         -1
+                                                                       (+
+                                                                        (shl
+                                                                         n
+                                                                         2)
+                                                                        1))))))))))))
+                                              (if (= word -1) (setq go 0)
+                                                (seq
+                                                 (if (>= raw 85)
+                                                     (setq sp (- sp 1))
+                                                   0)
+                                                 (ptr-write-u64
+                                                  (+ mem (* (- sp 1) 8)) 0
+                                                  word)
+                                                 (setq pc (+ pc 1)))))))))
+                                     (seq (setq go 0)))))))))))))))
+        (+ (shl pc 17) sp)))
+
+
     (defun wf_bytecode_execute_frame (code constants depth env out initial-args
                                      initial-argc initial-maxargs initial-rest
                                      initial-frame initial-words outw formals)
@@ -16421,6 +17200,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   ;; Only handler resumption can reset DONE; that branch
                   ;; above retains its independent resume-PC check.
                   (= done 0)))
+           (seq
+            (if (and (<= code-len 2147483647) (>= sp 0) (<= sp depth))
+                (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env)))
+                  (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))) 0)
            (let* ((offset pc) (raw (heap-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0)
                   (top (+ mem (* (- sp 1) 8)))
@@ -16889,6 +17672,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               7 3))
                            (setq sp (- sp 1))))
                      (t (seq (setq bad-op raw) (setq done 2))))))))))))))
+           )
          (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
          (ptr-write-u64 binding-state 16 (heap-sexp-payload binding-link))
          (if (= done 5)
@@ -18738,7 +19522,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (if (= status -2) (nl_abi_fail (bf_wrong_type_arrayp code) 0) 0)))))
              (seq (nl_root_release env mark) word))))))
     (defun m5_fx_run (code nlocals env out args nparams argw wout)
-      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (heap-read-u64 (+ env 104) 0)))
+      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (nl_frame_stack_limit env 0)))
         (if (>= (+ rec 2) rec_max)
             (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
           (seq (ptr-write-u64 (+ env 96) 0 (+ rec 2))
@@ -24212,15 +24996,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= n 0) 0
         (seq (ptr-write-u64 to 0 (heap-read-u64 src 0))
              (nl_copy_words (+ to 8) (+ src 8) (- n 1)))))
-    ;; Fresh per-thread env: copy mirror/frames/unbound (96 bytes, shared boxes,
-    ;; read-only during a compile), fresh rec_cur@+96=0, copy rec_max@+104.
+    ;; Private legacy evaluator context, built before publication to clone.
     (defun nl_make_thread_env (penv)
-      (let ((e (alloc-bytes 184 8)))
-        (seq (nl_copy_words e penv 12)
-             (ptr-write-u64 e 176 0)
-             (ptr-write-u64 (+ e 96) 0 0)
-             (ptr-write-u64 (+ e 104) 0 (heap-read-u64 (+ penv 104) 0))
-             e)))
+      ;; This path evaluates arbitrary Lisp after clone. Its inherited cells
+      ;; may be shared, but its frame stack and native state must be private.
+      (let* ((e (nl_os_alloc_chunk 184)) (i 0))
+        (if (< e 4096) (seq (bf_signal_memory_full) 0)
+          (seq
+           (while (< i 23) (seq (ptr-write-u64 e (* i 8) 0) (setq i (+ i 1))))
+           (nl_copy_words e penv 12)
+           (ptr-write-u64 e 104 (heap-read-u64 penv 104))
+           (ptr-write-u64 e 112 (heap-read-u64 penv 112))
+           (nl_frame_stack_inherit penv e 0 0)
+           e))))
     ;; Child entry (clean frame on the clone stack): read FORM + the ALREADY-
     ;; BUILT fresh env from the heap box (box[8] is built by the PARENT before
     ;; the clone, so the child never copies the parent's live ctx — which the
@@ -24231,6 +25019,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (seq (ptr-write-u64 268435688 0 0)
            (let ((out_slot (alloc-bytes 32 8)))
              (seq (extern-call nelisp_eval_call (heap-read-u64 box 0) (heap-read-u64 box 8) out_slot)
+                  (nl_frame_stack_retire_env (heap-read-u64 box 8) 0)
                   (syscall-direct 60 0 0 0 0 0 0)))))
     ;; spin (COMPILED, iterative) until *ADDR == 0 — the spawn handshake wait.
     (defun nl_spin_zero (addr)
@@ -24243,13 +25032,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; build the per-thread env NOW (parent, ctx consistent) -- not in
              ;; the child concurrently with the parent's own ctx mutation.
              (ptr-write-u64 box 8 (nl_make_thread_env env))
-             (ptr-write-u64 268435688 0 box)
+             (if (< (heap-read-u64 box 8) 4096) 0
+               (seq (ptr-write-u64 268435688 0 box)
              (let ((stack (syscall-direct 9 0 67108864 3 34 -1 0)))
                (if (= (syscall-direct 56 768 (+ stack 67108864) 0 0 0 0) 0)
                    (nl_thread_run (heap-read-u64 268435688 0))
                  ;; parent: wait until the child has captured+acked its box, so
                  ;; the NEXT spawn does not clobber the shared handshake slot.
-                 (seq (nl_spin_zero 268435688) (nl_imm_int 1)))))))
+                 (seq (nl_spin_zero 268435688) (nl_imm_int 1)))))))))
     ;; nelisp-spin-until (formerly the bare name `thread-join', which
     ;; collided with GNU's `thread-join THREAD' and crashed on a non-address
     ;; argument): spin until *ADDR >= TARGET.  Uses the COMPILED (aot,
@@ -38246,7 +39036,7 @@ gets no native definitions and is gated by
         (seq
          (record-type-tag (+ penv 32) type_slot)
          (vector-make 8 backing_slot)
-         (record-make type_slot 2 (+ env 32))
+         (record-make type_slot 3 (+ env 32))
          (record-slot-set (+ env 32) 0 backing_slot)
          ;; Private frame depth is typed metadata, just like the parent's.
          ;; Keep DEPTH_SLOT as an unused compatible ABI argument.
@@ -38304,6 +39094,7 @@ gets no native definitions and is gated by
                     (heap-read-u64 out 8)
                   (- 0 1002))
               (- 0 1001)))
+           (nl_frame_stack_retire_env env 0)
            (atomic-fetch-add done 1)
            0)))
      '(defun nl_thread_worker_registry_call (worker_id a0 a1 a2 env)
@@ -43698,6 +44489,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
             (nl_n3_globals_read_w op name env)))))))
 
 (defun nl_apply_do_globals_op_w (args env _pad)
+  (if (= (sexp-name-eq (nl_apply_list_nth args 0) "frame-stack-stats") 1)
+      (nl_frame_stack_stats_w env 0)
+
   (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-aliases") 1)
@@ -43713,9 +44507,10 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
       (nl_n3_globals_mode_w args env 0)
     (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
         (nl_n4_frame_op_w args env 0)
-      (nl_n3_globals_raw_w args env 0)))))
+      (nl_n3_globals_raw_w args env 0))))))
 
 (defun nl_n4_snapshot_w (env _pad)
+      (seq (nl_frame_stack_promote_env env 0)
   (let* ((mark (nl_root_mark env)) (list-root (nl_root_reserve env))
          (item-root (nl_root_reserve env)) (value (nl_root_reserve env))
          (state (nl_n4_state env)) (i 0))
@@ -43742,7 +44537,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                (nelisp_cons_construct_w (nl_cons_car_word item-root) (nl_cons_car_word list-root) 0))))
           (setq i (+ i 1)))))
      (let* ((word (nl_cons_car_word list-root)))
-       (seq (nl_root_release env mark) word)))))
+       (seq (nl_root_release env mark) word))))))
 
 (defun nl_n4_local_pair_word (pair holder)
   (let* ((value (nl_cell_get_value_w (nl_cons_cdr_word pair) 0)))
@@ -43794,8 +44589,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (nl_n4_local_history_word (nl_cons_cdr_word names) holder shadow env emit))) 0))
 
 (defun nl_n4_locals_w (env index _pad)
+      (seq (nl_frame_stack_promote_env env 0)
   (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
-         (start (heap-read-u64 frame 96))
+         (start (nl_frame_stack_locals_start frame 0))
          (depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
          (end (if (< (+ index 1) (heap-read-u64 state 0))
                   (heap-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
@@ -43827,7 +44623,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
           (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env 1)))
        (setq i (- i 1)))
      (let* ((word (nl_cons_car_word result)))
-       (seq (nl_root_release env mark) word)))))
+       (seq (nl_root_release env mark) word))))))
 
 (defun nl_n4_frame_op_w (args env _pad)
   (let* ((code (sexp-int-unwrap (nl_apply_list_nth args 1)))
@@ -43845,6 +44641,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   (nl_n4_frame_eval_w env frame (nl_apply_list_nth payload 1) 0))))))))))
 
 (defun nl_n4_frame_eval_w (env frame expression _pad)
+      (seq (nl_frame_stack_promote_env env 0)
       ;; Clone the binding stack prefix, retaining shared records/cells. The
       ;; suspended suffix stays rooted in SAVED and each activation record.
       ;; This has N3 eval's scope isolation while allowing live cell mutation.
@@ -43864,7 +44661,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
            (seq (vector-slot-set backing i
                   (nl_vector_slot_word (nl_record_slot_word (+ frame 64) 0) i))
                 (setq i (+ i 1))))
-         (record-make type 2 fresh)
+         (record-make type 3 fresh)
          (record-slot-set fresh 0 backing)
          (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
@@ -43886,7 +44683,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   (nelisp_cons_construct alist args args))
            (nelisp_cons_construct args args args))
          (nelisp_cons_construct expr args args)
-         (nl_n4_eval_finish (nl_n3_eval_slow_w args env 0) env saved flags mark))))
+         (nl_n4_eval_finish (nl_n3_eval_slow_w args env 0) env saved flags mark)))))
 (defun nl_apply_flat_builtin_frame_w (func header env _pad)
   (if (and (> header 4096) (= (sexp-tag header) 2)
            (= (heap-sexp-payload header) 3) (= (wf_bytecode_flat_path_int_cell func) 1))
@@ -44495,21 +45292,366 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
        patched (list nelisp-standalone--this-file (locate-library (symbol-name feat)))))))
 
 ;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
-;; EvalCtx+176 points to a per-context transient mmap: header {depth,serial},
-;; then 32768 160-byte records. Each record owns copied Sexp root views for
+;; EvalCtx+176 points to a per-context transient mmap: a 64-byte header with depth,
+;; serial and typed recursion-variable caches, then 32768 160-byte records. Each record owns copied Sexp root views for
 ;; function, arguments and shared frame stack; remaining words are entry
 ;; binding depth, eval mode, evaluated, exit-debug and generation. No handles
 ;; contain arena addresses. Cold restore creates a fresh EvalCtx and rebuilds
 ;; this stack from execution; suspended native continuations are never dumped.
 (defconst nelisp-standalone--n4-source
   `(seq
+    ;; Doc 216 S4.2. No Lisp-visible native is added. These private helpers
+    ;; implement existing evaluator and GC entries (native policy clause 2).
+    ;; A logical lexical stack owns an mmap reserve. Its third record slot
+    ;; caches the descriptor as a fixnum; old two-slot images use the registry.
+    ;; Registry/counters are transient BSS and never enter a heap image.
+    ;;
+    ;; Descriptor: next@0, owner WORD@8, logical depth@16, EvalCtx@24,
+    ;; capacity@32, retired flag@40; frames start@128 with a 64-byte stride:
+    ;; header/type/four WORD slots@0..47, promoted WORD@48, descriptor@56.
+    ;; A borrowed raw frame cannot cross evaluation of arbitrary Lisp. The
+    ;; existing binding/lookup helpers meet that rule; capture promotes after
+    ;; its final read, and reflection promotes before borrowing a prefix.
+    (defun nl_frame_stack_control () (data-addr nl_frame_stack_registry))
+    (defun nl_frame_stack_owner_word (frames)
+      (+ (nl_word_payload frames) 6))
+    (defun nl_frame_stack_find (owner _pad)
+      (let* ((state (heap-read-u64 (nl_frame_stack_control) 0)) (found 0))
+        (seq
+         (while (and (/= state 0) (= found 0))
+           (if (= (heap-read-u64 state 8) owner) (setq found state)
+             (setq state (heap-read-u64 state 0))))
+         found)))
+    (defun nl_frame_stack_new (frames _pad)
+      (let* ((control (nl_frame_stack_control)) (state 0))
+        (seq
+         (while (= (atomic-compare-exchange (+ control 8) 0 1) 0) 0)
+         (setq state (nl_frame_stack_find (nl_frame_stack_owner_word frames) 0))
+         (if (/= state 0) 0
+           (seq
+            ;; Only explicitly retired backtrace-eval reserves are reusable.
+            ;; An ordinary inactive owner may concurrently begin another push.
+            (setq state (heap-read-u64 control 0))
+            (while (and (/= state 0) (/= (atomic-fetch-add (+ state 40) 0) 1))
+              (setq state (heap-read-u64 state 0)))
+            ;; 64 MiB of address space, committed by the OS on use. Stable
+            ;; addresses cover more frames than the native recursion ceiling.
+            (if (/= state 0) 0
+              (seq
+               (setq state (nl_os_alloc_chunk 67108992))
+               (if (< state 4096) (setq state 0)
+                 (seq
+                  (ptr-write-u64 state 0 (heap-read-u64 control 0))
+                  (ptr-write-u64 control 0 state)))))
+            (if (< state 4096) (setq state 0)
+              (seq
+               (ptr-write-u64 state 8 (nl_frame_stack_owner_word frames))
+               (ptr-write-u64 state 16 0)
+               (ptr-write-u64 state 24 (- frames 32))
+               (ptr-write-u64 state 32 1048576)
+               (if (= (atomic-fetch-add (+ state 40) 0) 0) 0
+                 (atomic-fetch-add (+ state 40) (- 0 1)))))))
+         (ptr-write-u64 control 8 0)
+         (if (and (/= state 0) (> (record-slot-count frames) 2))
+             (record-slot-set frames 2 (+ (* state 4) 1)) 0)
+         state)))
+    (defun nl_frame_stack_state (frames _pad)
+      (let* ((cached (if (> (record-slot-count frames) 2)
+                         (nl_record_slot_word frames 2) 3))
+             (state (if (and (= (logand cached 3) 1) (> (sar cached 2) 4096))
+                        (sar cached 2)
+                      (let* ((found (nl_frame_stack_find (nl_frame_stack_owner_word frames) 0)))
+                        (if (/= found 0) found (nl_frame_stack_new frames 0)))))
+             (depth (sar (nl_record_slot_word frames 1) 2)))
+        (seq
+         (if (= state 0) 0
+           (seq
+            (ptr-write-u64 state 24 (- frames 32))
+            (if (and (= (heap-read-u64 state 16) 0) (> depth 0))
+                (seq (ptr-write-u64 state 16 depth)
+                     (if (= (heap-read-u64 (nl_frame_stack_control) 16) 0) 0
+                       (atomic-fetch-add (+ (nl_frame_stack_control) 56) depth))) 0)))
+         state)))
+    (defun nl_frame_stack_counter_push (_pad _pad2)
+      (let* ((control (nl_frame_stack_control)))
+        (if (= (heap-read-u64 control 16) 0) 0
+          (let* ((live (seq (atomic-fetch-add (+ control 24) 1)
+                            (atomic-fetch-add (+ control 32) 1)
+                            (+ (atomic-fetch-add (+ control 56) 1) 1)))
+                 (old (heap-read-u64 control 64)))
+            (while (> live old)
+              (if (= (atomic-compare-exchange (+ control 64) old live) 1)
+                  (setq old live)
+                (setq old (heap-read-u64 control 64)))) 0))))
+    (defun nl_frame_stack_push (frames lex-symbol scratch _pad)
+      (let* ((state (nl_frame_stack_state frames 0))
+             (depth (sar (nl_record_slot_word frames 1) 2)))
+        (if (or (= state 0) (< depth 0) (>= depth 1048576))
+            (seq (bf_signal_memory_full) 0)
+          (let* ((base (+ state (+ 128 (* depth 64)))))
+            (seq
+             ;; The depth guard establishes needed <= 2^20. No callback or
+             ;; publication occurs before this fresh raw depth read. Reuse
+             ;; the shared capacity body without the unreachable >2^32 fatal
+             ;; branch; the generic legacy entry retains that guard unchanged.
+             (extern-call nelisp_frame_stack_ensure_capacity_unchecked
+                          frames (+ (sar (nl_record_slot_word frames 1) 2) 1)
+                          scratch)
+             (ptr-write-u64 base 0 1036) ; four-slot compact Record
+             ;; LEX-SYMBOL is the permanent boot symbol box. Promotion uses
+             ;; record-make to obtain the ordinary serializable type WORD.
+             (ptr-write-u64 base 8 lex-symbol)
+             (ptr-write-u64 base 16 3) (ptr-write-u64 base 24 3)
+             (ptr-write-u64 base 32 3) (ptr-write-u64 base 40 3)
+             (ptr-write-u64 base 48 0) (ptr-write-u64 base 56 state)
+             (ptr-write-u64 (+ (nl_word_payload (nl_record_slot_word frames 0))
+                              (+ 8 (* depth 8))) 0 (+ base 6))
+             (record-slot-set frames 1 (+ (* (+ depth 1) 4) 1))
+             (ptr-write-u64 state 16 (+ depth 1))
+             (nl_frame_stack_counter_push 0 0)
+             1)))))
+    (defun nl_frame_stack_pop (frames depth)
+      (let* ((state (nl_frame_stack_state frames 0)))
+        (if (= state 0) 0
+          (let* ((base (+ state (+ 128 (* depth 64))))
+                 (control (nl_frame_stack_control)))
+            (seq
+             ;; The ordinary pop restores shallow bindings before this call.
+             ;; Captured heap records survive through their existing roots.
+             (ptr-write-u64 base 0 0)
+             (ptr-write-u64 base 48 0)
+             (ptr-write-u64 state 16 depth)
+             (if (= (heap-read-u64 control 16) 0) 0
+               (atomic-fetch-add (+ control 56) (- 0 1))) 0)))))
+    (defun nl_frame_stack_install_captured (env frame scratch _pad)
+      ;; The reference callback explicitly constructs/returns a Lisp frame.
+      ;; It is already captured; register that same object on the activation
+      ;; stack instead of creating another heap frame or copying its cells.
+      (let* ((frames (+ env 32)))
+        (seq
+         (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
+                                  (nl_frame_push_sym1_ptr) scratch)
+         (let* ((state (nl_frame_stack_state frames 0))
+                (index (- (sar (nl_record_slot_word frames 1) 2) 1))
+                (base (+ state (+ 128 (* index 64))))
+                (word (+ (nl_word_payload frame) 6))
+                (control (nl_frame_stack_control)))
+           (seq
+            (ptr-write-u64 base 48 word)
+            (ptr-write-u64 (+ (nl_word_payload (nl_record_slot_word frames 0))
+                             (+ 8 (* index 8))) 0 word)
+            (if (= (heap-read-u64 control 16) 0) 0
+              (seq (atomic-fetch-add (+ control 40) 1)
+                   (atomic-fetch-add (+ control 48) 1))) 0)))))
+    (defun nl_frame_stack_containing (frame _pad)
+      (if (= (logand frame 1) 1) 0
+        (let* ((base (nl_word_payload frame))
+               (state (heap-read-u64 (nl_frame_stack_control) 0)) (found 0))
+          (seq
+           (while (and (/= state 0) (= found 0))
+             (if (and (>= base (+ state 128))
+                      (< base (+ state (+ 128 (* (heap-read-u64 state 16) 64))))
+                      (= (logand (- base (+ state 128)) 63) 0))
+                 (setq found state)
+               (setq state (heap-read-u64 state 0))))
+           found))))
+    (defun nl_frame_stack_promote (frame _pad)
+      (let* ((state (nl_frame_stack_containing frame 0)))
+        (if (= state 0) frame
+          (let* ((base (nl_word_payload frame)) (forward (heap-read-u64 base 48)))
+            (if (/= forward 0) forward
+              (let* ((env (heap-read-u64 state 24)) (mark (nl_root_mark env))
+                     (out (nl_root_reserve env)))
+                (seq
+                 (record-make (nl_record_type_word frame) 4 out)
+                 (record-slot-set out 0 (nl_record_slot_word frame 0))
+                 (record-slot-set out 1 (nl_record_slot_word frame 1))
+                 (record-slot-set out 2 (nl_record_slot_word frame 2))
+                 (record-slot-set out 3 (nl_record_slot_word frame 3))
+                 (let* ((word (+ (nl_word_payload out) 6))
+                        (owner (heap-read-u64 state 8))
+                        (backing (nl_record_slot_word owner 0))
+                        (index (sar (- base (+ state 128)) 6))
+                        (control (nl_frame_stack_control)))
+                   (seq
+                    (ptr-write-u64 (nl_word_payload word) 0
+                      (logior 1036 (logand (heap-read-u64 base 0) 192)))
+                    (ptr-write-u64 base 48 word)
+                    (ptr-write-u64 (+ (nl_word_payload backing) (+ 8 (* index 8))) 0 word)
+                    (if (= (heap-read-u64 control 16) 0) 0
+                      (seq (atomic-fetch-add (+ control 40) 1)
+                           (atomic-fetch-add (+ control 48) 1)))
+                    (nl_root_release env mark)
+                    word)))))))))
+    (defun nl_frame_stack_promote_owner (frames _pad)
+      (let* ((depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
+        (while (< i depth)
+          (seq (nl_frame_stack_promote
+                 (nl_vector_slot_word (nl_record_slot_word frames 0) i) 0)
+               (setq i (+ i 1)))) 0))
+    (defun nl_frame_stack_promote_env (env _pad)
+      (nl_frame_stack_promote_owner (+ env 32) 0))
+    (defun nl_frame_stack_retire_env (env _pad)
+      ;; backtrace-eval owns a temporary logical stack with a captured heap
+      ;; prefix. Drop its registry roots before restoring the suspended owner.
+      (let* ((state (nl_frame_stack_find (nl_frame_stack_owner_word (+ env 32)) 0))
+             (control (nl_frame_stack_control)))
+        (if (= state 0) 0
+          (seq
+           (if (= (heap-read-u64 control 16) 0) 0
+             (atomic-fetch-add (+ control 56) (- 0 (heap-read-u64 state 16))))
+           (ptr-write-u64 state 16 0)
+           (if (> (record-slot-count (+ env 32)) 2)
+               (record-slot-set (+ env 32) 2 3) 0)
+           (ptr-write-u64 state 8 0)
+           (atomic-fetch-add (+ state 40) 1) 0))))
+    (defun nl_frame_stack_mark (_pad _pad2)
+      (let* ((state (heap-read-u64 (nl_frame_stack_control) 0)))
+        (while (/= state 0)
+          (let* ((depth (heap-read-u64 state 16)) (i 0))
+            (seq
+             (if (> depth 0) (nl_gc_mark_word (heap-read-u64 state 8)) 0)
+             (while (< i depth)
+               (let* ((base (+ state (+ 128 (* i 64))))
+                      (forward (heap-read-u64 base 48)) (j 1))
+                 (if (/= forward 0) (nl_gc_mark_word forward)
+                   (if (= (heap-read-u64 base 0) 0) 0
+                     (while (< j 6)
+                       (seq (nl_gc_mark_word (heap-read-u64 base (* j 8)))
+                            (setq j (+ j 1)))))))
+               (setq i (+ i 1)))
+             (setq state (heap-read-u64 state 0))))) 0))
+    (defun nl_frame_stack_rewrite (_pad _pad2)
+      (let* ((state (heap-read-u64 (nl_frame_stack_control) 0)))
+        (while (/= state 0)
+          (let* ((depth (heap-read-u64 state 16)) (i 0))
+            (seq
+             ;; The owner is weak when inactive, but its address cache must
+             ;; still follow a live owner moved through another root.
+             (nl_compact_rw_word_edge (+ state 8))
+             (while (< i depth)
+               (let* ((base (+ state (+ 128 (* i 64))))
+                      (forward (heap-read-u64 base 48)) (j 1))
+                 (if (/= forward 0)
+                     (nl_compact_rw_word (nl_compact_rw_word_edge (+ base 48)))
+                   (if (= (heap-read-u64 base 0) 0) 0
+                     (while (< j 6)
+                       (seq (nl_compact_rw_word
+                              (nl_compact_rw_word_edge (+ base (* j 8))))
+                            (setq j (+ j 1)))))))
+               (setq i (+ i 1)))
+             (setq state (heap-read-u64 state 0))))) 0))
+    (defun nl_frame_stack_export_all (_pad _pad2)
+      (let* ((state (heap-read-u64 (nl_frame_stack_control) 0)))
+        (while (/= state 0)
+          (let* ((owner (heap-read-u64 state 8)))
+            (seq
+             ;; Active stacks are explicit roots. An inactive owner is weak:
+             ;; authenticate its allocation and exact descriptor before clearing
+             ;; a cached pointer, since its old address may have been reused.
+             (if (> (heap-read-u64 state 16) 0)
+                 (nl_frame_stack_promote_owner owner 0) 0)
+             (if (= owner 0) 0
+             (if (= (nl_gc_conserv_valid_p (nl_word_payload owner)) 0) 0
+               (if (and (= (nl_val_tag owner) 12) (> (record-slot-count owner) 2))
+                   (if (= (nl_record_slot_word owner 2) (+ (* state 4) 1))
+                       (record-slot-set owner 2 3) 0) 0)))
+             (setq state (heap-read-u64 state 0))))) 0))
+    (defun nl_frame_stack_snapshot (env out)
+      (let* ((frames (+ env 32)) (mark (nl_root_mark env))
+             (backing (nl_root_reserve env))
+             (depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
+        (seq
+         (nl_frame_stack_promote_owner frames 0)
+         (vector-make depth backing)
+         (while (< i depth)
+           (seq (vector-slot-set backing i (nl_vector_slot_word (nl_record_slot_word frames 0) i))
+                (setq i (+ i 1))))
+         (record-make (nl_record_type_word frames) 2 out)
+         (record-slot-set out 0 backing)
+         (record-slot-set out 1 (+ (* depth 4) 1))
+         (nl_root_release env mark) 0)))
+    (defun nl_frame_stack_inherit (penv env _pad _pad2)
+      ;; Legacy thread-spawn evaluates an ordinary form with inherited lexical
+      ;; cells. Publish heap frames before clone, but never share its mutable
+      ;; backing vector, depth, descriptor, or off-heap frame addresses.
+      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv)))
+        (seq
+         (nl_frame_stack_snapshot penv saved)
+         (record-make (nl_record_type_word saved) 3 (+ env 32))
+         (record-slot-set (+ env 32) 0 (nl_record_slot_word saved 0))
+         (record-slot-set (+ env 32) 1 (nl_record_slot_word saved 1))
+         (nl_root_release penv mark) 0)))
+    (defun nl_frame_stack_stats_w (env _pad)
+      (let* ((control (nl_frame_stack_control)) (state (heap-read-u64 control 0))
+             (live 0) (mark (nl_root_mark env)) (out (nl_root_reserve env)) (i 0))
+        (seq
+         (if (/= (heap-read-u64 control 16) 0) 0
+           (seq
+            (while (/= state 0)
+              (seq (setq live (+ live (heap-read-u64 state 16)))
+                   (setq state (heap-read-u64 state 0))))
+            (ptr-write-u64 control 56 live) (ptr-write-u64 control 64 live)
+            (ptr-write-u64 control 16 1)))
+         (vector-make 6 out)
+         (while (< i 6)
+           (seq (vector-slot-set out i (+ (* (heap-read-u64 control (+ 24 (* i 8))) 4) 1))
+                (setq i (+ i 1))))
+         (let* ((word (+ (nl_word_payload out) 6)))
+           (seq (nl_root_release env mark) word)))))
+    (defun nl_frame_stack_locals_start (frame _pad)
+      (let* ((start (heap-read-u64 frame 96))
+             (backing (nl_record_slot_word (+ frame 64) 0)) (done 0))
+        (seq
+         (if (/= (heap-read-u64 frame 112) 0) 0
+           (while (and (> start 0) (= done 0))
+             (seq (setq start (- start 1))
+                  (if (= (nelisp_frame_scope_boundary_p
+                           (nl_vector_slot_word backing start)) 1)
+                      (setq done 1) 0))))
+         start)))
+    ;; The effective recursion knob is an ordinary special variable. Cache
+    ;; its entry per EvalCtx; binding and setq update that same entry. Worker
+    ;; dynamic bindings are private cells and take precedence over the mirror.
+    ;; The cache's three WORDs are explicit N4 roots, separate from S6.3.
+    (defun nl_frame_stack_limit_setup (env state)
+      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
+             (bytes (alloc-bytes 24 8)))
+        (seq
+         (ptr-write-u64 bytes 0 8102936067909902701)
+         (ptr-write-u64 bytes 8 7306014439016654125)
+         (ptr-write-u64 bytes 16 6845552)
+         (nl_alloc_symbol bytes 19 name)
+         (ptr-write-u64 state 32 (nl_word_clone name))
+         (let* ((entry (nelisp_mirror_lookup_entry env name)))
+           (ptr-write-u64 state 16
+             (if (= entry 0) 0 (+ (nl_word_payload entry) 6))))
+         (ptr-write-u64 state 24 (+ (nl_word_payload env) 6))
+         (nl_root_release env mark) 0)))
+    (defun nl_frame_stack_limit (env _pad)
+      (let* ((state (nl_n4_state env)))
+        (seq
+         (if (or (= (heap-read-u64 state 16) 0)
+                 (/= (heap-read-u64 state 24) (+ (nl_word_payload env) 6)))
+             (nl_frame_stack_limit_setup env state) 0)
+         (let* ((entry (heap-read-u64 state 16))
+                (value (if (= entry 0) 3 (nl_record_slot_word entry 0))))
+           (seq
+            (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+              (if (= (nl_thread_registry_find env) 0) 0
+                (let* ((cell (nelisp_frame_stack_find_kind
+                              (+ env 32) (heap-read-u64 state 32) 1 0)))
+                  (if (= cell 0) 0 (setq value (nl_cell_get_value_w cell 0))))))
+            (if (and (= (logand value 3) 1) (> (sar value 2) 0))
+                (sar value 2) (heap-read-u64 env 104)))))))
+
     (defun nl_n4_state (env)
       (if (= (heap-read-u64 env 176) 0)
-          (let* ((state (nl_os_alloc_chunk 5242912)))
+          (let* ((state (nl_os_alloc_chunk 5242944)))
             (seq (ptr-write-u64 env 176 state) state))
         (heap-read-u64 env 176)))
     (defun nl_n4_record (state index)
-      (+ state (+ 32 (* index 160))))
+      (+ state (+ 64 (* index 160))))
     (defun nl_n4_internal_p (function)
       (if (or (= (sexp-tag function) 4) (= (sexp-tag function) 16))
           (if (= (sexp-name-eq function "nelisp--env-globals-op") 1) 1
@@ -44667,6 +45809,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= (heap-read-u64 env 176) 0) 0
         (let* ((state (heap-read-u64 env 176)) (i 0))
           (seq
+           (nl_gc_mark_word (heap-read-u64 state 16))
+           (nl_gc_mark_word (heap-read-u64 state 24))
+           (nl_gc_mark_word (heap-read-u64 state 32))
            (while (< i (heap-read-u64 state 0))
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_gc_mark_slot frame)
@@ -44677,6 +45822,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (if (= (heap-read-u64 env 176) 0) 0
         (let* ((state (heap-read-u64 env 176)) (i 0))
           (seq
+           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 16)))
+           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 24)))
+           (nl_compact_rw_word (nl_compact_rw_word_edge (+ state 32)))
            (while (< i (heap-read-u64 state 0))
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_compact_rw_slot frame)
@@ -44692,6 +45840,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (setq i (- i 1))))
          found)))
     (defun nl_n4_snapshot (env out)
+      (seq (nl_frame_stack_promote_env env 0)
       (let* ((mark (nl_root_mark env)) (list (nl_root_reserve env))
              (item (nl_root_reserve env)) (value (nl_root_reserve env))
              (state (nl_n4_state env)) (i 0))
@@ -44721,7 +45870,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                   (nelisp_cons_construct item list list)))
            (setq i (+ i 1)))
          (nl_sexp_clone_into list out)
-         (nl_cons_root_finish env mark 0))))
+         (nl_cons_root_finish env mark 0)))))
     (defun nl_n4_locals (env index out)
       (nl_abi_word_to_rc (nl_n4_locals_w env index 0) out))
     (defun nl_n4_reverse (list out)
@@ -44729,10 +45878,12 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
           (seq (nelisp_cons_construct (nl_cons_car_word list) out out)
                (nl_n4_reverse (nl_cons_cdr_word list) out)) 0))
     (defun nl_n4_eval_finish (rc env saved flags mark)
+      (seq (nl_frame_stack_retire_env env 0)
       (seq (nl_sexp_clone_into saved (+ env 32))
            (ptr-write-u64 env 112 (logior flags (logand (heap-read-u64 env 112) 4)))
-           (nl_cons_root_finish env mark rc)))
+           (nl_cons_root_finish env mark rc))))
     (defun nl_n4_frame_eval (env frame expression out)
+      (seq (nl_frame_stack_promote_env env 0)
       ;; Clone the binding stack prefix, retaining shared records/cells. The
       ;; suspended suffix stays rooted in SAVED and each activation record.
       ;; This has N3 eval's scope isolation while allowing live cell mutation.
@@ -44752,7 +45903,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (seq (vector-slot-set backing i
                   (nl_vector_slot_word (nl_record_slot_word (+ frame 64) 0) i))
                 (setq i (+ i 1))))
-         (record-make type 2 fresh)
+         (record-make type 3 fresh)
          (record-slot-set fresh 0 backing)
          (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
@@ -44774,7 +45925,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                   (nelisp_cons_construct alist args args))
            (nelisp_cons_construct args args args))
          (nelisp_cons_construct expr args args)
-         (nl_n4_eval_finish (nl_n3_eval_slow args env out) env saved flags mark))))
+         (nl_n4_eval_finish (nl_n3_eval_slow args env out) env saved flags mark)))))
     (defun nl_n4_frame_op (args env out)
       (let* ((code (sexp-int-unwrap (nl_apply_list_nth args 1)))
              (payload (nl_apply_list_nth args 2)) (state (nl_n4_state env)))

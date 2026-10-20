@@ -214,25 +214,9 @@
     ;; `nelisp_frame_cell_count' and `nelisp-lexframe--ht' (Lisp side).
     ;; HT-SYM-PTR is kept for the unchanged 4-argument ABI.
     (defun nelisp_frame_push_direct (frames-ptr lex-sym-ptr _ht-sym-ptr cap-scratch-ptr)
-     (let* ((frame-slot (alloc-bytes 64 8))
-            (int-slot (+ frame-slot 32)))
-       (and
-        ;; Step 6: cell table (nil = empty alist), dynamic names, scope
-        ;; boundary, local declarations.
-        (record-make lex-sym-ptr
-                     4
-                     frame-slot)
-        ;; Step 8: ensure backing capacity >= depth+1.  The helper re-reads
-        ;; depth immediately before the extern call; no call-crossing
-        ;; `needed' local is trusted here.
-        (nelisp_frame_push_ensure_now
-         frames-ptr
-         cap-scratch-ptr)
-        ;; Step 9: install fresh frame into backing[old depth].  The helper
-        ;; re-reads backing/depth at the write point.
-        (nelisp_frame_push_install_now frames-ptr frame-slot)
-        ;; Step 10: depth bump — frames.slot 1 = Sexp::Int(current depth+1).
-        (nelisp_frame_push_bump_now frames-ptr int-slot)))))
+      ;; The reserve owns compact frames until capture. Ordinary scratch
+      ;; remains native stack storage; no heap record is made on this path.
+      (nl_frame_stack_push frames-ptr lex-sym-ptr cap-scratch-ptr 0)))
   "AOT source for Doc 111 §111.E #21 / Doc 115 §115.3
 `frame_push_rust_direct'.
 

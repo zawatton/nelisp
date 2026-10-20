@@ -79,6 +79,7 @@
     (defun nelisp_frame_pop_depth_word (frames-ptr)
       (nl_record_slot_word frames-ptr 1))
     (defun nelisp_frame_pop_inner (frames-ptr scratch-slot new-depth _pad)
+      (seq (nl_frame_stack_pop frames-ptr new-depth)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record.
       ;; scratch-slot: *mut Sexp — currently holds `Sexp::Nil'.
       ;; new-depth:    i64 — the post-pop depth (= old-depth - 1).
@@ -107,7 +108,7 @@
                             new-depth
                             3)
            (record-slot-set frames-ptr 1 (+ (* new-depth 4) 1))
-           1))
+           1)))
     (defun nelisp_frame_pop (frames-ptr scratch-slot)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record (=
       ;;               Sexp::Record(`nelisp-lexframe-stack')).

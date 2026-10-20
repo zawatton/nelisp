@@ -576,6 +576,7 @@
       (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1) w 0))
 
     (defun nl_capture_walk_frame_w (frame acc filtered filter roots)
+      (let* ((captured
       (if (= filtered 1)
           ;; Explicit eval-alist cells remain visible independently of the filter.
           (nl_capture_walk_frame_w frame
@@ -584,7 +585,11 @@
           (if (= (nl_val_tag bindings) 12)
               (nl_capture_walk_buckets_w (nl_record_slot_word bindings 1) 0
                 (nl_word_payload (nl_record_slot_word bindings 0)) acc filtered filter frame roots)
-            (nl_capture_walk_bucket_w bindings acc filtered filter frame roots)))))
+            (nl_capture_walk_bucket_w bindings acc filtered filter frame roots))))))
+        ;; Capture pairs retain the existing lexical cells. Promote only a
+        ;; frame that actually contributed bindings to this environment.
+        (seq (if (/= captured acc) (nl_frame_stack_promote frame 0) 0)
+             captured)))
 
     (defun nl_capture_walk_frames_w (backing i acc filtered filter roots)
       (if (< i 0) acc

@@ -549,6 +549,60 @@
                      )
                  (when (fboundp 'nelisp--debug-switch) (nelisp--debug-switch 29))))
              (quote ((t t t t t t t t t t t t 29 changed) (args-out-of-range [17] 3) (wrong-type-argument wholenump -1) (wrong-type-argument char-table-p 17) (args-out-of-range #s(whv-bounds nil) -1) (args-out-of-range #s(whv-bounds nil) 2) (wrong-type-argument integerp []) (wrong-type-argument characterp []) (wrong-type-argument characterp [])))) 1 0))
+    ;; Doc 216 S4.2: escaped sibling cells survive frame reuse, collection,
+    ;; nested throws and an intervening condition-case without losing aliasing.
+    (72 shared
+        (if (equal
+             (eval
+              '(let ((events nil) (pair nil) (held nil))
+                 (setq pair
+                       (funcall
+                        (lambda ()
+                          (let ((cell (list 'initial)))
+                            (list (lambda () cell)
+                                  (lambda (value) (setq cell value)))))))
+                 (dotimes (i 16)
+                   (let ((cell (list 'pressure i))) (car cell)))
+                 (garbage-collect)
+                 (let ((before (funcall (car pair))))
+                   (funcall (cadr pair) (list 'updated 7))
+                   (setq held
+                         (catch 'whf-corpus72-return
+                           (condition-case data
+                               (funcall
+                                (lambda (argument)
+                                  (let ((retained (list argument)))
+                                    (unwind-protect
+                                        (funcall
+                                         (lambda ()
+                                           (throw 'whf-corpus72-return
+                                                  (lambda ()
+                                                    (list (car retained)
+                                                          (funcall (car pair)))))))
+                                      (setq events (cons 'unwound events)))))
+                                19)
+                             (error (list 'unexpected data)))))
+                   (garbage-collect)
+                   (let ((after (funcall (car pair)))
+                         (escaped (funcall held)))
+                     (funcall (cadr pair) (list 'final 11))
+                     (garbage-collect)
+                     (list before after escaped (funcall held) events
+                           (condition-case data
+                               (funcall
+                                (lambda (argument)
+                                  (let ((owned (list argument)))
+                                    (garbage-collect)
+                                    (funcall
+                                     (lambda ()
+                                       (signal 'error (list 'frame (car owned)))))))
+                                23)
+                             (error data))))))
+              t)
+             '((initial) (updated 7) (19 (updated 7)) (19 (final 11))
+               (unwound) (error frame 23)))
+            1 0))
+
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

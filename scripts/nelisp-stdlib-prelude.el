@@ -28,6 +28,12 @@
                         nelisp--autoload-queue)))
           (setq features (cons feature features)))
         feature))
+;; Doc 216 S4.2: the evaluator caches this special variable's mirror entry.
+;; Define it early so bootstrap does not repeatedly search an absent name.
+(unless (boundp 'max-lisp-eval-depth)
+  (defvar max-lisp-eval-depth 16000
+    "Maximum evaluation nesting; special bindings and assignment affect calls."))
+
 ;; Mirrors GNU Emacs 31.1 src/doc.c:Fdocumentation_stringp at commit
 ;; a360712c9d272d950d8d8255ef74570f7e90b7d9 (SHA-256
 ;; 687aaa28c154570e8ac2a85ce4ecccbac48c60a2c32102f1d89c3f295dd11861).
@@ -12828,27 +12834,7 @@ this file was committed).")
 (defvar coding-system-for-read nil)
 (unless (boundp 'max-lisp-eval-depth)
   (defvar max-lisp-eval-depth 16000
-    "Emacs's recursion-depth knob, present so that code which BINDS it runs.
-
-Doc 205 P2.  This runtime does have a recursion ceiling -- deep enough
-recursion signals `excessive-lisp-nesting' -- but the ceiling is
-`rec_max', written into the evaluator context at BUILD time as a fixed
-16000 (see `nelisp-standalone-build.el', the two `ptr-write-u64 ctx 104
-16000' sites).  Nothing reads this variable to find it.
-
-So setting or `let'-binding this does NOT move the real limit: measured
-2026-09-18, a self-recursive function still signals at depth 20000 inside
-`(let ((max-lisp-eval-depth 40000)) ...)'.  The value here matches
-`rec_max' so that code reading it is not misled about where the ceiling
-sits.
-
-It exists because `scripts/nelisp-standalone-build.el' binds it four
-times as `(max max-lisp-eval-depth N)' -- which READS it -- and with the
-variable unbound that `let' raised `void-variable' long before any
-recursion got deep.  Doc 205 §1.8 originally filed this as \"not a gap\"
-on the strength of a real build never reaching the ceiling; that was
-measured correctly and answered the wrong question.  Reaching the ceiling
-and binding the name are independent."))
+    "Maximum evaluation nesting, read through the evaluator's special binding."))
 ;; `system-type'/`system-configuration' used to be hardcoded Linux-x86_64
 ;; literals here regardless of what the binary was actually built for (a
 ;; Windows PE build's `system-type' answered `gnu/linux'; real-machine
