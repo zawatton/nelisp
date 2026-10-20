@@ -452,9 +452,47 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
            (t (setq ranges (cons (cons c c) ranges) i (1+ i))))))
       (when cont
         (signal 'invalid-regexp (list "Unmatched [ or [^"))))
-    (cons (list :set neg (nlre--set-kind-ranges (nreverse ranges)
-                                               (multibyte-string-p pat))
-                (nreverse classes)) i)))
+    (let ((ascii t) (rs ranges))
+      (while rs
+        (when (>= (cdar rs) 128) (setq ascii nil))
+        (setq rs (cdr rs)))
+      (setq ranges (nreverse ranges) classes (nreverse classes))
+      (cons (list :set neg (nlre--set-kind-ranges ranges
+                                                 (multibyte-string-p pat))
+                  classes ascii
+                  (and ascii (nlre--ascii-set-plan ranges classes))) i))))
+
+(defun nlre--ascii-set-plan (ranges classes)
+  "Build default-fold ASCII bitmaps only for immutable ASCII membership.
+Raw Unicode ranges and syntax/case-dependent POSIX classes use the live
+matcher. These plans are never used with an installed canonical table."
+  (let ((all ranges) (names classes) (known t))
+    (while (and names known)
+      (let ((name (car names)))
+        (setq all
+              (append
+               (cond
+                ((equal name "alpha") '((65 . 90) (97 . 122)))
+                ((equal name "alnum") '((48 . 57) (65 . 90) (97 . 122)))
+                ((equal name "digit") '((48 . 57)))
+                ((equal name "xdigit") '((48 . 57) (65 . 70) (97 . 102)))
+                ((equal name "ascii") '((0 . 127)))
+                ((equal name "blank") '((9 . 9) (32 . 32)))
+                ((equal name "cntrl") '((0 . 31)))
+                ((equal name "graph") '((33 . 126)))
+                ((equal name "print") '((32 . 126)))
+                (t (setq known nil) nil))
+               all)))
+      (setq names (cdr names)))
+    (when known
+      (let ((plain (make-string 128 0)) (folded (make-string 128 0)))
+        (dolist (range all)
+          (let ((c (car range)))
+            (while (<= c (cdr range))
+              (aset plain c 1)
+              (aset folded (if (and (>= c ?A) (<= c ?Z)) (+ c 32) c) 1)
+              (setq c (1+ c)))))
+        (vector plain folded)))))
 
 ;; A fast plan is either a literal, or a finite language whose every variant
 ;; ends at `\\''.  The latter covers load-history and regexp-opt file names
@@ -796,13 +834,16 @@ return that atom node; else nil."
   "Non-nil when every match of the node list NODES must begin with \\=`."
   (and (consp nodes) (nlre--node-anchored-p (car nodes))))
 
-(defun nlre--fold-stable-p (_c fold)
+(defun nlre--fold-stable-p (c fold)
   "Non-nil when character C matches only itself under FOLD.
 Folding, that is an ASCII non-letter.  Above ASCII the case tables
 decide, and a character can be the fold of another without folding to
 it: C's own upcase and downcase being C proves nothing about the
 characters that downcase to C."
-  (not fold))
+  (or (not fold)
+      (and (eq fold :portable) (< c 128)
+           (not (and (>= c ?a) (<= c ?z)))
+           (not (and (>= c ?A) (<= c ?Z))))))
 
 (defun nlre--anchored-prefix (nodes fold)
   "Split an anchored NODES into (PREFIX-CHARS . REST-NODES).
@@ -853,7 +894,7 @@ reference, whose text no atom describes, or a node this does not know."
     (cond
      ((memq tag '(:bos :eos :bol :eol :wordb :wordedge :symedge)) nil)
      ((memq tag '(:lit :any :set :word :space :syntax)) (list node))
-     ((memq tag '(:seq :alt :group :star :plus :opt :lazystar :lazyplus :lazyopt))
+     ((memq tag '(:seq :alt :group :star :plus :opt :lazystar :lazyplus :lazyopt :bounded))
       (let ((children (cond ((eq tag :seq) (nth 1 node))
                             ((eq tag :alt) (apply #'append (nth 1 node)))
                             ((eq tag :group) (list (nth 2 node)))
@@ -870,26 +911,45 @@ reference, whose text no atom describes, or a node this does not know."
   "Up to three of `nlre--probe-chars' that no atom of NODES consumes, as
 one-character strings; nil when NODES' atoms are not all known.  Each
 atom is tested with the matcher's own `nlre--match-atom1', so case
-folding and dynamic syntax/class predicates are excluded: their tables
-are read at match time and may change while the compiled plan is cached."
-  (let ((atoms nil) (unknown fold))
+folding and dynamic syntax predicates are excluded.  :portable FOLD permits
+ASCII punctuation proofs for the default fold, with live POSIX class guards.
+The caller must disable those proofs whenever a canonical table is installed."
+  (let ((atoms nil) (unknown (and fold (not (eq fold :portable)))) classes)
     (dolist (x nodes)
       (let ((a (nlre--atoms x)))
         (if (eq a t) (setq unknown t)
           (dolist (atom a)
             (unless (or (memq (car atom) '(:lit :any))
-                        (and (eq (car atom) :set) (null (nth 3 atom))))
-              (setq unknown t)))
+                        (and (eq (car atom) :set)
+                             (or (eq fold :portable) (null (nth 3 atom)))))
+              (setq unknown t))
+            (when (eq (car atom) :set)
+              (dolist (name (nth 3 atom))
+                ;; GNU's ASCII class bitmaps are fixed for these names.
+                ;; Syntax/case-dependent classes still need a live guard.
+                (unless (or (member name '("alpha" "alnum" "digit" "xdigit"
+                                           "ascii" "blank" "cntrl" "graph" "print"))
+                            (member name classes))
+                  (setq classes (cons name classes))))))
           (setq atoms (append a atoms)))))
     (unless unknown
-      (let ((nlre--fold fold) (nlre--match-end-limit nil)
+      (let ((nlre--fold nil) (nlre--match-end-limit nil)
             (probes nil) (i 0) (n (length nlre--probe-chars)))
         (while (and (< i n) (< (length probes) 3))
           (let ((s (char-to-string (aref nlre--probe-chars i))) (as atoms) (ok nil))
             (while (and as (not ok))
               (when (nlre--match-atom1 (car as) s 0 1) (setq ok t))
               (setq as (cdr as)))
-            (unless ok (setq probes (cons s probes))))
+            (unless ok
+              (setq probes
+                    (cons (if (and (eq fold :portable) classes)
+                              (cons s (mapcar
+                                       (lambda (name)
+                                         (cons name (and (nlre--posix-class-p
+                                                         name (aref s 0)) t)))
+                                       classes))
+                            s)
+                          probes))))
           (setq i (1+ i)))
         (nreverse probes)))))
 
@@ -958,7 +1018,16 @@ such characters (`nlre--forbidden-probes')."
       ;; here with I = 0 and its prefix matched.
       (let ((probes (nth 3 pre)) (k (length (nth 1 pre))) (hit nil))
         (while (and probes (not hit))
-          (when (string-search (car probes) string k) (setq hit t))
+          (let* ((probe (car probes))
+                 (text (if (consp probe) (car probe) probe)))
+            (when (string-search text string k)
+              (let ((guards (and (consp probe) (cdr probe))) (valid t))
+                (while (and guards valid)
+                  (unless (eq (cdar guards)
+                              (and (nlre--posix-class-p (caar guards) (aref text 0)) t))
+                    (setq valid nil))
+                  (setq guards (cdr guards)))
+                (setq hit valid))))
           (setq probes (cdr probes)))
         hit)))
 
@@ -1015,6 +1084,19 @@ such characters (`nlre--forbidden-probes')."
             (setq out (concat out (substring pat i (1+ i))) i (1+ i))))))
       out)))
 
+(defun nlre--quick-reject-plan (pre)
+  "Pick a sufficient portable rejection witness from PRE.
+Required characters need no prefix test. An unguarded forbidden character
+after the fixed prefix is impossible in any complete anchored match."
+  (if (nth 2 pre)
+      (vector :missing (car (nth 2 pre)))
+    (let ((probes (nth 3 pre)) result)
+      (while (and probes (not result))
+        (when (stringp (car probes))
+          (setq result (vector :forbidden (car probes) (length (nth 1 pre)))))
+        (setq probes (cdr probes)))
+      result)))
+
 (defun nlre--compile-pattern (pat fold &optional spaces)
   (let* ((nlre--pattern-multibyte (multibyte-string-p pat))
          (nlre--fold fold)
@@ -1025,25 +1107,33 @@ such characters (`nlre--forbidden-probes')."
          (atom (and (not literal) (nlre--single-atom-node ast)))
          (prefix (and (not literal) (nlre--leading-literal-text
                                      (nlre--seq-nodes ast))))
-         (prefix (and prefix (nlre--pattern-kind-text prefix))))
-    (vector ast ng
-            (cond
+         (prefix (and prefix (nlre--pattern-kind-text prefix)))
+         (plan (cond
              (literal (vector :literal literal fold
                               (nlre--ascii-fold-text literal)
                               (nlre--ascii-text-p literal)))
              (atom (vector :atom atom))
              (t (or (nlre--greedy-suffix-plan ast ng fold)
-                    (nlre--suffix-plan ast ng fold))))
+                    (nlre--suffix-plan ast ng fold)))))
             ;; The prefilter's character strings use Unicode, so they cannot
             ;; prove absence of non-ASCII bytes in a unibyte regexp.  Retain
             ;; the ordinary engine (and byte-aware leading prefix) there.
-            (and (not literal) (not atom)
+         (pre (and (not literal) (not atom)
                  (or nlre--pattern-multibyte (nlre--ascii-text-p source))
-                 (nlre--prefilter ast fold))
+                 (nlre--prefilter ast fold)))
+            ;; Unlike the table-independent filter above, these ASCII
+            ;; punctuation proofs require the portable default fold.  Keep
+            ;; both plans: a cached regexp may see a new table on any call.
+         (portable (and fold (not literal) (not atom)
+                 (or nlre--pattern-multibyte (nlre--ascii-text-p source))
+                 (let ((nlre--translate-table nil))
+                   (nlre--prefilter ast :portable)))))
+    (vector ast ng plan pre
             (and prefix (vector :literal prefix fold
                                 (nlre--ascii-fold-text prefix)
                                 (nlre--ascii-text-p prefix)))
-            nlre--pattern-multibyte)))
+            nlre--pattern-multibyte portable
+            (and (not plan) (nlre--quick-reject-plan (or portable pre))))))
 
 ;; ---- matcher (no closures; rest threaded explicitly) ----
 
@@ -1093,7 +1183,12 @@ one, which would demote them to the interpreter)."
 
 (defun nlre--literal-char-equal-p (pattern pmulti subject smulti)
   "Compare one literal with GNU's pattern and subject byte-kind rules."
-  (let* ((pc (if pmulti (nlre--fold-char pattern)
+  (if (and (< pattern 128) (< subject 128) (null nlre--translate-table))
+      ;; Byte-kind conversion cannot change ASCII. Avoid the general byte
+      ;; translation helpers on the portable path's many failed literals.
+      (= (if (and nlre--fold (>= pattern ?A) (<= pattern ?Z)) (+ pattern 32) pattern)
+         (if (and nlre--fold (>= subject ?A) (<= subject ?Z)) (+ subject 32) subject))
+    (let* ((pc (if pmulti (nlre--fold-char pattern)
                (if (< pattern 128)
                    (or (nlre--character-byte (nlre--fold-char pattern)) pattern)
                  pattern)))
@@ -1103,7 +1198,7 @@ one, which would demote them to the interpreter)."
                  subject))))
     (if smulti
         (= sc (if pmulti pc (if (< pc 128) pc (+ #x3fff00 pc))))
-      (equal sc (if pmulti (nlre--character-byte pc) pc)))))
+      (equal sc (if pmulti (nlre--character-byte pc) pc))))))
 
 (defun nlre--flip-case (c)
   (cond ((and (>= c ?a) (<= c ?z)) (- c 32))
@@ -1148,10 +1243,11 @@ one, which would demote them to the interpreter)."
 
 (defun nlre--posix-class-p (name c)
   "Return non-nil when C belongs to dynamic POSIX class NAME."
-  (let ((category (if (fboundp 'get-char-code-property)
+  (let ((category (and (>= c 128)
+                      (if (fboundp 'get-char-code-property)
                       (get-char-code-property c 'general-category)
                     (and (fboundp 'nelisp-unicode-category)
-                         (nelisp-unicode-category c)))))
+                         (nelisp-unicode-category c))))))
     (cond
      ((equal name "digit") (and (>= c ?0) (<= c ?9)))
      ((equal name "xdigit")
@@ -1159,13 +1255,18 @@ one, which would demote them to the interpreter)."
           (and (>= c ?A) (<= c ?F))))
      ((equal name "ascii") (< c 128))
      ((equal name "alpha")
-      (if category (memq category '(Lu Ll Lt Lm Lo Mn Mc Me Nl))
-        (/= (nlre--upcase-char c) (nlre--downcase-char c))))
+      (if (< c 128)
+          (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z)))
+        (if category (memq category '(Lu Ll Lt Lm Lo Mn Mc Me Nl))
+          (/= (nlre--upcase-char c) (nlre--downcase-char c)))))
      ((equal name "alnum")
-      (or (and category (memq category '(Lu Ll Lt Lm Lo Mn Mc Me Nl Nd)))
-          (and (not category)
-               (or (and (>= c ?0) (<= c ?9))
-                   (/= (nlre--upcase-char c) (nlre--downcase-char c))))))
+      (if (< c 128)
+          (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))
+              (and (>= c ?0) (<= c ?9)))
+        (or (and category (memq category '(Lu Ll Lt Lm Lo Mn Mc Me Nl Nd)))
+            (and (not category)
+                 (or (and (>= c ?0) (<= c ?9))
+                     (/= (nlre--upcase-char c) (nlre--downcase-char c)))))))
      ((equal name "word")
       (nlre--word-p c))
      ((equal name "upper")
@@ -1197,13 +1298,18 @@ one, which would demote them to the interpreter)."
       ;; Class bitmaps contain raw ASCII members plus translated members.
       (or (and (< canonical 128) (nlre--posix-class-p name canonical))
           (and nlre--fold
-               (let ((ascii 0) found)
+               (if (and (null nlre--translate-table) (< canonical 128))
+                   ;; The only other ASCII preimage under the default fold
+                   ;; is an uppercase letter. Custom tables retain the scan.
+                   (and (>= canonical ?a) (<= canonical ?z)
+                        (nlre--posix-class-p name (- canonical 32)))
+                 (let ((ascii 0) found)
                  (while (and (< ascii 128) (not found))
                    (when (and (nlre--posix-class-p name ascii)
                               (= canonical (nlre--fold-char ascii)))
                      (setq found t))
                    (setq ascii (1+ ascii)))
-                 found)))
+                   found))))
     (if (and nlre--fold (member name '("upper" "lower")))
         (or (nlre--posix-class-p "upper" original)
             (nlre--posix-class-p "lower" original))
@@ -1222,7 +1328,7 @@ one, which would demote them to the interpreter)."
         (or (and (>= member 128) (= member target))
             (and (>= translated 128) (= translated target)))))))
 
-(defun nlre--set-match (neg ranges classes c &optional unibyte)
+(defun nlre--set-match (neg ranges classes c &optional unibyte ascii-ranges)
   ;; A translated unibyte character that cannot become a byte retains its
   ;; original code, but uses the range table, not the bitmap (GNU execute_charset).
   (let* ((original c)
@@ -1231,14 +1337,18 @@ one, which would demote them to the interpreter)."
          (byte (nlre--character-byte translated))
          (bitmap (and byte t))
          (target (if (and unibyte (not byte)) raw translated))
-         (hit (and (or (not nlre--fold)
+         (portable (and nlre--fold (null nlre--translate-table)
+                        ascii-ranges (< target 128)))
+         (hit (and (or portable (not nlre--fold)
                        (and (not bitmap) (>= target 128) (< target #x3fff80)))
                    (nlre--set-in-ranges ranges target)))
          (names classes))
     (while (and names (not hit))
       (setq hit (nlre--posix-match-p (car names) target bitmap original)
             names (cdr names)))
-    (when (and nlre--fold (not hit))
+    (when (and portable (not hit) (>= target ?a) (<= target ?z))
+      (setq hit (nlre--set-in-ranges ranges (- target 32))))
+    (when (and nlre--fold (not portable) (not hit))
       ;; Canonicalization is deliberately deferred.  Enumerating the raw
       ;; ranges honors even direct edits to a canonical table without a
       ;; synchronized equivalence-cycle table.
@@ -1568,9 +1678,8 @@ Does NOT continue to any rest (used for one repetition)."
      ((eq tag :any) (and (nlre--can-consume-p pos n)
                          (not (eq (nlre--fold-char (aref s pos)) ?\n)) (1+ pos)))
      ((eq tag :set) (and (nlre--can-consume-p pos n)
-                         (nlre--set-match (nth 1 node) (nth 2 node)
-                                          (nth 3 node) (aref s pos)
-                                          (not (multibyte-string-p s)))
+                         (nlre--set-node-match node (aref s pos)
+                                              (not (multibyte-string-p s)))
                          (1+ pos)))
      ((eq tag :word) (and (nlre--can-consume-p pos n) (let ((w (nlre--word-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
      ((eq tag :space) (and (nlre--can-consume-p pos n) (let ((w (nlre--space-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
@@ -1618,6 +1727,15 @@ Does NOT continue to any rest (used for one repetition)."
      ((eq tag :bos) (and (= pos 0) pos))
      ((eq tag :eos) (and (= pos n) pos))
      (t nil))))
+
+(defun nlre--set-node-match (node c unibyte)
+  "Match set NODE using its ASCII plan or its live table-dependent matcher."
+  (let ((plan (and (< c 128) (null nlre--translate-table) (nth 5 node))))
+    (if plan
+        (let* ((byte (if (and nlre--fold (>= c ?A) (<= c ?Z)) (+ c 32) c))
+               (hit (= (aref (aref plan (if nlre--fold 1 0)) byte) 1)))
+          (if (nth 1 node) (not hit) hit))
+      (nlre--set-match (nth 1 node) (nth 2 node) (nth 3 node) c unibyte (nth 4 node)))))
 
 (defun nlre--match-list (nodes s pos n)
   "Match NODES (a seq, possibly containing :star/:group/:alt/sentinels) at POS.
@@ -1696,9 +1814,50 @@ Return end-pos or nil."
 
 (defun nlre--match-star (x rest s pos n)
   "Greedy star of atom/group X then REST."
-  (or (nlre--match-list
-       (cons x (cons (list :repeat-next pos (list :star x)) rest)) s pos n)
-      (nlre--match-list rest s pos n)))
+  (if (memq (car x) '(:lit :any :set :word :space :syntax))
+      (let ((end pos) next result
+            (exclusive (nlre--mutually-exclusive-p x rest)))
+        ;; Fixed-width atoms have no captures or internal alternatives.
+        ;; Retain every possible split unless the first continuation
+        ;; character provably cannot be consumed by the repeated atom.
+        (while (setq next (nlre--match-atom1 x s end n)) (setq end next))
+        (setq result (nlre--match-list rest s end n))
+        (unless exclusive
+          (while (and (not result) (> end pos))
+            (setq end (1- end)
+                  result (nlre--match-list rest s end n))))
+        result)
+    (or (nlre--match-list
+         (cons x (cons (list :repeat-next pos (list :star x)) rest)) s pos n)
+        (nlre--match-list rest s pos n))))
+
+(defun nlre--mutually-exclusive-p (x rest)
+  "Prove portable atom X disjoint from REST's first required literal.
+Groups and capture sentinels consume nothing. Unknown/optional prefixes and
+custom canonical tables retain ordinary backtracking. Unicode preimages of
+an ASCII literal are tested with the same canonical ASCII set bitmap."
+  (when (null nlre--translate-table)
+    (let ((todo rest) first done)
+      (while (and todo (not done))
+        (let ((node (car todo)))
+          (cond
+           ((memq (car node) '(:savestart :saveend :bos :eos :bol :eol :wordb :wordedge :symedge))
+            (setq todo (cdr todo)))
+           ((eq (car node) :seq) (setq todo (append (nth 1 node) (cdr todo))))
+           ((eq (car node) :group)
+            (setq todo (append (nlre--seq-nodes (nth 2 node)) (cdr todo))))
+           (t (setq first node done t)))))
+      (when (and (eq (car first) :lit) (< (nth 1 first) 128))
+        (let* ((c (nth 1 first))
+               (c (if (and nlre--fold (>= c ?A) (<= c ?Z)) (+ c 32) c)))
+          (cond
+           ((and (eq (car x) :set) (nth 5 x))
+            (let ((hit (= (aref (aref (nth 5 x) (if nlre--fold 1 0)) c) 1)))
+              (if (nth 1 x) hit (not hit))))
+           ((and (eq (car x) :lit) (< (nth 1 x) 128))
+            (not (nlre--literal-char-equal-p (nth 1 x) t c t)))
+           ((eq (car x) :any) (= c 10))
+           (t nil)))))))
 
 (defun nlre--match-one (x s pos n)
   "Match exactly one X (atom or group) at POS, no rest; return end or nil."
@@ -1785,11 +1944,19 @@ of STRING.  Sets `nlre--match-data' as usual."
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
          (compiled (nlre--compiled-pattern regexp))
-         (nlre--pattern-multibyte (aref compiled 5))
          (n (length string))
+         (i (or start 0))
+         (quick (and (null nlre--translate-table)
+                     (> (length compiled) 7) (aref compiled 7))))
+    (if (and quick
+             (if (eq (aref quick 0) :missing)
+                 (not (string-search (aref quick 1) string))
+               (and (<= (aref quick 2) n)
+                    (string-search (aref quick 1) string (aref quick 2)))))
+        nil
+      (let* ((nlre--pattern-multibyte (aref compiled 5))
          (limit (if max-end (max 0 (min n max-end)) n))
          (nlre--match-end-limit limit)
-         (i (or start 0))
          (ng (aref compiled 1))
          (plan (let ((p (aref compiled 2)))
                  ;; A mutable canonical table can distinguish a character
@@ -1837,7 +2004,9 @@ of STRING.  Sets `nlre--match-data' as usual."
       (when hit (aset caps 0 (cons hit (1+ hit)))))
      (t
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
-             (pre (and (> (length compiled) 3) (aref compiled 3)))
+             (pre (or (and (null nlre--translate-table)
+                           (> (length compiled) 6) (aref compiled 6))
+                      (and (> (length compiled) 3) (aref compiled 3))))
              (prefix (and (> (length compiled) 4) (aref compiled 4)))
              (lead (and (not prefix) (nlre--leading-lit-char top)))
              (req-atom (and (not prefix) (not lead)
@@ -1892,10 +2061,8 @@ of STRING.  Sets `nlre--match-data' as usual."
                             (nth 1 req-atom) nlre--pattern-multibyte
                             c (multibyte-string-p string)))
                           ((eq tag :any) (not (eq (nlre--fold-char c) ?\n)))
-                          ((eq tag :set) (nlre--set-match (nth 1 req-atom)
-                                                          (nth 2 req-atom)
-                                                          (nth 3 req-atom) c
-                                                          (not (multibyte-string-p string))))
+                          ((eq tag :set) (nlre--set-node-match
+                                         req-atom c (not (multibyte-string-p string))))
                           ((eq tag :word)
                            (let ((w (nlre--word-p c))) (if (nth 1 req-atom) (not w) w)))
                           ((eq tag :space)
@@ -1943,7 +2110,7 @@ of STRING.  Sets `nlre--match-data' as usual."
                 (setq i (1+ i))))))))))
     (when hit
       (setq nlre--last-caps caps)
-      hit)))
+      hit)))))
 
 (defun nlre-match-beginning (n)
   (unless (fixnump n)

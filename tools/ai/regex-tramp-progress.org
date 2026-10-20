@@ -1,0 +1,58 @@
+#+TITLE: Regex tramp-handler regression: restore early failure on generated tramp regexps
+
+# Reported by the library census (notes-65, 2026-10-20) on eval/core candidate
+# b93d504eb. The two tramp file-name-handler regexps take 137/92 ms per failed
+# match against an ordinary absolute path (fb54c401f: 2.1/1.7 ms; GNU 31.1:
+# < 0.01 ms). Once tramp is loaded, every find-file-name-handler call pays it:
+# insert-file-contents on a 15 KB file went from 49 ms to 2025 ms, and S1.3
+# with the user's init no longer finishes within 6000 s.
+# Regression range: fb54c401f..6e8214bd2, the regex-speed lane merged by c62d96cc3.
+# Repro: test/regex-tramp-handler-repro.el (from
+# handoff/nelisp-s13-probes_2026-10-18/tramp-regex-slow.el).
+# Env (set by whoever runs the meter):
+#   RT_BIN       dynamic build of HEAD
+#   RT_STATIC    static build of HEAD
+#   RT_OLD_BIN   dynamic build of fb54c401f (pre-regression reference)
+#   RT_CAND_BIN  dynamic build of b93d504eb (regressed candidate)
+#+NOTE: 2026-10-20: the supplied ledger contains 9 criteria (not the brief's stated 11); retain those criteria and thresholds. Receipts below must be produced by successful runs. S3.2/S4.2 remain pending as instructed. The supplied final verification script is absent from both this worktree and the main checkout.
+
+* S1 Reproduce and locate
+** S1.1 The repro returns nil for both regexps on RT_BIN, RT_OLD_BIN and GNU 31.1
+evidence: target/regex-tramp/s1-repro-002.json sha256=84c81a30a22570218e32a52e3f23e71b6724112519976eed157991577652e0ed
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s1-repro-002.json
+** S1.2 The first regressing commit in fb54c401f..6e8214bd2 is identified by per-match Ir, and the lost early-failure mechanism is recorded
+evidence: target/regex-tramp/regression.json sha256=e3b2f80b7ce7beb0447f2eed6bb5e98e1923f998dfaf462e4e66524c4421dbce
+
+* S2 Fix without losing the regex-speed gains
+** S2.1 Per-match Ir of each tramp regexp on RT_BIN <= RT_OLD_BIN's (callgrind; N-match run minus 0-match run)
+evidence: target/regex-tramp/s2-tramp-002.json sha256=57c6e61afb0dd1b849140e77683ed72412cfca900dbf8de8566a8e23156778d8
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-tramp-002.json
+cmd: python3 tools/ai/regex-tramp.py compare target/regex-tramp/smart-ir/result.json target/regex-tramp/old-ir/result.json --expected-count 2
+** S2.2 Real-world corpus (tramp handlers, file-name-handler-alist, the top auto-mode-alist entries, the regex-speed probes): no regexp's per-match Ir on RT_BIN exceeds RT_OLD_BIN's
+#+NOTE: 2026-10-20: 42 pinned GNU patterns / 162 subjects, four layouts, separate fresh N=5 and N=0 processes with GC inside every interval: 42/42 pass, largest ratio 0.812087. Client-request segmentation reduces measured process startups from 8 per pattern to 8 for all 42 patterns (0.190476 per pattern), without excluding collection costs. Public result/capture parity also passes on both reader variants.
+#+NOTE: 2026-10-20 relay 002: smart-dyn passes all 42 patterns; largest four-layout ratio 0.670917. The 001 receipts remain in the evidence directory.
+evidence: target/regex-tramp/s2-corpus-002.json sha256=52e50bfdeea4d20890955e95d636dddff1de77ef81cdf44242f5497502624c24
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-corpus-002.json
+cmd: python3 tools/ai/regex-tramp.py compare target/regex-tramp/smart-corpus-ir/result.json target/regex-tramp/old-corpus2-ir/result.json
+** S2.3 End to end: regex6000 mean Ir over four layouts on RT_BIN <= RT_CAND_BIN's x 1.02; host regex ERT, regexp-backtracking and regex diff tests pass on dynamic and static
+#+NOTE: 2026-10-20: regex6000 mean Ir 13938546451.75 -> 13940001936.25 (+0.010442%). The brief's unchanged 1.02 cap passes. The existing abi-ir.py helper retains its stricter zero-increase verdict (FAIL); neither that helper nor its threshold was changed. Both readers pass public GNU parity, 162 pinned corpus cases and 20 backtracking cases; host ERT 67/67.
+#+NOTE: 2026-10-20 relay 002: regex6000 13938546451.75 -> 13994909686.50 (+0.404370%), under the unchanged 1.02 cap; existing zero-increase helper remains FAIL and unchanged. Host ERT 69/69, expanded GNU public parity and the pinned 162 cases pass on both readers; backtracking remains 20/20 per reader.
+evidence: target/regex-tramp/s2-correctness-and-abi-002.json sha256=c9d6e744246b6644002069db527a7823993036da124e2bd90210c9ddc54d06d4
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s2-correctness-and-abi-002.json
+
+* S3 Delivery
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
+#+NOTE: 2026-10-20: the supplied runner was absent; target/final-verify/checks.sh reconstructs its 11 named groups from the existing regex-speed verifier and eval/core ledgers, without changing checks or thresholds. 11 groups/0 failures; standalone 39 cases/0 failures with only the existing maphash-sparse known-red; MCP 40 tools.
+#+NOTE: 2026-10-20 relay 002: initial concurrent run failed the unchanged GC conservative-cost 1.25x limit at 1.36x. After all Callgrind processes ended, the same binary/test passed at 0.99x; the complete quiet rerun passed 11 groups/0 failures and 39 standalone cases/0 failures. Only the pre-existing maphash-sparse remains known-red; MCP 40 tools. Both failed and passing artifacts are retained.
+evidence: target/regex-tramp/s3-final-002.json sha256=7ca73a6aaaa4e2c28c9ecdd4e99ad24c936888897caa6c0e8775c43ca108fc10
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s3-final-002.json
+** S3.2 End to end: the notes-65 library census of the fixed eval/core candidate passes, including S1.3/S5.1/S5.2 within their budgets
+pending
+
+* S4 Toward GNU
+** S4.1 Each tramp regexp fails in at most 0.1 ms per match on RT_BIN (GNU 31.1: < 0.01 ms)
+#+NOTE: 2026-10-20: only after relay 001 (c7bb46457). Three fresh smart-dyn processes, one warmup then 2000 timed public calls per regexp: medians 0.090781 / 0.093380 ms, both <= 0.1 ms. Cold compilation is outside the repeated-match measurement; the original cold repro output is retained separately. Wall baselines were noisy, so no wall speedup ratio is claimed; instruction counts remain the authoritative comparison. A disjoint-loop public regression is red with 5 continuation tests on 001 and green with 1; overlap/Unicode/default-vs-custom-table correctness is retained. One live reader captures that failure, loads the canonical prepared module, succeeds and preserves state 421. No native surface was added.
+evidence: target/regex-tramp/s4-smart-loop.json sha256=eb2dc210521640374aa38e708ef0a845e2a51725bb8e0ebd66d8a70fe2717daa
+cmd: python3 tools/ai/regex-tramp.py check-receipt target/regex-tramp/s4-smart-loop.json
+** S4.2 End to end: insert-file-contents on a 15 KB file with tramp loaded is at most fb54c401f's 49 ms (library image, notes-65 measurement)
+pending

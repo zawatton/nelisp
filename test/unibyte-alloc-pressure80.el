@@ -1,0 +1,17 @@
+;;; pressure.el --- allocation pressure on a populated heap (coordinator's ABI final check)
+;; Keep about 300k live objects, then churn conses, strings, vectors and
+;; hash entries in rounds.  No explicit GC; the output is deterministic.
+(let ((live (make-hash-table :test 'equal))
+      (sum 0))
+  (dotimes (i 60000)
+    (puthash (format "key-%d" i) (list i (number-to-string i) (make-vector 4 i)) live))
+  (dotimes (round 80)
+    (let ((acc nil))
+      (dotimes (i 3000)
+        (push (cons (concat "s" (number-to-string i)) (list i round (make-vector 2 i))) acc))
+      (setq acc (nreverse acc))
+      (dolist (cell acc)
+        (setq sum (+ sum (length (car cell)) (car (cdr cell)))))
+      (puthash (format "round-%d" round) (mapcar #'car acc) live)
+      (setq sum (+ sum (length (gethash (format "key-%d" (* round 100)) live))))))
+  (princ (format "ABI-PRESSURE %d %d\n" (hash-table-count live) sum)))

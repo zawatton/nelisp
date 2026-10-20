@@ -19446,9 +19446,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; directive is one of %s %d %i %o %x %X %c %% with no flag, width or
     ;; precision; every arg-consuming directive has an argument; the numeric
     ;; directives get a fixnum (a float needs Emacs's truncation, a
-    ;; non-number must signal) and %c a fixnum in the character range; and
-    ;; neither the template nor a consumed argument is a raw-byte string
+    ;; non-number must signal) and %c an ASCII fixnum; and
+    ;; neither the template nor a consumed argument contains raw high bytes
     ;; (the concat-of-pieces path and the one-shot path differ there).
+    ;; ASCII byte strings are safe too: producer normalization must not
+    ;; send ordinary format calls through the allocating Lisp fallback.
     ;; Anything else declines (0) and the caller runs the full elisp layer,
     ;; so every signal and edge case stays exactly where it was.  The scan
     ;; is also what makes `m5_fmt_loop' safe to call: the loop itself never
@@ -19457,11 +19459,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_fmt_simple_char_ok (a)
       (if (= (ptr-read-u64 a 0) 2)
           (if (< (ptr-read-u64 a 8) 0) 0
-            (if (< 4194303 (ptr-read-u64 a 8)) 0 1))
+            (if (< 127 (ptr-read-u64 a 8)) 0 1))
         0))
     (defun bf_fmt_simple_arg_ok (d a)
-      (if (= (m5_unibyte_tag_p (ptr-read-u64 a 0)) 1) 0
-        (if (= d 115) 1
+      (if (and (= (m5_string_tag_p (ptr-read-u64 a 0)) 1)
+               (= (m5_raw_high_p a) 1)) 0
+        (if (= d 115)
+            ;; Symbol/aggregate princ semantics belong to the Lisp formatter.
+            (let* ((tag (ptr-read-u64 a 0)))
+              (if (or (= tag 0) (= tag 1) (= tag 2) (= tag 3) (= tag 13)
+                      (= (m5_string_tag_p tag) 1)) 1 0))
           (if (= d 99) (bf_fmt_simple_char_ok a)
             (if (= (ptr-read-u64 a 0) 2) 1 0)))))
     (defun bf_fmt_simple_conv_p (d)
@@ -19500,7 +19507,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (= (m5_byte_at fmt 1) 115) (= (nl_val_tag argl) 7)
                (= (m5_string_tag_p (nl_val_tag (nl_cons_car_word argl))) 1))
           (nl_cons_car_word argl)
-        (if (= (m5_unibyte_tag_p (ptr-read-u64 fmt 0)) 1) 3
+        (if (= (m5_raw_high_p fmt) 1) 3
           (if (= (bf_fmt_simple_scan fmt 0 (m5_strlen fmt) argl) 0) 3
             (let* ((builder (alloc-bytes 32 8))
                    (unibyte (if (= (m5_observably_unibyte_p fmt) 1)

@@ -13,6 +13,95 @@
          (expand-file-name "../lisp/nelisp-stdlib-regexp.el"
                            (file-name-directory (or load-file-name buffer-file-name))))
 
+(ert-deftest nelisp-regexp-rejects-impossible-default-fold-path-before-backtracking ()
+  "A repeated path component cannot consume a second slash."
+  (let ((case-fold-search t))
+    (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () nil))
+              ((symbol-function 'nlre--match-list)
+               (lambda (&rest _) (error "entered the backtracker"))))
+      (nlre--compiled-cache-clear)
+      (should-not (nlre-string-match "\\`/[[:alnum:]]*\\'" "/home/user/file.el")))))
+
+(ert-deftest nelisp-regexp-ascii-class-bitmap-ignores-unicode-property-edits ()
+  "GNU's ASCII class bitmap does not consult mutable Unicode categories."
+  (let ((old (get-char-code-property ?/ 'general-category))
+        (case-fold-search nil))
+    (unwind-protect
+        (progn
+          (put-char-code-property ?/ 'general-category 'Lu)
+          (dolist (pattern '("[[:alpha:]]" "[[:alnum:]]"))
+            (should (equal (nlre-string-match pattern "/") (string-match pattern "/")))))
+      (put-char-code-property ?/ 'general-category old))))
+
+(ert-deftest nelisp-regexp-portable-prefilter-preserves-live-classes ()
+  "A cached default-fold rejection must observe changed POSIX membership."
+  (with-temp-buffer
+    (set-syntax-table (copy-syntax-table))
+    (modify-syntax-entry ?/ ".")
+    (let ((case-fold-search t)
+          (pattern "\\`/[[:word:]]*\\'")
+          (text "/aa/a"))
+      (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () nil)))
+        (nlre--compiled-cache-clear)
+        (should-not (nlre-string-match pattern text))
+        (let ((compiled (nlre--compiled-pattern pattern)))
+          (modify-syntax-entry ?/ "w")
+          (should (eq compiled (nlre--compiled-pattern pattern)))
+          (should (equal (nlre-string-match pattern text) (string-match pattern text))))))))
+
+(ert-deftest nelisp-regexp-portable-ascii-sets-match-gnu ()
+  "Exercise every ASCII byte through cached immutable-class plans."
+  (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () nil)))
+    (dolist (fold '(nil t))
+      (let ((case-fold-search fold))
+        (dolist (class '("alpha" "alnum" "digit" "xdigit" "ascii"
+                         "blank" "cntrl" "graph" "print"))
+          (dolist (neg '("" "^"))
+            (let ((pattern (concat "\\`[" neg "[:" class ":]]\\'")))
+              (dotimes (c 128)
+                (let ((text (char-to-string c)))
+                  (should (equal (list class neg fold c (nlre-string-match pattern text))
+                                 (list class neg fold c (string-match pattern text)))))))))))))
+
+(ert-deftest nelisp-regexp-disjoint-loop-tests-continuation-once ()
+  "An anchored alternative defeats the global prefilter but admits a smart loop."
+  (let ((case-fold-search nil) (nlre--last-buffer nil) (calls 0)
+        (original (symbol-function 'nlre--literal-char-equal-p)))
+    (cl-letf (((symbol-function 'nlre--literal-char-equal-p)
+               (lambda (pattern pmulti subject smulti)
+                 (when (= pattern ?b) (setq calls (1+ calls)))
+                 (funcall original pattern pmulti subject smulti))))
+      (should (= (nlre-string-match "\\`a*b\\|c\\'" "aaaac") 4))
+      (should (equal (nlre-match-data t) '(4 5)))
+      (should (= calls 1)))))
+
+(ert-deftest nelisp-regexp-smart-loops-preserve-folding-and-overlap ()
+  "ASCII disjointness must preserve Unicode aliases and overlapping continuations."
+  (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () nil)))
+    (dolist (fold '(nil t))
+      (let ((case-fold-search fold) (nlre--last-buffer nil))
+        (dolist (pattern '("\\`\\([[:alnum:]]*\\):\\'" "\\`\\([^k]*\\)k\\'"
+                           "\\`\\(a*\\)a\\'" "\\`\\(a*\\)b\\'"
+                           "\\`\\(.*\\)\n\\'" "\\`\\([A-Z]*\\)b\\'"))
+          (dolist (text '("" ":" "abc:" "aaa" "aab" "kk" "Kk" "Kb" "ſs" "aaa\n"))
+            (let* ((expected (string-match pattern text))
+                   (data (and expected (match-data t)))
+                   (actual (nlre-string-match pattern text)))
+              (should (equal (list pattern text fold actual (and actual (nlre-match-data t)))
+                             (list pattern text fold expected data))))))))))
+
+(ert-deftest nelisp-regexp-portable-prefilter-follows-canonical-table ()
+  "Installing a table after compilation must disable default-fold proofs."
+  (let ((case-fold-search t)
+        (pattern "\\`/:\\'")
+        (table (make-vector 128 nil)) active-table)
+    (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () active-table)))
+      (nlre--compiled-cache-clear)
+      (should-not (nlre-string-match pattern "/x"))
+      (aset table ?x ?:)
+      (setq active-table table)
+      (should (eq (nlre-string-match pattern "/x") 0)))))
+
 (ert-deftest nelisp-regexp-invalid-pattern-error-data-matches-host ()
   "Malformed patterns signal GNU's complete condition rather than matching."
   (dolist (pattern '("[" "[^" "[a" "\\(" "\\)" "\\" "\\1"))
