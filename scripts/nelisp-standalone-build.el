@@ -1641,7 +1641,8 @@ position and under `data-addr'."
 (defconst nelisp-standalone--unit-inline-dependencies
   '(("arena.o" "reader-gc.o")
     ("mirror-lookup.o" "reader-gc.o")
-    ("val-load.o" "reader-gc.o"))
+    ("val-load.o" "reader-gc.o")
+    ("driver.o" "arena.o"))
   "Explicit unit dependencies available to the general small-function inliner.")
 
 (defun nelisp-standalone--inline-static-data-p (form)
@@ -14691,6 +14692,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_unwind_step (env unwinds target remaining out-bindings handlers pool)
       ;; Re-enter after every callback rather than relying on AOT loop state:
       ;; callbacks can allocate, move roots, and initiate another exit.
+      ;; An already-reached target consumes no event and needs no scratch roots.
+      (if (= (wf_bytecode_w_eqw unwinds target) 1)
+          (seq (wf_write_int out-bindings remaining) 0)
       (let* ((mark (nl_root_mark env))
              (event (nl_root_reserve env))
              (tail-slot (nl_root_reserve env))
@@ -14699,7 +14703,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (next-remaining remaining)
              (current-failed 0)
              (next-failed 0))
-        (if (= (bf_eq2 unwinds target) 1)
+        (if (= (wf_bytecode_w_eqw unwinds target) 1)
             (seq (wf_write_int out-bindings remaining)
                  (nl_root_release env mark)
                  0)
@@ -14740,7 +14744,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (seq (wf_bytecode_copy unwinds target)
                  (wf_write_int out-bindings remaining)
                  (nl_root_release env mark)
-                 1)))))
+                 1))))))
     (defun wf_bytecode_unwind_to (env unwinds target bindings out-bindings handlers pool)
       (wf_bytecode_unwind_step env unwinds target bindings out-bindings handlers pool))
     (defun wf_bytecode_handlers_push (env handlers tag destination sp bindings unwinds pool)
@@ -14812,7 +14816,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; is a rooted list value, retained across allocating frame accessors.
       (seq
        (while (and (= (sexp-tag handlers) 7)
-                   (= (bf_eq2 handlers previous) 0))
+                   (= (wf_bytecode_w_eqw handlers previous) 0))
          (wf_bytecode_handlers_pop env handlers pool))
        0))
     (defun wf_bytecode_handlers_cross_unwind (env handlers unwinds pool)
@@ -16152,7 +16156,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; list view).  The value goes to word OUTW when it is non-zero, else
       ;; to the 32-byte OUT.
       ;; Roots, contiguous: +0 the frame vector, +32 handlers, +64 unwinds,
-      ;; +96 nil-unwinds, +128 unwind-bindings, +160 resume-dest, +192
+      ;; +96 binding-link, +128 unwind-bindings, +160 resume-dest, +192
       ;; resume-sp, +224 resume-bindings, +256 catch-pool, +288.. +384 four
       ;; boundary scratch slots (BX).  Word DEPTH of the frame is the result.
       (let* ((code-len (m5_strlen code))
@@ -16160,12 +16164,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (cdata (ptr-read-u64 (ptr-read-u64 constants 8) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 14)))
+             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 13)))
              (vbox (if (= roots 0) 0 (nl_alloc_vector (+ depth 1))))
              (mem (if (= roots 0) 0 (ptr-read-u64 vbox 8)))
              (handlers (+ roots 32))
              (unwinds (+ roots 64))
-             (nil-unwinds (+ roots 96))
+             ;; Immutable nil needs no transport box or GC root (Doc 215).
+             (nil-unwinds 3)
              (unwind-bindings (+ roots 128))
              (resume-dest (+ roots 160))
              (resume-sp (+ roots 192))
@@ -16173,7 +16178,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (catch-pool (+ roots 256))
              (bx (+ roots 288))
              (bt (+ roots 384))
-             (binding-link (+ roots 416))
+             (binding-link (+ roots 96))
              (binding-state (if (= roots 0) 0 (nl_n4_state env)))
              (resw (+ mem (* depth 8)))
              (initial-slots (+ initial-maxargs initial-rest))
@@ -16193,7 +16198,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil handlers)
          (wf_write_int catch-pool 0)
          (wf_write_nil unwinds)
-         (wf_write_nil nil-unwinds)
          ;; Metadata is an integer root; the separate unwind root owns data.
          (sexp-int-make binding-link (ptr-read-u64 binding-state 16))
          (ptr-write-u64 binding-link 16 unwinds)
@@ -22199,7 +22203,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (or (= (sexp-tag sym) 0) (= (sexp-tag sym) 1))
           (bf_setting_constant sym)
         (if (= (bf_keyword_raw sym) 1)
-            (if (= (bf_eq2 sym val) 1) 0 (bf_setting_constant sym))
+            (if (= (wf_bytecode_w_eqw sym val) 1) 0 (bf_setting_constant sym))
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n3_set_dynamic_raw env sym val)
         (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))))
@@ -30143,10 +30147,12 @@ The reader driver takes about 15 seconds to compile.  Its content-addressed
 key covers the generated source (and therefore `NELISP_SRC') plus the
 toolchain digest.  The cache is also split by target, dynamic-reader mode,
 and TCO mode, so reusing it is safe across those build variants."
-  (nelisp-standalone--cached-unit
-   "driver.o"
-   (nelisp-standalone--reader-driver-source)
-   nelisp-standalone--this-file))
+  (let ((nelisp-standalone--inline-import-sources
+         (nelisp-standalone--unit-inline-imports "driver.o")))
+    (nelisp-standalone--cached-unit
+     "driver.o"
+     (nelisp-standalone--reader-driver-source)
+     nelisp-standalone--this-file)))
 
 ;;;###autoload
 (defun nelisp-standalone-compile-chunk ()
@@ -42375,7 +42381,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                    (if (or (= (sexp-tag sym_ptr) 0) (= (sexp-tag sym_ptr) 1))
                        (bf_setting_constant sym_ptr)
                      (if (= (bf_keyword_raw sym_ptr) 1)
-                         (if (= (bf_eq2 sym_ptr val_ptr) 1) 0
+                         (if (= (wf_bytecode_w_eqw sym_ptr val_ptr) 1) 0
                            (bf_setting_constant sym_ptr))
                    (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
                        (seq ,@(cdddr form))
@@ -43000,8 +43006,9 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
                            (list '(defun nl_bf_bind_optional (env name_ptr args_ptr idx)
                                     (let* ((word (nl_bf_bind_opt_walk args_ptr idx)))
                                       (if (= word 0)
-                                          (seq (nl_bf_bind_sym env name_ptr 3) idx)
-                                        (seq (nl_bf_bind_sym env name_ptr word) (+ idx 1)))))))
+                                          (if (= (nl_bf_bind_sym env name_ptr 3) 0) -1 idx)
+                                        (if (= (nl_bf_bind_sym env name_ptr word) 0)
+                                            -1 (+ idx 1)))))))
                           (t (list form))))
                        (cdr src)))))
 

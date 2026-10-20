@@ -460,7 +460,10 @@ def verify(group):
                 raise ValueError(f"globals benchmark regressed: {key}")
     elif group == "final":
         evidence = receipt("final-checks", "GATE-COUNT: 11 cases, 0 failures")
-        evidence += receipt("final-standalone", "GATE-COUNT: 71 cases, 0 failures")
+        cases = len(list((ROOT / "test").glob("standalone-*-check.el")))
+        if not cases:
+            raise ValueError("empty standalone corpus")
+        evidence += receipt("final-standalone", f"GATE-COUNT: {cases} cases, 0 failures")
         evidence += [pin(OUT / "run2h-dynamic-build.log"), pin(OUT / "run2h-static-build.log")]
         source_path = OUT / "run2h-source.json"
         source = json.loads(source_path.read_text())

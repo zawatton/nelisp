@@ -1,4 +1,6 @@
 #+TITLE: Prim integration: land the per-function primitive lanes on the WORD ABI landing
+#+NOTE: 2026-10-20 integration stops at the BRIEF's Doc 216 frame/root boundary. The unchanged five-file load criteria regress against freshly remeasured branch bases, although all GNU parity, the 30-operation callfloor non-regression check, and the three integration Ir workloads pass. No load criterion or cap is weakened. S2.1 and S2.2 remain failing executable checks; S3.3 remains the coordinator's pending wine run.
+#+NOTE: Evidence is retained in target/prim-integ, including authenticated builds.json, parity-{dynamic,static}.json, final.json, branch/pass-sets.json and lanes.json. The final lane meters run against the integrated binaries, without --no-run. COMMON.md assigns the worklog DB write to the coordinator.
 
 # Base: eval/abi-integ-20261019 at 0a7bec3e5 (WORD ABI landing; runtime final,
 # landing round 3 changes measurement tooling only).
@@ -20,22 +22,30 @@
 ** S1.1 All four inputs are ancestors of HEAD
 cmd: for c in 5ba6dae48 d3421a201 748392459 fd9e8222b; do git merge-base --is-ancestor $c HEAD || exit 1; done
 ** S1.2 Interim caps removed: prim-strcmp S3 back to 10x GNU, prim-globals S3 back to 3x GNU in every mode
-pending
+cmd: python3 tools/ai/prim-integ-check.py caps
 ** S1.3 End to end: dynamic and static builds of HEAD; box census S6.2 = 0 and TOTAL < 1682
-pending
+#+NOTE: Dynamic and static ELF/cold artifacts are in target/prim-integ/accepted-{dynamic,static}. Dynamic census has 114 certified units, S6.2=0, TOTAL=1348. Build source hashes are pinned in builds.json. Changed Elisp passes focused parens/ERT; the builder compiles with the same 31 warnings as merged HEAD, zero new warnings.
+#+NOTE: Runtime red/green: initial merged dynamic crashes on keyword assignment and sort predicate 12, and executes the body after optional binding to an alias of t fails. runtime-repairs/results.json records GNU plus old/new dynamic and new static commands, outputs and hashes: both repaired binaries exactly match GNU for all three. Empty-unwind ERT is red on the old body and green (2/2) after immediate-aware equality, removing the immutable nil root and avoiding scratch roots on a no-op unwind. All 30 S1 floor means then pass (the intermediate bytecode optional/rest regression 9901.44 Ir is repaired to 9311.97, versus base 9358.07).
+#+NOTE: Owned symbol-WORD mirror lookup repairs the alias reference cost: bytecode alias/plain 2.0313 -> 1.9697 under the unchanged 2x cap (also below shadow's frozen 1.99668 cap). The general driver's arena import repairs boot +5.433% -> -3.284%; its actual cache-binding test is red before and green after. No reader builtin, public native arm, opcode or inventory entry is added.
+cmd: python3 tools/ai/prim-integ-check.py builds
 
 * S2 Prim criteria on the integrated build
 ** S2.1 prim-strcmp, prim-sort, prim-alias, prim-globals and prim-shadow: every criterion that passed on its branch passes on the integrated build (the restored caps may stay red)
-pending
+#+NOTE: Unexempt losses are the alias/globals/shadow five-file load criteria. Equal-length executable paths reproduce the loss. Layout 0's conservative GC self Ir is 172498013 on the alias base versus 617108245 integrated, with owner-resolution calls 1155335 versus 4330125; both full-load profiles contain two collections. An existing general inliner 160-node experiment still costs 6100371270 Ir, above the approximately 5.93-billion-Ir base; it is diagnostic only, and the shipped 80-node setting is unchanged. Further recovery requires frame/root liveness work in Doc 216, outside this merge repair.
+cmd: python3 tools/ai/prim-integ-check.py lanes
 ** S2.2 prim-callfloor: the 11 criteria that passed on 5ba6dae48 pass (S3 original caps stay red, owned by Doc 216)
-pending
+#+NOTE: Every S1 operation/mode mean passes its original no-regression check. The unexempt S4.2 five-file load criterion remains red: freshly measured base 5942514985.25 versus integrated 6098211500 Ir (+2.620%). Its original three GNU caps remain red separately. No restored-cap exception covers this load loss.
+cmd: python3 tools/ai/prim-integ-check.py callfloor
 ** S2.3 End to end: the GNU 31.1 parity cases of all six prim lanes pass on dynamic and static
-pending
+cmd: python3 tools/ai/prim-integ-check.py parity
 
 * S3 Non-regression and delivery
 ** S3.1 boot, files and regex6000 mean total Ir over four layouts <= PRIM_INTEG_BASE, outputs identical (callgrind, GC included)
-pending
+#+NOTE: Four-layout total Ir: boot 535534416 -> 517949739.25 (-3.284%); files 5688817087.5 -> 4963739660.5 (-12.746%); regex6000 6487445401.5 -> 4022084624.5 (-38.002%). Outputs are identical, no forced collection; GC counts per layout are boot 0/0, files 2/2, regex6000 2/0 (base/candidate). Profiling is under nice -n 10, at most eight concurrent profiles.
+cmd: python3 tools/ai/prim-integ-check.py ir
 ** S3.2 Final verification: COMMON.md 11 groups with 0 failures (maphash-sparse known-red), standalone-checks, anvil MCP smoke with 40 tools
-pending
+#+NOTE: COMMON final: 11 groups/0 failures in 327.884 seconds, independent standalone 83 cases/0 failures in 265.956 seconds, documented launcher tools/list after 25 seconds exposes exactly 40 tools. The separate sort MCP smoke also makes a real code-context call. The only prescribed known-red is maphash-sparse. Final receipts bind the same accepted dynamic/static artifacts.
+#+NOTE: Development tooling: globals profiles 396.09 -> 90.65 seconds (12 profiles, four workers; candidate runtime also improved, so this is not a pure parallel-speedup claim); removed ABI.callgraph_options no longer aborts the load runner. The callfloor control client retries wakeups within its unchanged 15-second deadline, with delayed/never/invalid-ACK controls. Its final verifier now requires all current 83 standalone cases rather than stale 71. Alias standalone verification compares all GNU rows and normalized GNU warnings: old empty-stderr demand is red, GNU's four warnings are green, and missing/extra warnings remain red. Invalid provenance, lost branch PASS, missing final group, missing tool and premature stdin controls are rejected.
+cmd: python3 tools/ai/prim-integ-check.py final
 ** S3.3 End to end: coordinator's Windows wine smoke on the integrated build (eval, bytecode 145/145, printer, unibyte and SQLite against .expected)
 pending

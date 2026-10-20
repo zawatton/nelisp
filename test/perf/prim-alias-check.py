@@ -24,6 +24,9 @@ BASE = OUT / "base/nelisp"
 BIN = Path(os.environ.get("NELISP_BIN", OUT / "candidate/nelisp")).resolve()
 PADS = (0, 700, 1400, 2100)
 REFERENCES = 32
+PROFILE_WORKERS = int(os.environ.get("PRIM_PROFILE_WORKERS", "4"))
+if not 1 <= PROFILE_WORKERS <= 8:
+    raise ValueError("PRIM_PROFILE_WORKERS must be between 1 and 8")
 CORPUS = ROOT / "test/perf/prim-alias-corpus.el"
 EXTRA = ROOT / "test/perf/prim-alias-extra.el"
 FIVE_FILES = ("vendor/emacs-lisp/emacs-lisp/cl-seq.el",
@@ -247,7 +250,7 @@ def record_cost():
             for label, binary in (("base", BASE), ("candidate", BIN))
             for mode in ("interpreter", "vm", "bytecode")
             for access in ("plain", "alias", "constant") for n in (100, 2100) for pad in PADS]
-    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+    with concurrent.futures.ThreadPoolExecutor(PROFILE_WORKERS) as pool:
         results = list(pool.map(profile, jobs))
     totals = {(j[0], j[2], j[3], j[4], j[5]): ir for j, ir, _ in results}
     data = {"base_sha256": sha(BASE), "candidate_sha256": sha(BIN),
@@ -344,7 +347,7 @@ def record_load():
         return {"label": label, "pad": pad, "ir": ir, "gc": gc}
 
     jobs = [(label, binary, pad) for label, binary in (("base", BASE), ("candidate", BIN)) for pad in PADS]
-    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+    with concurrent.futures.ThreadPoolExecutor(PROFILE_WORKERS) as pool:
         rows = list(pool.map(one, jobs))
     evidence = {str(path.relative_to(ROOT)): sha(path)
                 for path in directory.iterdir()
@@ -489,7 +492,14 @@ def check_standalone():
     assert "STANDALONE-CHECKS PASS" in log and "STANDALONE-CHECK FAIL " not in log
     count = EXTRA.read_text().count("(pa-case '")
     assert f"VARIABLE-ALIAS PASS checked={count}\n" in (OUT / "standalone-cases/standalone-variable-alias-check.out").read_text()
-    assert not (OUT / "standalone-cases/standalone-variable-alias-check.err").read_bytes()
+    # The integrated watcher lane restores GNU's alias-overwrite warnings.
+    # Compare the actual oracle, including every unexpected warning/error.
+    oracle = run(["emacs", "-Q", "--batch", "--load",
+                  ROOT / "test/standalone-variable-alias-check.el"])
+    assert oracle.returncode == 0
+    assert oracle.stdout == (OUT / "standalone-cases/standalone-variable-alias-check.out").read_bytes()
+    assert ([line for line in oracle.stderr.splitlines() if line] ==
+            [line for line in (OUT / "standalone-cases/standalone-variable-alias-check.err").read_bytes().splitlines() if line])
 
 
 def record_mcp():

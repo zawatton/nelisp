@@ -20,6 +20,7 @@ LAYOUTS = (0, 700, 1400, 2100)
 OPS = ('control', 'varref', 'symbol-value', 'setq', 'set', 'funcall')
 FINAL = 'final3'
 CALL_TAGS = ('base-calls3', 'gnu-calls3', 'final3-calls')
+IR_CAP = 3  # Original brief cap, in every execution mode.
 
 
 def pin(path):
@@ -179,12 +180,11 @@ def check(group):
         inputs += p1 + p2 + p3 + [pin(ROOT / 'tools/ai/prim-globals-progress.org')]
         data = {'base': base, 'gnu': gnu, 'candidate': candidate, 'budgets': {}}
         for mode in MODES:
-            floor = base[mode]['funcall']['ir_per_op']
-            for op, multiplier in (('setq', 13), ('symbol-value', 6)):
-                limit = floor + multiplier * gnu[mode][op]['ir_per_op']
+            for op in ('setq', 'symbol-value'):
+                limit = IR_CAP * gnu[mode][op]['ir_per_op']
                 data['budgets'][mode + ':' + op] = limit
-                if group in (op, 'measurements') and candidate[mode][op]['ir_per_op'] > limit:
-                    raise ValueError(f'{mode} {op}: exceeds revised budget {limit}')
+                if group == op and candidate[mode][op]['ir_per_op'] > limit:
+                    raise ValueError(f'{mode} {op}: exceeds {IR_CAP}x GNU budget {limit}')
         expected = pin(OUT / FINAL / 'nelisp-dynamic')
         measured = read(OUT / CALL_TAGS[2] / 'perf.json')['binary']
         if measured != expected or measured != read(OUT / FINAL / 'parity.json')['binary']:

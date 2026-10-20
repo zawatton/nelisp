@@ -26,7 +26,7 @@ PARITY = ROOT / "test/perf/prim-strcmp-parity.el"
 LAYOUTS = (0, 700, 1400, 2100)
 NAMES = ("string-lessp", "string<", "string>", "string-greaterp",
          "compare-strings", "string=", "string-equal", "string-prefix-p")
-IR_CAP = 40  # Measurement-based provisional revision; see the S3.2 ledger NOTE.
+IR_CAP = 10  # Original brief cap, restored by the WORD ABI integration.
 SOURCE_PATHS = tuple(ROOT / name for name in (
     "lisp/nelisp-cc-string-compare.el", "lisp/nelisp-stdlib-plist-str.el",
     "scripts/nelisp-standalone-build.el", "scripts/nelisp-stdlib-prelude.el",

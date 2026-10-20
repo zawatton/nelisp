@@ -458,7 +458,7 @@
             (if (and (eq pg-word-held pg-word-value)
                      (eq (aref pg-word-observed 0) 'scratch)
                      (eq (symbol-value pg-word-cell) pg-word-value)) 1 0))))
-    (65 shared
+    (67 shared
         (progn
           (makunbound 'ps-corpus-shadow)
           (let ((ps-corpus-current
@@ -468,6 +468,13 @@
             (if (and (= ps-corpus-current 7)
                      (boundp 'ps-corpus-shadow)
                      (= ps-corpus-shadow 9)) 1 0))))
+    (68 shared
+        (if (equal (condition-case e (eval '(setq :prim-integ-keyword 9))
+                     (error e))
+                   '(setting-constant :prim-integ-keyword)) 1 0))
+    (69 shared
+        (if (equal (condition-case e (sort (list 2 1) 12) (error e))
+                   '(invalid-function 12)) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

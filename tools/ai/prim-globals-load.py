@@ -25,7 +25,7 @@ def measure(left, right, tag):
         env = dict(os.environ, TMPDIR=str(ROOT / "target/tmp"),
                    XDG_CACHE_HOME=str(cache), ABI_LAYOUT_PAD="x" * layout)
         command = ["valgrind", "--tool=callgrind", "--error-exitcode=97",
-                   f"--callgrind-out-file={stem}.cg", *ABI.callgraph_options(binary),
+                   f"--callgrind-out-file={stem}.cg",
                    str(Path(binary).resolve()), "--load", str(ROOT / "test/perf/prim-speed-load-five.el")]
         with stem.with_suffix('.out').open('w') as out, stem.with_suffix('.err').open('w') as err:
             result = subprocess.run(command, cwd=ROOT, env=env, stdout=out, stderr=err, timeout=600)

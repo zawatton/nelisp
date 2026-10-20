@@ -74,10 +74,11 @@ if __name__ == "__main__":
     parser.add_argument("--gnu", default=shutil.which("emacs"))
     parser.add_argument("--n", type=int, default=1000)
     parser.add_argument("--layout", type=int, action="append")
+    parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
     COMMON.prepare = prepare
     COMMON.DUMP_START = 4
-    result = COMMON.measure(args.binary, args.tag, args.gnu, args.n, args.layout or COMMON.LAYOUTS)
+    result = COMMON.measure(args.binary, args.tag, args.gnu, args.n, args.layout or COMMON.LAYOUTS, args.jobs)
     result["inputs"].append(COMMON.pin(__file__))
     result["method"] = __doc__
     (COMMON.OUT if hasattr(COMMON, "OUT") else COMMON.ROOT / "target/prim-globals").joinpath(

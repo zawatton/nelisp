@@ -115,11 +115,20 @@ def measure(binary, tag, gnu, n=300, layouts=(0, 700, 1400, 2100), modes=C.MODES
                                                 "--instr=on", str(process.pid)],
                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     try:
-                        # Wake a blocked stdin read so Valgrind services the request.
-                        time.sleep(.1)
-                        process.stdin.write(b"\n")
-                        process.stdin.flush()
-                        co, ce = control.communicate(timeout=15)
+                        # The control client may start after the first wakeup
+                        # under load. Keep servicing it within the same deadline.
+                        deadline = time.monotonic() + 15
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise subprocess.TimeoutExpired(control.args, 15)
+                            process.stdin.write(b"\n")
+                            process.stdin.flush()
+                            try:
+                                co, ce = control.communicate(timeout=min(.1, remaining))
+                                break
+                            except subprocess.TimeoutExpired:
+                                pass
                         Path(str(stem) + ".control.out").write_bytes(co)
                         Path(str(stem) + ".control.err").write_bytes(ce)
                         if control.returncode or b"OK." not in co:

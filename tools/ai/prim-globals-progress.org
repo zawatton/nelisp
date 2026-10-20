@@ -28,10 +28,11 @@ cmd: python3 tools/ai/prim-globals-check.py check parity-vm
 cmd: python3 tools/ai/prim-globals-check.py check parity-all
 
 * S3 Primitive instruction cost
-** S3.1 Global setq fits the S1-revised fixed Ir budget in each mode
+** S3.1 Global setq uses at most three times GNU Ir in each mode
+#+NOTE: 2026-10-20 WORD ABI integration restores the original 3x GNU cap in every mode for setq and symbol-value. No base funcall-floor allowance remains; checks stay executable and red until met. Remaining call-floor ownership: Doc 216 S4.2/S6.3. S3.3 authenticates complete measurements without imposing a cap on the explicitly ungated floor.
 #+NOTE: Interim (coordinator, 2026-10-20): the S1 revision (base funcall floor + 13x setq / 6x symbol-value) is accepted only for this branch. The floor is owned by Doc 216 S4.2/S6.3; the prim integration restores the brief cap (3x GNU in every mode) and re-measures; the check stays red until it passes.
 cmd: python3 tools/ai/prim-globals-check.py check setq
-** S3.2 Symbol-value fits the S1-revised fixed Ir budget in each mode
+** S3.2 Symbol-value uses at most three times GNU Ir in each mode
 cmd: python3 tools/ai/prim-globals-check.py check symbol-value
 ** S3.3 End-to-end all operations and modes measured, including the ungated funcall floor
 cmd: python3 tools/ai/prim-globals-check.py check measurements

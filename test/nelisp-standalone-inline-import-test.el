@@ -27,7 +27,8 @@
                   nelisp-standalone--unit-cache-key
                   nelisp-standalone--glue-source
                   nelisp-standalone--unit-inline-imports
-                  nelisp-standalone--unit-for))
+                  nelisp-standalone--unit-for
+                  nelisp-standalone--reader-driver-unit))
     (goto-char (point-min))
     (when (re-search-forward
            (format "^(\\(?:defun\\|defvar\\|defconst\\) %s\\_>"
@@ -38,6 +39,7 @@
 (defvar nelisp-standalone--inline-import-sources nil)
 (defvar nelisp-standalone--manifest nil)
 (defvar nelisp-standalone--gc-source nil)
+(defvar nelisp-standalone--this-file nil)
 (defvar nelisp-inline-import-test--feature-source nil)
 (defconst nelisp-inline-import-test--donor
   '(seq (defun donor (a b) (+ (* a 10) b))))
@@ -118,6 +120,22 @@
                  (setq observed nelisp-standalone--inline-import-sources))))
       (nelisp-standalone--unit-for
        '("mirror-lookup.o" feature nelisp-inline-import-test--feature-source))
+      (should (equal observed (list nelisp-inline-import-test--donor))))))
+
+(ert-deftest nelisp-inline-import-reader-driver-binds-before-cache ()
+  ;; This cold-loader path bypasses the manifest's `--unit-for' entry.
+  (let ((nelisp-standalone--manifest '(("arena.o" :glue allocator)))
+        (nelisp-standalone--this-file "fixture.el") observed)
+    (cl-letf (((symbol-function 'nelisp-standalone--reader-driver-source)
+               (lambda () '(seq (defun caller () (donor 2 7)))))
+              ((symbol-function 'nelisp-standalone--glue-source)
+               (lambda (name source)
+                 (should (equal name "arena.o")) (should (eq source 'allocator))
+                 nelisp-inline-import-test--donor))
+              ((symbol-function 'nelisp-standalone--prepare-inline-import) #'identity)
+              ((symbol-function 'nelisp-standalone--cached-unit)
+               (lambda (&rest _) (setq observed nelisp-standalone--inline-import-sources))))
+      (nelisp-standalone--reader-driver-unit)
       (should (equal observed (list nelisp-inline-import-test--donor))))))
 
 (ert-deftest nelisp-inline-import-rejects-conflicting-definitions ()

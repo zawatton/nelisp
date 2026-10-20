@@ -7,6 +7,7 @@ collections and allocations caused by the operation remain in its marginal Ir.
 No private call edges are skipped, so these profiles also support diagnosis.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -74,7 +75,9 @@ def prepare(dest, gnu):
     return driver
 
 
-def measure(binary, tag, gnu, n, layouts):
+def measure(binary, tag, gnu, n, layouts, jobs=4):
+    if not 1 <= jobs <= 8:
+        raise ValueError("jobs must be between 1 and 8")
     dest = ROOT / "target/prim-globals" / tag
     dest.mkdir(parents=True, exist_ok=True)
     driver = prepare(dest, gnu)
@@ -83,67 +86,74 @@ def measure(binary, tag, gnu, n, layouts):
     report = {"binary": pin(binary), "inputs": [pin(__file__), pin(driver),
                pin(dest / "functions.el"), pin(dest / "bytecode.el")],
               "n": n, "method": __doc__, "dump_start": DUMP_START, "runs": []}
-    for mode in ("interpreter", "vm", "bytecode"):
-        for layout in layouts:
-            stem = dest / f"{mode}-{layout}"
-            env = dict(os.environ, PG_MODE=mode, PG_N=str(n), ABI_LAYOUT_PAD="x" * layout,
-                       TMPDIR=str(ROOT / "target/tmp"), XDG_CACHE_HOME=str(ROOT / "target/xdg-cache"))
-            env.pop("NELISP_FX_DISABLE", None)
-            env.pop("PG_PROFILE", None)
-            if mode == "interpreter":
-                env["NELISP_FX_DISABLE"] = "1"
-            gc = "Fgarbage_collect"
-            if not is_gnu:
-                symbols = subprocess.check_output(["nm", binary], text=True)
-                address = re.search(r"^([0-9a-f]+) T bf_garbage_collect_w$", symbols, re.M)
-                if not address:
-                    raise ValueError("missing GC boundary symbol")
-                # Generated ELF files expose address names to Valgrind.
-                gc = f"0x{int(address[1], 16):016x}"
-            command = ["valgrind", "--tool=callgrind", "--error-exitcode=97",
-                       f"--dump-after={gc}", f"--callgrind-out-file={stem}.cg",
-                       binary, *(["-Q", "--batch"] if is_gnu else []),
-                       "--load", str(driver)]
-            started = time.monotonic()
-            with stem.with_suffix(".out").open("w") as out, stem.with_suffix(".err").open("w") as err:
-                result = subprocess.run(command, cwd=ROOT, env=dict(env, PG_PROFILE="1"),
-                                        stdout=out, stderr=err, timeout=600)
-            if result.returncode:
-                raise RuntimeError(f"exit {result.returncode}: {stem}.err")
-            output = stem.with_suffix(".out").read_text()
-            if "PERF-COMPLETE 6" not in output:
-                raise ValueError(f"missing completion marker: {stem}")
-            wall = subprocess.run([binary, *(["-Q", "--batch"] if is_gnu else []),
-                                   "--load", str(driver)], cwd=ROOT, env=env,
-                                  capture_output=True, text=True, timeout=180, check=True)
-            if wall.stderr or "PERF-COMPLETE 6" not in wall.stdout:
-                raise ValueError(f"invalid wall run: {stem}")
-            wall_path = Path(str(stem) + ".wall.out")
-            wall_path.write_text(wall.stdout)
-            intervals = []
-            for i, op in enumerate(OPS, DUMP_START):
-                profile = Path(str(stem) + f".cg.{i}")
-                match = re.search(r"^summary: (\d+)", profile.read_text(), re.M)
-                if not match:
-                    raise ValueError(f"missing interval: {profile}")
-                timing = re.search(rf"^PERF {op} .* ([0-9.]+)$", wall.stdout, re.M)
-                intervals.append({"op": op, "ir": int(match[1]),
-                                  "seconds": float(timing[1]), "profile": pin(profile)})
-            control = intervals[0]
-            for row in intervals:
-                row["ir_per_op"] = (row["ir"] - control["ir"]) / n
-                row["us_per_op"] = 1e6 * (row["seconds"] - control["seconds"]) / n
-                if DUMP_START > 2 and row['op'] != 'control' and row['ir_per_op'] <= 0:
-                    raise ValueError(f"unstable zero-iteration control: {stem} {row['op']}")
-            record = {"mode": mode, "layout": layout, "command": command,
-                      "profile_environment": {"PG_PROFILE": "1", "PG_MODE": mode,
-                                              "PG_N": str(n), "ABI_LAYOUT_PAD_BYTES": layout},
-                      "elapsed": time.monotonic() - started, "intervals": intervals,
-                      "wall_stdout": pin(wall_path),
-                      "stdout": pin(stem.with_suffix(".out")), "stderr": pin(stem.with_suffix(".err"))}
+    def trial(job):
+        mode, layout = job
+        stem = dest / f"{mode}-{layout}"
+        env = dict(os.environ, PG_MODE=mode, PG_N=str(n), ABI_LAYOUT_PAD="x" * layout,
+                   TMPDIR=str(ROOT / "target/tmp"), XDG_CACHE_HOME=str(ROOT / "target/xdg-cache"))
+        env.pop("NELISP_FX_DISABLE", None)
+        env.pop("PG_PROFILE", None)
+        if mode == "interpreter":
+            env["NELISP_FX_DISABLE"] = "1"
+        gc = "Fgarbage_collect"
+        if not is_gnu:
+            symbols = subprocess.check_output(["nm", binary], text=True)
+            address = re.search(r"^([0-9a-f]+) T bf_garbage_collect_w$", symbols, re.M)
+            if not address:
+                raise ValueError("missing GC boundary symbol")
+            # Generated ELF files expose address names to Valgrind.
+            gc = f"0x{int(address[1], 16):016x}"
+        command = ["valgrind", "--tool=callgrind", "--error-exitcode=97",
+                   f"--dump-after={gc}", f"--callgrind-out-file={stem}.cg",
+                   binary, *(["-Q", "--batch"] if is_gnu else []),
+                   "--load", str(driver)]
+        started = time.monotonic()
+        with stem.with_suffix(".out").open("w") as out, stem.with_suffix(".err").open("w") as err:
+            result = subprocess.run(command, cwd=ROOT, env=dict(env, PG_PROFILE="1"),
+                                    stdout=out, stderr=err, timeout=600)
+        if result.returncode:
+            raise RuntimeError(f"exit {result.returncode}: {stem}.err")
+        output = stem.with_suffix(".out").read_text()
+        if "PERF-COMPLETE 6" not in output:
+            raise ValueError(f"missing completion marker: {stem}")
+        wall = subprocess.run([binary, *(["-Q", "--batch"] if is_gnu else []),
+                               "--load", str(driver)], cwd=ROOT, env=env,
+                              capture_output=True, text=True, timeout=180, check=True)
+        if wall.stderr or "PERF-COMPLETE 6" not in wall.stdout:
+            raise ValueError(f"invalid wall run: {stem}")
+        wall_path = Path(str(stem) + ".wall.out")
+        wall_path.write_text(wall.stdout)
+        intervals = []
+        for i, op in enumerate(OPS, DUMP_START):
+            profile = Path(str(stem) + f".cg.{i}")
+            match = re.search(r"^summary: (\d+)", profile.read_text(), re.M)
+            if not match:
+                raise ValueError(f"missing interval: {profile}")
+            timing = re.search(rf"^PERF {op} .* ([0-9.]+)$", wall.stdout, re.M)
+            intervals.append({"op": op, "ir": int(match[1]),
+                              "seconds": float(timing[1]), "profile": pin(profile)})
+        control = intervals[0]
+        for row in intervals:
+            row["ir_per_op"] = (row["ir"] - control["ir"]) / n
+            row["us_per_op"] = 1e6 * (row["seconds"] - control["seconds"]) / n
+            if DUMP_START > 2 and row['op'] != 'control' and row['ir_per_op'] <= 0:
+                raise ValueError(f"unstable zero-iteration control: {stem} {row['op']}")
+        record = {"mode": mode, "layout": layout, "command": command,
+                  "profile_environment": {"PG_PROFILE": "1", "PG_MODE": mode,
+                                          "PG_N": str(n), "ABI_LAYOUT_PAD_BYTES": layout},
+                  "elapsed": time.monotonic() - started, "intervals": intervals,
+                  "wall_stdout": pin(wall_path),
+                  "stdout": pin(stem.with_suffix(".out")), "stderr": pin(stem.with_suffix(".err"))}
+        return record
+    # Each mode/layout owns its files and process. Preserve report ordering;
+    # only the parent publishes complete, validated rows.
+    matrix = [(mode, layout) for mode in ("interpreter", "vm", "bytecode") for layout in layouts]
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for record in pool.map(trial, matrix):
             report["runs"].append(record)
             (dest / "perf.json").write_text(json.dumps(report, indent=2) + "\n")
-            print(tag, mode, layout, [(r["op"], round(r["ir_per_op"])) for r in intervals[1:]], flush=True)
+            print(tag, record["mode"], record["layout"],
+                  [(r["op"], round(r["ir_per_op"])) for r in record["intervals"][1:]], flush=True)
     return report
 
 
@@ -154,5 +164,6 @@ if __name__ == "__main__":
     parser.add_argument("--gnu", default=shutil.which("emacs"))
     parser.add_argument("--n", type=int, default=1000)
     parser.add_argument("--layout", type=int, action="append")
+    parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
-    measure(args.binary, args.tag, args.gnu, args.n, args.layout or LAYOUTS)
+    measure(args.binary, args.tag, args.gnu, args.n, args.layout or LAYOUTS, args.jobs)

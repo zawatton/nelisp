@@ -80,6 +80,28 @@ cmd: python3 tools/ai/prim-shadow-check.py dynamic-link
 cmd: python3 tools/ai/prim-shadow-check.py shadow-smoke
 
 * S5 Inventory and costs
+
+#+NOTE: 2026-10-20 integration inventory: compare all merged inputs as well as the shadow tip. The 20 identities below were already present at merged HEAD bf6579866; no baseline or allowance is raised. The namespace scan of merged HEAD and the repaired tree is retained under target/prim-integ/ns-*.json.
+#+NOTE: Inventory justification per name: nelisp--prn-stdout The landed standalone prelude projects the existing printer output provider; the source provider remains available to host tooling.
+#+NOTE: Inventory justification per name: print-circle The GNU public print control is declared by the foundation, compiler data provider and standalone prelude; all declarations share the runtime binding.
+#+NOTE: Inventory justification per name: looking-back The landed regexp prelude supplies the real standalone provider while the existing foundation stub remains available to other substrates.
+#+NOTE: Inventory justification per name: nelisp--prn-list-body The landed WORD printer prelude and source printer are substrate-specific providers retained by the existing printer loading contract.
+#+NOTE: Inventory justification per name: nelisp--prn-reader-macro-abbrev The source and standalone printer providers retain their own existing WORD/host adapters for reader abbreviations.
+#+NOTE: Inventory justification per name: search-spaces-regexp This is the GNU public regexp option, whose spelling must remain compatible with GNU callers.
+#+NOTE: Inventory justification per name: case-table--char-table-range The landed regexp adapter deliberately consumes the genuine case-table provider range helper rather than copying its table interpretation.
+#+NOTE: Inventory justification per name: case-table--get-extra-slot The landed regexp adapter uses the genuine case-table provider extra-slot helper as the table authority.
+#+NOTE: Inventory justification per name: match-data--translate The existing standalone prelude bridge uses the foundation match-data translation provider for buffer-relative match positions.
+#+NOTE: Inventory justification per name: nelisp--fx-active-p The string compiler uses the prelude-owned FX activation protocol; this is an existing internal compiler dependency.
+#+NOTE: Inventory justification per name: nelisp--fx-native-macro-environment The bytecode compiler consumes the prelude-owned native macro environment rather than maintaining a second environment.
+#+NOTE: Inventory justification per name: nelisp--fx-next-index The string compiler allocates records through the existing prelude-owned FX index protocol.
+#+NOTE: Inventory justification per name: nelisp--fx-table The string compiler publishes into the authoritative prelude FX table used by the evaluator.
+#+NOTE: Inventory justification per name: nelisp--syntax-table The landed regexp provider reads the authoritative standalone syntax-table state owned by the prelude.
+#+NOTE: Inventory justification per name: nelisp-cc-fx-call-primitives--source The build generator links the existing compiler module source constant as its explicit native unit input.
+#+NOTE: Inventory justification per name: nelisp-cc-number-order--source The build generator links the shared WORD numeric comparator source constant; the sort lane already justified that provider.
+#+NOTE: Inventory justification per name: nelisp-cc-sort--source The build generator links the sort lane source constant through its existing explicitly requested native-sort exception.
+#+NOTE: Inventory justification per name: nelisp-cc-string-compare--source The build generator links the existing string comparison compiler source constant as the unit input.
+#+NOTE: Inventory justification per name: nlre--last-buffer The prelude regexp bridge retains the regexp provider buffer identity for the existing per-buffer matching protocol.
+#+NOTE: Inventory justification per name: nlre--looking-back The prelude looking-back bridge dispatches to the existing regexp provider implementation.
 ** S5.1 Every inventory increase is removed or individually justified
 cmd: python3 tools/ai/prim-shadow-check.py inventory
 ** S5.2 Plain reference Ir does not regress and all three alias ratios are no worse than prim-alias

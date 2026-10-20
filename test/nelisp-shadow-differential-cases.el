@@ -2399,6 +2399,16 @@
    (list (eq (car result) floating) (eq (cadr result) integer)
          (> integer floating) (value< floating integer)))
 
+ ;; Integration boundaries accept immediate values before inspecting them.
+ (condition-case e (eval '(setq :prim-integ-keyword 9)) (error e))
+ (condition-case e (sort (list 2 1) 12) (error e))
+ (progn
+   (defvaralias 'prim-integ-optional-constant 't)
+   (eval '(defun prim-integ-optional-formal (&optional prim-integ-optional-constant)
+            'body-must-not-run) nil)
+   (list (condition-case e (prim-integ-optional-formal) (error e))
+         (condition-case e (prim-integ-optional-formal 9) (error e))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

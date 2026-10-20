@@ -58,7 +58,9 @@
               (and (= (nl_val_tag entry) 12) (> (record-slot-count entry) 4)))
           (let ((target (nl_record_slot_word entry 4)))
             (if (or (= (nl_val_tag target) 4) (= (nl_val_tag target) 16))
-                (let ((terminal (nelisp_mirror_lookup_entry mirror target)))
+                ;; TARGET is the symbol WORD owned by the live mirror entry.
+                ;; No allocation/safepoint occurs before the owned lookup.
+                (let ((terminal (nelisp_mirror_lookup_entry_owned mirror target)))
                   (if (if (= terminal 0) 1
                         ;; The shared predicate already rejects non-records.
                         (= (nl_sb_plain_entry_p terminal) 1))

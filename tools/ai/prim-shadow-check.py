@@ -146,20 +146,24 @@ def generation():
 
 def corpus():
     source = ROOT / "tools/nelisp-substrate-parity-corpus.el"
-    driver = OUT / "corpus-row65.el"
+    driver = OUT / "corpus-row67.el"
     driver.write_text(f'''(load {json.dumps(str(source))} nil t)
-    (unless (= (eval (nth 2 (assq 65 nelisp-substrate-parity-corpus)) nil) 1)
-      (error "Defvar corpus row 65 failed"))
-    (princ "CORPUS-ROW65 PASS\\n")
+    (unless (= (length nelisp-substrate-parity-corpus)
+               (length (delete-dups (mapcar #'car nelisp-substrate-parity-corpus))))
+      (error "Duplicate substrate corpus ID"))
+    (dolist (id '(67 68 69))
+      (unless (= (eval (nth 2 (assq id nelisp-substrate-parity-corpus)) nil) 1)
+        (error "Integration corpus row %s failed" id)))
+    (princ "CORPUS-ROW67-69 PASS\\n")
     (kill-emacs 0)
     ''')
-    for label, argv in (("gnu-corpus-row65", ["emacs", "-Q", "--batch", "-l", driver]),
-                        ("native-corpus-row65", [BIN, "--load", driver])):
+    for label, argv in (("gnu-corpus-row67", ["emacs", "-Q", "--batch", "-l", driver]),
+                        ("native-corpus-row67", [BIN, "--load", driver])):
         output, _ = run(label, argv)
-        assert output == b"CORPUS-ROW65 PASS\n"
-    receipt("corpus", [source, driver, OUT / "gnu-corpus-row65.stdout",
-                       OUT / "native-corpus-row65.stdout"])
-    print("CORPUS-ROW65 PASS")
+        assert output == b"CORPUS-ROW67-69 PASS\n"
+    receipt("corpus", [source, driver, OUT / "gnu-corpus-row67.stdout",
+                       OUT / "native-corpus-row67.stdout"])
+    print("CORPUS-ROW67-69 PASS")
 
 
 def reload():

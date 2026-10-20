@@ -30,8 +30,10 @@
                                 env 0 0 (m5_fx_arity_code rec argc) data 0) 2)))
              (word (if (/= trial 2) trial
                      (let* ((args (m5_fx_slot_list data argc)))
-                       (if symbol (nl_n4_named_apply_w name fn args env 0)
-                         (nl_apply_function_w fn args env 0))))))
+                       ;; These evaluator entries return WORDs but inspect a
+                       ;; physical function view, including invalid immediates.
+                       (if symbol (nl_n4_named_apply_w name (wf_word_view fn) args env 0)
+                         (nl_apply_function_w (wf_word_view fn) args env 0))))))
         (seq (nl_root_release env mark) word)))
     (defun m5_sort_reference (args env)
       (let* ((name (m5_sort_symbol env 0))

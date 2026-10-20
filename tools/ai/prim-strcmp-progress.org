@@ -20,7 +20,8 @@ cmd: python3 tools/ai/prim-strcmp-check.py parity
 * S3 Primitive performance
 ** S3.1 Measure candidate per-function time and Ir over four layouts
 cmd: python3 tools/ai/prim-strcmp-check.py candidate-metrics
-** S3.2 Every function uses at most forty times GNU Ir
+** S3.2 Every function uses at most ten times GNU Ir
+#+NOTE: 2026-10-20 WORD ABI integration restores the original 10x GNU cap. The interim 40x value fails prim-integ S1.2 (target/prim-integ/caps-red.log); the restored cap stays an executable failing check until met. Remaining call-floor ownership: Doc 216 S4.2/S6.3.
 #+NOTE: Interim (coordinator, 2026-10-20): the 10x -> 40x revision is accepted only for this branch. The remaining gap is the call floor (prim-callfloor S1: heap frame per call, root registration), now owned by Doc 216 S4.2/S6.3. The prim integration restores the brief cap (10x) and re-measures; the check stays red until it passes.
 #+NOTE: 2026-10-20: Revise the BRIEF's provisional full-call Ir threshold from 10x to 40x GNU. The mandated anonymous-callback harness measures 18296.73 Ir even for an empty body on the base, versus GNU 2984.29 Ir. The lowered comparison loop itself costs about 2140 Ir, while interpreter function resolution, evaluated arguments and the anonymous callback leave a full call near 114088 Ir. The string= alias prototype fell from 207053 to 122168 Ir after retaining its canonical Lisp closure. General caller compilation is outside this comparison slice; 40x bounds the measured remaining transport cost. The five-file load cap remains exactly 100% of base.
 cmd: python3 tools/ai/prim-strcmp-check.py ratios
