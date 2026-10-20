@@ -26310,6 +26310,13 @@ Defining it as a function compiles them again.")
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
+                ;; Compiler-private -2 selects the nullary constant path.
+                ;; Ordinary VM calls keep the original executor prologue.
+                (let ((code (car c)))
+                  (when (and (= (cdr c) 0) (= (nth 1 shape) 0)
+                             (= (length code) 6) (= (aref code 0) 17)
+                             (= (aref code 2) 1) (= (aref code 4) 0))
+                    (setcdr c -2)))
                 (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)

@@ -18,13 +18,13 @@ SPEC = importlib.util.spec_from_file_location("pcf", Path(__file__).with_name("p
 C = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(C)
 ROOT, OUT = C.ROOT, C.OUT
-OPS = {"control": "nil", "form": "17", "funcall": "(funcall pcf-empty)",
+OPS = {"control": "", "form": "(eval '17)", "funcall": "(funcall pcf-empty)",
        "builtin": "(car pcf-pair)", "apply": "(apply pcf-one '(17))",
        "optional-rest": "(pcf-flex 1 2 3)",
        "let": "(let ((x pcf-pair)) x)",
        "let-special": "(let ((pcf-special 17)) pcf-special)",
        "let-star": "(let* ((x pcf-pair) (y x)) y)",
-       "while": "nil", "dotimes": "nil"}
+       "while": "", "dotimes": ""}
 
 
 def prepare(dest, gnu):
@@ -35,7 +35,7 @@ def prepare(dest, gnu):
         "(defvar pcf-pair '(17))\n(defvar pcf-special 7)\n"
         "(defun pcf-flex (a &optional b &rest r) r)\n" +
         "\n".join(f"(defun pcf-{op} (n) " +
-                    ("(dotimes (_ n) nil))" if op == "dotimes" else
+                    ("(dotimes (_ n)))" if op == "dotimes" else
                      f"(let ((i 0)) (while (< i n) {body} (setq i (1+ i)))) )")
                     for op, body in OPS.items()) + "\n")
     compiled = dest / "bytecode.el"

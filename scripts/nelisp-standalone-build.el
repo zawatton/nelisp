@@ -15370,10 +15370,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
              0))
          (nl_root_release env mark)
          active)))
+    ;; EvalCtx flags bit 2 is sticky after runtime hook installation.
+    ;; The baked prelude has only the nil-returning fallback. Live hook and
+    ;; alias lookup remains unchanged once this conservative flag is set.
+    (defun wf_bytecode_note_jit_install (name env)
+      (if (= (sexp-name-eq name "nelisp-bytecode-jit--runtime-dispatch") 1)
+          (ptr-write-u64 env 112 (logior (ptr-read-u64 env 112) 4)) 0))
     (defun wf_bytecode_try_jit_frame_w (func args argc env frame)
       ;; 2 is a miss, 0 a stashed exit; all other results are value WORDs.
-      (if (> argc 2)
-          2
+      (if (> argc 2) 2
+        (if (= (logand (ptr-read-u64 env 112) 4) 0)
+            ;; No callback can observe the call. Literal eligibility itself
+            ;; validates a nullary descriptor; all other callers retain
+            ;; their original executor and arity-error path.
+            (if (= argc 0) (wf_bytecode_literal_value_w func 0) 2)
         (let* ((mark (nl_root_mark env))
                (name-buf (alloc-bytes 40 8))
                (name-slot (nl_root_reserve env))
@@ -15456,7 +15466,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     0)))
              0)
            (nl_root_release env mark)
-           status))))
+           status)))))
     (defun wf_bytecode_function_frame (func frame argc env out)
       ;; Evaluator entry (minimal-native clause 2). FRAME is a live,
       ;; contiguous caller-owned root frame. Retain the ordinary JIT callback
@@ -15481,13 +15491,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
-                          (if (/= literal 2) (seq (wf_bytecode_w_load out literal) 0)
-                            (wf_bytecode_execute_frame
-                             (nl_record_slot_word func 1)
-                             (nl_record_slot_word func 2)
-                             (wf_bytecode_w_int (nl_record_slot_word func 3))
-                             env out 0 argc maxargs rest frame 0 0 0)))))))))))))
+                        (wf_bytecode_execute_frame
+                         (nl_record_slot_word func 1)
+                         (nl_record_slot_word func 2)
+                         (wf_bytecode_w_int (nl_record_slot_word func 3))
+                         env out 0 argc maxargs rest frame 0 0 0)))))))))))
     (defun wf_bytecode_function (func args env out)
       (nl_abi_word_to_rc (wf_bytecode_function_w func args env 0) out))
     (defun wf_bytecode_literal_value_w (func _pad)
@@ -15539,14 +15547,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (nl_abi_fail (bf_wrong_number_of_args (bf_subr_arity_name func env) argc) 0)
-                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
-                         (if (/= literal 2) literal
-                          (let* ((rc (wf_bytecode_execute_frame
+                        (let* ((rc (wf_bytecode_execute_frame
                                    (nl_record_slot_word func 1)
                                    (nl_record_slot_word func 2)
                                    (wf_bytecode_w_int (nl_record_slot_word func 3))
                                    env out args argc maxargs rest 0 0 outw 0)))
-                           (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))))
+                          (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
           (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
               (let* ((shape (wf_bytecode_arglist_shape dw 0 0 0)))
                 (if (< shape 0)
@@ -15751,8 +15757,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; Dynamic value of symbol word NAME into word DST, or 1 with
       ;; void-variable stashed.  A plain variable outside a worker is
       ;; shallow-bound: its mirror entry holds the current value word.
+      ;; NAME is a live WORD from a rooted constants/operand vector. The
+      ;; owned lookup retains type checks and needs no heap-membership scan.
       (let* ((entry (if (= (nl_sb_worker_p env) 1) 0
-                      (nelisp_mirror_lookup_entry (+ env 0) name)))
+                      (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
              (w (if (= entry 0) 0
                   (if (= (nl_sb_plain_entry_p entry) 1) (nl_record_slot_word entry 0) 0))))
         (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
@@ -15787,7 +15795,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (wf_bytecode_w_dynamic_function func dw mem first argc env outw out)
                 2)
             (let* ((jit-word
-                    (if (> argc 2) 2
+                    (if (or (> argc 2)
+                            (and (> argc 0) (= (logand (ptr-read-u64 env 112) 4) 0))) 2
                       (let* ((mark (nl_root_mark env))
                              (st (wf_bytecode_w_stage env mem first argc))
                              ;; Staging exhaustion has not stashed a signal.
@@ -15807,14 +15816,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
-                          (if (/= literal 2) (seq (ptr-write-u64 outw 0 literal) 0)
-                            (wf_bytecode_execute_frame
-                             (nl_record_slot_word func 1)
-                             (nl_record_slot_word func 2)
-                             (wf_bytecode_w_int (nl_record_slot_word func 3))
-                             env out 0 argc maxargs rest 0
-                             (+ mem (* first 8)) outw 0)))))))))))))
+                        (wf_bytecode_execute_frame
+                         (nl_record_slot_word func 1)
+                         (nl_record_slot_word func 2)
+                         (wf_bytecode_w_int (nl_record_slot_word func 3))
+                         env out 0 argc maxargs rest 0
+                         (+ mem (* first 8)) outw 0)))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
       ;; Dynamic-binding bytecode: the callee activation binds FORMALS to the
       ;; argument words itself (`wf_bytecode_w_bind_formals').
@@ -16083,7 +16090,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= roots 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
           (seq
-         ;; nl_alloc_vector already initialized every stack/result WORD to nil.
+         (while (<= i depth)
+           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
          (ptr-write-u64 roots 0 8)
          (ptr-write-u64 (+ roots 8) 0 vbox)
          (if (and (= done 0) (> initial-slots depth))
@@ -16172,7 +16180,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (atomic-fetch-add 268435544 1)
                           (setq done 0)) 0)
                      (and (= done 0) (< pc code-len)))
-                  (and (= done 0) (< pc code-len))))
+                  ;; The first test already makes a code-end PC an error.
+                  ;; Only handler resumption can reset DONE; that branch
+                  ;; above retains its independent resume-PC check.
+                  (= done 0)))
            (let* ((offset pc) (raw (ptr-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0)
                   (top (+ mem (* (- sp 1) 8)))
@@ -18486,8 +18497,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; ENTRY-CHECK, CONST, RETURN. Keep the entry guard and read the
       ;; constant afterwards; no frame, allocation or callback is observable.
       (if (and (= (vector-len code) 6)
-               (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 17)
                (= (wf_bytecode_w_int (nl_vector_slot_word code 2)) 1)
+               (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 17)
                (= (wf_bytecode_w_int (nl_vector_slot_word code 4)) 0)
                (= (nl_val_tag (nl_vector_slot_word code 5)) 2)
                (> (nl_word_payload (nl_vector_slot_word code 5)) 0))
@@ -18495,26 +18506,26 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (= (m5_fx_entry_check (nl_vector_slot_word code 1) _pad) 0))
               (nl_vector_slot_word code 3) 2)
         2))
+    (defun m5_fx_run_literal (code env out args argw wout)
+      (let* ((literal (m5_fx_literal_w code env)))
+        (if (/= literal 2)
+            (seq (if (= wout 0) (nl_abi_word_to_rc literal out)
+                   (ptr-write-u64 wout 0 literal)) -1)
+          ;; Mutation of code or exit debugging restores the ordinary frame.
+          (m5_fx_run_body code 0 env out args 0 argw wout))))
     (defun m5_fx_run_body (code nlocals env out args nparams argw wout)
-     ;; The record dispatcher already checked required/optional/rest arity.
-     ;; A constant program reads no parameter, so its unused local/rest
-     ;; storage is elidable too. Exit debugging retains the complete frame.
-     (let* ((literal (if (and (>= nlocals 0) (>= nparams 0))
-                         (m5_fx_literal_w code env) 2)))
-      (if (/= literal 2)
-          (seq (if (= wout 0) (nl_abi_word_to_rc literal out)
-                 (ptr-write-u64 wout 0 literal)) -1)
       ;; Negative NLOCALS is reserved for compiler-lowered whole functions.
       ;; Ordinary VM calls pay one integer branch, with no extra call or
       ;; instruction decode. Keep the existing recursion guard around both.
       (if (< nlocals 0)
+          (if (= nlocals -2) (m5_fx_run_literal code env out args argw wout)
           (if (and (= nlocals -1)
                    (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 18))
               (let* ((word (m5_fx_string_intrinsic code args (logand nparams 65535) argw env)))
                 (if (= word 2) -3
                   (seq (if (= wout 0) (nl_abi_word_to_rc word out)
                          (ptr-write-u64 wout 0 word)) -1)))
-            -3)
+            -3))
       (let* ((base (ptr-read-u64 (ptr-read-u64 code 8) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
@@ -18532,7 +18543,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (resw (+ stk (* stksize 8)))
              (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
         (seq
-         ;; nl_alloc_vector already initialized every local/stack/result WORD.
+         (while (< i nwords)
+           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
          (ptr-write-u64 vslot 0 8)
          (ptr-write-u64 (+ vslot 8) 0 vbox)
          (ptr-write-u64 (+ vslot 16) 0 0)
@@ -18636,7 +18648,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
-         status))))))
+         status))))
 ;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.  SCRATCH is
@@ -41799,15 +41811,15 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
              (depth (sar (nelisp_frame_slot_raw_word frames 1) 2))
-             (status 0))
+             (status 0) (scratch (alloc-bytes 32 8)))
         (seq
          (if (> depth 0)
              (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0) (- depth 1))))
                (if (= (ptr-read-u64 frame 16) 13109) 0
                  (setq status (nl_n3_pop_names env (nl_record_slot_word frame 1) depth 0))))
            0)
-         ;; WORD pop writes nil/depth directly; the legacy scratch is unused.
-         (nelisp_frame_pop frames 0)
+         (wf_write_nil scratch)
+         (nelisp_frame_pop frames scratch)
          (if (= status 0) 1 -1))))
     (defun nl_n3_globals_mode (args env out)
       (let* ((value (nl_apply_list_nth args 2)))
@@ -42089,6 +42101,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     `((defun nl_n3_special_name (name) ,test)
       (defun nl_n3_special_bit (name) ,bits)
       (defun nl_n3_special_install (name object env)
+        (seq (wf_bytecode_note_jit_install name env)
         (let* ((bit (nl_n3_special_bit name)))
           (if (= bit 0) 0
             (seq
@@ -42098,7 +42111,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (ptr-write-u64 (+ env 112) 0
                                 (logand (ptr-read-u64 (+ env 112) 0) (logxor bit -1)))
                (ptr-write-u64 (+ env 112) 0
-                              (logior (ptr-read-u64 (+ env 112) 0) bit))) 0))))
+                              (logior (ptr-read-u64 (+ env 112) 0) bit))) 0)))))
       (defun nl_n3_special_object (object)
         ;; Metadata is in an unused Sexp-view word, not a new heap layout.
         ;; Cloning/image transport already preserves all four view words.
@@ -42973,7 +42986,8 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (seq (nl_apply_build_setop_scratch unbound val unbound nil-slot scratch)
               (nelisp_mirror_set_value_or_insert env sym scratch 0) value)
        (if (= (nl_apply_eq_set_function op) 1)
-           (seq (nl_apply_build_setop_scratch unbound unbound val nil-slot scratch)
+           (seq (wf_bytecode_note_jit_install sym env)
+                (nl_apply_build_setop_scratch unbound unbound val nil-slot scratch)
                 (nelisp_mirror_set_function_or_insert env sym scratch 0) value)
          (if (= (nl_apply_eq_set_constant op) 1)
              (let* ((flag (if (= (nl_val_tag value) 0) 3 7)))
@@ -44014,7 +44028,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                (nl_n4_reverse (nl_cons_cdr_word list) out)) 0))
     (defun nl_n4_eval_finish (rc env saved flags mark)
       (seq (nl_sexp_clone_into saved (+ env 32))
-           (ptr-write-u64 env 112 flags)
+           (ptr-write-u64 env 112 (logior flags (logand (ptr-read-u64 env 112) 4)))
            (nl_cons_root_finish env mark rc)))
     (defun nl_n4_frame_eval (env frame expression out)
       ;; Clone the binding stack prefix, retaining shared records/cells. The

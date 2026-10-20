@@ -658,9 +658,9 @@
     ;; Arity 6 (even).
     (defun nl_apply_lambda_inner_w (captured formals body-list args-list env _pad)
       (let* ((literal
-              (if (and (= (nl_ali_cap_none captured 0) 1)
-                       (= (sexp-tag formals) 0)
-                       (if (= args-list 0) 1 (= (sexp-tag args-list) 0)))
+              (if (and (= (sexp-tag formals) 0)
+                       (if (= args-list 0) 1 (= (sexp-tag args-list) 0))
+                       (= (nl_ali_cap_none captured 0) 1))
                   (nl_ali_literal_body_w body-list 0) 2)))
        (if (/= literal 2) literal
         (if (= (nl_ali_cap_none captured 0) 1)
