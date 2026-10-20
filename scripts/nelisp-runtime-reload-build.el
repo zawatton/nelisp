@@ -41,6 +41,17 @@ the process's existing BSS addresses; it must never create a second heap."
      (nelisp-standalone--rebase-arena-source
       (cons 'seq
             (append (cdr (nelisp-standalone--target-arena-source))
+                    ;; The WORD-ABI collector reads the FX record index
+                    ;; through this existing VM helper. Keep the genuine
+                    ;; provider in the candidate instead of adding an import
+                    ;; to the running executable's frozen resolver ABI.
+                    (list
+                     (or (cl-find-if
+                          (lambda (form)
+                            (and (eq (car-safe form) 'defun)
+                                 (eq (cadr form) 'wf_bytecode_w_int)))
+                          nelisp-standalone--applyfn-bytecode-helpers)
+                         (error "Runtime reload lacks the WORD integer provider")))
                     (cdr (nelisp-runtime-reload-instrument-gc
                           nelisp-standalone--gc-source))))))))
 

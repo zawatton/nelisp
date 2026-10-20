@@ -1761,6 +1761,181 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
 
 ;;; Allocator current run -----------------------------------------------
 
+(defun nelisp-standalone-gc-test--zero-source (&optional broken)
+  "Compare production zeroing with the original eight-byte store sequence."
+  (let* ((p #x37000000) (q (+ p 4096)) (meta (+ p 8192))
+         (checked (cons 'seq (nelisp-standalone--alloc-check-arena-forms)))
+         (forms nil))
+    (dolist (name '(nl_alloc_zero_fill nl_alloc_pop_fast nl_alloc_bytes_run))
+      (let ((form (or (nelisp-standalone-gc-test--find-defun checked name)
+                      (nelisp-standalone-gc-test--find-defun
+                       nelisp-standalone--arena-source name))))
+        (dolist (pair `((,meta . nl_gc_diag) (,(+ meta 64) . nl_gc_stats)
+                       (,(+ meta 128) . nl_freelist_small_mask)))
+          (setq form (cl-subst (car pair) `(data-addr ,(cdr pair)) form :test #'equal)))
+        (when (eq name broken)
+          (let* ((store (if (eq name 'nl_alloc_pop_fast)
+                            '(ptr-write-u64 (+ cur o) 0 0)
+                          '(ptr-write-u64 (+ obj o) 0 0)))
+                 (mutated (cl-subst 0 store form :test #'equal)))
+            (when (equal form mutated) (error "Zeroing mutant did not apply"))
+            (setq form mutated)))
+        (push form forms)))
+    `(seq
+      (defun nl_alloc_pop_in_arena (_cur) 1)
+      (defun nl_alloc_bytes_slow (_size _align) -1)
+      ,@(nreverse forms)
+      (defun nl_probe_zero_init ()
+        (let ((i 0))
+          (while (< i 512)
+            (ptr-write-u64 ,p i -6510615555426900571)
+            (ptr-write-u64 ,q i -6510615555426900571)
+            (setq i (+ i 8)))))
+      (defun nl_probe_zero_reference (obj off nbytes)
+        (let ((o off))
+          (while (< o nbytes)
+            (ptr-write-u64 (+ obj o) 0 0)
+            (setq o (+ o 8)))))
+      (defun nl_probe_zero_compare ()
+        (let ((i 0) (bad 0))
+          (seq
+           (while (and (< i 512) (= bad 0))
+             (if (= (ptr-read-u64 ,p i) (ptr-read-u64 ,q i)) 0 (setq bad 1))
+             (setq i (+ i 8)))
+           bad)))
+      (defun nl_probe_zero_small (want run)
+        (let ((head (+ 268435696 (- want 16))) (obj 0))
+          (seq
+           (nl_probe_zero_init)
+           (ptr-write-u64 ,(+ meta 64) 0 0)
+           (ptr-write-u64 268435632 0 1)
+           (ptr-write-u64 ,q 0 want)
+           (if (= run 0)
+               (seq
+                (ptr-write-u64 ,p 0 (+ want 2))
+                (ptr-write-u64 ,p 8 0)
+                (ptr-write-u64 head 0 ,(+ p 8))
+                (ptr-write-u64 ,(+ meta 128) 0 (shl 1 (/ (- want 16) 8)))
+                (setq obj (nl_alloc_pop_fast want)))
+             (seq
+              (ptr-write-u64 ,p 0 (+ want 18))
+              (ptr-write-u64 ,q want 18)
+              (ptr-write-u64 ,meta 48 ,p)
+              (ptr-write-u64 ,(+ meta 128) 0 0)
+              (setq obj (nl_alloc_bytes_run (- want 8) 8 want))))
+           (nl_probe_zero_reference ,(+ q 8) 0 (- want 8))
+           (if (= obj ,(+ p 8))
+               (if (= (ptr-read-u64 ,(+ meta 64) 0) want)
+                   (if (= (ptr-read-u64 ,(+ meta 128) 0) 0)
+                       (if (= run 0)
+                           (if (= (ptr-read-u64 head 0) 0) (nl_probe_zero_compare) 4)
+                         (if (= (ptr-read-u64 ,meta 48) (+ ,p want))
+                             (nl_probe_zero_compare) 5)) 3) 2) 1))))
+      (defun nl_probe_zero_main ()
+        (let ((off 0) (n 0) (bad 0) (want 16))
+          (seq
+           (syscall-direct 9 ,p 16384 3 50 -1 0)
+           (syscall-direct 9 268435456 4096 3 50 -1 0)
+           (while (and (< off 18) (= bad 0))
+             (setq n 0)
+             (while (and (< n 130) (= bad 0))
+               (nl_probe_zero_init)
+               (nl_alloc_zero_fill ,p off n)
+               (nl_probe_zero_reference ,q off n)
+               (setq bad (nl_probe_zero_compare))
+               (setq n (+ n 1)))
+             (setq off (+ off 1)))
+           (while (and (< want 473) (= bad 0))
+             (setq bad (nl_probe_zero_small want 0))
+             (if (= bad 0) (setq bad (nl_probe_zero_small want 1)) 0)
+             (setq want (+ want 8)))
+           bad)))
+      (exit (nl_probe_zero_main)))))
+
+(defun nelisp-standalone-gc-test--run-zero (&optional broken)
+  (let ((path (make-temp-file "nelisp-zero-payload-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp (nelisp-standalone-gc-test--zero-source broken) path)
+          (call-process path nil nil nil))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-standalone-gc-zeroing-native ()
+  "Preserve every original store and neighboring bytes, headers and accounting."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64\\|amd64" system-configuration)))
+  (should (equal (nelisp-standalone-gc-test--run-zero) 0)))
+
+(ert-deftest nelisp-standalone-gc-zeroing-missing-store-is-red ()
+  "The oracle rejects omitted stores in all three production paths."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64\\|amd64" system-configuration)))
+  (dolist (name '(nl_alloc_zero_fill nl_alloc_pop_fast nl_alloc_bytes_run))
+    (should-not (equal (nelisp-standalone-gc-test--run-zero name) 0))))
+
+(defun nelisp-standalone-gc-test--hole-bits-source (&optional short-range)
+  "Native hole-bitmap probe with an independent per-bit oracle."
+  (let ((map #x36000000))
+    `(seq
+      ,(nelisp-standalone-gc-test--find-defun
+        nelisp-standalone--gc-source 'nl_boot_hole_set_bits)
+      (defun nl_probe_hole_case (begin end seed)
+        (let ((i 0) (actual 0) (expected 0) (bad 0))
+          (seq
+           (while (< i 6)
+             (ptr-write-u64 ,map (* i 8) seed)
+             (setq i (+ i 1)))
+           (nl_boot_hole_set_bits ,map begin ,(if short-range '(- end 1) 'end))
+           (setq i 0)
+           (while (and (< i 384) (= bad 0))
+             (setq actual
+                   (logand (sar (ptr-read-u64 ,map (* (sar i 6) 8))
+                                (logand i 63)) 1))
+             (setq expected
+                   (if (and (>= i begin) (< i end)) 1
+                     (logand (sar seed (logand i 63)) 1)))
+             (if (= actual expected) 0 (setq bad 1))
+             (setq i (+ i 1)))
+           bad)))
+      (defun nl_probe_hole_main ()
+        (let ((begin 0) (width 0) (bad 0))
+          (seq
+           (syscall-direct 9 ,map 4096 3 50 -1 0)
+           (while (and (< begin 129) (= bad 0))
+             (setq width 0)
+             (while (and (< width 131) (= bad 0))
+               (setq bad (nl_probe_hole_case begin (+ begin width) 0))
+               (if (= bad 0)
+                   (setq bad (nl_probe_hole_case begin (+ begin width)
+                                                 -6148914691236517206)) 0)
+               (if (= bad 0)
+                   (setq bad (nl_probe_hole_case begin (+ begin width) -1)) 0)
+               (setq width (+ width 1)))
+             (setq begin (+ begin 1)))
+           bad)))
+      (exit (nl_probe_hole_main)))))
+
+(defun nelisp-standalone-gc-test--run-hole-bits (&optional short-range)
+  (let ((path (make-temp-file "nelisp-hole-bits-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--hole-bits-source short-range) path)
+          (call-process path nil nil nil))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-standalone-gc-boot-hole-bits-native ()
+  "All alignments, empty/full/cross-word ranges preserve neighboring bits."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64\\|amd64" system-configuration)))
+  (should (equal (nelisp-standalone-gc-test--run-hole-bits) 0)))
+
+(ert-deftest nelisp-standalone-gc-boot-hole-short-range-is-red ()
+  "Dropping the last requested bit is rejected by the native oracle."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64\\|amd64" system-configuration)))
+  (should-not (equal (nelisp-standalone-gc-test--run-hole-bits t) 0)))
+
 (defconst nelisp-standalone-gc-test--run-heap #x35000000
   "Scratch heap for the current-run allocator probe (256 KiB mapped).")
 

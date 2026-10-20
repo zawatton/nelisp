@@ -141,6 +141,11 @@
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
         (if (extern-call nl_bind_clone_force_flag)
                 (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
+              ;; Scalar slots already clone as a verbatim 32-byte copy.
+              ;; Retain their physical representation in a fresh owned box;
+              ;; do not decode them into canonical immediate WORDs.
+              (if (< (ptr-read-u8 src_slot 0) 4)
+                  (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
               ;; Membership only chooses the shallow symbol/string path.
               ;; Every other tag takes the same fresh clone on either side
               ;; of that test, so avoid walking the chunk chain for it.
@@ -150,14 +155,8 @@
                        (extern-call nl_gc_in_arena src_slot))
                   (if (extern-call nl_gc_is_boot src_slot)
                       (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
-                    (if (= (ptr-read-u8 src_slot 0) 4)
-                        (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
-                      (if (= (ptr-read-u8 src_slot 0) 5)
-                          (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
-                        (if (= (ptr-read-u8 src_slot 0) 14)
-                            (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
-                          (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))
-                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
+                    (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
+                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

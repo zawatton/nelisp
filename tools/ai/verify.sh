@@ -25,6 +25,8 @@ python3 test/abi-char-table-image-test.py "$D" > "$V/b-char-table-image.log" 2>&
 echo "b char-table-image rc=$? last: $(tail -1 "$V/b-char-table-image.log")" >> "$R"
 python3 test/abi-value-clone-test.py "$D" > "$V/b-value-clone.log" 2>&1
 echo "b value-clone rc=$? last: $(tail -1 "$V/b-value-clone.log")" >> "$R"
+python3 test/abi-vm-integer-word-test.py "$D" > "$V/b-vm-integer-word.log" 2>&1
+echo "b vm-integer-word rc=$? last: $(tail -1 "$V/b-vm-integer-word.log")" >> "$R"
 # c
 for n in standalone allocating-standalone percpu-roots mirror-guard; do
   f=tools/nelisp-thread-$n-smoke.el; lg=$V/c-$n.log

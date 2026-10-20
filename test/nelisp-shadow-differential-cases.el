@@ -108,6 +108,9 @@
          (progn (fset symbol 9) (symbol-function symbol))
          (fboundp symbol)
          (progn (fmakunbound symbol) (symbol-function symbol))))
+ ;; Backtrace locals must traverse small alist frames as well as table frames.
+ (let ((activation-local 7))
+   (cdr (assq 'activation-local (backtrace--locals 1 'backtrace--locals))))
  ;; Float steps use the same typed writer as binary float arithmetic.
  (list (1+ 2.5) (1- 2.5) (1+ -2.5) (1- -2.5))
  ;; The protected form and handler can both collect. Their error/body slot

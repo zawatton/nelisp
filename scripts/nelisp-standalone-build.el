@@ -1176,7 +1176,7 @@ cross-unit call) before the freed payload is poisoned."
                           (let* ((next (ptr-read-u64 cur 0))
                                  (mask (ptr-read-u64 (data-addr nl_freelist_small_mask) 0))
                                  (bit (shl 1 (/ (- want 16) 8)))
-                                 (o 0))
+                                 (o 0) (pair-limit (- want 16)))
                             (seq
                              (ptr-write-u64 (data-addr nl_gc_stats) 0
                                             (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
@@ -1186,9 +1186,11 @@ cross-unit call) before the freed payload is poisoned."
                                                 (if (= (logand mask bit) 0) mask (- mask bit))
                                               (logior mask bit)))
                              (ptr-write-u64 (- cur 8) 0 (logand hw 4294967288))
-                             (while (< o (- want 8))
+                             (while (< o pair-limit)
                                (ptr-write-u64 (+ cur o) 0 0)
-                               (setq o (+ o 8)))
+                               (ptr-write-u64 (+ cur (+ o 8)) 0 0)
+                               (setq o (+ o 16)))
+                             (if (< o (- want 8)) (ptr-write-u64 (+ cur o) 0 0) 0)
                              cur))
                         0)
                     0))
@@ -1208,16 +1210,18 @@ cross-unit call) before the freed payload is poisoned."
               0)
             (let* ((bt (logand (ptr-read-u64 r 0) 4294967288))
                    (obj (+ r 8))
-                   (o 0))
+                   (o 0) (pair-limit (- want 16)))
               (seq
                (ptr-write-u64 (data-addr nl_gc_stats) 0
                               (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
                (ptr-write-u64 r 0 want)
                (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
                (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
-               (while (< o (- want 8))
+               (while (< o pair-limit)
                  (ptr-write-u64 (+ obj o) 0 0)
-                 (setq o (+ o 8)))
+                 (ptr-write-u64 (+ obj (+ o 8)) 0 0)
+                 (setq o (+ o 16)))
+               (if (< o (- want 8)) (ptr-write-u64 (+ obj o) 0 0) 0)
                obj))
           (nl_alloc_bytes_slow size align))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
@@ -2761,11 +2765,15 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; PERF (2026-10-15): the loop body is plain forms, not an `nl_seq2'
     ;; call per word; every reused block and the GC start index pass here.
     (defun nl_alloc_zero_fill (obj off nbytes)
-      (let* ((o off))
+      (let* ((o off) (pair-limit (- nbytes 8)))
         (seq
-         (while (< o nbytes)
+         (while (< o pair-limit)
            (ptr-write-u64 (+ obj o) 0 0)
-           (setq o (+ o 8)))
+           (ptr-write-u64 (+ obj (+ o 8)) 0 0)
+           (setq o (+ o 16)))
+         ;; Preserve the original final full-word store even when callers
+         ;; supply an n*4 byte count rather than a multiple of eight.
+         (if (< o nbytes) (ptr-write-u64 (+ obj o) 0 0) 0)
          0)))
     (defun nl_chunk_cursor_addr (chunk)
       (if (= chunk (ptr-read-u64 268436160 0))
@@ -4217,16 +4225,22 @@ REPL-facing module it feeds."
           0)))
     ;; Set map bits [G0, G1), whole words at a time where aligned.
     (defun nl_boot_hole_set_bits (map g0 g1)
-      (let ((g g0))
+      (let ((g g0) (offset 0) (count 0))
         (seq
          (while (< g g1)
            (if (if (= (logand g 63) 0) (if (< g1 (+ g 64)) 0 1) 0)
                (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0 (- 0 1))
                     (setq g (+ g 64)))
-             (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0
+             (seq
+                  (setq offset (logand g 63))
+                  (setq count (if (< (- g1 g) (- 64 offset))
+                                  (- g1 g) (- 64 offset)))
+                  ;; The full-word arm above handles count=64, so this
+                  ;; mask never relies on a machine shift by 64.
+                  (ptr-write-u64 (+ map (* (sar g 6) 8)) 0
                                  (logior (ptr-read-u64 (+ map (* (sar g 6) 8)) 0)
-                                         (shl 1 (logand g 63))))
-                  (setq g (+ g 1)))))
+                                         (shl (- (shl 1 count) 1) offset)))
+                  (setq g (+ g count)))))
          0)))
     ;; Exact starts, indexed only while the stopped heap is being marked.
     ;; Entries remain {data-start, end, bitmap}; one bit per eight arena bytes.
@@ -13352,9 +13366,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (index (ptr-read-u64 (+ mem (* (+ (- sp arity) 1) 8)) 0)))
         (if (if (= (logand arr 1) 1) 0
               (if (/= (ptr-read-u64 arr 0) 8) 0
-                (if (/= (logand index 3) 1) 0
+                (if (/= (wf_bytecode_w_tag index) 2) 0
                   (if (= (bf_nemacs_char_table_vector_p arr) 0) 1 0))))
-            (let ((i (sar index 2)))
+            (let ((i (wf_bytecode_w_int index)))
               (if (and (>= i 0) (< i (vector-len arr)))
                   (let* ((data (ptr-read-u64 (ptr-read-u64 arr 8) 8)))
                     (if (= opcode 73)
@@ -13385,9 +13399,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((dst (+ mem (* (- sp arity) 8)))
                  (l (ptr-read-u64 dst 0))
                  (r (ptr-read-u64 (+ mem (* (- sp 1) 8)) 0)))
-            (if (or (/= (logand l 3) 1) (/= (logand r 3) 1))
+            (if (or (/= (wf_bytecode_w_tag l) 2) (/= (wf_bytecode_w_tag r) 2))
                 2
-              (let* ((a (sar l 2)) (b (sar r 2)))
+              (let* ((a (wf_bytecode_w_int l)) (b (wf_bytecode_w_int r)))
+                ;; Physical Int objects are valid WORD operands too. Unlike
+                ;; immediates, they can contain a full i64: keep the original
+                ;; i62 input bound before doing any potentially overflowing op.
+                (if (or (< a -2305843009213693952) (> a 2305843009213693951)
+                        (< b -2305843009213693952) (> b 2305843009213693951))
+                    2
                 ;; A small product cannot overflow before the range check.
                 (if (and (= opcode 95)
                          (or (< a -1073741824) (> a 1073741823)
@@ -13406,7 +13426,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      (if (= opcode 92) (+ a b) (* a b))))))))
                       (if (= w -1)
                           2
-                        (seq (ptr-write-u64 dst 0 w) 0)))))))))))
+                        (seq (ptr-write-u64 dst 0 w) 0))))))))))))
     (defun wf_bytecode_call_primitive (env mem sp opcode)
       (if (= (wf_bytecode_small_arithmetic mem sp opcode) 0)
           0
@@ -16188,8 +16208,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ;; Fixnum arithmetic and comparison on the words
                      ;; themselves: 83 sub1, 84 add1, 85 =, 86 >, 87 <,
                      ;; 88 <=, 89 >=, 90 -, 92 +.  A tagged fixnum word
-                     ;; orders like its value.  Anything else, and a result
-                     ;; outside the fixnum range, takes the generic path.
+                     ;; orders like its value. Owned Int boxes use the checked
+                     ;; numeric helper below; other types and range failures
+                     ;; retain the generic path.
                      ((if (< base 83) 0 (if (> base 92) 0 (if (= base 91) 0 1)))
                       (let* ((unary (if (< base 85) 1 0))
                              (dst (if (= unary 1) top next))
@@ -16213,6 +16234,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (if (/= w -1)
                             (seq (ptr-write-u64 dst 0 w)
                                  (if (= unary 1) 0 (setq sp (- sp 1))))
+                          ;; Preserve the immediate hot arm, then accept owned
+                          ;; Int boxes through the same checked numeric reader.
+                          ;; Comparisons/subtraction previously bypassed this
+                          ;; helper and built legacy argument lists instead.
+                          (if (= (wf_bytecode_small_arithmetic mem sp base) 0)
+                              (if (= unary 1) 0 (setq sp (- sp 1)))
                           (if (= unary 1)
                               (if (= (wf_bytecode_call_primitive env mem sp base) 0)
                                   0 (setq done 4))
@@ -16223,7 +16250,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (seq (setq bad-op raw) (setq done 2))
                                 (if (= (wf_bytecode_w_boxed env mem sp 2 base bx) 0)
                                     (setq sp (- sp 1))
-                                  (setq done 4))))))))
+                                  (setq done 4)))))))))
                      ((= base 178)
                       (let* ((index (- sp operand 1)))
                         (if (if (<= sp 0) 1
@@ -25059,7 +25086,7 @@ into whatever the index happened to select."
    (when (nelisp-standalone--callsite-enabled-p)
      (list
       (cons '(:u8 "nelisp--native-callsite-symbol-addr")
-            `(wf_write_int out
+            `(:word wf_write_int_w 0
               ,(let* ((names (nelisp-standalone--callsite-symbol-names))
                       (form 0)
                       (idx (length names)))
@@ -43804,25 +43831,6 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (setq i (+ i 1)))
          (nl_sexp_clone_into list out)
          (nl_cons_root_finish env mark 0))))
-    (defun nl_n4_local_bucket (bucket out env)
-      (if (= (sexp-tag bucket) 7)
-          (let* ((pair (nl_cons_car_word bucket)) (value (alloc-bytes 32 8))
-                 (entry (alloc-bytes 32 8)))
-            (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
-                 (nelisp_cons_construct (nl_cons_car_word pair) value entry)
-                 (nelisp_cons_construct entry out out)
-                 (nl_n4_local_bucket (nl_cons_cdr_word bucket) out env)))
-        0))
-    (defun nl_n4_local_history (names out)
-      (if (= (sexp-tag names) 7)
-          (let* ((pair (nl_cons_car_word names)))
-            (seq
-             (if (= (sexp-tag pair) 7)
-                 (let* ((value (alloc-bytes 32 8)) (entry (alloc-bytes 32 8)))
-                   (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
-                        (nelisp_cons_construct (nl_cons_car_word pair) value entry)
-                        (nelisp_cons_construct entry out out))) 0)
-             (nl_n4_local_history (nl_cons_cdr_word names) out))) 0))
     (defun nl_n4_locals (env index out)
       (nl_abi_word_to_rc (nl_n4_locals_w env index 0) out))
     (defun nl_n4_reverse (list out)
@@ -45093,7 +45101,9 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
                 ;; functions go into the image already compiled for the VM.
-                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (nelisp--arena-dump-image-stream %S))"
+                ;; Match the compiler image path: do not freeze transient
+                ;; bootstrap allocations into every subsequent cold start.
+                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                         (nelisp-standalone--cold-target-path image))))
              (process-environment (nelisp-standalone--cold-build-environment))
              (status nil) (output nil))
