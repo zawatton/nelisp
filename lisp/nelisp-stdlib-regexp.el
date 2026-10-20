@@ -334,8 +334,12 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
       (while (< i minv) (setq out (cons atom out) i (1+ i)))
       (if (null maxv)
           (setq out (cons (list :star atom) out))
-        (let ((extra (- maxv minv)) (j 0))
-          (while (< j extra) (setq out (cons (list :opt atom) out) j (1+ j)))))
+        (let ((extra (- maxv minv)))
+          ;; The optional tail is one loop: an empty iteration ends it.
+          ;; Independent :opt nodes wrongly allow empty then nonempty
+          ;; iterations, changing both greediness and the final capture.
+          (when (> extra 0)
+            (setq out (cons (list :bounded atom extra) out)))))
       (cons out k))))
 
 (defun nlre--parse-atom (pat i n)
@@ -1270,7 +1274,7 @@ one, which would demote them to the interpreter)."
             (setq allowed (car result) nullable (or nullable (cdr result))
                   branches (cdr branches))))
         (cons allowed nullable)))
-     ((memq tag '(:star :opt :lazystar :lazyopt))
+     ((memq tag '(:star :opt :lazystar :lazyopt :bounded))
       (cons (car (nlre--start-map-node (nth 1 node) c)) t))
      ((memq tag '(:plus :lazyplus)) (nlre--start-map-node (nth 1 node) c))
      ((memq tag '(:bos :eos :bol :eol :wordb :wordedge :symedge)) (cons nil t))
@@ -1584,6 +1588,14 @@ Return end-pos or nil."
     (let* ((nd (car nodes)) (rest (cdr nodes)) (tag (car nd)))
       (cond
        ((eq tag :star) (nlre--match-star (nth 1 nd) rest s pos n))
+       ((eq tag :bounded)
+        (or (and (> (nth 2 nd) 0)
+                 (nlre--match-list
+                  (cons (nth 1 nd)
+                        (cons (list :repeat-next pos
+                                    (list :bounded (nth 1 nd) (1- (nth 2 nd))))
+                              rest)) s pos n))
+            (nlre--match-list rest s pos n)))
        ;; Non-greedy: try the REST first, and only consume another repetition
        ;; when that fails -- the mirror image of `nlre--match-star'.
        ((eq tag :lazystar)

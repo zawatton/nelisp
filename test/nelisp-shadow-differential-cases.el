@@ -775,7 +775,8 @@
              ("\\(ab\\|a\\)?b" "b")
              ("\\(ab\\|a\\)\\{1,2\\}b" "ab")
              ("\\(\\(a\\|b\\)*\\)\\2" "ab")
-             ("\\(a\\|b\\)*\\1" "abb"))))
+             ("\\(a\\|b\\)*\\1" "abb")
+             ("\\(a?\\|b\\)\\{0,2\\}a" "baa"))))
  ;; The regexp engine: shy groups, explicit numbering, word boundaries,
  ;; non-greedy quantifiers, folding, and \N in a replacement.
  (list (string-match "\\(?:x+\\)" "xxab")
