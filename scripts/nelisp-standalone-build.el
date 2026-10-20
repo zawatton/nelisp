@@ -43591,7 +43591,9 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
                 ;; functions go into the image already compiled for the VM.
-                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (nelisp--arena-dump-image-stream %S))"
+                ;; Reclaim registration temporaries before the cold loader
+                ;; makes the image permanent; later sweeps otherwise scan them.
+                (format "(progn (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                         (nelisp-standalone--cold-target-path image))))
              (process-environment (nelisp-standalone--cold-build-environment))
              (status nil) (output nil))

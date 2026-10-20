@@ -904,6 +904,23 @@ start index, on every group span, with START, and under case folding."
         (should (equal (string-match pattern text)
                        (nlre-string-match pattern text)))))))
 
+(ert-deftest nelisp-regexp-unibyte-space-substitution-keeps-encoded-bytes ()
+  "GNU inserts SPACES bytes into a unibyte regexp without decoding them."
+  (let ((case-fold-search nil) (nlre--last-buffer nil))
+    (dolist (spaces (list (string 255) (unibyte-string 255)))
+      (let ((search-spaces-regexp spaces))
+        (dolist (pattern (list (unibyte-string 32)
+                              (unibyte-string ?a 32 ?b)))
+          (dolist (middle (list (unibyte-string 255) (string 255)
+                                (unibyte-string 195 191)))
+            (let* ((text (if (= (length pattern) 1) middle
+                           (concat "a" middle "b")))
+                   (expected (string-match pattern text))
+                   (data (and expected (match-data t)))
+                   (actual (nlre-string-match pattern text)))
+              (should (equal actual expected))
+              (when actual (should (equal (nlre-match-data t) data))))))))))
+
 (ert-deftest nelisp-regexp-cross-byte-canonical-mappings-match-host ()
   "Literal and set rules differ when ASCII maps to a nonbyte character."
   (with-temp-buffer

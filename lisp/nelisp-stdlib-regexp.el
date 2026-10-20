@@ -965,6 +965,12 @@ such characters (`nlre--forbidden-probes')."
 (defun nlre--expand-search-spaces (pat spaces)
   "Substitute SPACES for maximal literal-space runs in PAT."
   (if (not (stringp spaces)) pat
+    ;; GNU compiles the inserted bytes with PAT's multibyte flag.  A
+    ;; Unicode SPACES string in a unibyte pattern therefore contributes
+    ;; its UTF-8 bytes, rather than a decoded Unicode character.
+    (when (not (multibyte-string-p pat))
+      (setq spaces (with-suppressed-warnings ((obsolete string-as-unibyte))
+                     (string-as-unibyte spaces))))
     (let ((i 0) (n (length pat)) (out "") (in-class nil) (in-repeat nil))
       (while (< i n)
         (let ((c (aref pat i)))

@@ -52,6 +52,17 @@
 (regex-speed-case 'negative-start
  '(list (string-match "a" "ba" -1) (regex-speed-data)))
 
+(regex-speed-case 'unibyte-space-substitution
+ '(let ((case-fold-search nil) results)
+    (dolist (spaces (list (string 255) (unibyte-string 255)))
+      (let ((search-spaces-regexp spaces))
+        (dolist (text (list (unibyte-string 255) (string 255)
+                           (unibyte-string 195 191)))
+          (let ((answer (string-match (unibyte-string 32) text)))
+            (setq results (cons (list answer (and answer (regex-speed-data)))
+                                results))))))
+    (nreverse results)))
+
 (dolist (form '((string-match "" "abc" -5)
                 (string-match-p "" "abc" -5)
                 (string-match "[" "a")

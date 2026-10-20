@@ -1,4 +1,5 @@
 #+TITLE: Regex hot-path speed
+#+NOTE: 2026-10-20 run 4: GNU's raw-byte search-spaces crash is a reference defect, excluded from parity under COMMON.md. Its reproducer and receipt are retained in target/regex-speed/gnu-defects/. Investigate the literal whole-process Ir regression before final acceptance; the cache 2 us and match 20 us limits remain unchanged.
 
 * S1 Regex cache and fast paths
 
@@ -30,6 +31,6 @@ cmd: python3 tools/ai/regex-speed.py check target/regex-speed/after-accept.json 
 cmd: python3 tools/ai/regex-speed-verify.py record target/regex-speed/accept-manifest.json target/regex-speed/accept-dynamic target/regex-speed/accept-static --parity target/regex-speed/parity-final-reload.out --parity-gnu target/regex-speed/parity-final-gnu.out --native target/regex-speed/parity-accept-native.out --ert-focused target/regex-speed/ert-run3-final.log --ert-mvp target/regex-speed/package-run3.log --ert-text-core target/regex-speed/text-core-run3.log --core11 target/regex-speed/core11-accept.log --mcp-json target/regex-speed/mcp-accept/result.json --abi-ir target/regex-speed/abi-accept.log
 cmd: python3 tools/ai/regex-speed-verify.py check target/regex-speed/accept-manifest.json
 
-#+NOTE: 2026-10-20 listed blocker: GNU Emacs 31.1 itself crashes (SIGSEGV, rc -11 in three fresh -Q --batch --eval processes) for a multibyte space regexp with search-spaces-regexp set to raw byte 255. No NeLisp code is loaded. The exact allocating reproducer is target/regex-speed/gnu-space-crash-eval.el, with binary identity and return codes in GNU-BLOCKER.json. Loading a smaller equivalent form from a file instead signals invalid-regexp. The earlier unibyte-pattern / multibyte search-spaces matrix also exposes an unresolved in-scope difference. The unvalidated speculative byte-kind change and its exploratory ERT were restored; the verified backtracking fixes remain. S5 therefore stays known-red, even though its existing corpus, all 11 core groups, 40 MCP tools and ABI Ir pass. A reference-policy decision or a corrected GNU reference is required before extending parity to this input; no fallback reference is silently substituted.
-evidence: target/regex-speed/GNU-BLOCKER.json sha256=116fb366f005175389a0002397be695c04a787dfb1f5e21bea8876bc2caf386a
-cmd: python3 -c 'import json; r=json.load(open("target/regex-speed/GNU-BLOCKER.json")); assert r["version"] == "31.1"; assert r["returncodes"] == [0, 0, 0], "GNU 31.1 reference crashes: " + str(r["returncodes"])'
+#+NOTE: GNU 31.1's crash is excluded rather than treated as a lane blocker. Noncrashing byte-kind differences remain in scope. Run 4 adds an explicit NeLisp termination check for the excluded reproducer.
+evidence: target/regex-speed/gnu-defects/GNU-BLOCKER.json sha256=116fb366f005175389a0002397be695c04a787dfb1f5e21bea8876bc2caf386a
+cmd: timeout 15 target/regex-speed/accept-dynamic --load target/regex-speed/gnu-defects/gnu-space-crash-eval.el > target/regex-speed/gnu-defects/nelisp.out 2> target/regex-speed/gnu-defects/nelisp.err && test ! -s target/regex-speed/gnu-defects/nelisp.err

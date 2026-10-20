@@ -1,5 +1,9 @@
 ;;; standalone-regexp-backtracking-check.el --- GNU 31.1 captures -*- lexical-binding: nil; -*-
 ;; Expected values: emacs -Q --batch -l tools/ai/regex-speed-parity.el.
+(let ((case-fold-search nil) (search-spaces-regexp (string 255)))
+  (unless (and (equal (string-match (unibyte-string 32) (unibyte-string 195 191)) 0)
+               (equal (match-data t) '(0 2)))
+    (error "REGEXP-SPACE-BYTES: wrong inserted-byte interpretation")))
 (let ((case-fold-search nil) (count 0))
   (dolist (row '(("\\(ab\\|a\\)*b" "ab" (0 (0 2 0 1)))
                  ("\\(ab\\|a\\)+b" "ab" (0 (0 2 0 1)))

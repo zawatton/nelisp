@@ -211,6 +211,38 @@ def check(args):
     return 0 if passed else 1
 
 
+def check_ir(args):
+    """Reject a regression in any four-layout whole-process pattern mean."""
+    report = json.loads(args.report.read_text())
+    layouts = [0, 700, 1400, 2100]
+    if (report.get("calls") != 2000 or report.get("gc_requests") != 10
+            or report.get("layouts") != layouts
+            or [row.get("pattern") for row in report.get("patterns", [])] != list(PATTERNS)):
+        raise RuntimeError("expected four exact 2000-call patterns and four layouts")
+    identities = report.get("identities", {})
+    if len(identities) < 9:
+        raise RuntimeError("missing profile input identities")
+    for record in identities.values():
+        if digest(ROOT / record["path"]) != record["sha256"]:
+            raise RuntimeError(f"stale profile input: {record['path']}")
+    passed = True
+    for row in report["patterns"]:
+        samples = row.get("samples", [])
+        if [sample.get("layout") for sample in samples] != layouts:
+            raise RuntimeError("missing or duplicate layout samples")
+        for who in ("base", "cand", "gnu"):
+            if any(sample.get(who, 0) <= 0 or sample.get(who + "_gc", 0) < 10
+                   for sample in samples):
+                raise RuntimeError("missing instruction or GC work")
+            if row.get(who) != sum(sample[who] for sample in samples) / 4:
+                raise RuntimeError("incorrect four-layout mean")
+        okay = row["cand"] <= row["base"]
+        passed &= okay
+        print(f"PATTERN-IR {row['pattern']!r}: {row['base']:.2f} -> "
+              f"{row['cand']:.2f}; {'PASS' if okay else 'FAIL'}")
+    return 0 if passed else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -232,8 +264,11 @@ def main():
     checker.add_argument("report", type=Path)
     checker.add_argument("--criterion", choices=["cache", "match"], required=True)
     checker.add_argument("--limit", type=float)
+    ir_checker = sub.add_parser("check-ir")
+    ir_checker.add_argument("report", type=Path)
     args = parser.parse_args()
-    return {"prepare": prepare, "measure": measure, "check": check}[args.action](args) or 0
+    return {"prepare": prepare, "measure": measure, "check": check,
+            "check-ir": check_ir}[args.action](args) or 0
 
 
 if __name__ == "__main__":
