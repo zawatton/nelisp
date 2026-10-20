@@ -8,6 +8,7 @@ evidence: target/prim-sort/profile.json sha256=f266eed3e690f7d7ec6d0ab3b43b0c001
 cmd: python3 tools/ai/prim-sort-check.py profile
 
 ** S1.2 GNU 31.1 sequence, option, identity and error parity
+#+NOTE: 2026-10-20 S1 accessor integration: the host numeric oracle now applies the same canonical accessor lowering as the runtime compiler before its existing IEEE hidden-bit mutation and evaluation. The unadapted host oracle failed both valid and broken inputs with void-function heap-read-u64; the adapted oracle passes all 6241 pairs and rejects the broken significand. The corpus, GNU reference, counts and caps are unchanged. Evidence: target/wh-prim/sort-s1.2-red/ and sort-number-host-green.log.
 #+NOTE: 2026-10-20 Run 2: 76 original cases + 512 mixed triples + 31 additional cases + 1444 numeric pairs (three sorts and six numeric predicates each) match GNU. A host runner executes the same numeric DSL on 6241 pairs against GNU; replacing its IEEE hidden bit with zero is rejected. Frozen predicates/keys, allocating callbacks and reentrant sort pass. Existing bignum/float rejection and fixnum-to-f64 rounding are fixed by the shared WORD comparator; no new arithmetic reader entry is added.
 cmd: python3 tools/ai/prim-sort-number-host.py
 cmd: python3 tools/ai/prim-sort-check.py parity

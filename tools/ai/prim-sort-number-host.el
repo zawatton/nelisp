@@ -4,6 +4,7 @@
 ;; machine intrinsics are simulated; GNU value< supplies independent answers.
 (setq load-prefer-newer t)
 (require 'nelisp-cc-number-order)
+(require 'nelisp-heap-accessors)
 (require 'cl-lib)
 (defvar ps-host-floats (make-hash-table :test 'eql))
 (defmacro seq (&rest body) `(progn ,@body))
@@ -34,7 +35,8 @@
       (setq limbs (nreverse limbs))
       (vector 13 (if (< n 0) 1 0) (vconcat limbs) (length limbs) n))))
 
-(let ((source (copy-tree nelisp-cc-number-order--source)))
+(let ((source (nelisp-heap-accessors-lower
+               (copy-tree nelisp-cc-number-order--source))))
   (when (getenv "PRIM_SORT_MUTATE") (setq source (cl-subst 0 4503599627370496 source)))
   (dolist (form (cdr source))
     (when (memq (cadr form) '(nl_number_integer_limb nl_number_integer_float_order
