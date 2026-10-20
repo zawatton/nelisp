@@ -9169,8 +9169,11 @@ leave symbols unresolved at link time."
                     (nelisp_cons_construct_w (+ (nl_word_payload snapshot) 6)
                      (nelisp_cons_construct_w (nl_word_clone (+ env 64))
                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
-                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
-               (seq (nl_root_release env mark) word))))))
+                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0)))
+               ;; The release and the result must stay inside this let*:
+               ;; a free `word' compiles silently as a dynamic variable
+               ;; lookup through uninitialized hidden boundary slots.
+               (seq (nl_root_release env mark) word)))))))
     (defun bf_env_capture_roots (out)
   (nl_abi_word_to_rc (bf_env_capture_roots_w 0) out))
     ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
