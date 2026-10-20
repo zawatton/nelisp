@@ -446,6 +446,18 @@
                    (multibyte-string-p multi)
                    (condition-case nil (progn (aset multi 0 233) nil)
                      (error t))) 1 0)))
+    ;; WORD global reads retain the owned object across the next callout.
+    (66 shared
+        (let* ((pg-word-cell (make-symbol "global-word-cell"))
+               (pg-word-other (make-symbol "global-word-other"))
+               (pg-word-value (vector 'global-word-value)))
+          (set pg-word-cell pg-word-value)
+          (set pg-word-other (vector 'scratch))
+          (let ((pg-word-held (symbol-value pg-word-cell))
+                (pg-word-observed (symbol-value pg-word-other)))
+            (if (and (eq pg-word-held pg-word-value)
+                     (eq (aref pg-word-observed 0) 'scratch)
+                     (eq (symbol-value pg-word-cell) pg-word-value)) 1 0))))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

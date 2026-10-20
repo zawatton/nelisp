@@ -4,17 +4,21 @@
 ;; variables. This does not qualify automatic-local creation or watcher hooks.
 (defvar nelisp-buffer-local--mirror nil)
 (defvar nelisp-buffer-local--serial 0)
+(defvar nelisp-buffer-local--root-api-indices nil
+  "Build-derived indexes of begin/reserve/slot/end in the existing root API.")
 (defun nelisp-buffer-local--mirror ()
   "Borrow the evaluator's mirror through an authenticated existing root API."
   (or nelisp-buffer-local--mirror
       (progn
-        (require 'nelisp-native-load)
-        (require 'nelisp-env)
+        (unless nelisp-buffer-local--root-api-indices (require 'nelisp-native-load))
         (let* ((env (nelisp--native-env))
-               (begin (nelisp-native-load--symbol-addr "nl_root_pin_begin_v2"))
-               (reserve (nelisp-native-load--symbol-addr "nl_root_pin_reserve_v2"))
-               (slot-api (nelisp-native-load--symbol-addr "nl_root_pin_slot_v2"))
-               (end (nelisp-native-load--symbol-addr "nl_root_pin_end_v2"))
+               (apis (if nelisp-buffer-local--root-api-indices
+                         (mapcar #'nelisp--native-symbol-addr nelisp-buffer-local--root-api-indices)
+                       (mapcar #'nelisp-native-load--symbol-addr
+                               '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2"
+                                 "nl_root_pin_slot_v2" "nl_root_pin_end_v2"))))
+               (begin (nth 0 apis)) (reserve (nth 1 apis))
+               (slot-api (nth 2 apis)) (end (nth 3 apis))
                (ticket (ptr-call begin env 0 0 0 0 0)))
           (unwind-protect
               (let* ((slot (ptr-call reserve env ticket 0 0 0 0))
@@ -41,7 +45,11 @@
       (when (or (memq name '(nil t)) (keywordp name)
                 (and entry (nelisp--record-ref entry 3)))
         (signal 'setting-constant (list variable)))
-      (unless entry (setq entry (nelisp-env--ensure-entry mirror (symbol-name name))))
+      (unless entry
+        ;; Ask the existing cell primitive to install its canonical void
+        ;; marker. Creating local metadata is not a user makunbound event.
+        (let ((emacs-parity-misc--inhibit-watchers t)) (makunbound name))
+        (setq entry (nelisp--fast-hash-get table (symbol-name name))))
       (when (<= (length entry) 6)
         (setq entry (nelisp--make-record 'symbol-entry
                      (nelisp--record-ref entry 0) (nelisp--record-ref entry 1)
@@ -52,7 +60,10 @@
         (nelisp--record-set entry 5 (vector 'nelisp--current-buffer nil))))
     entry))
 (defun nelisp-buffer-local--redirect (variable)
-  (let ((entry (nelisp-buffer-local--entry variable)))
+  ;; An explicit local can only have been made after the mirror was opened.
+  ;; A read-only predicate must not bootstrap the compiler during a watcher.
+  (let ((entry (and nelisp-buffer-local--mirror
+                    (nelisp-buffer-local--entry variable))))
     (and entry (> (length entry) 6) (nelisp--record-ref entry 5))))
 (defun nelisp-buffer-local-make (variable)
   "Create VARIABLE's explicit local cell in the current buffer, preserving void."

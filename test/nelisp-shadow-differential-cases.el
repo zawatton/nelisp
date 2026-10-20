@@ -315,6 +315,13 @@
  ;; every result derived: returning a raw-byte string here would compare the
  ;; two printers instead of the string semantics.
  (equal (unibyte-string 227 129 130) "あ")
+ ;; Mixed byte representations use distinct ordering/equality contracts.
+ (let ((u (unibyte-string 233))
+       (r (string-as-multibyte (unibyte-string 233))))
+   (list (compare-strings u nil nil "é" nil nil)
+         (compare-strings u nil nil r nil nil)
+         (string-lessp u "é") (string-lessp "é" u)
+         (string= u r) (string-prefix-p u r)))
  (append (unibyte-string 200 201 202) nil)
  (append "あ" nil)
  (list (multibyte-string-p (unibyte-string 200 201))
@@ -2339,6 +2346,20 @@
   (list (let ((print-circle t)) (prin1-to-string f))
         (let ((print-circle nil)) (format "%S" f))))
 
+ ;; Literal-only nullary closures preserve heap identity and captured values;
+ ;; executable forms and wrong arity still take the ordinary call path.
+ (eval '(let ((reader (lambda () [1 "callfloor"])) (events nil))
+          (let ((object (funcall reader)))
+            (garbage-collect)
+            (list ((lambda ())) ((lambda () nil t 17))
+                  (funcall (lambda (a &optional b &rest rest) 17) 1)
+                  (funcall (lambda (a &optional b &rest rest) 17) 1 2 3 4)
+                  (eq object (funcall reader))
+                  (let ((captured 23)) (funcall (lambda () captured)))
+                  (funcall (lambda () (push 'executed events) 31)) events
+                  (let ((empty (lambda () nil)))
+                    (condition-case e (funcall empty 1)
+                      (wrong-number-of-arguments (list (car e) (nth 2 e)))))))) t)
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

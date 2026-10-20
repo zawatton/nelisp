@@ -1157,6 +1157,8 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
+(defvar enable-multibyte-characters t)
+
 (defun nelisp--buffer-multibyte-p (buffer)
   "Return BUFFER's local multibyte flag, defaulting to t."
   ;; Every `insert' consults this with the CURRENT buffer.  Selecting a
@@ -2390,11 +2392,15 @@ Return (FROM . TO).  STR, START, and END are used only for the
              (n1 (- b a))
              (n2 (- d c))
              (n (if (< n1 n2) n1 n2))
+             (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
+             (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
              (i 0)
              (result t))
         (while (and (< i n) (eq result t))
           (let* ((ch1 (aref str1 (+ a i)))
                  (ch2 (aref str2 (+ c i)))
+                 (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
+                 (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
                  (k1 (if ignore-case (upcase ch1) ch1))
                  (k2 (if ignore-case (upcase ch2) ch2)))
             (cond
@@ -11464,18 +11470,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; Classification is stored when a binding is created, so later declarations
 ;; cannot reclassify an existing lexical binding.
 (fset 'boundp '(builtin boundp))
-(defun set (sym val)
-    ;; t, nil and every keyword are self-evaluating in Emacs and cannot be
-    ;; assigned; `symbolp' was the wrong complaint (they ARE symbols) and a
-    ;; keyword was assigned outright.
-    (when (or (eq sym t) (null sym) (keywordp sym))
-      (signal 'setting-constant (list sym)))
-    ;; Keep validation at this Lisp-owned semantic boundary without entering
-    ;; a second function scope for the same symbol predicate.
-    (unless (symbolp sym)
-      (signal 'wrong-type-argument (list 'symbolp sym)))
-  (funcall '(builtin set) sym val)
-  val)
+;; The existing symbol-cell entry validates types and constants, including
+;; GNU's keyword self-assignment exception. A second scope here duplicated
+;; validation, rejected that exception and hid the entry from the word VM.
+(fset 'set '(builtin set))
 (unless (fboundp 'defalias)
   (defun defalias (sym def &rest _)
     (when (and (null sym) def) (signal 'setting-constant (list sym)))
@@ -26591,6 +26589,13 @@ Defining it as a function compiles them again.")
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
+                ;; Compiler-private -2 selects the nullary constant path.
+                ;; Ordinary VM calls keep the original executor prologue.
+                (let ((code (car c)))
+                  (when (and (= (cdr c) 0) (= (nth 1 shape) 0)
+                             (= (length code) 6) (= (aref code 0) 17)
+                             (= (aref code 2) 1) (= (aref code 4) 0))
+                    (setcdr c -2)))
                 (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
