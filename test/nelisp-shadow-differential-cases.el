@@ -45,6 +45,15 @@
 ;;; Code:
 
 (list
+ ;; Regex fast plans retain greedy captures and notice mutable pattern text.
+ (let ((case-fold-search nil) (pattern (copy-sequence "file")))
+   (let ((hit (string-match "\\`\\(.*\\)\\(a\\|ba\\)\\'" "ba")))
+     (list hit (match-beginning 1) (match-end 1)
+           (match-beginning 2) (match-end 2)
+           (progn (string-match pattern "file")
+                  (aset pattern 0 ?m)
+                  (list (string-match pattern "file")
+                        (string-match pattern "mile"))))))
  ;; Backtrace locals must traverse small alist frames as well as table frames.
  (let ((activation-local 7))
    (cdr (assq 'activation-local (backtrace--locals 1 'backtrace--locals))))
@@ -756,6 +765,27 @@
        (format "%x %X %o %i" 255 255 8 -3)
        (format "%s|%s|%s|%s" 1.5 'sym '(1 a) nil)
        (format "%s extra" "a" "b"))
+ ;; Space replacement contributes encoded bytes to a unibyte regexp.
+ (let ((case-fold-search nil))
+   (mapcar (lambda (row)
+             (let* ((search-spaces-regexp (car row))
+                    (hit (string-match (unibyte-string 32) (cadr row))))
+               (list hit (and hit (match-data t)))))
+           (list (list (string 255) (unibyte-string 195 191))
+                 (list (string-to-multibyte (unibyte-string 255))
+                       (unibyte-string 193 191)))))
+ ;; Repeated groups retain their continuation while trying alternatives.
+ (let ((case-fold-search nil))
+   (mapcar (lambda (row)
+             (let ((hit (string-match (car row) (cadr row))))
+               (list hit (and hit (match-data t)))))
+           '(("\\(ab\\|a\\)*b" "ab")
+             ("\\(ab\\|a\\)+b" "ab")
+             ("\\(ab\\|a\\)?b" "b")
+             ("\\(ab\\|a\\)\\{1,2\\}b" "ab")
+             ("\\(\\(a\\|b\\)*\\)\\2" "ab")
+             ("\\(a\\|b\\)*\\1" "abb")
+             ("\\(a?\\|b\\)\\{0,2\\}a" "baa"))))
  ;; The regexp engine: shy groups, explicit numbering, word boundaries,
  ;; non-greedy quantifiers, folding, and \N in a replacement.
  (list (string-match "\\(?:x+\\)" "xxab")
@@ -1184,6 +1214,13 @@
        ;; disagree about which error comes first for reasons that have
        ;; nothing to do with the file.
        )
+
+ ;; Regex compilation and subgroup validation preserve complete conditions.
+ (list (condition-case e (string-match "[" "a") (error e))
+       (condition-case e (string-match "\\(" "a") (error e))
+       (condition-case e (string-match "" "abc" -5) (error e))
+       (progn (string-match "x" "x")
+              (condition-case e (match-beginning -1) (error e))))
 
  ;; The `f' rounding family requires a FLOAT: (ffloor 65) signals while
  ;; (floor 65) is 65.  Accepting any number, which an earlier pass did,

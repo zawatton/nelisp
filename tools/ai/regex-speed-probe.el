@@ -1,0 +1,60 @@
+;;; regex-speed-probe.el --- source-first stage probe -*- lexical-binding: nil; -*-
+;; Run through regex-speed.py.  Ordinary stdout also works on the standalone.
+(when (getenv "REGEX_SPEED_MODULE")
+  (nlre--compiled-cache-clear)
+  (load (getenv "REGEX_SPEED_MODULE"))
+  (nlre--compiled-cache-clear))
+(defvar regex-speed-patterns
+  '("\\`\\(.*\\)\\(\\)\\'" "\\`\\(.*\\)\\(\\.el\\)\\'"
+    "\\`\\(.*\\)\\(\\.so\\|\\.elc\\|\\.elc\\.gz\\|\\.el\\|\\.el\\.gz\\)\\'" "file"))
+(defvar regex-speed-count
+  (if (getenv "REGEX_SPEED_COUNT")
+      (string-to-number (getenv "REGEX_SPEED_COUNT")) 2000))
+(defmacro regex-speed-time (label count &rest body)
+  `(let ((rs-t0 (float-time)))
+     (dotimes (rs-i ,count) ,@body)
+     (princ (format "%s %.3f us\n" ,label
+                    (* 1000000.0 (/ (- (float-time) rs-t0) ,count))))))
+(let ((names nil)
+      (selected (getenv "REGEX_SPEED_PATTERN"))
+      (mode (getenv "REGEX_SPEED_MODE"))
+      (index 0))
+  (dotimes (i regex-speed-count) (setq names (cons (format "some-package-file-%d.el" i) names)))
+  (dolist (pat regex-speed-patterns)
+    (when (or (not selected) (= index (string-to-number selected)))
+    (when (or (not mode) (equal mode "full"))
+    (string-match pat (car names))
+    (garbage-collect)
+    (let ((rs-t0 (float-time)))
+      (dolist (s names) (string-match pat s))
+      (princ (format "full %S %.3f us\n" pat
+                     (* (/ 1000000.0 regex-speed-count) (- (float-time) rs-t0)))))
+    (let ((rs-t0 (float-time)))
+      (garbage-collect)
+      (princ (format "post-gc %.3f us\n" (* 1000000.0 (- (float-time) rs-t0))))))
+    (when (and (or (not mode) (equal mode "components"))
+               (fboundp 'nlre--compiled-pattern))
+      (princ (format "components %S\n" pat))
+      (let* ((s (car names)) (n (length s))
+             (compiled (nlre--compiled-pattern pat))
+             (plan (aref compiled 2)) (ng (aref compiled 1))
+             (nlre--fold case-fold-search) (nlre--match-end-limit nil))
+        (garbage-collect)
+        (princ (format "plan %S %S\n" pat (and plan (aref plan 0))))
+        (regex-speed-time "empty-loop" (max 20000 regex-speed-count) nil)
+        (regex-speed-time "cache" (max 20000 regex-speed-count) (nlre--compiled-pattern pat))
+        (regex-speed-time "compile" 20 (nlre--compile-pattern pat case-fold-search))
+        (regex-speed-time "syntax" regex-speed-count
+          (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader)))
+        (regex-speed-time "caps-allocation" regex-speed-count (make-vector ng nil))
+        (regex-speed-time "caps-construction" regex-speed-count
+          (let ((rs-caps (make-vector ng nil)))
+            (dotimes (rs-g ng) (aset rs-caps rs-g (cons 0 n)))))
+        (when (and plan (eq (aref plan 0) :literal))
+          (regex-speed-time "literal-engine" regex-speed-count (nlre--literal-plan-match plan s 0 n)))
+        (unless plan
+          (regex-speed-time "general-engine" 100
+            (let ((nlre--caps (make-vector ng nil)))
+              (nlre--match-list (nlre--seq-nodes (aref compiled 0)) s 0 n)))))))
+    (setq index (1+ index))))
+(princ "REGEX-PROFILE-DONE\n")
