@@ -152,3 +152,278 @@ reported as a criteria change.
 - The nelisp-emacs-lib session must rebuild its images after S7. Its census
   (ccore, process, display, ...) is part of S7's evidence.
 - anvil switches binaries only after S8 passes and the user approves.
+
+* S0 decision record (2026-10-20)
+
+S0 is BLOCKED at S0.4: the unchanged-decoder requirement contradicts the
+required GNU behavior for a direct cons. The native counterexample reports
+legacy (tag, car)=(7,7), but direct (tag, bytecode-tag, car, payload)=
+(0,844424930131968,0,0), where tag and car must both be 7. GNU reports (t t)
+for (consp (cons t nil)) and (car (cons t nil)). The proposed representation
+and threshold revisions below are reviewable proposals, not completed gates
+or permission to reinterpret the brief. Remaining profiling was interrupted
+at this listed GNU-contradiction blocker; S0.2/S0.3/S0.4/S0.6 remain failing.
+
+This section authorizes no runtime implementation. S1+ still waits for Doc 215 to land
+in eval/core. The reproducible measurements, source identities, raw-profile
+hashes, GNU output and limitations are in =target/word-heap/=; the compact
+committed evidence is =tools/ai/word-heap-s0-data.json=.
+
+** Measurement units and object populations
+
+The NeLisp metric is arena field 4 after two collections with conservative
+native-stack scanning disabled. It includes each allocation's 8-byte
+BLOCK_TOTAL prefix. RSS, arena reservation and image file length are different
+metrics. A 16-byte cons payload therefore costs *24*, not 16, in this meter.
+Keeping the 24-byte refcounted payload would cost 32. Achieving a charged
+16-byte cons would require a slab/pool allocator with amortized metadata,
+which is a separate design, not an effect of deleting the Sexp box.
+
+The probe allocates a keeper vector before its baseline and runs populations
+of 2000 and 4000 in separate processes. The slope subtracts constant parser,
+diagnostic and keeper-header costs. Vector slots are measured independently.
+One type per process also avoids charging a previous population's retained
+evaluator results to the next type. A single combined probe gave an impossible
+near-zero float increment on the candidate; the isolated slope is 40 B.
+
+| type / constructor                         | ABI candidate | baseline | GNU 31.1 minimum representation |
+|--------------------------------------------+---------------+----------+---------------------------------|
+| cons, retained through aset                |           152 |       72 |                              16 |
+| float                                      |            40 |       40 |                               8 |
+| string, eight ASCII characters             |            56 |       56 |                 41 incl. NUL   |
+| uninterned symbol, one-character name       |            56 |       56 |                              48 |
+| vector slot                                |             8 |        8 |                               8 |
+| record, one user slot plus type             |           136 |      128 |                              24 |
+| bignum, 2^61+i                              |            64 |       64 |               24 + >=8 limbs B |
+| detached marker                             |           272 |      144 |                              48 |
+
+These are retained *constructor-path slopes*, not a claim that the candidate's
+NlConsBox grew. Its 32 B Sexp allocation plus 24 B payload still costs 72 B.
+The original make-list probe gives 112 B on the candidate. Constructor path
+and retained alias/view overhead must remain visible; S2/S6 acceptance must
+exercise both make-list and individually retained conses. Do not extrapolate
+whole-heap savings from the 72 B structural minimum alone.
+
+GNU reference: the installed 31.1 executable's DWARF gives sizeof(cons)=16,
+float=8, string=32, symbol=48, vectorlike_header=8, bignum=24, marker=48.
+A one-slot record is that 8 B header plus type and user WORDs (=24); Fmake_record
+disassembly confirms slots+1 passed to allocate_vectorlike. Eight string bytes
+need a terminating NUL (=32+9), excluding data-pool bookkeeping and rounding.
+The bignum adds at least one 64-bit GMP limb; reserved limb capacity and malloc
+bookkeeping are not claimed measured. GNU GC-accounted slopes are also saved:
+16/8/40/48/8/40/40/64 respectively. They are *not* interchangeable with sizeof:
+summing vectors and vector-slots gives a different accounting unit for
+pseudovectors, and string-bytes does not charge the terminating NUL. The
+earlier float=16 reference is corrected.
+
+** Composition and execution order
+
+The census assigns exact nonfree BLOCK_TOTAL allocations to validated Sexp
+headers and their backing objects, counts shared backing once, and reports
+unique payloads separately from header aliases. It never labels a block a
+cons merely because of its size. External intern storage is reported separately.
+Permanent bootstrap allocations that have no relocatable typed owner remain
+explicitly unclassified; this is not a complete reachability oracle.
+
+Anvil was launched through the specified shell launcher and candidate. Only
+tools/list was sent. Forty tools remained registered; after 46 read-only
+requests a natural collection was observed. The snapshot's last-GC live size
+was 64,556,120 B and its remaining allocation debt 1,540,664 B. The original
+startup snapshot had 191,262,208 nonfree bytes; counting that as the live set
+would have charged roughly 125 MB of pending garbage. Ptrace-based diagnostic
+GC was rejected by the sandbox and is not used as evidence.
+
+The library reference is the existing ccore-gccheck-20261014 worktree's
+build/c-core-image/b222aacb0b08af496df17906a77be55f7e132abd2170cf2ab38be758883302e9.flat.
+It is read offline without loading it into an ABI-incompatible executable.
+This is an identified archived C-core base image, not a claim that the current
+library checkout has been rebuilt. Its filename, hash and intern-region size
+are in the evidence.
+
+In the classified physical snapshots, cons is 31.58% of Anvil, 54.61% of the
+library image, and 28.35% of the candidate cold image. Unclassified bytes remain
+47.70%, 21.07%, and 50.09% respectively; they must not be silently assigned to
+cons or interpreted as all removable. Consequently the *actual* cons share
+has not been proven below 60% either: the identified share is a lower bound,
+and the unclassified allocations may include additional cons backing held
+through embedded Sexp views. S0.2 remains incomplete. It needs a typed owner
+walk that also accounts for embedded root/parse-pool/frame views, plus the
+library session's identification of its current base image. The 60% criterion
+does not yet support a cons-only-first memory forecast. Proposed order for
+review, not an adopted stage reorder:
+
+=S1 -> S6 -> S2 -> S4 -> S3 -> S5 -> S7 -> S8=.
+
+S6 first removes known alias/view/root overhead and must refine the raw-storage
+census before another memory prediction. Cons remains the largest identified
+family. Vector/record work precedes strings because it owns the container and
+root interfaces that those transitions need; strings and symbols then share
+one tagged-handle interface. Stage IDs and the 27-criterion denominator remain.
+
+** Tags, alignment and mixed objects
+
+Choose 8-byte alignment and the even low-three-bit partition:
+
+| bits | representation |
+|------+----------------|
+| 000  | existing Sexp box, until that object or storage view is retired |
+| 010  | direct cons payload: car WORD at 0, cdr WORD at 8 |
+| 100  | string/symbol handle, beginning with a packed kind/length word |
+| 110  | vectorlike/remaining object, beginning with a packed kind/size word |
+
+Immediate encodings remain (n<<2)|1, nil=3 and t=7. Internal sentinels 0 and 2
+remain distinct from valid aligned heap addresses plus tags. Eight-byte
+alignment is sufficient because the largest pointer tag is 6. Sixteen-byte
+alignment would offer eight even pointer classes, but increases padding for
+small allocations and does not preserve the existing low-bit decoders by
+itself. It is not justified by these measurements. Float and bignum values
+initially use 110, rather than consuming a new immediate encoding.
+
+100 and 110 still require a kind-word load when their subtype is needed;
+only cons and the broad pointer classes can be recognized entirely from WORD
+bits. No universal "zero type-header loads" speed claim is made.
+
+All accessors first distinguish odd immediates, then dispatch 000/010/100/110.
+Only 000 may enter an existing Sexp-layout read. During the transition legacy
+views can refer to migrated backing: the accessor boundary must preserve
+canonical identity, error data, mutability and child tracing, rather than
+constructing another heap header for every read. Old cons payloads have the
+same first two WORD fields as new ones; mixed references normalize identity
+to the payload address. String and symbol mixed-identity rules need explicit
+buffer/name/identity tests; they cannot copy cons's normalization mechanically.
+
+** WORD decoder audit and preservation arguments
+
+It is impossible to keep *every decoder implementation unchanged*: for a
+010 WORD W=P|2, today's nl_word_payload reads *(P+10), while the desired car
+is at P. The former pointer branch also reads a tag at a tagged address.
+This is a direct counterexample, not a GNU-parity waiver. S1 must centralize
+these reads before any type flips. "Unchanged" means preserved observable
+decoder contracts and caller semantics, not unchanged instructions.
+
+The build dump inventory lists every function containing the searched low-bit
+tests or inline tg=2 idioms, including non-WORD arithmetic false positives.
+Source-emitter scans complement it; a source-name grep alone does not prove
+the compiled surface empty. The required decoder families and proofs are:
+
+| decoder family | preservation obligation / argument |
+|----------------+------------------------------------|
+| nl_val_is_imm, nl_val_int, nl_word_int, nl_imm_int, nil/t constructors | unchanged: all new pointers are even; fixnums retain low bits 01 and arithmetic shift by two; nil/t remain literal 3/7 |
+| nl_val_tag, nl_word_tag64, wf_bytecode_w_tag, raw sexp-tag / tag-byte emitters | add pointer-tag dispatch; return the same Sexp semantic tags; raw pointer reads restricted to 000 or explicit storage views |
+| nl_word_payload, wf_argval, wf_word_int | retain numeric behavior; generic pointer extraction must use the type accessor, never unmasked W+8 |
+| wf_bytecode_w_int | unchanged only under its integer precondition: immediate shift or legacy integer box; no new cons/string/vector WORD may enter its box branch |
+| inline (= tg 2) decoders | the comparison keeps its meaning, but tg must come from the centralized semantic-tag accessor; inventory names all eight such defuns |
+| nl_cons_car/cdr_word and *_ptr, vector/record slot readers, m5_fx_word_cons_p | untag addresses, select the layout, retain nil/type errors and WORD slot stride; phase tests must cover legacy and migrated parents/children |
+| nl_val_load/clone_into, wf_word_view/store_out, wf_bytecode_w_load/view/view_into/out/stage, nl_sci_store_imm | replace even=>32-byte-view assumptions; keep immediate adapters and root lifetimes; prohibit copying 32 B from a direct 16 B cons |
+| wf_bytecode_w_eq/eqv/eqw, bf_equal_word_slot, hashes and positioned symbols | compare canonical type-specific identity; mixed legacy/direct aliases must remain eq; never equate different types sharing address bits |
+| GC slot/pool/cons/vector/char-table walkers, conservative scan, precise and worker roots | parity still separates immediates, but block lookup must mask tags and child tracing must dispatch by kind; scan both legacy and direct objects, including cross-thread roots |
+| nl_fa_cons/slot/vec_slots/mirror_buckets and root walkers | mask tag before arena/block validation; enumerate the new child fields and carry pointer tag bits in relocations |
+| nl_fa_field, cold relocation and in-place restore | restore (base + untag(offset)) OR tag; aligned base preserves low bits, but classification and bounds must use the untagged offset; raw intern pointers stay untagged |
+| native/AOT/fx emitters, reader/printer and builtin dispatch | old Sexp offsets are valid only for explicit legacy views; use the accessor ABI and retain reader/printer, numeric and error-data differential cases |
+| raw ptr/FFI marshalling and callback adapters | external C pointers remain raw integers/addresses; only Lisp WORD arguments use the new decoders; pin objects, not temporary views |
+| authenticated scalar0 native-subr return decoder | its (word&3)==2 is the separate foreign scalar ABI, not NeLisp's fixnum encoding; preserve that boundary and explicitly convert via nl_imm_int |
+
+Each migration gate must include all four pointer classes, both fixnum signs
+and extrema, nil/t, invalid/unbound sentinels, mixed eq, cyclic objects,
+shared strings/symbols, forced GC, thread roots and dump/restore. The blanket
+claim that masking bit zero alone makes existing decoders safe is rejected.
+
+** Cons refcount
+
+The candidate still executes nelisp_nlconsbox_clone's lock xadd at payload+16;
+its returned old count is discarded. There is therefore a live *physical*
+reader/writer today. Its linked dynamic/static binaries do not contain the
+nelisp_nlconsbox_drop symbol; the old decrement/test/deallocate implementation
+remains in its source/test module. cons-set-car/cdr store via nl_val_clone_into
+and do not test the count. Tracing GC marking and sweep do not consult it.
+
+Decision: remove the unused clone RMW and constructor initialization across
+all active producers, retire/guard the old drop kernel and layout consumers,
+then shrink the payload. Do not truncate first: even an unused-result RMW at
+offset 16 would write past a 16 B cons. S2.2 must prove no linked count reader
+or writer remains on every platform, including codegen/native artifacts.
+
+** Instruction attribution and permitted claims
+
+The three abi-ir.py workloads are retained with instruction positions for
+four layouts, with GC included in total Ir and isolated caches. Materialiser
+and clone/copy columns are *self* Ir; call-edge costs are not added again.
+The parser asserts that all self costs sum to Callgrind's summary.
+
+Header attribution is a *confirmed lower bound*: audited decoder/accessor
+loads and the distinctive inlined nl_val_tag sequence, counted by instruction
+address. Other data loads stay unassigned. Materialiser/copy self Ir overlaps
+their own header loads; the columns are not additive. Existing binaries carry
+no instruction-to-source provenance sufficient for a complete header-load
+taint census. No speed multiplier or additive saved-Ir prediction follows
+from this bound. S1 must extend instruction provenance before making a
+complete header-load attribution or speed claim. Raw means and per-layout
+counts, including unassigned reads, are in the evidence.
+
+** GC trigger determinism
+
+The active rule is growth-reserved watermark OR allocation debt. Debt is
+armed after two collections; its threshold is max(16 MiB, last-sweep live*3).
+The growth watermark remains a separate trigger. Sweep counts permanent
+bootstrap blocks in live. Restore builds a hole map and freezes the boot
+watermark, so nonfree bootstrap garbage in an image becomes permanent too.
+
+Normalized machine code for boundary_due, debt_due, debt_rearm_for and
+sweep_merge_chunk is identical in all four supplied builds. Their images are
+not: hotfix has 34,653,240 nonfree bytes (233,876,768 free), versus before's
+139,345,784 nonfree (129,185,552 free). Baseline has 124,933,072 nonfree and the
+candidate 42,088,672. Thus the same executable policy uses very different
+live-derived denominators. The four-layout native counter measurements
+reproduce hotfix=28, before=10, candidate=26, baseline=11 on regex24000.
+The +24 diagnostic counter increments once in debt_rearm after each outer
+sweep; recursive chunk traversal does not increment it. Default arguments
+are retained and no explicit workload GC was added.
+
+The cold baker performs a collection with the conservative stack scan active.
+Address-dependent conservative retention, different transient bake roots and
+image contents can therefore survive the bake and become permanent on load.
+The saved free/nonfree maps prove the image difference; the exact earlier
+bake retention event is not reconstructible from these files alone. Do not
+claim to have reproduced that historical event or blame a changed trigger.
+
+Proposed deterministic design: bake from precise roots at a defined quiescent
+boundary, collect twice after releasing transient source/compiler roots, hash
+the resulting live/hole census, and reject an unexpected census before freezing
+the permanent generation. For comparative gates use a fixed *requested*
+allocation-debt budget independent of retained boot garbage, reset at the same
+semantic boundary, with a separately recorded emergency growth collection.
+Do not use pointer addresses, rounded capacity, free-list search success or
+wall time as the scheduling counter. Production may still use an adaptive
+live ratio, but then binary, image, initial live bytes and every trigger cause
+are part of the measurement identity. Existing diagnostic floor/percentage
+overrides were measured separately; they are not a production implementation.
+The fixed 16 MiB diagnostic budget gives candidate/base/hotfix/before counts
+218/210/205/211, identical across layouts within each image, but not across
+the two old builds. A fixed limit alone is insufficient: debt is initially
+unarmed for two sweeps, and the independent growth trigger depends on image
+free space. The proposed common semantic reset boundary is essential; no
+deterministic policy has been implemented or claimed verified.
+
+** S1-S8 threshold revisions
+
+Every revision is repeated as a dated ledger NOTE. They change the acceptance
+units and ordering explicitly; they do not mark any S1+ criterion complete.
+
+| stage | revised acceptance |
+|-------+--------------------|
+| S1 | raw header reads outside accessor module = 0, with a failing mutation; inventory includes WORD/view, GC, image, FFI and codegen boundaries; record unresolved instruction provenance before any speed claim |
+| S2 | retained cons slope <=32 B with rc / <=24 B without rc; payloads <=24 / <=16 B respectively; make-list and individually retained populations must both pass; no count RMW/reader remains |
+| S3 | eight-byte string <=48 arena B; uninterned symbol handle <=32 arena B with its shared name charged separately; preserve symbol-name/eq and mutation behavior, not a hidden uncharged new name per symbol |
+| S4 | no legacy Sexp header; vector slots remain 8 B, one-user-slot record <=32 arena B; include char-table/closure/frame GC and identity |
+| S5 | no legacy Sexp header; float <=24 B, the specified bignum <=32 B, detached two-field marker <=40 B; GNU numeric/error parity |
+| S6 | zero legacy 32 B header/view/root allocations, materialisers and copies; legitimate 32 B *payloads* classified separately, not misreported as header debt; WORD roots 8 B |
+| S7 | semantic image-format version bump, stale rejection, both loader/relocator paths, Windows acceptance and independently rebuilt library images |
+| S8 | retain provisional <=50% pending the same fixed vendor load on the pinned ABI candidate; unchanged total-Ir caps for files/regex/boot, 400-call anvil soak and platform gates |
+
+The 50% live-memory target is still unvalidated: only 28-55% of the physical
+image bytes are identified cons, and significant storage remains unclassified.
+Do not lower the target from these partial snapshots. Freeze the vendor-load
+recipe, candidate image and initial live census before S1, re-evaluate after
+the typed-storage census, and require a new dated NOTE for a revision. Current
+Anvil/library/cold snapshots are partial composition evidence, not substitutes
+for that future fixed vendor-load measurement. S0.6 has not passed.
