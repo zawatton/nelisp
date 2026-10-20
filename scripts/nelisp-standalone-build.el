@@ -49,6 +49,7 @@
 (require 'nelisp-native-arithmetic-v2)
 (require 'nelisp-standalone-arena-rewrite)
 (require 'bytecomp)
+(require 'nelisp-cc-variable-watchers)
 (require 'json)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
@@ -14504,12 +14505,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (= (bf_keyword_raw canonical) 1))
                    (setq rc (bf_setting_constant canonical))
                  (seq
+                  (if (= (logand (ptr-read-u64 env 112) 1048576) 0) 0
+                    (setq rc (nl_n3_notify env canonical rooted-value 2)))
+                  (if (= rc 0)
+                    (seq
                   (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
                                             (nl_frame_push_sym1_ptr) scratch)
                   (if (= (nl_sb_bind env frames canonical rooted-value) 0) 0
                     (seq
                      (wf_bytecode_mark_dynamic frames canonical)
-                     (nl_bind_frame_fast frames canonical rooted-value))))) 0)
+                     (nl_bind_frame_fast frames canonical rooted-value)))) 0))) 0)
            (nl_root_release env mark) rc))))
     (defun wf_bytecode_unbind (frames n)
       (if (= n 0)
@@ -14517,7 +14522,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (let* ((env (- frames 32))
                (mark (nl_root_mark env))
                (popped (nl_root_reserve env)))
-          (seq (nelisp_frame_pop frames popped)
+          (seq (nl_env_pop_frame env)
                (nl_root_release env mark)
                (wf_bytecode_unbind frames (- n 1))))))
     (defun wf_bytecode_unwind_push (env unwinds kind payload)
@@ -15944,6 +15949,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; so the binding never outlives it.
     (defun wf_bytecode_w_lean_bind (env name valw unwinds tmp)
       ;; 0 when bound; 1 when NAME needs the general binder (nothing done).
+      ;; Watchers use the frame binder, whose unwind retains callback state.
+      (if (/= (logand (ptr-read-u64 env 112) 1048576) 0) 1
       (if (= (logand name 1) 1) 1
         (if (/= (ptr-read-u64 name 0) 4) 1
           (if (= (bf_keyword_raw name) 1) 1
@@ -15956,7 +15963,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (nelisp_cons_construct (wf_bytecode_w_cons name saved tmp) unwinds unwinds)
                        (wf_dirty)
                        (ptr-write-u64 (ptr-read-u64 (ptr-read-u64 entry 8) 32) 0 valw)
-                       0))))))))))
+                       0)))))))))))
     (defun wf_bytecode_w_lean_event_p (event)
       (let* ((carw (nl_cons_car_word event)))
         (if (= carw 0) 0
@@ -18050,13 +18057,39 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_callout (env sym stk sp argc resw fslot oslot nslot _pad)
       (let* ((rc (nelisp_env_lookup_function (+ env 0) (+ env 64) sym fslot)))
         (if (/= rc 0) (nl_cons_stash_void_function env sym)
-          (let* ((rec (m5_fx_covered fslot argc env oslot))
-                 (st (if (= rec 0) -3
-                       (m5_fx_call_words rec sym (+ stk (* (- sp argc) 8)) argc env oslot resw 0))))
+          (let* ((direct (m5_fx_globals_word fslot stk sp argc resw env oslot 0))
+                 (rec (if (= direct -3) (m5_fx_covered fslot argc env oslot) 0))
+                 (st (if (/= direct -3) direct
+                       (if (= rec 0) -3
+                         (m5_fx_call_words rec sym (+ stk (* (- sp argc) 8)) argc env oslot resw 0)))))
             (if (= st -3)
                 (m5_fx_call_list sym fslot (m5_fx_list_slot (m5_fx_word_list stk sp argc 0) nslot)
                                  env oslot resw)
               st)))))
+    ;; Existing evaluator entries, called with the VM's rooted WORD operands.
+    ;; Authenticate the resolved function cell so advice and redefinition
+    ;; retain normal apply semantics. No argument conses are needed here.
+    (defun m5_fx_globals_word (fn stk sp argc resw env scratch _pad)
+      (if (= (m5_fx_word_cons_p fn 0) 0) -3
+        (let* ((head (nl_cons_car_word fn)) (tail (nl_cons_cdr_word fn)))
+          (if (or (= (logand head 1) 1) (= (m5_fx_word_cons_p tail 0) 0)) -3
+            (if (= (sexp-name-eq head "builtin") 0) -3
+              (let* ((name (nl_cons_car_word tail))
+                     (a (if (> argc 0) (ptr-read-u64 (+ stk (* (- sp argc) 8)) 0) 3)))
+                (if (and (= argc 1) (= (sexp-name-eq name "symbol-value") 1))
+                    (if (or (= a 3) (= a 7)) (m5_fx_take a resw)
+                      (if (= (logand a 1) 1) -3
+                        (if (or (= (sexp-tag a) 4) (= (sexp-tag a) 16))
+                            (if (= (bf_keyword_raw a) 1) (m5_fx_take a resw)
+                              (wf_bytecode_w_varref env a resw scratch)) -3)))
+                  (if (and (= argc 2) (= (sexp-name-eq name "set") 1))
+                      (if (= (logand a 1) 1) -3
+                        (if (or (= (sexp-tag a) 4) (= (sexp-tag a) 16))
+                            (let* ((b (ptr-read-u64 (+ stk (* (- sp 1) 8)) 0))
+                                   (rc (bf_set_dynamic_value
+                                        env a (wf_bytecode_w_view b scratch))))
+                              (if (= rc 0) (m5_fx_take b resw) rc)) -3))
+                    -3))))))))
     ;; The backtrace frame names SYM, as the interpreter's frame for a call
     ;; form names its operator (`nl_apply_function' would name FN's value).
     (defun m5_fx_call_list (sym fn lst env oslot resw)
@@ -21508,7 +21541,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
     (nl_env_lookup_val_done_w
       (if (= cell 0)
-          (nelisp_env_lkv_mirror_with_frames_w env (+ env 32) name 0 1 0 0 0)
+          (nelisp_env_lkv_mirror_with_frames_w env (+ env 32) name entry 1 0 0 0)
         (nl_cell_get_value_w cell 0)) env 0 0)))
     (defun bf_boundp (args env out)
       (nl_abi_word_to_rc (bf_boundp_w args env 0) out))
@@ -21905,15 +21938,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (if (= noerror 1) 3
                    (seq (bf_require_file_missing (wf_word_view feature)) 0)))))))))))
     (defun bf_set_dynamic_value (env sym val)
+      (if (or (= (sexp-tag sym) 0) (= (sexp-tag sym) 1))
+          (bf_setting_constant sym)
+        (if (= (bf_keyword_raw sym) 1)
+            (if (= (bf_eq2 sym val) 1) 0 (bf_setting_constant sym))
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
-          (if (= (nelisp_mirror_is_constant (+ env 0) sym) 1)
-              (bf_setting_constant sym)
-            (let* ((cell (nelisp_frame_stack_find_kind (+ env 32) sym 1 0)))
-              (seq (wf_dirty)
-                   (if (= cell 0)
-                       (nelisp_env_setv_mirror_lazy (+ env 0) sym val (+ env 64))
-                     (seq (cell-set-value cell val) 0)))))
-        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))
+          (nl_n3_set_dynamic_raw env sym val)
+        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))))
     (defun nl_n3_set_dynamic_raw (env sym val)
       (if (= (nelisp_mirror_is_constant (+ env 0) sym) 1)
           (bf_setting_constant sym)
@@ -30697,6 +30728,31 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                    (insert "\n")
                    (insert-file-contents
                     (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
+                                      nelisp-standalone--repo-root))
+                   (goto-char (point-max))
+                   (insert-file-contents
+                    (expand-file-name "lisp/nelisp-stdlib-fast-hash.el"
+                                      nelisp-standalone--repo-root))
+                   (goto-char (point-max))
+                   (insert "\n" (nelisp-cc-variable-watchers-source
+                                  nelisp-standalone--repo-root))
+                   ;; Use the existing checked root API without bootstrapping
+                   ;; the artifact compiler on the first buffer-local query.
+                   (require 'nelisp-native-load)
+                   (insert
+                    (prin1-to-string
+                     (list 'defconst 'nelisp-buffer-local--root-api-indices
+                           (list 'quote
+                                 (mapcar
+                                  (lambda (name)
+                                    (or (cl-position name nelisp-native-load-bridgeable-symbols
+                                                     :test #'equal)
+                                        (error "Missing root API: %s" name)))
+                                  '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2"
+                                    "nl_root_pin_slot_v2" "nl_root_pin_end_v2")))))
+                    "\n")
+                   (insert-file-contents
+                    (expand-file-name "lisp/nelisp-buffer-local.el"
                                       nelisp-standalone--repo-root))
                    (buffer-string)))
          (source (nelisp-boot-image-prelude source))
@@ -41481,6 +41537,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (seq
          (nl_sexp_clone_into copies roots)
          (nl_sexp_clone_into (+ copies 32) result)
+         ;; GNU restores a localized variable through `set', even when the
+         ;; buffer that originally localized it has since been killed.
+         (if (= operation 3)
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) roots)))
+               (if (= entry 0) 0
+                 (if (> (record-slot-count entry) 5)
+                     (if (= (nelisp_env_entry_slot_tag entry 5) 8)
+                         (setq operation 1) 0) 0))) 0)
          (nl_sexp_clone_into 268435480 tag-save)
          (nl_sexp_clone_into 268435512 val-save)
          (ptr-write-u64 268435472 0 0)
@@ -41696,9 +41760,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          ((eq name 'nl_env_set_value)
           (push (cons 'defun (cons 'nl_n3_setq_raw (cddr form))) out)
           (push `(defun nl_env_set_value (env sym_ptr val_ptr)
+                   (if (or (= (sexp-tag sym_ptr) 0) (= (sexp-tag sym_ptr) 1))
+                       (bf_setting_constant sym_ptr)
+                     (if (= (bf_keyword_raw sym_ptr) 1)
+                         (if (= (bf_eq2 sym_ptr val_ptr) 1) 0
+                           (bf_setting_constant sym_ptr))
                    (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
                        (seq ,@(cdddr form))
-                     (nl_n3_setq env sym_ptr val_ptr))) out))
+                     (nl_n3_setq env sym_ptr val_ptr))))) out))
          ((memq name '(nelisp_env_setv_cell_hit))
           (push (nelisp-standalone--n3-rewrite form) out))
          ((eq name 'nl_apply_do_globals_op)

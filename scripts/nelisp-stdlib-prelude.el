@@ -1157,6 +1157,8 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
+(defvar enable-multibyte-characters t)
+
 (defun nelisp--buffer-multibyte-p (buffer)
   "Return BUFFER's local multibyte flag, defaulting to t."
   ;; Every `insert' consults this with the CURRENT buffer.  Selecting a
@@ -11404,18 +11406,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; Classification is stored when a binding is created, so later declarations
 ;; cannot reclassify an existing lexical binding.
 (fset 'boundp '(builtin boundp))
-(defun set (sym val)
-    ;; t, nil and every keyword are self-evaluating in Emacs and cannot be
-    ;; assigned; `symbolp' was the wrong complaint (they ARE symbols) and a
-    ;; keyword was assigned outright.
-    (when (or (eq sym t) (null sym) (keywordp sym))
-      (signal 'setting-constant (list sym)))
-    ;; Keep validation at this Lisp-owned semantic boundary without entering
-    ;; a second function scope for the same symbol predicate.
-    (unless (symbolp sym)
-      (signal 'wrong-type-argument (list 'symbolp sym)))
-  (funcall '(builtin set) sym val)
-  val)
+;; The existing symbol-cell entry validates types and constants, including
+;; GNU's keyword self-assignment exception. A second scope here duplicated
+;; validation, rejected that exception and hid the entry from the word VM.
+(fset 'set '(builtin set))
 (unless (fboundp 'defalias)
   (defun defalias (sym def &rest _)
     (when (and (null sym) def) (signal 'setting-constant (list sym)))

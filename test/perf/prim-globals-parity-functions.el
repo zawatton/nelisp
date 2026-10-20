@@ -1,6 +1,7 @@
 ;;; -*- lexical-binding: t -*-
 (defvar pgs-global 10)
 (defvar pgs-events nil)
+(defvar pgs-plain 5)
 (defconst pgs-constant 7)
 (defun pgs-get () pgs-global)
 (defun pgs-symbol-value () (symbol-value 'pgs-global))
@@ -20,3 +21,9 @@
     (list pgs-lexical (symbol-value 'pgs-lexical))))
 (defun pgs-watch (symbol value operation where)
   (push (list symbol value operation (if (bufferp where) (buffer-name where) where)) pgs-events))
+(defun pgs-plain-get () pgs-plain)
+(defun pgs-watched-bind ()
+  (let ((pgs-global 43)) (pgs-set 44) (pgs-get)))
+(defun pgs-watched-plain () (let ((pgs-plain 6)) (pgs-plain-get)))
+(defun pgs-watch-fail (_symbol _value _operation _where)
+  (signal 'error '("watcher cancelled write")))

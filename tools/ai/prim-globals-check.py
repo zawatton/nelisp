@@ -21,7 +21,9 @@ OUT = ROOT / "target/prim-globals"
 FUNCTIONS = ROOT / "test/perf/prim-globals-parity-functions.el"
 DRIVER = ROOT / "test/perf/prim-globals-parity.el"
 MODES = ("interpreter", "vm", "bytecode")
-CORE = ("pgs-get", "pgs-symbol-value", "pgs-setq", "pgs-set")
+CORE = ("pgs-get", "pgs-symbol-value", "pgs-setq", "pgs-set",
+        "pgs-plain-get")
+CASES = 27
 
 
 def digest(path):
@@ -55,9 +57,9 @@ def run(command, stem, env):
 
 def canonical(text):
     rows = [line for line in text.splitlines() if line.startswith("PG ")]
-    if len(rows) != 19 or len(set(line.split(" ", 2)[1] for line in rows)) != 19:
+    if len(rows) != CASES or len(set(line.split(" ", 2)[1] for line in rows)) != CASES:
         raise ValueError(f"incomplete parity output: {len(rows)} cases")
-    if text.splitlines().count("PG-COMPLETE 19") != 1:
+    if text.splitlines().count(f"PG-COMPLETE {CASES}") != 1:
         raise ValueError("missing or duplicate completion marker")
     return rows
 
@@ -143,7 +145,7 @@ def parity(binary, tag, gnu):
             (dest / f"{mode}.diff").write_text("\n".join(diff) + ("\n" if diff else ""))
             different = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
             failures += bool(diff)
-            print(f"{mode}: checked=19 differing={different} "
+            print(f"{mode}: checked={CASES} differing={different} "
                   f"{'FAIL' if diff else 'PASS'}", flush=True)
         except ValueError as error:
             record["error"] = str(error)
@@ -168,10 +170,13 @@ def check(group, tag):
                 text = inspect_run(report["modes"][mode]["candidate"])
                 if any(f"({name} . t)" not in text for name in CORE):
                     raise ValueError("VM coverage absent")
-        print(f"{group}: PASS ({19 * len(modes)} cases)")
+        print(f"{group}: PASS ({CASES * len(modes)} cases)")
         return
-    # Expensive stages use command receipts rather than re-running a build or
-    # profile in the meter. No receipt is produced while the precondition fails.
+    # Revalidate raw artifacts without repeating expensive builds/profiles.
+    result = subprocess.run([sys.executable, str(ROOT / 'tools/ai/prim-globals-accept.py'), group],
+                            cwd=ROOT, capture_output=True, text=True, timeout=45)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or result.stdout.strip())
     receipt_path = OUT / "acceptance" / f"{group}.json"
     if not receipt_path.exists():
         raise ValueError(f"{group}: no measurement/verification receipt recorded")
@@ -195,7 +200,7 @@ def main():
     execute.add_argument("--tag", default="base")
     verify = sub.add_parser("check")
     verify.add_argument("group")
-    verify.add_argument("--tag", default="base")
+    verify.add_argument("--tag", default="final3")
     args = parser.parse_args()
     if args.action == "parity":
         return parity(args.binary, args.tag, args.gnu)

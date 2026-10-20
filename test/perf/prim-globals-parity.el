@@ -8,7 +8,8 @@
            (fboundp 'nelisp--fx-register))
   (dolist (name '(pgs-get pgs-symbol-value pgs-setq pgs-set pgs-floor
                  pgs-setq-nil pgs-setq-t pgs-setq-keyword
-                 pgs-setq-constant pgs-set-constant pgs-let pgs-lexical))
+                 pgs-setq-constant pgs-set-constant pgs-let pgs-lexical
+                 pgs-plain-get))
     (nelisp--fx-register name)))
 (defvar pgs-count 0)
 (defun pgs-result (name thunk)
@@ -53,12 +54,85 @@
 ;; A second invocation proves warmed calls behave identically.
 (pgs-result 'warm (lambda () (list (pgs-setq 71) (pgs-set 72) (pgs-get)
                                   (pgs-symbol-value) (pgs-floor))))
+(pgs-result 'watcher-api
+            (lambda ()
+              (list (add-variable-watcher 'pgs-global #'pgs-watch)
+                    (add-variable-watcher 'pgs-global #'pgs-watch)
+                    (get-variable-watchers 'pgs-global)
+                    (remove-variable-watcher 'pgs-global #'pgs-watch)
+                    (get-variable-watchers 'pgs-global))))
+(pgs-result 'watcher-bind
+            (lambda ()
+              (setq pgs-events nil)
+              (add-variable-watcher 'pgs-global #'pgs-watch)
+              (unwind-protect
+                  (list (pgs-watched-bind) (pgs-get) (reverse pgs-events))
+                (remove-variable-watcher 'pgs-global #'pgs-watch))))
+(pgs-result 'watcher-unbound
+            (lambda ()
+              (setq pgs-events nil)
+              (add-variable-watcher 'pgs-global #'pgs-watch)
+              (unwind-protect
+                  (progn (makunbound 'pgs-global)
+                         (list (boundp 'pgs-global) (reverse pgs-events)))
+                (remove-variable-watcher 'pgs-global #'pgs-watch)
+                (set 'pgs-global 72))))
+(pgs-result 'watcher-plain-unlet
+            (lambda ()
+              (setq pgs-events nil)
+              (add-variable-watcher 'pgs-plain #'pgs-watch)
+              (unwind-protect
+                  (list (pgs-watched-plain) pgs-plain (reverse pgs-events))
+                (remove-variable-watcher 'pgs-plain #'pgs-watch))))
+(pgs-result 'watcher-local
+            (lambda ()
+              (setq pgs-events nil)
+              (let ((b (generate-new-buffer "pgs-watched-buffer")))
+                (unwind-protect
+                    (with-current-buffer b
+                      (make-local-variable 'pgs-global)
+                      (add-variable-watcher 'pgs-global #'pgs-watch)
+                      (pgs-set 81)
+                      (list (default-value 'pgs-global) (reverse pgs-events)))
+                  (remove-variable-watcher 'pgs-global #'pgs-watch)
+                  (kill-buffer b)))))
+(pgs-result 'watcher-cancel
+            (lambda ()
+              (add-variable-watcher 'pgs-global #'pgs-watch-fail)
+              (unwind-protect
+                  (list (condition-case e (pgs-set 99) (error e)) (pgs-get))
+                (remove-variable-watcher 'pgs-global #'pgs-watch-fail))))
+(pgs-result 'fresh-local-void
+            (lambda ()
+              (setq pgs-events nil)
+              (add-variable-watcher 'pgs-local-void #'pgs-watch)
+              (let ((b (generate-new-buffer "pgs-void-buffer")))
+                (unwind-protect
+                    (list (with-current-buffer b
+                            (make-local-variable 'pgs-local-void)
+                            (list (boundp 'pgs-local-void)
+                                  (local-variable-p 'pgs-local-void)
+                                  (default-boundp 'pgs-local-void)
+                                  (set 'pgs-local-void 85)
+                                  (symbol-value 'pgs-local-void)
+                                  (default-boundp 'pgs-local-void)))
+                          (boundp 'pgs-local-void) (reverse pgs-events))
+                  (remove-variable-watcher 'pgs-local-void #'pgs-watch)
+                  (kill-buffer b)))))
+(pgs-result 'watcher-alias
+            (lambda ()
+              (setq pgs-events nil)
+              (add-variable-watcher 'pgs-watched-alias #'pgs-watch)
+              (unwind-protect
+                  (progn (defvaralias 'pgs-watched-alias 'pgs-global)
+                         (reverse pgs-events))
+                (remove-variable-watcher 'pgs-watched-alias #'pgs-watch))))
 (when (and (equal (getenv "PG_MODE") "vm")
            (boundp 'nelisp--fx-table))
   (princ (format "PG-COVERAGE %S\n"
                  (mapcar (lambda (name)
                            (cons name (vectorp (gethash (nthcdr 3 (symbol-function name))
                                                         nelisp--fx-table))))
-                         '(pgs-get pgs-symbol-value pgs-setq pgs-set)))))
+                      '(pgs-get pgs-symbol-value pgs-setq pgs-set pgs-plain-get)))))
 (princ (format "PG-COMPLETE %d\n" pgs-count))
 (kill-emacs 0)

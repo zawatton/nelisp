@@ -107,9 +107,16 @@
     ;; this frame-miss path; a lexical (frame-hit) `setq' never needed it.
     ;; Arity 4 (even) ✓.
     (defun nelisp_env_setv_mirror_lazy (mirror-ptr name-ptr val-ptr unbound-ptr)
-      (let ((scratch (alloc-bytes 32 8)))
-        (and (extern-call nl_env_build_scratch val-ptr unbound-ptr scratch)
-             (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0))))
+      ;; Existing entries need neither the insertion vector nor its box.
+      ;; Keep the same worker mutation guard on both update and insert.
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            (let ((scratch (alloc-bytes 32 8)))
+              (and (extern-call nl_env_build_scratch val-ptr unbound-ptr scratch)
+                   (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0)))
+          (if (= (extern-call nl_thread_mirror_mutation_guard mirror-ptr name-ptr) 1)
+              1
+            (seq (record-slot-set entry 0 val-ptr) 0)))))
 
     ;; On a frame miss, route an existing alias to its canonical variable.
     ;; SCRATCH-PTR=0 selects the lazy mirror writer; nonzero preserves the
