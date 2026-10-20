@@ -14384,7 +14384,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            (if (= entry 0) 0
                                              (seq
                                               (setq address (alloc-bytes 8 8))
-                                              (setq rc (nelisp_env_variable_canonicalize mirror frames entry arg1 address 0))
+                                              (setq rc (nelisp_env_variable_canonicalize env (+ env 32) entry arg1 address 0))
                                               (if (= rc 0) (wf_bytecode_copy payload (heap-read-u64 address 0))
                                                 (if (= rc 3) (setq rc 0) 0))))
                                            ;; Constants, identity-symbol keys,
