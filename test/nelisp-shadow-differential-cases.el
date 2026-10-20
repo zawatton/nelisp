@@ -765,6 +765,17 @@
        (format "%x %X %o %i" 255 255 8 -3)
        (format "%s|%s|%s|%s" 1.5 'sym '(1 a) nil)
        (format "%s extra" "a" "b"))
+ ;; Repeated groups retain their continuation while trying alternatives.
+ (let ((case-fold-search nil))
+   (mapcar (lambda (row)
+             (let ((hit (string-match (car row) (cadr row))))
+               (list hit (and hit (match-data t)))))
+           '(("\\(ab\\|a\\)*b" "ab")
+             ("\\(ab\\|a\\)+b" "ab")
+             ("\\(ab\\|a\\)?b" "b")
+             ("\\(ab\\|a\\)\\{1,2\\}b" "ab")
+             ("\\(\\(a\\|b\\)*\\)\\2" "ab")
+             ("\\(a\\|b\\)*\\1" "abb"))))
  ;; The regexp engine: shy groups, explicit numbering, word boundaries,
  ;; non-greedy quantifiers, folding, and \N in a replacement.
  (list (string-match "\\(?:x+\\)" "xxab")

@@ -1417,6 +1417,20 @@ one, which would demote them to the interpreter)."
 (defun nlre--greedy-suffix-plan-match (plan string start n)
   "Return the rightmost finite suffix match for greedy-dot PLAN."
   (when (= start 0)
+    (let ((single (aref plan 5)))
+      ;; A single finite suffix needs neither bucket lookup nor candidate
+      ;; merging.  Custom canonical tables retain the general path below.
+      (if (and (null (cdr single))
+               (or (not (aref plan 2)) (null nlre--translate-table)))
+          (let* ((entry (car single)) (text (car entry))
+                 (pos (- n (length text))))
+            (when (and (>= pos 0)
+                       (or (eq pos (nlre--literal-search text string pos))
+                           (and (aref plan 2)
+                                (nlre--folded-text-equal-at-p text string pos n)))
+                       (let ((newline (nlre--literal-search "\n" string 0)))
+                         (or (null newline) (>= newline pos))))
+              (cons pos (cdr entry))))
     (let* ((fold (aref plan 2))
            (fast-fold (and fold (aref plan 8)
                            (null nlre--translate-table)))
@@ -1470,7 +1484,7 @@ one, which would demote them to the interpreter)."
                          (eq pos (nlre--literal-search text string pos)))))
             (setq hit (cons pos variant))))
         (setq xs (cdr xs)))
-      hit)))
+      hit)))))
 
 ;; PLAN is [:atom NODE] (see `nlre--single-atom-node').  `nlre--fold' is
 ;; already dynamically bound by `nlre-string-match' for the whole call, so
@@ -1574,8 +1588,8 @@ Return end-pos or nil."
        ;; when that fails -- the mirror image of `nlre--match-star'.
        ((eq tag :lazystar)
         (or (nlre--match-list rest s pos n)
-            (let ((p2 (nlre--match-one (nth 1 nd) s pos n)))
-              (and p2 (> p2 pos) (nlre--match-list (cons nd rest) s p2 n)))))
+            (nlre--match-list
+             (cons (nth 1 nd) (cons (list :repeat-next pos nd) rest)) s pos n)))
        ((eq tag :lazyplus)
         (nlre--match-list
          (cons (nth 1 nd) (cons (list :lazystar (nth 1 nd)) rest)) s pos n))
@@ -1614,6 +1628,13 @@ Return end-pos or nil."
             r)))
        ((eq tag :seq)
         (nlre--match-list (append (nth 1 nd) rest) s pos n))
+       ((eq tag :repeat-next)
+        ;; Keep the repetition's continuation inside its group's search.
+        ;; A failed continuation can then revisit an earlier alternative,
+        ;; and savestart/saveend unwind captures on that same path.  An
+        ;; empty iteration may capture, but cannot start another iteration.
+        (nlre--match-list (if (> pos (nth 1 nd)) (cons (nth 2 nd) rest) rest)
+                          s pos n))
        (t ;; plain atom
         (let ((p2 (nlre--match-atom1 nd s pos n)))
           (and p2 (nlre--match-list rest s p2 n))))))))
@@ -1625,8 +1646,8 @@ Return end-pos or nil."
 
 (defun nlre--match-star (x rest s pos n)
   "Greedy star of atom/group X then REST."
-  (or (let ((p2 (nlre--match-one x s pos n)))
-        (and p2 (> p2 pos) (nlre--match-star x rest s p2 n)))
+  (or (nlre--match-list
+       (cons x (cons (list :repeat-next pos (list :star x)) rest)) s pos n)
       (nlre--match-list rest s pos n)))
 
 (defun nlre--match-one (x s pos n)
@@ -1901,6 +1922,9 @@ of STRING.  Sets `nlre--match-data' as usual."
   "Return flattened match data for the last NeLisp regexp match."
   (when nlre--last-caps
     (let ((i 0) (n (length nlre--last-caps)) (out nil) (reuse-values reuse))
+      ;; GNU omits unmatched groups beyond the last participating group.
+      (while (and (> n 1) (null (aref nlre--last-caps (1- n))))
+        (setq n (1- n)))
       (while (< i n)
         (let ((span (aref nlre--last-caps i)))
           (dolist (pos (if span (list (car span) (cdr span)) '(nil nil)))

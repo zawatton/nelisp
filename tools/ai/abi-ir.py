@@ -158,15 +158,15 @@ def pattern_profiles(candidate, baseline, gnu):
     patterns = [r"\`\(.*\)\(\)\'", r"\`\(.*\)\(\.el\)\'",
                 r"\`\(.*\)\(\.so\|\.elc\|\.elc\.gz\|\.el\|\.el\.gz\)\'", "file"]
 
-    def gnu_one(directory):
-        profile = directory / "gnu.cg"
-        with (directory / "gnu.out").open("w") as out, (directory / "gnu.err").open("w") as err:
+    def gnu_one(directory, layout):
+        profile = directory / f"gnu-{layout}.cg"
+        with (directory / f"gnu-{layout}.out").open("w") as out, (directory / f"gnu-{layout}.err").open("w") as err:
             result = subprocess.run(["valgrind", "--tool=callgrind", "--error-exitcode=97",
                                      f"--callgrind-out-file={profile}", str(Path(gnu).resolve()),
                                      "-Q", "--batch", "-l", str(directory / "regex.el")],
-                                    cwd=ROOT, env=dict(os.environ, TMPDIR=str(directory)),
+                                    cwd=ROOT, env=dict(os.environ, TMPDIR=str(directory), ABI_LAYOUT_PAD="x" * layout),
                                     stdout=out, stderr=err, timeout=580)
-        if result.returncode or "ABI-REGEX 6000" not in (directory / "gnu.out").read_text():
+        if result.returncode or "ABI-REGEX 6000" not in (directory / f"gnu-{layout}.out").read_text():
             raise RuntimeError(f"incomplete GNU instruction profile: {directory}")
         total = next((int(line.split()[1]) for line in profile.read_text().splitlines()
                       if line.startswith("summary:")), 0)
@@ -192,19 +192,29 @@ def pattern_profiles(candidate, baseline, gnu):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         jobs = {}
         for index, directory in enumerate(directories):
-            for who, binary in (("base", baseline), ("cand", candidate)):
-                jobs[index, who] = pool.submit(run_one, directory, "regex", who,
-                                                Path(binary).resolve(), 0)
-            jobs[index, "gnu"] = pool.submit(gnu_one, directory)
+            for layout in LAYOUTS["regex"]:
+                for who, binary in (("base", baseline), ("cand", candidate)):
+                    jobs[index, layout, who] = pool.submit(
+                        run_one, directory, "regex", who, Path(binary).resolve(), layout)
+                jobs[index, layout, "gnu"] = pool.submit(gnu_one, directory, layout)
         for index, pattern in enumerate(patterns):
-            row = {"pattern": pattern}
+            row = {"pattern": pattern, "samples": []}
+            for layout in LAYOUTS["regex"]:
+                sample = {"layout": layout}
+                for who in ("base", "cand", "gnu"):
+                    instructions, cycles = jobs[index, layout, who].result()
+                    if cycles < 10:
+                        raise RuntimeError(f"missing GC work: {index} {layout} {who}")
+                    sample[who] = instructions
+                directory = directories[index]
+                if ((directory / f"regex-base-{layout}.out").read_bytes()
+                        != (directory / f"regex-cand-{layout}.out").read_bytes()):
+                    raise RuntimeError(f"different pattern outputs: {index} {layout}")
+                row["samples"].append(sample)
             for who in ("base", "cand", "gnu"):
-                instructions, cycles = jobs[index, who].result()
-                if cycles < 10:
-                    raise RuntimeError(f"missing GC work: {index} {who}")
-                row[who] = instructions
+                row[who] = sum(sample[who] for sample in row["samples"]) / len(LAYOUTS["regex"])
             rows.append(row)
-            print(f"pattern {index}: base {row['base']} cand {row['cand']} GNU {row['gnu']} Ir", flush=True)
+            print(f"pattern {index}: base {row['base']:.2f} cand {row['cand']:.2f} GNU {row['gnu']:.2f} Ir (four-layout mean)", flush=True)
     identities = {who: {"path": str(Path(binary).resolve()),
                          "sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest()}
                   for who, binary in (("base", baseline), ("cand", candidate), ("gnu", gnu))}
