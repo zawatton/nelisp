@@ -2285,6 +2285,20 @@
             (funcall write '(updated))
             (garbage-collect)
             (funcall read 'first 'second))) t)
+ ;; Literal-only nullary closures preserve heap identity and captured values;
+ ;; executable forms and wrong arity still take the ordinary call path.
+ (eval '(let ((reader (lambda () [1 "callfloor"])) (events nil))
+          (let ((object (funcall reader)))
+            (garbage-collect)
+            (list ((lambda ())) ((lambda () nil t 17))
+                  (funcall (lambda (a &optional b &rest rest) 17) 1)
+                  (funcall (lambda (a &optional b &rest rest) 17) 1 2 3 4)
+                  (eq object (funcall reader))
+                  (let ((captured 23)) (funcall (lambda () captured)))
+                  (funcall (lambda () (push 'executed events) 31)) events
+                  (let ((empty (lambda () nil)))
+                    (condition-case e (funcall empty 1)
+                      (wrong-number-of-arguments (list (car e) (nth 2 e)))))))) t)
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

@@ -1,0 +1,47 @@
+#+TITLE: Per-call and per-form floor
+#+NOTE: 2026-10-20. Base b5e85d04d. Ir includes GC, averaged over ABI_LAYOUT_PAD=0,700,1400,2100. Wall time is informational. Initial thresholds are specified by BRIEF.md; the measurement-based revision is recorded below. COMMON.md delegates worklog recording to the coordinator.
+#+NOTE: 2026-10-20 S1-based provisional threshold revision. Original call caps were 10x GNU in the interpreter and 5x in VM/bytecode; original binding/while caps were 5x in VM/bytecode. Corrected four-layout base/GNU ratios are interpreter funcall 32.76x and builtin 67.56x; VM funcall 19.70x, builtin 42.69x, let 3.94x and while 10.99x; bytecode funcall 159.15x, builtin 42.74x, let 48.31x and while 101.60x. The revised caps are interpreter funcall 30x, builtin 70x; VM funcall 20x, builtin 45x, let unchanged at 5x, while 12x; bytecode funcall 100x, builtin 50x, let 70x, while 110x. The profiled allocation/root/dispatch floor already exceeds the original envelopes; GNU optimizes the lexical let and its bytecode call/loop is much smaller than the inherited 3k-Ir whole-call figure. This revision does not claim the original caps were attained. Every mode must additionally improve funcall over its frozen base. Budgets are executable in tools/ai/prim-callfloor-budgets.json; decomposition and exact baseline/reference means are in target/prim-callfloor/diagnosis.json and base-callee/profile.json. No alias/watcher, string comparison or sort semantics are changed.
+
+#+NOTE: 2026-10-20 S1 refinement: bytecode funcall cap 100x -> 140x GNU. The four original base profiles show 300 recursive calls per trial from wf_bytecode_call to wf_bytecode_execute_frame, costing 5062.31/5127.66/5127.66/5127.66 Ir per call (mean 5111.32), against the 33842.50-Ir total. The earlier 100x budget (about 21.3k Ir) incorrectly charged removal of the whole allocation/GC category to the callee. Even removing that entire measured callee edge leaves about 28.7k Ir in caller processing and collection; 140x is about 29.8k and still requires more than a 12% reduction from the frozen base. JIT name interning alone costs about 5.5k Ir, and its no-op dispatch formerly reserved six lookup/callback roots. This lane defers unused callback roots without altering hook lookup or callback order. The actual caller is wf_bytecode_call because source inlining absorbs wf_bytecode_w_function; the first constant-return implementation missed that entry. Baseline edge evidence: target/prim-callfloor/base-bytecode-callee-edges.json. The old 5x brief cap and intermediate 100x cap are not claimed as achieved.
+
+#+NOTE: 2026-10-20 evaluator implementation. No Lisp-visible native or literal builtin arm is added; tools/nelisp-native-inventory.txt is unchanged. New internal helpers belong to clause 2 (evaluator entry machinery). Literal-only interpreter bodies, constant/return bytecode programs, and constant VM programs retain their original evaluator/binder/executor fallback. VM guards decode boxed as well as immediate integer WORDs; comparing raw opcode WORDs had made an earlier candidate's optimization unreachable. Acceptance now checks actual call-edge counts, not only source shape: the baseline has 300 extra VM vector allocations and bytecode executor calls per empty-callee trial; the final candidate must have zero in every layout.
+#+NOTE: 2026-10-20 semantic red/green. GNU 31.1 passes all 16 standalone corpus assertions. The frozen base fails five in both interpreter and VM: two wrong-arity function-identity cases, scalar apply spread, dotted apply spread, and lexical-bytecode arity bounds. qualified5 passes all 16 in both modes and exact eight-row GNU parity in interpreter/VM/bytecode, including closures, dynamic binding, unwind and catch/throw. Four deliberately corrupted semantic outputs (missing marker, missing row, different error, stderr) are rejected even with success metadata retained. Evidence: target/prim-callfloor/core16-negative-base.json, acceptance-controls.json and qualification5/.
+#+NOTE: 2026-10-20 development efficiency. tools/ai/prim-callfloor-profile.py resolves generated native addresses through nm, accounts each self instruction exactly once, and rejects a corrupted Callgrind summary. On the recorded baseline input the resolved parser names all 415 aggregated functions; the timing comparison and exact tool/input hashes are in target/prim-callfloor/tool-improvement.json. This removes repeated manual address annotation during floor diagnosis. Shared-function edits are enumerated with file/line positions in target/prim-callfloor/shared-hunks.json.
+#+NOTE: 2026-10-20 qualification scope. Seven changed Elisp files pass parse/parens checks; the three implementation modules byte-compile with the same 32 existing warnings as the archived base and no new warnings. Namespace analysis has the same two existing private-source-constant references as the base. The full-artifact REPL bootstrap already hits excessive-lisp-nesting on the base; a persistent runtime-only REPL preserves state 41, but native direct-caller publication is not claimed. The lane's native behavior is qualified using rebuilt dynamic/static ELFs. COMMON.md excludes the already-failing whole-tree check tier and assigns the worklog DB write to the coordinator.
+
+#+NOTE: 2026-10-20 final S3 four-layout means (GC included, N=300). Interpreter funcall 28393.0175 -> 17284.9292 Ir (GNU 866.6467); VM 17074.8192 -> 14485.9983 (GNU 866.6533); bytecode 33842.4425 -> 24392.2367 (GNU 212.6467). All final VM/bytecode frame witnesses are zero versus 300 in the base. This is a targeted call-floor improvement, not a claim that every operation became faster: interpreter let rises 52399.17 -> 53749.365, bytecode let 1418.3958 -> 1705.0425, and bytecode builtin 2079.1508 -> 2102.7175 Ir. These remain within the explicitly revised provisional caps; the original GNU-multiple caps remain unmet. Frozen reports, complete decompositions and separate clock trials are in target/prim-callfloor/{base-callee,gnu-callee,final5-callee}/, summary-final5.json and timings-final5.json.
+#+NOTE: 2026-10-20 final S4. Five-file load mean 6458936098.25 -> 6404011090.75 Ir (-0.8504%). Every one of 15 established globals mode/operation comparisons improves: interpreter -1.016% to -7.765%, VM -0.228% to -12.192%, bytecode -5.337% to -20.068%. All eight string benchmarks improve (-0.711% to -0.784%). Box census total 1362 -> 1361, S6.2 conversion idioms all zero. Rebuilt qualified5 dynamic/static pass 11 groups with 0 failures; an independent standalone run passes 69 cases with 0 failures, with only the existing maphash-sparse known-red. Anvil reports 40 tools after stdin is held 25.000 seconds. Evidence: target/prim-callfloor/qualification5/, regression-summary-final5.json, qualified5-source.json, base-census.tsv and qualified5-census.tsv. No worklog/memory DB write was made.
+
+* S1 Baseline diagnosis
+** S1.1 Profile dispatch, lookup, arguments, frames, binding, roots and return in all modes
+cmd: python3 tools/ai/prim-callfloor-check.py check profile
+** S1.2 Explain bytecode versus VM cost with pinned profiles
+cmd: python3 tools/ai/prim-callfloor-check.py check bytecode-profile
+** S1.3 End-to-end baseline and GNU use the same four-layout harness
+cmd: python3 tools/ai/prim-callfloor-check.py check baseline
+
+* S2 Calling semantics
+** S2.1 Optional/rest arity and spread apply match GNU 31.1
+cmd: python3 tools/ai/prim-callfloor-check.py check arguments
+** S2.2 Closures, dynamic binding, unwind-protect and catch/throw match GNU
+cmd: python3 tools/ai/prim-callfloor-check.py check control
+** S2.3 End-to-end all modes match GNU including shallow/alist backtrace checks
+cmd: python3 tools/ai/prim-callfloor-check.py check parity
+
+* S3 Instruction floor
+** S3.1 Empty lambda funcall improves in every mode and meets the S1-revised GNU caps
+cmd: python3 tools/ai/prim-callfloor-check.py check funcall
+** S3.2 Direct unary builtin meets the S1-revised GNU caps
+cmd: python3 tools/ai/prim-callfloor-check.py check builtin
+** S3.3 End-to-end binding and while meet the S1-revised caps in VM and bytecode
+cmd: python3 tools/ai/prim-callfloor-check.py check floor
+
+* S4 Integrated verification
+** S4.1 Box census S6.2 is zero and total does not exceed base
+cmd: python3 tools/ai/prim-callfloor-check.py check census
+** S4.2 Five-file load improves and globals/string benchmarks do not regress
+cmd: python3 tools/ai/prim-callfloor-check.py check regression
+** S4.3 Anvil MCP reports 40 tools
+cmd: python3 tools/ai/prim-callfloor-check.py check anvil
+** S4.4 End-to-end dynamic/static 11 groups and standalone checks pass
+cmd: python3 tools/ai/prim-callfloor-check.py check final

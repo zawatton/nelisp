@@ -15377,11 +15377,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (let* ((mark (nl_root_mark env))
                (name-buf (alloc-bytes 40 8))
                (name-slot (nl_root_reserve env))
-               (fn-slot (nl_root_reserve env))
-               (arglist (nl_root_reserve env))
-               (tail (nl_root_reserve env))
-               (result (nl_root_reserve env))
-               (nil-slot (nl_root_reserve env))
+               ;; An unbound JIT hook needs only its lookup roots. Callback
+               ;; argument/result slots are reserved after a callable is found.
+               (fn-slot 0) (arglist 0) (tail 0) (result 0) (nil-slot 0)
                (status 2))
           (seq
            (ptr-write-u64 name-buf 0 7074434230661178734)
@@ -15389,16 +15387,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (ptr-write-u64 (+ name-buf 16) 0 7959393454808918378)
            (ptr-write-u64 (+ name-buf 24) 0 8316288333054306676)
            (ptr-write-u64 (+ name-buf 32) 0 448345170288)
-           (wf_write_nil tail)
            (if (/= (nl_intern_lookup name-buf 37 name-slot) 0)
                (seq
+                (setq fn-slot (nl_root_reserve env))
                 (let* ((mirror (+ env 0))
                        (unbound (+ env 64))
                        (lookup (nelisp_env_lookup_function mirror unbound name-slot fn-slot)))
                   (if (= lookup 0)
                       (if (= (wf_bytecode_jit_dispatch_active_p env) 0)
                           (let* ((rc 2)
-                                 (call-result nil-slot))
+                                 (call-result
+                                  (seq (setq arglist (nl_root_reserve env))
+                                       (setq tail (nl_root_reserve env))
+                                       (setq result (nl_root_reserve env))
+                                       (setq nil-slot (nl_root_reserve env))
+                                       (wf_write_nil tail) nil-slot)))
                             ;; Reuse three already published roots as callback
                             ;; arguments. The fourth root owns its result; the
                             ;; original caller frame and function stay live.
@@ -15478,13 +15481,36 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (wf_bytecode_execute_frame
-                         (nl_record_slot_word func 1)
-                         (nl_record_slot_word func 2)
-                         (wf_bytecode_w_int (nl_record_slot_word func 3))
-                         env out 0 argc maxargs rest frame 0 0 0)))))))))))
+                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
+                          (if (/= literal 2) (seq (wf_bytecode_w_load out literal) 0)
+                            (wf_bytecode_execute_frame
+                             (nl_record_slot_word func 1)
+                             (nl_record_slot_word func 2)
+                             (wf_bytecode_w_int (nl_record_slot_word func 3))
+                             env out 0 argc maxargs rest frame 0 0 0)))))))))))))
     (defun wf_bytecode_function (func args env out)
       (nl_abi_word_to_rc (wf_bytecode_function_w func args env 0) out))
+    (defun wf_bytecode_literal_value_w (func _pad)
+      ;; A nullary constant/return program cannot observe an operand or
+      ;; binding frame. Call only after the ordinary JIT callback and arity
+      ;; checks, so code and constants are read after any callback reentry.
+      (if (and (>= (record-slot-count func) 4)
+               (= (nl_val_tag (nl_record_slot_word func 0)) 2)
+               (= (wf_bytecode_w_int (nl_record_slot_word func 0)) 0)
+               (= (nl_val_tag (nl_record_slot_word func 3)) 2)
+               (>= (nl_word_payload (nl_record_slot_word func 3)) 1)
+               (<= (nl_word_payload (nl_record_slot_word func 3)) 131063))
+          (let* ((code (nl_record_slot_word func 1))
+                 (constants (nl_record_slot_word func 2)))
+            (if (and (= (m5_string_tag_p (sexp-tag code)) 1)
+                     (= (sexp-tag constants) 8) (= (m5_strlen code) 2))
+                (let* ((opcode (m5_byte_at code 0)) (index (- opcode 192)))
+                  (if (and (>= opcode 192) (= (m5_byte_at code 1) 135)
+                           (< index (vector-len constants)))
+                      (nl_vector_slot_word constants index)
+                    2))
+              2))
+        2))
     (defun wf_bytecode_function_w (func args env _pad)
       ;; The VM publishes its result WORD in a rooted vector. OUT is only
       ;; error/JIT scratch; no physical result is decoded at this boundary.
@@ -15513,12 +15539,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (nl_abi_fail (bf_wrong_number_of_args (bf_subr_arity_name func env) argc) 0)
-                        (let* ((rc (wf_bytecode_execute_frame
+                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
+                         (if (/= literal 2) literal
+                          (let* ((rc (wf_bytecode_execute_frame
                                    (nl_record_slot_word func 1)
                                    (nl_record_slot_word func 2)
                                    (wf_bytecode_w_int (nl_record_slot_word func 3))
                                    env out args argc maxargs rest 0 0 outw 0)))
-                          (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
+                           (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))))
           (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
               (let* ((shape (wf_bytecode_arglist_shape dw 0 0 0)))
                 (if (< shape 0)
@@ -15779,12 +15807,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (wf_bytecode_execute_frame
-                         (nl_record_slot_word func 1)
-                         (nl_record_slot_word func 2)
-                         (wf_bytecode_w_int (nl_record_slot_word func 3))
-                         env out 0 argc maxargs rest 0
-                         (+ mem (* first 8)) outw 0)))))))))))
+                        (let* ((literal (wf_bytecode_literal_value_w func 0)))
+                          (if (/= literal 2) (seq (ptr-write-u64 outw 0 literal) 0)
+                            (wf_bytecode_execute_frame
+                             (nl_record_slot_word func 1)
+                             (nl_record_slot_word func 2)
+                             (wf_bytecode_w_int (nl_record_slot_word func 3))
+                             env out 0 argc maxargs rest 0
+                             (+ mem (* first 8)) outw 0)))))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
       ;; Dynamic-binding bytecode: the callee activation binds FORMALS to the
       ;; argument words itself (`wf_bytecode_w_bind_formals').
@@ -16053,8 +16083,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= roots 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
           (seq
-         (while (<= i depth)
-           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
+         ;; nl_alloc_vector already initialized every stack/result WORD to nil.
          (ptr-write-u64 roots 0 8)
          (ptr-write-u64 (+ roots 8) 0 vbox)
          (if (and (= done 0) (> initial-slots depth))
@@ -18447,7 +18476,34 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (m5_fx_run_done (m5_fx_run_body code nlocals env out args nparams argw wout) env rec)))))
     (defun m5_fx_run_done (st env rec)
       (seq (ptr-write-u64 (+ env 96) 0 rec) st))
+    (defun nl_n4_exit_debug_active_p (env _pad)
+      (let* ((state (ptr-read-u64 env 176)))
+        (if (= state 0) 0
+          (let* ((depth (ptr-read-u64 state 0)))
+            (if (= depth 0) 0
+              (if (/= (ptr-read-u64 (nl_n4_record state (- depth 1)) 120) 0) 1 0))))))
+    (defun m5_fx_literal_w (code _pad)
+      ;; ENTRY-CHECK, CONST, RETURN. Keep the entry guard and read the
+      ;; constant afterwards; no frame, allocation or callback is observable.
+      (if (and (= (vector-len code) 6)
+               (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 17)
+               (= (wf_bytecode_w_int (nl_vector_slot_word code 2)) 1)
+               (= (wf_bytecode_w_int (nl_vector_slot_word code 4)) 0)
+               (= (nl_val_tag (nl_vector_slot_word code 5)) 2)
+               (> (nl_word_payload (nl_vector_slot_word code 5)) 0))
+          (if (and (= (nl_n4_exit_debug_active_p _pad 0) 0)
+                   (= (m5_fx_entry_check (nl_vector_slot_word code 1) _pad) 0))
+              (nl_vector_slot_word code 3) 2)
+        2))
     (defun m5_fx_run_body (code nlocals env out args nparams argw wout)
+     ;; The record dispatcher already checked required/optional/rest arity.
+     ;; A constant program reads no parameter, so its unused local/rest
+     ;; storage is elidable too. Exit debugging retains the complete frame.
+     (let* ((literal (if (and (>= nlocals 0) (>= nparams 0))
+                         (m5_fx_literal_w code env) 2)))
+      (if (/= literal 2)
+          (seq (if (= wout 0) (nl_abi_word_to_rc literal out)
+                 (ptr-write-u64 wout 0 literal)) -1)
       ;; Negative NLOCALS is reserved for compiler-lowered whole functions.
       ;; Ordinary VM calls pay one integer branch, with no extra call or
       ;; instruction decode. Keep the existing recursion guard around both.
@@ -18476,8 +18532,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (resw (+ stk (* stksize 8)))
              (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
         (seq
-         (while (< i nwords)
-           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
+         ;; nl_alloc_vector already initialized every local/stack/result WORD.
          (ptr-write-u64 vslot 0 8)
          (ptr-write-u64 (+ vslot 8) 0 vbox)
          (ptr-write-u64 (+ vslot 16) 0 0)
@@ -18581,7 +18636,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed.
-         status))))
+         status))))))
 ;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.  SCRATCH is
@@ -23316,14 +23371,45 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (let* ((name (bf_subr_arity_name body env)))
                (if (= (sexp-tag name) 4)
                    (cons-set-car 268435512 name)
-                 0))
+                 ;; The binder has not entered the body. Its activation still
+                 ;; identifies the actual closure, including anonymous calls.
+                 ;; GNU reports that closure, rather than the symbol lambda.
+                 (let* ((state (ptr-read-u64 env 176))
+                        (depth (if (= state 0) 0 (ptr-read-u64 state 0))))
+                   (if (> depth 0)
+                       (let* ((frame (nl_n4_record state (- depth 1)))
+                              (kind (sexp-tag frame))
+                              (mark (nl_root_mark env))
+                              (symbol-root (if (or (= kind 4) (= kind 16))
+                                               (nl_root_reserve_checked env) 0))
+                              (function
+                               (if (= symbol-root 0) frame
+                                 (seq (wf_word_store_out symbol-root frame)
+                                      (nelisp_env_lookup_function_w
+                                       env (+ env 64) symbol-root 0)))))
+                         (nl_root_release env mark)
+                         (if (and (> function 4096) (= (sexp-tag function) 7))
+                             (cons-set-car 268435512 function) 0))
+                     0))))
            0)
          1)))
     (defun bf_wrong_number_of_args (name argc)
       (let* ((wbuf (alloc-bytes 32 1))
              (count (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
-             (data-tail (alloc-bytes 32 8)))
+             (data-tail (alloc-bytes 32 8))
+             ;; GNU 31's lexical bytecode arity errors carry (MIN . MAX).
+             ;; Dynamic bytecode retains its argument-list function object.
+             (reported
+              (if (= (sexp-tag name) 17)
+                  (let* ((descriptor (nl_record_slot_word name 0)))
+                    (if (= (nl_val_tag descriptor) 2)
+                        (let* ((template (nl_word_payload descriptor)))
+                          (nelisp_cons_construct_w
+                           (wf_write_int_w 0 (logand template 127))
+                           (wf_write_int_w 0 (/ template 256)) 0))
+                      name))
+                name)))
         (seq
          (ptr-write-u64 wbuf 0 8461750672133419639)
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
@@ -23333,7 +23419,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct name data-tail 268435512)
+         (nelisp_cons_construct reported data-tail 268435512)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
          1)))
@@ -41713,15 +41799,15 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
              (depth (sar (nelisp_frame_slot_raw_word frames 1) 2))
-             (status 0) (scratch (alloc-bytes 32 8)))
+             (status 0))
         (seq
          (if (> depth 0)
              (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0) (- depth 1))))
                (if (= (ptr-read-u64 frame 16) 13109) 0
                  (setq status (nl_n3_pop_names env (nl_record_slot_word frame 1) depth 0))))
            0)
-         (wf_write_nil scratch)
-         (nelisp_frame_pop frames scratch)
+         ;; WORD pop writes nil/depth directly; the legacy scratch is unused.
+         (nelisp_frame_pop frames 0)
          (if (= status 0) 1 -1))))
     (defun nl_n3_globals_mode (args env out)
       (let* ((value (nl_apply_list_nth args 2)))
@@ -43152,11 +43238,14 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   (wf_word_store_out function-root function)
                   (let* ((rest (nl_cons_cdr_word input))
                          (head (nl_apply_list_init_w rest prefix))
-                         (tail (nl_apply_list_last_word rest))
-                         (joined (nl_apply_list_append_w head tail holder)))
-                    (seq
-                     (wf_word_store_out spliced joined)
-                     (nl_n4_named_apply_w (wf_word_view name) function-root spliced env 0)))))))
+                         (tail (nl_apply_list_last_word rest)) (end tail))
+                    (while (= (nl_val_tag end) 7) (setq end (nl_cons_cdr_word end)))
+                    (if (/= (nl_val_tag end) 0)
+                        (nl_abi_fail (bf_wrong_type_listp (wf_word_view end)) 0)
+                      (let* ((joined (nl_apply_list_append_w head tail holder)))
+                        (seq
+                         (wf_word_store_out spliced joined)
+                         (nl_n4_named_apply_w (wf_word_view name) function-root spliced env 0)))))))))
          (seq (nl_root_release env mark) word))))))
 
 (defun nl_apply_do_funcall_w (args env _pad)
