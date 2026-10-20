@@ -1,0 +1,42 @@
+#+TITLE: Regex tramp-handler regression: restore early failure on generated tramp regexps
+
+# Reported by the library census (notes-65, 2026-10-20) on eval/core candidate
+# b93d504eb. The two tramp file-name-handler regexps take 137/92 ms per failed
+# match against an ordinary absolute path (fb54c401f: 2.1/1.7 ms; GNU 31.1:
+# < 0.01 ms). Once tramp is loaded, every find-file-name-handler call pays it:
+# insert-file-contents on a 15 KB file went from 49 ms to 2025 ms, and S1.3
+# with the user's init no longer finishes within 6000 s.
+# Regression range: fb54c401f..6e8214bd2, the regex-speed lane merged by c62d96cc3.
+# Repro: test/regex-tramp-handler-repro.el (from
+# handoff/nelisp-s13-probes_2026-10-18/tramp-regex-slow.el).
+# Env (set by whoever runs the meter):
+#   RT_BIN       dynamic build of HEAD
+#   RT_STATIC    static build of HEAD
+#   RT_OLD_BIN   dynamic build of fb54c401f (pre-regression reference)
+#   RT_CAND_BIN  dynamic build of b93d504eb (regressed candidate)
+
+* S1 Reproduce and locate
+** S1.1 The repro returns nil for both regexps on RT_BIN, RT_OLD_BIN and GNU 31.1
+pending
+** S1.2 The first regressing commit in fb54c401f..6e8214bd2 is identified by per-match Ir, and the lost early-failure mechanism is recorded
+pending
+
+* S2 Fix without losing the regex-speed gains
+** S2.1 Per-match Ir of each tramp regexp on RT_BIN <= RT_OLD_BIN's (callgrind; N-match run minus 0-match run)
+pending
+** S2.2 Real-world corpus (tramp handlers, file-name-handler-alist, the top auto-mode-alist entries, the regex-speed probes): no regexp's per-match Ir on RT_BIN exceeds RT_OLD_BIN's
+pending
+** S2.3 End to end: regex6000 mean Ir over four layouts on RT_BIN <= RT_CAND_BIN's x 1.02; host regex ERT, regexp-backtracking and regex diff tests pass on dynamic and static
+pending
+
+* S3 Delivery
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
+pending
+** S3.2 End to end: the notes-65 library census of the fixed eval/core candidate passes, including S1.3/S5.1/S5.2 within their budgets
+pending
+
+* S4 Toward GNU
+** S4.1 Each tramp regexp fails in at most 0.1 ms per match on RT_BIN (GNU 31.1: < 0.01 ms)
+pending
+** S4.2 End to end: insert-file-contents on a 15 KB file with tramp loaded is at most fb54c401f's 49 ms (library image, notes-65 measurement)
+pending
