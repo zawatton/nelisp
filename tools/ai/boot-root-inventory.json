@@ -9,7 +9,7 @@
     {"name": "private worker reserves", "walker": "nl_gc_mark_thread_roots", "storage": "fresh BSS registry of worker EvalCtx and atomically published top"},
     {"name": "exit tag and value", "walker": "nl_gc_mark_rootstack", "storage": "current arena base +24 and +56; unconditionally traced even after the flag is cleared"},
     {"name": "shared symentry", "walker": "nl_gc_mark_symentry", "storage": "current arena base +872 points at a tagged symbol slot"},
-    {"name": "macro and free-variable caches", "walker": "nl_mxcache_mark_all / nl_fvcache_mark_all", "storage": "fresh BSS table pointers and current epoch; no cache registration is restored from the image"},
+    {"name": "macro and free-variable caches", "walker": "nl_mxcache_mark_all / nl_fvcache_forget_all", "storage": "fresh BSS table pointers and current epoch; free-variable memo rows expire at collection; no cache registration is restored from the image"},
     {"name": "canonical symbol strings", "walker": "nl_gc_symname_mark_roots", "storage": "fresh external sidecar and BSS nil/t symbol slots"},
     {"name": "frame type symbols", "storage": "fresh BSS nl_frame_push_sym0 / nl_frame_push_sym1, repopulated at init; name bytes belong to the permanent intern region"}
   ],

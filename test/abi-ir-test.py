@@ -92,6 +92,39 @@ class ProfileCounterTest(unittest.TestCase):
 
 
 class ProfileCommandTest(unittest.TestCase):
+    def test_explicit_output_keeps_profiles_in_requested_directory(self):
+        def profile(directory, mode, who, binary, layout, cancel=None):
+            stem = directory / f"{mode}-{who}-{layout}"
+            stem.with_suffix(".cg").write_text("fixture\n")
+            stem.with_suffix(".err").write_text("")
+            stem.with_suffix(".out").write_text("ABI-FILES (1000 527500)\n")
+            return 100, 2
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "permanent-evidence"
+            started = time.monotonic()
+            with mock.patch.object(gate.sys, "argv", [
+                    "abi-ir.py", "files", "cand", "base", "--output", str(output)]), \
+                    mock.patch.object(gate, "run_one", side_effect=profile) as jobs, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, gate.main())
+            self.assertEqual(8, jobs.call_count)
+            self.assertTrue(all(call.args[0] == output for call in jobs.call_args_list))
+            self.assertEqual(8, len(list(output.glob("*.cg"))))
+            print(f"EXPLICIT-OUTPUT elapsed={time.monotonic() - started:.6f}s")
+
+    def test_explicit_output_refuses_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            sentinel = output / "retained.cg"
+            sentinel.write_text("keep this evidence")
+            with mock.patch.object(gate.sys, "argv", [
+                    "abi-ir.py", "files", "cand", "base", "--output", str(output)]), \
+                    mock.patch.object(gate, "run_one") as jobs:
+                with self.assertRaises(FileExistsError):
+                    gate.main()
+            jobs.assert_not_called()
+            self.assertEqual("keep this evidence", sentinel.read_text())
+
     def test_command_records_all_layouts_without_forced_collections(self):
         def profile(directory, mode, who, binary, layout, cancel=None):
             stem = directory / f"{mode}-{who}-{layout}"

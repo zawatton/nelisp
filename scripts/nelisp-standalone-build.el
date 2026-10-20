@@ -6028,12 +6028,14 @@ REPL-facing module it feeds."
     ;; formal symbols excluded, keyed by that raw args cons pointer.
     ;;
     ;; Slot layout matches MXCACHE: {args_ptr@0, filter_ptr@8, epoch@16}.  The
-    ;; table is deliberately smaller (4096 slots x 24B = 96 KiB): each live row
-    ;; roots its lambda args tree, and org-mode creates many distinct lambdas.
+    ;; table is deliberately smaller (4096 slots x 24B = 96 KiB): rows refer
+    ;; to lambda args trees, and org-mode creates many distinct lambdas.
     ;; The compaction hazard is identical, so this cache shares
     ;; `nl_mxcache_epoch': `nl_gc_compact' bumps it before relocation, making
-    ;; old pointer-keyed rows invisible.  Mark+sweep roots both key and value
-    ;; for current-epoch rows.  `nl_fvcache_disable_lookup' is toggled by
+    ;; old pointer-keyed rows invisible.  Collection expires these optional
+    ;; memo rows: retaining a key would otherwise keep a dead lambda's whole
+    ;; source tree alive just for its derived symbol filter. Live lambdas
+    ;; rebuild their filters on their next use. `nl_fvcache_disable_lookup' is toggled by
     ;; `(nelisp--debug-switch 17)' and `(nelisp--debug-switch 18)' for cached-vs-raw A/B
     ;; replay checks.
     ;; ===================================================================
@@ -6136,23 +6138,17 @@ REPL-facing module it feeds."
        (ptr-write-u64 (data-addr nl_fx_tbl_cache) 8 (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
        (ptr-write-u64 (data-addr nl_fx_tbl_cache) 0 entry)
        0))
-    (defun nl_fvcache_mark_one (base i epoch)
-      (let* ((slot (+ base (* i 24))))
-        (if (= (ptr-read-u64 (+ slot 16) 0) epoch)
-            (let* ((ap (ptr-read-u64 slot 0)))
-              (if (= ap 0) 0
-                (let* ((fp (ptr-read-u64 (+ slot 8) 0)))
-                  (seq (nl_gc_mark_block ap) (nl_gc_mark_slot ap)
-                       (nl_gc_mark_block fp) (nl_gc_mark_slot fp)))))
-          0)))
-    (defun nl_fvcache_mark_all ()
+    (defun nl_fvcache_forget_all ()
       (let* ((base (ptr-read-u64 (data-addr nl_fvcache_table_base) 0)))
         (if (= base 0) 0
-          (let* ((epoch (ptr-read-u64 (data-addr nl_mxcache_epoch) 0)) (i 0))
+          (let* ((i 0))
             (seq
              (while (< i 4096)
-               (nl_seq2 (nl_fvcache_mark_one base i epoch)
-                        (setq i (+ i 1))))
+               (let* ((slot (+ base (* i 24))))
+                 (ptr-write-u64 slot 0 0)
+                 (ptr-write-u64 (+ slot 8) 0 0)
+                 (ptr-write-u64 (+ slot 16) 0 0))
+               (setq i (+ i 1)))
              0)))))
     ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
     ;; Precise roots are marked first and the conservative stack scan
@@ -6205,7 +6201,7 @@ REPL-facing module it feeds."
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
                                 (nl_seq2 (nl_mxcache_mark_all)
-                                         (nl_seq2 (nl_fvcache_mark_all)
+                                         (nl_seq2 (nl_fvcache_forget_all)
                                                   (nl_gc_conserv_maybe)))))))))))))))) ; bsym + shared symentry + conserv pin
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
@@ -6839,10 +6835,10 @@ REPL-facing module it feeds."
          (nl_seq2 (nl_gc_mark_symentry)
           (nl_seq2 1
            ;; perf/macroexpansion-cache: this collector is ALWAYS mark+sweep
-           ;; (never compact).  Mark cache entries alive here too, or a live
-           ;; cache value with no other root would be freed between iterations.
+           ;; (never compact). Mark macro expansions alive here too; expire
+           ;; the optional free-variable filters instead of rooting dead code.
            (nl_seq2 (nl_mxcache_mark_all)
-            (nl_seq2 (nl_fvcache_mark_all)
+            (nl_seq2 (nl_fvcache_forget_all)
                      (nl_seq2 (nl_gc_symname_mark_roots)
                      (if (if (= mode 0) (= (nl_gc_conserv_maybe) 0) 0)
                          ;; No outer index-mark wrapper here: clear the marks
@@ -11644,7 +11640,7 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
                (nl_aref_cache_invalidate ptr)
                (nl_gc_mark_recorded_contexts) (nl_gc_mark_rootstack)
                (nl_gc_mark_thread_roots) (nl_gc_mark_symentry)
-               (nl_mxcache_mark_all) (nl_fvcache_mark_all)
+               (nl_mxcache_mark_all) (nl_fvcache_forget_all)
                (nl_gc_symname_mark_roots)
                (nl_gc_typed_slot sx tag)
                (ptr-write-u64 st 0 0)
@@ -24950,7 +24946,7 @@ fixed-table shared-library entry point directly from elisp."
                    (plist-get sig :windows-initialize))
           (setq arm
                 `(let ((initrc (extern-call ,(plist-get sig :windows-initialize))))
-                   (if (= initrc 0) ,arm (wf_write_int out initrc)))))
+                   (if (= initrc 0) ,arm (wf_write_int_w 0 initrc)))))
         (setq chain
               `(if (= (sexp-name-eq nm ,sym) 1)
                    ,arm

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Doc 215 total-Ir comparisons; retain profiles and count actual GC sweeps."""
+"""Doc 215 total-Ir comparisons; retain profiles and count actual GC sweeps.
+
+ir/files CAND BASE [--output DIRECTORY] writes directly to a new evidence
+directory when requested. Existing evidence directories are never overwritten.
+"""
 import bisect
 import concurrent.futures
 import hashlib
@@ -217,13 +221,19 @@ def main():
     if len(sys.argv) == 5 and sys.argv[1] == "verify-ir":
         return replay_ir(Path(sys.argv[4]).resolve(), Path(sys.argv[2]).resolve(),
                          Path(sys.argv[3]).resolve())
-    mode, cand, base = sys.argv[1:]
+    if len(sys.argv) not in (4, 6) or (len(sys.argv) == 6 and sys.argv[4] != "--output"):
+        raise ValueError("expected ir/files CAND BASE [--output DIRECTORY]")
+    mode, cand, base = sys.argv[1:4]
     if mode not in ("ir", "files"):
         raise ValueError("expected ir, files, or verify-ir CAND BASE DIRECTORY")
     before = identities(cand, base) if mode == "ir" else None
-    tmp_root = ROOT / "target/abi-ir"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix=f"{mode}-", dir=tmp_root))
+    if len(sys.argv) == 6:
+        tmp = Path(sys.argv[5]).resolve()
+        tmp.mkdir(parents=True)  # Refuse to overwrite any prior evidence.
+    else:
+        tmp_root = ROOT / "target/abi-ir"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix=f"{mode}-", dir=tmp_root))
     print(f"profiles: {tmp}", flush=True)
     # Same fixed work for both binaries. No GC instructions are subtracted.
     (tmp / "regex.el").write_text(r'''

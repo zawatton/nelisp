@@ -18,6 +18,8 @@
 
 #+NOTE: 2026-10-20 landing merge dad512b4d + fb54c401f: preserve all 21 criteria and thresholds; remeasure candidate dump/census and both Ir gates against 10beb8a3c. Evidence environment: LANG=C.UTF-8; preserve and record NELISP_*, LD_*, LC_* values. Existing pinned evidence is historical until replaced by this merge candidate.
 
+#+NOTE: 2026-10-20 landing round 2 starts at92388df41 after cons/marker fix7bbe8fb9b and eval/core candidate b93d504eb. Rebuild dynamic with dump/census and static; remeasure S6.3/S6.4 against the unchanged prescribed10beb8a3c artifact. Preserve all21 criteria, workloads, caps and natural-GC floors. Earlier pins below are historical until replaced. Evidence: target/abi-landing2; LANG=C.UTF-8, LC_ALL=C, LC_CTYPE=C.UTF-8; clear inherited NELISP_*, M5_*, LD_* and other LC_* variables.
+
 * S1 Group G1 converted
 
 ** S1.1 G1 has no dispatch arm left on the legacy adapter
@@ -490,8 +492,8 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
-evidence: $ABI_IR_PROFILE/measurement.json sha256=31962935c70de497ae0fc97f97c7d94cddbdb48a75eeec1ab91c32f06970f4ec
-evidence: tools/ai/abi-final-evidence.json sha256=e785970166b6f83c6a5c5eab293ff3245bd1eacc3d32faa6c997f3ca3ff7b454
+evidence: $ABI_IR_PROFILE/measurement.json sha256=f853a2f56c6f5dd18340c3df3fbd8d3a2274ed189fba5b14259131b56a975c60
+evidence: tools/ai/abi-final-evidence.json sha256=679a0d795bb1f8a6dfd47d513845bb4c783b2e662c2fe002c342598758e16efb
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
@@ -549,3 +551,13 @@ cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
 # with differing coverage/load; no runtime speedup is claimed from this.
 # Boot wall medians under8 Callgrind jobs are informational only:
 # base414563.883us, candidate365171.686us. No acceptance cap changes.
+
+#+NOTE: 2026-10-20 round2 memory red on92388df41: unchanged4000-object probe reports149.82/221.84/205.82/133.82 B, versus146.31/218.33/202.31/130.31 baseline; live-cons80 B passes. Doubling population leaves the same14040 B excess, and diagnostic freevar-cache disable lowers cons149.82 ->145.872 B. Expire optional lambda free-variable memo rows at collection instead of retaining dead lambda source trees as roots. No new native surface, no object-layout or criterion change. Rebuild and remeasure all acceptance paths after this repair. Preserve initial evidence under target/abi-landing2/dynamic and ir-formal.
+
+#+NOTE: 2026-10-20 round2 source review finds a Windows-only merge regression: sqlite3_initialize failure still calls wf_write_int with removed OUT in a WORD dispatch arm. Port that branch and its host dispatch fixture; compare the full selected Linux dispatch IR before/after. Windows execution remains the coordinator's task; no Wine is run.
+
+#+NOTE: 2026-10-20 round2 final evidence: all24 profile jobs exit0 in1311.493s. Full total-Ir means base -> candidate: boot1215428814.75 ->536044952.75 (-55.897%); regex6000 69805824101 ->6487998891.5 (-90.706%); regex24000 255222445988.75 ->18520146464 (-92.744%); files11177569901.5 ->5743391489.5 (-48.617%). Every output matches. GC base/candidate in every layout: boot0/0, regex6000 4/2, regex24000 11/2, files2/2. S6.3 remains FAIL solely because candidate natural GC2 is below the unchanged10-cycle floor. No criterion, Ir cap, workload or denominator is revised.
+# Dynamic/static builds188s/191s. Live cons80 B; WH_N4000 retained sizes cons145.872, marker217.892, record1 201.872, string8 129.872 B, all below baseline. Memo regression red4297880 B -> green-1896 B on both shipping builds; actual opt-in native REPL red4216368 -> green-1856 B, generations0 ->1 ->2 with retained state unchanged. CensusTOTAL1349, box-to-WORD dependencies0.
+# Host regex62/62; dynamic/static printer106, unibyte43, VM105 and locals7 pass; regexp-backtracking20 and FFI-memory58 pass on both. Dynamic SQLite golden and CString pass. Static SQLite/CString normal paths remain unsupported by the existing freestanding FFI design, with identical exact refusal before/after; scope clarification is pending. Final11 groups/0 failures, all73 standalone cases except listed maphash-sparse; Anvil40 tools with25s open stdin.
+# Windows initializer error converted to WORD; host fixture is red before and4/4 green after. Linux FFI IR before/after SHA256=57fbf93646cf18662d0dfa04cdd34a5e8200a410e9b8694de748f84a3f4367f4, so the post-build Windows-only correction does not change the measured Linux dispatch. No Wine run. Changed Elisp parens3/0; whole-tree check retains inherited failure and times out60s at generated-source-parse.
+# Development efficiency: abi-ir.py --output writes directly to a fresh persistent evidence directory and refuses overwrites. Requested-directory control: before0 profiles/rc1 in0.001s, after8 fixture profiles/rc0 in0.004061s; all23 harness tests pass. This is fixture coverage and evidence placement, not a runtime speed claim.

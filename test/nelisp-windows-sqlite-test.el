@@ -29,11 +29,13 @@
     (cl-letf (((symbol-function 'wf_arg_ptr) (lambda (args i) (nth i args)))
               ((symbol-function 'wf_argval) (lambda (args i) (nth i args)))
               ((symbol-function 'sexp-name-eq) (lambda (a b) (if (equal a b) 1 0)))
-              ((symbol-function 'wf_write_int) (lambda (_out value) (setq result value)))
-              ((symbol-function 'wf_write_nil) (lambda (_out) (setq result nil))))
-      (eval (nelisp-windows-sqlite-test--lower form)
-            `((args . ("sqlite3_open_v2" 100 200 6 0)) (out . 0)
-              (sqlite-extern . ,external))))
+              ((symbol-function 'wf_write_int_w) (lambda (_pad value) value)))
+      ;; WORD dispatch returns its result; OUT is deliberately absent so a
+      ;; legacy write cannot be hidden by a fixture-only output slot.
+      (setq result
+            (eval (nelisp-windows-sqlite-test--lower form)
+                  `((args . ("sqlite3_open_v2" 100 200 6 0))
+                    (sqlite-extern . ,external)))))
     (list result (nreverse calls))))
 
 (ert-deftest nelisp-windows-sqlite-initializes-before-open ()
