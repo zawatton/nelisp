@@ -7,13 +7,15 @@
 ;; These buffers live outside NeLisp's managed arena. The collector never
 ;; reclaims or scans them, so each owner must be released explicitly (usually
 ;; with `unwind-protect') after native code no longer uses its address.
-;; This initial implementation targets Linux x86_64 syscall numbers and page
-;; size, matching the standalone FFI loader profile.
+;; Linux x86_64 uses anonymous mmap; Windows x86_64 uses VirtualAlloc through
+;; the runtime's existing fixed FFI table. Only the two OS adapters differ;
+;; ownership, validation, page rounding and cleanup are shared.
 
 ;;; Code:
 
 (declare-function syscall-direct "ext:nelisp-runtime"
                   (number a b c d e f))
+(declare-function nl-ffi-call "ext:nelisp-runtime" (name &rest args))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 
 (defconst nl-ffi-memory--page-bytes 4096)
@@ -25,11 +27,33 @@
 (defconst nl-ffi-memory--max-size 9223372036854771712)
 
 (defun nl-ffi-memory--supported-p ()
-  (and (eq system-type 'gnu/linux)
-       (boundp 'system-configuration)
+  (and (boundp 'system-configuration)
        (stringp system-configuration)
        (string-match-p "\\`\\(x86_64\\|amd64\\)" system-configuration)
-       (fboundp 'syscall-direct)))
+       (or (and (eq system-type 'gnu/linux) (fboundp 'syscall-direct))
+           (and (eq system-type 'windows-nt) (fboundp 'nl-ffi-call)))))
+
+(defun nl-ffi-memory--map (size)
+  "Map SIZE external bytes; return an address or a negative OS error."
+  (if (eq system-type 'windows-nt)
+      ;; MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE. The fixed table already
+      ;; imports these kernel32 functions; no DLL loader or new native is
+      ;; needed. Normalize the Win32 NULL failure to mmap's negative result.
+      (let ((base (nl-ffi-call "VirtualAlloc" 0 size 12288 4)))
+        (if (= base 0) (- (max 1 (nl-ffi-call "GetLastError"))) base))
+    (syscall-direct nl-ffi-memory--sys-mmap 0 size
+                    nl-ffi-memory--prot-read-write
+                    nl-ffi-memory--map-private-anonymous -1 0)))
+
+(defun nl-ffi-memory--unmap (base size)
+  "Release BASE and SIZE; return zero on success or a negative OS error."
+  (if (eq system-type 'windows-nt)
+      ;; MEM_RELEASE requires the original base and a zero size. Win32 BOOL
+      ;; success is nonzero, whereas the shared owner protocol uses zero.
+      (if (= (nl-ffi-call "VirtualFree" base 0 32768) 0)
+          (- (max 1 (nl-ffi-call "GetLastError")))
+        0)
+    (syscall-direct nl-ffi-memory--sys-munmap base size 0 0 0 0)))
 
 (defun nl-ffi-memory--valid-owner-p (owner)
   (and (vectorp owner)
@@ -44,26 +68,25 @@
 
 (defun nl-ffi-memory-allocate (byte-count)
   "Return an owner for BYTE-COUNT writable external bytes.
-The allocation is anonymous mmap memory and is not visible to NeLisp GC.
+The allocation is anonymous OS memory and is not visible to NeLisp GC.
 Call `nl-ffi-memory-release' exactly once when native use has ended."
   (unless (and (integerp byte-count)
                (>= byte-count 0)
                (<= byte-count nl-ffi-memory--max-size))
     (error "nl-ffi-memory: invalid byte count %S" byte-count))
   (unless (nl-ffi-memory--supported-p)
-    (error "nl-ffi-memory: requires Linux x86_64 syscall-direct"))
+    (if (eq system-type 'windows-nt)
+        (error "nl-ffi-memory: requires Windows x86_64 nl-ffi-call")
+      (error "nl-ffi-memory: requires Linux x86_64 syscall-direct")))
   (let* ((owner (vector nl-ffi-memory--owner-marker 0 0 byte-count))
          (needed (if (< byte-count 1) 1 byte-count))
          (mapped-size (* (/ (+ needed 4095) 4096) 4096))
-         (base (syscall-direct nl-ffi-memory--sys-mmap 0 mapped-size
-                               nl-ffi-memory--prot-read-write
-                               nl-ffi-memory--map-private-anonymous -1 0)))
+         (base (nl-ffi-memory--map mapped-size)))
     (when (< base 0)
       (error "nl-ffi-memory: mmap of %d bytes failed (%d)"
              mapped-size base))
     (when (< base nl-ffi-memory--page-bytes)
-      (let ((unmap-rc (syscall-direct nl-ffi-memory--sys-munmap
-                                      base mapped-size 0 0 0 0)))
+      (let ((unmap-rc (nl-ffi-memory--unmap base mapped-size)))
         (unless (= unmap-rc 0)
           (error "nl-ffi-memory: rejected mmap address %d; cleanup failed (%d)"
                  base unmap-rc)))
@@ -79,11 +102,10 @@ Call `nl-ffi-memory-release' exactly once when native use has ended."
   (aref owner 1))
 
 (defun nl-ffi-memory-release (owner)
-  "Release OWNER's mapping once; leave OWNER live if `munmap' fails."
+  "Release OWNER's mapping once; leave OWNER live if OS release fails."
   (unless (nl-ffi-memory--valid-owner-p owner)
     (error "nl-ffi-memory: invalid or already released owner"))
-  (let ((rc (syscall-direct nl-ffi-memory--sys-munmap
-                           (aref owner 1) (aref owner 2) 0 0 0 0)))
+  (let ((rc (nl-ffi-memory--unmap (aref owner 1) (aref owner 2))))
     (unless (= rc 0)
       (error "nl-ffi-memory: munmap failed (%d)" rc))
     (aset owner 1 0)
