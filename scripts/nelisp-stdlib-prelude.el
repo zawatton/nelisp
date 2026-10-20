@@ -23156,10 +23156,13 @@ NUL.  Emacs signals for every one of those."
    ;; in two places: a float is a specifier mismatch, a negative integer is
    ;; `(wrong-type-argument characterp -1)'.
    ((= conv 99)
-    (unless (integerp arg)
-      (signal 'error (list "Format specifier doesn’t match argument type")))
-    (unless (and (>= arg 0) (<= arg 4194303))
-      (signal 'wrong-type-argument (list 'characterp arg)))))
+    ;; GNU 31.1 also renders a symbol whose canonical name is multibyte.
+    ;; An otherwise identical unibyte symbol name retains the type error.
+    (unless (and (symbolp arg) (multibyte-string-p (symbol-name arg)))
+      (unless (integerp arg)
+        (signal 'error (list "Format specifier doesn’t match argument type")))
+      (unless (and (>= arg 0) (<= arg 4194303))
+        (signal 'wrong-type-argument (list 'characterp arg))))))
   arg)
 
 ;; Fast path (2026-09-06).  `nelisp--format-simple' is a native arm that
@@ -23184,6 +23187,32 @@ conversions are delegated to native `format', which lacks only the
 field-width layer."
   (or (nelisp--format-simple template args)
       (nelisp--format-full template args)))
+
+(defun nelisp--format-princ (arg)
+  "Render a %s argument with GNU string-serialization byte escaping."
+  (let ((text (nelisp--prn-to-string arg nil)))
+    (if (or (stringp arg) (symbolp arg)) text
+      ;; Aggregate princ omits quotes but serializes nested raw bytes as
+      ;; octal. Ordinary Unicode characters retain their representation.
+      (let ((i 0) (start 0) (parts nil) (raw (unibyte-string-p text)))
+        (while (< i (length text))
+          (let ((c (aref text i)))
+            (when (if raw (>= c 128) (>= c #x3fff80))
+              (push (substring text start i) parts)
+              (let ((b (if raw c (- c #x3fff00))))
+                (push (concat "\\" (char-to-string (+ 48 (/ b 64)))
+                              (char-to-string (+ 48 (% (/ b 8) 8)))
+                              (char-to-string (+ 48 (% b 8)))) parts))
+              (setq start (1+ i))))
+          (setq i (1+ i)))
+        (let ((result (if (null parts) text
+                        (push (substring text start) parts)
+                        (apply #'concat (nreverse parts)))))
+          ;; Princ serialization of ASCII aggregate contents is byte text,
+          ;; even when an element's canonical name carries a text flag.
+          (if (= (length result) (string-bytes result))
+              (string-as-unibyte result)
+            result))))))
 
 (defun nelisp--format-full (template args)
   "The full elisp `format' layer over TEMPLATE and the list ARGS; see `format'."
@@ -23273,14 +23302,16 @@ field-width layer."
                                    ;; %d/%i/%o/%x/%X of a float: truncate toward
                                    ;; zero like Emacs (native reads the raw bits
                                    ;; otherwise).  Doc 159 §13.
-                                    (if (= conv 83) ; ?S
-                                        (prin1-to-string arg)
-                                      (nelisp--native-format
+                                    (cond
+                                     ((= conv 83) (prin1-to-string arg))
+                                     ((= conv 115) (nelisp--format-princ arg))
+                                     ((= conv 99) (if (symbolp arg) (symbol-name arg) (char-to-string arg)))
+                                     (t (nelisp--native-format
                                        (concat "%" (char-to-string conv))
                                        (if (and (floatp arg)
                                                 (or (= conv 100) (= conv 105) (= conv 111)
                                                     (= conv 120) (= conv 88)))
-                                           (truncate arg) arg))))))
+                                           (truncate arg) arg)))))))
                       (setq argp (cdr argp))
                       ;; `#' on %g keeps the trailing zeros %g strips, and
                       ;; keeps the point even when nothing follows it

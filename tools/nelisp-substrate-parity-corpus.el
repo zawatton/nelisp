@@ -446,6 +446,10 @@
                    (multibyte-string-p multi)
                    (condition-case nil (progn (aset multi 0 233) nil)
                      (error t))) 1 0)))
+    (66 shared
+        (let ((s (format (string-as-unibyte "key-%d/%s")
+                         42 (number-to-string 123))))
+          (if (and (equal s "key-42/123") (not (multibyte-string-p s))) 1 0)))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)
