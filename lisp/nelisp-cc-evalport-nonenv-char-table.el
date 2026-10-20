@@ -10,6 +10,9 @@
 ;; set over any range (even 0..#x3FFFFF) is O(log n) plus one array shift.
 ;; Slot value nil (or no interval) falls through to the table default and
 ;; then to the parent chain, exactly like GNU `char_table_ref'.
+;; Doc 216 S4: the 80-byte body begins with kind/size, followed by subtype
+;; WORD@8, default WORD@16, entries/cap/len@24/32/40, parent body@48 and
+;; extras/cap/len@56/64/72.  Entry and extra strides remain 48 and 32.
 ;;; Code:
 (defconst nelisp-cc-evalport-nonenv-char-table--source
   (quote
@@ -30,14 +33,14 @@
              (new_ptr (nelisp_alloc_bytes (* new_cap 48) 8)))
         (seq (nl_ct_copy_entries old_ptr new_ptr 0 old_len)
              (if (> old_cap 0) (nelisp_dealloc_bytes old_ptr (* old_cap 48) 8) 1)
-             (seq (ptr-write-u64 (+ box 64) 0 new_ptr)
-                  (ptr-write-u64 (+ box 72) 0 new_cap))
+             (seq (ptr-write-u64 (+ box 24) 0 new_ptr)
+                  (ptr-write-u64 (+ box 32) 0 new_cap))
              new_ptr)))
     ;; Ensure room for NEED entries; returns the (possibly new) array pointer.
     (defun nl_ct_reserve (box need)
-      (let* ((eptr (heap-read-u64 (+ box 64) 0))
-             (ecap (heap-read-u64 (+ box 72) 0))
-             (elen (heap-read-u64 (+ box 80) 0)))
+      (let* ((eptr (heap-read-u64 (+ box 24) 0))
+             (ecap (heap-read-u64 (+ box 32) 0))
+             (elen (heap-read-u64 (+ box 40) 0)))
         (if (<= need ecap) eptr (nl_ct_grow_entries box eptr ecap elen))))
     (defun nl_ct_start (eptr i) (heap-read-u64 (+ eptr (* i 48)) 0))
     (defun nl_ct_end (eptr i) (heap-read-u64 (+ eptr (+ (* i 48) 40)) 0))
@@ -82,40 +85,40 @@
     ;; never the parent chain (verified against host Emacs).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_char_table_get_local_raw_w (arg idx _pad)
-      (let* ((box (heap-read-u64 arg 8)) (eptr (heap-read-u64 box 64))
-             (elen (heap-read-u64 box 80)) (i (nl_ct_lower_end eptr elen idx))
+      (let* ((box (nl_word_payload arg)) (eptr (heap-read-u64 box 24))
+             (elen (heap-read-u64 box 40)) (i (nl_ct_lower_end eptr elen idx))
              (hit (and (< i elen) (<= (nl_ct_start eptr i) idx))))
         (if (and hit (/= (nl_val_tag (heap-read-u64 (nl_ct_val eptr i) 0)) 0))
             (heap-read-u64 (nl_ct_val eptr i) 0)
-          (heap-read-u64 box 32))))
+          (heap-read-u64 box 16))))
     (defun nl_char_table_get_local_raw (arg idx out)
       (nl_abi_word_to_rc (nl_char_table_get_local_raw_w arg idx 0) out))
     (defun nl_char_table_get_raw (arg idx out)
-      (let* ((tag (heap-native-read-u8 arg 0)))
+      (let* ((tag (nl_val_tag arg)))
         (if (= tag 9)
-            (nl_ct_get_box (heap-read-u64 (+ arg 8) 0) idx out)
+            (nl_ct_get_box (nl_word_payload arg) idx out)
           1)))
     ;; Doc 215 builtin word ABI: a storage slot as a value WORD (Int -> immediate, nil 3, t 7).
 
     ;; Effective lookup returning the value WORD (the table's own child, no clone).
     (defun nl_ct_get_box_w (box idx _pad)
-      (let* ((eptr (heap-read-u64 box 64)) (elen (heap-read-u64 box 80))
+      (let* ((eptr (heap-read-u64 box 24)) (elen (heap-read-u64 box 40))
              (i (nl_ct_lower_end eptr elen idx))
              (hit (and (< i elen) (<= (nl_ct_start eptr i) idx)))
              (value (if hit (heap-read-u64 (nl_ct_val eptr i) 0) 3)))
         (if (/= (nl_val_tag value) 0) value
-          (let* ((parent (heap-read-u64 box 88)) (default (heap-read-u64 box 32)))
+          (let* ((parent (heap-read-u64 box 48)) (default (heap-read-u64 box 16)))
             (if (and (= (nl_val_tag default) 0) (/= parent 0))
                 (nl_ct_get_box_w parent idx 0) default)))))
     ;; Doc 215 builtin word ABI: the value WORD, or 0 after a stashed error for a non-char-table.
     (defun nl_char_table_get_raw_w (arg idx _pad)
-      (if (= (heap-native-read-u8 arg 0) 9)
-          (nl_ct_get_box_w (heap-read-u64 (+ arg 8) 0) idx 0)
+      (if (= (nl_val_tag arg) 9)
+          (nl_ct_get_box_w (nl_word_payload arg) idx 0)
         (extern-call nl_abi_fail 1 0)))
     ;; Merge entry P with its right / left neighbour when adjacent and `eq'.
     (defun nl_ct_coalesce (box p)
-      (let* ((eptr (heap-read-u64 (+ box 64) 0))
-             (n (heap-read-u64 (+ box 80) 0)))
+      (let* ((eptr (heap-read-u64 (+ box 24) 0))
+             (n (heap-read-u64 (+ box 40) 0)))
         (if (< (+ p 1) n)
             (if (= (nl_ct_start eptr (+ p 1)) (+ (nl_ct_end eptr p) 1))
                 (if (= (wf_bytecode_w_eqw (heap-read-u64 (nl_ct_val eptr p) 0) (heap-read-u64 (nl_ct_val eptr (+ p 1)) 0)) 1)
@@ -123,7 +126,7 @@
                                         (nl_ct_end eptr (+ p 1)))
                          (nl_ct_move_entries eptr (+ p 2) (+ p 1) (- n (+ p 2)))
                          (setq n (- n 1))
-                         (ptr-write-u64 (+ box 80) 0 n))
+                         (ptr-write-u64 (+ box 40) 0 n))
                   0)
               0)
           0)
@@ -134,7 +137,7 @@
                                         (nl_ct_end eptr p))
                          (nl_ct_move_entries eptr (+ p 1) p (- n (+ p 1)))
                          (setq n (- n 1))
-                         (ptr-write-u64 (+ box 80) 0 n))
+                         (ptr-write-u64 (+ box 40) 0 n))
                   0)
               0)
           0)
@@ -164,7 +167,7 @@
                                 (nl_ct_end eptr2 lo))
                  (nl_ct_write_entry eptr2 hi from to val)
                  (ptr-write-u64 (+ eptr2 (+ (* lo 48) 40)) 0 (- from 1))
-                 (ptr-write-u64 (+ box 80) 0 (+ n 2))
+                 (ptr-write-u64 (+ box 40) 0 (+ n 2))
                  1)
               0)
           0)
@@ -187,15 +190,15 @@
              (seq (nl_ct_move_entries eptr pr (+ pl 1) (- n pr))
                   (setq n2 (- n (- r 1)))))
            (nl_ct_write_entry eptr2 pl from to val)
-           (ptr-write-u64 (+ box 80) 0 n2)
+           (ptr-write-u64 (+ box 40) 0 n2)
            (nl_ct_coalesce box pl)
            1))))
     ;; Set every char in [FROM,TO] (FROM <= TO, both valid chars) to VAL.
     (defun nl_ct_value_eq (slot value)
       (wf_bytecode_w_eqw (heap-read-u64 slot 0) value))
     (defun nl_ct_set_range (box from to val)
-      (let* ((eptr (heap-read-u64 (+ box 64) 0))
-             (n (heap-read-u64 (+ box 80) 0))
+      (let* ((eptr (heap-read-u64 (+ box 24) 0))
+             (n (heap-read-u64 (+ box 40) 0))
              (lo (nl_ct_lower_end eptr n from))
              (hi (nl_ct_upper_start eptr n to))
              (same (if (= (- hi lo) 1)
@@ -209,28 +212,28 @@
             1
           (nl_ct_set_range2 box eptr n lo hi from to val))))
     (defun nl_char_table_set_raw (arg idx val out)
-      (if (= (heap-native-read-u8 arg 0) 9)
+      (if (= (nl_val_tag arg) 9)
           (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
-            (seq (nl_ct_set_range (heap-read-u64 arg 8) idx idx word)
+            (seq (nl_ct_set_range (nl_word_payload arg) idx idx word)
                  (nl_sexp_clone_into val out) 0)) 1))
     ;; Doc 215 builtin word ABI: set and answer VAL as a WORD (an immediate stays as it is).
     (defun nl_char_table_set_raw_w (arg idx val _pad)
       ;; VAL is the caller's canonical WORD; legacy entries copy their view.
-      (if (= (heap-native-read-u8 arg 0) 9)
-          (seq (nl_ct_set_range (heap-read-u64 arg 8) idx idx val) val)
+      (if (= (nl_val_tag arg) 9)
+          (seq (nl_ct_set_range (nl_word_payload arg) idx idx val) val)
         (extern-call nl_abi_fail 1 0)))
     (defun nl_char_table_set_range_raw (arg from to val out)
-      (if (= (heap-native-read-u8 arg 0) 9)
+      (if (= (nl_val_tag arg) 9)
           (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
-            (seq (nl_ct_set_range (heap-read-u64 arg 8) from to word)
+            (seq (nl_ct_set_range (nl_word_payload arg) from to word)
                  (nl_sexp_clone_into val out) 0)) 1))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
     ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
     ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `nl_char_table_set_range_raw'.
     (defun nl_char_table_set_range_raw_w (arg from to val _pad)
       ;; VAL is the caller's canonical WORD; legacy entries copy their view.
-      (if (= (heap-native-read-u8 arg 0) 9)
-          (seq (nl_ct_set_range (heap-read-u64 arg 8) from to val) val)
+      (if (= (nl_val_tag arg) 9)
+          (seq (nl_ct_set_range (nl_word_payload arg) from to val) val)
         (extern-call nl_abi_fail 1 0)))))
   "Interval-based CharTable get/set kernel.")
 (provide (quote nelisp-cc-evalport-nonenv-char-table))

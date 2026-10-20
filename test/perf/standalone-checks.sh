@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run every test/standalone-*-check.el (or the explicit file arguments)
+# Run every test/standalone-*-check.el plus the vectorlike check (or explicit files)
 # on $EVAL_BIN, one at a time; exit
 # non-zero if any fails that is not listed in
 # test/perf/standalone-checks-known-red.txt.  The evaluator ledger's
@@ -13,10 +13,12 @@ logdir=${STANDALONE_CHECK_LOGDIR:-target/standalone-checks}
 mkdir -p "$logdir" || exit 2
 # Optional exact paths keep a focused edit from running the entire corpus.
 # Validate every path before starting any process; the default remains all.
-if [ "$#" = 0 ]; then set -- test/standalone-*-check.el; fi
+if [ "$#" = 0 ]; then
+  set -- test/standalone-*-check.el test/perf/word-heap-vectorlike-check.el
+fi
 for f do
   case "$f" in
-    test/standalone-*-check.el) ;;
+    test/standalone-*-check.el|test/perf/word-heap-vectorlike-check.el) ;;
     *) echo "STANDALONE-CHECK invalid check path: $f" >&2; exit 2 ;;
   esac
   [ -f "$f" ] || { echo "STANDALONE-CHECK missing check: $f" >&2; exit 2; }

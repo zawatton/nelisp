@@ -233,7 +233,7 @@
           (let* ((result (if (or (= inplace 1) (= n 0)) sequence (nl_w_vector_make n 0))) (i 0))
             (seq (wf_dirty)
                  (while (< i n)
-                   (ptr-write-u64 (heap-read-u64 (heap-read-u64 result 8) 8) (* i 8) (heap-read-u64 data (* i 16)))
+                   (ptr-write-u64 (+ (nl_word_payload result) 8) (* i 8) (heap-read-u64 data (* i 16)))
                    (setq i (+ i 1))) result))
         (if (= inplace 1)
             (let* ((cur sequence) (i 0))

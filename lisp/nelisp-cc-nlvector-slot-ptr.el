@@ -61,11 +61,10 @@
     ;; 32B view into a FRESH box (one per call -> no shared-scratch
     ;; clobber when results are held live).
     (defun nl_vector_slot_ptr (sexp-ptr idx)
-      (let ((word (heap-read-u64
-                   (+ (heap-read-u64 (heap-read-u64 sexp-ptr 8) 8) (* idx 8))
-                   0)))
+      (let ((word (nl_vector_slot_word sexp-ptr idx)))
         (if (= (logand word 1) 0)
-            word
+            (if (= (logand word 7) 6)
+                (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)) word)
           (extern-call nl_val_load word (alloc-bytes 32 8))))))
   "AOT source for the `nl_vector_slot_ptr' Doc 147 Phase 2 helper.
 

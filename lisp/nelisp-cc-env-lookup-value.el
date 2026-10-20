@@ -80,7 +80,7 @@
     (defun nelisp_env_entry_slot_tag (rec k)
       ;; Keep this small tagged-slot accessor eligible for the general source
       ;; inliner.  Nil metadata is the common case, so classify it first.
-      (let* ((w (heap-read-u64 (+ (heap-read-u64 (heap-sexp-payload rec) 32) (* k 8)) 0)))
+      (let* ((w (nl_record_slot_word rec k)))
         (if (= w 3) 0
           (if (= (logand w 1) 0)
               (sexp-tag w)

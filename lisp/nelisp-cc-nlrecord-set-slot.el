@@ -69,18 +69,7 @@
     ;; then install VAL as a single 8B tagged WORD via the keystone
     ;; `nl_val_clone_into'.
     (defun nl_record_set_slot (record n val)
-      ;; Doc 135 cutover fix (preserved): refcount-SAFE install -- clone VAL
-      ;; into the slot (rc-bump for boxed variants, deep-copy for strings) via
-      ;; `nl_val_clone_into' instead of a raw move.  Without this the bootstrap
-      ;; mirror's fast-hash-table / backing-vector boxes were MOVE-aliased
-      ;; between the Rust scratch `Sexp::Vector' and globals.slot[0] /
-      ;; frames.slot[0]; dropping the scratch then over-freed a still-owned box
-      ;; (= the §9.2 / §9.6.4 bootstrap UAF).  Doc 147 Phase 2: the slot is now
-      ;; an 8B WORD, so `nl_val_clone_into' (immediate direct; boxed child
-      ;; deep-cloned into a fresh 32B box, its 8-aligned ptr stored) replaces
-      ;; the 32B-into-32B-slot `nl_sexp_clone_into'.
-      (let ((dst (+ (heap-read-u64 record 32) (* n 8))))
-        (extern-call nl_val_clone_into val dst))))
+      (extern-call nl_val_clone_into val (+ (+ record 16) (* n 8)))))
   "AOT source for the `nl_record_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

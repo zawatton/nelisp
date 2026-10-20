@@ -720,19 +720,12 @@
     ;; did); an immediate is written as its storage form (tag 0 nil, 1 t,
     ;; 2 fixnum) without allocating.  Returns 0 (success status).
     (defun nl_native_store_word_v2 (output w)
-      (if (= (logand w 1) 0)
-          (seq
-           (ptr-write-u64 output 0 (heap-read-u64 w 0))
-           (ptr-write-u64 output 8 (heap-read-u64 w 8))
-           (ptr-write-u64 output 16 (heap-read-u64 w 16))
-           (ptr-write-u64 output 24 (heap-read-u64 w 24))
-           0)
-        (seq
-         (ptr-write-u64 output 0 (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))
-         (ptr-write-u64 output 8 (if (= (logand w 3) 1) (sar w 2) 0))
-         (ptr-write-u64 output 16 0)
-         (ptr-write-u64 output 24 0)
-         0)))
+      (if (or (= (logand w 1) 1) (= (logand w 7) 6))
+          (seq (nl_sexp_clone_into w output) 0)
+        (seq (ptr-write-u64 output 0 (heap-read-u64 w 0))
+             (ptr-write-u64 output 8 (heap-read-u64 w 8))
+             (ptr-write-u64 output 16 (heap-read-u64 w 16))
+             (ptr-write-u64 output 24 (heap-read-u64 w 24)) 0)))
 
     (defun nl_native_car_v2 (env token input-index output-index)
       (let* ((input (nl_root_pin_slot_v2 env token input-index))
@@ -849,7 +842,8 @@
        0 (heap-read-u64 (data-addr nl_thread_registry) 0))))
   "AOT source for the Doc 152 §11.37 Stage 2 dynamic root stack.
 
-Lazy-inits on the first main-thread `nl_root_reserve'.  Stage-3 evaluator callers use
+Lazy-inits on the first main-thread `nl_root_reserve'.
+Stage-3 evaluator callers use
 the returned mutable entry directly as their eval/function result slot and
 restore a saved `nl_root_mark' on every status path.  Tier-3b workers select
 their registered private reserve by EvalCtx address.  See the Commentary for

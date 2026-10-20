@@ -13,11 +13,12 @@ controls           inject one raw read and demonstrate rejecting checks
 check [--source-revision REV --linked DUMP]
                    recheck hash-bound S1.2 evidence; integration replay pins
                    historical source and requires the current linked census
+check-historical   recheck committed S1 sources and raw evidence after S2+ edits
 migrate            mechanical call-head/assembler-reference migration
 """
 import hashlib
-import importlib.util
 import io
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -433,12 +434,36 @@ def migrate():
     print(json.dumps(counts, indent=2))
 
 
-def check(revision=None, linked=None):
+def historical_source_hashes(names):
+    """Authenticate S1's frozen sources without rebinding any measured bytes.
+
+    S4 deliberately changes the representation that S1 proved unchanged.
+    Artifact paths still name the original on-disk evidence; source paths
+    name exactly the committed S1 tree, never a caller-selected revision.
+    """
+    revision = "b51fe66f4bb7fbac31d4ce44796f1f074c85d17b"
+    names = [name for name in names if not name.startswith("target/")]
+    request = "".join(f"{revision}:{name}\n" for name in names).encode()
+    run = subprocess.run(["git", "cat-file", "--batch"], input=request,
+                         cwd=ROOT, capture_output=True, check=True)
+    stream, result = io.BytesIO(run.stdout), {}
+    for name in names:
+        header = stream.readline().split()
+        need(len(header) == 3 and header[1] == b"blob",
+             f"S1 source absent from pinned revision: {name}")
+        data = stream.read(int(header[2]))
+        need(stream.read(1) == b"\n", "invalid git blob framing")
+        result[name] = hashlib.sha256(data).hexdigest()
+    need(not stream.read(), "unexpected S1 source blobs")
+    return result
+
+
+def check(revision=None, linked=None, historical=False):
     check_source()
     manifest = json.loads((OUT / "s1-evidence.json").read_text())
     need(manifest["schema"] == 1 and manifest["baseline_commit"] == "50a75cbcb",
          "wrong S1 baseline/schema")
-    historical = {}
+    frozen = historical_source_hashes(manifest["hashes"]) if historical else {}
     if revision:
         need(linked is not None, "historical S1 replay requires a current linked dump")
         ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", revision, "HEAD"], cwd=ROOT)
@@ -450,7 +475,7 @@ def check(revision=None, linked=None):
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as members:
             for member in members:
                 if member.isfile():
-                    historical[member.name] = hashlib.sha256(members.extractfile(member).read()).hexdigest()
+                    frozen[member.name] = hashlib.sha256(members.extractfile(member).read()).hexdigest()
         units = dump_units(linked)
         need(len(units) == 114, "incomplete current linked-source input")
         current = dump_counts(linked)
@@ -459,9 +484,9 @@ def check(revision=None, linked=None):
         for name in (ACCESSORS, "tools/ai/box-census.py", "tools/ai/word-heap-accessor-code.el"):
             need(sha(ROOT / name) == manifest["hashes"][name], f"changed S1 accessor contract: {name}")
     for name, expected in manifest["hashes"].items():
-        actual = historical.get(name) if revision and not name.startswith("target/") else sha(ROOT / name)
+        actual = frozen.get(name) if (revision or historical) and not name.startswith("target/") else sha(ROOT / name)
         need(actual == expected, f"changed S1 evidence: {name}")
-    need(manifest["facts"] == facts(), "S1 measured facts changed")
+    need(manifest["facts"] == facts(historical=historical), "S1 measured facts changed")
     if revision:
         print(f"Retained accessor-only S1 source={revision}; current linked raw=0")
     print("PASS S1.2 raw=0 ABI-S6.2=0; 51 identical-code cases; 24 Ir profiles <=+0.5%")
@@ -523,7 +548,7 @@ def abi_tool():
     return module
 
 
-def facts():
+def facts(historical=False):
     result = dict(source=source_proof())
     for name in ("dynamic", "static"):
         dump = OUT / name / "dump.jsonl"
@@ -550,19 +575,36 @@ def facts():
     need(sha(candidate) != sha(baseline), "candidate reused as baseline")
     directory = OUT / "ir"
     identities = abi.identities(candidate, baseline)
-    # Retained evidence may be copied into an integration worktree. Preserve
-    # every measured hash and the runtime-environment identity; translate only
-    # the checkout prefix before comparing the immutable provenance record.
-    measured = json.loads((directory / "measurement.json").read_text())["identities"]
-    suffix = "target/word-heap-s1/dynamic/nelisp-dynamic"
-    measured_candidate = measured["candidate-path"]
-    need(measured_candidate.endswith("/" + suffix), "unexpected S1 candidate provenance")
-    measured_root = measured_candidate[:-len(suffix)].rstrip("/")
-    def original_path(value):
+    if historical:
+        # Copies of the S1 evidence keep their original path labels. Compare
+        # exactly the same file/environment hashes under those labels; never
+        # rewrite the recorded manifest or accept a changed artifact.
+        recorded = json.loads((directory / "measurement.json").read_text())["identities"]
+        suffix = "/tools/ai/abi-ir.py"
+        origins = [name[:-len(suffix)] for name in recorded if name.endswith(suffix)]
+        need(len(origins) == 1, "ambiguous S1 measurement origin")
         prefix = str(ROOT) + "/"
-        return measured_root + "/" + value[len(prefix):] if value.startswith(prefix) else value
-    identities = {original_path(k): original_path(v) if k in ("candidate-path", "baseline-path") else v
-                  for k, v in identities.items()}
+        identities = {(origins[0] + "/" + name[len(prefix):]
+                       if name.startswith(prefix) else name): digest
+                      for name, digest in identities.items()}
+        for key in ("candidate-path", "baseline-path"):
+            value = identities[key]
+            need(value.startswith(prefix), f"S1 executable outside evidence copy: {key}")
+            identities[key] = origins[0] + "/" + value[len(prefix):]
+    else:
+        # Retained evidence may be copied into an integration worktree. Preserve
+        # every measured hash and the runtime-environment identity; translate only
+        # the checkout prefix before comparing the immutable provenance record.
+        measured = json.loads((directory / "measurement.json").read_text())["identities"]
+        suffix = "target/word-heap-s1/dynamic/nelisp-dynamic"
+        measured_candidate = measured["candidate-path"]
+        need(measured_candidate.endswith("/" + suffix), "unexpected S1 candidate provenance")
+        measured_root = measured_candidate[:-len(suffix)].rstrip("/")
+        def original_path(value):
+            prefix = str(ROOT) + "/"
+            return measured_root + "/" + value[len(prefix):] if value.startswith(prefix) else value
+        identities = {original_path(k): original_path(v) if k in ("candidate-path", "baseline-path") else v
+                      for k, v in identities.items()}
     abi.validate_record(directory, identities, abi.ACCESSOR_MODES)
     ir = {}
     for mode in abi.ACCESSOR_MODES:
@@ -638,6 +680,8 @@ def main(args):
         else:
             need(len(args) == 1, "check [--source-revision REV --linked DUMP]")
             check()
+    elif cmd == "check-historical":
+        check(historical=True)
     elif cmd == "seal":
         seal()
     else:

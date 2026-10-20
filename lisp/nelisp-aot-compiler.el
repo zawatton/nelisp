@@ -242,8 +242,8 @@ path while sharing the same parsed IR.")
 (defvar nelisp-aot-compiler--abi 'sysv
   "Calling convention ABI bound by the public compile entry points.
 Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
-  'sysv  — System V AMD64 (Linux / macOS); default
-  'win64 — Microsoft x64 (Windows x86_64)
+  `sysv'  — System V AMD64 (Linux / macOS); default
+  `win64' — Microsoft x64 (Windows x86_64)
 Emit helpers consult this dynvar for arg-register selection, shadow
 space allocation, and prologue/epilogue layout.  The aarch64 path
 ignores this var (= AAPCS64 only).")
@@ -368,8 +368,8 @@ populating the hidden boundary slots in a synthetic frame."
 
 (defun nelisp-aot-compiler--byte-vec->string (vec)
   "Convert byte VEC into a unibyte-string without large-arity `apply'.
-The standalone interpreter still mis-handles `(apply #'unibyte-string
-...)' on long byte vectors, so emit fixed-size chunks and join them."
+The standalone interpreter still mis-handles long calls of `unibyte-string'
+through `apply', so emit fixed-size chunks and join them."
   (let ((n (length vec))
         (i 0)
         (chunks nil))
@@ -976,7 +976,8 @@ at its kind-fixed offset since per-kind layout is constant."
 `raw-i64' denotes machine integers used by arithmetic and loop control;
 `raw-ptr' denotes an unboxed byte address, which must never be offered to
 the Sexp dispatcher; `sexp-ptr' denotes an address of a 32-byte Sexp slot
-accepted by the runtime dispatcher.  New lowering must set this explicitly at every
+accepted by the runtime dispatcher.  New lowering must set this explicitly
+at every
 representation boundary; the temporary fallback documents legacy IR
 nodes while their constructors are migrated."
   (or (nelisp-aot-compiler--ir-get node :repr)
@@ -5299,7 +5300,7 @@ required wherever the value flows on as a value -- but in an `if' or
 already accepts a raw i64 (that is how `cmp' results are consumed).
 
 Measured on the Doc 170 section 9 bench: `nl-cell-p' is
-`(and (vectorp c) (= (length c) 3) (eq (aref c 0) 'nl--cell))', all of
+`(and (vectorp c) (= (length c) 3) (eq (aref c 0) (quote nl--cell)))', all of
 it in test position, and routing its predicates through the dispatcher
 took the checked borrow from 1.43x to 6.36x.
 
@@ -12830,7 +12831,7 @@ walk; the emitter substitutes a no-op for the original site."
 
 A quoted symbol reaches the runtime through `nl_alloc_symbol', which
 heap-allocates its name buffer.  Compiled code does that on every
-execution, so a loop over `(eq (aref c 0) 'nl--cell)' allocates a symbol
+execution, so a loop over `(eq (aref c 0) (quote nl--cell))' allocates a symbol
 per iteration -- measured as +2.46x of the Doc 170 section 9 borrow
 ratio, and the reason adding two pairs to that bench made the reader OOM.
 Every delegated builtin call pays it too, for the callee's name.
@@ -15375,6 +15376,46 @@ the compile-elisp-objects manifest."
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 
+(defun nelisp-aot-compiler--emit-vectorlike-payload (buf dst base)
+  "Decode a vectorlike WORD or legacy view in BASE into backing pointer DST."
+  (let* ((id (nelisp-aot-compiler--gensym "vectorlike-payload"))
+         (direct (intern (format "%s-direct" id)))
+         (done (intern (format "%s-done" id))))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (progn
+          (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+          (nelisp-asm-arm64-and-reg-reg buf 'x9 base 'x9)
+          (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+          (nelisp-asm-arm64-b-cond buf 'eq direct)
+          (nelisp-heap-accessors-arm64-sexp-payload buf dst base)
+          (nelisp-asm-arm64-b buf done)
+          (nelisp-asm-arm64-define-label buf direct)
+          (nelisp-asm-arm64-sub-imm buf dst base 6)
+          (nelisp-asm-arm64-define-label buf done))
+      (nelisp-asm-x86_64-mov-imm32 buf 'r11 7)
+      (nelisp-asm-x86_64-and-reg-reg buf 'r11 base)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'r11 6)
+      (nelisp-asm-x86_64-jz-rel32 buf direct)
+      (nelisp-heap-accessors-x86_64-sexp-payload buf dst base)
+      (nelisp-asm-x86_64-jmp-rel32 buf done)
+      (nelisp-asm-x86_64-define-label buf direct)
+      (nelisp-asm-x86_64-mov-reg-reg buf dst base)
+      (nelisp-asm-x86_64-sub-imm32 buf dst 6)
+      (nelisp-asm-x86_64-define-label buf done))))
+
+(defun nelisp-aot-compiler--vectorlike-call-ir (name args)
+  "Build an ordinary GP extern call to the semantic accessor NAME for ARGS."
+  (nelisp-aot-compiler--make-ir
+   'extern-call :name name :ret-class 'gp
+   :args (mapcar (lambda (arg) (vconcat arg (vector :cls 'gp))) args)))
+
+(defun nelisp-aot-compiler--emit-vectorlike-call (name args buf)
+  "Emit semantic accessor NAME on parsed ARGS into BUF using the target ABI."
+  (let ((call (nelisp-aot-compiler--vectorlike-call-ir name args)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (nelisp-aot-compiler--emit-extern-call-arm64 call buf)
+      (nelisp-aot-compiler--emit-extern-call call buf))))
+
 (defun nelisp-aot-compiler--emit-sexp-tag (node buf)
   "Emit an immediate-aware tag read (Doc 146 §3.0 step 2).
 NODE's :ptr computes a value word V into rax.  If V's low bit is 0 it
@@ -15390,7 +15431,8 @@ byte-offset (unique per emit site within a function buffer)."
          (slot-lbl (intern (format "stag%d_slot" id)))
          (int-lbl  (intern (format "stag%d_int" id)))
          (nil-lbl  (intern (format "stag%d_nil" id)))
-         (done-lbl (intern (format "stag%d_done" id))))
+         (done-lbl (intern (format "stag%d_done" id)))
+         (legacy-lbl (intern (format "stag%d_legacy" id))))
     (nelisp-aot-compiler--emit-value ptr buf)          ; rax = value word V
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)      ; rdi = V (preserved)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
@@ -15412,7 +15454,15 @@ byte-offset (unique per emit site within a function buffer)."
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 2)           ; Int
     (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
     (nelisp-asm-x86_64-define-label buf slot-lbl)
-    (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi) ; tag byte at [V]
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
+    (nelisp-asm-x86_64-jnz-rel32 buf legacy-lbl)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
+    (nelisp-asm-x86_64-define-label buf legacy-lbl)
+    (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rdi 63)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
     (nelisp-asm-x86_64-define-label buf done-lbl)))
 
 (defun nelisp-aot-compiler--emit-f64-to-i64-trunc (node buf)
@@ -15622,32 +15672,11 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
 ;; ---- Doc 101 §101.B Cons read ops emit ----
 
 (defun nelisp-aot-compiler--emit-cons-null-p (node buf)
-  "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
-Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
-`nelisp-sexp--tag-nil'; else returns 0."
-  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
-         (id (aref buf 1))
-         (slot-lbl (intern (format "cnp%d_slot" id)))
-         (done-lbl (intern (format "cnp%d_done" id))))
-    ;; Doc 146 §3.0: immediate-aware Nil predicate.  V is Nil iff it is the
-    ;; immediate Nil word (3) or an 8-aligned slot whose tag byte is Nil.
-    (nelisp-aot-compiler--emit-value ptr buf)            ; rax = V
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)        ; rdi = V
-    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
-    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)        ; V & 1
-    (nelisp-asm-x86_64-jz-rel32 buf slot-lbl)            ; low bit 0 -> slot
-    ;; immediate: result = (V == 3)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 3)
-    (nelisp-asm-x86_64-setcc-al buf 'sete)
-    (nelisp-asm-x86_64-movzx-eax-al buf)
-    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
-    (nelisp-asm-x86_64-define-label buf slot-lbl)
-    (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi) ; tag byte
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
-    (nelisp-asm-x86_64-setcc-al buf 'sete)
-    (nelisp-asm-x86_64-movzx-eax-al buf)
-    (nelisp-asm-x86_64-define-label buf done-lbl)))
+  "Return whether NODE's WORD denotes nil, including compact pointer classes."
+  (nelisp-aot-compiler--emit-sexp-tag node buf)
+  (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+  (nelisp-asm-x86_64-setcc-al buf 'sete)
+  (nelisp-asm-x86_64-movzx-eax-al buf))
 
 (defun nelisp-aot-compiler--emit-cons-slot-copy (node buf field-off)
   "Emit the Doc 101 §2.1 boxed-slot copy for `car' / `cdr'.
@@ -15737,6 +15766,10 @@ values."
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 1)
     (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)
     ;; r11 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r11)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
+    (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'r11)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
     (nelisp-asm-x86_64-jnz-rel32 buf nil-lbl)
@@ -15759,6 +15792,10 @@ safe to use as the loop seed in the length walker."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
+    (nelisp-asm-x86_64-jz-rel32 buf zero-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
     (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
@@ -15778,9 +15815,23 @@ deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (id (nelisp-aot-compiler--gensym "sexp-payload-ptr-record"))
          (zero-lbl (intern (format "%s-zero" id)))
-         (end-lbl (intern (format "%s-end" id))))
+         (end-lbl (intern (format "%s-end" id)))
+         (legacy-lbl (intern (format "%s-legacy" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
+    (nelisp-asm-x86_64-jnz-rel32 buf legacy-lbl)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
+    (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-mov-imm32 buf 'r11 63)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r11)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-record)
+    (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf legacy-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-record)
     (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
@@ -15851,33 +15902,18 @@ every `record-slot-ref-ptr' consumer reads a 32B `Sexp' from it)."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
 
 (defun nelisp-aot-compiler--emit-record-type-tag (node buf)
-  "Copy a record's inline `type_tag' Sexp into the caller-owned slot."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
-        (slot (nelisp-aot-compiler--ir-get node :slot)))
-    (nelisp-aot-compiler--emit-value ptr buf)
-    (nelisp-aot-compiler--emit-temp-push buf 'rax)
-    (nelisp-aot-compiler--emit-value slot buf)
-    (nelisp-aot-compiler--emit-temp-push buf 'rax)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rsi)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
-    (nelisp-heap-accessors-x86_64-sexp-payload
-     buf 'r10 'rdi)
-    (nelisp-heap-accessors-x86_64-movdqu-xmm-mem-disp8
-     buf 'xmm0 'r10 nelisp-nlrecord--offset-type-tag)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
-    (nelisp-heap-accessors-x86_64-movdqu-xmm-mem-disp8
-     buf 'xmm0 'r10 (+ nelisp-nlrecord--offset-type-tag 16))
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+  "Copy the record type WORD into the caller's view through its accessor."
+  (nelisp-aot-compiler--emit-vectorlike-call
+   'nl_record_type_copy
+   (list (nelisp-aot-compiler--ir-get node :ptr)
+         (nelisp-aot-compiler--ir-get node :slot)) buf))
 
 (defun nelisp-aot-compiler--emit-record-slot-count (node buf)
-  "Read `record.slots.len' into rax."
+  "Read the compact vectorlike header's logical length."
   (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-  (nelisp-heap-accessors-x86_64-sexp-payload
-   buf 'rdi 'rdi)
-  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
-   buf 'rax 'rdi nelisp-nlrecord--offset-slots-length))
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'rax 'rax)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rax 'rax 0)
+  (nelisp-asm-x86_64-sar-reg-imm8 buf 'rax 8))
 
 (defun nelisp-aot-compiler--emit-record-slot-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's record slot in rax."
@@ -15985,7 +16021,7 @@ undefined-rax behaviour."
           (nelisp-aot-compiler--emit-temp-pop buf 'r8)
           (nelisp-aot-compiler--emit-temp-pop buf 'rdx)
           (nelisp-aot-compiler--emit-temp-pop buf 'rcx)
-          (nelisp-heap-accessors-x86_64-sexp-payload
+          (nelisp-aot-compiler--emit-vectorlike-payload
            buf 'rcx 'rcx)
           (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
           (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
@@ -15995,7 +16031,7 @@ undefined-rax behaviour."
       (nelisp-aot-compiler--emit-temp-pop buf 'rdx)
       (nelisp-aot-compiler--emit-temp-pop buf 'rsi)
       (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
-      (nelisp-heap-accessors-x86_64-sexp-payload
+      (nelisp-aot-compiler--emit-vectorlike-payload
        buf 'rdi 'rdi)
       ;; Dynamic rsp alignment around the call.
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x49 #x89 #xE2))
@@ -16061,13 +16097,11 @@ elsewhere in AOT."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
 
 (defun nelisp-aot-compiler--emit-vector-len (node buf)
-  "Read `vector.value.len' into rax."
+  "Read the compact vectorlike header's logical length."
   (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-  (nelisp-heap-accessors-x86_64-sexp-payload
-   buf 'rsi 'rdi)
-  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
-   buf 'rax 'rsi nelisp-nlvector--offset-value-length))
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'rax 'rax)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rax 'rax 0)
+  (nelisp-asm-x86_64-sar-reg-imm8 buf 'rax 8))
 
 (defun nelisp-aot-compiler--emit-vector-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's vector element in rax."
@@ -16104,7 +16138,7 @@ yields a stable truthy value)."
           (nelisp-aot-compiler--emit-temp-pop buf 'r8)
           (nelisp-aot-compiler--emit-temp-pop buf 'rdx)
           (nelisp-aot-compiler--emit-temp-pop buf 'rcx)
-          (nelisp-heap-accessors-x86_64-sexp-payload
+          (nelisp-aot-compiler--emit-vectorlike-payload
            buf 'rcx 'rcx)
           (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
           (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
@@ -16114,7 +16148,7 @@ yields a stable truthy value)."
       (nelisp-aot-compiler--emit-temp-pop buf 'rdx)
       (nelisp-aot-compiler--emit-temp-pop buf 'rsi)
       (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
-      (nelisp-heap-accessors-x86_64-sexp-payload
+      (nelisp-aot-compiler--emit-vectorlike-payload
        buf 'rdi 'rdi)
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
       (nelisp-asm-x86_64-reloc-plt32-here
@@ -17274,7 +17308,8 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific store instruction:
   nl_ptr_write_u8  → MOV BYTE  PTR [RDI+RSI], DL
   nl_ptr_write_u16 → MOV WORD  PTR [RDI+RSI], DX
   nl_ptr_write_u32 → MOV DWORD PTR [RDI+RSI], EDX
-Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-extern contract)."
+Returns rax = 1 sentinel for `and'-chain composition
+(matches the Rust void-extern contract)."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
         (offset (nelisp-aot-compiler--ir-get node :offset))
         (val (nelisp-aot-compiler--ir-get node :val)))
@@ -17630,11 +17665,9 @@ slot -> x0, val -> x1; STRB tag-int @[x0+0], STR val @[x0+8]; x0 = slot."
   (nelisp-asm-arm64-str-imm buf 'x1 'x0 nelisp-sexp--offset-payload))
 
 (defun nelisp-aot-compiler--emit-cons-null-p-arm64 (node buf)
-  "Emit `cons-null-p' for aarch64 — x0 = (tag byte at [ptr] == Nil)."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-heap-accessors-arm64-ldrb-imm buf 'x1 'x0 0)          ; x1 = tag byte
-  (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
+  "Return whether NODE's WORD denotes nil, including compact pointer classes."
+  (nelisp-aot-compiler--emit-sexp-tag-arm64 node buf)
+  (nelisp-asm-arm64-cmp-imm buf 'x0 0)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
 (defun nelisp-aot-compiler--emit-cons-slot-copy-arm64 (node buf field-off)
@@ -17724,6 +17757,10 @@ slot pointer in x0 (matches the `cons-make' ABI)."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value
      (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'eq zero-lbl)
     (nelisp-heap-accessors-arm64-ldrb-imm buf 'x1 'x0 0)        ; tag byte
     (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
@@ -17766,6 +17803,10 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
     (nelisp-asm-arm64-cmp-imm buf 'x3 1)
     (nelisp-asm-arm64-b-cond buf 'eq nil-lbl)
     ;; x1 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x1 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'eq nil-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x2 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x2 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-b-cond buf 'ne nil-lbl)
@@ -17780,9 +17821,22 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
   "Emit `sexp-payload-ptr-record' for aarch64 — Record -> box ptr, else 0."
   (let* ((id (nelisp-aot-compiler--gensym "sexp-payload-ptr-record-a64"))
          (zero-lbl (intern (format "%s-zero" id)))
-         (end-lbl (intern (format "%s-end" id))))
+         (end-lbl (intern (format "%s-end" id)))
+         (legacy-lbl (intern (format "%s-legacy" id))))
     (nelisp-aot-compiler--emit-value
      (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'ne legacy-lbl)
+    (nelisp-asm-arm64-sub-imm buf 'x0 'x0 6)
+    (nelisp-heap-accessors-arm64-sexp-tag buf 'x1 'x0)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 63)
+    (nelisp-asm-arm64-and-reg-reg buf 'x1 'x1 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-record)
+    (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf legacy-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x1 'x0)
     (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-record)
     (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
@@ -17808,26 +17862,19 @@ no manual align is needed.  Returns the view pointer in x0."
   (nelisp-asm-arm64-bl buf 'nl_record_slot_ptr))   ; x0 = view ptr
 
 (defun nelisp-aot-compiler--emit-record-type-tag-arm64 (node buf)
-  "Emit `record-type-tag' for aarch64 — copy inline type tag to :slot."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
-        (slot (nelisp-aot-compiler--ir-get node :slot)))
-    (nelisp-aot-compiler--emit-value ptr buf)
-    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-    (nelisp-aot-compiler--emit-value slot buf)
-    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
-    (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0)
-    (nelisp-heap-accessors-arm64-sexp-payload buf 'x2 'x0)
-    (nelisp-aot-compiler--emit-copy-sexp32-arm64
-     buf 'x2 'x1 nelisp-nlrecord--offset-type-tag 0)
-    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)))
+  "Copy the record type WORD into the caller's view through its accessor."
+  (nelisp-aot-compiler--emit-vectorlike-call
+   'nl_record_type_copy
+   (list (nelisp-aot-compiler--ir-get node :ptr)
+         (nelisp-aot-compiler--ir-get node :slot)) buf))
 
 (defun nelisp-aot-compiler--emit-record-slot-count-arm64 (node buf)
-  "Emit `record-slot-count' for aarch64 — read NlRecord.slots.length."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0)
-  (nelisp-heap-accessors-arm64-ldr-imm
-   buf 'x0 'x0 nelisp-nlrecord--offset-slots-length))
+  "Read the compact vectorlike header's logical length."
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'x0 'x0)
+  (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 0)
+  (nelisp-asm-arm64-mov-imm64 buf 'x9 8)
+  (nelisp-asm-arm64-lsrv buf 'x0 'x0 'x9))
 
 (defun nelisp-aot-compiler--emit-record-slot-ref-ptr-arm64 (node buf)
   "Emit `record-slot-ref-ptr' for aarch64."
@@ -17863,7 +17910,7 @@ no manual align is needed.  Returns the view pointer in x0."
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0)
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0)
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'x0 'x0)
   (nelisp-asm-arm64-bl buf 'nl_record_set_slot)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
@@ -17883,12 +17930,12 @@ no manual align is needed.  Returns the view pointer in x0."
   (nelisp-asm-arm64-bl buf 'nl_vector_slot_ptr))   ; x0 = view ptr
 
 (defun nelisp-aot-compiler--emit-vector-len-arm64 (node buf)
-  "Emit `vector-len' for aarch64 — read NlVector.value.length."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0)
-  (nelisp-heap-accessors-arm64-ldr-imm
-   buf 'x0 'x0 nelisp-nlvector--offset-value-length))
+  "Read the compact vectorlike header's logical length."
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'x0 'x0)
+  (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 0)
+  (nelisp-asm-arm64-mov-imm64 buf 'x9 8)
+  (nelisp-asm-arm64-lsrv buf 'x0 'x0 'x9))
 
 (defun nelisp-aot-compiler--emit-vector-ref-ptr-arm64 (node buf)
   "Emit `vector-ref-ptr' for aarch64."
@@ -17924,7 +17971,7 @@ no manual align is needed.  Returns the view pointer in x0."
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0)
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0)
+  (nelisp-aot-compiler--emit-vectorlike-payload buf 'x0 'x0)
   (nelisp-asm-arm64-bl buf 'nl_vector_set_slot)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
@@ -18030,10 +18077,43 @@ immediate WORD 3, so load the full word (not a tag byte) and compare to 3."
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
 (defun nelisp-aot-compiler--emit-sexp-tag-arm64 (node buf)
-  "Emit `sexp-tag' for aarch64 — x0 = zero-extended tag byte at [ptr]."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x0))
+  "Emit the semantic tag for legacy, compact and immediate WORDs."
+  (let* ((id (nelisp-aot-compiler--gensym "sexp-tag-a64"))
+         (pointer (intern (format "%s-pointer" id)))
+         (legacy (intern (format "%s-legacy" id)))
+         (integer (intern (format "%s-integer" id)))
+         (nil-value (intern (format "%s-nil" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 1)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 0)
+    (nelisp-asm-arm64-b-cond buf 'eq pointer)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 3)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 1)
+    (nelisp-asm-arm64-b-cond buf 'eq integer)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 3)
+    (nelisp-asm-arm64-b-cond buf 'eq nil-value)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf integer)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 2)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf nil-value)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf pointer)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'ne legacy)
+    (nelisp-asm-arm64-sub-imm buf 'x0 'x0 6)
+    (nelisp-asm-arm64-define-label buf legacy)
+    (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x0)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 63)
+    (nelisp-asm-arm64-and-reg-reg buf 'x0 'x0 'x9)
+    (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-sexp-int-unwrap-arm64 (node buf)
   "Emit `sexp-int-unwrap' for aarch64 — x0 = i64 payload at [ptr+8].

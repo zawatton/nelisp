@@ -1,4 +1,5 @@
 #+TITLE: Header-less heap (Doc 216): tagged WORDs address the payload directly
+#+NOTE: 2026-10-21 wh-s4f: preserve 29 criteria and all thresholds; resolve S4.1 plus primitive semantics, recover four-layout total Ir against ccf3d0330, then implement S4.2 without S6.3 root-stack work. Evidence belongs under target/wh-s4f. Inherited pending criteria are executable failures until their implementation and acceptance evidence exist; no completion is claimed by this conversion. Wine remains coordinator-owned.
 #+NOTE: 2026-10-20 wh-prim integration: preserve all 29 criteria and caps while merging 44c73e926 onto b51fe66f4. S0/S1 evidence is retained; rerun the accessor census, Linux acceptance and primitive ledgers. S1.3 Wine remains with the coordinator. Evidence belongs to target/wh-prim; COMMON.md assigns worklog persistence to the coordinator.
 
 #+NOTE: 2026-10-20 meter environment (coordinator): S1.2 re-validates the abi-ir.py measurement record, whose identities include a hash of NELISP_*/M5_*/LD_*/LC_*/LANG. The S1 record was made under LANG=en_DK.UTF-8 LC_ALL=C.UTF-8 LC_CTYPE=C.UTF-8 LC_TIME=en_DK.UTF-8. Run the meter with LC_CTYPE=C.UTF-8 exported in this desktop shell (LANG and LC_TIME already match), or S1.2 reads FAIL "stale provenance".
@@ -48,7 +49,10 @@ cmd: python3 tools/ai/word-heap-accessors.py controls
 #+NOTE: 2026-10-20 S1 evidence replay pins the measured LC_ALL=C.UTF-8 because progress-meter exports LC_ALL=C. Runtime-environment hash validation remains exact; no evidence or threshold is rebound to the meter environment.
 #+NOTE: 2026-10-20 wh-prim replay separates the unchanged accessor-only measurement at b51fe66f4 from subsequent primitive runtime edits. Historical source hashes, artifacts, byte identity and Ir facts remain pinned unchanged; current canonical source and all 114 linked units must still have zero raw reads, with the accessor/lowerer contract unchanged. Before: 16 historical source hash mismatches prevent reuse; after: historical evidence and current integration census are checked separately. No cap or criterion is removed.
 #+NOTE: 2026-10-20 wh-prim integration: unresolved source raw-read upper bound 96 -> 0; dynamic linked raw reads 0 with 3825 accessor sites; both binaries retain ABI S6.2=0 and TOTAL dynamic1348/static1346. Four-layout total Ir against freshly archived/rebuilt b51fe66f4: boot534960229.00 ->519863760.50 (-2.821980%), files4667490116.50 ->4357290750.00 (-6.645957%), regex6000 6153867578.50 ->3739517988.00 (-39.233044%). All outputs agree; per-layout GC boot0/0, files2/2, regex2/0. target/wh-prim retains source provenance, raw profiles and GNU references; no threshold changed.
-cmd: LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check --source-revision b51fe66f4 --linked target/prim-integ/accepted-dynamic/box-dump.jsonl
+#+NOTE: 2026-10-20 S4 prerequisite: preserve the S1 unchanged-layout proof against committed source b51fe66f4bb7fbac31d4ce44796f1f074c85d17b while checking current raw reads=0. The exact recorded source/artifact/environment hashes remain required; only worktree path labels relocate. Restored eleven omitted Linux log files from the original worktree after verifying their existing manifest hashes. The strict live-source mode rejects S4 edits; historical replay passes, and altered source/artifact hashes both fail. No measurement or threshold changed.
+cmd: LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check-historical
+cmd: python3 tools/ai/box-census.py check "${WH_S4F_DYN_CENSUS:-target/wh-s4f/merged2-dynamic/census.tsv}" --family all --idiom raw-header-read --max 0
+cmd: python3 tools/ai/box-census.py check "${WH_S4F_DYN_CENSUS:-target/wh-s4f/merged2-dynamic/census.tsv}" --family all --idiom nl_val_store_word --idiom nl_abi_rc_to_word --idiom nl_abi_rc2_to_word --idiom inline-box-to-word --max 0
 
 ** S1.3 End to end: eval/core full suite (dyn+static), standalone-checks, wine Windows smoke on the accessor-only tree
 #+NOTE: 2026-10-20 lane scope: Linux dynamic/static 11-group verification, standalone checks and 40-tool Anvil MCP smoke are required here; Wine remains pending for the coordinator, as BRIEF.md requires.
@@ -63,81 +67,89 @@ cmd: grep -q 'GATE-COUNT: 11 cases, 0 failures' target/word-heap-s1/final-checks
 
 ** S2.1 arena bytes/cons <= 32 (payload <=24) by the objsize probe
 #+NOTE: 2026-10-20 S0 revision S2: old <=24/16 arena B with/without rc -> <=32/24 arena B; payload limits remain24/16 B. Reason: every allocation adds8 B BLOCK_TOTAL. Exercise make-list and individually retained populations to expose alias overhead; remove every linked rc reader/writer before shrinking.
-pending
+cmd: printf '%s\n' 'S2.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S2.2 cons refcount removed: arena bytes/cons <=24 (payload <=16)
 #+NOTE: 2026-10-20 unit correction: old <=16 arena B -> <=24 arena B; payload limit stays 16 B. Live clone lock-xadd at payload+16 must be removed before shrinking; old drop source/layout consumers must be retired or guarded. A 16 B charged cons needs a separate pooled-allocator design.
-pending
+cmd: printf '%s\n' 'S2.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S2.3 End to end: full suite, exit-stash/GC-root checks, image dump/restore round-trip, wine Windows smoke
-pending
+cmd: printf '%s\n' 'S2.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S3 strings and symbols header-less
 
 ** S3.1 bytes per 8-char string and per uninterned symbol at or below the S0-revised thresholds
 #+NOTE: 2026-10-20 S0 revision S3: old unspecified limits -> string8<=48 arena B; symbol handle<=32 arena B with shared name charged separately. Reason: tagged payload plus allocator prefix; preserve GNU name identity/eq and mutation without hiding name storage.
-pending
+cmd: printf '%s\n' 'S3.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S3.2 End to end: full suite, GC-root checks, image round-trip, reader/printer parity with GNU 31.1, wine smoke
-pending
+cmd: printf '%s\n' 'S3.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S4 vectors, records, char-tables and frames header-less (vectorlike header word)
 
 ** S4.1 vector/record/char-table objects carry no 32 B header box (probe plus census)
 #+NOTE: 2026-10-20 S0 revision S4: old zero-header requirement -> same0 plus vector slot8 B, one-user-slot record<=32 arena B, closure/frame/char-table tracing and mixed identity; move S4 before S2. Reason: primary cons shares are below60%, and container/frame alias ownership must be explicit before cons-only forecasts.
-pending
+#+NOTE: 2026-10-20 S4.1 lane starts from b51fe66f4. Recompute pinned raw object populations and allocation census; reject the S1 representation before accepting compact vectorlikes. S4.2 remains outside this lane; S4.3 Linux evidence is recorded separately while coordinator Wine acceptance remains outstanding. No threshold changed.
+#+NOTE: 2026-10-20 fresh S1 retained slopes: vector1=96, record1=128, char-table=544, vector-slot=8 arena B on both linkages; GNU GC slopes=32/40/568/8 and DWARF structural minima=16/24/552/8 B are distinct references. Ten verifier controls pass: both real S1 linkages fail acceptance, six mutations reject a legacy header or hidden alias for each kind, and two malformed raw layouts reject a record field crossing its allocation and an undersized ten-cell extra buffer. The former verifier accepts both malformed layouts; a valid48-root calibration passes. S1 populations were recaptured with the strengthened verifier; the archived prior raw inputs remain intact. Development loop: the new actual-code boundary fixture covers 17 codegen, 20 relocation and 42 shallow-copy checks in0.87 s versus a158.31 s full reader rebuild; all three restored ownership-clone mutations fail. The focused fixture does not replace the full final build/suite. No new reader builtin or native Lisp API is introduced.
+#+NOTE: 2026-10-20 candidate replay also requires the independent source manifest: the exact557 inputs covered by the existing build guard (direct src/lisp/scripts Elisp plus staged subr), actual embedded guard identity from both candidate executables, and binary/image/startup trios. This is the existing guard coverage, not a claim to hash all vendored build inputs. A stale measured binary cannot satisfy a changed current guarded source tree.
+#+NOTE: 2026-10-20 compact metadata views exposed an identity-stamp dependency on a temporary view address. Both stamp sites now use the backing address. The actual production sync/rehash/accessor native fixture passes14 checks in0.54 s; restoring both view-address stamps fails the repeated-view case. Epoch and moved-backing invalidation remain required. This is a representation correctness fix, with no threshold change.
+#+NOTE: 2026-10-20 final compact slopes equal physical allocation charges on both linkages: vector1=24, record1=32, char-table=416, vector-slot=8 B; census96 distinct roots has zero retained legacy header/alias boxes. Fresh four-layout total Ir includes GC and increases versus S1: dynamic boot+4.271%, files+20.915%, regex6000+14.899%; static+4.216%/+20.835%/+14.870%. All48 profile outputs match and GC counts remain0/2/2. The inherited1.0 comparison remains FAIL; S8 stays pending and no speed threshold changed. See target/word-heap-s4v/ir/result.json.
+cmd: python3 tools/ai/word-heap-vectorlike.py check && python3 tools/ai/word-heap-vectorlike-source.py check
+cmd: python3 tools/ai/word-heap-prim-boundaries.py check --output target/wh-s4f/primitive-layout/published-run
 
 ** S4.2 Call frames live on a frame stack and move to the heap only when captured (closures, backtrace frames/locals); the prim-callfloor let/while gates pass (VM and bytecode <=5x GNU)
 #+NOTE: Added 2026-10-20 (denominator 27 -> 29 with S6.3). prim-callfloor S1 located the evaluator call floor in a heap frame per call, 32 B root registration and the bytecode JIT hook; its caps cannot be met in the current layer, so frames and roots are designed here. Mind the alist frames (6aff648db), captured closure frames (16afff6df) and backtrace--locals.
-pending
+cmd: python3 tools/ai/word-heap-frames.py check
 
 ** S4.3 End to end: full suite, GC-root checks, image round-trip, closure/frame parity cases, wine smoke
-pending
+#+NOTE: 2026-10-20 S4.1 Linux evidence: both fresh cold builds succeed; standard COMMON DYN/STATIC suite11 groups/0 failures, separate dynamic standalone76/0, Anvil MCP40 tools with stdin held25 s. Both linkages pass precise-root closure/frame GNU parity, six first-call/forced-GC regressions, image dump/in-place/fresh-restore32 checks, and bad/foreign image rejection. Raw-header census=0 and ABI S6.2 dependencies=0 across all7 families on both linkages. Current557-input build guard matches both embedded identities; six source controls and five actual-code boundary mutations reject their broken inputs. Evidence target/word-heap-s4v/{final,typed-image-after-stamp,closure-after-stamp,census-after-stamp,source-after-stamp-controls,final-boundaries-after-stamp}/.
+#+NOTE: 2026-10-20 additional all-static functional suite is11 groups/1 failure: standalone-sqlite-owned-check reports SQLite unavailable. The same exact check fails on the pinned S1 static executable, while GNU31.1 and the current dynamic executable pass with identical output. The existing freestanding static build deliberately excludes the external FFI dispatcher; implementing a static dynamic-loader/SQLite facility is outside this representation lane and prevents full all-static acceptance. Keep the failing raw result, do not add a known-red exemption or weaken its assertion. See target/word-heap-s4v/static-sqlite-diagnosis/singlecheck.json and final/static-final-checks.out. S4.3 remains pending for this baseline capability and the coordinator's Wine acceptance; S4.2 is untouched.
+cmd: printf '%s\n' 'S4.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S5 floats, bignums, markers and remaining types header-less
 
 ** S5.1 No object type allocates a 32 B header box (census of allocation sites by type)
 #+NOTE: 2026-10-20 S0 revision S5: old zero-header target -> same0 plus float<=24, measured one-limb bignum<=32, detached two-field marker<=40 arena B, with GNU numeric/error parity. Reason: payload plus allocator prefix and measured40/64/272 B constructor slopes need separate limits.
-pending
+cmd: printf '%s\n' 'S5.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S5.2 End to end: full suite, GC-root checks, image round-trip, numeric parity cases, wine smoke
-pending
+cmd: printf '%s\n' 'S5.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S6 Roots and copies retired
 
 ** S6.1 Census: legacy 32 B headers/views/root allocations = 0, *_ptr materialisers = 0, clone_into = 0, wf_copy32 = 0
 #+NOTE: 2026-10-20 S0 revision S6: old literal alloc-bytes32-8=0 -> classified legacy headers/views/root allocations=0, materialisers/copies=0, roots8 B; legitimate32 B payloads counted separately. Reason: an allocation size is not an object kind. Keep S6 after object conversions; its zero-header end state cannot precede them.
-pending
+cmd: printf '%s\n' 'S6.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S6.2 Precise roots are WORD slots: nl_root_reserve 32 B slots = 0
-pending
+cmd: printf '%s\n' 'S6.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S6.3 Call-path roots are WORD slots on a root stack; the prim-callfloor funcall/builtin gates pass (VM and bytecode <=5x GNU, interpreter <=10x)
-pending
+cmd: printf '%s\n' 'S6.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S6.4 End to end: full suite, thread smokes on static, GC-root checks, wine smoke
-pending
+cmd: printf '%s\n' 'S6.4: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S7 Image format and platforms
 
 ** S7.1 .cold image format version bumped; a stale image is rejected with a clear error (test)
 #+NOTE: 2026-10-20 S0 revision S7: old format/platform acceptance -> unchanged; both loader/relocator paths preserve pointer tags after untagged bounds checks. Reason: aligned addition preserves000 only. Independently rebuilt library images and native Windows remain required future evidence.
-pending
+cmd: printf '%s\n' 'S7.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S7.2 Native Windows acceptance on the user's machine (auto-discovered .cold, eval, GC root, bytecode 145/145)
-pending
+cmd: printf '%s\n' 'S7.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S7.3 nelisp-emacs-lib images rebuilt and its census (ccore/process/display/buffer/...) passes (evidence from that session)
-pending
+cmd: printf '%s\n' 'S7.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 * S8 Final
 
 ** S8.1 Live bytes after a fixed vendor load are at most 50% of the pinned ABI candidate (provisional until complete S0 evidence)
 #+NOTE: 2026-10-20 S0 revision S8: old provisional<=50% vendor-load limit -> retain<=50%; pin ABI executable+image and freeze the fixed vendor-load recipe before S1; unchanged4-layout total-Ir caps including GC and400-call soak. Reason: these physical snapshots are not the fixed-load experiment, and different permanent generations invalidate date-only baselines. Any later threshold change requires a new dated NOTE.
-pending
+cmd: printf '%s\n' 'S8.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S8.2 Ir gates: files and regex at or below the baseline, boot not slower (four address layouts, total Ir including GC)
-pending
+cmd: python3 tools/ai/word-heap-s4f-ir.py check
 
 ** S8.3 End to end: anvil 400-call side-by-side soak with 0 mismatches, plus the eval/core full suite on the final binaries
-pending
+cmd: printf '%s\n' 'S8.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1

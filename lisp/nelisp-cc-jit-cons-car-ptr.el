@@ -31,30 +31,10 @@
 
 (defconst nelisp-cc-jit-cons-car-ptr--source
   '(defun nl_cons_car_ptr (arg)
-     ;; arg: *const Sexp.  Returns a 32B-slot VIEW of the car, or 0 when
-     ;; arg is not a Cons (tag != 7).
-     ;;
-     ;; Doc 147 Phase 3 — the NlConsBox car is now an 8-byte tagged WORD
-     ;; @ box+0 (was a 32B inline Sexp).  The ~302 consumer sites still
-     ;; read a 32B `Sexp' (tag@+0 / payload@+8) from the returned pointer,
-     ;; so we MATERIALISE a 32B-slot VIEW exactly like the Phase-2
-     ;; `nl_vector_slot_ptr':
-     ;;   box   = *(u64*)(arg + 8)        // Sexp::Cons payload (NlConsBox*)
-     ;;   word  = *(u64*)(box + 0)        // the 8B tagged car WORD
-     ;;   - pointer WORD (low bit 0): return it directly (already a 32B
-     ;;     child Sexp box the consumer reads tag/payload from).
-     ;;   - immediate WORD (low bit 1): alloc a FRESH 32B box and
-     ;;     materialise the immediate into it via `nl_val_load(word, box)'
-     ;;     (the Phase 0 keystone).  A fresh box PER immediate call kills
-     ;;     the SCRATCH-LIFETIME HAZARD for consumers holding two+ accessor
-     ;;     results live (list walks / bucket walks / equal2 recursion).
-     (if (= (logand arg 1) 1) 0
-     (if (= (sexp-tag arg) 7)
-         (let ((word (heap-read-u64 (heap-sexp-payload arg) 0)))
-           (if (= (logand word 1) 0)
-               word
-             (extern-call nl_val_load word (alloc-bytes 32 8))))
-       0)))
+      (if (= (nl_val_tag arg) 7)
+          (let ((word (heap-read-u64 (nl_word_payload arg) 0)))
+            (if (and (= (logand word 1) 0) (/= (logand word 7) 6)) word
+              (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))) 0))
   "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
 
 Returns a 32B-slot VIEW of the cons CAR when arg is Sexp::Cons (tag 7),

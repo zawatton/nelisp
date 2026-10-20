@@ -4,16 +4,15 @@
 
 ;;; Commentary:
 
-;; S1 changes no representation. These are compiler forms, not runtime
-;; functions or reader builtins. Lower them before optimization/inlining to
-;; the original operations, preserving evaluation order and instruction bytes.
+;; S1 established the load boundary without changing representation.
+;; S4 lowers logical Sexp fields to WORD-aware helpers before optimization:
+;; legacy storage views and direct vectorlike values share one semantic API.
+;; These remain compiler forms, not reader builtins.
 ;;
-;; A storage operand is an explicit address: a legacy Sexp/view, backing
-;; object, allocator metadata, or foreign buffer. It is NOT an unchecked
-;; arbitrary tagged WORD. WORD consumers must retain their immediate checks
-;; and semantic accessors (nl_val_tag, nl_word_payload, container accessors).
-;; Later per-type stages must change those policies before producing a new
-;; pointer class; changing this storage primitive alone is not sufficient.
+;; Raw heap-read/native/extern operations below still address explicit storage:
+;; backing objects, allocator metadata, foreign buffers or physical views.
+;; They do not decode an arbitrary tagged WORD. Only the logical heap-sexp
+;; forms dispatch immediate/legacy/direct representations.
 ;;
 ;; We deliberately centralize a superset of header reads: all storage loads,
 ;; including non-object memory. Thus the census needs no optimistic pointer
@@ -37,11 +36,9 @@
     (heap-sexp-payload ptr-read-u64 8)
     (heap-sexp-data ptr-read-u64 16)
     (heap-sexp-length ptr-read-u64 24))
-  "Logical legacy Sexp/view fields; their physical offsets live only here.
-Tag-word retains all eight bytes (some callers deliberately use a full-word
-tag), while tag-byte retains zero-extension. No immediate check is added:
-these callers have already selected a pointer/view. WORD-aware operations
-retain their existing immediate branches outside the storage selection.")
+  "Logical Sexp/view fields; offsets describe the legacy fallback only.
+S4 resolves these fields through the WORD-aware semantic helpers. Physical
+storage reads below retain their exact load widths and calling conventions.")
 
 (defconst nelisp-heap-accessors-read-ops
   '((heap-read-u8 ptr-read-u8)
@@ -60,7 +57,8 @@ retain their existing immediate branches outside the storage selection.")
 Keep direct/native/explicit-extern calls distinct: their old ABI is retained.")
 
 (defun nelisp-heap-accessors-lower (source)
-  "Lower accessor forms in SOURCE without touching quoted Lisp data.
+  "Lower semantic fields and physical storage access in SOURCE.
+Do not touch quoted Lisp data.
 Do this after the census, before any source optimizer or native emitter.
 Every operand is retained exactly once; dotted data is preserved."
   (if (not (consp source)) source
@@ -71,9 +69,17 @@ Every operand is retained exactly once; dotted data is preserved."
                          (assq (car source) nelisp-heap-accessors-sexp-fields))))
         (cond
          (field
-          (append (list (cadr field))
-                  (nelisp-heap-accessors--lower-tail (cdr source))
-                  (list (caddr field))))
+          ;; These operands denote Lisp values, unlike the raw storage
+          ;; accessors below. Preserve legacy views while accepting direct
+          ;; vectorlike WORDs. The primitive helpers use storage loads, so
+          ;; this lowering cannot recurse into itself.
+          (list (pcase (car field)
+                  ('heap-sexp-tag-byte 'nl_val_tag)
+                  ('heap-sexp-tag-word 'nl_word_tag64)
+                  ('heap-sexp-payload 'nl_word_payload)
+                  ('heap-sexp-data 'nl_word_data)
+                  ('heap-sexp-length 'nl_word_length))
+                (nelisp-heap-accessors-lower (cadr source))))
          (entry
           (append (cdr entry) (nelisp-heap-accessors--lower-tail (cdr source))))
          (t
