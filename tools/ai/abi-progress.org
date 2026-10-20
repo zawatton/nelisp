@@ -16,6 +16,8 @@
 #   python3 tools/ai/box-apply.py flip-arms
 #   rebuild, python3 tools/ai/box-apply.py repoint "$ABI_DUMP"
 
+#+NOTE: 2026-10-20 landing merge dad512b4d + fb54c401f: preserve all 21 criteria and thresholds; remeasure candidate dump/census and both Ir gates against 10beb8a3c. Evidence environment: LANG=C.UTF-8; preserve and record NELISP_*, LD_*, LC_* values. Existing pinned evidence is historical until replaced by this merge candidate.
+
 * S1 Group G1 converted
 
 ** S1.1 G1 has no dispatch arm left on the legacy adapter
@@ -488,10 +490,62 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
-evidence: $ABI_IR_PROFILE/measurement.json sha256=5a04c4241280a323a7a3348449670ea9007ce2ec706b39c82747e74aa28dfd8a
-evidence: tools/ai/abi-final-evidence.json sha256=bd4a9676a174df781da6128fb7fd69076ecc0e296133394e70b62573d13ba10c
+evidence: $ABI_IR_PROFILE/measurement.json sha256=31962935c70de497ae0fc97f97c7d94cddbdb48a75eeec1ab91c32f06970f4ec
+evidence: tools/ai/abi-final-evidence.json sha256=e785970166b6f83c6a5c5eab293ff3245bd1eacc3d32faa6c997f3ca3ff7b454
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN
 #+TIMEOUT: 600
 cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
+
+#+NOTE: 2026-10-20 landing measurement operations: under concurrent Callgrind
+# load the 580-second regex6000 jobs produced no complete profiles. The run
+# was interrupted without accepting evidence. Operational timeouts change
+# regex6000 580 -> 1780 seconds and regex24000 1780 -> 3600 seconds; reduce
+# simultaneous profiles 16 -> 8. Workloads, all four layouts, independent
+# mean-Ir caps, >=10 natural regex24000 sweeps and 21 criteria are unchanged.
+# Detect any failed future immediately and cancel/reap every active process
+# group, rather than waiting for unrelated long profiles on pool shutdown.
+# Real negative control: the old failure path waits 3.038186 seconds for
+# siblings; the repaired path takes 0.041222 seconds, with timeout/cancel
+# process reaping and all20 Ir harness tests passing.
+# A subsequent Astra audit found external SIGTERM bypassed Python cleanup
+# for the isolated groups. A real parent/profile test is red before and
+# green after routing SIGTERM through cancellation; repeat requests cannot
+# interrupt reaping. The test publishes its child PID by atomic rename.
+# Final21 harness tests pass; failure propagation0.013751s vs3.038186s old.
+#+NOTE: 2026-10-20 baseline provenance correction. The prescribed baseline
+# remains the preserved10beb8a3c triple (ELF SHA256
+# ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a),
+# as pinned before this lane. An additional clean source rebuild has the
+# same609 source files and113 common native units but different dumped heap
+# topology:2780700 vs2210258 blocks, FREE981 vs4464. It is not the same
+# artifact. The additional comparison is KNOWN-RED: regex6000 mean
+# 67273370582.25 ->67645605196 (+0.553%). Preserve its profiles and JSON
+# under target/abi-landing/additional-baseline-comparison.json. A separate
+# Astra audit confirms restoring the original exact baseline is faithful to
+# the brief; do not attribute the topology difference solely to paths.
+# Formal24-job and files comparisons are remeasured against the prescribed
+# baseline; no acceptance workload, cap, GC floor or denominator changes.
+#+NOTE: 2026-10-20 landing merge dad512b4d + fb54c401f: formal24/24 jobs
+# complete in1947.637s against the unchanged prescribed10beb8a3c artifact.
+# Environment exactly LANG=C.UTF-8, LC_ALL=C, LC_CTYPE=C.UTF-8; all other
+# NELISP_*, M5_*, LD_* and LC_* variables unset. Reproduction:
+# source target/codex/env-final.sh. Raw evidence is frozen in plain lane
+# directories target/abi-landing/ir-formal and files-formal.
+# Mean total Ir base -> candidate: boot1215310860 ->636689926.5 (-47.611%);
+# regex6000 69804804092.75 ->67645600930 (-3.093%);
+# regex24000 255221743308 ->255143942857.75 (-0.030%). All outputs match.
+# GC base/candidate in every layout: boot0/0, regex6000 4/5,
+# regex24000 11/25; no forced collection or excluded GC instructions.
+# Files:11177697697.75 ->7149414752 (-36.039%), GC2/2, matching output.
+# CensusTOTAL1365 and every box-to-word dependency0. Dynamic/static
+# printer106, GNU31.1 unibyte43, VM native-head105 and locals7 all pass.
+# Full standalone69/0 failures except listed maphash-sparse; final suite
+# 11/0; host ERT25/25; changed Elisp parens17/0; Anvil40 tools/exit0.
+# All21 Ir-tool tests pass including real SIGTERM cleanup and negative
+# controls. Doc200 tests now select NELISP_BIN:7 skipped ->0 skipped;
+# full ERT57.811s (17 pass/1 fail/7 skip) ->127.178s (25 pass), measured
+# with differing coverage/load; no runtime speedup is claimed from this.
+# Boot wall medians under8 Callgrind jobs are informational only:
+# base414563.883us, candidate365171.686us. No acceptance cap changes.

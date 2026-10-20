@@ -1,54 +1,110 @@
 {
-  "schema_version": 1,
-  "runtime_source_commit": "b409d8ae654042a746e0600fea5fce75025b9b35",
-  "baseline_source_commit": "10beb8a3c",
+  "schema_version": 2,
+  "merge_parents": [
+    "dad512b4d7a835f719aec4c56adfbc105746e3a6",
+    "fb54c401f004145e295b8ca055069a64d022dc04"
+  ],
+  "baseline_source_commit": "10beb8a3c717a65a4bd9add8a466991d0ec9d00a",
+  "runtime_sources": {
+    "lisp/nelisp-aot-compiler.el": "9c665685a7a9bd9c494103f31dc8c7f70244673ca4c4f96bc55c35109cae56eb",
+    "lisp/nelisp-artifact.el": "8aa2b1853fd0d5eb680d45ebfda46e2aa3fca6c49e01df9fda0833dd53a0eb5b",
+    "lisp/nelisp-cc-nlstr-direct-ops.el": "3c5d2ad7ce7b4f70def748b7158cc59b22cb90913ab7af880ebe41c895fb4269",
+    "lisp/nelisp-cc-reader-lexer.el": "b24e9eb1d7055f6955a1d399fd6d4f758b7918d66fee9e5a44caafc569da5105",
+    "lisp/nelisp-cc-reader-parser.el": "4de9c2886977b0f6dbdc2ecb463ae0d55895f79e9146faa68d150096a9ea7c68",
+    "lisp/nelisp-stdlib-prn.el": "afd132088ae4ebac73b338373b38e96025c0a777e49ece42ebf2906239a09c8f",
+    "scripts/nelisp-prelude-bytecode.el": "94ba2fb6c8a03014382048c298f8dbb475504b6f01fcbbcd1dc6d1686d10d34f",
+    "scripts/nelisp-standalone-build.el": "72eed3ec8c4c02384738c3a6c13aaae2917dd7eeca100015eb74caeb87881795",
+    "scripts/nelisp-stdlib-prelude.el": "0280ae9e37cfecdf5df66b1e6f75f170709f058670049b28e8ae28fae4f22493",
+    "src/nelisp-bytecode.el": "93069b2a816e93aa3ffde914be425624a23f962d80112a85daeb9a2a94ff0dd9",
+    "test/nelisp-doc200-unibyte-repr-test.el": "89cb4905739559ab0fd172036da5e467a402f729e02dcd16d6b970c47a66783a",
+    "test/nelisp-shadow-differential-cases.el": "832754aa39b9d9ee0cdbc3003533c1fc8987a397a02d57289e50b7f21a5c4685",
+    "test/nelisp-special-form-head-test.el": "f0df8584cc3f9804e17d5f08c30197f0722bd12c477c99423fe8848eafc882c1",
+    "test/standalone-printer-load-check.el": "7ab8bebd285ba81113530f465559ab746ab0045103ba492a7ffb7f6adb81b13f",
+    "test/standalone-unibyte-aset-check.el": "d3058c25a3b6a10f855db9290179b77d80dca5b150b267b7c7f92895c9d50dfd",
+    "test/standalone-vm-special-form-head-check.el": "c72f79b0d686c18eeb9508b0410bf35d441895d1f21b1299cdac3085be850f04",
+    "tools/nelisp-substrate-parity-corpus.el": "1f81950f24a59cd66d4882289cd60820a34628a9d53d55726cd6e09b8ad15081"
+  },
+  "tool_sources": {
+    "tools/ai/abi-ir.py": "9802e2142579a0586a85794cac8f33ac8613868c812ca16b60a2384dc90faa6f",
+    "tools/ai/abi-merge-gate.sh": "498f07003e82e508187682f1a135832c0826602a87c787972b2b3f3c5b01bcd9",
+    "test/abi-ir-test.py": "1a671ebfd952cfd4ad11b570bb45fb797817188ad1171834ae796013f5f0899f"
+  },
   "layouts": [
     0,
     700,
     1400,
     2100
   ],
-  "gc_method": "Callgrind nonrecursive entries into nl_gc_sweep_merge_chunks; recursive edges excluded; no explicit GC",
+  "gc_method": "Callgrind nonrecursive entries into nl_gc_sweep_merge_chunks; all total Ir including automatic GC; no forced collection",
   "thresholds": {
     "maximum_mean_ir_ratio": 1.0,
-    "minimum_regex24000_gc_per_binary_per_layout": 10
+    "minimum_regex24000_gc_per_binary_per_layout": 10,
+    "census_total_exclusive_maximum": 1682,
+    "box_to_word_dependencies_maximum": 0
   },
-  "elapsed_seconds": 1296.738,
+  "runtime_environment": {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C",
+    "LC_CTYPE": "C.UTF-8"
+  },
+  "gnu_comparison_locale": "LC_ALL=C.UTF-8",
+  "gnu_nonportable_vm_fixture": "The native-reader-head fixture intentionally rebinds throw and is run on NeLisp only; GNU printer/load, unibyte/aset, backtrace locals and portable corpus are separate references.",
   "measurement": {
-    "path": "target/abi-ir/ir-21adodvd/measurement.json",
-    "sha256": "5a04c4241280a323a7a3348449670ea9007ce2ec706b39c82747e74aa28dfd8a"
+    "path": "target/abi-landing/ir-formal/measurement.json",
+    "sha256": "31962935c70de497ae0fc97f97c7d94cddbdb48a75eeec1ab91c32f06970f4ec"
   },
+  "elapsed_seconds": 1947.637,
   "binary_builds": {
-    "runtime_source_commit": "b409d8ae6",
-    "build_seconds": {
-      "dynamic": 181,
-      "static": 292
-    },
-    "artifacts": {
-      "dynamic": {
-        "target/abi-p2/merged-dyn/nelisp-dynamic": "b3c9d406ced3ac3977921c960a874f6a03085aa04b7ce9effe0eb2d1778d2b15",
-        "target/abi-p2/merged-dyn/nelisp-dynamic.cold": "2ff071e3889a6b68777297af9a6025ecf2b5053aafffbe05ca386dd4f7a82416",
-        "target/abi-p2/merged-dyn/nelisp-dynamic.native-startup.el": "34a01ea6f1f7f300c6589ffded1fc01be26c97a50aeede531f59c0a4b38e3b78"
+    "dynamic": [
+      {
+        "path": "target/abi-p2/landing-dyn/nelisp-dynamic",
+        "sha256": "fd45dde03d2626051c9b7a04de517268836f7d7bc3089d04a49dcdcec4f6672f"
       },
-      "static": {
-        "target/abi-p2/merged-static/nelisp-static": "2389421c1ceb018d16d92d6d3bd1e7dceddc75b2f7376f27cb5fe740c7d9d732",
-        "target/abi-p2/merged-static/nelisp-static.cold": "494367b56c73943b5b4e137d856724d5a805842d33d31c8e6359c636cfbe12cd",
-        "target/abi-p2/merged-static/nelisp-static.native-startup.el": "b077537d4a170e592f7401d64ff839dc04d3ececb5bfaa7715d5eb864e9106ad"
+      {
+        "path": "target/abi-p2/landing-dyn/nelisp-dynamic.cold",
+        "sha256": "37838dcb42b866301ccef5b00dbf1eb46ac004a5bd7f58344bb32ef71e6832f2"
       },
-      "baseline": {
-        "target/abi-final/baseline/nelisp-dyn": "ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a",
-        "target/abi-final/baseline/nelisp-dyn.cold": "6b29b679961be62e1a41489233bf45d6caca2abb814e40d8d407a0389697509e",
-        "target/abi-final/baseline/nelisp-dyn.native-startup.el": "ce3bd70b5a112518ed6a5b42d906e16d15ff6ebe7fe62add1b68dedc376c5633"
-      },
-      "ABI_DUMP": {
-        "path": "target/abi-p2/merged-dyn/dump.jsonl",
-        "sha256": "500c84fa554f0874c93933ed7ef4a9d74c948ec086a0c83264616fbcf4175725"
-      },
-      "ABI_CENSUS": {
-        "path": "target/abi-p2/merged-dyn/census.tsv",
-        "sha256": "4f46676d09169cd98bcc6cdaca53f151ed1cdf0c7485d0b28bea4b228b334274"
+      {
+        "path": "target/abi-p2/landing-dyn/nelisp-dynamic.native-startup.el",
+        "sha256": "4b6839106ac9decf011829755e51e43bfb1f59c149f14d96ecde53ab9bb080c6"
       }
-    }
+    ],
+    "static": [
+      {
+        "path": "target/abi-p2/landing-static/nelisp-static",
+        "sha256": "5d94a4ca1f9d97f58ea06edfa890cf176a973e8e4c6656b44f5aca659d7eefff"
+      },
+      {
+        "path": "target/abi-p2/landing-static/nelisp-static.cold",
+        "sha256": "44613655200a815bb22db300e57f21ecfac9c5bdef30e4a81945177671960f62"
+      },
+      {
+        "path": "target/abi-p2/landing-static/nelisp-static.native-startup.el",
+        "sha256": "735011e699443e167fe26072548343c65112a8ab3f2493c4ebd27cbf81755bff"
+      }
+    ],
+    "baseline": [
+      {
+        "path": "target/abi-final/baseline/nelisp-dyn",
+        "sha256": "ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a"
+      },
+      {
+        "path": "target/abi-final/baseline/nelisp-dyn.cold",
+        "sha256": "6b29b679961be62e1a41489233bf45d6caca2abb814e40d8d407a0389697509e"
+      },
+      {
+        "path": "target/abi-final/baseline/nelisp-dyn.native-startup.el",
+        "sha256": "ce3bd70b5a112518ed6a5b42d906e16d15ff6ebe7fe62add1b68dedc376c5633"
+      }
+    ]
+  },
+  "dump": {
+    "path": "target/abi-p2/landing-dyn/dump.jsonl",
+    "sha256": "c6ba736b801a07f5c11b80088d7423fc42665fb3d0559808eaf50194e1c8631c"
+  },
+  "census": {
+    "path": "target/abi-p2/landing-dyn/census.tsv",
+    "sha256": "35c4dccdb57d5bd8b0292aa1162c22fc292277387db6ffa7d34ace5ebd9ad1c7"
   },
   "workloads": {
     "boot": {
@@ -56,51 +112,51 @@
         {
           "layout": 0,
           "base": {
-            "ir": 1215253409,
+            "ir": 1215147325,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 627839208,
+            "ir": 636526926,
             "gc_cycles": 0
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 1215364459,
+            "ir": 1215257217,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 627952748,
+            "ir": 636641550,
             "gc_cycles": 0
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 1215472075,
+            "ir": 1215366884,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 628057139,
+            "ir": 636741174,
             "gc_cycles": 0
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 1215577973,
+            "ir": 1215472014,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 628163659,
+            "ir": 636850056,
             "gc_cycles": 0
           }
         }
       ],
-      "base_mean_ir": 1215416979.0,
-      "candidate_mean_ir": 628003188.5,
-      "change_percent": -48.3302274568603,
+      "base_mean_ir": 1215310860.0,
+      "candidate_mean_ir": 636689926.5,
+      "change_percent": -47.61094075140577,
       "identical_outputs": true
     },
     "regex6000": {
@@ -108,51 +164,51 @@
         {
           "layout": 0,
           "base": {
-            "ir": 69804519489,
+            "ir": 69804736020,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 67149765988,
+            "ir": 67644908937,
             "gc_cycles": 5
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 69804755146,
+            "ir": 69804701400,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 67148486632,
+            "ir": 67646543110,
             "gc_cycles": 5
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 69805140567,
+            "ir": 69804952733,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 67150230835,
+            "ir": 67645400886,
             "gc_cycles": 5
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 69804966305,
+            "ir": 69804826218,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 67150060821,
+            "ir": 67645550787,
             "gc_cycles": 5
           }
         }
       ],
-      "base_mean_ir": 69804845376.75,
-      "candidate_mean_ir": 67149636069.0,
-      "change_percent": -3.8037607467208523,
+      "base_mean_ir": 69804804092.75,
+      "candidate_mean_ir": 67645600930.0,
+      "change_percent": -3.09320137892094,
       "identical_outputs": true
     },
     "regex24000": {
@@ -160,108 +216,336 @@
         {
           "layout": 0,
           "base": {
-            "ir": 255222211946,
+            "ir": 255221316048,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 255035003426,
-            "gc_cycles": 26
+            "ir": 255141074356,
+            "gc_cycles": 25
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 255221507280,
+            "ir": 255221911069,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 255045473894,
-            "gc_cycles": 26
+            "ir": 255148175802,
+            "gc_cycles": 25
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 255222604750,
+            "ir": 255221982469,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 255042195950,
-            "gc_cycles": 26
+            "ir": 255137390725,
+            "gc_cycles": 25
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 255222665112,
+            "ir": 255221763646,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 255045446133,
-            "gc_cycles": 26
+            "ir": 255149130548,
+            "gc_cycles": 25
           }
         }
       ],
-      "base_mean_ir": 255222247272.0,
-      "candidate_mean_ir": 255042029850.75,
-      "change_percent": -0.07061195611914872,
+      "base_mean_ir": 255221743308.0,
+      "candidate_mean_ir": 255143942857.75,
+      "change_percent": -0.030483472623299424,
+      "identical_outputs": true
+    },
+    "files": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 11177487433,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 7149194807,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 11177902974,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 7149306337,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 11177677387,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 7149497171,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 11177722997,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 7149660693,
+            "gc_cycles": 2
+          }
+        }
+      ],
+      "base_mean_ir": 11177697697.75,
+      "candidate_mean_ir": 7149414752.0,
+      "change_percent": -36.038574800254864,
       "identical_outputs": true
     }
   },
-  "focused_checks": {
-    "ir_tests": {
-      "path": "target/abi-final/abi-ir-test.log",
-      "sha256": "80e922c10d7781a654e338842d0deb3767e640e739adb55d5a2e56d4828b5557"
+  "files_profiles": {
+    "files-base-0.cg": {
+      "path": "target/abi-landing/files-formal/files-base-0.cg",
+      "sha256": "ae21619f9627d1845dfdfbfad01517ded86b3fe3ed3dd86d842eac21c9758a57"
     },
-    "vm_before": {
-      "path": "target/abi-final/vm-before.log",
-      "sha256": "2f9040f744877097d2b391bf50b975ec82bab9b23dec07a45d1385945884e855"
+    "files-base-0.err": {
+      "path": "target/abi-landing/files-formal/files-base-0.err",
+      "sha256": "77ea0b5aa833b505b0cd2c7a6fde5bcdf0646171e3955049824ab67948421ec2"
     },
-    "vm_candidate": {
-      "path": "target/abi-final/vm-candidate.log",
-      "sha256": "a16ded3f945ad649771e4ca8febffe08106ea5d595b756db51a22a02900793f2"
+    "files-base-0.out": {
+      "path": "target/abi-landing/files-formal/files-base-0.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
     },
-    "gc_layout_negative_controls": {
-      "path": "target/abi-final/counter-negative-controls.log",
-      "sha256": "66ae548e6d9199038ab8d6a785e3c75c4b0a20b81c5f217e212169cb81895880"
+    "files-base-1400.cg": {
+      "path": "target/abi-landing/files-formal/files-base-1400.cg",
+      "sha256": "ab8624eb13aba3948c44e2d8c4f5624d0d4ebe95ecc64ebd0b1f5b61d1ba67d6"
     },
-    "cli_negative_control": {
-      "path": "target/abi-final/profile-command-negative-control.log",
-      "sha256": "3275c78d0bdc744b5c9ea9fa42dbf6044ff8b7cfed099dc95fa1bc9d87be9503"
+    "files-base-1400.err": {
+      "path": "target/abi-landing/files-formal/files-base-1400.err",
+      "sha256": "4b0395ef93d7447c0ea00f9e010f01c5a047c6a336674d7f90dfeccd6356151e"
+    },
+    "files-base-1400.out": {
+      "path": "target/abi-landing/files-formal/files-base-1400.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-base-2100.cg": {
+      "path": "target/abi-landing/files-formal/files-base-2100.cg",
+      "sha256": "5911ca6ecff955b1ccad3f7e1169db7de95716d37215dce9e7272abbd95874cc"
+    },
+    "files-base-2100.err": {
+      "path": "target/abi-landing/files-formal/files-base-2100.err",
+      "sha256": "8f2d288289a67e951c14653770730e571d6514bc21ce2c2bcf150faac4a70736"
+    },
+    "files-base-2100.out": {
+      "path": "target/abi-landing/files-formal/files-base-2100.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-base-700.cg": {
+      "path": "target/abi-landing/files-formal/files-base-700.cg",
+      "sha256": "565113a0a5462b8b336a9dc669ab274e251586d3376aea701f8470fdb0736672"
+    },
+    "files-base-700.err": {
+      "path": "target/abi-landing/files-formal/files-base-700.err",
+      "sha256": "c45ea0a1a60b6b745defac75876ae3e0b47d7e47270c11919eb26f18c684a689"
+    },
+    "files-base-700.out": {
+      "path": "target/abi-landing/files-formal/files-base-700.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-cand-0.cg": {
+      "path": "target/abi-landing/files-formal/files-cand-0.cg",
+      "sha256": "e8070ebb91b186ba34a2160a379b6f74ef3777f42436740a6d9fee38cd4ea09a"
+    },
+    "files-cand-0.err": {
+      "path": "target/abi-landing/files-formal/files-cand-0.err",
+      "sha256": "9c01b19632d6c98563204db3fee8c76d0c2cf14514a372565644ce61fa88fab7"
+    },
+    "files-cand-0.out": {
+      "path": "target/abi-landing/files-formal/files-cand-0.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-cand-1400.cg": {
+      "path": "target/abi-landing/files-formal/files-cand-1400.cg",
+      "sha256": "6c8de3658dc7559c3f2c883a4dde6d127f7a3adb5260ded0f846b19851c4148d"
+    },
+    "files-cand-1400.err": {
+      "path": "target/abi-landing/files-formal/files-cand-1400.err",
+      "sha256": "090fa16f962cf30d561428526694e7bcc4b79149908c5b7f56dd1f49b866479e"
+    },
+    "files-cand-1400.out": {
+      "path": "target/abi-landing/files-formal/files-cand-1400.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-cand-2100.cg": {
+      "path": "target/abi-landing/files-formal/files-cand-2100.cg",
+      "sha256": "feda15463c8ff5628d3ebed83104e1561d607956c6eb9a3607b4f1591aec1123"
+    },
+    "files-cand-2100.err": {
+      "path": "target/abi-landing/files-formal/files-cand-2100.err",
+      "sha256": "0b32bd4b8fffacf0d717b1025a0724fdf4cda44a635c30fa66af9c2cb75898f6"
+    },
+    "files-cand-2100.out": {
+      "path": "target/abi-landing/files-formal/files-cand-2100.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
+    },
+    "files-cand-700.cg": {
+      "path": "target/abi-landing/files-formal/files-cand-700.cg",
+      "sha256": "ea8bc68215616a6ea8539f524838ab7df8360eb87cfaf03d9af076b60a3ea60b"
+    },
+    "files-cand-700.err": {
+      "path": "target/abi-landing/files-formal/files-cand-700.err",
+      "sha256": "83dc2ce7d3b2ec821cf581226266fb26d3d536df1a589521b9c2987061d55007"
+    },
+    "files-cand-700.out": {
+      "path": "target/abi-landing/files-formal/files-cand-700.out",
+      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
     }
   },
-  "normal_check": {
-    "normal-check-core.json": {
-      "commit": "45d970c82",
-      "command": "timeout 60 tools/ai/nelisp-ai.sh check",
-      "exit": 124,
-      "elapsed_seconds": 60.001641703012865
+  "checks": {
+    "dynamic-focused.log": {
+      "path": "target/abi-landing/dynamic-focused.log",
+      "sha256": "bc1bbab099efd5cb8553d61dbbd12e84d18711911ccded04a074542876911d7d"
     },
-    "normal-check-final.json": {
-      "command": "timeout 60 tools/ai/nelisp-ai.sh check",
-      "exit": 124,
-      "elapsed_seconds": 60.00159984297352
+    "static-focused.log": {
+      "path": "target/abi-landing/static-focused.log",
+      "sha256": "bc1bbab099efd5cb8553d61dbbd12e84d18711911ccded04a074542876911d7d"
     },
-    "normal-check-comparison.json": {
-      "reference_log": "target/codex/gate/check.log",
-      "baseline_commit": "45d970c82",
-      "reference_findings": 33,
-      "baseline_findings": 33,
-      "identical_diagnostic_lines": false,
-      "baseline_gate_counts": [
-        "GATE-COUNT checked=1158 findings=33"
-      ],
-      "last_stage": "generated-source-parse",
-      "same_finding_subjects_ignoring_positions_and_absorbed_form_list": true,
-      "diagnostic_differences": "Two nelisp-native-load.el diagnostics have shifted positions; the absorbed-form list has 72 versus 73 forms."
+    "checks.log": {
+      "path": "target/abi-landing/checks.log",
+      "sha256": "92d6a9437d32452bbda3ae8651b632466be15b3c8a1899dc6bfb46699384710b"
     },
-    "normal-check-core.log": {
-      "path": "target/abi-final/normal-check-core.log",
-      "sha256": "ede391df20257283bb45117f29d5fc980501cedb1df6ba46c224c8d13101ae35"
+    "host-ert-final.log": {
+      "path": "target/abi-landing/host-ert-final.log",
+      "sha256": "bc8c4ebc765a2b9eb5100e7e69f64b16b1dd6380c9d488484933784317a9894b"
     },
-    "normal-check-final.log": {
-      "path": "target/abi-final/normal-check-final.log",
-      "sha256": "1e618e944684f2fc3153532899634c634e90de23e9c0af34d35b17f76cc452ae"
+    "host-aset.log": {
+      "path": "target/abi-landing/host-aset.log",
+      "sha256": "664c08b3cbe0bfec82e073b7f9695cf11199bd3f9edab71f86946859f42be6e2"
+    },
+    "host-ert.log": {
+      "path": "target/abi-landing/host-ert.log",
+      "sha256": "85b845c38c925f99f48bca2b14d8331e39f95dca5f19fb579ae0b83b16b6bba6"
+    },
+    "host-binary-focused.log": {
+      "path": "target/abi-landing/host-binary-focused.log",
+      "sha256": "f2bfafddd936c9ed63fd1edd274d92928d93ec576ba9cdf74c604d985dc5f74d"
+    },
+    "parens.log": {
+      "path": "target/abi-landing/parens.log",
+      "sha256": "ab58b5d86ba22b3721258528ddb119bc01fa3c010c6e1927ff4d8d0bf91362a1"
+    },
+    "anvil-result.json": {
+      "path": "target/abi-landing/anvil-result.json",
+      "sha256": "37d7bdabdbdca7c2a7ea36f5cf39290510a415fa901d85dae571e58147270015"
+    },
+    "premerge-results.log": {
+      "path": "target/abi-landing/premerge-results.log",
+      "sha256": "19a64ac2a3df0fbcf2781e2f9b4206a7b7a33d2a61f711fc7618d572b2b105f6"
+    },
+    "gnu-results.log": {
+      "path": "target/abi-landing/gnu-results.log",
+      "sha256": "863dee69700d9ee5066b5599b06409575937ca1284750f47ca30adc28efc1542"
+    },
+    "gnu-unibyte.out": {
+      "path": "target/abi-landing/gnu-unibyte.out",
+      "sha256": "c713629e623706f32e86d21bb95e4c2f996337a7b0d63329fa8401b685163979"
+    },
+    "gnu-unibyte.err": {
+      "path": "target/abi-landing/gnu-unibyte.err",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ir.log": {
+      "path": "target/abi-landing/ir.log",
+      "sha256": "7e8992f751bc3c444caf7548cd7cb5ba9287b7edf2332ef342c6bdbf80ee6b45"
+    },
+    "files-precheck.log": {
+      "path": "target/abi-landing/files-precheck.log",
+      "sha256": "eb2f5e1ee8f87a2a218e382da5045c01738d27c89703f1a91092a7c3f65932ad"
+    },
+    "census-conversions.log": {
+      "path": "target/abi-landing/census-conversions.log",
+      "sha256": "e1ed786d2b1d472d6d01bd66a3ed2a136a35cdf01d294213948dc52bb7b902d3"
+    },
+    "ir-tool-tests.log": {
+      "path": "target/abi-landing/ir-tool-tests.log",
+      "sha256": "5f7ec4e3a65125e655bb16fc14fb9752886abcf51376227bdcd152e5b10a88c1"
+    },
+    "ir-cancel-before.log": {
+      "path": "target/abi-landing/ir-cancel-before.log",
+      "sha256": "1d573ba385fe0ffa8365cb8c50ca6ff851b338df15786d9954d51854f48fc30c"
+    },
+    "ir-sigterm-before.log": {
+      "path": "target/abi-landing/ir-sigterm-before.log",
+      "sha256": "257185851f3168d213ef7bcf5673cb2911fce03ddc92b991804328af3c6574f5"
+    },
+    "baseline-build.log": {
+      "path": "target/abi-landing/baseline-build.log",
+      "sha256": "5932a18647c95a53c3a8fafaf674caf7c5525fa936d154a0839e5bfb4728cf9b"
+    },
+    "baseline-build.rc": {
+      "path": "target/abi-landing/baseline-build.rc",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "build-dyn.out": {
+      "path": "target/abi-landing/build-dyn.out",
+      "sha256": "0766b082ca501ea0904c941fca3b990f99cc1991bbf8880a8979d6240ac2c41b"
+    },
+    "build-static.out": {
+      "path": "target/abi-landing/build-static.out",
+      "sha256": "aec3b213e4f992a95c4a4b7e6ed0c25c35ce5caf0cc896360feba6b85012fd53"
+    },
+    "gnu-version.out": {
+      "path": "target/abi-landing/gnu-version.out",
+      "sha256": "7e3b1ab70b502d105e08798ae8333d99050cd25aeef096ad3d35cdd064cd8379"
+    },
+    "dynamic-all.log": {
+      "path": "target/abi-landing/dynamic-all.log",
+      "sha256": "d3ec20f746674caf9689ce67f1fd5d80ef5e3b8f34c8e94a064df90cd39ba0fd"
+    },
+    "additional-baseline-comparison.json": {
+      "path": "target/abi-landing/additional-baseline-comparison.json",
+      "sha256": "df260eed17dfd66d8902c16f1a70c447c0951037569bfc2e10965d6ca6df2097"
+    },
+    "wall-info.json": {
+      "path": "target/abi-landing/wall-info.json",
+      "sha256": "d89940814b8299791a801b9601943acf3dffdbc74208a0ccddd25399ff8a01a2"
     }
+  },
+  "audit": {
+    "model": "gpt-6-astra",
+    "reasoning_effort": "ultra",
+    "scope": "read-only comparison of conflict resolutions and unconflicted additions against both merge parents",
+    "findings_remaining": [],
+    "corrections": "SIGTERM now enters cancellation/reaping; PID publication in the process test is atomic."
+  },
+  "development_efficiency": {
+    "change": "Doc200 checks accept NELISP_BIN, allowing actual lane binaries without copying or rebuilding target/nelisp. Port freestanding mutation dependencies and preserve signal assertions.",
+    "before": {
+      "ert_seconds": 57.81112,
+      "skipped": 7,
+      "unexpected": 1
+    },
+    "after": {
+      "ert_seconds": 127.178231,
+      "skipped": 0,
+      "passed": 25
+    },
+    "failure_propagation_before_seconds": 3.038186,
+    "failure_propagation_after_seconds": 0.013751,
+    "ir_harness_tests": 21,
+    "interpretation": "Coverage improvement; times include different executed cases and shared profiling load, so no speedup is claimed."
   }
 }

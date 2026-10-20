@@ -2278,6 +2278,22 @@
             (funcall write '(updated))
             (garbage-collect)
             (funcall read 'first 'second))) t)
+;; A named closure crosses first-call VM compilation while retaining throw
+;; syntax. This is portable to GNU, where throw's normal cell is callable.
+(progn
+  (fset 'vsh-parity-throw (lambda (tag value) (throw tag value)))
+  (unwind-protect
+      (let ((answers nil))
+        (dotimes (i 6)
+          (push (catch 'vsh-tag (vsh-parity-throw 'vsh-tag 42)) answers))
+        (nreverse answers))
+    (fmakunbound 'vsh-parity-throw)))
+
+;; Closure slots participate in the same print graph as lists and vectors.
+(let ((f (eval '(let ((f nil)) (setq f (lambda () f)) f) t)))
+  (list (let ((print-circle t)) (prin1-to-string f))
+        (let ((print-circle nil)) (format "%S" f))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

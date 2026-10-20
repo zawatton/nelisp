@@ -5445,7 +5445,8 @@ path, which asks for a NUMBER first and only then for an integer."
   (dolist (c chars) (nelisp--check-character c))
   (apply #'concat (mapcar #'char-to-string chars)))
 (defun prin1 (object &optional _stream)
-  (nelisp--write-stdout-bytes (nelisp--prn-to-string object t))
+  (let ((nelisp--prn-stdout t) (nelisp--prn-call-cache nil))
+          (nelisp--write-stdout-bytes (nelisp--prn-to-string object t)))
   object)
 ;; `format-message' curves the grave accent and apostrophe in the FORMAT
 ;; string, which is the whole reason it exists as a separate function; this
@@ -17723,6 +17724,9 @@ would flag."
       (and (>= c 97) (<= c 102))
       (and (>= c 65) (<= c 70))))
 
+(defvar nelisp--prn-stdout nil
+  "Non-nil while prin1 serializes to the standard byte output stream.")
+
 (defun nelisp--prn-string-escaped (s)
   "Return S with characters escaped the way Emacs `prin1' escapes them.
 `\"' and `\\' are always doubled.  The remaining escapes are controlled by
@@ -17743,13 +17747,13 @@ characters other than the quote/backslash pair pass through verbatim.
 
 Char comparisons use raw integer codepoints (34 / 92 / 10 / 12) to sidestep
 any difference in how `?\\X' literals get parsed by the bundled reader vs
-the host.  For a tag-14/15 unibyte string, Doc 200 additionally requires
-every byte >= 128 to print as octal, never as a raw byte mistaken for
-UTF-8 -- that rule is unconditional and independent of
-`print-escape-nonascii' (which this runtime binds for `boundp' parity but
-does not yet gate any behavior on, since the Doc 200 rule already forces
-the stricter octal form GNU's flag would only opt into)."
+the host.  Serialization to a string escapes raw bytes as octal.  Like
+GNU 31.1, standard byte output retains unibyte high bytes unless
+`print-escape-nonascii' requests octal escapes. Multibyte byte8 characters
+always use octal escapes."
   (if (and (fboundp 'nelisp--repr)
+           (not (and (boundp 'nelisp--prn-stdout) nelisp--prn-stdout
+                     (not print-escape-nonascii)))
            (not print-escape-control-characters)
            (or (not print-escape-multibyte) (unibyte-string-p s)
                (= (length s) (string-bytes s)))
@@ -17786,6 +17790,12 @@ the stricter octal form GNU's flag would only opt into)."
         (cond
          ((= c 34) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
          ((= c 92) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
+         ((and (boundp 'nelisp--prn-stdout) nelisp--prn-stdout
+               (not print-escape-nonascii)
+               unibyte (>= c 128))
+          (setq need-nonhex nil)
+          (nelisp--prn-chunks-add chunks
+            (char-to-string (+ c #x3fff00))))
          ((or (and unibyte (>= c 128)) (>= c #x3fff80))
           (setq need-nonhex nil)
           (nelisp--prn-chunks-add chunks
@@ -17919,7 +17929,10 @@ gone rather than merely made faster."
                          ((string= tag-name ",@")        ",@")
                          (t nil))))
       (when prefix
-        (concat prefix (nelisp--prn-to-string arg escape))))))
+        (let ((nelisp--prn-active
+               (if (and (not print-circle) (memq (car lst) '(quote function)))
+                   (cdr nelisp--prn-active) nelisp--prn-active)))
+          (concat prefix (nelisp--prn-to-string arg escape)))))))
 
 ;; `print-length' and `print-level' existed nowhere, so both were ignored:
 ;; a long list printed in full and a deep one printed to the bottom.  That
@@ -17942,31 +17955,54 @@ Also print formfeeds as `\\f'.")
 (defvar print-escape-nonascii nil
   "Non-nil means print unibyte non-ASCII chars in strings as \\OOO.
 \(OOO is the octal representation of the character code.)
-Only single-byte characters are affected, and only in `prin1'.
-Bound for `boundp' parity; this runtime's Doc 200 unibyte-string rule
-already forces the octal form unconditionally, so this variable does
-not yet gate anything (see `nelisp--prn-string-escaped').")
+This affects standard byte output from `prin1'.  String serialization
+always escapes raw bytes so its result remains readable.")
 (defvar print-escape-multibyte nil
   "Non-nil means print multibyte characters in strings as \\xXXXX.
 \(XXXX is the hex representation of the character code.)
 This affects only `prin1'.")
 (defun nelisp--prn-list-body (lst escape &optional depth memo)
   (setq depth (or depth 0))
-  (let ((chunks (cons nil nil)) (cur lst) (first t) (count 0))
+  (let ((chunks (cons nil nil)) (cur lst) (first t) (count 0)
+        (tortoise lst) (period 2) (remaining 2) (tail-index 0) (stop nil))
     (while (and (consp cur)
-                (if print-length (< count print-length) t))
-      (unless first (nelisp--prn-chunks-add chunks " "))
-      (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (car cur) escape depth))
-      (setq first nil)
-      (setq count (1+ count))
-      (setq cur (cdr cur)))
-    (when (and (consp cur) print-length)
-      (nelisp--prn-chunks-add chunks " ...")
-      (setq cur nil))
+                (not stop))
+      (cond
+       ((and (not first)
+             (or (nelisp--prn-interpreted-p cur)
+                 (nelisp--prn-hash-table-p cur)
+                 (and (eq (car cur) 'builtin) (consp (cdr cur)))
+                 (and print-circle
+                   (let ((entry (gethash cur nelisp--prn-circle-table)))
+                     (and entry (> (aref entry 0) 1))))))
+        (setq stop t))
+       ((and print-length (>= count print-length))
+        (nelisp--prn-chunks-add chunks (if first "..." " ..."))
+        (setq cur nil stop t))
+       (t
+        ;; GNU print.c's Brent detector uses list-local tail indices.  It
+        ;; avoids retaining/scanning every preceding tail on an acyclic list.
+        (unless first
+          (setq remaining (1- remaining))
+          (cond
+           ((= remaining 0)
+            (setq tail-index (+ tail-index period) period (* period 2)
+                  remaining period tortoise cur))
+           ((eq cur tortoise)
+            (nelisp--prn-chunks-add chunks
+                                    (concat " . #" (number-to-string tail-index)))
+            (setq cur nil stop t))))
+        (unless stop
+        (unless first (nelisp--prn-chunks-add chunks " "))
+        (nelisp--prn-chunks-add chunks
+                                (nelisp--prn-to-string (car cur) escape depth))
+        (setq first nil)
+        (setq count (1+ count))
+        (setq cur (cdr cur))))))
     (unless (null cur)
       (nelisp--prn-chunks-add chunks " . ")
-      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth)))
+      (nelisp--prn-chunks-add
+       chunks (nelisp--prn-to-string cur escape depth)))
     (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-vector (vec escape &optional depth memo)
@@ -18062,18 +18098,129 @@ claimed to match, only the shape."
                 (mapconcat 'identity (nreverse parts) " ") "))")))))
 (defun nelisp--prn-slots (obj escape depth &optional memo)
   "Print function object OBJ as `#[SLOT...]' through `length'/`aref'."
-  (let ((chunks (cons nil nil)) (n (length obj)) (i 0))
+  (let* ((slots (nelisp--prn-function-slots obj))
+         (chunks (cons nil nil)) (n (length slots)) (i 0))
     (nelisp--prn-chunks-add chunks "#[")
     (while (< i n)
       (when (> i 0) (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (aref obj i) escape depth))
+                              (nelisp--prn-to-string (aref slots i) escape depth))
       (setq i (1+ i)))
     (nelisp--prn-chunks-add chunks "]")
     (nelisp--prn-chunks-string chunks)))
 (defvar nelisp--prn-call-cache nil
   "Identity print memo owned by one complete canonical serialization.")
+(defvar print-circle nil)
+(defvar nelisp--prn-active nil)
+(defvar nelisp--prn-circle-table nil)
+(defvar nelisp--prn-circle-next 0)
+(defvar nelisp--prn-slot-table nil)
+(defvar nelisp--prn-env-table nil)
+(defun nelisp--prn-interpreted-p (obj)
+  (and (consp obj) (eq (car obj) 'closure)
+       (consp (cdr obj)) (consp (cddr obj))))
+(defun nelisp--prn-function-slots (obj)
+  "Snapshot exactly the slots printed, retaining captured binding identity.
+The runtime's `aref' projects lexical cells into fresh pairs.  Reuse one
+projection per cell and one slot vector per function for this print call."
+  (or (and nelisp--prn-slot-table (gethash obj nelisp--prn-slot-table))
+      (let ((slots (make-vector (length obj) nil)) (i 0))
+        (while (< i (length slots))
+          (aset slots i (aref obj i))
+          (setq i (1+ i)))
+        (when (and nelisp--prn-env-table (nelisp--prn-interpreted-p obj))
+          (let ((env (aref slots 2)) (raw (nth 1 obj)))
+            (while (consp env)
+              (let ((pair (car env)) (binding nil) (tail raw))
+                ;; Native capture order is outer-first; the last binding wins.
+                (while (consp tail)
+                  (when (and (consp pair) (consp (car tail))
+                             (eq (caar tail) (car pair)))
+                    (setq binding (car tail)))
+                  (setq tail (cdr tail)))
+                (when binding
+                  ;; A cell projection is shared by captured closures. Plain
+                  ;; caller-supplied ENV values retain their binding identity.
+                  (let* ((value (cdr binding))
+                         (key (if (eq (nelisp--cell-value value) value)
+                                  binding value))
+                         (prior (gethash key nelisp--prn-env-table)))
+                    (if prior (setcar env prior)
+                      (puthash key pair nelisp--prn-env-table)))))
+              (setq env (cdr env)))))
+        (when nelisp--prn-slot-table (puthash obj slots nelisp--prn-slot-table))
+        slots)))
+(defun nelisp--prn-graph-p (obj)
+  (and (or (consp obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
+           (byte-code-function-p obj) (and (stringp obj) (> (length obj) 0)))
+       ;; Match the opaque branches of the print pass, including its buffer
+       ;; adapter. Their hidden implementation graphs must never be walked.
+       (not (or (and (consp obj) (eq (car obj) 'builtin) (consp (cdr obj)))
+                (and (vectorp obj) (> (length obj) 1) (eq (aref obj 0) 'buffer))
+                (and (fboundp 'bufferp) (bufferp obj))
+                (and (fboundp 'markerp) (markerp obj))
+                (and (fboundp 'overlayp) (overlayp obj))
+                (and (fboundp 'bool-vector-p) (bool-vector-p obj))))))
+(defun nelisp--prn-scan (obj)
+  "Count shared objects, traversing function slots before the cons case."
+  (let ((work (list obj)))
+    (while work
+      (setq obj (car work) work (cdr work))
+      (when (nelisp--prn-graph-p obj)
+       (let ((entry (gethash obj nelisp--prn-circle-table)))
+        (if entry
+            (progn
+              (when (= (aref entry 0) 1)
+                (setq nelisp--prn-circle-next (1+ nelisp--prn-circle-next))
+                (aset entry 1 nelisp--prn-circle-next))
+              (aset entry 0 (1+ (aref entry 0))))
+        (puthash obj (vector 1 nil nil) nelisp--prn-circle-table)
+        (cond
+         ((or (nelisp--prn-interpreted-p obj) (byte-code-function-p obj))
+          (let* ((slots (nelisp--prn-function-slots obj)) (i (length slots)))
+            (while (> i 0)
+              (setq i (1- i) work (cons (aref slots i) work)))))
+         ((nelisp--prn-hash-table-p obj)
+          (maphash (lambda (key value)
+                     (setq work (cons key (cons value work)))) obj))
+         ((consp obj)
+          (setq work (cons (car obj) (cons (cdr obj) work))))
+         ((vectorp obj)
+          (let ((i (length obj)))
+            (while (> i 0)
+              (setq i (1- i) work (cons (aref obj i) work)))))
+         ((recordp obj)
+          (let ((i (1- (nelisp--record-length obj))))
+            (while (> i 0)
+              (setq i (1- i) work (cons (nelisp--record-ref obj i) work))))
+          (setq work (cons (nelisp--record-type obj) work))))))))))
 (defun nelisp--prn-to-string (obj escape &optional depth)
+  (if (not (nelisp--prn-graph-p obj))
+      (nelisp--prn-object obj escape depth)
+    (if (not nelisp--prn-active)
+        (let ((nelisp--prn-circle-table (and print-circle (make-hash-table :test 'eq)))
+              (nelisp--prn-circle-next 0)
+              (nelisp--prn-slot-table (make-hash-table :test 'eq))
+              (nelisp--prn-env-table (make-hash-table :test 'eq))
+              (nelisp--prn-call-cache (and (not print-circle) nelisp--prn-call-cache)))
+          (when print-circle (nelisp--prn-scan obj))
+          (nelisp--prn-labelled obj escape depth))
+      (nelisp--prn-labelled obj escape depth))))
+(defun nelisp--prn-labelled (obj escape depth)
+  (let* ((entry (and print-circle (gethash obj nelisp--prn-circle-table)))
+         (label (and entry (> (aref entry 0) 1)))
+         (active (and (not print-circle) (memq obj nelisp--prn-active))))
+    (cond
+     (active (concat "#" (number-to-string (1- (length active)))))
+     ((and label (aref entry 2))
+      (concat "#" (number-to-string (aref entry 1)) "#"))
+     (t
+      (when label (aset entry 2 t))
+      (let* ((nelisp--prn-active (cons obj nelisp--prn-active))
+             (text (nelisp--prn-object obj escape depth)))
+        (if label (concat "#" (number-to-string (aref entry 1)) "=" text)
+          text))))))
+(defun nelisp--prn-object (obj escape &optional depth)
   (setq depth (or depth 0))
   (let* ((cache (and escape (not print-length) (not print-level)
                      (and (boundp 'nelisp--prn-call-cache) nelisp--prn-call-cache)))
@@ -25998,6 +26145,26 @@ a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
   "Nil while compiling a body known to name no macro: `macroexpand-all'
 would return it unchanged, and expanding is most of a compilation's cost.")
 
+(defconst nelisp--fx-native-heads '(lambda defalias when unless prog2 dolist throw)
+  "Reader forms dispatched by name even with a user-bound function cell.
+GNU special forms instead follow their special objects (N3); cl-defun,
+defun, defmacro and defvaralias can defer to their current function cells.")
+
+(defconst nelisp--fx-native-macro-environment
+  (list '(lambda) '(defalias) '(throw) '(when) '(unless) '(prog2)
+        (cons 'dolist
+              (lambda (spec &rest body)
+                (let ((tail (make-symbol "tail")))
+                  (list 'let (list (list tail (cadr spec)))
+                        (list 'while tail
+                              (list 'let (list (list (car spec) (list 'car tail)))
+                                    (cons 'progn body)
+                                    (list 'setq tail (list 'cdr tail))))
+                        (nth 2 spec))))))
+  "Protect reader heads from user macro expansion during VM compilation.
+Dolist uses the reader's canonical expansion, matching its let/while
+template. When, unless and prog2 are lowered directly by the VM compiler.")
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
@@ -26061,6 +26228,17 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (if c (progn (comp (nth 2 x)) (emit 12) (emit 3 (cdr c)))
                      (emit 1 (nth 1 x)) (comp (nth 2 x)) (emit 16 'set 2))))
                 ((eq op 'progn) (body (cdr x)))
+                ((memq op '(when unless))
+                 (let ((skip (label)) (end (label)))
+                   (comp (cadr x)) (jump 9 skip)
+                   (if (eq op 'when) (body (cddr x)) (emit 1 nil))
+                   (jump 8 end) (place skip)
+                   (if (eq op 'unless) (body (cddr x)) (emit 1 nil))
+                   (place end)))
+                ((eq op 'prog2)
+                 (if (null (cddr x)) (emit 1 nil)
+                   (comp (cadr x)) (emit 11) (comp (nth 2 x))
+                   (dolist (a (nthcdr 3 x)) (comp a) (emit 11))))
                 ((eq op 'if)
                  (let ((else (label)) (end (label)))
                    (comp (nth 1 x)) (jump 9 else)
@@ -26099,7 +26277,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                        (comp a) (emit 12) (jump 9 next) (jump 8 end)
                        (place next) (emit 11)))
                    (emit 1 nil) (place end)))
-                ((and (symbolp op) (special-form-p op)) (unsupported x))
+                ((and (symbolp op)
+                      (or (memq op nelisp--fx-native-heads)
+                          (special-form-p op)))
+                 (unsupported x))
                 ((and (symbolp op) (assq op nelisp--fx-inline-ops)
                       (= (length (cdr x)) (cddr (assq op nelisp--fx-inline-ops))))
                  (dolist (a (cdr x)) (comp a))
@@ -26119,7 +26300,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                   (emit 17 nil)
                   (comp (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
-                            (macroexpand-all form)
+                            (macroexpand-all form nelisp--fx-native-macro-environment)
                           form))
                   (emit 0) 'ok)
                 'ok)

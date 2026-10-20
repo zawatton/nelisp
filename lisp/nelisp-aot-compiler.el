@@ -3941,6 +3941,7 @@ whose car is set to t when a rewrite happened."
    ((not (consp form)) form)
    ;; The tail self-call itself.
    ((and (eq (car form) name)
+         (not (memq name '(lambda defalias when unless prog2 dolist throw)))
          (not (eq name 'seq)) (not (eq name 'if)) (not (eq name 'let))
          (not (eq name 'and)) (not (eq name 'or)) (not (eq name 'while)))
     (let ((rewritten (nelisp-aot-compiler--tco-rewrite-call
@@ -4956,6 +4957,32 @@ the whole program."
     (nelisp-aot-compiler--preprocess-source
      (nelisp-native-cfg-grammar-aot-form sexp)))
    ((eq (car sexp) 'quote) sexp)
+   ;; Reader syntax wins over a same-unit definition or a host macro cell.
+   ((memq (car sexp) '(when unless))
+    (nelisp-aot-compiler--preprocess-source
+     (if (eq (car sexp) 'when)
+         (list 'if (cadr sexp) (cons 'progn (cddr sexp)) nil)
+       (list 'if (cadr sexp) nil (cons 'progn (cddr sexp))))))
+   ((eq (car sexp) 'prog2)
+    (if (null (cddr sexp)) 0
+      (let ((value (make-symbol "prog2-value")))
+        (nelisp-aot-compiler--preprocess-source
+         (list 'progn (cadr sexp)
+               (append (list 'let (list (list value (nth 2 sexp))))
+                       (nthcdr 3 sexp) (list value)))))))
+   ((eq (car sexp) 'dolist)
+    (let ((tail (make-symbol "tail")) (spec (cadr sexp)))
+      (nelisp-aot-compiler--preprocess-source
+       (list 'let (list (list tail (cadr spec)))
+             (list 'while tail
+                   (list 'let (list (list (car spec) (list 'car tail)))
+                         (cons 'progn (cddr sexp))
+                         (list 'setq tail (list 'cdr tail))))
+             (nth 2 spec)))))
+   ((eq (car sexp) 'throw)
+    (cons 'throw (mapcar #'nelisp-aot-compiler--preprocess-source (cdr sexp))))
+   ((eq (car sexp) 'defalias)
+    (cons 'defalias (mapcar #'nelisp-aot-compiler--preprocess-source (cdr sexp))))
    ((nelisp-aot-compiler--fresh-fat-pointer-source-form sexp)
     (nelisp-aot-compiler--preprocess-source
      (nelisp-aot-compiler--fresh-fat-pointer-source-form sexp)))
@@ -4967,6 +4994,8 @@ the whole program."
    ((nelisp-aot-compiler--lambda-literal-form sexp)
     (nelisp-aot-compiler--lambda-closure-value
      (nelisp-aot-compiler--lambda-literal-form sexp)))
+   ((eq (car sexp) 'lambda)
+    (error "AOT cannot lower malformed native lambda: %S" sexp))
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
     (nelisp-aot-compiler--preprocess-funcall-lambda sexp))
@@ -9686,6 +9715,8 @@ parameter alist `((SYM . REG) ...)' for the enclosing function (=
 nil at top level), DEFUNS is the alist of already-defined
 functions `((NAME . ARITY) ...)'."
   (cond
+   ((and (consp sexp) (eq (car sexp) 'defalias))
+    (signal 'nelisp-aot-compiler-error (list :nested-native-defalias sexp)))
 	   ;; Compile-time foldable -> immediate.
 	   ((nelisp-aot-compiler--int-foldable-p sexp env fenv)
 	    (nelisp-aot-compiler--make-ir 'imm
@@ -10461,8 +10492,7 @@ functions `((NAME . ARITY) ...)'."
    ;; descriptor in OUT on the elisp side, while native lowering will
    ;; eventually restore SP and jump to the returned landing pad.
    ((and (consp sexp)
-         (eq (car sexp) 'throw)
-         (not (assq 'throw defuns)))
+         (eq (car sexp) 'throw))
     (if (eq nelisp-aot-compiler--arch 'wasm32)
         (nelisp-aot-compiler--parse-wasm-throw
          sexp env fenv defuns)

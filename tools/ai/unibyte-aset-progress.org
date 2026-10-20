@@ -1,0 +1,20 @@
+#+TITLE: Unibyte aset GNU Emacs 31.1 parity
+
+* S1 Unibyte producers, mutation, and anvil acceptance
+
+** S1.1 Confirm root cause and producer/tag table against the baseline
+#+NOTE: Completion audit on 2026-10-20 also found the same pre-existing unibyte contract defect in number-to-string and lazy symbol-name results. Normalize their producer tags, including the canonical symbol-name cache; preserve all three acceptance criteria and rerun final acceptance after these production changes.
+#+NOTE: Producer tags are source-derived; debugger ptrace is blocked. Baseline red and candidate green use distinct binaries built on this branch. No native entry was added. The full-tree baseline metadata gates fail already; changed Elisp normal/host parens checks pass for 9 files. GNU-30-pinned emacs-parity is a reasoned skip on this 31.1 host.
+evidence: target/unibyte-aset/root-cause.json sha256=366fa29068feb0fe9b1dc1d7c689a46ea6a88edbefaca3f60e4d0195b8b3b222
+
+** S1.2 Dynamic and static checks match GNU 31.1 including the anvil byte path
+#+NOTE: GNU observations expanded from 33 to 43 after the completion audit. The reference producer loops must themselves succeed; reader names preserve unibyte versus forced-multibyte source kind, and CLI ERT covers ASCII/Unicode argv through single and multiple actions.
+#+NOTE: The scoped runner reduces selected loads from 34 to 1, and rejects missing output that the old runner accepted (target/unibyte-aset/runner-efficiency.json). GNU 31.1 golden output is checked byte for byte, including stdout byte8.
+evidence: target/unibyte-aset/gnu31.out sha256=c713629e623706f32e86d21bb95e4c2f996337a7b0d63329fa8401b685163979
+cmd: EVAL_BIN="$PWD/target/unibyte-aset/dynamic-complete" STANDALONE_CHECK_LOGDIR=target/unibyte-aset/meter-dynamic test/perf/standalone-checks.sh test/standalone-unibyte-aset-check.el && EVAL_BIN="$PWD/target/unibyte-aset/static-complete" STANDALONE_CHECK_LOGDIR=target/unibyte-aset/meter-static test/perf/standalone-checks.sh test/standalone-unibyte-aset-check.el
+
+** S1.3 End to end final suite and anvil MCP smoke expose 40 tools
+#+NOTE: Final dynamic/static GNU43 checks, Doc200 12/12 including 4 CLI source shapes, and both symbol-name identity/GC smokes pass. The GC no-op negative control fails at runtime. Full normal check is recorded as interrupted, never green; no gate threshold changed.
+#+NOTE: The official launcher used copied memory/worklog databases. It listed 40 tools and returned one worklog-search row; canonical databases were not written.
+evidence: target/unibyte-aset/final.json sha256=373780b73f447cb870889919fe8a8c5c125ecd980a4b4ea2a648381c19f26928
+cmd: python3 -c 'import json; d=json.load(open("target/unibyte-aset/final.json")); assert d["groups"] == 11 and d["failures"] == 0 and d["standalone_checks"] == "PASS" and d["anvil_tools"] == 40 and d["anvil_worklog_rows"] == 1; import hashlib; assert all(hashlib.sha256(open(p,"rb").read()).hexdigest() == h for p,h in d["binaries"].items())'

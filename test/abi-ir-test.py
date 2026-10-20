@@ -4,8 +4,12 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import signal
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -89,7 +93,7 @@ class ProfileCounterTest(unittest.TestCase):
 
 class ProfileCommandTest(unittest.TestCase):
     def test_command_records_all_layouts_without_forced_collections(self):
-        def profile(directory, mode, who, binary, layout):
+        def profile(directory, mode, who, binary, layout, cancel=None):
             stem = directory / f"{mode}-{who}-{layout}"
             for suffix in ("cg", "err"):
                 stem.with_suffix("." + suffix).write_text("fixture\n")
@@ -113,6 +117,126 @@ class ProfileCommandTest(unittest.TestCase):
                 source = (output / name).read_text()
                 self.assertNotIn("garbage-collect", source)
                 self.assertIn(f"(while (< i {iterations})", source)
+
+
+class ProfileCancellationTest(unittest.TestCase):
+    def test_failed_job_does_not_wait_for_unrelated_profiles(self):
+        started = threading.Event()
+        def profile(tmp, mode, who, binary, layout, cancel=None):
+            if mode == "boot" and who == "base" and layout == 0:
+                if not started.wait(3):
+                    raise AssertionError("sibling profile did not start")
+                raise RuntimeError("deliberate profile failure")
+            started.set()
+            until = time.monotonic() + 1.5
+            while time.monotonic() < until:
+                if cancel is not None and cancel.is_set():
+                    raise concurrent.futures.CancelledError()
+                time.sleep(0.01)
+            return 1, 10
+        import concurrent.futures
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = time.monotonic()
+            with mock.patch.object(gate, "ROOT", root), \
+                    mock.patch.object(gate.sys, "argv", ["abi-ir.py", "ir", "cand", "base"]), \
+                    mock.patch.object(gate, "identities", return_value={}), \
+                    mock.patch.object(gate, "run_one", side_effect=profile), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "deliberate profile failure"):
+                    gate.main()
+            elapsed = time.monotonic() - before
+            print(f"PROFILE-CANCEL elapsed={elapsed:.6f}s")
+            self.assertLess(elapsed, 0.8)
+            self.assertFalse(any((root / "target/abi-ir").glob("*/measurement.json")))
+
+    def test_cancelled_process_is_reaped(self):
+        import concurrent.futures
+        cancel = threading.Event()
+        original_popen = gate.subprocess.Popen
+        processes = []
+        def launch(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            cancel.set()
+            return process
+        with mock.patch.object(gate.subprocess, "Popen", side_effect=launch):
+            with self.assertRaises(concurrent.futures.CancelledError):
+                gate.run_process([gate.sys.executable, "-c", "import time; time.sleep(30)"],
+                                 timeout=3, cancel=cancel)
+        self.assertEqual(1, len(processes))
+        self.assertIsNotNone(processes[0].poll())
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
+    def test_sigterm_cancels_and_reaps_profile_groups(self):
+        parent_code = r"""
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
+gate.ROOT = Path(sys.argv[2]); pid_file = Path(sys.argv[3])
+gate.PROFILE_WORKERS = 1
+gate.identities = lambda *_: {}
+original_popen = gate.subprocess.Popen
+def launch(*args, **kwargs):
+    process = original_popen(*args, **kwargs)
+    temporary = pid_file.with_suffix(".tmp")
+    temporary.write_text(str(process.pid))
+    temporary.replace(pid_file)
+    return process
+gate.subprocess.Popen = launch
+def profile(tmp, mode, who, binary, layout, cancel):
+    return gate.run_process([sys.executable, "-c", "import time; time.sleep(30)"],
+                            timeout=30, cancel=cancel)
+gate.run_one = profile
+sys.argv = ["abi-ir.py", "ir", "cand", "base"]
+gate.main()
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "child.pid"
+            parent = gate.subprocess.Popen(
+                [gate.sys.executable, "-c", parent_code, str(Path(gate.__file__).resolve()),
+                 str(root), str(pid_file)], stdout=gate.subprocess.DEVNULL,
+                stderr=gate.subprocess.DEVNULL)
+            child = None
+            try:
+                deadline = time.monotonic() + 5
+                while not pid_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_file.exists(), "profile did not start")
+                child = int(pid_file.read_text())
+                parent.terminate()
+                parent.wait(timeout=5)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
+            finally:
+                if parent.poll() is None:
+                    parent.terminate()
+                try:
+                    parent.wait(timeout=5)
+                except gate.subprocess.TimeoutExpired:
+                    parent.kill()
+                    parent.wait()
+                if child is not None:
+                    try:
+                        os.killpg(child, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_timed_out_process_is_reaped(self):
+        original_popen = gate.subprocess.Popen
+        processes = []
+        def launch(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+        with mock.patch.object(gate.subprocess, "Popen", side_effect=launch):
+            with self.assertRaises(gate.subprocess.TimeoutExpired):
+                gate.run_process([gate.sys.executable, "-c", "import time; time.sleep(30)"],
+                                 timeout=0.05, cancel=threading.Event())
+        self.assertEqual(1, len(processes))
+        self.assertIsNotNone(processes[0].poll())
 
 
 class RecordedEvidenceTest(unittest.TestCase):

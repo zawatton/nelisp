@@ -81,6 +81,9 @@ would flag."
       (and (>= c 97) (<= c 102))
       (and (>= c 65) (<= c 70))))
 
+(defvar nelisp--prn-stdout nil
+  "Non-nil while prin1 serializes to the standard byte output stream.")
+
 (defun nelisp--prn-string-escaped (s)
   "Return S with characters escaped the way Emacs `prin1' escapes them.
 `\"' and `\\' are always doubled.  The remaining escapes are controlled by
@@ -101,12 +104,10 @@ characters other than the quote/backslash pair pass through verbatim.
 
 Char comparisons use raw integer codepoints (34 / 92 / 10 / 12) to sidestep
 any difference in how `?\\X' literals get parsed by the bundled reader vs
-the host.  For a tag-14/15 unibyte string, Doc 200 additionally requires
-every byte >= 128 to print as octal, never as a raw byte mistaken for
-UTF-8 -- that rule is unconditional and independent of
-`print-escape-nonascii' (which this runtime binds for `boundp' parity but
-does not yet gate any behavior on, since the Doc 200 rule already forces
-the stricter octal form GNU's flag would only opt into)."
+the host.  Serialization to a string escapes raw bytes as octal.  Like
+GNU 31.1, standard byte output retains unibyte high bytes unless
+`print-escape-nonascii' requests octal escapes. Multibyte byte8 characters
+always use octal escapes."
   (let ((chunks (cons nil nil))
         (i 0)
         (n (length s))
@@ -118,6 +119,12 @@ the stricter octal form GNU's flag would only opt into)."
         (cond
          ((= c 34) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
          ((= c 92) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
+         ((and (boundp 'nelisp--prn-stdout) nelisp--prn-stdout
+               (not print-escape-nonascii)
+               unibyte (>= c 128))
+          (setq need-nonhex nil)
+          (nelisp--prn-chunks-add chunks
+            (char-to-string (+ c #x3fff00))))
          ((or (and unibyte (>= c 128)) (>= c #x3fff80))
           (setq need-nonhex nil)
           (nelisp--prn-chunks-add chunks
@@ -273,10 +280,8 @@ Also print formfeeds as `\\f'.")
 (defvar print-escape-nonascii nil
   "Non-nil means print unibyte non-ASCII chars in strings as \\OOO.
 \(OOO is the octal representation of the character code.)
-Only single-byte characters are affected, and only in `prin1'.
-Bound for `boundp' parity; this runtime's Doc 200 unibyte-string rule
-already forces the octal form unconditionally, so this variable does
-not yet gate anything (see `nelisp--prn-string-escaped').")
+This affects standard byte output from `prin1'.  String serialization
+always escapes raw bytes so its result remains readable.")
 (defvar print-escape-multibyte nil
   "Non-nil means print multibyte characters in strings as \\xXXXX.
 \(XXXX is the hex representation of the character code.)
@@ -375,7 +380,8 @@ This affects only `prin1'.")
   "Print OBJECT in read syntax to STREAM or `standard-output' (Doc 22 A9)."
   (let ((s (or stream standard-output)))
     (if (or (null s) (eq s t))
-        (nelisp--write-stdout-bytes (nelisp--prn-to-string object t))
+        (let ((nelisp--prn-stdout t) (nelisp--prn-call-cache nil))
+          (nelisp--write-stdout-bytes (nelisp--prn-to-string object t)))
       (nelisp--emit-to-stream (nelisp--prn-to-string object t) s)))
   object)
 

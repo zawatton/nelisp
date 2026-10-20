@@ -24,7 +24,8 @@
 #       both binaries under ABI_LAYOUT_PAD=0/700/1400/2100 bytes in parallel.
 #       Exits 0 only if all outputs agree and each workload's mean candidate
 #       count is <= the mean baseline count. Prints per-layout Ir/GC and spread.
-#       The longer regex workload has a 1780-second operational timeout.
+#       Regex6000/regex24000 have 1780/3600-second operational timeouts;
+#       at most eight profiles run together. Failed jobs cancel and reap peers.
 #       Count nonrecursive Callgrind entries into nl_gc_sweep_merge_chunks;
 #       sweep may be inlined. Retain total Ir, including all GC work.
 #   abi-merge-gate.sh files CANDIDATE BASELINE

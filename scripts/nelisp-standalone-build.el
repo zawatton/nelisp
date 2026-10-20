@@ -7928,7 +7928,7 @@ argument (reachability + in-arena bounds checks).")
     ;; Doc 190 Phase A: accepts tag 13 (Bignum) too, via `m5_push_bignum'.
     ((:lit "number-to-string") :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13) 1 0)))
                             (let* ((arg (wf_arg_ptr args 0)))
-                                   (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 16)
+                                   (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 16 1)
                                         (if (= (ptr-read-u64 arg 0) 3)
                                             (m5_push_float sb arg)
                                           (if (= (ptr-read-u64 arg 0) 13)
@@ -7952,22 +7952,28 @@ argument (reachability + in-arena bounds checks).")
                                          (mut-str-finalize sb sb) sb))))
     ((:lit "char-to-string")   :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
                                    (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
-                            (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 4)
+                            (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 4
+                                        (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 128) 1 0))
                                         ;; Doc 161: UTF-8-encode the codepoint
                                         (nl_u8_encode sb (ptr-read-u64 (wf_arg_ptr args 0) 8))
                                         (mut-str-finalize sb sb) sb))
                           (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 0)) 0)))
-    ((:lit "make-string")      :word . (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
-                                        (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
-                              (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
-                                   (if (< (ptr-read-u64 (wf_arg_ptr args 1) 8) 0) 0 1) 0)
-                              (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 16)
-                                        ;; Doc 161: COUNT copies of CHAR's UTF-8
-                                        (nl_u8_repeat sb (ptr-read-u64 (wf_arg_ptr args 0) 8)
-                                                      (ptr-read-u64 (wf_arg_ptr args 1) 8))
-                                        (mut-str-finalize sb sb) sb))
-                            (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
-                          (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
+    ((:lit "make-string") :word .
+     (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
+             (if (< (ptr-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
+         (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
+                 (if (< (ptr-read-u64 (wf_arg_ptr args 1) 8) 0) 0 1) 0)
+             (let* ((cp (ptr-read-u64 (wf_arg_ptr args 1) 8))
+                    (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
+                    (forced (if (= (ptr-read-u64 rest 0) 7)
+                                (if (= (ptr-read-u64 (wf_arg_ptr args 2) 0) 0) 0 1) 0))
+                    (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
+                    (sb (alloc-bytes 32 8)))
+               (seq (m5_make_builder sb 16 (- 1 multi))
+                    (nl_u8_repeat sb (ptr-read-u64 (wf_arg_ptr args 0) 8) cp)
+                    (nl_g4arm_finish_string_w sb multi)))
+           (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
+       (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
     ((:lit "concat")           :word . (let* ((why (m5_concat_first_bad_kind args)))
                                    (if (= why 0)
                                        (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
@@ -8125,7 +8131,7 @@ argument (reachability + in-arena bounds checks).")
                 (seq (m5_sha_hexword sb (m5_sha_word p i))
                      (setq i (+ i 4))))
               (mut-str-finalize sb sb) sb)))))
-    ((:lit "nelisp--sha256") :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 64)
+    ((:lit "nelisp--sha256") :word . (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 64 1)
                                       (m5_sha256 sb (wf_arg_ptr args 0))
                                       (mut-str-finalize sb sb) sb)))
     ;; Digest LEN bytes at an ADDRESS.  `nelisp--sha256' takes a string and
@@ -19217,7 +19223,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((out (alloc-bytes 32 8)))
         (if (= (seq
       (if (= (m5_observably_unibyte_p sx) 1)
-          (seq (wf_copy32 out sx) 0)
+          ;; ASCII text is observably unibyte too, but must carry a raw-byte
+          ;; tag before mutation: tags 5/6 make aref decode UTF-8 afterward.
+          (if (= (bf_string_unibyte_p sx) 1)
+              (seq (wf_copy32 out sx) 0)
+            (bf_copy_string_tag sx 14 out))
         (let ((ms (alloc-bytes 32 8)) (i 0) (n (bf_str_len sx)))
           (seq (m5_make_builder ms n 1)
                (while (< i n)
@@ -19237,7 +19247,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((out (alloc-bytes 32 8)))
         (if (= (seq
       (if (= (m5_observably_unibyte_p sx) 1)
-          (seq (wf_copy32 out sx) 0)
+          (if (= (bf_string_unibyte_p sx) 1)
+              (seq (wf_copy32 out sx) 0)
+            (bf_copy_string_tag sx 14 out))
         (let ((ms (alloc-bytes 32 8)) (i 0)
               (n (bf_str_len sx)) (bad -1))
           (seq (m5_make_builder ms n 1)
@@ -20529,14 +20541,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 builtin word ABI: bf_aset_unibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_unibyte_string keeps the (rc, OUT) ABI.
     (defun bf_aset_unibyte_string_status (arr idx idx-slot val)
       (if (= (nl_word_tag64 val) 2)
-          (if (if (< idx 0) 1 (if (< idx (bf_str_len arr)) 0 1))
-              (bf_args_out_of_range arr idx-slot)
-            (let* ((cp (nl_word_payload val)))
-              (if (if (< cp 0) 1 (if (> cp 255) 1 0))
-                  (bf_args_out_of_range_byte val)
-                (seq (nl_aref_cache_invalidate (bf_str_ptr arr))
-                     (bf_aset_string_write_status arr idx val)))))
-        (bf_wrong_type_integerp val)))
+          (let* ((cp (nl_word_payload val)))
+            (if (if (< cp 0) 1 (if (> cp 4194303) 1 0))
+                (bf_wrong_type_characterp val)
+              (if (if (< idx 0) 1 (if (< idx (bf_str_len arr)) 0 1))
+                  (bf_args_out_of_range arr idx-slot)
+                (if (> cp 255)
+                    (seq (bf_aset_fixed_width_rejected_w 0) 1)
+                  (seq (nl_aref_cache_invalidate (bf_str_ptr arr))
+                       (bf_aset_string_write_status arr idx val))))))
+        (bf_wrong_type_characterp val)))
     (defun bf_aset_unibyte_string_w (arr idx idx-slot val _pad)
       (if (= (bf_aset_unibyte_string_status arr idx idx-slot val) 0) val 0))
     (defun bf_aset_unibyte_string (arr idx idx-slot val out)
@@ -20549,26 +20563,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 builtin word ABI: bf_aset_multibyte_string_w returns the result WORD (0 = signal stashed); bf_aset_multibyte_string keeps the (rc, OUT) ABI.
     (defun bf_aset_multibyte_string_status (arr idx idx-slot val)
       (if (= (nl_word_tag64 val) 2)
-          (if (< idx 0)
-              (bf_args_out_of_range arr idx-slot)
-            (let* ((byte-idx
-                    (if (= (ptr-read-u64 arr 0) 5)
-                        (nl_str_aref_byte_off arr (bf_str_len arr) idx)
-                      (if (< idx (nl_str_charlen arr))
-                          (nl_u8_cidx_byte arr 0 (bf_str_len arr) 0 idx)
-                        -1))))
-              (if (< byte-idx 0)
+          (let* ((cp (nl_word_payload val)))
+            (if (if (< cp 0) 1 (if (> cp 4194303) 1 0))
+                (bf_wrong_type_characterp val)
+              (if (< idx 0)
                   (bf_args_out_of_range arr idx-slot)
-                (let* ((cp (nl_word_payload val)))
-                  ;; Both sides must be ASCII.  This is stricter than the
-                  ;; 30.1 host used by `emacs-parity', deliberately
-                  ;; matching 31.1.
-                  (if (if (< cp 0) 1
-                        (if (> cp 127) 1
-                          (if (>= (m5_byte_at arr byte-idx) 128) 1 0)))
-                      (seq (bf_aset_fixed_width_rejected_w 0) 1)
-                    (bf_aset_string_write_status arr byte-idx val))))))
-        (bf_wrong_type_integerp val)))
+                (let* ((byte-idx
+                        (if (= (ptr-read-u64 arr 0) 5)
+                            (nl_str_aref_byte_off arr (bf_str_len arr) idx)
+                          (if (< idx (nl_str_charlen arr))
+                              (nl_u8_cidx_byte arr 0 (bf_str_len arr) 0 idx) -1))))
+                  (if (< byte-idx 0)
+                      (bf_args_out_of_range arr idx-slot)
+                    (if (> cp 127)
+                        (seq (bf_aset_fixed_width_rejected_w 1) 1)
+                      (if (>= (m5_byte_at arr byte-idx) 128)
+                          (seq (bf_aset_fixed_width_rejected_w 2) 1)
+                        (bf_aset_string_write_status arr byte-idx val))))))))
+        (bf_wrong_type_characterp val)))
     (defun bf_aset_multibyte_string_w (arr idx idx-slot val _pad)
       (if (= (bf_aset_multibyte_string_status arr idx idx-slot val) 0) val 0))
     (defun bf_aset_multibyte_string (arr idx idx-slot val out)
@@ -20808,20 +20820,40 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_cannot_convert_unibyte (index out)
       (nl_abi_word_to_rc (bf_cannot_convert_unibyte_w index 0) out))
     ;; Doc 215 builtin word ABI: bf_aset_fixed_width_rejected_w returns the result WORD (0 = signal stashed).
-    (defun bf_aset_fixed_width_rejected_w (_pad)
+    (defun bf_aset_fixed_width_rejected_w (kind)
     (nl_abi_fail (seq
 
-      (let* ((mbuf (alloc-bytes 40 1))
+      (let* ((mbuf (alloc-bytes 64 1))
              (msg (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
              (head (alloc-bytes 32 8)))
         (seq
-         (ptr-write-u64 mbuf 0 8028077692528456545)       ; "aset vio"
-         (ptr-write-u64 (+ mbuf 8) 0 7594793501602373996) ; "lates fi"
-         (ptr-write-u64 (+ mbuf 16) 0 8386944366654285176); "xed-widt"
-         (ptr-write-u64 (+ mbuf 24) 0 7453010373645639784); "h string"
-         (ptr-write-u64 (+ mbuf 32) 0 435611333152)       ; " rule"
-         (nl_alloc_str mbuf 37 msg)
+         (if (= kind 0)
+             (seq (ptr-write-u64 mbuf 0 2338617721668006977)
+                   (ptr-write-u64 mbuf 8 7310027691114131316)
+                   (ptr-write-u64 mbuf 16 8392847327847476768)
+                   (ptr-write-u64 mbuf 24 2334401090213519461)
+                   (ptr-write-u64 mbuf 32 7597138403589910121)
+                   (ptr-write-u64 mbuf 40 8247343400600500578)
+                   (ptr-write-u64 mbuf 48 6778473)
+                   (nl_alloc_str mbuf 51 msg))
+           (if (= kind 1)
+               (seq (ptr-write-u64 mbuf 0 2338617721668006977)
+                   (ptr-write-u64 mbuf 8 7310027691114131316)
+                   (ptr-write-u64 mbuf 16 4851292886990286368)
+                   (ptr-write-u64 mbuf 24 2338038257526262089)
+                   (ptr-write-u64 mbuf 32 7815272714447646313)
+                   (ptr-write-u64 mbuf 40 8295742064543558004)
+                   (ptr-write-u64 mbuf 48 444234035828)
+                   (nl_alloc_str mbuf 53 msg))
+             (seq (ptr-write-u64 mbuf 0 2338617721668006977)
+                   (ptr-write-u64 mbuf 8 7020109500172496756)
+                   (ptr-write-u64 mbuf 16 4696531411285337443)
+                   (ptr-write-u64 mbuf 24 7018969009576559443)
+                   (ptr-write-u64 mbuf 32 7815272714430128242)
+                   (ptr-write-u64 mbuf 40 8295742064543558004)
+                   (ptr-write-u64 mbuf 48 444234035828)
+                   (nl_alloc_str mbuf 53 msg))))
          (wf_write_nil nil-slot)
          (nelisp_cons_construct msg nil-slot head)
          (bf_error_w head 0)))
@@ -30874,6 +30906,7 @@ which reach this non-inline prelude variant with INLINE nil)."
    "              (and (stringp file)\n"
    "                   (locate-file file load-path '(\"\" \".el\")))\n"
    "              file)))\n"
+   "    (let ((notify nil))\n"
    "    (let ((result\n"
    "           (if (and (stringp source-file) (file-readable-p source-file)\n"
    "                    (> (length source-file) 4)\n"
@@ -30886,7 +30919,7 @@ which reach this non-inline prelude variant with INLINE nil)."
    "                   (error \".eln registration loader unavailable\"))\n"
    "                 (let ((load-file-name source-file))\n"
    "                   (nelisp-eln-registration-load source-file))\n"
-   "                 t)\n"
+   "                 (setq notify t))\n"
    "             (let* ((entry (and (stringp source-file)\n"
    "                               (nelisp--core-bytecode-entry source-file)))\n"
    "                    (source (and entry\n"
@@ -30895,17 +30928,21 @@ which reach this non-inline prelude variant with INLINE nil)."
    "                                   (buffer-string)))))\n"
    "               (if (and entry\n"
    "                        (equal (secure-hash 'sha256 source) (nth 1 entry)))\n"
-   "                   (nelisp--core-bytecode-load source-file (nth 2 entry))\n"
+   "                   (progn (setq notify t)\n"
+   "                          (nelisp--core-bytecode-load source-file (nth 2 entry)))\n"
    "                 (let ((pieces (and (stringp source-file)\n"
    "                                    (fboundp 'nelisp--vendor-bytecode-pieces)\n"
    "                                    (nelisp--vendor-bytecode-pieces source-file))))\n"
    "                   (if pieces\n"
-   "                       (nelisp--core-bytecode-load source-file pieces)\n"
+   "                       (progn (setq notify t)\n"
+   "                              (nelisp--core-bytecode-load source-file pieces))\n"
    "                     (apply nelisp--base-load source-file arguments))))))))\n"
-   "      (when result\n"
+   ;; The primitive source loader already publishes history and notifies.
+   ;; Only paths that bypass it need the Lisp-level completion event.
+   "      (when (and result notify)\n"
    "        (when (fboundp 'nelisp--after-load-feature)\n"
    "          (nelisp--after-load-feature source-file)))\n"
-   "      result))))\n"
+   "      result)))))\n"
    ;; `require' starts this process bound to the native loader primitive
    ;; (`bi_require's replacement subr), which does its own file loading
    ;; and never calls the Lisp symbol `load' at all -- so the `fset 'load'
@@ -31645,7 +31682,8 @@ resolved fine.  Same feature, different answer per entry point."
    "(defun nelisp--after-load-feature (event)\n"
    "  (if (stringp event)\n"
    "      (progn\n"
-   "        (setq load-history (cons (cons event nil) load-history))\n"
+   "        (setq load-history\n"
+   "              (cons (cons event nil) (delq (assoc event load-history) load-history)))\n"
    "        (do-after-load-evaluation event))\n"
    "    (let ((elt (assq event after-load-alist)))\n"
    "      (when elt (mapc #'funcall (cdr elt))))))\n"
@@ -39376,12 +39414,23 @@ correctly."
 	         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
 	         (setq off (nl_runtime_image_eval_suffix fbuf off))
 	         (nl_alloc_str fbuf off src))))
+    (defun nl_cli_source_from_bytes (bytes n out)
+      ;; GNU decodes ASCII argv source as unibyte and non-ASCII as text.
+      ;; Do this before any syntax precheck can intern a canonical name.
+      (if (= (nl_alloc_str bytes n out) 0) 0
+        (let* ((p (ptr-read-u64 out 16)) (i 0) (ascii 1))
+          (seq
+           (while (< i n)
+             (if (>= (ptr-read-u8 p i) 128) (setq ascii 0) 0)
+             (setq i (+ i 1)))
+           (if (= ascii 1) (ptr-write-u8 out 0 14) 0)
+           1))))
     (defun nl_cli_wrap_source_at (fbuf off src)
       (seq
        (ptr-write-u8 fbuf off 10)
        (setq off (+ off 1))
        (setq off (nl_cli_eval_suffix fbuf off))
-       (nl_alloc_str fbuf off src)))
+       (nl_cli_source_from_bytes fbuf off src)))
     (defun nl_cli_eval_source (form_ptr fbuf src)
       (let* ((off (nl_cli_eval_prefix fbuf 0)))
         (seq
@@ -40089,12 +40138,12 @@ correctly."
         (if (>= (+ expr_len 8) ,nelisp-standalone--reader-read-cap)
             (let* ((expr-str (alloc-bytes 32 8)))
               (seq
-               (nl_alloc_str expr_ptr expr_len expr-str)
+               (nl_cli_source_from_bytes expr_ptr expr_len expr-str)
                (nl_cli_stash_source_too_large expr-str)
                (nl_eval_source_report_error 0 0 0 0 0)
                (- (ptr-read-u64 268435464 0) 1)))
           (seq
-           (nl_alloc_str expr_ptr expr_len src)
+           (nl_cli_source_from_bytes expr_ptr expr_len src)
            (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
                                 expr_ptr expr_len)
            (if (= (ptr-read-u64 268435464 0) 0)
@@ -40615,7 +40664,7 @@ correctly."
           (if (= (nl_cli_source_args_p arg2 arg3) 1)
               (let* ((expr-str (alloc-bytes 32 8)))
                 (seq
-                 (nl_alloc_str arg2 (nl_cstr_len arg2) expr-str)
+                 (nl_cli_source_from_bytes arg2 (nl_cstr_len arg2) expr-str)
                  (if (>= (+ (nl_cstr_len arg2) 256)
                          ,nelisp-standalone--reader-read-cap)
                      ;; `nl_cli_eval_expr_check' below validates EXPR

@@ -616,10 +616,12 @@ so an aliased macro is recognised as one."
     (nelisp-bc--compile-prog1 ctx (cadr form) (cddr form)))
    ((and (consp form) (eq (car form) 'prog2))
     ;; (prog2 X Y BODY...) ≡ (progn X (prog1 Y BODY...))
-    (nelisp-bc--compile-form ctx (cadr form))
-    (nelisp-bc--emit ctx 'DROP)
-    (nelisp-bc--adjust-sp ctx -1)
-    (nelisp-bc--compile-prog1 ctx (nth 2 form) (nthcdr 3 form)))
+    ;; The reader returns nil without effects when Y is absent.
+    (if (null (cddr form)) (nelisp-bc--compile-form ctx nil)
+      (nelisp-bc--compile-form ctx (cadr form))
+      (nelisp-bc--emit ctx 'DROP)
+      (nelisp-bc--adjust-sp ctx -1)
+      (nelisp-bc--compile-prog1 ctx (nth 2 form) (nthcdr 3 form))))
    ((and (consp form)
          (memq (car form)
                '(defun defvar defconst defmacro)))
@@ -633,6 +635,11 @@ so an aliased macro is recognised as one."
     ;; ((lambda PARAMS BODY) ARGS...) — inline call to a literal
     ;; lambda.  Compile the lambda then invoke via CALL.
     (nelisp-bc--compile-call ctx (car form) (cdr form)))
+   ((and (consp form) (memq (car form) '(defalias dolist)))
+    ;; The reader dispatches these heads before function/macro lookup.
+    ;; Leave unsupported syntax to it, even if a user bound the cell.
+    (signal 'nelisp-bc-unimplemented
+            (list "native special form" (car form))))
    ((and (consp form) (symbolp (car form)) (nelisp-bc--macro-p (car form)))
     ;; A macro the arms above did not rewrite.  Compiling it as a call is
     ;; what turned `(dotimes (i 3) ...)' into a call to `i': the head was
@@ -1592,6 +1599,17 @@ MCP Parameters:
 
 ;;; Compiler entry ---------------------------------------------------
 
+(defvar nelisp--fx-native-macro-environment)
+
+(defun nelisp-bc-macroexpand-source (form)
+  "Expand FORM without letting macro cells replace native reader heads.
+The standalone prelude owns the reader's canonical macro environment.
+Host-only compilation retains GNU's macro environment."
+  (macroexpand-all
+   form (if (boundp 'nelisp--fx-native-macro-environment)
+            nelisp--fx-native-macro-environment
+          '((lambda) (throw) (defalias) (when) (unless) (prog2) (dolist)))))
+
 (defun nelisp-bc-compile (form &optional env)
   "Compile FORM to a `nelisp-bcl'.
 Phase 3b.3 adds arithmetic / comparison primitives and `if' / `cond'
@@ -2471,7 +2489,7 @@ interpreter handles it as if loading the `.el' source."
                         ;; forms (`and', `or', `prog1', `setq', `if',
                         ;; `let' family) pass through unchanged and
                         ;; are handled directly by `compile-form'.
-                        (expanded (macroexpand-all src))
+                        (expanded (nelisp-bc-macroexpand-source src))
                         (wrapper-bcl (nelisp-bc-compile expanded)))
                    ;; Evaluate the wrapper to materialise the inner bcl
                    ;; template (no captures since ENV is nil).

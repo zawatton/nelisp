@@ -7,15 +7,20 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS = (0, 700, 1400, 2100)
 IR_MODES = ("boot", "regex", "regex-gc")
 GC_CYCLE_FUNCTION = "nl_gc_sweep_merge_chunks"
+PROFILE_WORKERS = 8
+# Operational limits only: workloads, Ir caps and GC floors stay fixed.
+PROFILE_TIMEOUTS = {"boot": 580, "files": 580, "regex": 1780, "regex-gc": 3600}
 
 
 def fingerprint(path):
@@ -137,7 +142,32 @@ def profile_counts(profile, binary):
     return total, cycles
 
 
-def run_one(tmp, mode, who, binary, layout):
+def run_process(args, *, timeout, cancel, **kwargs):
+    """Reap the whole isolated profile process group on failure or cancellation."""
+    process = subprocess.Popen(args, start_new_session=True, **kwargs)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if cancel.is_set():
+                raise concurrent.futures.CancelledError()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(args, timeout)
+            try:
+                return process.wait(timeout=min(remaining, 0.1))
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def run_one(tmp, mode, who, binary, layout, cancel):
+    if cancel.is_set():
+        raise concurrent.futures.CancelledError()
     stem = tmp / f"{mode}-{who}-{layout}"
     cache = tmp / f"{mode}-{who}-{layout}-cache"
     cache.mkdir()  # must be empty for every process, including boot/regex
@@ -146,12 +176,12 @@ def run_one(tmp, mode, who, binary, layout):
     args = ["--eval", "nil"] if mode == "boot" else ["--load", str(
         ROOT / "tools/ai/abi-file-exec.el" if mode == "files" else tmp / f"{mode}.el")]
     with stem.with_suffix(".out").open("w") as out, stem.with_suffix(".err").open("w") as err:
-        result = subprocess.run(["valgrind", "--tool=callgrind", "--error-exitcode=97",
+        result = run_process(["valgrind", "--tool=callgrind", "--error-exitcode=97",
                                  f"--callgrind-out-file={stem}.cg", str(binary), *args],
                                 cwd=ROOT, env=env, stdout=out, stderr=err,
-                                timeout=1780 if mode == "regex-gc" else 580)
-    if result.returncode:
-        raise RuntimeError(f"{mode} {who} exit {result.returncode}: {stem}.err")
+                                timeout=PROFILE_TIMEOUTS[mode], cancel=cancel)
+    if result:
+        raise RuntimeError(f"{mode} {who} exit {result}: {stem}.err")
     check_marker(stem, mode)
     return profile_counts(stem.with_suffix(".cg"), binary)
 
@@ -218,14 +248,31 @@ def main():
     workloads_before = {name: fingerprint(tmp / name) for name in ("regex.el", "regex-gc.el")}
     modes = IR_MODES if mode == "ir" else ["files"]
     ok = True
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-        jobs = {(m, who, layout): pool.submit(run_one, tmp, m, who, Path(b).resolve(), layout)
+    cancel = threading.Event()
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=PROFILE_WORKERS)
+    def terminate(signum, _frame):
+        # Repeated termination requests must not interrupt process reaping.
+        if not cancel.is_set():
+            cancel.set()
+            raise SystemExit(128 + signum)
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate)
+    try:
+        jobs = {pool.submit(run_one, tmp, m, who, Path(b).resolve(), layout, cancel): (m, who, layout)
                 for m in modes for who, b in (("base", base), ("cand", cand)) for layout in LAYOUTS}
+        results = {}
+        for job in concurrent.futures.as_completed(jobs):
+            results[jobs[job]] = job.result()
         for m in modes:
-            samples = [(layout, *(jobs[m, who, layout].result() +
+            samples = [(layout, *(results[m, who, layout] +
                         ((tmp / f"{m}-{who}-{layout}.out").read_bytes(),)
                         for who in ("base", "cand"))) for layout in LAYOUTS]
             ok &= summarize(m, samples)
+    finally:
+        cancel.set()
+        try:
+            pool.shutdown(wait=True, cancel_futures=True)
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
     if mode == "ir":
         verify_workloads(tmp, workloads_before)
         if before != identities(cand, base):
