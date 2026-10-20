@@ -103,7 +103,7 @@
     ;; an immediate, so no view is materialised per iteration.
     (defun nl_sf_while_body_word (body)
       (if (= (sexp-tag body) 7)
-          (ptr-read-u64 (ptr-read-u64 body 8) 8)
+          (heap-read-u64 (heap-sexp-payload body) 8)
         0))
 
     ;; Walk the body forms (recursion depth = body length).

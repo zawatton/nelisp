@@ -162,9 +162,9 @@
     ;; offset (`spare_idx' = 7 + d*4) plus one word of slack.
     ;; ===========================================================
 
-    (defun nelisp_reader_p_pool_cap () (ptr-read-u64 268436448 0))
+    (defun nelisp_reader_p_pool_cap () (heap-read-u64 268436448 0))
     (defun nelisp_reader_p_label_count (pool)
-      (ptr-read-u64 (nelisp_reader_p_slot pool 3) 8))
+      (heap-read-u64 (nelisp_reader_p_slot pool 3) 8))
     (defun nelisp_reader_p_max_depth ()
       (/ (- (nelisp_reader_p_pool_cap) 8) 4))
     ;; Arity 2 (even, with a `_pad'), matching `nelisp_eval_call_stash_
@@ -184,7 +184,7 @@
     ;; slots to clear when the read ends.
     (defun nelisp_reader_p_depth_ok_p (pool d)
       (seq
-       (if (> d (ptr-read-u64 (nelisp_reader_p_slot pool 3) 16))
+       (if (> d (heap-read-u64 (nelisp_reader_p_slot pool 3) 16))
            (ptr-write-u64 (nelisp_reader_p_slot pool 3) 16 d)
          0)
        (< (nelisp_reader_p_spare_idx d)
@@ -216,7 +216,7 @@
     ;; per-depth slots down to the deepest level reached, the label entries
     ;; and the context slot at PARSE-CAP.
     (defun nelisp_reader_p_clear_used (pool parse-cap)
-      (let* ((deepest (ptr-read-u64 (nelisp_reader_p_slot pool 3) 16))
+      (let* ((deepest (heap-read-u64 (nelisp_reader_p_slot pool 3) 16))
              (lcount (nelisp_reader_p_label_count pool))
              (low-end (+ (nelisp_reader_p_spare_idx deepest) 1))
              (high-start (- parse-cap (* 2 lcount))))
@@ -248,7 +248,7 @@
     ;; legacy callers raised `invalid-read-syntax' themselves), stash the same
     ;; condition for SRC; a signal already stashed (nesting, raw byte) is kept.
     (defun nelisp_reader_p_fail_syntax (str-ptr)
-      (if (= (ptr-read-u64 268435472 0) 1) 0
+      (if (= (heap-read-u64 268435472 0) 1) 0
         (seq (bf_read_syntax_error str-ptr) 0)))
 
     (defun nelisp_reader_p_stash_raw_byte_unrepresentable ()
@@ -329,26 +329,26 @@
     (defun nelisp_reader_p_symbol_name_kind (source name)
       ;; Symbol names inherit the reader input's representation, including
       ;; multibyte ASCII. Set it before the canonical name is registered.
-      (if (or (= (ptr-read-u8 source 0) 14) (= (ptr-read-u8 source 0) 15))
+      (if (or (= (heap-read-u8 source 0) 14) (= (heap-read-u8 source 0) 15))
           (ptr-write-u8 name 0 14)
         (seq (ptr-write-u8 name 0 5)
              (ptr-write-u64 name 8
-               (logior (ptr-read-u64 name 8) 4611686018427387904)))))
+               (logior (heap-read-u64 name 8) 4611686018427387904)))))
 
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
       ;; The direct allocator also installs a stable name-Sexp edge for the
       ;; interned symbol; the reader token slot itself is scratch storage.
       (nl_alloc_symbol_named
-       (ptr-read-u64 src-str-slot 16)
-       (ptr-read-u64 src-str-slot 24)
+       (heap-read-u64 src-str-slot 16)
+       (heap-read-u64 src-str-slot 24)
        src-str-slot
        dest-slot))
 
     (defun nelisp_reader_p_make_uninterned_symbol (dest-slot src-str-slot)
       (let* ((identity (nl_next_symbol_identity)))
         (if (= (nl_alloc_uninterned_symbol_named
-                (ptr-read-u64 src-str-slot 16)
-                (ptr-read-u64 src-str-slot 24)
+                (heap-read-u64 src-str-slot 16)
+                (heap-read-u64 src-str-slot 24)
                 identity src-str-slot dest-slot) 0)
             -1 1)))
 
@@ -356,9 +356,9 @@
       (let* ((written
               (sexp-write-str
                dest-slot
-               (ptr-read-u64 src-str-slot 16)
-               (ptr-read-u64 src-str-slot 24))))
-        (if (= (ptr-read-u8 src-str-slot 0) 14)
+               (heap-read-u64 src-str-slot 16)
+               (heap-read-u64 src-str-slot 24))))
+        (if (= (heap-read-u8 src-str-slot 0) 14)
             (nelisp_reader_p_prog2
              (ptr-write-u8 dest-slot 0 14)
              written)
@@ -701,15 +701,15 @@
         (cond ((= (nelisp_reader_p_is_nil_name payload-slot) 1) 3)
               ((= (nelisp_reader_p_is_t_name payload-slot) 1) 7)
               (t (nl_alloc_symbol_named_w
-                  (ptr-read-u64 payload-slot 16)
-                  (ptr-read-u64 payload-slot 24) payload-slot 0))))
+                  (heap-read-u64 payload-slot 16)
+                  (heap-read-u64 payload-slot 24) payload-slot 0))))
        ((= kind 24) (nl_imm_int (nelisp_reader_p_decode_char payload-slot)))
        ((= kind 25) (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))
        ((= kind 21)
         (let ((object (alloc-bytes 32 8)))
           (if (= (extern-call nl_str_to_float
-                              (ptr-read-u64 payload-slot 16)
-                              (ptr-read-u64 payload-slot 24) object) 1)
+                              (heap-read-u64 payload-slot 16)
+                              (heap-read-u64 payload-slot 24) object) 1)
               object
             (nl_abi_fail 0 0))))
        (t (nl_abi_fail -1 0))))
@@ -839,9 +839,9 @@
       (if (>= i (nelisp_reader_p_label_count pool))
           0
         (let* ((meta (nelisp_reader_p_label_meta pool i))
-               (kind (ptr-read-u64 meta 8)))
+               (kind (heap-read-u64 meta 8)))
           (if (and (or (= kind 1) (= kind 2))
-                   (= (ptr-read-u64 meta 16) label))
+                   (= (heap-read-u64 meta 16) label))
               kind
             (nelisp_reader_p_label_find_kind pool label (+ i 1))))))
 
@@ -849,9 +849,9 @@
       (if (>= i (nelisp_reader_p_label_count pool))
           0
         (let* ((meta (nelisp_reader_p_label_meta pool i))
-               (kind (ptr-read-u64 meta 8)))
-          (if (and (= kind 2) (= (ptr-read-u64 meta 16) label))
-              (ptr-read-u64 (nelisp_reader_p_label_value pool i) 0)
+               (kind (heap-read-u64 meta 8)))
+          (if (and (= kind 2) (= (heap-read-u64 meta 16) label))
+              (heap-read-u64 (nelisp_reader_p_label_value pool i) 0)
             (nelisp_reader_p_label_find_value pool label (+ i 1))))))
 
     (defun nelisp_reader_p_label_add_pending (pool depth label)
@@ -890,11 +890,11 @@
       (if (>= i (nelisp_reader_p_label_count pool))
           -1
         (let* ((meta (nelisp_reader_p_label_meta pool i))
-               (proxy (ptr-read-u64 (nelisp_reader_p_label_value pool i) 0)))
-          (if (and (= (ptr-read-u64 meta 8) 3)
+               (proxy (heap-read-u64 (nelisp_reader_p_label_value pool i) 0)))
+          (if (and (= (heap-read-u64 meta 8) 3)
                    (= (nl_val_tag object) 7)
                    (= (nl_word_payload object) (nl_word_payload proxy)))
-              (ptr-read-u64 meta 16)
+              (heap-read-u64 meta 16)
             (nelisp_reader_p_label_proxy_number object pool (+ i 1))))))
 
     (defun nelisp_reader_p_parse_label_def (str-ptr cursor-slot result-slot pool depth)
@@ -1020,7 +1020,7 @@
    ((= kind 15) (nelisp_reader_p_parse_byte_code_w str-ptr cursor-slot 0 slot-pool depth))
    ((= kind 26) (nelisp_reader_p_parse_label_def_w str-ptr cursor-slot 0 slot-pool depth))
    ((= kind 27) (nelisp_reader_p_parse_label_ref_w 0 slot-pool depth))
-   ((= kind 28) (ptr-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_pool_cap)) 0))
+   ((= kind 28) (heap-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_pool_cap)) 0))
    ((= kind 29)
     (let* ((object (alloc-bytes 32 8)))
       (nelisp_reader_p_symbol_name_kind str-ptr (nelisp_reader_p_slot slot-pool 1))
@@ -1054,14 +1054,14 @@
       (if (= tag 5) 1 (if (= tag 6) 1 (if (= tag 14) 1 (if (= tag 15) 1 0)))))
 
     (defun nelisp_reader_p_bv_str_ptr (s)
-      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
-          (ptr-read-u64 (ptr-read-u64 s 8) 8)
-        (ptr-read-u64 s 16)))
+      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+          (heap-read-u64 (heap-read-u64 s 8) 8)
+        (heap-read-u64 s 16)))
 
     (defun nelisp_reader_p_bv_str_len (s)
-      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
-          (ptr-read-u64 (ptr-read-u64 s 8) 16)
-        (ptr-read-u64 s 24)))
+      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+          (heap-read-u64 (heap-read-u64 s 8) 16)
+        (heap-read-u64 s 24)))
 
     (defun nelisp_reader_p_build_bool_vector (n-slot str-slot result-slot)
       (let* ((w (nelisp_reader_p_build_bool_vector_w n-slot str-slot 0)))
@@ -1072,7 +1072,7 @@
       (if (= (nl_val_tag n-slot) 2)
           (let ((n (nl_word_payload n-slot)))
             (if (and (>= n 0)
-                     (= (nelisp_reader_p_bv_string_tag_p (ptr-read-u64 str-slot 0)) 1)
+                     (= (nelisp_reader_p_bv_string_tag_p (heap-read-u64 str-slot 0)) 1)
                      (>= (nelisp_reader_p_bv_str_len str-slot) (nl_bv_bytelen n)))
                 (nl_alloc_bool_vector_from_bytes_w
                  n (nelisp_reader_p_bv_str_ptr str-slot) 0)
@@ -1149,10 +1149,10 @@
     ;; element), spare = last cons, cdr = scratch cons, car = element.
     ;; The public entry points keep their historical (even) arities.
     (defun nelisp_reader_p_copy32 (to src)
-      (seq (ptr-write-u64 to 0 (ptr-read-u64 src 0))
-           (ptr-write-u64 to 8 (ptr-read-u64 src 8))
-           (ptr-write-u64 to 16 (ptr-read-u64 src 16))
-           (ptr-write-u64 to 24 (ptr-read-u64 src 24))
+      (seq (ptr-write-u64 to 0 (heap-read-u64 src 0))
+           (ptr-write-u64 to 8 (heap-read-u64 src 8))
+           (ptr-write-u64 to 16 (heap-read-u64 src 16))
+           (ptr-write-u64 to 24 (heap-read-u64 src 24))
            0))
 
     (defun nelisp_reader_p_seq_link (head tail node _pad)
@@ -1198,8 +1198,8 @@
     (if (and (and (/= tail 0) (/= tail 2))
              (= (nelisp_reader_p_lex_one str-ptr cursor-slot (nelisp_reader_p_slot slot-pool 1)
                                          (nelisp_reader_p_slot slot-pool 0)) 2))
-        (seq (cons-set-cdr (ptr-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth)) 0) tail)
-             (ptr-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)) 0))
+        (seq (cons-set-cdr (heap-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth)) 0) tail)
+             (heap-read-u64 (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)) 0))
       (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))))
 
     (defun nelisp_reader_p_seq_dispatch (str-ptr cursor-slot result-slot slot-pool depth km)
@@ -1211,9 +1211,9 @@
   (let* ((head-slot (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)))
          (tail-slot (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth))))
     (cond
-     ((= km (if (>= km 200) 304 102)) (ptr-read-u64 head-slot 0))
+     ((= km (if (>= km 200) 304 102)) (heap-read-u64 head-slot 0))
      ((= km 110)
-      (if (= (ptr-read-u64 head-slot 0) 3)
+      (if (= (heap-read-u64 head-slot 0) 3)
           (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
         (nelisp_reader_p_seq_dot_w str-ptr cursor-slot 0 slot-pool depth 0)))
      ((= (- km (if (>= km 200) 300 100)) -2)
@@ -1228,9 +1228,9 @@
                                                (- km (if (>= km 200) 300 100)))))
         (if (or (= item 0) (= item 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
           (let* ((node (nelisp_cons_construct_w item 3 0)))
-            (if (= (ptr-read-u64 head-slot 0) 3)
+            (if (= (heap-read-u64 head-slot 0) 3)
                 (nelisp_reader_p_word_slot_set head-slot node)
-              (cons-set-cdr (ptr-read-u64 tail-slot 0) node))
+              (cons-set-cdr (heap-read-u64 tail-slot 0) node))
             (nelisp_reader_p_word_slot_set tail-slot node)
             (nelisp_reader_p_seq_loop_w str-ptr cursor-slot 0 slot-pool depth (if (>= km 200) 1 0)))))))))
 
@@ -1377,9 +1377,9 @@
                 (nelisp_cons_construct_w (nl_cons_car_word data)
                                           (nl_cons_car_word rest) 0))
                (nelisp_reader_p_word_slot_set newhead-slot
-                (nelisp_cons_construct_w (ptr-read-u64 pair-slot 0)
+                (nelisp_cons_construct_w (heap-read-u64 pair-slot 0)
                                           (nl_cons_cdr_word table) 0))
-               (cons-set-cdr table (ptr-read-u64 newhead-slot 0))
+               (cons-set-cdr table (heap-read-u64 newhead-slot 0))
                (setq data (nl_cons_cdr_word rest)))
             (setq data 3))))
       1)

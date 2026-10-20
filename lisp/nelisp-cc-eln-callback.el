@@ -27,7 +27,7 @@
       0)
     (defun nl_eln_callback_slot_ok (env slot)
       (if (and (> env 0)
-               (= (ptr-read-u64 (data-addr nl_root_pin_control) 8) env)
+               (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env)
                (= (nl_root_pin_slot_active slot) 1))
           1 0))
     (defun nelisp_eln_callback_context_push
@@ -44,14 +44,14 @@
         (nl_eln_callback_lock)
         (ptr-write-u64 (data-addr nl_eln_callback_context) 24
                        (syscall-direct 186 0 0 0 0 0 0))
-        (if (and (> (ptr-read-u64 (data-addr nl_eln_callback_context) 24) 0)
+        (if (and (> (heap-read-u64 (data-addr nl_eln_callback_context) 24) 0)
                  (= gateway-value (data-addr wf_bytecode_call_gateway))
                  (= argc-value 1)
-                 (< (ptr-read-u64 (data-addr nl_eln_callback_context) 16)
+                 (< (heap-read-u64 (data-addr nl_eln_callback_context) 16)
                     ,nelisp-cc-eln-callback-context-capacity)
-                 (or (= (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
-                     (= (ptr-read-u64 (data-addr nl_eln_callback_context) 8)
-                        (ptr-read-u64 (data-addr nl_eln_callback_context) 24)))
+                 (or (= (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+                     (= (heap-read-u64 (data-addr nl_eln_callback_context) 8)
+                        (heap-read-u64 (data-addr nl_eln_callback_context) 24)))
                  (= (nl_eln_callback_slot_ok env-value function-value) 1)
                  (= (nl_eln_callback_slot_ok env-value args-value) 1)
                  (= (nl_eln_callback_slot_ok env-value out-value) 1)
@@ -61,11 +61,11 @@
             (let ((record
                    (nl_eln_callback_record_at
                     (data-addr nl_eln_callback_context)
-                    (ptr-read-u64 (data-addr nl_eln_callback_context) 16))))
+                    (heap-read-u64 (data-addr nl_eln_callback_context) 16))))
               (seq
-               (if (= (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+               (if (= (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
                    (ptr-write-u64 (data-addr nl_eln_callback_context) 8
-                                  (ptr-read-u64
+                                  (heap-read-u64
                                    (data-addr nl_eln_callback_context) 24))
                  0)
                (ptr-write-u64 record 0 env-value)
@@ -76,43 +76,43 @@
                (ptr-write-u64 record 40 -1)
                (ptr-write-u64 record 48 0)
                (ptr-write-u64 (data-addr nl_eln_callback_context) 16
-                              (+ (ptr-read-u64
+                              (+ (heap-read-u64
                                   (data-addr nl_eln_callback_context) 16) 1))
-               (let ((token (ptr-read-u64
+               (let ((token (heap-read-u64
                              (data-addr nl_eln_callback_context) 16)))
                  (ptr-write-u64 (data-addr nl_eln_callback_context) 24 token)
                  (nl_eln_callback_unlock)
                  token)))
           (seq (nl_eln_callback_unlock) 0))))
     (defun nelisp_eln_callback_context_status (token)
-      (if (and (> (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
-               (<= (ptr-read-u64 (data-addr nl_eln_callback_context) 16)
+      (if (and (> (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+               (<= (heap-read-u64 (data-addr nl_eln_callback_context) 16)
                    ,nelisp-cc-eln-callback-context-capacity)
-               (= token (ptr-read-u64 (data-addr nl_eln_callback_context) 16))
+               (= token (heap-read-u64 (data-addr nl_eln_callback_context) 16))
                (> (syscall-direct 186 0 0 0 0 0 0) 0)
                (= (syscall-direct 186 0 0 0 0 0 0)
-                  (ptr-read-u64 (data-addr nl_eln_callback_context) 8)))
-          (ptr-read-u64
+                  (heap-read-u64 (data-addr nl_eln_callback_context) 8)))
+          (heap-read-u64
            (nl_eln_callback_record_at
             (data-addr nl_eln_callback_context)
-            (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+            (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
            40)
         -1))
     (defun nelisp_eln_callback_context_pop (token)
       (nl_eln_callback_lock)
       (ptr-write-u64 (data-addr nl_eln_callback_context) 24
                      (syscall-direct 186 0 0 0 0 0 0))
-      (if (and (> (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
-               (<= (ptr-read-u64 (data-addr nl_eln_callback_context) 16)
+      (if (and (> (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+               (<= (heap-read-u64 (data-addr nl_eln_callback_context) 16)
                    ,nelisp-cc-eln-callback-context-capacity)
-               (= token (ptr-read-u64 (data-addr nl_eln_callback_context) 16))
-               (> (ptr-read-u64 (data-addr nl_eln_callback_context) 24) 0)
-               (= (ptr-read-u64 (data-addr nl_eln_callback_context) 24)
-                  (ptr-read-u64 (data-addr nl_eln_callback_context) 8)))
+               (= token (heap-read-u64 (data-addr nl_eln_callback_context) 16))
+               (> (heap-read-u64 (data-addr nl_eln_callback_context) 24) 0)
+               (= (heap-read-u64 (data-addr nl_eln_callback_context) 24)
+                  (heap-read-u64 (data-addr nl_eln_callback_context) 8)))
           (let ((record
                  (nl_eln_callback_record_at
                   (data-addr nl_eln_callback_context)
-                  (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))))
+                  (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))))
             (seq
              (ptr-write-u64 record 0 0)
              (ptr-write-u64 record 8 0)
@@ -122,13 +122,13 @@
              (ptr-write-u64 record 40 -1)
              (ptr-write-u64 record 48 0)
              (ptr-write-u64 (data-addr nl_eln_callback_context) 16
-                            (- (ptr-read-u64
+                            (- (heap-read-u64
                                 (data-addr nl_eln_callback_context) 16) 1))
-             (if (= (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+             (if (= (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
                  (ptr-write-u64 (data-addr nl_eln_callback_context) 8 0)
                0)
              (ptr-write-u64 (data-addr nl_eln_callback_context) 24
-                            (ptr-read-u64
+                            (heap-read-u64
                              (data-addr nl_eln_callback_context) 16))
              (nl_eln_callback_unlock)
              1))
@@ -137,12 +137,12 @@
       ;; GNU 31.1 fixnums have low tag bits 10 and a signed 62-bit payload.
       ;; Failure is side-channel state for this probe only; general GNU
       ;; nonlocal exits need a distinct handler/unwind compatibility bridge.
-      (if (or (= (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 0)
-              (> (ptr-read-u64 (data-addr nl_eln_callback_context) 16)
+      (if (or (= (heap-read-u64 (data-addr nl_eln_callback_context) 16) 0)
+              (> (heap-read-u64 (data-addr nl_eln_callback_context) 16)
                  ,nelisp-cc-eln-callback-context-capacity)
               (= (syscall-direct 186 0 0 0 0 0 0) 0)
               (/= (syscall-direct 186 0 0 0 0 0 0)
-                  (ptr-read-u64 (data-addr nl_eln_callback_context) 8)))
+                  (heap-read-u64 (data-addr nl_eln_callback_context) 8)))
           raw_value
         (seq
          ;; Save the raw fallback before helper/gateway calls; only the
@@ -150,141 +150,141 @@
          (ptr-write-u64
           (nl_eln_callback_record_at
            (data-addr nl_eln_callback_context)
-           (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+           (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
           48 raw_value)
-         (if (or (/= (ptr-read-u64
+         (if (or (/= (heap-read-u64
                       (nl_eln_callback_record_at
                        (data-addr nl_eln_callback_context)
-                       (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                       (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                       32) 1)
                  (/= (nl_eln_callback_slot_ok
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        0)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        8)) 1)
                  (/= (nl_eln_callback_slot_ok
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        0)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        16)) 1)
                  (/= (nl_eln_callback_slot_ok
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        0)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        24)) 1))
              (seq
               (ptr-write-u64
                (nl_eln_callback_record_at
                 (data-addr nl_eln_callback_context)
-                (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                40 2)
-              (ptr-read-u64
+              (heap-read-u64
                (nl_eln_callback_record_at
                 (data-addr nl_eln_callback_context)
-                (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                48))
            (if (/= (logand
-                    (ptr-read-u64
+                    (heap-read-u64
                      (nl_eln_callback_record_at
                       (data-addr nl_eln_callback_context)
-                      (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                      (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                      48) 3) 2)
                (seq
                 (ptr-write-u64
                  (nl_eln_callback_record_at
                   (data-addr nl_eln_callback_context)
-                  (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                  (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                  40 3)
-                (ptr-read-u64
+                (heap-read-u64
                  (nl_eln_callback_record_at
                   (data-addr nl_eln_callback_context)
-                  (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                  (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                  48))
              (seq
               (ptr-write-u64
-               (ptr-read-u64
+               (heap-read-u64
                 (nl_eln_callback_record_at
                  (data-addr nl_eln_callback_context)
-                 (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                 (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                 16) 0 2)
               (ptr-write-u64
-               (ptr-read-u64
+               (heap-read-u64
                 (nl_eln_callback_record_at
                  (data-addr nl_eln_callback_context)
-                 (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                 (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                 16) 8
                (sar
-                (ptr-read-u64
+                (heap-read-u64
                  (nl_eln_callback_record_at
                   (data-addr nl_eln_callback_context)
-                  (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                  (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                  48) 2))
               (ptr-write-u64
-               (ptr-read-u64
+               (heap-read-u64
                 (nl_eln_callback_record_at
                  (data-addr nl_eln_callback_context)
-                 (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                 (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                 16) 16 0)
               (ptr-write-u64
-               (ptr-read-u64
+               (heap-read-u64
                 (nl_eln_callback_record_at
                  (data-addr nl_eln_callback_context)
-                 (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                 (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                 16) 24 0)
               (let ((status
                      (wf_bytecode_call_gateway
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        0)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        8)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        16)
                       0
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        32)
-                      (ptr-read-u64
+                      (heap-read-u64
                        (nl_eln_callback_record_at
                         (data-addr nl_eln_callback_context)
-                        (- (ptr-read-u64 (data-addr nl_eln_callback_context) 16) 1))
+                        (- (heap-read-u64 (data-addr nl_eln_callback_context) 16) 1))
                        24))))
                 (let* ((control (data-addr nl_eln_callback_context))
-                       (depth (ptr-read-u64 control 16))
+                       (depth (heap-read-u64 control 16))
                        (record (nl_eln_callback_record_at control (- depth 1)))
-                       (fallback (ptr-read-u64 record 48)))
+                       (fallback (heap-read-u64 record 48)))
                   (if (/= status 0)
                       (seq (ptr-write-u64 record 40 status) fallback)
-                    (let ((tag (ptr-read-u64 (ptr-read-u64 record 24) 0))
-                          (result (ptr-read-u64 (ptr-read-u64 record 24) 8)))
+                    (let ((tag (heap-read-u64 (heap-read-u64 record 24) 0))
+                          (result (heap-read-u64 (heap-read-u64 record 24) 8)))
                       (if (or (/= tag 2)
                               (< result -2305843009213693952)
                               (>= result 2305843009213693952))

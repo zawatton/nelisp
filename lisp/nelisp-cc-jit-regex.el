@@ -99,7 +99,7 @@
     (defun nl_smp_all_digits (tbytes i end)
       (if (= i end)
           1
-        (if (= (nl_smp_is_digit (ptr-read-u8 tbytes i)) 1)
+        (if (= (nl_smp_is_digit (heap-read-u8 tbytes i)) 1)
             (nl_smp_all_digits tbytes (+ i 1) end)
           0)))
 
@@ -111,18 +111,18 @@
       (if (= tlen 0)
           0
         (nl_smp_numeric_digits tbytes tlen
-                               (if (= (ptr-read-u8 tbytes 0) 45) 1 0)
-                               (if (= (ptr-read-u8 tbytes 0) 45) 1 0))))
+                               (if (= (heap-read-u8 tbytes 0) 45) 1 0)
+                               (if (= (heap-read-u8 tbytes 0) 45) 1 0))))
 
     ;; nl_smp_numeric_digits: scan first digit run from start/i.
     (defun nl_smp_numeric_digits (tbytes tlen start i)
       (if (= i tlen)
           (if (> i start) 1 0)
-        (if (= (nl_smp_is_digit (ptr-read-u8 tbytes i)) 1)
+        (if (= (nl_smp_is_digit (heap-read-u8 tbytes i)) 1)
             (nl_smp_numeric_digits tbytes tlen start (+ i 1))
           (if (= i start)
               0
-            (if (and (= (ptr-read-u8 tbytes i) 46)
+            (if (and (= (heap-read-u8 tbytes i) 46)
                      (< (+ i 1) tlen))
                 (nl_smp_all_digits tbytes (+ i 1) tlen)
               0)))))
@@ -133,8 +133,8 @@
     (defun nl_smp_match_json (tbytes tlen)
       (if (< tlen 2)
           0
-        (if (and (= (ptr-read-u8 tbytes 0) 123)
-                 (= (ptr-read-u8 tbytes (- tlen 1)) 125))
+        (if (and (= (heap-read-u8 tbytes 0) 123)
+                 (= (heap-read-u8 tbytes (- tlen 1)) 125))
             1
           0)))
 
@@ -148,19 +148,19 @@
 
     (defun nl_smp_ipv4_group (tbytes tlen idx grp)
       (if (or (= idx tlen)
-              (= (nl_smp_is_digit (ptr-read-u8 tbytes idx)) 0))
+              (= (nl_smp_is_digit (heap-read-u8 tbytes idx)) 0))
           0
         (nl_smp_ipv4_digits tbytes tlen idx idx grp)))
 
     (defun nl_smp_ipv4_digits (tbytes tlen start i grp)
       (if (= i tlen)
           (if (and (= grp 3) (> i start)) 1 0)
-        (if (= (nl_smp_is_digit (ptr-read-u8 tbytes i)) 1)
+        (if (= (nl_smp_is_digit (heap-read-u8 tbytes i)) 1)
             (nl_smp_ipv4_digits tbytes tlen start (+ i 1) grp)
           (if (= i start)
               0
             (if (< grp 3)
-                (if (= (ptr-read-u8 tbytes i) 46)
+                (if (= (heap-read-u8 tbytes i) 46)
                     (nl_smp_ipv4_group tbytes tlen (+ i 1) (+ grp 1))
                   0)
               0)))))
@@ -171,7 +171,7 @@
     (defun nl_smp_match_whitespace (tbytes tlen i)
       (if (= i tlen)
           1
-        (if (= (nl_smp_is_ws (ptr-read-u8 tbytes i)) 1)
+        (if (= (nl_smp_is_ws (heap-read-u8 tbytes i)) 1)
             (nl_smp_match_whitespace tbytes tlen (+ i 1))
           0)))
 
@@ -182,8 +182,8 @@
       (if (= i tlen)
           1
         (if (and (< (+ i 1) tlen)
-                 (= (ptr-read-u8 tbytes i) 194)
-                 (= (ptr-read-u8 tbytes (+ i 1)) 160))
+                 (= (heap-read-u8 tbytes i) 194)
+                 (= (heap-read-u8 tbytes (+ i 1)) 160))
             (nl_smp_match_nbsp tbytes tlen (+ i 2))
           0)))
 
@@ -193,8 +193,8 @@
     (defun nl_smp_match_newline (tbytes tlen i)
       (if (= i tlen)
           0
-        (if (or (= (ptr-read-u8 tbytes i) 10)
-                (= (ptr-read-u8 tbytes i) 13))
+        (if (or (= (heap-read-u8 tbytes i) 10)
+                (= (heap-read-u8 tbytes i) 13))
             1
           (nl_smp_match_newline tbytes tlen (+ i 1)))))
 
@@ -213,16 +213,16 @@
         (if (= ti tlen)
             ;; Text exhausted but pattern remains
             0
-          (if (and (= (ptr-read-u8 pbytes pi) 92)
+          (if (and (= (heap-read-u8 pbytes pi) 92)
                    (< (+ pi 1) pe)
-                   (or (= (ptr-read-u8 pbytes (+ pi 1)) 46)
-                       (= (ptr-read-u8 pbytes (+ pi 1)) 92)))
+                   (or (= (heap-read-u8 pbytes (+ pi 1)) 46)
+                       (= (heap-read-u8 pbytes (+ pi 1)) 92)))
               ;; Recognized escape \\. or \\\\: match second byte in text
-              (if (= (ptr-read-u8 tbytes ti) (ptr-read-u8 pbytes (+ pi 1)))
+              (if (= (heap-read-u8 tbytes ti) (heap-read-u8 pbytes (+ pi 1)))
                   (nl_smp_fb_cmp pbytes (+ pi 2) pe tbytes (+ ti 1) tlen)
                 0)
             ;; Literal byte: match pat[pi] in text
-            (if (= (ptr-read-u8 tbytes ti) (ptr-read-u8 pbytes pi))
+            (if (= (heap-read-u8 tbytes ti) (heap-read-u8 pbytes pi))
                 (nl_smp_fb_cmp pbytes (+ pi 1) pe tbytes (+ ti 1) tlen)
               0)))))
 
@@ -231,10 +231,10 @@
     (defun nl_smp_fb_lit_len (pbytes ps pe)
       (if (= ps pe)
           0
-        (if (and (= (ptr-read-u8 pbytes ps) 92)
+        (if (and (= (heap-read-u8 pbytes ps) 92)
                  (< (+ ps 1) pe)
-                 (or (= (ptr-read-u8 pbytes (+ ps 1)) 46)
-                     (= (ptr-read-u8 pbytes (+ ps 1)) 92)))
+                 (or (= (heap-read-u8 pbytes (+ ps 1)) 46)
+                     (= (heap-read-u8 pbytes (+ ps 1)) 92)))
             (+ 1 (nl_smp_fb_lit_len pbytes (+ ps 2) pe))
           (+ 1 (nl_smp_fb_lit_len pbytes (+ ps 1) pe)))))
 
@@ -291,13 +291,13 @@
        pbytes
        ;; ps: skip \\` (bytes 92+96, 2 bytes) or ^ (94, 1 byte)
        (if (= (logand asae 2) 2)
-           (if (and (>= plen 2) (= (ptr-read-u8 pbytes 0) 92))
+           (if (and (>= plen 2) (= (heap-read-u8 pbytes 0) 92))
                2
              1)
          0)
        ;; pe: strip \\' (bytes 92+39, 2 bytes) or $ (36, 1 byte)
        (if (= (logand asae 1) 1)
-           (if (and (>= plen 2) (= (ptr-read-u8 pbytes (- plen 2)) 92))
+           (if (and (>= plen 2) (= (heap-read-u8 pbytes (- plen 2)) 92))
                (- plen 2)
              (- plen 1))
          plen)
@@ -310,17 +310,17 @@
        pbytes plen tbytes tlen
        ;; Compute asae = as*2 + ae (packed anchor flags)
        (+ (if (and (>= plen 2)
-                   (= (ptr-read-u8 pbytes 0) 92)
-                   (= (ptr-read-u8 pbytes 1) 96))
+                   (= (heap-read-u8 pbytes 0) 92)
+                   (= (heap-read-u8 pbytes 1) 96))
               2
-            (if (and (>= plen 1) (= (ptr-read-u8 pbytes 0) 94))
+            (if (and (>= plen 1) (= (heap-read-u8 pbytes 0) 94))
                 2
               0))
           (if (and (>= plen 2)
-                   (= (ptr-read-u8 pbytes (- plen 2)) 92)
-                   (= (ptr-read-u8 pbytes (- plen 1)) 39))
+                   (= (heap-read-u8 pbytes (- plen 2)) 92)
+                   (= (heap-read-u8 pbytes (- plen 1)) 39))
               1
-            (if (and (>= plen 1) (= (ptr-read-u8 pbytes (- plen 1)) 36))
+            (if (and (>= plen 1) (= (heap-read-u8 pbytes (- plen 1)) 36))
                 1
               0)))))
 

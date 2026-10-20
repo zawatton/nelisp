@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(require 'nelisp-heap-accessors)
+
 (require 'nelisp-asm-x86_64)
 
 (defconst nelisp-native-jump-x86_64-buffer-size 64
@@ -42,7 +44,7 @@ RDI points to a writable buffer of at least
   (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsp)
   (nelisp-asm-x86_64-add-imm32 buf 'rax 8)
   (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi 48 'rax)
-  (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rax 0)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp buf 'rax 0)
   (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi 56 'rax)
   (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
   (nelisp-asm-x86_64-ret buf))
@@ -60,14 +62,14 @@ zero is normalized to one.  The transfer never returns normally."
     (nelisp-asm-x86_64-jnz-rel32 buf nonzero)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
     (nelisp-asm-x86_64-define-label buf nonzero)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r11 'rdi 56)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r10 'rdi 48)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbx 'rdi 0)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbp 'rdi 8)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r12 'rdi 16)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r13 'rdi 24)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r14 'rdi 32)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r15 'rdi 40)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r11 'rdi 56)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r10 'rdi 48)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rbx 'rdi 0)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rbp 'rdi 8)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r12 'rdi 16)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r13 'rdi 24)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r14 'rdi 32)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r15 'rdi 40)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
     (nelisp-native-jump-x86_64--emit-jmp-reg buf 'r11)))
 

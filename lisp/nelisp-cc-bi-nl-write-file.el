@@ -176,7 +176,7 @@
     (defun nelisp_bi_nl_write_file_decode (src-ptr src-len dst-ptr src-idx dst-idx)
       (if (= src-idx src-len)
           dst-idx
-        (let ((b (ptr-read-u8 src-ptr src-idx)))
+        (let ((b (heap-read-u8 src-ptr src-idx)))
           (if (< b 194)
               ;; ASCII (< 0x80) or stray continuation byte (0x80..0xbf)
               ;; or invalid lead byte 0xc0/0xc1 — pass through.
@@ -189,7 +189,7 @@
                 ;; decoded byte verbatim (= U+0080..U+00BF).
                 (and
                  (ptr-write-u8 dst-ptr dst-idx
-                               (ptr-read-u8 src-ptr (+ src-idx 1)))
+                               (heap-read-u8 src-ptr (+ src-idx 1)))
                  (nelisp_bi_nl_write_file_decode
                   src-ptr src-len dst-ptr (+ src-idx 2) (+ dst-idx 1)))
               (if (= b 195)
@@ -198,7 +198,7 @@
                   ;; into 0xc0..0xff).
                   (and
                    (ptr-write-u8 dst-ptr dst-idx
-                                 (+ (ptr-read-u8 src-ptr (+ src-idx 1)) 64))
+                                 (+ (heap-read-u8 src-ptr (+ src-idx 1)) 64))
                    (nelisp_bi_nl_write_file_decode
                     src-ptr src-len dst-ptr (+ src-idx 2) (+ dst-idx 1)))
                 ;; 0xc4..0xff: 3+ byte UTF-8 lead.  Should not

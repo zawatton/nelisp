@@ -84,7 +84,7 @@
                       ;; path's `xor eax, eax' zeroes rax cleanly, so
                       ;; `(= rc 0)' is the reliable disambiguator.
                       (if (= (extern-call stat cstr statbuf) 0)
-                          (ptr-read-u64 statbuf 88)
+                          (heap-read-u64 statbuf 88)
                         -1))
        (dealloc-bytes cstr size-plus-one 1)
        (dealloc-bytes statbuf 144 8)

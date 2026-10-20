@@ -15,7 +15,7 @@
               (seq (ptr-write-u64 trace-buffer 0 5641975213432120625)
                    (ptr-write-u64 trace-buffer 8 ,kind)
                    (ptr-write-u64 trace-buffer 16 (nl_bi_strptr src))
-                   (ptr-write-u64 trace-buffer 24 (ptr-read-u64 cursor 8))
+                   (ptr-write-u64 trace-buffer 24 (heap-read-u64 cursor 8))
                    (ptr-write-u64 trace-buffer 32 trace-length)
                    (nl_os_write_stderr trace-buffer 40)
                    (if (> trace-length 0)

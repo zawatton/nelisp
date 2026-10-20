@@ -62,9 +62,9 @@
     (defun nl_jit_access_aref_bv_do (payload idx out)
       ;; payload: NlBoolVector* (raw i64).  idx: i64.  out: *mut Sexp.
       ;; Pure-Elisp box bit length is at offset 0 and packed data at +8.
-      (if (< idx (ptr-read-u64 payload 0))
+      (if (< idx (heap-read-u64 payload 0))
           (if (= (logand
-                  (/ (ptr-read-u8 (ptr-read-u64 payload 8) (/ idx 8))
+                  (/ (heap-read-u8 (heap-read-u64 payload 8) (/ idx 8))
                      (nl_jit_access_aref_bv_bitval (mod idx 8)))
                   1)
                  0)

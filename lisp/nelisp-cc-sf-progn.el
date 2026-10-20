@@ -64,7 +64,7 @@
     ;; the cdr WORD; only a non-nil immediate (dotted tail) still needs the
     ;; materialised view.
     (defun nl_sf_progn_next (cur _pad)
-      (let ((tail (ptr-read-u64 (ptr-read-u64 cur 8) 8)))
+      (let ((tail (heap-read-u64 (heap-read-u64 cur 8) 8)))
         (if (= (logand tail 1) 1)
             (if (= tail 3) 0 (extern-call nl_cons_cdr_ptr cur))
           (if (= (sexp-tag tail) 0) 0 tail))))

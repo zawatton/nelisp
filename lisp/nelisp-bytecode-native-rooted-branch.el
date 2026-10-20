@@ -67,7 +67,7 @@
   '(defun nl_native_rooted_branch_probe_v1 (env ticket argument-count root-count)
      (let ((condition-slot (extern-call nl_root_pin_slot_v2 env ticket 1 0 0 0)))
        (if (= condition-slot 0) 2
-         (if (= (ptr-read-u64 condition-slot 0) 0)
+         (if (= (heap-read-u64 condition-slot 0) 0)
              (let ((gateway-status
                     (extern-call nl_native_cdr_v2 env ticket 3 4 0 0)))
                (if (= gateway-status 0) 0

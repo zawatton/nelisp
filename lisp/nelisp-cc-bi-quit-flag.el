@@ -119,7 +119,7 @@ Mirrors the set kernel modulo the swap of `expected' / `new'.")
      ;; (= the `MOV' instruction is indivisible) so the value observed
      ;; is always one of the prior `compare-exchange' results — never
      ;; a torn read.  Returns 0 if clear, 1 if pending.
-     (ptr-read-u64 flag-ptr 0))
+     (heap-read-u64 flag-ptr 0))
   "AOT source for the Doc 117 §117.B `(quit-flag-pending-p)' swap.
 
 Single-arg function reading `*flag-ptr' as a `u64' and returning

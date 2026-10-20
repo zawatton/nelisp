@@ -100,7 +100,7 @@
     ;; nelisp_tty_ptr_read_i64: read an i64 from an atomic pointer.
     ;; Used for TTY_FD load.
     (defun nelisp_tty_ptr_read_i64 (ptr)
-      (ptr-read-u64 ptr 0))
+      (heap-read-u64 ptr 0))
 
     ;; ------------------------------------------------------------------
     ;; Build a NUL-terminated "/dev/tty" C string.
@@ -264,7 +264,7 @@
     ;; Check revents byte at offset 6 for POLLIN(1) | POLLHUP(0x10).
     ;; POLLIN=1, POLLHUP=16, mask=17 (0x11).
     (defun nelisp_tty_check_revents (pfd-buf)
-      (if (= (logand (ptr-read-u8 pfd-buf 6) 17) 0)
+      (if (= (logand (heap-read-u8 pfd-buf 6) 17) 0)
           -1
         (nelisp_tty_do_read)))
 
@@ -302,11 +302,11 @@
     ;; Pack ws_col and ws_row into (col << 16 | row).
     ;; ws_row at offset 0 (u16 LE), ws_col at offset 2 (u16 LE).
     (defun nelisp_tty_winsize_pack (ws-buf)
-      (+ (* (+ (* (ptr-read-u8 ws-buf 3) 256)
-                (ptr-read-u8 ws-buf 2))
+      (+ (* (+ (* (heap-read-u8 ws-buf 3) 256)
+                (heap-read-u8 ws-buf 2))
             65536)
-         (+ (* (ptr-read-u8 ws-buf 1) 256)
-            (ptr-read-u8 ws-buf 0)))))
+         (+ (* (heap-read-u8 ws-buf 1) 256)
+            (heap-read-u8 ws-buf 0)))))
   "Wave k AOT source for tty raw-mode / winsize syscall bodies.
 
 Exports:

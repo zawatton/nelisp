@@ -50,7 +50,7 @@
      ;;     cdr-ptr result is held across the recursive descent).
      (if (= (logand arg 1) 1) 0
      (if (= (sexp-tag arg) 7)
-         (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 8)))
+         (let ((word (heap-read-u64 (heap-sexp-payload arg) 8)))
            (if (= (logand word 1) 0)
                word
              (extern-call nl_val_load word (alloc-bytes 32 8))))

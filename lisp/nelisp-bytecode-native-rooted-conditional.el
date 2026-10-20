@@ -54,7 +54,7 @@
          (if (= condition-slot 0) 2
            (if (= truth-slot 0) 2
              (if (= false-slot 0) 2
-               (if (= (ptr-read-u64 condition-slot 0) 0) 259 258))))))))
+               (if (= (heap-read-u64 condition-slot 0) 0) 259 258))))))))
 
 (defun nelisp-bytecode-native-rooted-conditional-build (input artifact-path)
   "Build the source-verified fixed `(if x y z)' slot-tag selection probe."

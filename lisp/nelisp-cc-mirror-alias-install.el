@@ -126,8 +126,8 @@
                    (setq done 1)
                  ;; Doc 215: the slot's own WORD; nil is 3, any other
                  ;; immediate is not a symbol.
-                 (setq next (ptr-read-u64
-                             (+ (ptr-read-u64 (ptr-read-u64 entry 8) 32) 32) 0))
+                 (setq next (heap-read-u64
+                             (+ (heap-read-u64 (heap-sexp-payload entry) 32) 32) 0))
                  (if (if (= next 3) 1
                        (if (= (logand next 1) 1) 0 (= (sexp-tag next) 0)))
                      (setq done 1)

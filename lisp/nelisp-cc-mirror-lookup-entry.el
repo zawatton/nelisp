@@ -143,8 +143,8 @@
     ;; (`ht_rec' below), whose slot 0 is provably never a pointer WORD,
     ;; so no behavior changes for any value this slot can hold.
     (defun nelisp_mirror_slot_raw_word (rec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
+      (heap-read-u64
+       (+ (heap-read-u64 (heap-read-u64 rec-ptr 8) 32) (* idx 8))
        0))
 
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
@@ -184,8 +184,8 @@
         ;; lexical variable reference and `setq' checks one) land on an
         ;; empty bucket.  A pointer head is the bucket's first Cons view.
         (let ((ht-rec-ptr (nl_record_slot_word mirror-ptr 0)))
-          (let ((head (ptr-read-u64
-                       (+ (ptr-read-u64
+          (let ((head (heap-read-u64
+                       (+ (heap-read-u64
                            (nl_word_payload (nl_record_slot_word ht-rec-ptr 1)) 8)
                           (* (logand
                               (extern-call nelisp_fnv1a sym-ptr)

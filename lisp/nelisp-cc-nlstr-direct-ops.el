@@ -95,7 +95,7 @@
      ;;   [NlStr*+16] = String::len (= byte count, u64)
      ;;
      ;; Returns: i64 byte length.
-     (ptr-read-u64 (ptr-read-u64 ptr 8) 16))
+     (heap-read-u64 (heap-read-u64 ptr 8) 16))
   "AOT direct-symbol source for `nl_mut_str_len'.
 
 Replaces the Rust `#[no_mangle] pub unsafe extern \"C\" fn nl_mut_str_len'
@@ -126,16 +126,16 @@ value form using the `ptr-read-u64' grammar op in nested position.")
      ;; grammar op (single load from [sexp+0]) so repeated evaluation
      ;; is safe and avoids the `let' restriction.
      (if (or (= (sexp-tag sexp) 6) (= (sexp-tag sexp) 15))
-         (ptr-read-u64 (ptr-read-u64 sexp 8) 8)
+         (heap-read-u64 (heap-sexp-payload sexp) 8)
        (if (or (= (sexp-tag sexp) 5) (= (sexp-tag sexp) 14))
-           (ptr-read-u64 sexp 16)
+           (heap-sexp-data sexp)
          (if (= (sexp-tag sexp) 4)
-             (ptr-read-u64 sexp 16)
+             (heap-sexp-data sexp)
            0))))
     ;; Raw-pointer byte access shared by AOT consumers whose source files are
     ;; deliberately kept out of the raw-memory kernel inventory.
     (defun nl_bytes_byte_at (bytes i)
-      (ptr-read-u8 bytes i))
+      (heap-read-u8 bytes i))
     ;; The reader's scratch builder is already an owning MutStr.  Numeric
     ;; escapes only change its representation flag; the boxed NlStr layout and
     ;; byte buffer remain untouched.
@@ -181,9 +181,9 @@ lifetime of a Sexp value.  No `let' binding needed.")
       ;; ~768MB -- the dominant peak-RSS contributor + deep-stack SIGSEGV source.
       (let ((k i))
         (while (<= (+ k 8) n)
-          (and (ptr-write-u64 dst_ptr k (ptr-read-u64 src k)) (setq k (+ k 8))))
+          (and (ptr-write-u64 dst_ptr k (heap-read-u64 src k)) (setq k (+ k 8))))
         (while (< k n)
-          (and (ptr-write-u8 dst_ptr k (ptr-read-u8 src k)) (setq k (+ k 1))))
+          (and (ptr-write-u8 dst_ptr k (heap-read-u8 src k)) (setq k (+ k 1))))
         1))
 
     ;; Shared inline-string writer.  TAG is 5 for UTF-8 Str and 14 for
@@ -259,23 +259,23 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Key-kind 1 is an interned/tag-4 name buffer; 2 is a tag-16 identity.
     (defun nl_symname_copy32 (src to off)
       (if (>= off 32) 1
-        (seq (ptr-write-u64 to off (ptr-read-u64 src off))
+        (seq (ptr-write-u64 to off (heap-read-u64 src off))
              (nl_symname_copy32 src to (+ off 8)))))
     (defun nl_symname_copy80 (src dst_ptr off)
       (if (>= off 80) 1
-        (seq (ptr-write-u64 dst_ptr off (ptr-read-u64 src off))
+        (seq (ptr-write-u64 dst_ptr off (heap-read-u64 src off))
              (nl_symname_copy80 src dst_ptr (+ off 8)))))
     (defun nl_symname_entry_match (entry kind key len hash)
-      (if (or (/= (ptr-read-u64 entry 8) kind)
-              (/= (ptr-read-u64 entry 32) hash)) 0
+      (if (or (/= (heap-read-u64 entry 8) kind)
+              (/= (heap-read-u64 entry 32) hash)) 0
         (if (= kind 2)
-            (if (= (ptr-read-u64 entry 16) key) 1 0)
-          (if (/= (ptr-read-u64 entry 24) len) 0
-            (nl_intern_eq (ptr-read-u64 entry 16) key 0 len)))))
+            (if (= (heap-read-u64 entry 16) key) 1 0)
+          (if (/= (heap-read-u64 entry 24) len) 0
+            (nl_intern_eq (heap-read-u64 entry 16) key 0 len)))))
     (defun nl_symname_probe (table cap kind key len hash step first-tomb)
       (if (>= step cap) first-tomb
         (let* ((entry (+ table (* (logand (+ hash step) (- cap 1)) 80)))
-               (state (ptr-read-u64 entry 0)))
+               (state (heap-read-u64 entry 0)))
           (if (= state 0)
               (if (= first-tomb 0) entry first-tomb)
             (if (= state 2)
@@ -295,20 +295,20 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_key_permanent (key len)
       ;; A buffer merely landing in the intern mapping is insufficient: only
       ;; a currently occupied intern-table row grants permanent lifetime.
-      (let* ((base (ptr-read-u64 268436288 0)))
+      (let* ((base (heap-read-u64 268436288 0)))
         (if (= base 0) 0
           (let* ((slot (nl_intern_probe
                         base (logand (nl_intern_hash key 0 len 2166136261) 1048575)
                         key len 0)))
             (if (= slot 0) 0
-              (if (= (ptr-read-u64 slot 0) (+ len 1))
-                  (if (= (ptr-read-u64 slot 8) key) 1 0)
+              (if (= (heap-read-u64 slot 0) (+ len 1))
+                  (if (= (heap-read-u64 slot 8) key) 1 0)
                 0))))))
     (defun nl_symname_reinsert (new-table new-cap old-entry)
-      (let* ((hash (ptr-read-u64 old-entry 32)) (step 0) (done 0))
+      (let* ((hash (heap-read-u64 old-entry 32)) (step 0) (done 0))
         (while (and (< step new-cap) (= done 0))
           (let* ((entry (+ new-table (* (logand (+ hash step) (- new-cap 1)) 80))))
-            (if (= (ptr-read-u64 entry 0) 0)
+            (if (= (heap-read-u64 entry 0) 0)
                 (seq (nl_symname_copy80 old-entry entry 0) (setq done 1))
               (setq step (+ step 1)))))
         done))
@@ -316,21 +316,21 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (let* ((i 0) (valid 1))
         (while (and (< i old-cap) (= valid 1))
           (let* ((entry (+ old-table (* i 80))))
-            (if (and (= (ptr-read-u64 entry 0) 1)
+            (if (and (= (heap-read-u64 entry 0) 1)
                      (= (nl_symname_reinsert new-table new-cap entry) 0))
                 (setq valid 0) 0)
             (setq i (+ i 1))))
         valid))
     (defun nl_symname_grow ()
-      (let* ((cap (ptr-read-u64 (data-addr nl_symbol_name_state) 8)))
+      (let* ((cap (heap-read-u64 (data-addr nl_symbol_name_state) 8)))
         (nl_symname_rehash_to (if (= cap 0) 256 (* cap 2)))))
     ;; Rebuild the table at NEW-CAP (a power of two) from its live entries.
     ;; Tombstones are not copied, so this is also how the collector drops
     ;; them once sweeping has filled the table with them.
     (defun nl_symname_rehash_to (new-cap)
       (let* ((state (data-addr nl_symbol_name_state))
-             (old (ptr-read-u64 state 0))
-             (cap (ptr-read-u64 state 8)))
+             (old (heap-read-u64 state 0))
+             (cap (heap-read-u64 state 8)))
         ;; Power-of-two capacity and 80-byte entries must remain in signed
         ;; i64 range. Allocation failure leaves the old table untouched.
         (if (or (< cap 0) (>= new-cap 72057594037927936)) 0
@@ -349,15 +349,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
                        1))))))))
     (defun nl_symname_entry (kind key len hash)
       (let* ((state (data-addr nl_symbol_name_state))
-             (base (ptr-read-u64 state 0))
-             (cap (ptr-read-u64 state 8)))
+             (base (heap-read-u64 state 0))
+             (cap (heap-read-u64 state 8)))
         (if (= base 0)
             (if (= (nl_symname_grow) 0) 0
               (nl_symname_entry kind key len hash))
           (let* ((entry (nl_symname_probe base cap kind key len hash 0 0))
-                 (used (ptr-read-u64 state 16)))
+                 (used (heap-read-u64 state 16)))
             (if (= entry 0) 0
-              (if (= (ptr-read-u64 entry 0) 1) entry
+              (if (= (heap-read-u64 entry 0) 1) entry
                 (if (>= (* (+ used 1) 4) (* cap 3))
                     (if (= (nl_symname_grow) 0) 0
                       (nl_symname_entry kind key len hash))
@@ -365,12 +365,12 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Return the entry address without allocating. Used by the GC hooks.
     (defun nl_symbol_name_entry_for (kind key len)
       (let* ((state (data-addr nl_symbol_name_state))
-             (base (ptr-read-u64 state 0)) (cap (ptr-read-u64 state 8)))
+             (base (heap-read-u64 state 0)) (cap (heap-read-u64 state 8)))
         (if (= base 0) 0
           (let* ((hash (nl_symname_hash kind key len))
                  (entry (nl_symname_probe base cap kind key len hash 0 0)))
             (if (if (= entry 0) 1
-                  (if (= (ptr-read-u64 entry 0) 1)
+                  (if (= (heap-read-u64 entry 0) 1)
                       (if (= (nl_symname_entry_match entry kind key len hash) 1) 0 1)
                     1)) 0 entry)))))
     ;; First insertion wins: an intern hit must retain the original name Sexp.
@@ -378,20 +378,20 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (let* ((hash (nl_symname_hash kind key len))
              (entry (nl_symname_entry kind key len hash)))
         (if (= entry 0) 0
-          (if (= (ptr-read-u64 entry 0) 1) 1
+          (if (= (heap-read-u64 entry 0) 1) 1
             (seq (ptr-write-u64 entry 8 kind)
                  (ptr-write-u64 entry 16 key)
                  (ptr-write-u64 entry 24 len)
                  (ptr-write-u64 entry 32 hash)
                  (nl_symname_copy32 name-slot (+ entry 40) 0)
-                 (ptr-write-u64 entry 72 (ptr-read-u64 (data-addr nl_symbol_name_state) 24))
+                 (ptr-write-u64 entry 72 (heap-read-u64 (data-addr nl_symbol_name_state) 24))
                  (ptr-write-u64 entry 0 1)
                  (ptr-write-u64 (data-addr nl_symbol_name_state) 16
-                                (+ (ptr-read-u64 (data-addr nl_symbol_name_state) 16) 1))
+                                (+ (heap-read-u64 (data-addr nl_symbol_name_state) 16) 1))
                  1)))))
     (defun nl_symbol_name_copy_out (entry out)
       (if (= entry 0) 0
-        (if (= (ptr-read-u64 entry 0) 1)
+        (if (= (heap-read-u64 entry 0) 1)
             (seq (nl_symname_copy32 (+ entry 40) out 0) 1)
           0)))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
@@ -432,7 +432,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_uninterned_symbol_equal (left right)
       (if (= (sexp-tag left) 16)
           (if (= (sexp-tag right) 16)
-              (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
+              (if (= (heap-sexp-payload left) (heap-sexp-payload right)) 1 0)
             0)
         0))
 
@@ -450,17 +450,17 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_hash (p i n h)
       (if (< i n)
           (nl_intern_hash p (+ i 1) n
-                          (logand (* (logxor h (ptr-read-u8 p i)) 16777619) 4294967295))
+                          (logand (* (logxor h (heap-read-u8 p i)) 16777619) 4294967295))
         h))
     (defun nl_intern_eq (a b i n)
       (if (= i n)
           1
-        (if (= (ptr-read-u8 a i) (ptr-read-u8 b i))
+        (if (= (heap-read-u8 a i) (heap-read-u8 b i))
             (nl_intern_eq a b (+ i 1) n)
           0)))
     (defun nl_intern_slotmatch (slot p n)
-      (if (= (ptr-read-u64 slot 0) (+ n 1))
-          (nl_intern_eq p (ptr-read-u64 slot 8) 0 n)
+      (if (= (heap-read-u64 slot 0) (+ n 1))
+          (nl_intern_eq p (heap-read-u64 slot 8) 0 n)
         0))
     ;; K counts probe steps.  After 2^20 of them every slot has been
     ;; visited and the table is full: answer 0 (no slot) so the callers
@@ -471,7 +471,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_probe (table idx p n k)
       (if (< 1048575 k)
           0
-        (if (= (ptr-read-u64 (+ table (* idx 16)) 0) 0)
+        (if (= (heap-read-u64 (+ table (* idx 16)) 0) 0)
             (+ table (* idx 16))
           (if (= (nl_intern_slotmatch (+ table (* idx 16)) p n) 1)
               (+ table (* idx 16))
@@ -480,14 +480,14 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; arena [base+16MiB, base+64MiB).  The bump pointer used to advance
     ;; past the end of the mapping unchecked.
     (defun nl_intern_arena_fits (n)
-      (if (<= (+ (ptr-read-u64 268436296 0) (if (= n 0) 1 n))
-              (+ (ptr-read-u64 268436288 0) 67108864))
+      (if (<= (+ (heap-read-u64 268436296 0) (if (= n 0) 1 n))
+              (+ (heap-read-u64 268436288 0) 67108864))
           1
         0))
     (defun nl_intern_bump (n)
       (and (ptr-write-u64 268436296 0
-                          (+ (ptr-read-u64 268436296 0) (if (= n 0) 1 n)))
-           (- (ptr-read-u64 268436296 0) (if (= n 0) 1 n))))
+                          (+ (heap-read-u64 268436296 0) (if (= n 0) 1 n)))
+           (- (heap-read-u64 268436296 0) (if (= n 0) 1 n))))
     (defun nl_intern_write_sexp (dest-slot buf n)
       (and (ptr-write-u8  dest-slot 0  4)
            (ptr-write-u64 dest-slot 8  (if (= n 0) 1 n))
@@ -510,11 +510,11 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_finish (slot p n dest-slot)
       (if (= slot 0)
           (nl_alloc_symbol_plain p n dest-slot)
-        (if (= (ptr-read-u64 slot 0) 0)
+        (if (= (heap-read-u64 slot 0) 0)
             (if (= (nl_intern_arena_fits n) 1)
                 (nl_intern_insert slot p n dest-slot (nl_intern_bump n))
               (nl_alloc_symbol_plain p n dest-slot))
-          (nl_intern_write_sexp dest-slot (ptr-read-u64 slot 8) n))))
+          (nl_intern_write_sexp dest-slot (heap-read-u64 slot 8) n))))
 
     ;; ---- nil/t name canonicalization ----
     ;; `nil' and `t' are immediate Sexp values (tag=0 / tag=1 -- see
@@ -533,15 +533,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; since both public entries route through these two `_pos' helpers.
     (defun nl_name_is_nil (p n)
       (if (= n 3)
-          (if (= (ptr-read-u8 p 0) 110)
-              (if (= (ptr-read-u8 p 1) 105)
-                  (if (= (ptr-read-u8 p 2) 108) 1 0)
+          (if (= (heap-read-u8 p 0) 110)
+              (if (= (heap-read-u8 p 1) 105)
+                  (if (= (heap-read-u8 p 2) 108) 1 0)
                 0)
             0)
         0))
     (defun nl_name_is_t (p n)
       (if (= n 1)
-          (if (= (ptr-read-u8 p 0) 116) 1 0)
+          (if (= (heap-read-u8 p 0) 116) 1 0)
         0))
     (defun nl_write_canonical_nil (dest-slot)
       (and (ptr-write-u64 dest-slot 0 0) (ptr-write-u64 dest-slot 8 0)
@@ -561,10 +561,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
           (nl_write_canonical_nil dest-slot)
         (if (= (nl_name_is_t bytes-ptr n) 1)
             (nl_write_canonical_t dest-slot)
-          (if (= (ptr-read-u64 268436288 0) 0)
+          (if (= (heap-read-u64 268436288 0) 0)
               (nl_alloc_symbol_plain bytes-ptr n dest-slot)
             (nl_intern_finish
-             (nl_intern_probe (ptr-read-u64 268436288 0)
+             (nl_intern_probe (heap-read-u64 268436288 0)
                               (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                               bytes-ptr n 0)
              bytes-ptr n dest-slot)))))
@@ -599,12 +599,12 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_finish_named (slot n name-slot result-slot)
       (if (= slot 0)
           (nl_alloc_symbol_plain_named name-slot n result-slot)
-        (if (= (ptr-read-u64 slot 0) 0)
+        (if (= (heap-read-u64 slot 0) 0)
             (if (= (nl_intern_arena_fits n) 1)
                 (nl_intern_insert slot (str-bytes-ptr name-slot) n result-slot
                                   (nl_intern_bump n))
               (nl_alloc_symbol_plain_named name-slot n result-slot))
-          (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+          (nl_intern_write_sexp result-slot (heap-read-u64 slot 8) n))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_intern_finish_named' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_intern_finish_named_w (slot n name-slot _pad)
@@ -619,26 +619,26 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (let* ((n (if (< len 0) 0 len))
              (probe (if (or (= (nl_name_is_nil bytes-ptr n) 1)
                             (= (nl_name_is_t bytes-ptr n) 1)
-                            (= (ptr-read-u64 268436288 0) 0)) 0
+                            (= (heap-read-u64 268436288 0) 0)) 0
                       (nl_intern_probe
-                       (ptr-read-u64 268436288 0)
+                       (heap-read-u64 268436288 0)
                        (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                        bytes-ptr n 0)))
              (was-present (if (= probe 0) 0
-                            (if (= (ptr-read-u64 probe 0) (+ n 1)) 1 0))))
+                            (if (= (heap-read-u64 probe 0) (+ n 1)) 1 0))))
         (if (= (nl_name_is_nil bytes-ptr n) 1)
             (nl_write_canonical_nil result-slot)
           (if (= (nl_name_is_t bytes-ptr n) 1)
               (nl_write_canonical_t result-slot)
-            (let* ((slot (if (= (ptr-read-u64 268436288 0) 0) 0
+            (let* ((slot (if (= (heap-read-u64 268436288 0) 0) 0
                            (nl_intern_probe
-                            (ptr-read-u64 268436288 0)
+                            (heap-read-u64 268436288 0)
                             (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                             bytes-ptr n 0))))
               (if (= (nl_intern_finish_named slot n name-slot result-slot) 0) 0
                 (if (= was-present 1) 1
                   (nl_symbol_name_register
-                   1 (ptr-read-u64 result-slot 16) n name-slot))))))))
+                   1 (heap-read-u64 result-slot 16) n name-slot))))))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_alloc_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_alloc_symbol_named_w (bytes-ptr len name-slot _pad)
@@ -668,18 +668,18 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Return the canonical original name Sexp for a symbol, lazily creating
     ;; it for symbols produced by the reader's byte-only construction path.
     (defun nl_symbol_name_value (env symbol-slot out)
-      (let* ((tag (ptr-read-u64 symbol-slot 0)))
+      (let* ((tag (heap-read-u64 symbol-slot 0)))
         (if (= tag 4)
-            (let* ((key (ptr-read-u64 symbol-slot 16))
-                   (len (ptr-read-u64 symbol-slot 24))
+            (let* ((key (heap-read-u64 symbol-slot 16))
+                   (len (heap-read-u64 symbol-slot 24))
                    (entry (nl_symbol_name_entry_for 1 key len)))
               (if (/= entry 0)
                   (nl_symbol_name_copy_out entry out)
                 (nl_symbol_name_value_create env symbol-slot out)))
           (if (= tag 16)
-              (let* ((identity (ptr-read-u64 symbol-slot 8))
-                     (key (ptr-read-u64 symbol-slot 16))
-                     (len (ptr-read-u64 symbol-slot 24))
+              (let* ((identity (heap-read-u64 symbol-slot 8))
+                     (key (heap-read-u64 symbol-slot 16))
+                     (len (heap-read-u64 symbol-slot 24))
                      (entry (nl_symbol_name_entry_for 2 identity len)))
                 (if (/= entry 0)
                     (nl_symbol_name_copy_out entry out)
@@ -704,21 +704,21 @@ lifetime of a Sexp value.  No `let' binding needed.")
                (nl_symname_copy32 symbol-slot symbol-root 0)
                ;; Allocate destination first. This may collect/compact; the
                ;; rooted symbol slot is reread afterwards for its moved key.
-               (let* ((len (ptr-read-u64 symbol-root 24))
+               (let* ((len (heap-read-u64 symbol-root 24))
                       (alloc-n (if (= len 0) 1 len))
                       (buf (alloc-bytes alloc-n 1)))
-                 (let* ((tag (ptr-read-u64 symbol-root 0))
+                 (let* ((tag (heap-read-u64 symbol-root 0))
                         (kind (if (= tag 4) 1 2))
-                        (name-key (if (= tag 4) (ptr-read-u64 symbol-root 16)
-                                    (ptr-read-u64 symbol-root 8)))
-                        (key (ptr-read-u64 symbol-root 16))
+                        (name-key (if (= tag 4) (heap-read-u64 symbol-root 16)
+                                    (heap-read-u64 symbol-root 8)))
+                        (key (heap-read-u64 symbol-root 16))
                         (name-tag 14)
                         (i 0))
                    ;; Reader-created symbols have no original string Sexp.
                    ;; Establish ASCII byte kind before canonical registration
                    ;; so every returned alias uses the same representation.
                    (while (< i len)
-                     (if (>= (ptr-read-u8 key i) 128) (setq name-tag 5) 0)
+                     (if (>= (heap-read-u8 key i) 128) (setq name-tag 5) 0)
                      (setq i (+ i 1)))
                    (if (= (nl_alloc_str_write_tag key len alloc-n tmp buf name-tag) 0)
                        (seq (nl_root_release env marker) 0)
@@ -737,7 +737,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_immediate (env tag out)
       (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
                       (data-addr nl_symbol_name_t))))
-        (if (= (ptr-read-u64 state 0) 14)
+        (if (= (heap-read-u64 state 0) 14)
             (seq (nl_symname_copy32 state out 0) 1)
           (let* ((marker (nl_root_mark env))
                  (tmp (nl_root_reserve_checked env))
@@ -756,7 +756,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                       (nl_symname_copy32 tmp out 0)
                       1))
                (nl_root_release env marker)
-               (if (= (ptr-read-u64 state 0) 14) 1 0))))))))
+               (if (= (heap-read-u64 state 0) 14) 1 0))))))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_immediate' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_immediate_w (env tag _pad)
@@ -791,9 +791,9 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_lookup_finish (slot n result-slot)
       (if (= slot 0)
           0
-        (if (= (ptr-read-u64 slot 0) 0)
+        (if (= (heap-read-u64 slot 0) 0)
             0
-          (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+          (nl_intern_write_sexp result-slot (heap-read-u64 slot 8) n))))
     ;; Doc 215 word ABI: the result WORD, or 3 (nil) when the legacy form answered 0 (a miss, no signal).
     ;; `nl_intern_lookup_finish' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_intern_lookup_finish_w (slot n _pad)
@@ -819,10 +819,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
           (nl_write_canonical_nil result-slot)
         (if (= (nl_name_is_t bytes-ptr n) 1)
             (nl_write_canonical_t result-slot)
-          (if (= (ptr-read-u64 268436288 0) 0)
+          (if (= (heap-read-u64 268436288 0) 0)
               0
             (nl_intern_lookup_finish
-             (nl_intern_probe (ptr-read-u64 268436288 0)
+             (nl_intern_probe (heap-read-u64 268436288 0)
                               (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
                               bytes-ptr n 0)
              n result-slot)))))
@@ -860,19 +860,19 @@ lifetime of a Sexp value.  No `let' binding needed.")
       (let* ((scan cursor) (slot 0) (word 0))
         (while (and (< scan 1048576) (= word 0))
           (setq slot (+ table (* scan 16)))
-          (setq word (ptr-read-u64 slot 0))
+          (setq word (heap-read-u64 slot 0))
           (if (= word 0) (setq scan (+ scan 1)) 0))
         (if (= word 0)
             -1
           (seq
            (nl_intern_write_sexp
-            dest-slot (ptr-read-u64 slot 8) (- word 1))
+            dest-slot (heap-read-u64 slot 8) (- word 1))
            (+ scan 1)))))
     (defun nl_intern_next (cursor dest-slot)
       (if (or (< cursor 0) (>= cursor 1048576)
-              (= (ptr-read-u64 268436288 0) 0))
+              (= (heap-read-u64 268436288 0) 0))
           -1
-        (nl_intern_next_scan (ptr-read-u64 268436288 0) cursor dest-slot)))
+        (nl_intern_next_scan (heap-read-u64 268436288 0) cursor dest-slot)))
   )
   "AOT direct-symbol source for `nl_alloc_str' + `nl_alloc_symbol' +
 `nl_intern_lookup'.
@@ -1055,9 +1055,9 @@ expectations.  Both use the global allocator, compatible with
     (defun nl_mut_str_finalize_copy_loop (src dst i n)
       (let ((k i))
         (while (<= (+ k 8) n)
-          (and (ptr-write-u64 dst k (ptr-read-u64 src k)) (setq k (+ k 8))))
+          (and (ptr-write-u64 dst k (heap-read-u64 src k)) (setq k (+ k 8))))
         (while (< k n)
-          (and (ptr-write-u8 dst k (ptr-read-u8 src k)) (setq k (+ k 1))))
+          (and (ptr-write-u8 dst k (heap-read-u8 src k)) (setq k (+ k 1))))
         1))
 
     ;; Innermost writers: the tag-6 builder finalizes through the historical
@@ -1098,7 +1098,7 @@ expectations.  Both use the global allocator, compatible with
     (defun nl_mut_str_finalize_inner
         (nlstr result-slot str-len out-tag)
       (nl_mut_str_finalize_alloc
-       (ptr-read-u64 nlstr 8)               ; str-ptr = NlStr.value.ptr
+       (heap-read-u64 nlstr 8)               ; str-ptr = NlStr.value.ptr
        str-len
        (if (= str-len 0) 1 str-len)         ; alloc-n = max(str-len, 1)
        result-slot out-tag))
@@ -1107,7 +1107,7 @@ expectations.  Both use the global allocator, compatible with
     (defun nl_mut_str_finalize_nlstr (ptr result-slot nlstr out-tag)
       (nl_mut_str_finalize_inner
        nlstr result-slot
-       (ptr-read-u64 nlstr 16) out-tag))     ; str-len = NlStr.value.len
+       (heap-read-u64 nlstr 16) out-tag))     ; str-len = NlStr.value.len
 
     ;; Public entry: nl_mut_str_finalize(ptr, result_slot).
     ;; ptr:         *const Sexp — source MutStr slot (tag=6).
@@ -1116,8 +1116,8 @@ expectations.  Both use the global allocator, compatible with
     (defun nl_mut_str_finalize (ptr result-slot)
       (nl_mut_str_finalize_nlstr
        ptr result-slot
-       (ptr-read-u64 ptr 8)
-       (if (= (ptr-read-u8 ptr 0) 15) 14 5))))
+       (heap-read-u64 ptr 8)
+       (if (= (heap-read-u8 ptr 0) 15) 14 5))))
   "AOT direct-symbol source for `nl_mut_str_finalize'.
 
 Seven-entry `(seq DEFUN ...)' manifest:

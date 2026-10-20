@@ -32,7 +32,7 @@
                         (nelisp_env_alias_canonicalize
                          mirror-ptr entry name-ptr terminal-address))
                   (if (= status 0)
-                      (let ((terminal (ptr-read-u64 terminal-address 0)))
+                      (let ((terminal (heap-read-u64 terminal-address 0)))
                         (if (= (extern-call nelisp_mirror_is_constant
                                             mirror-ptr name-ptr) 1)
                             (setq status 4)

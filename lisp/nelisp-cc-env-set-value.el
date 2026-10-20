@@ -139,7 +139,7 @@
                         (nelisp_env_variable_canonicalize
                          mirror-ptr frames-ptr entry name-ptr canonical-address 0))
                   (if (= status 0)
-                      (let* ((canonical-ptr (ptr-read-u64 canonical-address 0))
+                      (let* ((canonical-ptr (heap-read-u64 canonical-address 0))
                              (cell-ptr
                               (if (= dynamic-only-p 1)
                                   (extern-call nelisp_frame_stack_find_kind

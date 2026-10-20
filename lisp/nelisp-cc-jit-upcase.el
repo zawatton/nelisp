@@ -62,16 +62,16 @@
       (if (= idx src_len)
           1
         (and
-         (if (and (>= (ptr-read-u8 src_ptr idx) 97)
-                  (<= (ptr-read-u8 src_ptr idx) 122))
-             (mut-str-push-byte out (- (ptr-read-u8 src_ptr idx) 32))
-           (mut-str-push-byte out (ptr-read-u8 src_ptr idx)))
+         (if (and (>= (heap-read-u8 src_ptr idx) 97)
+                  (<= (heap-read-u8 src_ptr idx) 122))
+             (mut-str-push-byte out (- (heap-read-u8 src_ptr idx) 32))
+           (mut-str-push-byte out (heap-read-u8 src_ptr idx)))
          (nl_jit_upcase_walk src_ptr src_len out (+ idx 1)))))
 
     (defun nl_jit_upcase_byte_len (arg)
       (if (or (= (sexp-tag arg) 6) (= (sexp-tag arg) 15))
-          (ptr-read-u64 (ptr-read-u64 arg 8) 16)
-        (ptr-read-u64 arg 24)))
+          (heap-read-u64 (heap-read-u64 arg 8) 16)
+        (heap-read-u64 arg 24)))
 
     (defun nl_jit_upcase_make_builder (arg out)
       (if (or (= (sexp-tag arg) 14) (= (sexp-tag arg) 15))

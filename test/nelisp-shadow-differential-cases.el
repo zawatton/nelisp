@@ -45,6 +45,21 @@
 ;;; Code:
 
 (list
+ ;; Doc 216 S1: legacy WORDs/views preserve shared identity and mutation
+ ;; across cons, vector and record boundaries, including a collecting form.
+ (let* ((text (copy-sequence "ab"))
+        (symbol (make-symbol "heap-accessor"))
+        (tail (cons 17 nil))
+        (head (cons text tail))
+        (vector (vector head tail symbol))
+        (record (record 'heap-accessor vector 1.25 2305843009213693952)))
+   (setcar tail -17)
+   (aset text 0 122)
+   (garbage-collect)
+   (list (eq (cdr head) tail) (eq (aref vector 1) tail)
+         (eq (aref record 1) vector) (eq (aref vector 2) symbol)
+         (car (cdr head)) (car head) (symbol-name symbol)
+         (aref record 2) (aref record 3)))
  ;; Truth predicates consume the returned WORD after a collecting form.
  (list (if (progn (garbage-collect) nil) 'wrong 'nil-result)
        (if (progn (garbage-collect) 0) 'integer-result 'wrong)

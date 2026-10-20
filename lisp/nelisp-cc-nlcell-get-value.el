@@ -70,14 +70,14 @@
     ;; on boxed/string variants).  Preserves the "returns a 32B-slot
     ;; view in OUT" consumer contract refcount-correctly.  Return 0.
     (defun nl_cell_get_value (cell-ptr out)
-      (let ((nlcell-ptr (ptr-read-u64 cell-ptr 8)))
-        (if (or (extern-call nl_sexp_clone_into (ptr-read-u64 nlcell-ptr 0) out) 1)
+      (let ((nlcell-ptr (heap-read-u64 cell-ptr 8)))
+        (if (or (extern-call nl_sexp_clone_into (heap-read-u64 nlcell-ptr 0) out) 1)
             0
           0)))
     ;; Doc 215 builtin word ABI: the cell's value WORD itself (an immediate, or the
     ;; child box): no slot, no clone.  nl_cell_get_value keeps the cloning (rc, OUT) form.
     (defun nl_cell_get_value_w (cell-ptr _pad)
-      (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 0)))
+      (heap-read-u64 (heap-read-u64 cell-ptr 8) 0)))
   "AOT source for the `nl_cell_get_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

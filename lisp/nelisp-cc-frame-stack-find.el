@@ -88,18 +88,18 @@
           0
         (if (= (nelisp_frame_stack_find_word_tag_p cell-ptr 7) 0)
             0
-          (let* ((cell-box (ptr-read-u64 cell-ptr 8)))
-            (let* ((pair-word (ptr-read-u64 cell-box 0))
-                   (next-word (ptr-read-u64 cell-box 8)))
+          (let* ((cell-box (heap-sexp-payload cell-ptr)))
+            (let* ((pair-word (heap-read-u64 cell-box 0))
+                   (next-word (heap-read-u64 cell-box 8)))
               ;; A shared closure environment (`nelisp_frame_try_share_chain')
               ;; also holds bare declarations: skip any non-pair element.
               (if (= (nelisp_frame_stack_find_word_tag_p pair-word 7) 0)
                   (if (= (logand next-word 1) 1)
                       0
                     (nelisp_frame_stack_find_walk_bucket next-word name-ptr))
-                (let* ((pair-box (ptr-read-u64 pair-word 8)))
-                  (let* ((key-word (ptr-read-u64 pair-box 0))
-                         (value-word (ptr-read-u64 pair-box 8)))
+                (let* ((pair-box (heap-sexp-payload pair-word)))
+                  (let* ((key-word (heap-read-u64 pair-box 0))
+                         (value-word (heap-read-u64 pair-box 8)))
                     (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
                         0
                       (if (= (extern-call nelisp_symbol_key_equal key-word name-ptr) 1)
@@ -127,23 +127,23 @@
           0
         (if (= (nelisp_frame_stack_find_word_tag_p frame-ptr 12) 0)
             0
-          (let* ((frame-box (ptr-read-u64 frame-ptr 8)))
+          (let* ((frame-box (heap-sexp-payload frame-ptr)))
             (if (/= (sexp-tag frame-box) 4)
                 0
-              (let* ((frame-data (ptr-read-u64 frame-box 32)))
-                (let* ((ht-word (ptr-read-u64 frame-data 0)))
+              (let* ((frame-data (heap-read-u64 frame-box 32)))
+                (let* ((ht-word (heap-read-u64 frame-data 0)))
                   ;; Small frame: slot 0 is nil or an alist, i.e. one
                   ;; bucket chain (`nelisp_frame_push_direct').
                   (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
                       (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
                           (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
                         0)
-                    (let* ((ht-box (ptr-read-u64 ht-word 8)))
+                    (let* ((ht-box (heap-sexp-payload ht-word)))
                       (if (/= (sexp-tag ht-box) 4)
                           0
-                        (let* ((ht-data (ptr-read-u64 ht-box 32)))
-                          (let* ((count-word (ptr-read-u64 ht-data 0))
-                                 (buckets-word (ptr-read-u64 ht-data 8)))
+                        (let* ((ht-data (heap-read-u64 ht-box 32)))
+                          (let* ((count-word (heap-read-u64 ht-data 0))
+                                 (buckets-word (heap-read-u64 ht-data 8)))
                             (if (/= (logand count-word 3) 1)
                                 0
                               (let* ((bucket-count (sar count-word 2)))
@@ -162,11 +162,11 @@
                                            0)
                                         0
                                       (let* ((buckets-box
-                                              (ptr-read-u64 buckets-word 8)))
+                                              (heap-sexp-payload buckets-word)))
                                         (let* ((buckets-data
-                                                (ptr-read-u64 buckets-box 8))
+                                                (heap-read-u64 buckets-box 8))
                                                (bucket-len
-                                                (ptr-read-u64 buckets-box 16)))
+                                                (heap-read-u64 buckets-box 16)))
                                           (if (> bucket-count bucket-len)
                                               0
                                             (let* ((idx
@@ -175,7 +175,7 @@
                                                       nelisp_fnv1a name-ptr)
                                                      (- bucket-count 1)))
                                                    (head-word
-                                                    (ptr-read-u64
+                                                    (heap-read-u64
                                                      (+ buckets-data (* idx 8))
                                                      0)))
                                               (if (= (logand head-word 1) 1)
@@ -273,7 +273,7 @@
     ;; ROOTS contains canonical WORDs, not cloned storage views. In particular,
     ;; a nil-initialized object must remain the same header while it is filled.
     (defun nl_capture_root_set_word (roots index word)
-      (ptr-write-u64 (+ (ptr-read-u64 (ptr-read-u64 roots 8) 8) (* index 8)) 0 word))
+      (ptr-write-u64 (+ (heap-read-u64 (heap-read-u64 roots 8) 8) (* index 8)) 0 word))
 
     (defun nl_capture_emit_one_w (name cell acc roots)
       (let* ((pair (nelisp_cons_construct_w name cell 0)))
@@ -308,8 +308,8 @@
     ;; validated `*const Sexp' view of a Record (same precondition its
     ;; callers already establish for `record-slot-count').
     (defun nelisp_frame_slot_raw_word (rec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
+      (heap-read-u64
+       (+ (heap-read-u64 (heap-read-u64 rec-ptr 8) 32) (* idx 8))
        0))
 
     (defun nelisp_frame_binding_dynamic_p (frame-ptr name-ptr)
@@ -583,7 +583,7 @@
                     (if (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
                           (if (= filtered 2)
                               (if (= (nl_val_tag cell) 11)
-                                  (= (ptr-read-u64 cell 16) 13107) 0)
+                                  (= (heap-sexp-data cell) 13107) 0)
                             (nl_capture_name_allowed filtered filter name)))
                         (nl_capture_emit_one_w name cell acc roots) acc)
                     filtered filter frame roots))

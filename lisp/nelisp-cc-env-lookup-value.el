@@ -78,7 +78,7 @@
     ;; slots 4 (alias target) and 5 (buffer-local redirect) are nil for
     ;; almost every variable.  Tags: 0 nil, 1 t, 2 fixnum, else the box's tag.
     (defun nelisp_env_entry_slot_tag (rec k)
-      (let ((w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 rec 8) 32) (* k 8)) 0)))
+      (let ((w (heap-read-u64 (+ (heap-read-u64 (heap-read-u64 rec 8) 32) (* k 8)) 0)))
         (if (= (logand w 1) 0)
             (sexp-tag w)
           (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))))
@@ -163,7 +163,7 @@
       (let ((status (nelisp_env_alias_canonicalize
                      mirror-ptr entry-ptr name-ptr address)))
         (if (or (= status 0) (= status 3))
-            (let* ((canonical (ptr-read-u64 address 0))
+            (let* ((canonical (heap-read-u64 address 0))
                    (entry (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
               ;; Only a Vector slot 5 is a redirect; test its WORD first so
               ;; the usual nil slot is not boxed just to be rejected.
@@ -204,7 +204,7 @@
                    (status (nelisp_env_variable_canonicalize
                             mirror-ptr frames-ptr entry name-ptr address 0)))
               (if (= status 0)
-                  (let* ((canonical (ptr-read-u64 address 0))
+                  (let* ((canonical (heap-read-u64 address 0))
                          (cell (if (= frames-ptr 0) 0
                                  (if (= frame-mode 1)
                                      (extern-call nelisp_frame_stack_find_kind
@@ -239,7 +239,7 @@
             (setq status (nelisp_env_variable_canonicalize
                           mirror-ptr frames-ptr entry name-ptr address 0))
             (if (= status 0)
-                (let* ((canonical (ptr-read-u64 address 0))
+                (let* ((canonical (heap-read-u64 address 0))
                        (cell (if (= frames-ptr 0) 0
                                (if (= frame-mode 1)
                                    (extern-call nelisp_frame_stack_find_kind frames-ptr canonical 1 0)

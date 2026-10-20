@@ -69,7 +69,7 @@
     ;; top == 0 means uninitialised (bss zero-fill); after init top >= region
     ;; addr (non-zero), so the zero-check is a reliable "not yet armed" gate.
     (defun nl_rootstack_init ()
-      (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0)
+      (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
           (ptr-write-u64 (data-addr nl_rootstack_top) 0 (data-addr nl_rootstack_region))
         0))
     ;; Fixed worker registry.  ADD is parent-only during the spawn phase, and
@@ -83,7 +83,7 @@
         (seq
          (ptr-write-u64 (nl_thread_registry_entry i) 0 env)
          (ptr-write-u64 (nl_thread_registry_entry i) 8
-                        (ptr-read-u64 env 120))
+                        (heap-read-u64 env 120))
          (ptr-write-u64 (data-addr nl_thread_registry) 0 (+ i 1))
          i)))
     ;; Intern the refusal condition on the parent before publishing any worker.
@@ -105,12 +105,12 @@
       (seq
        (nl_thread_mirror_condition_init)
        (nl_thread_registry_add_at
-        env (ptr-read-u64 (data-addr nl_thread_registry) 0))))
+        env (heap-read-u64 (data-addr nl_thread_registry) 0))))
     (defun nl_thread_registry_clear ()
       (ptr-write-u64 (data-addr nl_thread_registry) 0 0))
     (defun nl_thread_registry_find_from (env i count)
       (if (or (>= i count) (>= i 64)) 0
-        (if (= (ptr-read-u64 (nl_thread_registry_entry i) 0) env)
+        (if (= (heap-read-u64 (nl_thread_registry_entry i) 0) env)
             (nl_thread_registry_entry i)
           (nl_thread_registry_find_from env (+ i 1) count))))
     ;; Callers test the registry count inline first: with no worker thread
@@ -119,7 +119,7 @@
     ;; call.
     (defun nl_thread_registry_find (env)
       (nl_thread_registry_find_from
-       env 0 (ptr-read-u64 (data-addr nl_thread_registry) 0)))
+       env 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
@@ -147,10 +147,10 @@
         (nl_thread_mirror_mutation_signal name-ptr)))
     (defun nl_thread_mirror_mutation_guard (mirror-ptr name-ptr)
       ;; Outside a parallel section count is zero: one load + compare, no scan.
-      (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+      (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
           0
         (nl_thread_mirror_mutation_guard_registered
-         (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find mirror-ptr)) name-ptr)))
+         (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find mirror-ptr)) name-ptr)))
     ;; The AOT DSL has no separate atomic-store operation.  A successful
     ;; SeqCst compare-exchange is the required atomic publication store; the
     ;; fetch-add by zero supplies its SeqCst expected value / marker load.
@@ -211,7 +211,7 @@
         (nl_thread_park_missed)))
     (defun nl_thread_park_request_begin ()
       (nl_thread_park_request_claim
-       (ptr-read-u64 (data-addr nl_thread_registry) 0)))
+       (heap-read-u64 (data-addr nl_thread_registry) 0)))
     (defun nl_thread_park_request_end ()
       (nl_thread_park_request_store 0))
     (defun nl_thread_park_collect_succeeded ()
@@ -234,16 +234,16 @@
              1)
           0)))
     (defun nl_thread_park_safepoint (env)
-      (nl_thread_park_safepoint_at (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (nl_thread_park_safepoint_at (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     (defun nl_root_mark_at (env entry)
       (if (= entry 0)
-          (ptr-read-u64 (data-addr nl_rootstack_top) 0)
-        (ptr-read-u64 env 120)))
+          (heap-read-u64 (data-addr nl_rootstack_top) 0)
+        (heap-read-u64 env 120)))
     (defun nl_root_mark (env)
-      (nl_root_mark_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (nl_root_mark_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     (defun nl_root_depth ()
-      (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
-        (sar (- (ptr-read-u64 (data-addr nl_rootstack_top) 0)
+      (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+        (sar (- (heap-read-u64 (data-addr nl_rootstack_top) 0)
                 (data-addr nl_rootstack_region))
              5)))
     ;; Reserve one 32-byte slot at top, zero it, bump top, return slot addr.
@@ -268,7 +268,7 @@
     (defun nl_rootstack_slot_active_worker (slot i count)
       (if (>= i count) 0
         (let* ((entry (nl_thread_registry_entry i))
-               (env (ptr-read-u64 entry 0))
+               (env (heap-read-u64 entry 0))
                (top (atomic-fetch-add (+ entry 8) 0))
                (base (+ env 4096))
                (end (+ env 1052672)))
@@ -282,7 +282,7 @@
     (defun nl_rootstack_slot_active (slot)
       (let* ((base (data-addr nl_rootstack_region))
              (end (nl_rootstack_end))
-             (top (ptr-read-u64 (data-addr nl_rootstack_top) 0)))
+             (top (heap-read-u64 (data-addr nl_rootstack_top) 0)))
         (if (and (/= top 0)
                  (>= top base) (<= top end)
                  (= (logand (- top base) 31) 0)
@@ -290,7 +290,7 @@
                  (= (logand (- slot base) 31) 0))
             1
           (nl_rootstack_slot_active_worker
-           slot 0 (ptr-read-u64 (data-addr nl_thread_registry) 0)))))
+           slot 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))))
     (defun nl_root_reserve_slot (slot)
       (if (= slot 0) 0
         (if (> (+ slot 32) (nl_rootstack_end)) 0
@@ -320,33 +320,33 @@
     (defun nl_root_reserve_at (env entry)
       (if (= entry 0)
           (seq
-           (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0)
+           (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
                (nl_rootstack_init) 0)
            (nl_root_reserve_or_scratch
             (nl_root_reserve_slot
-             (ptr-read-u64 (data-addr nl_rootstack_top) 0))))
+             (heap-read-u64 (data-addr nl_rootstack_top) 0))))
         (nl_root_reserve_or_scratch
-         (nl_root_reserve_private env entry (ptr-read-u64 env 120)))))
+         (nl_root_reserve_private env entry (heap-read-u64 env 120)))))
     (defun nl_root_reserve (env)
-      (nl_root_reserve_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (nl_root_reserve_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
     ;; The native loader cannot use `nl_root_reserve': its capacity fallback
     ;; is deliberately unrooted scratch for legacy callers.  Object arguments
     ;; must remain visible to a moving collection, so this variant reserves
     ;; only from a validated registered region and answers 0 on exhaustion.
     (defun nl_root_reserve_checked (env)
-      (let* ((entry (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
         (if (= entry 0)
             (seq
-             (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0)
+             (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
                  (nl_rootstack_init) 0)
-             (let* ((slot (ptr-read-u64 (data-addr nl_rootstack_top) 0))
+             (let* ((slot (heap-read-u64 (data-addr nl_rootstack_top) 0))
                     (base (data-addr nl_rootstack_region)))
                (if (if (< slot base) 1
                      (if (> (+ slot 32) (nl_rootstack_end)) 1
                        (if (/= (logand (- slot base) 31) 0) 1 0)))
                    0
                  (nl_root_reserve_slot slot))))
-          (let* ((slot (ptr-read-u64 env 120))
+          (let* ((slot (heap-read-u64 env 120))
                  (base (+ env 4096))
                  (end (+ env 1052672)))
             (if (if (< slot base) 1
@@ -362,7 +362,7 @@
          (nl_thread_registry_store_top entry marker)
          0)))
     (defun nl_root_release (env marker)
-      (nl_root_release_at env (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
+      (nl_root_release_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
     ;; Native loader roots live in a separate driver-owned BSS region.  The
     ;; evaluator restores its ordinary root top after every interpreted call,
     ;; so a loader frame must never borrow that stack.  Pinning is single-owner:
@@ -378,10 +378,10 @@
              (base (data-addr nl_root_pin_region))
              (end (+ base 524288))
              (top (atomic-fetch-add (+ control 24) 0))
-             (prev (ptr-read-u64 control 16)))
+             (prev (heap-read-u64 control 16)))
         (if (if (/= (atomic-fetch-add control 0) 1) 1
-              (if (/= (ptr-read-u64 control 8) env) 1
-                (if (/= (ptr-read-u64 control 48) 1) 1
+              (if (/= (heap-read-u64 control 8) env) 1
+                (if (/= (heap-read-u64 control 48) 1) 1
                 (if (< top base) 1
                   (if (> (+ top 64) end) 1
                     (if (/= (logand (- top base) 31) 0) 1 0))))))
@@ -396,25 +396,25 @@
            (ptr-write-u64 (+ control 16) 0 (+ top 32))
            (+ top 32)))))
     (defun nl_root_pin_begin (env)
-        (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+        (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
             0
-        (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 0)
+        (if (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 0)
             (if (= (atomic-compare-exchange
                     (data-addr nl_root_pin_control) 0 1)
                    1)
                 (seq
                  (ptr-write-u64 (data-addr nl_root_pin_control) 8 env)
-                 (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 24) 0)
+                 (if (= (heap-read-u64 (data-addr nl_root_pin_control) 24) 0)
                      (ptr-write-u64 (data-addr nl_root_pin_control) 24
                                     (data-addr nl_root_pin_region))
                    0)
                  (let ((marker
-                        (ptr-read-u64 (data-addr nl_root_pin_control) 24)))
+                        (heap-read-u64 (data-addr nl_root_pin_control) 24)))
                    (ptr-write-u64 (data-addr nl_root_pin_control) 16 marker)
                    (ptr-write-u64 (data-addr nl_root_pin_control) 48 1)
                    marker))
               0)
-          (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 1)
+          (if (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 1)
               (nl_root_pin_begin_nested env)
             0))))
     (defun nl_root_pin_reserve (env marker)
@@ -423,9 +423,9 @@
              (end (+ base 524288))
              (top (atomic-fetch-add (+ control 24) 0)))
         (if (if (/= (atomic-fetch-add control 0) 1) 1
-              (if (/= (ptr-read-u64 control 8) env) 1
-              (if (/= (ptr-read-u64 control 48) 1) 1
-               (if (/= (ptr-read-u64 control 16) marker) 1
+              (if (/= (heap-read-u64 control 8) env) 1
+              (if (/= (heap-read-u64 control 48) 1) 1
+               (if (/= (heap-read-u64 control 16) marker) 1
                   (if (if (< top base) 1
                         (if (> (+ top 32) end) 1
                           (if (/= (logand (- top base) 31) 0) 1 0)))
@@ -447,9 +447,9 @@
              (base (data-addr nl_root_pin_region))
              (end (+ base 524288))
              (top (atomic-fetch-add (+ control 24) 0))
-             (marker (ptr-read-u64 control 16)))
+             (marker (heap-read-u64 control 16)))
         (if (and (= (atomic-fetch-add control 0) 1)
-                 (> (ptr-read-u64 control 8) 0)
+                 (> (heap-read-u64 control 8) 0)
                  (>= top base)
                  (<= top end)
                  (= (logand (- top base) 31) 0)
@@ -471,14 +471,14 @@
     (defun nl_root_pin_nested_link_p (base marker)
       (if (< marker (+ base 32)) 0
         (let ((link (- marker 32)))
-          (if (and (= (ptr-read-u64 link 0) 2)
-                   (= (ptr-read-u64 link 16) 1234567890123456789)
-                   (= (ptr-read-u64 link 24) marker))
+          (if (and (= (heap-read-u64 link 0) 2)
+                   (= (heap-read-u64 link 16) 1234567890123456789)
+                   (= (heap-read-u64 link 24) marker))
               1 0))))
     (defun nl_root_pin_end_nested (control marker)
       (let ((link (- marker 32)))
         (seq
-         (ptr-write-u64 (+ control 16) 0 (ptr-read-u64 link 8))
+         (ptr-write-u64 (+ control 16) 0 (heap-read-u64 link 8))
          (ptr-write-u64 (+ control 24) 0 link)
          (ptr-write-u64 link 0 0)
          (ptr-write-u64 (+ link 8) 0 0)
@@ -490,9 +490,9 @@
              (base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add (+ control 24) 0)))
         (if (= (atomic-fetch-add control 0) 1)
-            (if (= (ptr-read-u64 control 48) 1)
-                (if (= (ptr-read-u64 control 8) env)
-                    (if (= (ptr-read-u64 control 16) marker)
+            (if (= (heap-read-u64 control 48) 1)
+                (if (= (heap-read-u64 control 8) env)
+                    (if (= (heap-read-u64 control 16) marker)
                         (if (= (nl_root_pin_end_valid base top marker) 1)
                             (if (= (nl_root_pin_nested_link_p base marker) 1)
                                 (nl_root_pin_end_nested control marker)
@@ -515,7 +515,7 @@
     ;; The standalone linker reserves a 64-byte control prefix before the
     ;; pin-root region so these fields cannot overlap the first root slot.
     (defun nl_root_pin_v2_next_token (control)
-      (let* ((next (ptr-read-u64 control 40))
+      (let* ((next (heap-read-u64 control 40))
              (token (if (= next 0) 1 next)))
         ;; Tickets are positive signed-i64 values in the ptr-call ABI; stop at
         ;; INT64_MAX instead of allowing an emitter or host to wrap the u64.
@@ -528,30 +528,30 @@
     (defun nl_root_pin_begin_v2 (env)
       (let* ((control (data-addr nl_root_pin_control))
              (base (data-addr nl_root_pin_region))
-             (mode (ptr-read-u64 control 48))
+             (mode (heap-read-u64 control 48))
              (token (nl_root_pin_v2_next_token control)))
         (if (or (= token 0)
-                (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0))
+                (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0))
             0
           (if (= mode 0)
               (if (= (atomic-compare-exchange control 0 1) 1)
                   (seq
                    (ptr-write-u64 (+ control 8) 0 env)
-                   (if (= (ptr-read-u64 control 24) 0)
+                   (if (= (heap-read-u64 control 24) 0)
                        (ptr-write-u64 (+ control 24) 0 base)
                      0)
                    (ptr-write-u64 (+ control 16) 0
-                                  (ptr-read-u64 control 24))
+                                  (heap-read-u64 control 24))
                    (ptr-write-u64 (+ control 48) 0 2)
                    (nl_root_pin_v2_commit_token control token))
                 0)
             (if (= mode 2)
                 (let* ((top (atomic-fetch-add (+ control 24) 0))
-                       (prev-marker (ptr-read-u64 control 16))
-                       (prev-token (ptr-read-u64 control 32))
+                       (prev-marker (heap-read-u64 control 16))
+                       (prev-token (heap-read-u64 control 32))
                        (end (+ base 524288)))
                   (if (if (/= (atomic-fetch-add control 0) 1) 1
-                        (if (/= (ptr-read-u64 control 8) env) 1
+                        (if (/= (heap-read-u64 control 8) env) 1
                           (if (< top base) 1
                             (if (> (+ top 64) end) 1
                               (if (/= (logand (- top base) 31) 0) 1 0)))))
@@ -571,9 +571,9 @@
              (end (+ base 524288))
              (top (atomic-fetch-add (+ control 24) 0)))
         (if (if (/= (atomic-fetch-add control 0) 1) 1
-              (if (/= (ptr-read-u64 control 48) 2) 1
-                (if (/= (ptr-read-u64 control 8) env) 1
-                  (if (/= (ptr-read-u64 control 32) token) 1
+              (if (/= (heap-read-u64 control 48) 2) 1
+                (if (/= (heap-read-u64 control 8) env) 1
+                  (if (/= (heap-read-u64 control 32) token) 1
                     (if (if (< top base) 1
                           (if (> (+ top 32) end) 1
                             (if (/= (logand (- top base) 31) 0) 1 0)))
@@ -598,9 +598,9 @@
              (next (+ top (* count 32))) (i 0))
         (if (or (< count 1) (> count 255)
                 (/= (atomic-fetch-add control 0) 1)
-                (/= (ptr-read-u64 control 48) 2)
-                (/= (ptr-read-u64 control 8) env)
-                (/= (ptr-read-u64 control 32) token)
+                (/= (heap-read-u64 control 48) 2)
+                (/= (heap-read-u64 control 8) env)
+                (/= (heap-read-u64 control 32) token)
                 (< top base) (> next end)
                 (/= (logand (- top base) 31) 0))
             0
@@ -617,23 +617,23 @@
       (let* ((control (data-addr nl_root_pin_control))
              (base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add (+ control 24) 0))
-             (marker (ptr-read-u64 control 16)))
+             (marker (heap-read-u64 control 16)))
         (if (= (atomic-fetch-add control 0) 1)
-          (if (= (ptr-read-u64 control 48) 2)
-           (if (= (ptr-read-u64 control 8) env)
-            (if (= (ptr-read-u64 control 32) token)
+          (if (= (heap-read-u64 control 48) 2)
+           (if (= (heap-read-u64 control 8) env)
+            (if (= (heap-read-u64 control 32) token)
              (if (= (nl_root_pin_end_valid base top marker) 1)
             (if (> marker base)
                 (let ((link (- marker 32)))
-                  (if (and (= (ptr-read-u64 link 0) 2)
-                           (= (ptr-read-u64 link 24) marker)
-                           (> (ptr-read-u64 link 16) 0))
+                  (if (and (= (heap-read-u64 link 0) 2)
+                           (= (heap-read-u64 link 24) marker)
+                           (> (heap-read-u64 link 16) 0))
                       (seq
                        (ptr-write-u64 (+ control 16) 0
-                                      (ptr-read-u64 link 8))
+                                      (heap-read-u64 link 8))
                        (ptr-write-u64 (+ control 24) 0 link)
                        (ptr-write-u64 (+ control 32) 0
-                                      (ptr-read-u64 link 16))
+                                      (heap-read-u64 link 16))
                        (ptr-write-u64 link 0 0)
                        (ptr-write-u64 (+ link 8) 0 0)
                        (ptr-write-u64 (+ link 16) 0 0)
@@ -661,7 +661,7 @@
              (region-end (if (> base 9223372036854251519)
                              0 (+ base 524288)))
              (top (atomic-fetch-add (+ control 24) 0))
-             (marker (ptr-read-u64 control 16))
+             (marker (heap-read-u64 control 16))
              (safe-marker
               (if (if (= region-end 0) 1
                     (if (< marker base) 1 (> marker region-end)))
@@ -679,17 +679,17 @@
              (slot-end (if (> slot 9223372036854775775)
                            0 (+ slot 32)))
              (link (if (> safe-marker base) (- safe-marker 32) base))
-             (parent-marker (ptr-read-u64 link 8))
+             (parent-marker (heap-read-u64 link 8))
              (safe-parent-marker
               (if (if (< parent-marker base) 1 (> parent-marker link))
                   base parent-marker))
-             (parent-token (ptr-read-u64 link 16))
+             (parent-token (heap-read-u64 link 16))
              (frame-valid
               (if (= safe-marker base) 1
                 (if (and (> safe-marker base)
                          (>= link base)
-                         (= (ptr-read-u64 link 0) 2)
-                         (= (ptr-read-u64 link 24) safe-marker)
+                         (= (heap-read-u64 link 0) 2)
+                         (= (heap-read-u64 link 24) safe-marker)
                          (>= parent-marker base)
                          (<= parent-marker link)
                          (= (logand (- safe-parent-marker base) 31) 0)
@@ -697,10 +697,10 @@
                          (< parent-token token))
                     1 0))))
         (if (if (or (/= (atomic-fetch-add control 0) 1)
-                    (/= (ptr-read-u64 control 48) 2)
-                    (/= (ptr-read-u64 control 8) env)
+                    (/= (heap-read-u64 control 48) 2)
+                    (/= (heap-read-u64 control 8) env)
                     (<= token 0)
-                    (/= (ptr-read-u64 control 32) token)
+                    (/= (heap-read-u64 control 32) token)
                     (= region-end 0)
                     (< marker base) (> marker top) (> top region-end)
                     (/= (logand (- marker base) 31) 0)
@@ -722,10 +722,10 @@
     (defun nl_native_store_word_v2 (output w)
       (if (= (logand w 1) 0)
           (seq
-           (ptr-write-u64 output 0 (ptr-read-u64 w 0))
-           (ptr-write-u64 output 8 (ptr-read-u64 w 8))
-           (ptr-write-u64 output 16 (ptr-read-u64 w 16))
-           (ptr-write-u64 output 24 (ptr-read-u64 w 24))
+           (ptr-write-u64 output 0 (heap-read-u64 w 0))
+           (ptr-write-u64 output 8 (heap-read-u64 w 8))
+           (ptr-write-u64 output 16 (heap-read-u64 w 16))
+           (ptr-write-u64 output 24 (heap-read-u64 w 24))
            0)
         (seq
          (ptr-write-u64 output 0 (if (= (logand w 3) 1) 2 (if (= w 3) 0 1)))
@@ -738,7 +738,7 @@
       (let* ((input (nl_root_pin_slot_v2 env token input-index))
              (output (nl_root_pin_slot_v2 env token output-index)))
         (if (or (= input 0) (= output 0)) 2
-          (let ((tag (ptr-read-u64 input 0)))
+          (let ((tag (heap-sexp-tag-word input)))
             (if (= tag 0)
                 (seq
                  (ptr-write-u64 output 0 0)
@@ -774,7 +774,7 @@
       (let* ((input (nl_root_pin_slot_v2 env token input-index))
              (output (nl_root_pin_slot_v2 env token output-index)))
         (if (or (= input 0) (= output 0)) 2
-          (let ((tag (ptr-read-u64 input 0)))
+          (let ((tag (heap-sexp-tag-word input)))
             (if (= tag 0)
                 (seq
                  (ptr-write-u64 output 0 0)
@@ -808,9 +808,9 @@
     ;; broke.
     (defun nl_gc_mark_rootstack ()
       (seq
-       (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
-                                    (ptr-read-u64 (data-addr nl_rootstack_top) 0)))
+                                    (heap-read-u64 (data-addr nl_rootstack_top) 0)))
        (nl_gc_mark_pinned_roots)
        (extern-call nl_gc_mark_slot 268435480)
        (extern-call nl_gc_mark_slot 268435512)))
@@ -841,12 +841,12 @@
       (if (>= i count) 0
         (seq
          (nl_gc_mark_thread_roots_one
-          (ptr-read-u64 (nl_thread_registry_entry i) 0)
+          (heap-read-u64 (nl_thread_registry_entry i) 0)
           (atomic-fetch-add (+ (nl_thread_registry_entry i) 8) 0))
          (nl_gc_mark_thread_roots_from (+ i 1) count))))
     (defun nl_gc_mark_thread_roots ()
       (nl_gc_mark_thread_roots_from
-       0 (ptr-read-u64 (data-addr nl_thread_registry) 0))))
+       0 (heap-read-u64 (data-addr nl_thread_registry) 0))))
   "AOT source for the Doc 152 §11.37 Stage 2 dynamic root stack.
 
 Lazy-inits on the first main-thread `nl_root_reserve'.  Stage-3 evaluator callers use

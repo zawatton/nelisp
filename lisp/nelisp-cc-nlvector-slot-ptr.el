@@ -61,8 +61,8 @@
     ;; 32B view into a FRESH box (one per call -> no shared-scratch
     ;; clobber when results are held live).
     (defun nl_vector_slot_ptr (sexp-ptr idx)
-      (let ((word (ptr-read-u64
-                   (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 8) (* idx 8))
+      (let ((word (heap-read-u64
+                   (+ (heap-read-u64 (heap-read-u64 sexp-ptr 8) 8) (* idx 8))
                    0)))
         (if (= (logand word 1) 0)
             word

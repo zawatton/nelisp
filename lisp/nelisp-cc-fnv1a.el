@@ -75,7 +75,7 @@
       ;; and string keys retain their historical name-based interoperability.
       (if (= (sexp-tag left) 16)
           (if (= (sexp-tag right) 16)
-              (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
+              (if (= (heap-sexp-payload left) (heap-sexp-payload right)) 1 0)
             0)
         (if (= (sexp-tag right) 16) 0
           ;; Interned symbols share their name buffer, so two tag-4 keys
@@ -83,8 +83,8 @@
           ;; without the byte compare.  Any other pair still compares names.
           (if (if (= (sexp-tag left) 4)
                   (if (= (sexp-tag right) 4)
-                      (if (= (ptr-read-u64 left 16) (ptr-read-u64 right 16))
-                          (= (ptr-read-u64 left 24) (ptr-read-u64 right 24))
+                      (if (= (heap-sexp-data left) (heap-sexp-data right))
+                          (= (heap-sexp-length left) (heap-sexp-length right))
                         0)
                     0)
                 0)
@@ -184,10 +184,10 @@
       ;; the repeated `(shl 1 32)' shift in every inner step.
       (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
                           (if (= (sexp-tag str-ptr) 16)
-                              (ptr-read-u64 str-ptr 16)
+                              (heap-sexp-data str-ptr)
                             (str-bytes-ptr str-ptr)) 0
                           (if (= (sexp-tag str-ptr) 16)
-                              (ptr-read-u64 str-ptr 24)
+                              (heap-sexp-length str-ptr)
                             (str-len str-ptr))
                           (- (shl 1 32) 1))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp

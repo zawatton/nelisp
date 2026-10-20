@@ -77,8 +77,8 @@
     ;; integer back out.  Same pattern as A1/A2 (ab4a72484 / 441aa152c)
     ;; and this segment's frame-bind / frame-push fixes.
     (defun nelisp_frame_pop_depth_word (frames-ptr)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 frames-ptr 8) 32) 8)
+      (heap-read-u64
+       (+ (heap-read-u64 (heap-read-u64 frames-ptr 8) 32) 8)
        0))
     (defun nelisp_frame_pop_inner (frames-ptr scratch-slot new-depth _pad)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record.

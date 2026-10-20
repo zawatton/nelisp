@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Doc 215 total-Ir comparisons; retain profiles and count actual GC sweeps.
 
-ir/files/pressure CAND BASE [--output DIRECTORY] writes directly to a new evidence
+ir/files/pressure/accessors CAND BASE [--output DIRECTORY] writes to a new evidence
 directory when requested. Existing evidence directories are never overwritten.
 The ir manifest covers all five workloads. verify-ir rechecks every raw verdict;
 verify-files rechecks files alone after validating the same complete manifest.
+accessors/verify-accessors is the separate Doc 216 S1 three-workload manifest
+with its specified +0.5% cap; the existing Doc 215 cap remains unchanged.
 """
 import bisect
 import concurrent.futures
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -23,6 +26,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS = (0, 700, 1400, 2100)
 IR_MODES = ("boot", "regex", "regex-gc", "pressure", "files")
+ACCESSOR_MODES = ("boot", "files", "regex")
 WORKLOAD_NAMES = ("regex.el", "regex-gc.el", "pressure.el")
 FILE_SOURCES = ("tools/ai/abi-file-exec.el", *(
     "vendor/emacs-lisp/emacs-lisp/" + name + ".el"
@@ -63,14 +67,14 @@ def identities(cand, base):
     return result
 
 
-def ir_artifacts():
-    return {f"{m}-{who}-{layout}.{suffix}" for m in IR_MODES
+def ir_artifacts(modes=IR_MODES):
+    return {f"{m}-{who}-{layout}.{suffix}" for m in modes
             for who in ("base", "cand") for layout in LAYOUTS
             for suffix in ("cg", "out", "err")} | set(WORKLOAD_NAMES)
 
 
-def completed_jobs():
-    return {f"{m}-{who}-{layout}": 0 for m in IR_MODES
+def completed_jobs(modes=IR_MODES):
+    return {f"{m}-{who}-{layout}": 0 for m in modes
             for who in ("base", "cand") for layout in LAYOUTS}
 
 
@@ -87,14 +91,14 @@ def check_marker(stem, mode):
         raise ValueError(f"missing completion marker: {stem}.out")
 
 
-def validate_record(directory, current):
+def validate_record(directory, current, modes=IR_MODES):
     """Reject stale/incomplete inputs before recomputing the raw-profile verdict."""
     record = json.loads((directory / "measurement.json").read_text())
-    if (record.get("schema") != 1 or record.get("modes") != list(IR_MODES)
+    if (record.get("schema") != 1 or record.get("modes") != list(modes)
             or record.get("layouts") != list(LAYOUTS)
-            or record.get("completed_jobs") != completed_jobs()
+            or record.get("completed_jobs") != completed_jobs(modes)
             or record.get("identities") != current
-            or set(record.get("artifacts", {})) != ir_artifacts()):
+            or set(record.get("artifacts", {})) != ir_artifacts(modes)):
         raise ValueError("incomplete or stale Ir measurement provenance")
     for name, digest in record["artifacts"].items():
         if fingerprint(directory / name) != digest:
@@ -103,15 +107,15 @@ def validate_record(directory, current):
         check_marker(directory / stem, stem.rsplit("-", 2)[0])
 
 
-def replay_ir(directory, cand, base, modes=IR_MODES):
-    validate_record(directory, identities(cand, base))
+def replay_ir(directory, cand, base, modes=IR_MODES, *, accessor=False):
+    validate_record(directory, identities(cand, base), ACCESSOR_MODES if accessor else IR_MODES)
     ok = True
     for mode in modes:
         samples = [(layout, *(profile_counts(directory / f"{mode}-{who}-{layout}.cg", binary)
                     + ((directory / f"{mode}-{who}-{layout}.out").read_bytes(),)
                     for who, binary in (("base", base), ("cand", cand))))
                    for layout in LAYOUTS]
-        ok &= summarize(mode, samples)
+        ok &= summarize(mode, samples, 1.005 if accessor else 1.0)
     return 0 if ok else 1
 
 
@@ -201,7 +205,7 @@ def run_one(tmp, mode, who, binary, layout, cancel):
     return profile_counts(stem.with_suffix(".cg"), binary)
 
 
-def summarize(mode, samples):
+def summarize(mode, samples, max_ratio=1.0):
     """Judge all four layouts, including their complete outputs and GC work."""
     outputs = set()
     enough = True
@@ -215,8 +219,9 @@ def summarize(mode, samples):
     baselines = [b[0] for _, b, _ in samples]
     candidates = [c[0] for _, _, c in samples]
     bb, cc = sum(baselines), sum(candidates)
+    cap = Fraction(str(max_ratio))
     passed = ([layout for layout, _, _ in samples] == list(LAYOUTS)
-              and cc <= bb and same and enough)
+              and cc * cap.denominator <= bb * cap.numerator and same and enough)
     print(f"Ir {mode} mean base {bb / len(samples):.2f} cand {cc / len(samples):.2f}; "
           f"delta {(cc / bb - 1) * 100:+.3f}%; "
           f"spread base {min(baselines)}..{max(baselines)} "
@@ -229,16 +234,18 @@ def summarize(mode, samples):
 
 def main():
     started = time.monotonic()
-    if len(sys.argv) == 5 and sys.argv[1] in ("verify-ir", "verify-files"):
+    if len(sys.argv) == 5 and sys.argv[1] in ("verify-ir", "verify-files", "verify-accessors"):
+        accessor = sys.argv[1] == "verify-accessors"
         return replay_ir(Path(sys.argv[4]).resolve(), Path(sys.argv[2]).resolve(),
                          Path(sys.argv[3]).resolve(),
-                         ("files",) if sys.argv[1] == "verify-files" else IR_MODES)
+                         ACCESSOR_MODES if accessor else ("files",) if sys.argv[1] == "verify-files" else IR_MODES,
+                         accessor=accessor)
     if len(sys.argv) not in (4, 6) or (len(sys.argv) == 6 and sys.argv[4] != "--output"):
-        raise ValueError("expected ir/files/pressure CAND BASE [--output DIRECTORY]")
+        raise ValueError("expected ir/files/pressure/accessors CAND BASE [--output DIRECTORY]")
     mode, cand, base = sys.argv[1:4]
-    if mode not in ("ir", "files", "pressure"):
-        raise ValueError("expected ir/files/pressure CAND BASE or verify-ir CAND BASE DIRECTORY")
-    before = identities(cand, base) if mode == "ir" else None
+    if mode not in ("ir", "files", "pressure", "accessors"):
+        raise ValueError("expected ir/files/pressure/accessors CAND BASE or verify-* CAND BASE DIRECTORY")
+    before = identities(cand, base) if mode in ("ir", "accessors") else None
     if len(sys.argv) == 6:
         tmp = Path(sys.argv[5]).resolve()
         tmp.mkdir(parents=True)  # Refuse to overwrite any prior evidence.
@@ -284,7 +291,7 @@ def main():
   (princ (format "ABI-PRESSURE %d %d\n" (hash-table-count live) sum)))
 '''.replace("ROUNDS", str(PRESSURE_ROUNDS)))
     workloads_before = {name: fingerprint(tmp / name) for name in WORKLOAD_NAMES}
-    modes = IR_MODES if mode == "ir" else [mode]
+    modes = IR_MODES if mode == "ir" else ACCESSOR_MODES if mode == "accessors" else [mode]
     ok = True
     cancel = threading.Event()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=PROFILE_WORKERS)
@@ -304,25 +311,25 @@ def main():
             samples = [(layout, *(results[m, who, layout] +
                         ((tmp / f"{m}-{who}-{layout}.out").read_bytes(),)
                         for who in ("base", "cand"))) for layout in LAYOUTS]
-            ok &= summarize(m, samples)
+            ok &= summarize(m, samples, 1.005 if mode == "accessors" else 1.0)
     finally:
         cancel.set()
         try:
             pool.shutdown(wait=True, cancel_futures=True)
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
-    if mode in ("ir", "pressure"):
+    if mode in ("ir", "pressure", "accessors"):
         verify_workloads(tmp, workloads_before)
-    if mode == "ir":
+    if mode in ("ir", "accessors"):
         if before != identities(cand, base):
             raise ValueError("Ir inputs changed during profiling; no record written")
         # Written only after every process exits0 with its completion marker.
         # Store raw evidence and identities, never a cached PASS decision.
         (tmp / "measurement.json").write_text(json.dumps({
-            "schema": 1, "modes": list(IR_MODES), "layouts": list(LAYOUTS),
-            "completed_jobs": completed_jobs(),
+            "schema": 1, "modes": list(modes), "layouts": list(LAYOUTS),
+            "completed_jobs": completed_jobs(modes),
             "identities": before,
-            "artifacts": {name: fingerprint(tmp / name) for name in sorted(ir_artifacts())},
+            "artifacts": {name: fingerprint(tmp / name) for name in sorted(ir_artifacts(modes))},
         }, indent=2) + "\n")
     print(f"elapsed {time.monotonic() - started:.3f}s", flush=True)
     return 0 if ok else 1

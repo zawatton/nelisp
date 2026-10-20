@@ -73,7 +73,7 @@
     ;; `nl_cons_cdr_ptr'); usually the nil terminator, an immediate.
     (defun nl_sf_setq_cdr_word (val-cdr)
       (if (= (sexp-tag val-cdr) 7)
-          (ptr-read-u64 (ptr-read-u64 val-cdr 8) 8)
+          (heap-read-u64 (heap-sexp-payload val-cdr) 8)
         0))
 
     ;; Next pair, or W (the value just assigned) at the end.  W is

@@ -505,3 +505,54 @@ These are representation choices, so they belong to this design rather than to a
 - *Gates.* The prim-callfloor checker supplies the acceptance numbers: let/while for S4.2, and funcall/builtin for S6.3, at the original caps (VM and bytecode <=5x GNU, interpreter <=10x).
 
 One owner edits frame and root code in =scripts/nelisp-standalone-build.el= at a time. Like every implementation stage here, this work starts after the ABI lands in eval/core.
+
+* S1 accessor implementation and evidence (2026-10-20)
+
+=lisp/nelisp-heap-accessors.el= owns the legacy Sexp field selections and
+storage-load compiler forms, plus the host AOT/JIT load aliases. Lowering runs
+after source recording and arena rewriting, before optimization and inlining.
+Direct, native and explicit extern forms preserve their old call semantics.
+No tag, layout, allocation size or reader builtin changes in this stage.
+
+Storage operands still denote selected legacy views, backing storage or foreign
+addresses. They are not arbitrary tagged WORDs: the existing WORD immediate
+guards remain in their semantic consumers. S2-S5 must change those policies
+before introducing new pointer classes. S1 does not claim that renaming a
+storage load makes an old decoder understand the future tags.
+
+The census deliberately counts a superset of object-header reads: every raw
+native DSL storage load and host codegen load reference outside the accessor
+module. Canonical producer sites at =50a75cbcb= are 4358 -> 0; linked dynamic
+source sites are 3766 -> 0, with 3766 accessor sites (static: 3762). Public Lisp
+=ptr-read-*= API calls and recognizer literals keep their names. Their native
+implementations remain subject to the linked-source census. Injected source,
+linked-unit and direct-codegen reads each count one and fail; empty or
+uncertified scans cannot claim zero. This is source provenance rather than
+hardware pointer taint or an exact count of header-load instructions.
+
+All 17 accessor forms produce identical nonempty link units against independent
+old-ABI fixtures on SysV x86-64, Win64 x86-64 and AArch64 (51 comparisons; six
+rejecting mutations). 113/114 normalized runtime units match the independently
+built baseline exactly. The driver differs only in authenticated generated
+bootstrap Lisp text (+48 bytes) and its lengths; whole-ELF identity is not
+claimed. Both linkages retain ABI census S6.2 = 0.
+
+Four-layout mean total Ir, including GC, against =50a75cbcb=:
+
+| workload | baseline | accessor | change |
+|----------+----------+----------+--------|
+| boot | 535747546.00 | 534582980.00 | -0.217372% |
+| files | 4731674967.50 | 4724927992.25 | -0.142592% |
+| regex6000 | 6162955217.00 | 6154779190.25 | -0.132664% |
+
+The +0.5% cap is unchanged; these totals support no additive header-load speed
+claim. =tools/ai/abi-ir.py accessors= measures the specified 24 profiles;
+=verify-accessors= rechecks the raw evidence. The full ABI mode still requires
+40 profiles and its original cap.
+=LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check=
+rechecks the hash-bound source, census, code and profile evidence under
+=target/word-heap-s1/=. The locale matches the recorded runtime-environment
+hash, even when the meter sets its own locale. Linux acceptance passed 11 groups, 75 standalone cases
+(maphash-sparse remains known-red), the shared-identity GC case against GNU
+31.1, 14 decoder cases on both linkages and the 40-tool Anvil smoke. S1.3 stays
+pending until the coordinator supplies Wine acceptance.

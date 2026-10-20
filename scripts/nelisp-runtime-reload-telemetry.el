@@ -19,14 +19,14 @@
   '(defun nl_runtime_reload_gc_finish ()
      (seq
       (ptr-write-u64 (data-addr nl_runtime_reload_state) 64
-                     (ptr-read-u64 (data-addr nl_gc_conserv_state) 40))
+                     (heap-read-u64 (data-addr nl_gc_conserv_state) 40))
       (ptr-write-u64 (data-addr nl_runtime_reload_state) 72
-                     (ptr-read-u64 (data-addr nl_gc_conserv_state) 48))
+                     (heap-read-u64 (data-addr nl_gc_conserv_state) 48))
       (ptr-write-u64 (data-addr nl_runtime_reload_state) 80
-                     (ptr-read-u64 (data-addr nl_gc_conserv_state) 32))
+                     (heap-read-u64 (data-addr nl_gc_conserv_state) 32))
       (ptr-write-u64
        (data-addr nl_runtime_reload_state) 88
-       (+ (ptr-read-u64 (data-addr nl_runtime_reload_state) 88) 1))
+       (+ (heap-read-u64 (data-addr nl_runtime_reload_state) 88) 1))
       (nl_gc_conserv_state_clear)
       0)))
 

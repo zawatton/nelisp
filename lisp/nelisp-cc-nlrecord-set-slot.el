@@ -79,7 +79,7 @@
       ;; an 8B WORD, so `nl_val_clone_into' (immediate direct; boxed child
       ;; deep-cloned into a fresh 32B box, its 8-aligned ptr stored) replaces
       ;; the 32B-into-32B-slot `nl_sexp_clone_into'.
-      (let ((dst (+ (ptr-read-u64 record 32) (* n 8))))
+      (let ((dst (+ (heap-read-u64 record 32) (* n 8))))
         (extern-call nl_val_clone_into val dst))))
   "AOT source for the `nl_record_set_slot' cutover spike.
 

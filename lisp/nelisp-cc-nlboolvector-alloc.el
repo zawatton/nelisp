@@ -116,12 +116,12 @@
     ;; ---------------------------------------------------------------
 
     (defun nl_bv_bit_get (data idx)
-      (logand (/ (ptr-read-u8 data (/ idx 8)) (nl_bv_bitval (mod idx 8))) 1))
+      (logand (/ (heap-read-u8 data (/ idx 8)) (nl_bv_bitval (mod idx 8))) 1))
 
     (defun nl_bv_bit_set (data idx v)
       (let* ((bidx (/ idx 8))
              (bv (nl_bv_bitval (mod idx 8)))
-             (old (ptr-read-u8 data bidx)))
+             (old (heap-read-u8 data bidx)))
         (if (= v 0)
             (ptr-write-u8 data bidx (logand old (- 255 bv)))
           (ptr-write-u8 data bidx (logior old bv)))))
@@ -153,7 +153,7 @@
     (defun nl_bv_copy_loop (src to i bytelen)
       (let ((k i))
         (while (< k bytelen)
-          (and (ptr-write-u8 to k (ptr-read-u8 src k)) (setq k (+ k 1))))
+          (and (ptr-write-u8 to k (heap-read-u8 src k)) (setq k (+ k 1))))
         to))
 
     ;; Zero the unused high bits of the last byte after a raw copy (the
@@ -161,7 +161,7 @@
     ;; like `#&7"\\377"' must read back masked, matching host Emacs).
     (defun nl_bv_mask_last (data full bytelen rem)
       (if (< full bytelen)
-          (ptr-write-u8 data full (logand (ptr-read-u8 data full) (nl_bv_mask rem)))
+          (ptr-write-u8 data full (logand (heap-read-u8 data full) (nl_bv_mask rem)))
         1))
 
     ;; ---------------------------------------------------------------
@@ -284,16 +284,16 @@
 
     (defun nl_bv_bytes_eq (a b i n)
       (if (>= i n) 1
-        (if (= (ptr-read-u8 a i) (ptr-read-u8 b i))
+        (if (= (heap-read-u8 a i) (heap-read-u8 b i))
             (nl_bv_bytes_eq a b (+ i 1) n)
           0)))
 
     (defun bf_bv_equal (a b)
-      (let* ((boxa (ptr-read-u64 a 8)) (boxb (ptr-read-u64 b 8))
-             (na (ptr-read-u64 boxa 0)) (nb (ptr-read-u64 boxb 0)))
+      (let* ((boxa (heap-read-u64 a 8)) (boxb (heap-read-u64 b 8))
+             (na (heap-read-u64 boxa 0)) (nb (heap-read-u64 boxb 0)))
         (if (= na nb)
-            (nl_bv_bytes_eq (ptr-read-u64 boxa 8) (ptr-read-u64 boxb 8)
-                            0 (ptr-read-u64 boxa 16))
+            (nl_bv_bytes_eq (heap-read-u64 boxa 8) (heap-read-u64 boxb 8)
+                            0 (heap-read-u64 boxa 16))
           0))))
   "AOT source for the bool-vector (Sexp tag 10) allocator + bit
 accessors + equal comparator.  See this file's Commentary for the box

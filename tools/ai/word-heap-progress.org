@@ -37,13 +37,18 @@ cmd: python3 tools/ai/word-heap-evidence.py check S0.6
 
 ** S1.1 box-census counts raw header reads outside the accessor module, with a negative control that must count
 #+NOTE: 2026-10-20 S0 revision S1: old raw reads outside accessor=0 -> same0; include all WORD/view, GC/image/FFI/codegen boundaries, failing mutation and instruction-provenance limits. Reason: all new-tag recipients must move before S2; S0.4 is clarified, not blocked.
+#+NOTE: 2026-10-20 S1: raw-header-read is a conservative upper bound over all native DSL storage loads and host codegen load references, not optimistic header-pointer inference. Canonical producers at 50a75cbcb: 4358 -> 0; linked dynamic source: 3766 -> 0, with 3766 accessor sites (static 3762). Normal Lisp ptr-read API calls and recognizer literals retain their names; their native implementation is counted. Injected source, linked-unit and codegen reads each count1 and fail; empty/uncertified scans are rejected, as are reads hidden in binding initializers or function-quoted lambdas. This is source provenance, not hardware pointer taint.
 cmd: python3 tools/ai/word-heap-accessors.py controls
 
 ** S1.2 Raw header reads outside the accessor module = 0
-cmd: python3 tools/ai/word-heap-accessors.py check
+#+NOTE: 2026-10-20 S1: no layout, tag, allocation-size or reader-builtin change. Logical Sexp fields and explicit storage loads lower before inlining; direct/native/extern forms keep their old ABI. 51 independent old/new emitted units are identical across SysV x86-64, Win64 x86-64 and AArch64;6 broken-offset/lowerer controls differ. 113/114 normalized runtime units match the base exactly; driver differences are authenticated bootstrap text (+48 bytes) and its lengths, so whole-ELF byte identity is deliberately not claimed. ABI S6.2 remains0 on both binaries.
+#+NOTE: 2026-10-20 S1: baseline rebuilt here from runtime sources identical to50a75cbcb before migration. Four-layout total Ir, including GC: boot535747546.00 ->534582980.00 (-0.217372%); files4731674967.50 ->4724927992.25 (-0.142592%); regex6000 6162955217.00 ->6154779190.25 (-0.132664%). Every output matches; files/regex each collect twice in all layouts. Original +0.5% caps unchanged; no additive header-load speed claim. Evidence closure: target/word-heap-s1/s1-evidence.json. The separate abi-ir accessors mode runs24 profiles; full ABI ir still requires40 and its original cap.
+#+NOTE: 2026-10-20 S1 evidence replay pins the measured LC_ALL=C.UTF-8 because progress-meter exports LC_ALL=C. Runtime-environment hash validation remains exact; no evidence or threshold is rebound to the meter environment.
+cmd: LC_ALL=C.UTF-8 python3 tools/ai/word-heap-accessors.py check
 
 ** S1.3 End to end: eval/core full suite (dyn+static), standalone-checks, wine Windows smoke on the accessor-only tree
 #+NOTE: 2026-10-20 lane scope: Linux dynamic/static 11-group verification, standalone checks and 40-tool Anvil MCP smoke are required here; Wine remains pending for the coordinator, as BRIEF.md requires.
+#+NOTE: 2026-10-20 S1 Linux acceptance complete: checks-word-heap-s1-final=11 groups/0 failures; standalone-checks=75 cases/0 failures (maphash-sparse known-red); static thread smokes pass; Anvil tools/list=40 after25 s open stdin. Both linkages pass14 legacy decoder cases and the new shared-cons/vector/record/string/symbol/float/bignum GC corpus form against GNU31.1. All97 changed Elisp files pass check-parens and both new modules byte-compile with error-on-warn. The broad AOT byte-compile's existing unescaped-quote docstring warning is reproduced on50a75cbcb too. Initial final-check failures were sandbox temp-directory errors; setting TMPDIR to target/tmp yields the passing full rerun. Wine is intentionally still pending; no threshold changed.
 pending
 
 * S2 cons header-less

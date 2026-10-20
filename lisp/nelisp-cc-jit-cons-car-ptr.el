@@ -50,7 +50,7 @@
      ;;     results live (list walks / bucket walks / equal2 recursion).
      (if (= (logand arg 1) 1) 0
      (if (= (sexp-tag arg) 7)
-         (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 0)))
+         (let ((word (heap-read-u64 (heap-sexp-payload arg) 0)))
            (if (= (logand word 1) 0)
                word
              (extern-call nl_val_load word (alloc-bytes 32 8))))
