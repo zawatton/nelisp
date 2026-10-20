@@ -72,7 +72,11 @@ pending
 #+NOTE: 2026-10-20 S0 revision S4: old zero-header requirement -> same0 plus vector slot8 B, one-user-slot record<=32 arena B, closure/frame/char-table tracing and mixed identity; move S4 before S2. Reason: primary cons shares are below60%, and container/frame alias ownership must be explicit before cons-only forecasts.
 pending
 
-** S4.2 End to end: full suite, GC-root checks, image round-trip, closure/frame parity cases, wine smoke
+** S4.2 Call frames live on a frame stack and move to the heap only when captured (closures, backtrace frames/locals); the prim-callfloor let/while gates pass (VM and bytecode <=5x GNU)
+#+NOTE: Added 2026-10-20 (denominator 27 -> 29 with S6.3). prim-callfloor S1 located the evaluator call floor in a heap frame per call, 32 B root registration and the bytecode JIT hook; its caps cannot be met in the current layer, so frames and roots are designed here. Mind the alist frames (6aff648db), captured closure frames (16afff6df) and backtrace--locals.
+pending
+
+** S4.3 End to end: full suite, GC-root checks, image round-trip, closure/frame parity cases, wine smoke
 pending
 
 * S5 floats, bignums, markers and remaining types header-less
@@ -93,7 +97,10 @@ pending
 ** S6.2 Precise roots are WORD slots: nl_root_reserve 32 B slots = 0
 pending
 
-** S6.3 End to end: full suite, thread smokes on static, GC-root checks, wine smoke
+** S6.3 Call-path roots are WORD slots on a root stack; the prim-callfloor funcall/builtin gates pass (VM and bytecode <=5x GNU, interpreter <=10x)
+pending
+
+** S6.4 End to end: full suite, thread smokes on static, GC-root checks, wine smoke
 pending
 
 * S7 Image format and platforms

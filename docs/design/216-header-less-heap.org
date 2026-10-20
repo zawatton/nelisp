@@ -492,3 +492,16 @@ stale-pointer fixture. The comparison recipe and measured individual/batch
 costs are retained in =target/word-heap/verification-cost.{py,json}=. Runtime
 rebuilds and the COMMON final binary suite are deliberately not run in S0;
 their cost is not justified by a docs/tools-only measurement lane.
+
+* Frames and roots on the call path (added 2026-10-20)
+
+The prim-callfloor lane (eval/prim-callfloor-20261020) measured the evaluator call floor against GNU 31.1:
+- empty-lambda funcall costs 17k Ir (interpreter), 14k (VM) and 24k (bytecode), against 867 / 867 / 213 Ir in GNU;
+- its S1 attributes the floor to a heap-allocated frame per call, 32 B root registration, and the bytecode JIT-hook check.
+
+These are representation choices, so they belong to this design rather than to a tuning lane:
+- *Frames (S4.2).* A call frame lives on a LIFO frame stack and is promoted to the heap only when something captures it: a closure, =backtrace-frames= / =backtrace--locals=, or a non-local exit that must keep it. The alist frames of 6aff648db and the captured closure frames of 16afff6df define what promotion has to preserve.
+- *Roots (S6.3).* Call-path roots become WORD slots pushed on a root stack, replacing 32 B =nl_root_reserve= boxes.
+- *Gates.* The prim-callfloor checker supplies the acceptance numbers: let/while for S4.2, and funcall/builtin for S6.3, at the original caps (VM and bytecode <=5x GNU, interpreter <=10x).
+
+One owner edits frame and root code in =scripts/nelisp-standalone-build.el= at a time. Like every implementation stage here, this work starts after the ABI lands in eval/core.
