@@ -2360,6 +2360,36 @@
                   (let ((empty (lambda () nil)))
                     (condition-case e (funcall empty 1)
                       (wrong-number-of-arguments (list (car e) (nth 2 e)))))))) t)
+ ;; Sort skips callbacks for singleton keys and preserves list/vector identity
+ ;; according to the GNU 31 keyword and legacy interfaces.
+ (list (sort (list 1) :key 12)
+       (sort [1] :lessp 12 :key 12)
+       (sort (list '(2 a) '(1 b) '(2 c) '(1 d)) :key #'car :reverse t)
+       (let* ((items (list 3 1 2)) (result (sort items #'<)))
+         (list items result (eq items result)))
+       (let* ((items (vector 3 1 2)) (result (sort items :lessp #'<)))
+         (list items result (eq items result)))
+       (condition-case e
+           (sort (list 2 1) (lambda (_a _b) (signal 'arith-error '(sort-predicate))))
+         (error e)))
+ ;; Native sorting retains values through allocating callbacks, and freezes
+ ;; the comparator before the key function can redefine its symbol.
+ (list (sort (list 3 1 2) (lambda (a b) (garbage-collect) (< a b)))
+       (let ((original (symbol-function '<)))
+         (unwind-protect
+             (sort (list 3 1 2) :lessp '<
+                   :key (lambda (x) (fset '< (lambda (_a _b) nil)) x))
+           (fset '< original)))
+       (let* ((source (list 3 1 2)) (copy (copy-sequence source)))
+         (list (equal source copy) (eq source copy)
+               (eq (cdr source) (cdr copy)))))
+
+ ;; Numeric comparison must not round a fixnum through f64 before ordering.
+ (let* ((integer (1+ (ash 1 60))) (floating (float (ash 1 60)))
+        (result (sort (list integer floating))))
+   (list (eq (car result) floating) (eq (cadr result) integer)
+         (> integer floating) (value< floating integer)))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

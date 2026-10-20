@@ -5837,14 +5837,9 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
 `aset' mutated the original / a string literal)."
   (cond
    ((null seq) nil)
-   ((consp seq)
-    (let ((acc nil) (cur seq))
-      (while (consp cur)
-        (setq acc (cons (car cur) acc))
-        (setq cur (cdr cur)))
-      (when cur
-        (signal 'wrong-type-argument (list 'listp cur)))
-      (nreverse acc)))
+   ;; Reuse the existing spine copier. Besides avoiding a second reversal,
+   ;; APPEND preserves fresh cons identity and the improper-tail condition.
+   ((consp seq) (append seq nil))
    ((stringp seq) (concat seq))
    ;; Records are sequences in host Emacs.  The standalone record length
    ;; includes the type tag, while `nelisp--record-ref' indexes payload
@@ -16300,34 +16295,99 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (while (consp cursor) (setq cursor (cdr cursor)))
       cursor)))
 
-(defun sort (sequence &rest arguments)
+(defconst nelisp--sort-string-lessp-definition (symbol-function 'string-lessp))
+(defconst nelisp--sort-string<-definition (symbol-function 'string<))
+(defalias 'nelisp--sort-native-string< nelisp--sort-string<-definition)
+
+(defun nelisp--sort-string-lessp (a b)
+  "Compare sort keys through the current native string comparator adapter."
+  (nelisp--sort-native-string< a b))
+
+(defun nelisp--sort-merge-links (left right lessp reverse strings keyed)
+  "Merge private list spines, taking LEFT first on equal keys."
+  (let ((head nil) (tail nil) (node nil))
+    (while (and left right)
+      (let ((a (car right)) (b (car left)))
+        (when keyed (setq a (car a)) (setq b (car b)))
+        (when reverse (let ((saved a)) (setq a b) (setq b saved)))
+        (if (if strings (nelisp--sort-string-lessp a b) (funcall lessp a b))
+            (progn (setq node right) (setq right (cdr right)))
+          (setq node left) (setq left (cdr left))))
+      (if tail (setcdr tail node) (setq head node))
+      (setq tail node))
+    (if tail
+        (progn (setcdr tail (or left right)) head)
+      (or left right))))
+
+(defun nelisp--sort-links (items size lessp reverse strings keyed)
+  "Stable merge sort on a private spine, with no per-merge consing."
+  (if (< size 2) items
+    (if (= size 2)
+        (let ((right (cdr items)))
+          (setcdr items nil)
+          (nelisp--sort-merge-links items right lessp reverse strings keyed))
+      (let* ((half (/ size 2)) (last items) (index 1))
+        (while (< index half) (setq last (cdr last)) (setq index (1+ index)))
+        (let ((right (cdr last)))
+          (setcdr last nil)
+          (nelisp--sort-merge-links
+           (nelisp--sort-links items half lessp reverse strings keyed)
+           (nelisp--sort-links right (- size half) lessp reverse strings keyed)
+           lessp reverse strings keyed))))))
+
+(defun nelisp--sort-before (a b lessp strings keyed)
+  (when keyed (setq a (car a)) (setq b (car b)))
+  (if strings (nelisp--sort-string-lessp a b) (funcall lessp a b)))
+
+(defun nelisp--sort-small (items size lessp strings keyed)
+  "Sort a short private spine in GNU's run and binary insertion order."
+  (if (< size 2) items
+    (let* ((cursor (cdr items)) (previous (car items)) (run 2)
+           (descending (nelisp--sort-before (car cursor) previous lessp strings keyed))
+           (active t))
+      (setq previous (car cursor))
+      (setq cursor (cdr cursor))
+      (while (and active cursor)
+        (let ((order (nelisp--sort-before (car cursor) previous lessp strings keyed)))
+          (if (if descending (not order) order)
+              (setq active nil)
+            (setq run (1+ run))
+            (setq previous (car cursor))
+            (setq cursor (cdr cursor)))))
+      (let ((last (nthcdr (1- run) items)))
+        (setcdr last nil)
+        (when descending (setq items (nreverse items))))
+      (while cursor
+        (let ((node cursor) (left 0) (right run))
+          (setq cursor (cdr cursor))
+          (while (< left right)
+            (let ((middle (/ (+ left right) 2)))
+              (if (nelisp--sort-before (car node) (nth middle items) lessp strings keyed)
+                  (setq right middle)
+                (setq left (1+ middle)))))
+          (if (= left 0)
+              (progn (setcdr node items) (setq items node))
+            (let ((before (nthcdr (1- left) items)))
+              (setcdr node (cdr before))
+              (setcdr before node)))
+          (setq run (1+ run))))
+      items)))
+
+(defun nelisp--sort-reference (sequence &rest arguments)
   "Sort SEQUENCE stably using GNU Emacs 31 keyword or legacy options."
-  (unless (or (listp sequence)
-              (and (vectorp sequence) (not (stringp sequence))))
-    (signal 'wrong-type-argument (list 'list-or-vector-p sequence)))
-  (when (nelisp--sort-circular-list-p sequence)
-    (signal 'circular-list (list sequence)))
-  (when (and (listp sequence) (not (nelisp--sort-proper-list-p sequence)))
-    (signal 'wrong-type-argument
-            (list 'listp (nelisp--sort-improper-list-tail sequence))))
-  (let ((key-function #'identity)
+  (let ((key-function nil)
         (lessp #'value<)
         (reverse nil)
         (in-place nil)
         (options arguments))
     (cond
      ((null options))
-     ((not (keywordp (car options)))
-      (unless (null (cdr options))
-        (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length options)))))
+     ((null (cdr options))
       (setq lessp (or (car options) #'value<))
       (setq in-place t))
-     ((null (cdr options))
-      ;; A lone keyword is the legacy comparator argument.  Calling it during
-      ;; comparison preserves GNU's void-function failure for malformed input.
-      (setq lessp (car options))
-      (setq in-place t))
      (t
+      (when (= (% (length options) 2) 1)
+        (error "Invalid argument list"))
       (while options
         (let ((option (car options)))
           (setq options (cdr options))
@@ -16335,39 +16395,62 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
             (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length arguments)))))
           (let ((value (car options)))
             (setq options (cdr options))
-            (cond ((eq option :key) (setq key-function (or value #'identity)))
+            (cond ((eq option :key) (setq key-function value))
                   ((eq option :lessp) (setq lessp (or value #'value<)))
                   ((eq option :reverse) (setq reverse value))
                   ((eq option :in-place) (setq in-place value))
                   (t (signal 'error (list "Invalid keyword argument" option)))))))))
+    (unless (or (listp sequence)
+                (and (vectorp sequence) (not (stringp sequence))))
+      (signal 'wrong-type-argument (list 'list-or-vector-p sequence)))
+    (when (nelisp--sort-circular-list-p sequence)
+      (signal 'circular-list (list sequence)))
+    (when (and (listp sequence) (not (nelisp--sort-proper-list-p sequence)))
+      (signal 'wrong-type-argument
+              (list 'listp (nelisp--sort-improper-list-tail sequence))))
     (let ((cursor (if (vectorp sequence)
                       (let ((index 0) (items nil))
                         (while (< index (length sequence))
                           (setq items (cons (aref sequence index) items))
                           (setq index (1+ index)))
                         (nreverse items))
-                    sequence)))
-      (let ((decorated nil))
-        (while cursor
-          (let ((item (car cursor)))
+                    (copy-sequence sequence))))
+      (let ((decorated nil) (size (length cursor))
+            (strings (and (memq lessp '(string-lessp string<))
+                          (let ((definition (indirect-function lessp)))
+                            (or (eq definition nelisp--sort-string-lessp-definition)
+                                (eq definition nelisp--sort-string<-definition))))))
+        ;; GNU reverses before computing keys, then reverses the result. This
+        ;; preserves ties and the observable order of key/predicate failures.
+        (when reverse (setq cursor (nreverse cursor)))
+        ;; GNU does not invoke :key, or the predicate, for zero/one item.
+        ;; No-key sorts avoid decorating every value and calling a closure
+        ;; around every comparison. Only known, unchanged string definitions
+        ;; select the adapter; advice and redefinitions keep normal FUNCALL.
+        (if (or (< size 2) (null key-function))
             (setq decorated
-                  (cons (cons (funcall key-function item) item) decorated)))
-          (setq cursor (cdr cursor)))
-        (setq decorated (nreverse decorated))
-        (let ((compare
-               (lambda (left right)
-                 (if reverse
-                     (funcall lessp (car right) (car left))
-                   (funcall lessp (car left) (car right))))))
-          (let ((sorted (nelisp--sort-merge-sort decorated compare))
-                (values nil))
-            (while sorted
-              (setq values (cons (cdr (car sorted)) values))
-              (setq sorted (cdr sorted)))
-            (setq values (nreverse values))
+                  (if (< size 64)
+                      (nelisp--sort-small cursor size lessp strings nil)
+                    (nelisp--sort-links cursor size lessp nil strings nil)))
+          (progn
+            (while cursor
+              (let ((item (car cursor)))
+                (setq decorated
+                      (cons (cons (funcall key-function item) item) decorated)))
+              (setq cursor (cdr cursor)))
+            (setq decorated
+                  (if (< size 64)
+                      (nelisp--sort-small (nreverse decorated) size lessp strings t)
+                    (nelisp--sort-links (nreverse decorated) size lessp nil strings t)))
+            (let ((entry decorated))
+              (while entry
+                (setcar entry (cdr (car entry)))
+                (setq entry (cdr entry))))))
+        (when reverse (setq decorated (nreverse decorated)))
+        (let ((values decorated))
             (cond
              ((vectorp sequence)
-              (let ((result (if in-place sequence (copy-sequence sequence)))
+              (let ((result (if (or in-place (= size 0)) sequence (copy-sequence sequence)))
                     (index 0))
                 (while values
                   (aset result index (car values))
@@ -16381,7 +16464,11 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
                   (setq destination (cdr destination))
                   (setq values (cdr values)))
                 sequence))
-             (t values))))))))
+             (t values)))))))
+
+(unless (fboundp 'sort)
+  (defalias 'sort #'nelisp--sort-reference))
+(defconst nelisp--sort-value<-definition (symbol-function 'value<))
 
 ;; --- Wave-2 (C): define-error ------------------------------------------
 ;; define-error NAME MESSAGE &optional PARENT: register an error symbol.  In
@@ -26387,7 +26474,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                 ((and (symbolp op) (fboundp op) (not (macrop op)))
                  (dolist (a (cdr x)) (comp a))
                  (push op nelisp--fx-called)
-                 (emit 16 op (length (cdr x))))
+                 ;; Cache the live function cell, never its value. Rebinding
+                 ;; still takes effect; replacing/growing the table expires it.
+                 (emit 16 (vector op nil nil nil nil) (length (cdr x))))
                 ((and (symbolp op) (not (fboundp op)))
                  (setq nelisp--fx-missing op)
                  (unsupported x))
@@ -27055,3 +27144,10 @@ are skipped.")
             (when (and (eq (car-safe definition) 'macro) (nelisp--fx-active-p))
               (nelisp--fx-check-macro symbol)
               (nelisp--fx-retry-waiters symbol))))))
+
+;; Queue only the sort provider, rather than making every prelude definition
+;; a compilation candidate during unrelated library loads.
+(when (nelisp--fx-active-p)
+  (dolist (name '(nelisp--sort-links nelisp--sort-merge-links nelisp--sort-before
+                 nelisp--sort-small nelisp--sort-string-lessp))
+    (nelisp--fx-defer name)))
