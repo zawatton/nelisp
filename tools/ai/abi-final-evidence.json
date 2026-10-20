@@ -1,67 +1,46 @@
 {
-  "schema_version": 4,
-  "source_base_commit": "0a7bec3e582869633ccedb8ed0907f55627b92b8",
+  "schema_version": 5,
+  "source_base_commit": "4cbee4fd7",
   "baseline_source_commit": "10beb8a3c717a65a4bd9add8a466991d0ec9d00a",
+  "recorded_head": "4cbee4fd73c9cee05b636ae3dbaee0e72c8823f8",
   "runtime_sources": {
-    "scripts/nelisp-standalone-build.el": "7f49b22cd4157bb7bba117b4df5e22c8538866d1bc64b4e2016875aaf2e4e017",
-    "lisp/nelisp-stdlib-regexp.el": "b560a408ddee1126eac7bc4bf46540131b22a2d6910b6df582fee532a8d94e14",
-    "packages/nl-ffi/src/nl-ffi-memory.el": "99f2c670b30384c92d85dff825049d97433bb5586246fd774ad833ec0b3ba5b3",
-    "test/standalone-freevar-cache-collection-check.el": "a99daff0c2906c892dcd664c9a850735558c54ef2c1a49955c2190f556dad06d",
-    "test/nelisp-windows-sqlite-test.el": "e72876ddd6479eca7f6ba16481f95b6283f257b757242b90ea04e34ee7c2732f"
+    "scripts/nelisp-standalone-build.el": "83d5634ce171d956dae9ebeef740ace907fe23d348aca23b9cc145772ea7ebc7",
+    "scripts/nelisp-stdlib-prelude.el": "b9165e84274b2c13e7df16f765404d1b4c6e8754dedd9aa33aec0e46734f2633",
+    "lisp/nelisp-stdlib-regexp.el": "073b06dd198fb59413245268e30aa872f01eefc7ca08046d5666e9f2281a33f2",
+    "packages/nl-ffi/src/nl-ffi-memory.el": "99f2c670b30384c92d85dff825049d97433bb5586246fd774ad833ec0b3ba5b3"
   },
   "tool_sources": {
-    "tools/ai/abi-ir.py": "262873039bf97ec187ffa42ce7b7f1dbe0593238f5c583f9b16d8a7d2275193f",
-    "tools/ai/abi-merge-gate.sh": "498f07003e82e508187682f1a135832c0826602a87c787972b2b3f3c5b01bcd9",
-    "tools/ai/boot-root-inventory.json": "fb22d411f52476d6a3ea8542aad8aa1ddc5eb1c55b954a1b37508c59ad77bb5f",
-    "test/abi-ir-test.py": "4c2c183a93ad5c50df12830f21a5529f7b6aa973d25f89ccc708772a63e9ed82"
-  },
-  "standalone_check_count": 73,
-  "layouts": [
-    0,
-    700,
-    1400,
-    2100
-  ],
-  "gc_method": "Callgrind nonrecursive entries into nl_gc_sweep_merge_chunks; complete Ir including natural GC; no forced collection",
-  "thresholds": {
-    "maximum_mean_ir_ratio": 1.0,
-    "census_total_exclusive_maximum": 1682,
-    "box_to_word_dependencies_maximum": 0,
-    "minimum_pressure_gc_per_binary_per_layout": 10,
-    "pressure_rounds": 240
-  },
-  "runtime_environment": {
-    "LANG": "C.UTF-8",
-    "LC_ALL": "C",
-    "LC_CTYPE": "C.UTF-8"
+    "tools/ai/abi-ir.py": "98ee298d17b8b0fb5f7dde84e33fea02c30eea7b9ca4877d904ed17b00ed05aa",
+    "tools/ai/abi-merge-gate.sh": "137530b2e0d2bd8ab41ed101a42b1d6c8b4123fec52a02fa8f164059b4ff25c7",
+    "test/abi-ir-test.py": "ddaa15d052dc46bae37363e4db5d26eeccee9bcb5deb2730133c113b0eec94ab"
   },
   "binary_builds": {
     "dynamic": [
       {
-        "path": "target/abi-landing2/dynamic-fixed/nelisp-dynamic",
-        "sha256": "68c3d652e15c56bf854e7a5887988f9a7290228e06dd00b050c7c05d464422e6"
+        "path": "target/abi-landing4/dynamic/nelisp-dynamic",
+        "sha256": "7dd7900fbad9e5644281306c7edb8e2e620683201d2720ed74d70e0179f002f4"
       },
       {
-        "path": "target/abi-landing2/dynamic-fixed/nelisp-dynamic.cold",
-        "sha256": "bcda7d848ea9dbf2c2a6ab4c8635fcaf562a8084245d4722072ecf97590029d6"
+        "path": "target/abi-landing4/dynamic/nelisp-dynamic.cold",
+        "sha256": "6370838ed4d909d36a738d32f067f5d814566f675aa723a7f9f8283dafd3fc85"
       },
       {
-        "path": "target/abi-landing2/dynamic-fixed/nelisp-dynamic.native-startup.el",
-        "sha256": "ff48a3ad66eed73edf7dbed3cef464e66d21c7827d5520c6a86a7b18c4a8243e"
+        "path": "target/abi-landing4/dynamic/nelisp-dynamic.native-startup.el",
+        "sha256": "5aeb8845cc67c76df412c03ca264b8da637d6d11563eb2990b986f97485439da"
       }
     ],
     "static": [
       {
-        "path": "target/abi-landing2/static-fixed/nelisp-static",
-        "sha256": "b7edff29c5cadc9605d31d8aaf9725b711ccda45414cd745fe8e46ac2d0a7064"
+        "path": "target/abi-landing4/static/nelisp-static",
+        "sha256": "fa3531fac3b15f5dfa4f5749155bd231376e03328d0ce4d2597d72f3808a4efe"
       },
       {
-        "path": "target/abi-landing2/static-fixed/nelisp-static.cold",
-        "sha256": "363602b98756551bc4b8812fff4593d6c0658cc254b7a2afdb1ec2e9b24e189b"
+        "path": "target/abi-landing4/static/nelisp-static.cold",
+        "sha256": "bad1fb1134275b83cf479f6be0e91d8a8ff8b5d10d77241ef5624e4de24d3c83"
       },
       {
-        "path": "target/abi-landing2/static-fixed/nelisp-static.native-startup.el",
-        "sha256": "2f62fb5d30e32d760172daea9b93c8bf2e8379104fcdc466fde83fc2205d3f8f"
+        "path": "target/abi-landing4/static/nelisp-static.native-startup.el",
+        "sha256": "725051dfa6670cc012ca8f44c7f884ead3f1a592ffe2fb393a555fe4c91ab15a"
       }
     ],
     "baseline": [
@@ -80,302 +59,310 @@
     ]
   },
   "dump": {
-    "path": "target/abi-landing2/dynamic-fixed/dump.jsonl",
-    "sha256": "226857748cbee4698e69e6c0c9ecfbd3ff864b2c6984ccfcc6f3d92d3e104236"
+    "path": "target/abi-landing4/dynamic/dump.jsonl",
+    "sha256": "cfbc513b939641da1605e9e68678899a7c1e49bcf0e194fe730c697f7a8e2c09"
   },
   "census": {
-    "path": "target/abi-landing2/dynamic-fixed/census.tsv",
-    "sha256": "185f2a7920a7843398603eecbb1f2a5d80b9bc3d480b83e698a47c87ec4bc172"
+    "path": "target/abi-landing4/dynamic/census.tsv",
+    "sha256": "664e12d48cc2b669b4a7f797c173017e660faa1226e7bc0d2cfe674e7b8a225f"
   },
+  "census_total": 1302,
+  "box_to_word_dependencies": 0,
+  "conversions": [],
   "measurement": {
-    "path": "target/abi-landing2/ir-fixed/measurement.json",
-    "sha256": "f853a2f56c6f5dd18340c3df3fbd8d3a2274ed189fba5b14259131b56a975c60"
+    "path": "target/abi-landing4/ir/measurement.json",
+    "sha256": "a7823cc6d22199accb62663bf7de334164ab5a05320ba05de3b9a95e44bf271c"
   },
-  "elapsed_seconds": 1311.493,
-  "linux_ffi_dispatch_unchanged": true,
+  "layouts": [
+    0,
+    700,
+    1400,
+    2100
+  ],
   "workloads": {
     "boot": {
       "samples": [
         {
           "layout": 0,
           "base": {
-            "ir": 1215263683,
+            "ir": 1215257756,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 535878700,
+            "ir": 536037176,
             "gc_cycles": 0
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 1215375137,
+            "ir": 1215369192,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 536001402,
+            "ir": 536146204,
             "gc_cycles": 0
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 1215485909,
+            "ir": 1215477401,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 536097698,
+            "ir": 536256284,
             "gc_cycles": 0
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 1215590530,
+            "ir": 1215584142,
             "gc_cycles": 0
           },
           "cand": {
-            "ir": 536202011,
+            "ir": 536361869,
             "gc_cycles": 0
           }
         }
       ],
-      "base_mean_ir": 1215428814.75,
-      "candidate_mean_ir": 536044952.75,
-      "change_percent": -55.89663942102126,
+      "base_mean_ir": 1215422122.75,
+      "candidate_mean_ir": 536200383.25,
+      "change_percent": -55.883608401268916,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true,
-      "measurement_round": 2,
-      "gc_floor_applies": false
+      "natural_gc_floor_pass": true
     },
-    "regex6000": {
+    "regex": {
       "samples": [
         {
           "layout": 0,
           "base": {
-            "ir": 69804702213,
+            "ir": 69804750536,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 6487839336,
+            "ir": 6163325917,
             "gc_cycles": 2
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 69804774539,
+            "ir": 69804947700,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 6487916226,
+            "ir": 6163415967,
             "gc_cycles": 2
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 69805169064,
+            "ir": 69804988182,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 6488065561,
+            "ir": 6163537364,
             "gc_cycles": 2
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 69808650588,
+            "ir": 69805110737,
             "gc_cycles": 4
           },
           "cand": {
-            "ir": 6488174443,
+            "ir": 6163641026,
             "gc_cycles": 2
           }
         }
       ],
-      "base_mean_ir": 69805824101.0,
-      "candidate_mean_ir": 6487998891.5,
-      "change_percent": -90.70564816753298,
+      "base_mean_ir": 69804949288.75,
+      "candidate_mean_ir": 6163480068.5,
+      "change_percent": -91.1704254049314,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true,
-      "measurement_round": 2,
-      "gc_floor_applies": false
+      "natural_gc_floor_pass": true
     },
-    "regex24000": {
+    "regex-gc": {
       "samples": [
         {
           "layout": 0,
           "base": {
-            "ir": 255222207125,
+            "ir": 255221745927,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 18519991977,
+            "ir": 18427778483,
             "gc_cycles": 2
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 255222096466,
+            "ir": 255222040322,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 18520126943,
+            "ir": 18427979951,
             "gc_cycles": 2
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 255222357091,
+            "ir": 255222479261,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 18520136089,
+            "ir": 18428063789,
             "gc_cycles": 2
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 255223123273,
+            "ir": 255222489296,
             "gc_cycles": 11
           },
           "cand": {
-            "ir": 18520330847,
+            "ir": 18428232008,
             "gc_cycles": 2
           }
         }
       ],
-      "base_mean_ir": 255222445988.75,
-      "candidate_mean_ir": 18520146464.0,
-      "change_percent": -92.74352755602995,
+      "base_mean_ir": 255222188701.5,
+      "candidate_mean_ir": 18428013557.75,
+      "change_percent": -92.77961933815135,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true,
-      "measurement_round": 2,
-      "gc_floor_applies": false
+      "natural_gc_floor_pass": true
+    },
+    "pressure": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 353250439824,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 342012842630,
+            "gc_cycles": 17
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 353385695539,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 342195250843,
+            "gc_cycles": 17
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 353279687082,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 341832255354,
+            "gc_cycles": 17
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 352901547602,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 341777360181,
+            "gc_cycles": 17
+          }
+        }
+      ],
+      "base_mean_ir": 353204342511.75,
+      "candidate_mean_ir": 341954427252.0,
+      "change_percent": -3.185101060691442,
+      "identical_outputs": true,
+      "mean_ir_pass": true,
+      "natural_gc_floor_pass": true
     },
     "files": {
       "samples": [
         {
           "layout": 0,
           "base": {
-            "ir": 11177444155,
+            "ir": 11177448503,
             "gc_cycles": 2
           },
           "cand": {
-            "ir": 5743250458,
+            "ir": 4721065206,
             "gc_cycles": 2
           }
         },
         {
           "layout": 700,
           "base": {
-            "ir": 11177584316,
+            "ir": 11177461653,
             "gc_cycles": 2
           },
           "cand": {
-            "ir": 5743299902,
+            "ir": 4721159398,
             "gc_cycles": 2
           }
         },
         {
           "layout": 1400,
           "base": {
-            "ir": 11177535728,
+            "ir": 11177604288,
             "gc_cycles": 2
           },
           "cand": {
-            "ir": 5743394686,
+            "ir": 4721277373,
             "gc_cycles": 2
           }
         },
         {
           "layout": 2100,
           "base": {
-            "ir": 11177715407,
+            "ir": 11177618071,
             "gc_cycles": 2
           },
           "cand": {
-            "ir": 5743620912,
+            "ir": 4721430000,
             "gc_cycles": 2
           }
         }
       ],
-      "base_mean_ir": 11177569901.5,
-      "candidate_mean_ir": 5743391489.5,
-      "change_percent": -48.61681438709453,
+      "base_mean_ir": 11177533128.75,
+      "candidate_mean_ir": 4721232994.25,
+      "change_percent": -57.76140459734891,
       "identical_outputs": true,
       "mean_ir_pass": true,
-      "natural_gc_floor_pass": true,
-      "measurement_round": 2,
-      "gc_floor_applies": false
-    },
-    "pressure": {
-      "rounds": 240,
-      "samples": [
-        {
-          "layout": 0,
-          "base": {
-            "ir": 353179662147,
-            "gc_cycles": 11
-          },
-          "cand": {
-            "ir": 372414200605,
-            "gc_cycles": 20
-          }
-        },
-        {
-          "layout": 700,
-          "base": {
-            "ir": 353314322430,
-            "gc_cycles": 11
-          },
-          "cand": {
-            "ir": 372476036077,
-            "gc_cycles": 20
-          }
-        },
-        {
-          "layout": 1400,
-          "base": {
-            "ir": 353276870528,
-            "gc_cycles": 11
-          },
-          "cand": {
-            "ir": 372650324801,
-            "gc_cycles": 20
-          }
-        },
-        {
-          "layout": 2100,
-          "base": {
-            "ir": 353339024685,
-            "gc_cycles": 11
-          },
-          "cand": {
-            "ir": 372208017461,
-            "gc_cycles": 20
-          }
-        }
-      ],
-      "base_mean_ir": 353277469947.5,
-      "candidate_mean_ir": 372437144736.0,
-      "change_percent": 5.423406930350616,
-      "identical_outputs": true,
-      "mean_ir_pass": false,
-      "natural_gc_floor_pass": true,
-      "method": "Full Callgrind profiles from counts-only calibration; GC counts selected and R pinned before Ir read",
-      "measurement_round": 3,
-      "gc_floor_applies": true
+      "natural_gc_floor_pass": true
     }
+  },
+  "gc_method": "Callgrind nonrecursive nl_gc_sweep_merge_chunks entries; all Ir including natural GC; no forced collection",
+  "thresholds": {
+    "maximum_mean_ir_ratio": 1,
+    "census_total_exclusive_maximum": 1682,
+    "box_to_word_dependencies_maximum": 0,
+    "minimum_pressure_gc_per_binary_per_layout": 10,
+    "pressure_rounds": 240
+  },
+  "runtime_environment": {
+    "LANG": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8",
+    "LC_ALL": "C"
   },
   "memory": {
     "values": {
@@ -385,10 +372,10 @@
       "base-record1": 202.31,
       "base-string8": 130.31,
       "cand-live": 80,
-      "cand-cons": 145.872,
-      "cand-marker": 217.892,
-      "cand-record1": 201.872,
-      "cand-string8": 129.872,
+      "cand-cons": 74.74,
+      "cand-marker": 217.922,
+      "cand-record1": 201.902,
+      "cand-string8": 129.902,
       "gnu-cons": 16.19725,
       "gnu-marker": 64.19725,
       "gnu-record1": 40.19725,
@@ -400,1199 +387,91 @@
       "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-final/baseline/nelisp-dyn": "ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a",
       "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-final/baseline/nelisp-dyn.cold": "6b29b679961be62e1a41489233bf45d6caca2abb814e40d8d407a0389697509e",
       "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-final/baseline/nelisp-dyn.native-startup.el": "ce3bd70b5a112518ed6a5b42d906e16d15ff6ebe7fe62add1b68dedc376c5633",
-      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing2/dynamic-fixed/nelisp-dynamic": "68c3d652e15c56bf854e7a5887988f9a7290228e06dd00b050c7c05d464422e6",
-      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing2/dynamic-fixed/nelisp-dynamic.cold": "bcda7d848ea9dbf2c2a6ab4c8635fcaf562a8084245d4722072ecf97590029d6",
-      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing2/dynamic-fixed/nelisp-dynamic.native-startup.el": "ff48a3ad66eed73edf7dbed3cef464e66d21c7827d5520c6a86a7b18c4a8243e"
+      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing4/dynamic/nelisp-dynamic": "7dd7900fbad9e5644281306c7edb8e2e620683201d2720ed74d70e0179f002f4",
+      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing4/dynamic/nelisp-dynamic.cold": "6370838ed4d909d36a738d32f067f5d814566f675aa723a7f9f8283dafd3fc85",
+      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-integ-20261019/target/abi-landing4/dynamic/nelisp-dynamic.native-startup.el": "5aeb8845cc67c76df412c03ca264b8da637d6d11563eb2990b986f97485439da"
+    }
+  },
+  "tramp": {
+    "dynamic": {
+      "cold_ms_per_match_including_compilation": [
+        2.79,
+        2.86
+      ],
+      "fresh_repro_timing_pass": false,
+      "cached_ms_per_match": [
+        0.11,
+        0.09
+      ],
+      "warm_match_timing_pass": true,
+      "evidence": {
+        "path": "target/abi-landing4/tramp-repeat.out",
+        "sha256": "6bf2385e516efd5e09d9bd8efc595e13da693aa5689be64d60a1b00ba41f07dc"
+      }
+    },
+    "static": {
+      "cold_ms_per_match_including_compilation": [
+        2.82,
+        2.64
+      ],
+      "fresh_repro_timing_pass": false,
+      "cached_ms_per_match": [
+        0.1,
+        0.08
+      ],
+      "warm_match_timing_pass": true,
+      "evidence": {
+        "path": "target/abi-landing4/tramp-repeat-static.out",
+        "sha256": "191f276431b49a16ac857823fa01c00df66acbdd8c8a1ce99a33fdd0cd673b82"
+      }
     }
   },
   "checks": {
-    "standalone-final.log": {
-      "path": "target/abi-landing2/standalone-final.log",
-      "sha256": "9c3ced004ecc1e7ea788e6a61e1103cab082842e3cc05c206538973c83c2442d"
-    },
-    "cache-static.out": {
-      "path": "target/abi-landing2/cache-static.out",
-      "sha256": "abd04fd8241d3119abaacca59cbe6108600c244e771e7ba3e14784ba1f5aebef"
-    },
-    "cache-static.err": {
-      "path": "target/abi-landing2/cache-static.err",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    "cache-static.rc": {
-      "path": "target/abi-landing2/cache-static.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "windows-ffi-before.log": {
-      "path": "target/abi-landing2/windows-ffi-before.log",
-      "sha256": "20a881d52adf9bdcef471cfcd7faa275cd6d41f772c5a1ad22204f2959880f7f"
-    },
-    "windows-ffi-before.rc": {
-      "path": "target/abi-landing2/windows-ffi-before.rc",
-      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
-    },
-    "windows-ffi-after.log": {
-      "path": "target/abi-landing2/windows-ffi-after.log",
-      "sha256": "a7177afbc86b0779514e9a5df14c7e29dff5953dd61e3d7e412cf6d96e5e12e7"
-    },
-    "windows-ffi-after.rc": {
-      "path": "target/abi-landing2/windows-ffi-after.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "linux-ffi-before.ir": {
-      "path": "target/abi-landing2/linux-ffi-before.ir",
-      "sha256": "57fbf93646cf18662d0dfa04cdd34a5e8200a410e9b8694de748f84a3f4367f4"
-    },
-    "linux-ffi-after.ir": {
-      "path": "target/abi-landing2/linux-ffi-after.ir",
-      "sha256": "57fbf93646cf18662d0dfa04cdd34a5e8200a410e9b8694de748f84a3f4367f4"
-    },
-    "memory.py": {
-      "path": "target/abi-landing2/memory.py",
-      "sha256": "85f7dd6f237cc98d593bfa3a7777a85bc603b5b70d3dde9b4bfe7fc532389c97"
-    },
-    "build.sh": {
-      "path": "target/abi-landing2/build.sh",
-      "sha256": "53cfcd4c060711a88b6657d723c358e8bd8b8d7c0324b6c3463cf9497dfcaf71"
-    },
-    "features.sh": {
-      "path": "target/abi-landing2/features.sh",
-      "sha256": "7f8aa6bfc8c9e591ab2fb7c2ba2641b6ec4142a80449297e6815a0790e74a9ef"
-    },
-    "env.sh": {
-      "path": "target/abi-landing2/env.sh",
-      "sha256": "be58f275b9683914a9106e943ed4f1e99218362858c56dee26eb1cfb399c739d"
-    },
-    "record-evidence.py": {
-      "path": "target/abi-landing2/record-evidence.py",
-      "sha256": "030fa53ec4350a251cbe67f2b7e16bc2971ab1c92c6f16b6a5565ac6b160fa53"
-    },
-    "cstring-fixture.c": {
-      "path": "target/abi-landing2/cstring-fixture.c",
-      "sha256": "a78fc551126a3abdbec3e85e6538e34bba801a6fed892df5df460f7d9a2a9d29"
-    },
-    "cstring-fixture.eln": {
-      "path": "target/abi-landing2/cstring-fixture.eln",
-      "sha256": "14ed6527f0786519371bef32a46a944049a42f2f01ae365a21cc4004774f411f"
-    },
-    "runtime-environment.json": {
-      "path": "target/abi-landing2/runtime-environment.json",
-      "sha256": "bdd1a807c019c049b1c52554f1f4a204ffa2a6b46e6a289d668d2c3321a9ad5c"
-    },
-    "host-regex.log": {
-      "path": "target/abi-landing2/host-regex.log",
-      "sha256": "8d4631b489b9c71f06a2b753eca9bd145dcd2717674d920a8338443e03157725"
-    },
-    "host-regex.rc": {
-      "path": "target/abi-landing2/host-regex.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "census-fixed.log": {
-      "path": "target/abi-landing2/census-fixed.log",
-      "sha256": "9c525da262c2bd6292cafbbc613e327061b3b25a57681cc0ebb9465c4f770cb4"
-    },
-    "memory-fixed.log": {
-      "path": "target/abi-landing2/memory-fixed.log",
-      "sha256": "75d4554f9783bfdddb2bc55b29148f30eac4943389aff9d499cb3008c37361eb"
-    },
-    "memory/measurement.json": {
-      "path": "target/abi-landing2/memory/measurement.json",
-      "sha256": "44ba11f1257fcc9a43f509d3f140da5238962c03ae534e003e4cb437609bcbd6"
-    },
-    "cache-before.out": {
-      "path": "target/abi-landing2/cache-before.out",
-      "sha256": "2ef367354717ac8d41f0cc40ab72b286599ed378e3b3da0a0d850a5ebcc8068d"
-    },
-    "cache-before.err": {
-      "path": "target/abi-landing2/cache-before.err",
-      "sha256": "cc2eac4e0e483d22982b821e70202f41c5ef822dcc22405dfbead63c07812591"
-    },
-    "cache-before.rc": {
-      "path": "target/abi-landing2/cache-before.rc",
-      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
-    },
-    "cache-after.out": {
-      "path": "target/abi-landing2/cache-after.out",
-      "sha256": "abd04fd8241d3119abaacca59cbe6108600c244e771e7ba3e14784ba1f5aebef"
-    },
-    "cache-after.err": {
-      "path": "target/abi-landing2/cache-after.err",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    "cache-after.rc": {
-      "path": "target/abi-landing2/cache-after.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "repl.out": {
-      "path": "target/abi-landing2/repl.out",
-      "sha256": "ac2f560594e19b3920da0420b1c8e161db1010863bfbdfd5b9c8acd0b6fab1a5"
-    },
-    "reload-evidence/record.json": {
-      "path": "target/abi-landing2/reload-evidence/record.json",
-      "sha256": "408f010aff24f98ecc1bbbafb0fe725ea9cde20c93567b574d3b179585d28196"
-    },
-    "features-dynamic-fixed.log": {
-      "path": "target/abi-landing2/features-dynamic-fixed.log",
-      "sha256": "ad28dafa2afccb548be3f2d8a43f8aaa2b82628ed928556695153a71807e9bda"
-    },
-    "features-static-fixed.log": {
-      "path": "target/abi-landing2/features-static-fixed.log",
-      "sha256": "0eb85c0c99d6734c019bdf460bdc6aec0b7444c738e64ec9fee6e9dadfb946b6"
-    },
-    "static-ffi-refusal-before.out": {
-      "path": "target/abi-landing2/static-ffi-refusal-before.out",
-      "sha256": "d3788514c4215fded5ec2a1a00c141ac1ac9a3d4746f858e4fdf60d3170b326d"
-    },
-    "static-ffi-refusal-after.out": {
-      "path": "target/abi-landing2/static-ffi-refusal-after.out",
-      "sha256": "d3788514c4215fded5ec2a1a00c141ac1ac9a3d4746f858e4fdf60d3170b326d"
-    },
-    "checks-fixed.log": {
-      "path": "target/abi-landing2/checks-fixed.log",
-      "sha256": "7bada3ac549c6c537b8dce4ca149e97dd0bc1d1388b319cee87f94c4e6305824"
-    },
-    "anvil-fixed/result.json": {
-      "path": "target/abi-landing2/anvil-fixed/result.json",
-      "sha256": "52466314ce328e202c222af6e46fecc9687b3a5124df8006ff2cff4448d8dc1c"
-    },
-    "ir-fixed.log": {
-      "path": "target/abi-landing2/ir-fixed.log",
-      "sha256": "29d6ebf633e6b7782f94aff7d47a4630182fd3e8f3b54ba3699284e17bb72461"
-    },
-    "files-fixed.log": {
-      "path": "target/abi-landing2/files-fixed.log",
-      "sha256": "45c9ef8b53d93d58fd1f0dc817eeab4d584ad252e38a93eb58af754b94afb8f7"
-    },
-    "ir-tool-tests-final.log": {
-      "path": "target/abi-landing2/ir-tool-tests-final.log",
-      "sha256": "977470febaa2db0446973ba3926b195b3ec4554ddc8e417cfccc0f5db1f3bd51"
-    },
-    "output-before.log": {
-      "path": "target/abi-landing2/output-before.log",
-      "sha256": "bdfbe5ccc08010df18d81ccb38c341db2d8610fa88170287aa295956429f9a4a"
-    },
-    "normal-check.log": {
-      "path": "target/abi-landing2/normal-check.log",
-      "sha256": "e4d830892a20e3a98f8ed5a0081ad620e27b1c2ab4bc9bc473147c6b2585dbac"
-    },
-    "normal-check.rc": {
-      "path": "target/abi-landing2/normal-check.rc",
-      "sha256": "ca2ebdf97d7469496b1f4b78958f9dc8447efdcb623953fee7b6996b762f6fff"
-    },
-    "parens.log": {
-      "path": "target/abi-landing2/parens.log",
-      "sha256": "a9f5b9114dada713d3aaa1da835ec4cb8274fe2de871559b2f700f5288ed92e9"
-    },
-    "dynamic-fixed/build-summary.log": {
-      "path": "target/abi-landing2/dynamic-fixed/build-summary.log",
-      "sha256": "0d532f7a2d11f00d7e16b02c0d0e7088ed81e977c56edcbb886bc3e683c57827"
-    },
-    "static-fixed/build-summary.log": {
-      "path": "target/abi-landing2/static-fixed/build-summary.log",
-      "sha256": "032e65c333ed68d683b0b1b22aee5d11feb2990da8a0ce24c59ca7190a2d5f57"
-    },
-    "gnu/version.out": {
-      "path": "target/abi-landing2/gnu/version.out",
-      "sha256": "6d9048ff14e6a4dacca73fc885b29e419b0163e079bf28b358dbcd393e45b187"
-    },
-    "gnu/printer-load.out": {
-      "path": "target/abi-landing2/gnu/printer-load.out",
-      "sha256": "2b70631edaba00af05df478c247f07be119fa79c9c753958389a7c046959949b"
-    },
-    "gnu/unibyte-aset.out": {
-      "path": "target/abi-landing2/gnu/unibyte-aset.out",
-      "sha256": "c713629e623706f32e86d21bb95e4c2f996337a7b0d63329fa8401b685163979"
-    },
-    "gnu/backtrace-locals.out": {
-      "path": "target/abi-landing2/gnu/backtrace-locals.out",
-      "sha256": "b7bda8321e34878e45d63a922986c7df13d72a248e5d49745e3bf78f06b8768c"
-    },
-    "gnu/sqlite-owned.out": {
-      "path": "target/abi-landing2/gnu/sqlite-owned.out",
-      "sha256": "b817820cbb001ebca89b530df61e69991673dbbb94fa3fd0c8122c6a75384e92"
-    },
-    "gnu/freevar-cache.out": {
-      "path": "target/abi-landing2/gnu/freevar-cache.out",
-      "sha256": "7fefded14a5ba9cdef94596b029417a536834388f6791da0ddb6bd98a7237d12"
-    },
-    "round3/calibrate.py": {
-      "path": "target/abi-landing3/calibrate.py",
-      "sha256": "dd4cb6f5d29db7a05f654bd47707f586f46233dc0d1526ee8e11ec624962572e"
-    },
-    "round3/calibration.log": {
-      "path": "target/abi-landing3/calibration.log",
-      "sha256": "a1dd713f85e05d95211e238ee34ce0bfed7ff51f2b489e3df2fc59e0f5d15a90"
-    },
-    "round3/record-blocker.py": {
-      "path": "target/abi-landing3/record-blocker.py",
-      "sha256": "110d018f22f9d197f62360179a0bdda61f0edef1798d8148487c576199920eee"
-    },
-    "round3/pressure-check.py": {
-      "path": "target/abi-landing3/pressure-check.py",
-      "sha256": "3b97117fce0af77fa2e75e4689e95af040ee5b59de8b99acd5ef44ce6dc57ea8"
-    },
-    "round3/pressure-check.log": {
-      "path": "target/abi-landing3/pressure-check.log",
-      "sha256": "cc940517fe711d01183f23e2fde60e0da40885f126d2f040168e2be4f2e37f49"
-    },
-    "round3/pressure-check.rc": {
-      "path": "target/abi-landing3/pressure-check.rc",
-      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
-    },
-    "round3/pressure-deltas.py": {
-      "path": "target/abi-landing3/pressure-deltas.py",
-      "sha256": "d8851faaaf0f12442d803b931711fdd516f3f07c24efb26ae22bcc7e8209a4be"
-    },
-    "round3/pressure-deltas.log": {
-      "path": "target/abi-landing3/pressure-deltas.log",
-      "sha256": "beb0c065ecd6a845635e8fa58c4410ca18a07f4ebe04a7661512fb11d4bc4943"
-    },
-    "round3/pressure-deltas.rc": {
-      "path": "target/abi-landing3/pressure-deltas.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "round3/harness-red.log": {
-      "path": "target/abi-landing3/harness-red.log",
-      "sha256": "cb1147e6b0171a2b568d026563339a6b011004b2efdd9cde034ff7e71af3b13c"
-    },
-    "round3/harness-green.log": {
-      "path": "target/abi-landing3/harness-green.log",
-      "sha256": "5132f7bd557a2b4dd97091ebc61bbadab4a63fd5d204c688bbd8907c6a8542d1"
-    },
-    "round3/harness-green.rc": {
-      "path": "target/abi-landing3/harness-green.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "round3/env.sh": {
-      "path": "target/abi-landing3/env.sh",
-      "sha256": "d151833137c4b79b82057f26a70a81819ec13eef0a2f2a38f81ab87a760dfbcc"
-    },
-    "round3/runtime-environment.json": {
-      "path": "target/abi-landing3/runtime-environment.json",
-      "sha256": "f5375f610862cab0dc1ad195d9b1a4eccbb514f592b95a5dca93c36433420346"
-    },
-    "round3/checks.log": {
-      "path": "target/abi-landing3/checks.log",
-      "sha256": "ff08bcb909ce9454c1faefa5e6d8c873c32a23eaf6f30341aabb9198e3d9e0b7"
-    },
-    "round3/checks.rc": {
-      "path": "target/abi-landing3/checks.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-    },
-    "round3/anvil-smoke.py": {
-      "path": "target/abi-landing3/anvil-smoke.py",
-      "sha256": "1c8b94a0bbe278ed040af3ea3b950eb0299292516e7df955359a73cb71fee384"
-    },
-    "round3/anvil.log": {
-      "path": "target/abi-landing3/anvil.log",
+    "checks": {
+      "path": "target/abi-landing4/checks.log",
+      "sha256": "64de6b4a5f0733e2b9cc8c98f41419c44565da5a3fc2b566ddc504e81d321d48"
+    },
+    "anvil": {
+      "path": "target/abi-landing4/anvil.log",
       "sha256": "5b8d0b9c67ffb8f5fa71f1fd752b6d59845c2bd2a479252e52d0221a4bd1b719"
     },
-    "round3/anvil.rc": {
-      "path": "target/abi-landing3/anvil.rc",
-      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    "census": {
+      "path": "target/abi-landing4/census.log",
+      "sha256": "72c5f75e0a9481fabd3bc5e82dc420849ae9ec2f32d27a0dbe7660b476fa8002"
     },
-    "round3/anvil/result.json": {
-      "path": "target/abi-landing3/anvil/result.json",
-      "sha256": "9183385e010577d1d5a23604082aaaacd3ad1004f730eac5837b66a75bb464c2"
+    "host-regex": {
+      "path": "target/abi-landing4/host-regex.log",
+      "sha256": "8d082caf4b7fc72ed990a385eecdde7d65f9484032f8ae703c3f6953e4d667c7"
     },
-    "round3/anvil/stdout": {
-      "path": "target/abi-landing3/anvil/stdout",
-      "sha256": "98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a"
+    "harness-green": {
+      "path": "target/abi-landing4/harness-green.log",
+      "sha256": "0fb73d00bbd15d8a87e1bd60d205ac566a35c20771257c33f6a1290bbb83bc8c"
     },
-    "round3/anvil/stderr": {
-      "path": "target/abi-landing3/anvil/stderr",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    "printer-retry": {
+      "path": "target/abi-landing4/printer-retry.log",
+      "sha256": "7775851eca31c047612f8ff876e75d42d1916a08e3cf056a0280d39d7d8a0a56"
     },
-    "round3/calibration-gdb.log": {
-      "path": "target/abi-landing3/calibration-gdb.log",
-      "sha256": "5fba657a90c273130f7c705e1128d4fdbfb2c5bfc4b50d476e035f30563cf651"
+    "doc200-dynamic-utf8": {
+      "path": "target/abi-landing4/doc200-dynamic-utf8.log",
+      "sha256": "309256416c5708edf79ce97ea24e0f3ce54dd03f6c9af770a6381693536384c6"
     },
-    "round3/calibration-gdb-80/base-0.err": {
-      "path": "target/abi-landing3/calibration-gdb-80/base-0.err",
-      "sha256": "5b2bcb40e030354f5014aee002b6a98a57fea946e088fcc41345a017d6157fd7"
+    "doc200-static-utf8": {
+      "path": "target/abi-landing4/doc200-static-utf8.log",
+      "sha256": "85b497b8ab4e1f790900ebaaf37cd27bf3e23b4b4709b11001e78725cecacbd6"
+    },
+    "tramp-fresh-timing": {
+      "path": "target/abi-landing4/tramp-timing-red.log",
+      "sha256": "73edb9ffc35c2d35251f9edca14d0465d09d4bd7be6e664a89149fb28273a3b7",
+      "exit_status": 1
     }
   },
-  "files_profiles": {
-    "files-base-0.cg": {
-      "path": "target/abi-landing2/files-fixed/files-base-0.cg",
-      "sha256": "6fc10966059a993cd4331f4829db29a128ff598ccf0d4d849d5d4653b34cf074"
-    },
-    "files-base-0.err": {
-      "path": "target/abi-landing2/files-fixed/files-base-0.err",
-      "sha256": "fddea1c4dcb633ac7452e1209e86af0d38016cb690084bed4ecaa41a111a6e70"
-    },
-    "files-base-0.out": {
-      "path": "target/abi-landing2/files-fixed/files-base-0.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-base-1400.cg": {
-      "path": "target/abi-landing2/files-fixed/files-base-1400.cg",
-      "sha256": "a17ce9a872f08dca740e76efc01cf51511b7b123bbd0e3ba6f17e980181b3e46"
-    },
-    "files-base-1400.err": {
-      "path": "target/abi-landing2/files-fixed/files-base-1400.err",
-      "sha256": "66dd2765ab302b26149ac1108262c7d9811a545cc4f3ed975506f0f0269d9eba"
-    },
-    "files-base-1400.out": {
-      "path": "target/abi-landing2/files-fixed/files-base-1400.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-base-2100.cg": {
-      "path": "target/abi-landing2/files-fixed/files-base-2100.cg",
-      "sha256": "6fd281379854e36a3c57f2160eac4b0deccc39a3a1ce089c92775bfdf530a39e"
-    },
-    "files-base-2100.err": {
-      "path": "target/abi-landing2/files-fixed/files-base-2100.err",
-      "sha256": "eb1bbfbb4348bd1275105ae0f542d1266719a33275183b5d5e23ddb0854aad0c"
-    },
-    "files-base-2100.out": {
-      "path": "target/abi-landing2/files-fixed/files-base-2100.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-base-700.cg": {
-      "path": "target/abi-landing2/files-fixed/files-base-700.cg",
-      "sha256": "39eb0f498667cad8a0c93f988aff440919ae81485fc1881a5f04aef430b7aa06"
-    },
-    "files-base-700.err": {
-      "path": "target/abi-landing2/files-fixed/files-base-700.err",
-      "sha256": "564d9350472c09d139e724d58ca259aba3e2766605136530bb6a9570a31f0409"
-    },
-    "files-base-700.out": {
-      "path": "target/abi-landing2/files-fixed/files-base-700.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-cand-0.cg": {
-      "path": "target/abi-landing2/files-fixed/files-cand-0.cg",
-      "sha256": "91d8e215999ca144d4ca194e5ae50889e2fdf9087c98cf6122004f3b59c3c126"
-    },
-    "files-cand-0.err": {
-      "path": "target/abi-landing2/files-fixed/files-cand-0.err",
-      "sha256": "15d0d4d1b90968af25f648ade92bb8f807df96a0a97cff8c2e1aad32499cc4de"
-    },
-    "files-cand-0.out": {
-      "path": "target/abi-landing2/files-fixed/files-cand-0.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-cand-1400.cg": {
-      "path": "target/abi-landing2/files-fixed/files-cand-1400.cg",
-      "sha256": "65e0447c11e3411e79e5c66d91e8a4617aea9d9014f5de0d4227a11c38a20359"
-    },
-    "files-cand-1400.err": {
-      "path": "target/abi-landing2/files-fixed/files-cand-1400.err",
-      "sha256": "269748d6781cb9106988099742814be274652467b633b768de41eb819922b0fc"
-    },
-    "files-cand-1400.out": {
-      "path": "target/abi-landing2/files-fixed/files-cand-1400.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-cand-2100.cg": {
-      "path": "target/abi-landing2/files-fixed/files-cand-2100.cg",
-      "sha256": "30eb0b088fef9b435d27277f6c8b84d1290b0099df5acb55d571465fad630e99"
-    },
-    "files-cand-2100.err": {
-      "path": "target/abi-landing2/files-fixed/files-cand-2100.err",
-      "sha256": "340115d5c3081c22a32a83894f5cddf3d57bc3f03ccf8c893467151f83862c40"
-    },
-    "files-cand-2100.out": {
-      "path": "target/abi-landing2/files-fixed/files-cand-2100.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "files-cand-700.cg": {
-      "path": "target/abi-landing2/files-fixed/files-cand-700.cg",
-      "sha256": "b7aaea437e3e712d815f9d9bd4faf468fbe8e77cd75b77785a1a51515e0c7971"
-    },
-    "files-cand-700.err": {
-      "path": "target/abi-landing2/files-fixed/files-cand-700.err",
-      "sha256": "6d2107a4e758c11be2de02114b090c87408c38053ca5b3887d826114c4bf7988"
-    },
-    "files-cand-700.out": {
-      "path": "target/abi-landing2/files-fixed/files-cand-700.out",
-      "sha256": "fcae7df6059e04be6d8f7cf696768ac18a5195ba5baab383c4b8f0372e68be11"
-    },
-    "regex-gc.el": {
-      "path": "target/abi-landing2/files-fixed/regex-gc.el",
-      "sha256": "01bc0a8a6deb2508b9dfcb54f23fc7546f82182f82128cdf8f464bf7fe47bfde"
-    },
-    "regex.el": {
-      "path": "target/abi-landing2/files-fixed/regex.el",
-      "sha256": "0a0c25960322037e70cea68943ee23eb94eedd967a33ce5171b0381fa8147100"
-    }
-  },
-  "native_reload": {
-    "nelisp-runtime-checkout-15-2.nelr": "4e3f4b9b5d4cd3d3b90549204cf7eca679c4ea037c8fa6d8046ec4ec2b71d124",
-    "nelisp-runtime-checkout-15-2.nelr.el": "05481c98620c61f345284bea679865a91f546b6213d392a5e7bd54911ba707a3",
-    "binary_sha256": "3829f4b476c63e1a84575d5656c4ce7681a26a057967719d7b3aebfdacf53ee2",
-    "before_retained_bytes": 4216368,
-    "after_retained_bytes": -1856,
-    "before_generation": 0,
-    "published_generation": 1,
-    "restored_generation": 2,
-    "preserved_state": [
-      "retained",
-      [
-        40,
-        42
-      ]
-    ]
-  },
-  "conversions": [
-    "Windows-only SQLite initializer failure: wf_write_int OUT -> wf_write_int_w WORD; host dispatch fixture uses the real result and no OUT binding. Linux dispatch IR is byte-identical."
-  ],
-  "runtime_repair": "Expire derived free-variable memo rows at collection so the cache does not root dead lambda source trees. No added native surface or object-layout changes.",
-  "development_efficiency": {
-    "change": "abi-ir.py ir/files --output DIRECTORY writes directly to a fresh persistent evidence directory and refuses reuse.",
-    "before": {
-      "new_path_profiles": 0,
-      "test_rc": 1,
-      "test_seconds": 0.001
-    },
-    "after": {
-      "new_path_profiles": 8,
-      "test_rc": 0,
-      "test_seconds": 0.004061,
-      "harness_tests": 23
-    },
-    "interpretation": "Fixture coverage and evidence placement, not a runtime speed claim."
-  },
-  "limitations": {
-    "static_sqlite": "Normal-path smoke reports SQLite unavailable; the freestanding static build cannot call shared libraries.",
-    "static_cstring": "Normal-path smoke reports nl-ffi-unavailable (ffi:library dlopen); before/after exact low-level static refusal matches (nelisp-unsupported-primitive nl-ffi-call).",
-    "normal_check": "Inherited whole-tree check remains red; inspect pinned log. Changed Elisp parens, actual builds, native regression and Python harness are checked separately.",
-    "repl_bootstrap": "Full artifact REPL bootstrap on the original shipping build reports excessive-lisp-nesting 16000. Opt-in --runtime-only REPL supports actual allocator/collector publication, restoration and preserved-state verification.",
-    "round3": "Historical round 2 full manifest; round 3 stopped on pressure Ir cap before re-running the complete manifest"
-  },
-  "measurement_status": "Historical round 2 full manifest; round 3 stopped on pressure Ir cap before re-running the complete manifest",
-  "round3": {
-    "status": "BLOCKED: pressure mean total Ir exceeds baseline; no runtime tuning attempted",
-    "complete_manifest_rerun": false,
-    "criteria_change": "Relocate the unchanged 10-natural-GC floor from regex24000 to pressure, adding an independent pressure mean total-Ir <= baseline cap. Other workloads, layouts, caps and the denominator of 21 are unchanged.",
-    "calibration": {
-      "path": "target/abi-landing3/calibration.json",
-      "sha256": "e1cbbe2e5a568f13be5086879de984ebbc47d2d3bde7a995256c01d033416dbe"
-    },
-    "calibration_method": "Callgrind nonrecursive nl_gc_sweep_merge_chunks calls; summary Ir ignored until R pinned",
-    "calibration_samples": [
-      {
-        "rounds": 80,
-        "samples": [
-          {
-            "binary": "base",
-            "layout": 0,
-            "gc_cycles": 6
-          },
-          {
-            "binary": "base",
-            "layout": 700,
-            "gc_cycles": 6
-          },
-          {
-            "binary": "base",
-            "layout": 1400,
-            "gc_cycles": 6
-          },
-          {
-            "binary": "base",
-            "layout": 2100,
-            "gc_cycles": 6
-          },
-          {
-            "binary": "cand",
-            "layout": 0,
-            "gc_cycles": 12
-          },
-          {
-            "binary": "cand",
-            "layout": 700,
-            "gc_cycles": 12
-          },
-          {
-            "binary": "cand",
-            "layout": 1400,
-            "gc_cycles": 12
-          },
-          {
-            "binary": "cand",
-            "layout": 2100,
-            "gc_cycles": 12
-          }
-        ]
-      },
-      {
-        "rounds": 120,
-        "samples": [
-          {
-            "binary": "base",
-            "layout": 0,
-            "gc_cycles": 8
-          },
-          {
-            "binary": "base",
-            "layout": 700,
-            "gc_cycles": 8
-          },
-          {
-            "binary": "base",
-            "layout": 1400,
-            "gc_cycles": 8
-          },
-          {
-            "binary": "base",
-            "layout": 2100,
-            "gc_cycles": 8
-          },
-          {
-            "binary": "cand",
-            "layout": 0,
-            "gc_cycles": 15
-          },
-          {
-            "binary": "cand",
-            "layout": 700,
-            "gc_cycles": 15
-          },
-          {
-            "binary": "cand",
-            "layout": 1400,
-            "gc_cycles": 15
-          },
-          {
-            "binary": "cand",
-            "layout": 2100,
-            "gc_cycles": 15
-          }
-        ]
-      },
-      {
-        "rounds": 160,
-        "samples": [
-          {
-            "binary": "base",
-            "layout": 0,
-            "gc_cycles": 9
-          },
-          {
-            "binary": "base",
-            "layout": 700,
-            "gc_cycles": 9
-          },
-          {
-            "binary": "base",
-            "layout": 1400,
-            "gc_cycles": 9
-          },
-          {
-            "binary": "base",
-            "layout": 2100,
-            "gc_cycles": 9
-          },
-          {
-            "binary": "cand",
-            "layout": 0,
-            "gc_cycles": 17
-          },
-          {
-            "binary": "cand",
-            "layout": 700,
-            "gc_cycles": 17
-          },
-          {
-            "binary": "cand",
-            "layout": 1400,
-            "gc_cycles": 17
-          },
-          {
-            "binary": "cand",
-            "layout": 2100,
-            "gc_cycles": 17
-          }
-        ]
-      },
-      {
-        "rounds": 240,
-        "samples": [
-          {
-            "binary": "base",
-            "layout": 0,
-            "gc_cycles": 11
-          },
-          {
-            "binary": "base",
-            "layout": 700,
-            "gc_cycles": 11
-          },
-          {
-            "binary": "base",
-            "layout": 1400,
-            "gc_cycles": 11
-          },
-          {
-            "binary": "base",
-            "layout": 2100,
-            "gc_cycles": 11
-          },
-          {
-            "binary": "cand",
-            "layout": 0,
-            "gc_cycles": 20
-          },
-          {
-            "binary": "cand",
-            "layout": 700,
-            "gc_cycles": 20
-          },
-          {
-            "binary": "cand",
-            "layout": 1400,
-            "gc_cycles": 20
-          },
-          {
-            "binary": "cand",
-            "layout": 2100,
-            "gc_cycles": 20
-          }
-        ]
-      }
-    ],
-    "chosen_rounds": 240,
-    "gdb_limitation": "ptrace Operation not permitted; see calibration-gdb-80",
-    "formal_pressure": {
-      "path": "target/abi-landing3/pressure-verdict.json",
-      "sha256": "433749395dd9bb5a5287f3d43e93a2160b7fbfea37bd27ff200506557dad75d7"
-    },
-    "formal_pressure_method": "Full Callgrind profiles from counts-only calibration; GC counts selected and R pinned before Ir read",
-    "formal_gc_counts": [
-      {
-        "layout": 0,
-        "base": {
-          "ir": 353179662147,
-          "gc_cycles": 11
-        },
-        "cand": {
-          "ir": 372414200605,
-          "gc_cycles": 20
-        }
-      },
-      {
-        "layout": 700,
-        "base": {
-          "ir": 353314322430,
-          "gc_cycles": 11
-        },
-        "cand": {
-          "ir": 372476036077,
-          "gc_cycles": 20
-        }
-      },
-      {
-        "layout": 1400,
-        "base": {
-          "ir": 353276870528,
-          "gc_cycles": 11
-        },
-        "cand": {
-          "ir": 372650324801,
-          "gc_cycles": 20
-        }
-      },
-      {
-        "layout": 2100,
-        "base": {
-          "ir": 353339024685,
-          "gc_cycles": 11
-        },
-        "cand": {
-          "ir": 372208017461,
-          "gc_cycles": 20
-        }
-      }
-    ],
-    "pressure_top10": {
-      "path": "target/abi-landing3/pressure-top10.log",
-      "sha256": "beb0c065ecd6a845635e8fa58c4410ca18a07f4ebe04a7661512fb11d4bc4943"
-    },
-    "pressure_deltas": {
-      "path": "target/abi-landing3/pressure-deltas.json",
-      "sha256": "9e0891bc873354710575412fef7b3ab4df0f247f8a5fb4c750699785d2e10327"
-    },
-    "profile_workers": 8,
-    "pressure_timeout_seconds": 3600,
-    "harness_tests": 26,
-    "red_before": {
-      "path": "target/abi-landing3/harness-red.log",
-      "sha256": "cb1147e6b0171a2b568d026563339a6b011004b2efdd9cde034ff7e71af3b13c"
-    },
-    "green_after": {
-      "path": "target/abi-landing3/harness-green.log",
-      "sha256": "5132f7bd557a2b4dd97091ebc61bbadab4a63fd5d204c688bbd8907c6a8542d1"
-    },
-    "runtime_and_binary_fingerprints_unchanged": true,
-    "calibration_artifacts": {
-      "calibration-80/base-0.cg": {
-        "path": "target/abi-landing3/calibration-80/base-0.cg",
-        "sha256": "a3e34378493034b38391392c9e48e1eddcaef66cce7c2a9c0f9768acd55ddf57"
-      },
-      "calibration-80/base-0.err": {
-        "path": "target/abi-landing3/calibration-80/base-0.err",
-        "sha256": "43125abffe01ec3575f90f11caa12adab2cd8a75056cb2731c2df366acca55c2"
-      },
-      "calibration-80/base-0.out": {
-        "path": "target/abi-landing3/calibration-80/base-0.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/base-1400.cg": {
-        "path": "target/abi-landing3/calibration-80/base-1400.cg",
-        "sha256": "0b6b35e7c276cdba1c45491a2fa0cbb3ec72155321c636b9b9d19d334ae8896a"
-      },
-      "calibration-80/base-1400.err": {
-        "path": "target/abi-landing3/calibration-80/base-1400.err",
-        "sha256": "f0c0391291852a9568e16d334cf897f0b2fa70ac594905585c07a10ef282d6f9"
-      },
-      "calibration-80/base-1400.out": {
-        "path": "target/abi-landing3/calibration-80/base-1400.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/base-2100.cg": {
-        "path": "target/abi-landing3/calibration-80/base-2100.cg",
-        "sha256": "b5f66965c0f87e4ed110b622cbf22db6ab89025b9b1db7e25f55be3e624f58e1"
-      },
-      "calibration-80/base-2100.err": {
-        "path": "target/abi-landing3/calibration-80/base-2100.err",
-        "sha256": "32eadc8f99b112b0dd85a77036afda3bc87d0225ff720698030e9f6a3770312b"
-      },
-      "calibration-80/base-2100.out": {
-        "path": "target/abi-landing3/calibration-80/base-2100.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/base-700.cg": {
-        "path": "target/abi-landing3/calibration-80/base-700.cg",
-        "sha256": "b9c357cbd9fc683c7f5b8d9cfbd90d6abcb4689d4d72c0e6620388276dfba266"
-      },
-      "calibration-80/base-700.err": {
-        "path": "target/abi-landing3/calibration-80/base-700.err",
-        "sha256": "0f3769ac4dcae6ae5fba33047cf3528afab5295d5cfaea34f5f46e68be673b36"
-      },
-      "calibration-80/base-700.out": {
-        "path": "target/abi-landing3/calibration-80/base-700.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/cand-0.cg": {
-        "path": "target/abi-landing3/calibration-80/cand-0.cg",
-        "sha256": "a9ae12bf18a0ddfc8085433d4771ae734ee6cfe5652e47a6d17c87d51ed68ae7"
-      },
-      "calibration-80/cand-0.err": {
-        "path": "target/abi-landing3/calibration-80/cand-0.err",
-        "sha256": "c70242b30b82a4dfcb5743038dbb4a55e08d0bdcf4a071fb4f10ec38cdb471fe"
-      },
-      "calibration-80/cand-0.out": {
-        "path": "target/abi-landing3/calibration-80/cand-0.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/cand-1400.cg": {
-        "path": "target/abi-landing3/calibration-80/cand-1400.cg",
-        "sha256": "8fb8c5cdc9a7c88a7d96137e893daf2acb20c3f956a3fcfea58b2207d43b00f4"
-      },
-      "calibration-80/cand-1400.err": {
-        "path": "target/abi-landing3/calibration-80/cand-1400.err",
-        "sha256": "ebb7449b863ecb9c44cb6285c82abaf8598d431e54dca19921538d784ddf54cc"
-      },
-      "calibration-80/cand-1400.out": {
-        "path": "target/abi-landing3/calibration-80/cand-1400.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/cand-2100.cg": {
-        "path": "target/abi-landing3/calibration-80/cand-2100.cg",
-        "sha256": "bbbc5734406bc3f311f20b0e736e6909781e5378025a3f57468effaaf1725230"
-      },
-      "calibration-80/cand-2100.err": {
-        "path": "target/abi-landing3/calibration-80/cand-2100.err",
-        "sha256": "8601ce1ae42722731888c840a26c31b4a25b62c2768aa88b52965cd6151fddb9"
-      },
-      "calibration-80/cand-2100.out": {
-        "path": "target/abi-landing3/calibration-80/cand-2100.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/cand-700.cg": {
-        "path": "target/abi-landing3/calibration-80/cand-700.cg",
-        "sha256": "cb88a9eac6c982096abda1fd8d37c0b58819136b87bb5b6a68073af0f4633f5d"
-      },
-      "calibration-80/cand-700.err": {
-        "path": "target/abi-landing3/calibration-80/cand-700.err",
-        "sha256": "2d8cab06243ce91620ea1d8b116abe041cd3472492ae0f0fa9570d48b61faa89"
-      },
-      "calibration-80/cand-700.out": {
-        "path": "target/abi-landing3/calibration-80/cand-700.out",
-        "sha256": "ab07bee8722a69be76fb39e60009a7cf56c0ab3e360b15d60320b7a32d9073ad"
-      },
-      "calibration-80/gnu.err": {
-        "path": "target/abi-landing3/calibration-80/gnu.err",
-        "sha256": "7665384bf3e6d00848c9ae33519c25fb929246e763fdbd3ed0c454c7f8ca009c"
-      },
-      "calibration-80/gnu.out": {
-        "path": "target/abi-landing3/calibration-80/gnu.out",
-        "sha256": "4c5231e618e407ffbee01b99e2cc6c8c63528c6f5ac3cd31de4c39a0f6da199d"
-      },
-      "calibration-80/pressure.el": {
-        "path": "target/abi-landing3/calibration-80/pressure.el",
-        "sha256": "9ebbe72d044934e054899c2ba56352f894f838580c942d87c5dc707ba879be85"
-      },
-      "calibration-120/base-0.cg": {
-        "path": "target/abi-landing3/calibration-120/base-0.cg",
-        "sha256": "a5a56b19017aa8a2365f0b0f9c39d846e5b3414cbac35155ce3ac5ef3aba23bf"
-      },
-      "calibration-120/base-0.err": {
-        "path": "target/abi-landing3/calibration-120/base-0.err",
-        "sha256": "bd7d7ce494cbbaf0dcf3647dc57bd8488dfc3f61d10c99f9f55def3767699154"
-      },
-      "calibration-120/base-0.out": {
-        "path": "target/abi-landing3/calibration-120/base-0.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/base-1400.cg": {
-        "path": "target/abi-landing3/calibration-120/base-1400.cg",
-        "sha256": "df57a943b286ac050a88de963150f2c37520a3a452120e9c60f5d15813fff542"
-      },
-      "calibration-120/base-1400.err": {
-        "path": "target/abi-landing3/calibration-120/base-1400.err",
-        "sha256": "3cf3bc511500e2b2313868260aa811342d5b7ee111dbd88c8a4f8e98401c1d5c"
-      },
-      "calibration-120/base-1400.out": {
-        "path": "target/abi-landing3/calibration-120/base-1400.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/base-2100.cg": {
-        "path": "target/abi-landing3/calibration-120/base-2100.cg",
-        "sha256": "42721b283b8edb86204d21801e2729852d2d606049e309bcb7914ae7fe4ff4e8"
-      },
-      "calibration-120/base-2100.err": {
-        "path": "target/abi-landing3/calibration-120/base-2100.err",
-        "sha256": "b996c22c62c686722b4ce0772370ca4e1ed01aa653edd482a83092189b5fcae3"
-      },
-      "calibration-120/base-2100.out": {
-        "path": "target/abi-landing3/calibration-120/base-2100.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/base-700.cg": {
-        "path": "target/abi-landing3/calibration-120/base-700.cg",
-        "sha256": "eba100a068ccbd1ddc13cbedac52de4331110a47a977469e8aa92b11a546e8ed"
-      },
-      "calibration-120/base-700.err": {
-        "path": "target/abi-landing3/calibration-120/base-700.err",
-        "sha256": "ee5dcc84ce10eb4eff1f3a4309737ccb4afc5174e071e2ed70a720dd197ff2e0"
-      },
-      "calibration-120/base-700.out": {
-        "path": "target/abi-landing3/calibration-120/base-700.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/cand-0.cg": {
-        "path": "target/abi-landing3/calibration-120/cand-0.cg",
-        "sha256": "1f7f2cd4ac15db1822b9e9d84790cea381d1868dd0600445750083f4c1e2de60"
-      },
-      "calibration-120/cand-0.err": {
-        "path": "target/abi-landing3/calibration-120/cand-0.err",
-        "sha256": "c994961a7a45927d0635498f274b69e32948a00f42b9ec236548a4a7b4c67eb3"
-      },
-      "calibration-120/cand-0.out": {
-        "path": "target/abi-landing3/calibration-120/cand-0.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/cand-1400.cg": {
-        "path": "target/abi-landing3/calibration-120/cand-1400.cg",
-        "sha256": "37668301ab3a08044ae1280532c2e081c39e60dfc26b3062a08e58d39dcd896d"
-      },
-      "calibration-120/cand-1400.err": {
-        "path": "target/abi-landing3/calibration-120/cand-1400.err",
-        "sha256": "151c33ffec9678ee65b862cf716497891b26ec047d6d3f6e377308bc9710cde9"
-      },
-      "calibration-120/cand-1400.out": {
-        "path": "target/abi-landing3/calibration-120/cand-1400.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/cand-2100.cg": {
-        "path": "target/abi-landing3/calibration-120/cand-2100.cg",
-        "sha256": "802e0251221c009d6d37a15dace0a49cb144a7e9acfd2cd70260a5008ce6a037"
-      },
-      "calibration-120/cand-2100.err": {
-        "path": "target/abi-landing3/calibration-120/cand-2100.err",
-        "sha256": "debef0e70e5c90ffc555c5eccb0b51e3090ab5c6c53eff6106fe9e86eb4929f0"
-      },
-      "calibration-120/cand-2100.out": {
-        "path": "target/abi-landing3/calibration-120/cand-2100.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/cand-700.cg": {
-        "path": "target/abi-landing3/calibration-120/cand-700.cg",
-        "sha256": "885abe9c17393914544395e500ce35872e79e42e758a0826d5fa148ba61346e7"
-      },
-      "calibration-120/cand-700.err": {
-        "path": "target/abi-landing3/calibration-120/cand-700.err",
-        "sha256": "290d89d173c515d6a9a39d8f667131aea0fa97617f188d1af549c8f9a41e19e3"
-      },
-      "calibration-120/cand-700.out": {
-        "path": "target/abi-landing3/calibration-120/cand-700.out",
-        "sha256": "d54cbb23bd949092a992b7650d4082ce842418527efad269d6439ddcae408542"
-      },
-      "calibration-120/gnu.err": {
-        "path": "target/abi-landing3/calibration-120/gnu.err",
-        "sha256": "802b3a4458daed8401983418d614713c47853c7a3b91119598092b6e87b829c9"
-      },
-      "calibration-120/gnu.out": {
-        "path": "target/abi-landing3/calibration-120/gnu.out",
-        "sha256": "07881713ff2dd33a2f5f090cf36f429dbaaebfb26569ab81c180f308c078d62b"
-      },
-      "calibration-120/pressure.el": {
-        "path": "target/abi-landing3/calibration-120/pressure.el",
-        "sha256": "9a600a1eeaa276427def7c2a5b5aa875f4c03a06931c76dd08ffa493cdde89e0"
-      },
-      "calibration-160/base-0.cg": {
-        "path": "target/abi-landing3/calibration-160/base-0.cg",
-        "sha256": "e1fbfd1dc1220e14876d86bf7d504ab6a192a1522fd6904c107dc30cb87e28c9"
-      },
-      "calibration-160/base-0.err": {
-        "path": "target/abi-landing3/calibration-160/base-0.err",
-        "sha256": "a7265e1cb071b717285f71b241b77dd1fe396bd58b6f422f7e2867881db21ab9"
-      },
-      "calibration-160/base-0.out": {
-        "path": "target/abi-landing3/calibration-160/base-0.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/base-1400.cg": {
-        "path": "target/abi-landing3/calibration-160/base-1400.cg",
-        "sha256": "c39401951daebc2114542d3de691b809a3460ea20ec1c85929853d5ba97dc613"
-      },
-      "calibration-160/base-1400.err": {
-        "path": "target/abi-landing3/calibration-160/base-1400.err",
-        "sha256": "de1176a2e424a8731fa9b209be4c1428b90e63636eb41ebdc64904a29f160bcd"
-      },
-      "calibration-160/base-1400.out": {
-        "path": "target/abi-landing3/calibration-160/base-1400.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/base-2100.cg": {
-        "path": "target/abi-landing3/calibration-160/base-2100.cg",
-        "sha256": "2e5bfd2da4a6bb9795b2f78ac38b82340e430ba9ad79ca24dd22a557fda48cfd"
-      },
-      "calibration-160/base-2100.err": {
-        "path": "target/abi-landing3/calibration-160/base-2100.err",
-        "sha256": "5ae3010fcaaf899fc653ca1ebfb1fd9b84f52f597d4e6f5fb4e50c511a49b88d"
-      },
-      "calibration-160/base-2100.out": {
-        "path": "target/abi-landing3/calibration-160/base-2100.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/base-700.cg": {
-        "path": "target/abi-landing3/calibration-160/base-700.cg",
-        "sha256": "761daf75316f40d6964792877b5e02747675571532a0edb6e440faa1a4d7245d"
-      },
-      "calibration-160/base-700.err": {
-        "path": "target/abi-landing3/calibration-160/base-700.err",
-        "sha256": "15ec44724f40139dc93b434ff4aaee642944bea9e597f60c775dde5c81980ae1"
-      },
-      "calibration-160/base-700.out": {
-        "path": "target/abi-landing3/calibration-160/base-700.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/cand-0.cg": {
-        "path": "target/abi-landing3/calibration-160/cand-0.cg",
-        "sha256": "ee2b310e1e3a143b4c1cb0119a0952e2914b1c46fd9d96c9fd5cdeec4751185e"
-      },
-      "calibration-160/cand-0.err": {
-        "path": "target/abi-landing3/calibration-160/cand-0.err",
-        "sha256": "dbb00bad047e88c859eb6171084fdb5860924eb1a922cca72d21b69a5fd82fe2"
-      },
-      "calibration-160/cand-0.out": {
-        "path": "target/abi-landing3/calibration-160/cand-0.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/cand-1400.cg": {
-        "path": "target/abi-landing3/calibration-160/cand-1400.cg",
-        "sha256": "84997534031953de6ffb9913e87825644fcdfa4a4b4a363761af27956e85ece2"
-      },
-      "calibration-160/cand-1400.err": {
-        "path": "target/abi-landing3/calibration-160/cand-1400.err",
-        "sha256": "5da5b87a2f84a89771e5989efc5a8f844e355ee9f986b8587c626443fb384617"
-      },
-      "calibration-160/cand-1400.out": {
-        "path": "target/abi-landing3/calibration-160/cand-1400.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/cand-2100.cg": {
-        "path": "target/abi-landing3/calibration-160/cand-2100.cg",
-        "sha256": "95eecfa33c5159505dd1b774c58027a8f93671026df2634b8784885757488161"
-      },
-      "calibration-160/cand-2100.err": {
-        "path": "target/abi-landing3/calibration-160/cand-2100.err",
-        "sha256": "979a93b27549aeddac9a6882829320f3fde44f15254af416e6a3cd6fb70452db"
-      },
-      "calibration-160/cand-2100.out": {
-        "path": "target/abi-landing3/calibration-160/cand-2100.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/cand-700.cg": {
-        "path": "target/abi-landing3/calibration-160/cand-700.cg",
-        "sha256": "53f7583ea8ac03e7b48bad8fb0524ead4aa65d543a48a6f14a028d3ce2b9114f"
-      },
-      "calibration-160/cand-700.err": {
-        "path": "target/abi-landing3/calibration-160/cand-700.err",
-        "sha256": "1c497e5587c37dc39fbbaebe2c338d0e847bc4f8f6fe310ce253f75b562aba3a"
-      },
-      "calibration-160/cand-700.out": {
-        "path": "target/abi-landing3/calibration-160/cand-700.out",
-        "sha256": "23a82d5ab86d77e022361365c76e60d7cca7a43924e58105594cc311ea052654"
-      },
-      "calibration-160/gnu.err": {
-        "path": "target/abi-landing3/calibration-160/gnu.err",
-        "sha256": "598352c40d151475a2b64c69d57cdd39ea70bd8a979a73fc1d9f6f0d303a504e"
-      },
-      "calibration-160/gnu.out": {
-        "path": "target/abi-landing3/calibration-160/gnu.out",
-        "sha256": "b9712d4693824df52f191c4d1ea6a4e29713fefa96d6dfa8c843d3d11ee8fb90"
-      },
-      "calibration-160/pressure.el": {
-        "path": "target/abi-landing3/calibration-160/pressure.el",
-        "sha256": "7168febfcdebde0fb6636fa87b96e1589c5c4af1efdb3f16686e5e981c7c7944"
-      },
-      "calibration-240/base-0.cg": {
-        "path": "target/abi-landing3/calibration-240/base-0.cg",
-        "sha256": "846ebd593744f032317e6a539cb7b8e4a7bef058d0f4d2ca7f345693465da52a"
-      },
-      "calibration-240/base-0.err": {
-        "path": "target/abi-landing3/calibration-240/base-0.err",
-        "sha256": "f11d3eaa41a3ab777d14ff532cdae1959838d653d793b8717ed495f3d11a0d76"
-      },
-      "calibration-240/base-0.out": {
-        "path": "target/abi-landing3/calibration-240/base-0.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/base-1400.cg": {
-        "path": "target/abi-landing3/calibration-240/base-1400.cg",
-        "sha256": "9b606bef9cb7747d1ca6eb801e21d709d22d3f4f9b56061ef14fd1ac9ad8bef1"
-      },
-      "calibration-240/base-1400.err": {
-        "path": "target/abi-landing3/calibration-240/base-1400.err",
-        "sha256": "b8a4c9086117210d57b16707d32938bd8ce6717fe9f9dbefd6ccbb15718d1226"
-      },
-      "calibration-240/base-1400.out": {
-        "path": "target/abi-landing3/calibration-240/base-1400.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/base-2100.cg": {
-        "path": "target/abi-landing3/calibration-240/base-2100.cg",
-        "sha256": "4ae9e60d09515488a609c81a379f16bcf68ce6c78cc4591ab1515cd1404fdc3e"
-      },
-      "calibration-240/base-2100.err": {
-        "path": "target/abi-landing3/calibration-240/base-2100.err",
-        "sha256": "f6b043f1fda929e6b6ad12975dfe2c55eb3c55da9b2fc58b81126d724437c336"
-      },
-      "calibration-240/base-2100.out": {
-        "path": "target/abi-landing3/calibration-240/base-2100.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/base-700.cg": {
-        "path": "target/abi-landing3/calibration-240/base-700.cg",
-        "sha256": "c48af250749987e8320a35337c9954a734314fc0d0b3141f4c658e1e3350ca69"
-      },
-      "calibration-240/base-700.err": {
-        "path": "target/abi-landing3/calibration-240/base-700.err",
-        "sha256": "4421e03cca7da9a0af2c3574f7ca87cb01102d168496d33f9d4839676c03584c"
-      },
-      "calibration-240/base-700.out": {
-        "path": "target/abi-landing3/calibration-240/base-700.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/cand-0.cg": {
-        "path": "target/abi-landing3/calibration-240/cand-0.cg",
-        "sha256": "fa659e1e3be3f53f2decb581cb222580ba536ff506f8e214e4d1ab5804641697"
-      },
-      "calibration-240/cand-0.err": {
-        "path": "target/abi-landing3/calibration-240/cand-0.err",
-        "sha256": "9b32cd9e1bfe801e28cccdbf5e48bddf3e1870debb2887aecb2c6103ac4f6e77"
-      },
-      "calibration-240/cand-0.out": {
-        "path": "target/abi-landing3/calibration-240/cand-0.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/cand-1400.cg": {
-        "path": "target/abi-landing3/calibration-240/cand-1400.cg",
-        "sha256": "59fee8c5e4d598b438f620a41caf61268d8cc4b206237dadd5585327eff1bde5"
-      },
-      "calibration-240/cand-1400.err": {
-        "path": "target/abi-landing3/calibration-240/cand-1400.err",
-        "sha256": "e115297f02248516c018536a8dcee8849f43ba003a4ee54bbd8dfaa889b92827"
-      },
-      "calibration-240/cand-1400.out": {
-        "path": "target/abi-landing3/calibration-240/cand-1400.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/cand-2100.cg": {
-        "path": "target/abi-landing3/calibration-240/cand-2100.cg",
-        "sha256": "0c83bee612cafaf740710dfa6152415c37ae6f88de021a8a416c57189930b7ff"
-      },
-      "calibration-240/cand-2100.err": {
-        "path": "target/abi-landing3/calibration-240/cand-2100.err",
-        "sha256": "54ebda499671f8608f39bcf95aa5f980eb17f9198d5c95adea4f602d9a183487"
-      },
-      "calibration-240/cand-2100.out": {
-        "path": "target/abi-landing3/calibration-240/cand-2100.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/cand-700.cg": {
-        "path": "target/abi-landing3/calibration-240/cand-700.cg",
-        "sha256": "e2e8d5aaaba6164fc7222744e3c3fc84b8629ebbaee2833967d9abdd37b2ff4c"
-      },
-      "calibration-240/cand-700.err": {
-        "path": "target/abi-landing3/calibration-240/cand-700.err",
-        "sha256": "3ecb6cb32615fb09046b9cfbe27a9d4080af1174296062bf93e1eb01d95f8377"
-      },
-      "calibration-240/cand-700.out": {
-        "path": "target/abi-landing3/calibration-240/cand-700.out",
-        "sha256": "202c143a7313efbb553bbfed54acb471df8cda5f3ca4ca949fcdc6f4493504f3"
-      },
-      "calibration-240/gnu.err": {
-        "path": "target/abi-landing3/calibration-240/gnu.err",
-        "sha256": "a26b219cc2705095fa24d1c5d26086f9401e5bf639146539cd977f07631a6972"
-      },
-      "calibration-240/gnu.out": {
-        "path": "target/abi-landing3/calibration-240/gnu.out",
-        "sha256": "0608b80d1002519895640766c0fee90b9605ee8e001ad08a0bfeb91627371829"
-      },
-      "calibration-240/pressure.el": {
-        "path": "target/abi-landing3/calibration-240/pressure.el",
-        "sha256": "35e1e49915481f7aba75772056207c738cded8141c692ea13d7598b8ad86e886"
-      }
-    },
-    "annotation_artifacts": {
-      "pressure-base-0.annotate": {
-        "path": "target/abi-landing3/pressure-base-0.annotate",
-        "sha256": "d4aa3f60269f009a039ee09c7916c3881a284ceab307b2c91376a89c49b4d8c4"
-      },
-      "pressure-base-1400.annotate": {
-        "path": "target/abi-landing3/pressure-base-1400.annotate",
-        "sha256": "9efc6c11fb459732c2f4f7c2d56f1cd76f4724e3d54ae5b615e037d3535d7aa1"
-      },
-      "pressure-base-2100.annotate": {
-        "path": "target/abi-landing3/pressure-base-2100.annotate",
-        "sha256": "31b83b7256f7978006b2eff1fb5bc87ad08de124645c5a0ebfaf4b1d95e442cb"
-      },
-      "pressure-base-700.annotate": {
-        "path": "target/abi-landing3/pressure-base-700.annotate",
-        "sha256": "edf88a2e7eb150442819ea3b84bec3665ebd5600d0c9a91bab70df61c95a0c99"
-      },
-      "pressure-cand-0.annotate": {
-        "path": "target/abi-landing3/pressure-cand-0.annotate",
-        "sha256": "86581363cf3a96e72c2a899332b8629dee4a865a8828fc396a9450060a4022f8"
-      },
-      "pressure-cand-1400.annotate": {
-        "path": "target/abi-landing3/pressure-cand-1400.annotate",
-        "sha256": "eda5474ebf2011fede6918f27789c07e9b5e402dff82d12303c25c8e3db95f8d"
-      },
-      "pressure-cand-2100.annotate": {
-        "path": "target/abi-landing3/pressure-cand-2100.annotate",
-        "sha256": "8dad6f7835e3a4cf6780aef4450ffeaea77318ace985798558d3ec0ed4d140cf"
-      },
-      "pressure-cand-700.annotate": {
-        "path": "target/abi-landing3/pressure-cand-700.annotate",
-        "sha256": "607a225fe3d2c8cb515090420d52b76503d7e877214ae749fafc4b42d9c814ba"
-      }
-    },
-    "gnu_comparison": "Pressure result line agrees with GNU31.1; complete baseline/candidate stdout agrees including inherited --load return echo"
-  }
+  "standalone_check_count": 75,
+  "brief_tramp_timing_complete": true,
+  "brief_tramp_timing_contract": "BRIEF.md clarification at 17:35: under 1 ms applies after the first call; the unchanged five-iteration average including compilation is accepted as printed.",
+  "exceptions": [
+    "maphash-sparse remains the listed known-red.",
+    "The initial focused dynamic printer check collided with parallel test temp directories; isolated retry and the full 75-file run pass.",
+    "GNU LC_ALL=C changes error quote style and argv decoding; GNU unibyte goldens and all 12 Doc200 cases pass in C.UTF-8 on dynamic and static.",
+    "The unchanged tramp repro includes first-time regexp compilation; cold and cached timings are recorded separately. The coordinator explicitly applies the 1 ms bound to warm matches."
+  ]
 }

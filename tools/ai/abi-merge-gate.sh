@@ -20,7 +20,8 @@
 #       Instruction counts (valgrind callgrind) instead of wall time, which is
 #       noisy on this shared machine: `--eval nil' boot, pure regex (20 x300
 #       matches), and the original regex work repeated to 80 x300 matches
-#       (>=10 actual GC sweeps per binary/layout). Each has its own Ir cap;
+#       plus fixed R=240 allocation pressure (>=10 natural GC cycles per
+#       binary/layout), and the five-source files workload. Each has its own Ir cap;
 #       both binaries under ABI_LAYOUT_PAD=0/700/1400/2100 bytes in parallel.
 #       Exits 0 only if all outputs agree and each workload's mean candidate
 #       count is <= the mean baseline count. Prints per-layout Ir/GC and spread.
@@ -28,6 +29,8 @@
 #       at most eight profiles run together. Failed jobs cancel and reap peers.
 #       Count nonrecursive Callgrind entries into nl_gc_sweep_merge_chunks;
 #       sweep may be inlined. Retain total Ir, including all GC work.
+#       abi-ir.py verify-ir/verify-files CANDIDATE BASELINE DIRECTORY validates
+#       the complete pinned manifest before replaying all/files raw verdicts.
 #   abi-merge-gate.sh files CANDIDATE BASELINE
 #       Five vendor sources plus builtin micro-suite under the same four
 #       layouts, fresh caches, identical output and mean total Ir <= baseline.

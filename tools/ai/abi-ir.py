@@ -3,6 +3,8 @@
 
 ir/files/pressure CAND BASE [--output DIRECTORY] writes directly to a new evidence
 directory when requested. Existing evidence directories are never overwritten.
+The ir manifest covers all five workloads. verify-ir rechecks every raw verdict;
+verify-files rechecks files alone after validating the same complete manifest.
 """
 import bisect
 import concurrent.futures
@@ -20,8 +22,11 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS = (0, 700, 1400, 2100)
-IR_MODES = ("boot", "regex", "regex-gc", "pressure")
+IR_MODES = ("boot", "regex", "regex-gc", "pressure", "files")
 WORKLOAD_NAMES = ("regex.el", "regex-gc.el", "pressure.el")
+FILE_SOURCES = ("tools/ai/abi-file-exec.el", *(
+    "vendor/emacs-lisp/emacs-lisp/" + name + ".el"
+    for name in ("subr-x", "ring", "easy-mmode", "derived", "benchmark")))
 # Counts-only Callgrind ladder, all layouts: 80=6/12, 120=8/15,
 # 160=9/17, 240=11/20 (base/candidate). Pin before reading pressure Ir.
 PRESSURE_ROUNDS = 240
@@ -38,6 +43,7 @@ def fingerprint(path):
 
 def identities(cand, base):
     paths = [Path(__file__).resolve(), ROOT / "tools/ai/abi-merge-gate.sh"]
+    paths.extend(ROOT / name for name in FILE_SOURCES)
     for binary in (cand, base):
         paths.extend(Path(str(Path(binary).resolve()) + suffix)
                      for suffix in ("", ".cold", ".native-startup.el"))
@@ -97,10 +103,10 @@ def validate_record(directory, current):
         check_marker(directory / stem, stem.rsplit("-", 2)[0])
 
 
-def replay_ir(directory, cand, base):
+def replay_ir(directory, cand, base, modes=IR_MODES):
     validate_record(directory, identities(cand, base))
     ok = True
-    for mode in IR_MODES:
+    for mode in modes:
         samples = [(layout, *(profile_counts(directory / f"{mode}-{who}-{layout}.cg", binary)
                     + ((directory / f"{mode}-{who}-{layout}.out").read_bytes(),)
                     for who, binary in (("base", base), ("cand", cand))))
@@ -223,9 +229,10 @@ def summarize(mode, samples):
 
 def main():
     started = time.monotonic()
-    if len(sys.argv) == 5 and sys.argv[1] == "verify-ir":
+    if len(sys.argv) == 5 and sys.argv[1] in ("verify-ir", "verify-files"):
         return replay_ir(Path(sys.argv[4]).resolve(), Path(sys.argv[2]).resolve(),
-                         Path(sys.argv[3]).resolve())
+                         Path(sys.argv[3]).resolve(),
+                         ("files",) if sys.argv[1] == "verify-files" else IR_MODES)
     if len(sys.argv) not in (4, 6) or (len(sys.argv) == 6 and sys.argv[4] != "--output"):
         raise ValueError("expected ir/files/pressure CAND BASE [--output DIRECTORY]")
     mode, cand, base = sys.argv[1:4]

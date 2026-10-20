@@ -20,6 +20,8 @@
 
 #+NOTE: 2026-10-20 landing round 2 starts at92388df41 after cons/marker fix7bbe8fb9b and eval/core candidate b93d504eb. Rebuild dynamic with dump/census and static; remeasure S6.3/S6.4 against the unchanged prescribed10beb8a3c artifact. Preserve all21 criteria, workloads, caps and natural-GC floors. Earlier pins below are historical until replaced. Evidence: target/abi-landing2; LANG=C.UTF-8, LC_ALL=C, LC_CTYPE=C.UTF-8; clear inherited NELISP_*, M5_*, LD_* and other LC_* variables.
 
+#+NOTE: 2026-10-20 landing round 4 starts at 4cbee4fd7 (eval/core candidate 2). Preserve all 21 criteria, caps, workloads, four layouts and natural pressure GC floor. Rebuild dynamic with dump/census and static; replace historical S6.3/S6.4 pins only with freshly measured evidence under target/abi-landing4. Runtime environment: LANG=C.UTF-8, LC_ALL=C, LC_CTYPE=C.UTF-8; all other NELISP_*, M5_*, LD_* and LC_* cleared. Pressure R=240 remains frozen; stop on pressure failure without tuning.
+
 * S1 Group G1 converted
 
 ** S1.1 G1 has no dispatch arm left on the legacy adapter
@@ -528,14 +530,46 @@ cmd: tools/ai/abi-merge-gate.sh store-word "$ABI_CENSUS" 0
 #+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
 cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
-evidence: $ABI_IR_PROFILE/measurement.json sha256=f853a2f56c6f5dd18340c3df3fbd8d3a2274ed189fba5b14259131b56a975c60
-evidence: tools/ai/abi-final-evidence.json sha256=1b0046ed5429e80b3f31132d511ec51133eef6a2d44fded40d7411ec0e49a2ba
-evidence: target/abi-landing3/pressure-verdict.json sha256=433749395dd9bb5a5287f3d43e93a2160b7fbfea37bd27ff200506557dad75d7
+evidence: $ABI_IR_PROFILE/measurement.json sha256=a7823cc6d22199accb62663bf7de334164ab5a05320ba05de3b9a95e44bf271c
+evidence: tools/ai/abi-final-evidence.json sha256=168569af8eb591cc50c3405817cb2264a4d892a5ff19c833047801c424dc8bcd
+evidence: target/abi-landing4/pressure-verdict.json sha256=e247dcc81216f420eec4473d6287b7302ff1ca9f8a44711da430ab57f2605d8d
 
 ** S6.4 Five vendor sources and builtin micro-suite: identical output and mean Ir over four layouts <= baseline
-#+REQUIRES: ABI_BIN,ABI_BASE_BIN
+#+REQUIRES: ABI_BIN,ABI_BASE_BIN,ABI_IR_PROFILE
 #+TIMEOUT: 600
-cmd: tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
+cmd: LC_ALL=C python3 tools/ai/abi-ir.py verify-files "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
+
+#+NOTE: 2026-10-20 round4 final measurement: 40/40 profile jobs pass in
+# 2829.839s against the unchanged prescribed10beb8a3c artifact. Full total
+# Ir means base -> candidate: boot1215422122.75 ->536200383.25 (-55.884%);
+# regex6000 69804949288.75 ->6163480068.5 (-91.170%); regex24000
+# 255222188701.5 ->18428013557.75 (-92.780%); pressure R240
+# 353204342511.75 ->341954427252 (-3.185%); files11177533128.75
+# ->4721232994.25 (-57.761%). Outputs agree in every layout. Natural GC
+# base/candidate in every layout: boot0/0, regex6000 4/2, regex24000 11/2,
+# pressure11/17, files2/2; all GC instructions included, no forced collection.
+# Reproduce with source target/abi-landing4/env.sh. All other NELISP_*,
+# M5_*, LD_* and LC_* cleared; LANG=C.UTF-8, LC_ALL=C, LC_CTYPE=C.UTF-8.
+# Runtime sources are unchanged from4cbee4fd7; no census conversions needed.
+# CensusTOTAL1302, S6.2 dependencies0. Live cons80 B; retained cons74.740,
+# marker217.922, record1 201.902, string8 129.902 B, all below original caps.
+# Both builds pass regex, GNU31.1 unibyte43, printer106, VM and locals,
+# FFI-memory58; dynamic SQLite passes and static refusal is unchanged.
+# Final11 groups/0 failures; all75 standalone cases pass except the listed
+# maphash-sparse known-red; Anvil40 tools. Doc200 dynamic/static12/12 pass.
+# The coordinator's17:35 BRIEF clarification applies the1ms bound to warm
+# matches: unchanged repro nil/nil, dynamic0.11/0.09ms and static0.10/0.08ms.
+# Its first five-call averages including compilation remain2.79/2.86ms and
+# 2.82/2.64ms respectively, explicitly accepted by that clarification.
+# S6.4 now verifies raw files profiles from the same complete40-job manifest
+# rather than profiling files again inside the meter. All123 artifact hashes,
+# binaries and workload sources are checked before recomputing the same
+# four-layout output and Ir cap. The fresh files profiles span121s from first
+# profile creation to last write; complete-manifest files replay takes0.570107s.
+# This is verification reuse, not a runtime speed claim. The old harness is
+# red on missing files support; all29 tests pass, including changed-output,
+# marker, hash, source-identity and Ir101/100 negative controls. No criterion,
+# cap, workload, layout, baseline or natural-GC floor changes.
 
 #+NOTE: 2026-10-20 landing measurement operations: under concurrent Callgrind
 # load the 580-second regex6000 jobs produced no complete profiles. The run

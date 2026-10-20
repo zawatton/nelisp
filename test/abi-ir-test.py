@@ -133,7 +133,8 @@ class ProfileCommandTest(unittest.TestCase):
             stem.with_suffix(".out").write_text({
                 "boot": "", "regex": "ABI-REGEX 6000\n",
                 "regex-gc": "ABI-REGEX-GC 24000\n",
-                "pressure": "ABI-PRESSURE 60080 360991440\n"}[mode])
+                "pressure": "ABI-PRESSURE 60080 360991440\n",
+                "files": "ABI-FILES (1000 527500)\n"}[mode])
             return (100 if who == "base" else 99), 10
 
         with tempfile.TemporaryDirectory() as directory:
@@ -144,7 +145,7 @@ class ProfileCommandTest(unittest.TestCase):
                     mock.patch.object(gate, "run_one", side_effect=profile) as jobs, \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(0, gate.main())
-            self.assertEqual(32, jobs.call_count)
+            self.assertEqual(40, jobs.call_count)
             output, = (root / "target/abi-ir").iterdir()
             gate.validate_record(output, {})
             for name, iterations in (("regex.el", 20), ("regex-gc.el", 80)):
@@ -280,6 +281,29 @@ gate.main()
 
 
 class RecordedEvidenceTest(unittest.TestCase):
+    def test_files_belongs_to_the_complete_manifest(self):
+        self.assertIn("files", gate.IR_MODES)
+        self.assertIn("files-base-2100.cg", gate.ir_artifacts())
+
+    def test_file_sources_are_fingerprinted(self):
+        with mock.patch.object(gate, "fingerprint", return_value="digest"):
+            inputs = gate.identities("candidate", "baseline")
+        for name in gate.FILE_SOURCES:
+            self.assertIn(str(gate.ROOT / name), inputs)
+
+    def test_verify_files_recomputes_the_ir_cap(self):
+        for candidate_ir, status in ((101, 1), (99, 0)):
+            with self.subTest(candidate_ir=candidate_ir):
+                def count(profile, _binary):
+                    return (candidate_ir if "-cand-" in profile.name else 100), 2
+                with mock.patch.object(gate, "identities", return_value=self.inputs), \
+                        mock.patch.object(gate, "profile_counts", side_effect=count) as counts, \
+                        mock.patch.object(gate.sys, "argv", ["abi-ir.py", "verify-files",
+                                                            "candidate", "baseline", str(self.directory)]), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(status, gate.main())
+                self.assertEqual(8, counts.call_count)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -287,7 +311,7 @@ class RecordedEvidenceTest(unittest.TestCase):
         self.inputs = {"candidate-path": "candidate", "baseline-path": "baseline"}
         for name in gate.ir_artifacts():
             (self.directory / name).write_text(
-                "ABI-REGEX 6000\nABI-REGEX-GC 24000\nABI-PRESSURE 60080 360991440\n")
+                "ABI-REGEX 6000\nABI-REGEX-GC 24000\nABI-PRESSURE 60080 360991440\nABI-FILES (1000 527500)\n")
         self.record = {"schema": 1, "modes": list(gate.IR_MODES),
                        "layouts": list(gate.LAYOUTS), "identities": self.inputs,
                        "completed_jobs": gate.completed_jobs(),
@@ -362,7 +386,7 @@ class RecordedEvidenceTest(unittest.TestCase):
             gate.validate_record(self.directory, self.inputs)
 
     def test_missing_marker_fails_even_if_its_hash_is_updated(self):
-        for mode in ("regex-gc", "pressure"):
+        for mode in ("regex-gc", "pressure", "files"):
             with self.subTest(mode=mode):
                 name = f"{mode}-cand-0.out"
                 original = (self.directory / name).read_text()
