@@ -776,6 +776,12 @@
                        (unibyte-string 193 191)))))
  ;; Repeated groups retain their continuation while trying alternatives.
  (let ((case-fold-search t))
+   (mapcar (lambda (row)
+             (let ((hit (string-match (car row) (cadr row))))
+               (list hit (and hit (match-data t)))))
+           '(("\\`a*b\\|c\\'" "aaaac") ("\\`\\(a*\\)a\\'" "aaa")
+             ("\\`\\([^k]*\\)k\\'" "Kk") ("\\`\\([A-Z]*\\)b\\'" "Kb"))))
+ (let ((case-fold-search t))
    (list (string-match "\\`/[[:alnum:]]*\\'" "/home/user/file.el")
          (string-match "\\`/[[:alnum:]]*\\'" "/HOME")
          (string-match "[A-Z]+" "abc")

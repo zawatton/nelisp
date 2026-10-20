@@ -1084,6 +1084,19 @@ such characters (`nlre--forbidden-probes')."
             (setq out (concat out (substring pat i (1+ i))) i (1+ i))))))
       out)))
 
+(defun nlre--quick-reject-plan (pre)
+  "Pick a sufficient portable rejection witness from PRE.
+Required characters need no prefix test. An unguarded forbidden character
+after the fixed prefix is impossible in any complete anchored match."
+  (if (nth 2 pre)
+      (vector :missing (car (nth 2 pre)))
+    (let ((probes (nth 3 pre)) result)
+      (while (and probes (not result))
+        (when (stringp (car probes))
+          (setq result (vector :forbidden (car probes) (length (nth 1 pre)))))
+        (setq probes (cdr probes)))
+      result)))
+
 (defun nlre--compile-pattern (pat fold &optional spaces)
   (let* ((nlre--pattern-multibyte (multibyte-string-p pat))
          (nlre--fold fold)
@@ -1094,32 +1107,33 @@ such characters (`nlre--forbidden-probes')."
          (atom (and (not literal) (nlre--single-atom-node ast)))
          (prefix (and (not literal) (nlre--leading-literal-text
                                      (nlre--seq-nodes ast))))
-         (prefix (and prefix (nlre--pattern-kind-text prefix))))
-    (vector ast ng
-            (cond
+         (prefix (and prefix (nlre--pattern-kind-text prefix)))
+         (plan (cond
              (literal (vector :literal literal fold
                               (nlre--ascii-fold-text literal)
                               (nlre--ascii-text-p literal)))
              (atom (vector :atom atom))
              (t (or (nlre--greedy-suffix-plan ast ng fold)
-                    (nlre--suffix-plan ast ng fold))))
+                    (nlre--suffix-plan ast ng fold)))))
             ;; The prefilter's character strings use Unicode, so they cannot
             ;; prove absence of non-ASCII bytes in a unibyte regexp.  Retain
             ;; the ordinary engine (and byte-aware leading prefix) there.
-            (and (not literal) (not atom)
+         (pre (and (not literal) (not atom)
                  (or nlre--pattern-multibyte (nlre--ascii-text-p source))
-                 (nlre--prefilter ast fold))
-            (and prefix (vector :literal prefix fold
-                                (nlre--ascii-fold-text prefix)
-                                (nlre--ascii-text-p prefix)))
-            nlre--pattern-multibyte
+                 (nlre--prefilter ast fold)))
             ;; Unlike the table-independent filter above, these ASCII
             ;; punctuation proofs require the portable default fold.  Keep
             ;; both plans: a cached regexp may see a new table on any call.
-            (and fold (not literal) (not atom)
+         (portable (and fold (not literal) (not atom)
                  (or nlre--pattern-multibyte (nlre--ascii-text-p source))
                  (let ((nlre--translate-table nil))
-                   (nlre--prefilter ast :portable))))))
+                   (nlre--prefilter ast :portable)))))
+    (vector ast ng plan pre
+            (and prefix (vector :literal prefix fold
+                                (nlre--ascii-fold-text prefix)
+                                (nlre--ascii-text-p prefix)))
+            nlre--pattern-multibyte portable
+            (and (not plan) (nlre--quick-reject-plan (or portable pre))))))
 
 ;; ---- matcher (no closures; rest threaded explicitly) ----
 
@@ -1801,15 +1815,49 @@ Return end-pos or nil."
 (defun nlre--match-star (x rest s pos n)
   "Greedy star of atom/group X then REST."
   (if (memq (car x) '(:lit :any :set :word :space :syntax))
-      ;; A single character has no internal alternative/capture to revisit.
-      ;; Keep all continuation backtracking positions without constructing a
-      ;; group continuation and repeat-next sentinel at each character.
-      (or (let ((p2 (nlre--match-atom1 x s pos n)))
-            (and p2 (nlre--match-star x rest s p2 n)))
-          (nlre--match-list rest s pos n))
+      (let ((end pos) next result
+            (exclusive (nlre--mutually-exclusive-p x rest)))
+        ;; Fixed-width atoms have no captures or internal alternatives.
+        ;; Retain every possible split unless the first continuation
+        ;; character provably cannot be consumed by the repeated atom.
+        (while (setq next (nlre--match-atom1 x s end n)) (setq end next))
+        (setq result (nlre--match-list rest s end n))
+        (unless exclusive
+          (while (and (not result) (> end pos))
+            (setq end (1- end)
+                  result (nlre--match-list rest s end n))))
+        result)
     (or (nlre--match-list
          (cons x (cons (list :repeat-next pos (list :star x)) rest)) s pos n)
         (nlre--match-list rest s pos n))))
+
+(defun nlre--mutually-exclusive-p (x rest)
+  "Prove portable atom X disjoint from REST's first required literal.
+Groups and capture sentinels consume nothing. Unknown/optional prefixes and
+custom canonical tables retain ordinary backtracking. Unicode preimages of
+an ASCII literal are tested with the same canonical ASCII set bitmap."
+  (when (null nlre--translate-table)
+    (let ((todo rest) first done)
+      (while (and todo (not done))
+        (let ((node (car todo)))
+          (cond
+           ((memq (car node) '(:savestart :saveend :bos :eos :bol :eol :wordb :wordedge :symedge))
+            (setq todo (cdr todo)))
+           ((eq (car node) :seq) (setq todo (append (nth 1 node) (cdr todo))))
+           ((eq (car node) :group)
+            (setq todo (append (nlre--seq-nodes (nth 2 node)) (cdr todo))))
+           (t (setq first node done t)))))
+      (when (and (eq (car first) :lit) (< (nth 1 first) 128))
+        (let* ((c (nth 1 first))
+               (c (if (and nlre--fold (>= c ?A) (<= c ?Z)) (+ c 32) c)))
+          (cond
+           ((and (eq (car x) :set) (nth 5 x))
+            (let ((hit (= (aref (aref (nth 5 x) (if nlre--fold 1 0)) c) 1)))
+              (if (nth 1 x) hit (not hit))))
+           ((and (eq (car x) :lit) (< (nth 1 x) 128))
+            (not (nlre--literal-char-equal-p (nth 1 x) t c t)))
+           ((eq (car x) :any) (= c 10))
+           (t nil)))))))
 
 (defun nlre--match-one (x s pos n)
   "Match exactly one X (atom or group) at POS, no rest; return end or nil."
@@ -1896,11 +1944,19 @@ of STRING.  Sets `nlre--match-data' as usual."
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
          (compiled (nlre--compiled-pattern regexp))
-         (nlre--pattern-multibyte (aref compiled 5))
          (n (length string))
+         (i (or start 0))
+         (quick (and (null nlre--translate-table)
+                     (> (length compiled) 7) (aref compiled 7))))
+    (if (and quick
+             (if (eq (aref quick 0) :missing)
+                 (not (string-search (aref quick 1) string))
+               (and (<= (aref quick 2) n)
+                    (string-search (aref quick 1) string (aref quick 2)))))
+        nil
+      (let* ((nlre--pattern-multibyte (aref compiled 5))
          (limit (if max-end (max 0 (min n max-end)) n))
          (nlre--match-end-limit limit)
-         (i (or start 0))
          (ng (aref compiled 1))
          (plan (let ((p (aref compiled 2)))
                  ;; A mutable canonical table can distinguish a character
@@ -2054,7 +2110,7 @@ of STRING.  Sets `nlre--match-data' as usual."
                 (setq i (1+ i))))))))))
     (when hit
       (setq nlre--last-caps caps)
-      hit)))
+      hit)))))
 
 (defun nlre-match-beginning (n)
   (unless (fixnump n)

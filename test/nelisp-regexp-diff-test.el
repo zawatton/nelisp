@@ -63,6 +63,33 @@
                   (should (equal (list class neg fold c (nlre-string-match pattern text))
                                  (list class neg fold c (string-match pattern text)))))))))))))
 
+(ert-deftest nelisp-regexp-disjoint-loop-tests-continuation-once ()
+  "An anchored alternative defeats the global prefilter but admits a smart loop."
+  (let ((case-fold-search nil) (nlre--last-buffer nil) (calls 0)
+        (original (symbol-function 'nlre--literal-char-equal-p)))
+    (cl-letf (((symbol-function 'nlre--literal-char-equal-p)
+               (lambda (pattern pmulti subject smulti)
+                 (when (= pattern ?b) (setq calls (1+ calls)))
+                 (funcall original pattern pmulti subject smulti))))
+      (should (= (nlre-string-match "\\`a*b\\|c\\'" "aaaac") 4))
+      (should (equal (nlre-match-data t) '(4 5)))
+      (should (= calls 1)))))
+
+(ert-deftest nelisp-regexp-smart-loops-preserve-folding-and-overlap ()
+  "ASCII disjointness must preserve Unicode aliases and overlapping continuations."
+  (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () nil)))
+    (dolist (fold '(nil t))
+      (let ((case-fold-search fold) (nlre--last-buffer nil))
+        (dolist (pattern '("\\`\\([[:alnum:]]*\\):\\'" "\\`\\([^k]*\\)k\\'"
+                           "\\`\\(a*\\)a\\'" "\\`\\(a*\\)b\\'"
+                           "\\`\\(.*\\)\n\\'" "\\`\\([A-Z]*\\)b\\'"))
+          (dolist (text '("" ":" "abc:" "aaa" "aab" "kk" "Kk" "Kb" "ſs" "aaa\n"))
+            (let* ((expected (string-match pattern text))
+                   (data (and expected (match-data t)))
+                   (actual (nlre-string-match pattern text)))
+              (should (equal (list pattern text fold actual (and actual (nlre-match-data t)))
+                             (list pattern text fold expected data))))))))))
+
 (ert-deftest nelisp-regexp-portable-prefilter-follows-canonical-table ()
   "Installing a table after compilation must disable default-fold proofs."
   (let ((case-fold-search t)
