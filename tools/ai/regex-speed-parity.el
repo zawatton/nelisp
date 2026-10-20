@@ -54,14 +54,25 @@
 
 (regex-speed-case 'unibyte-space-substitution
  '(let ((case-fold-search nil) results)
-    (dolist (spaces (list (string 255) (unibyte-string 255)))
+    (dolist (spaces (list (string 255) (unibyte-string 255)
+                         (string-to-multibyte (unibyte-string 128))
+                         (string-to-multibyte (unibyte-string 255))))
       (let ((search-spaces-regexp spaces))
         (dolist (text (list (unibyte-string 255) (string 255)
-                           (unibyte-string 195 191)))
+                           (unibyte-string 195 191) (unibyte-string 192 128)
+                           (unibyte-string 193 191)))
           (let ((answer (string-match (unibyte-string 32) text)))
             (setq results (cons (list answer (and answer (regex-speed-data)))
                                 results))))))
     (nreverse results)))
+
+(regex-speed-case 'anchored-byte-fastmap
+ '(let ((case-fold-search t) (search-spaces-regexp (string 255)))
+    (list (string-match "\\( \\)" (unibyte-string 195 191)) (regex-speed-data)
+          (string-match "\\`\\( \\)\\'" (unibyte-string 195 191))
+          (string-match "\\`\\( \\)\\'"
+                        (string-to-multibyte (unibyte-string 195 191)))
+          (regex-speed-data))))
 
 (dolist (form '((string-match "" "abc" -5)
                 (string-match-p "" "abc" -5)

@@ -766,9 +766,14 @@
        (format "%s|%s|%s|%s" 1.5 'sym '(1 a) nil)
        (format "%s extra" "a" "b"))
  ;; Space replacement contributes encoded bytes to a unibyte regexp.
- (let ((case-fold-search nil) (search-spaces-regexp (string 255)))
-   (let ((hit (string-match (unibyte-string 32) (unibyte-string 195 191))))
-     (list hit (and hit (match-data t)))))
+ (let ((case-fold-search nil))
+   (mapcar (lambda (row)
+             (let* ((search-spaces-regexp (car row))
+                    (hit (string-match (unibyte-string 32) (cadr row))))
+               (list hit (and hit (match-data t)))))
+           (list (list (string 255) (unibyte-string 195 191))
+                 (list (string-to-multibyte (unibyte-string 255))
+                       (unibyte-string 193 191)))))
  ;; Repeated groups retain their continuation while trying alternatives.
  (let ((case-fold-search nil))
    (mapcar (lambda (row)

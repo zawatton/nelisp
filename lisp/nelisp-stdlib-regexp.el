@@ -962,6 +962,22 @@ such characters (`nlre--forbidden-probes')."
           (setq probes (cdr probes)))
         hit)))
 
+(defun nlre--regexp-storage-bytes (text)
+  "Return GNU's internal bytes of TEXT, including raw-byte escapes."
+  (if (not (multibyte-string-p text)) text
+    (let ((i 0) (n (length text)) pieces)
+      (while (< i n)
+        (let ((c (aref text i)))
+          (setq pieces
+                (cons (if (>= c #x3fff80)
+                          (unibyte-string (+ #xc0 (ash (- c #x3fff80) -6))
+                                          (+ #x80 (logand c 63)))
+                        (with-suppressed-warnings ((obsolete string-as-unibyte))
+                          (string-as-unibyte (char-to-string c))))
+                      pieces)))
+        (setq i (1+ i)))
+      (apply #'concat (nreverse pieces)))))
+
 (defun nlre--expand-search-spaces (pat spaces)
   "Substitute SPACES for maximal literal-space runs in PAT."
   (if (not (stringp spaces)) pat
@@ -969,8 +985,7 @@ such characters (`nlre--forbidden-probes')."
     ;; Unicode SPACES string in a unibyte pattern therefore contributes
     ;; its UTF-8 bytes, rather than a decoded Unicode character.
     (when (not (multibyte-string-p pat))
-      (setq spaces (with-suppressed-warnings ((obsolete string-as-unibyte))
-                     (string-as-unibyte spaces))))
+      (setq spaces (nlre--regexp-storage-bytes spaces)))
     (let ((i 0) (n (length pat)) (out "") (in-class nil) (in-repeat nil))
       (while (< i n)
         (let ((c (aref pat i)))
@@ -1019,7 +1034,12 @@ such characters (`nlre--forbidden-probes')."
              (atom (vector :atom atom))
              (t (or (nlre--greedy-suffix-plan ast ng fold)
                     (nlre--suffix-plan ast ng fold))))
-            (and (not literal) (not atom) (nlre--prefilter ast fold))
+            ;; The prefilter's character strings use Unicode, so they cannot
+            ;; prove absence of non-ASCII bytes in a unibyte regexp.  Retain
+            ;; the ordinary engine (and byte-aware leading prefix) there.
+            (and (not literal) (not atom)
+                 (or nlre--pattern-multibyte (nlre--ascii-text-p source))
+                 (nlre--prefilter ast fold))
             (and prefix (vector :literal prefix fold
                                 (nlre--ascii-fold-text prefix)
                                 (nlre--ascii-text-p prefix)))
@@ -1301,6 +1321,18 @@ one, which would demote them to the interpreter)."
 (defun nlre--match-candidate (nodes string pos n)
   (and (nlre--candidate-start-p nodes string pos)
        (nlre--match-list nodes string pos n)))
+
+(defun nlre--anchored-search-reject-p (ast byte)
+  "Model GNU's extra fastmap translation after a leading buffer anchor."
+  ;; GNU 31.1 regex-emacs.c: re_search_2 sets RANGE=0 after an initial
+  ;; begbuf, then its backward fastmap branch translates the raw byte again.
+  ;; Capturing groups emit start_memory; shy sequences emit no opcode.
+  (let ((nodes (nlre--seq-nodes ast)))
+    (while (and nodes (eq (caar nodes) :seq))
+      (setq nodes (append (cadar nodes) (cdr nodes))))
+    (and (eq (caar nodes) :bos)
+         (let ((result (nlre--start-map-seq nodes (nlre--fold-char byte))))
+           (not (or (car result) (cdr result)))))))
 
 (defun nlre--literal-search (needle string start)
   (cond
@@ -1773,6 +1805,10 @@ of STRING.  Sets `nlre--match-data' as usual."
          (hit nil))
     (setq nlre--caps caps)
     (cond
+     ((and nlre--fold (> n 0) (>= (aref string 0) 128)
+           (not nlre--inhibit-search-fastmap) (not (multibyte-string-p string))
+           (nlre--anchored-search-reject-p (aref compiled 0) (aref string 0)))
+      nil)
      ((and (null max-end) plan (eq (aref plan 0) :literal))
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
             hit (nlre--literal-plan-match plan string i n))
