@@ -1,0 +1,66 @@
+#+TITLE: Runtime WORD ABI object allocation repair
+
+* S1 Root cause evidence
+
+** S1.1 Object identity and retention evidence
+evidence: target/abi-cons/root-cause.json sha256=cf9280bfef5525f52406df4daa58646c27f7da6bf75e458a3e51b9509ea07728
+
+** S1.2 Baseline and defective ABI measurements
+cmd: python3 tools/ai/abi-cons-check.py baseline
+
+** S1.3 End to end: reproduce live-size regression
+cmd: python3 tools/ai/abi-cons-check.py reproduce
+
+#+NOTE: 2026-10-20: cons child boxes are 2 x 40 bytes; marker fields are 3 x 40 plus the old trailing type WORD. A cached cl-labels expansion contains 428 boxed nils before the setcdr repair and none after. New mutation allocation check fails on the prior binary (608696 bytes / 4000 cells), passes on GNU31.1 and the final build.
+
+* S2 WORD allocation repair
+
+** S2.1 Cons live size at most 80 bytes
+cmd: python3 tools/ai/abi-cons-check.py live
+
+** S2.2 All four retained object sizes at or below baseline
+cmd: python3 tools/ai/abi-cons-check.py objects
+
+** S2.3 Zero decoders and TOTAL at most 1362
+cmd: python3 tools/ai/abi-cons-check.py census
+
+** S2.4 End to end: allocation and GNU parity checks
+cmd: python3 tools/ai/abi-cons-check.py parity
+
+#+NOTE: Final dynamic census TOTAL1346; all S6.2 decoder families are zero. Both 4000/8000 object measurements are below baseline; all thresholds are unchanged. Fast native field inspection completes in 1.037s during profiling; the previous loader-based probe times out at 2s (rc124).
+
+* S3 Four-layout instruction gate
+
+** S3.1 Boot and regex6000 Ir at most baseline
+#+TIMEOUT: 600
+cmd: . target/abi-cons/env.sh && python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
+
+** S3.2 Natural-pressure regex24000 Ir at most baseline and GC reported
+#+TIMEOUT: 600
+cmd: . target/abi-cons/env.sh && python3 tools/ai/abi-ir.py verify-ir "$ABI_BIN" "$ABI_BASE_BIN" "$ABI_IR_PROFILE"
+
+** S3.3 End to end: four-layout files Ir at most baseline
+#+TIMEOUT: 600
+cmd: . target/abi-cons/env.sh && tools/ai/abi-merge-gate.sh files "$ABI_BIN" "$ABI_BASE_BIN"
+
+#+NOTE: Final four-layout measurements: boot 1215407840.50->562592281.50 Ir (-53.712%), GC 0/0; regex6000 69805862686.00->66199190042.25 Ir (-5.167%), GC 4/5; regex24000 255222631154.00->252117103037.00 Ir (-1.217%), GC 11/27; files 11177428066.00->9402092679.25 Ir (-15.883%), GC 2/2 No workload, cap or GC-counting change.
+
+#+NOTE: Natural GC counts remain11/27 baseline/candidate. The diagnostic (no additional GC counter) finds the default3x-live debt threshold405791472 ->143319984 bytes, with live135263824 ->47773328 and allocated4061946432 ->4224361976 bytes. This explains increased frequency despite repaired retained size. No workload or scheduling override.
+
+* S4 Final verification
+
+** S4.1 Dynamic and static binaries run
+cmd: . target/abi-cons/env.sh && "$ABI_BIN" --eval '(princ 42)' | grep -q 42 && "$ABI_STATIC_BIN" --eval '(princ 42)' | grep -q 42
+
+** S4.2 Eleven check groups have zero failures
+cmd: grep -qx 'GATE-COUNT: 11 cases, 0 failures' target/abi-cons/final.out
+
+** S4.3 Standalone checks including allocation regression pass
+cmd: grep -qx 'STANDALONE-CHECKS PASS' target/final-verify/checks-abi-cons/standalone-checks.log && grep -q 'WORD-ALLOCATION PASS' target/standalone-checks/standalone-word-allocation-check.out
+
+** S4.4 Anvil MCP exposes forty tools
+cmd: python3 -c 'import json; r=json.load(open("target/abi-cons/anvil.json")); assert r["tools"] == 40 and r["rc"] == 0'
+
+** S4.5 End to end: ABI live meter is 21/21
+#+NOTE: Check the structured live snapshot, avoiding the meter's 100.0% display spelling. Requirement remains exactly21 passes, no failures/skips/pending/unknown.
+cmd: python3 -c 'import json; r=json.load(open("target/progress/abi-progress.json"))["overall"]; assert r["criteria_defined"] == 21 and r["counts"] == {"pass":21,"fail":0,"skip":0,"pending":0,"unknown":0}'

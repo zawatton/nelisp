@@ -83,14 +83,13 @@
     ;; as 32B Sexp views.
     ;;
     ;; Doc 147 Phase 3 shrank cons car/cdr to 8-byte tagged WORD slots.
-    ;; Use nl_cons_car_ptr/nl_cons_cdr_ptr so immediate values are
-    ;; materialised as 32B Sexp views before bind_formals consumes them.
+    ;; Bind_formals accepts WORDs; preserve immediate parameters.
     ;;
     ;; Arity 2 (even).
     (defun nl_bf_args_nth_step (cur remaining)
       (if (= (sexp-tag cur) 7)
           (if (= remaining 0)
-              (nl_cons_car_ptr cur)
+              (nl_cons_car_word cur)
             (nl_bf_args_nth_step (nl_cons_cdr_word cur) (- remaining 1)))
         0))
 

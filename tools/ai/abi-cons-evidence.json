@@ -1,0 +1,611 @@
+{
+  "schema_version": 1,
+  "runtime_base_commit": "dad512b4d",
+  "baseline_source_commit": "10beb8a3c",
+  "layouts": [
+    0,
+    700,
+    1400,
+    2100
+  ],
+  "locale": "C.UTF-8",
+  "gc_method": "Callgrind nonrecursive calls into nl_gc_sweep_merge_chunks; all GC instructions included",
+  "thresholds": {
+    "total_census_max": 1362,
+    "decoder_dependencies_max": 0,
+    "live_cons_bytes_max": 80,
+    "object_sizes_max": "remeasured baseline at both 4000/8000 objects",
+    "ir_max": "baseline mean in each workload",
+    "regex24000_gc_min_per_layout": 10
+  },
+  "census": {
+    "total": 1346,
+    "decoders": 0
+  },
+  "allocations": {
+    "cons": {
+      "base": {
+        "bytes_at_4000": 585240,
+        "bytes_at_8000": 873240,
+        "per_object_at_4000": 146.31,
+        "slope": 72.0
+      },
+      "before": {
+        "bytes_at_4000": 936848,
+        "bytes_at_8000": 1544848,
+        "per_object_at_4000": 234.212,
+        "slope": 152.0
+      },
+      "cand": {
+        "bytes_at_4000": 584160,
+        "bytes_at_8000": 872160,
+        "per_object_at_4000": 146.04,
+        "slope": 72.0
+      }
+    },
+    "marker": {
+      "base": {
+        "bytes_at_4000": 873320,
+        "bytes_at_8000": 1449320,
+        "per_object_at_4000": 218.33,
+        "slope": 144.0
+      },
+      "before": {
+        "bytes_at_4000": 1416928,
+        "bytes_at_8000": 2504928,
+        "per_object_at_4000": 354.232,
+        "slope": 272.0
+      },
+      "cand": {
+        "bytes_at_4000": 872240,
+        "bytes_at_8000": 1448240,
+        "per_object_at_4000": 218.06,
+        "slope": 144.0
+      }
+    },
+    "record1": {
+      "base": {
+        "bytes_at_4000": 809240,
+        "bytes_at_8000": 1321240,
+        "per_object_at_4000": 202.31,
+        "slope": 128.0
+      },
+      "before": {
+        "bytes_at_4000": 872848,
+        "bytes_at_8000": 1416848,
+        "per_object_at_4000": 218.212,
+        "slope": 136.0
+      },
+      "cand": {
+        "bytes_at_4000": 808160,
+        "bytes_at_8000": 1320160,
+        "per_object_at_4000": 202.04,
+        "slope": 128.0
+      }
+    },
+    "string8": {
+      "base": {
+        "bytes_at_4000": 521240,
+        "bytes_at_8000": 745240,
+        "per_object_at_4000": 130.31,
+        "slope": 56.0
+      },
+      "before": {
+        "bytes_at_4000": 552848,
+        "bytes_at_8000": 776848,
+        "per_object_at_4000": 138.212,
+        "slope": 56.0
+      },
+      "cand": {
+        "bytes_at_4000": 520160,
+        "bytes_at_8000": 744160,
+        "per_object_at_4000": 130.04,
+        "slope": 56.0
+      }
+    }
+  },
+  "workloads": {
+    "boot": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 1215244515,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 562426345,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 1215354581,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 562546617,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 1215463159,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 562647081,
+            "gc_cycles": 0
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 1215569107,
+            "gc_cycles": 0
+          },
+          "cand": {
+            "ir": 562749083,
+            "gc_cycles": 0
+          }
+        }
+      ],
+      "base_mean_ir": 1215407840.5,
+      "candidate_mean_ir": 562592281.5,
+      "change_percent": -53.711646185484675,
+      "identical_outputs": true
+    },
+    "regex6000": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 69804700809,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 66198740501,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 69805066055,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 66198677961,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 69805022433,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 66198438665,
+            "gc_cycles": 5
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 69808661447,
+            "gc_cycles": 4
+          },
+          "cand": {
+            "ir": 66200903042,
+            "gc_cycles": 5
+          }
+        }
+      ],
+      "base_mean_ir": 69805862686.0,
+      "candidate_mean_ir": 66199190042.25,
+      "change_percent": -5.1667188184085555,
+      "identical_outputs": true
+    },
+    "regex24000": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 255222623946,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 252116101435,
+            "gc_cycles": 27
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 255222407683,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 252116862551,
+            "gc_cycles": 27
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 255222674984,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 252116251570,
+            "gc_cycles": 27
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 255222818003,
+            "gc_cycles": 11
+          },
+          "cand": {
+            "ir": 252119196592,
+            "gc_cycles": 27
+          }
+        }
+      ],
+      "base_mean_ir": 255222631154.0,
+      "candidate_mean_ir": 252117103037.0,
+      "change_percent": -1.216791827181718,
+      "identical_outputs": true
+    },
+    "files": {
+      "samples": [
+        {
+          "layout": 0,
+          "base": {
+            "ir": 11177258337,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 9401892516,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 700,
+          "base": {
+            "ir": 11177429684,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 9402036926,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 1400,
+          "base": {
+            "ir": 11177462775,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 9402214021,
+            "gc_cycles": 2
+          }
+        },
+        {
+          "layout": 2100,
+          "base": {
+            "ir": 11177561468,
+            "gc_cycles": 2
+          },
+          "cand": {
+            "ir": 9402227254,
+            "gc_cycles": 2
+          }
+        }
+      ],
+      "base_mean_ir": 11177428066.0,
+      "candidate_mean_ir": 9402092679.25,
+      "change_percent": -15.88321907568606,
+      "identical_outputs": true
+    }
+  },
+  "measurement": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-ir/ir-aju3fjbo/measurement.json",
+    "sha256": "abaa157e9a90a9bae6276436ac2f5c1dddbf2a2cfa90ae298d78dc85bafb6051"
+  },
+  "prior_abi_reference": {
+    "path": "tools/ai/abi-final-evidence.json",
+    "sha256": "bd4a9676a174df781da6128fb7fd69076ecc0e296133394e70b62573d13ba10c",
+    "workloads": {
+      "boot": {
+        "samples": [
+          {
+            "layout": 0,
+            "base": {
+              "ir": 1215253409,
+              "gc_cycles": 0
+            },
+            "cand": {
+              "ir": 627839208,
+              "gc_cycles": 0
+            }
+          },
+          {
+            "layout": 700,
+            "base": {
+              "ir": 1215364459,
+              "gc_cycles": 0
+            },
+            "cand": {
+              "ir": 627952748,
+              "gc_cycles": 0
+            }
+          },
+          {
+            "layout": 1400,
+            "base": {
+              "ir": 1215472075,
+              "gc_cycles": 0
+            },
+            "cand": {
+              "ir": 628057139,
+              "gc_cycles": 0
+            }
+          },
+          {
+            "layout": 2100,
+            "base": {
+              "ir": 1215577973,
+              "gc_cycles": 0
+            },
+            "cand": {
+              "ir": 628163659,
+              "gc_cycles": 0
+            }
+          }
+        ],
+        "base_mean_ir": 1215416979.0,
+        "candidate_mean_ir": 628003188.5,
+        "change_percent": -48.3302274568603,
+        "identical_outputs": true
+      },
+      "regex6000": {
+        "samples": [
+          {
+            "layout": 0,
+            "base": {
+              "ir": 69804519489,
+              "gc_cycles": 4
+            },
+            "cand": {
+              "ir": 67149765988,
+              "gc_cycles": 5
+            }
+          },
+          {
+            "layout": 700,
+            "base": {
+              "ir": 69804755146,
+              "gc_cycles": 4
+            },
+            "cand": {
+              "ir": 67148486632,
+              "gc_cycles": 5
+            }
+          },
+          {
+            "layout": 1400,
+            "base": {
+              "ir": 69805140567,
+              "gc_cycles": 4
+            },
+            "cand": {
+              "ir": 67150230835,
+              "gc_cycles": 5
+            }
+          },
+          {
+            "layout": 2100,
+            "base": {
+              "ir": 69804966305,
+              "gc_cycles": 4
+            },
+            "cand": {
+              "ir": 67150060821,
+              "gc_cycles": 5
+            }
+          }
+        ],
+        "base_mean_ir": 69804845376.75,
+        "candidate_mean_ir": 67149636069.0,
+        "change_percent": -3.8037607467208523,
+        "identical_outputs": true
+      },
+      "regex24000": {
+        "samples": [
+          {
+            "layout": 0,
+            "base": {
+              "ir": 255222211946,
+              "gc_cycles": 11
+            },
+            "cand": {
+              "ir": 255035003426,
+              "gc_cycles": 26
+            }
+          },
+          {
+            "layout": 700,
+            "base": {
+              "ir": 255221507280,
+              "gc_cycles": 11
+            },
+            "cand": {
+              "ir": 255045473894,
+              "gc_cycles": 26
+            }
+          },
+          {
+            "layout": 1400,
+            "base": {
+              "ir": 255222604750,
+              "gc_cycles": 11
+            },
+            "cand": {
+              "ir": 255042195950,
+              "gc_cycles": 26
+            }
+          },
+          {
+            "layout": 2100,
+            "base": {
+              "ir": 255222665112,
+              "gc_cycles": 11
+            },
+            "cand": {
+              "ir": 255045446133,
+              "gc_cycles": 26
+            }
+          }
+        ],
+        "base_mean_ir": 255222247272.0,
+        "candidate_mean_ir": 255042029850.75,
+        "change_percent": -0.07061195611914872,
+        "identical_outputs": true
+      }
+    }
+  },
+  "binary_builds": {
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/baseline-10beb8a3c/nelisp-dyn": "ffd5d8e8b0d86c1962796803d7903f11c1b5fe0eddc72c62f7a82600d3cc793a",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/baseline-10beb8a3c/nelisp-dyn.cold": "6b29b679961be62e1a41489233bf45d6caca2abb814e40d8d407a0389697509e",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/baseline-10beb8a3c/nelisp-dyn.native-startup.el": "ce3bd70b5a112518ed6a5b42d906e16d15ff6ebe7fe62add1b68dedc376c5633",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-dynamic/nelisp-dyn": "e39fda656920bf094f7b1a70d0aa3d2b9e094b3600f800d3944265a68e8ddc67",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-dynamic/nelisp-dyn.cold": "bb5878434d7b1e9a3cc28493cc66389960dc77154e53195a89f93784f509bf45",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-dynamic/nelisp-dyn.native-startup.el": "a54f72fa223d63717e6212422a6e570137739ad5d2dc6d561319508e79178dd9",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-static/nelisp-static": "aa3e1807f64c996482b90312688d5023ba26428324ec56c3daa97568e89a87fa",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-static/nelisp-static.cold": "5dc4a7fe21cac111dc5855c0b12c46aae09217c4509782aa14a5c650a9be2933",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final-static/nelisp-static.native-startup.el": "c5f71fbebf5c61a25493e6937dc8649043c68efa2d85dbb49e3f538e82e762cc"
+  },
+  "source_hashes": {
+    "lisp/nelisp-cc-bf-args-nth-ptr.el": "9c07661fa1639bcb19edaff3fe02fdd07d6d58a34a1c21b33dda1b9375cb1d45",
+    "lisp/nelisp-cc-nlrecord-alloc.el": "d0c46138e680c769fa141b13fb2b55270eac64e8819d77e098f8048cea94c647",
+    "lisp/nelisp-cc-sf-setq.el": "1bb03b983009aaa9907b7f00271763d57148d0efd4c619e33b5220ddcb133d4c",
+    "scripts/nelisp-standalone-build.el": "18416294328dcd4028aac89241d19dd30b023ca5e0735cf99077c5734e8a3dd1",
+    "test/nelisp-shadow-differential-cases.el": "07b9ad0780fe03f9d39b265b0af70d3c2c8bd49eb885bc8275f932e0980e1de5",
+    "test/perf/word-cons-live.el": "f0958201f874e53ecf6b34e020e36f2dc92602ec25d9d77d07a6e1b5c4745b3a",
+    "test/perf/word-object-fields.el": "717dcbccfe41b892669bf4ba5904649a3bb2debeba1e898a0be599ce148c1335",
+    "test/perf/word-object-size.el": "cf37a61f713c3cc6199bfefb556c094106a2ffff6cfa035c022c8065d5168aba",
+    "test/standalone-word-allocation-check.el": "4be355b1235aa66505e98d362cc4fdcaef3c06ab9ebe225a233bcb737904baf3",
+    "tools/ai/abi-cons-check.py": "45279a4c05b24460b33c1ccbe523fa66d2af48a196d5d01083614f887e020da7"
+  },
+  "artifacts": {
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/root-cause.json": "cf9280bfef5525f52406df4daa58646c27f7da6bf75e458a3e51b9509ea07728",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/objects.json": "910bfc742ca76f6457f479928bd9c6249c9d29735d8de18affb06a20a19f0d8e",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/allocation-table.json": "a2ff349d9101e6e76189286d5a18abfa1606a0dad039aa4fafaa0769df4f529c",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/fields-final.check": "6bd0a405709b78691d3396078a091eb0f640b82f9c30568aabe8b45068981a5b",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/record-corpus.json": "e0f9bd45d1643b624f19669985298587efa38b673717110582a1a236e3083690",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/inspection-efficiency.json": "103d582ec1488631033e8330d55d67d1675619ff235d840be535c07c25d0b0f5",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/compile-changed.out": "3512140bbf10e7a2d3c814895bbdd363747f5ed6d7edfece6ac600aa94a82dbd",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/compile-changed.err": "372578f7f38fb45f414caacec3e1c52b4acbde322504ebe39f4e40efcdf2485a",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/compile-preexisting.json": "3b1d37033e05447b620fa52222fac1d54f7581e387564287b0d89205819f9947",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/syntax-final.out": "4ebe73344787b094b7a6974e35cc467aab205f198dbd71cce020232f8f6ec455",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/normal-check-final.out": "292c7733a26d5eeaa6c361d95890736db82ef1371a1306fa7fe108ce732614bd",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/final.out": "95e1ad1e9c3e605a104f8a0d7fd69965e24ef90d07a386fca6ba58fee5f04c7f",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/anvil.json": "25247035f3fd6e480ea01293d2bb2cf99a42a7d1b1536072c52a05fd842fd6fe",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/verification.json": "d4857941315c2b5b71ed61c2b61b1d35e59ce6fb11b130d9c7c67afb0418824d",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/ir.out": "ab233fe3d1bb2f22473dc06f2c9bf3aea293444c83fff95759a86220c12eb538",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/files.out": "d1c7f7c0f78841205bfbda241bf4134ed5b70c220a1403c0049cdf9c814430c5",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/mutation-negative.err": "d1a3dbd062892b4019f5acecc2ef98fcb47b3fe14cd36fbb08d777b37a3f2025",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/marker-negative.err": "8189c0801adf4c822e1e25e85c168ba14911fec285ee620e626eaa12ce416429",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/abi-cons-20261020/target/abi-cons/gnu.out": "b17e051d4586f69708d8e9172cf151c3ee99e45796cab4df39c1b71c9e5373a0",
+    "target/abi-cons/debt-diagnostic.json": "440e1c9a1893e165872235df68fcb757566eb0d88ff71312945fa35cf8a7100f",
+    "target/abi-cons/debt-diagnostic.py": "70be070c7d22498b463b8a2944b206215b34184b27a885c6c30cb7197d1d6707",
+    "target/abi-cons/debt-base.el": "62f139138ffa9d335fa3e5b59b534c7cf1eb0ad98a1f1dbf1bf3f7ba98619237",
+    "target/abi-cons/debt-candidate.el": "c81b548b8822ddcde96179af817f49a604ea1134b23853b6ad01a2856966695c",
+    "target/abi-cons/debt-base.out": "99032aa3e01efe16c23e01d67053ad548b39bc05688e072a8c3415df5c2f814a",
+    "target/abi-cons/debt-candidate.out": "d825e80389618e603b57a0d498f80f9526d6c616c298cd6a6c490b0a936e4f2e"
+  },
+  "hunks": {
+    "lisp/nelisp-cc-bf-args-nth-ptr.el": [
+      "required argument WORD getter"
+    ],
+    "lisp/nelisp-cc-nlrecord-alloc.el": [
+      "canonical type WORD in unused capacity field; no trailing slot"
+    ],
+    "lisp/nelisp-cc-sf-setq.el": [
+      "WORD to environment setter; remove view adapters"
+    ],
+    "scripts/nelisp-standalone-build.el": [
+      "cons/setcar/setcdr WORD operands",
+      "record type accessor and image relocation",
+      "mapcar callback WORDs",
+      "VM argument bind, varref and interpreted call WORD gateway",
+      "N3 watcher and N4 shallow binding WORD preservation",
+      "parallel/sequential let initializer WORDs",
+      "dolist generated source and rest-spine nil WORDs",
+      "optional argument WORDs"
+    ],
+    "tests": [
+      "four memory probes and mutation/record/marker regression",
+      "record type/copy/GC parity corpus"
+    ],
+    "tools": [
+      "pinned memory replay and fast field inspection",
+      "required progress ledgers and evidence"
+    ]
+  },
+  "normal_check": {
+    "exit": 124,
+    "parens_findings": 33,
+    "changed_files_check_parens": "9/9 pass",
+    "changed_aot_modules_strict_compile": "3/3 pass",
+    "build_script_strict_compile": "unchanged docstring width error at line181"
+  },
+  "final_verification": {
+    "groups": 11,
+    "failures": 0,
+    "standalone_files": 67,
+    "known_red": "maphash-sparse",
+    "anvil_tools": 40
+  },
+  "native_registry_entries_added": 0,
+  "gc_allocation_diagnostic": {
+    "base": {
+      "allocated_bytes_during_workload": 4061946432,
+      "before": {
+        "total_allocated": 0,
+        "debt": 8904,
+        "limit": 0,
+        "live": 0
+      },
+      "after": {
+        "total_allocated": 4061946432,
+        "debt": 17960,
+        "limit": 405791472,
+        "live": 135263824
+      }
+    },
+    "candidate": {
+      "allocated_bytes_during_workload": 4224361976,
+      "before": {
+        "total_allocated": 0,
+        "debt": 9472,
+        "limit": 0,
+        "live": 0
+      },
+      "after": {
+        "total_allocated": 4224361976,
+        "debt": 19432,
+        "limit": 143319984,
+        "live": 47773328
+      }
+    },
+    "scope": "Diagnostic allocation telemetry only; no GC counters, forced collection, overrides or acceptance-profile changes.",
+    "interpretation": "The collector arms 3x live bytes (default 300%). The smaller candidate live graph lowers the debt threshold 405791472 -> 143319984 bytes; total allocation is 4061946432 -> 4224361976 bytes. More frequent collections do not imply increased retained size. No debt-floor/percent override or extra acceptance GC counter is used."
+  }
+}
