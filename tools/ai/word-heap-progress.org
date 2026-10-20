@@ -17,7 +17,11 @@ pending
 ** S0.4 Design decision record: tag scheme, alignment, coexistence of legacy =000= boxes, cons refcount removal; all existing WORD decoders proven unchanged
 pending
 
-** S0.5 End to end: S1+ thresholds revised from S0 data and the revision reported (criteria-change record)
+** S0.5 GC trigger determinism: explain why GC cycle counts differ between builds of one commit
+#+NOTE: Added 2026-10-20 (denominator 26 -> 27). Two builds of 45d970c82 run regex24000 with 10 and 28 collections (non-recursive nl_gc_sweep_merge_chunks entries), with no cache effect; the ABI candidate gives 26 against 11 at 10beb8a3c. The word heap changes object sizes and GC, so the trigger rule must be understood and deterministic first.
+pending
+
+** S0.6 End to end: S1+ thresholds revised from S0 data and the revision reported (criteria-change record)
 pending
 
 * S1 Accessor layer (no layout change)
