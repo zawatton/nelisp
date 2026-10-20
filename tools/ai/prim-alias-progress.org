@@ -51,7 +51,8 @@ cmd: python3 test/perf/prim-alias-check.py load-five
 
 * S4 Delivery
 ** S4.1 Standalone checks include the alias regression and pass
-cmd: python3 test/perf/prim-alias-check.py standalone
+#+NOTE: 2026-10-20 Pin the same GNU C.UTF-8 reference locale as S1.4. The meter's LC_ALL=C changes GNU warning/error quotation marks, while the exact recorded native reference uses Unicode quotes. The old C invocation is red and C.UTF-8 is green; all rows and normalized warning lines are still compared, including missing/extra-warning negative controls. No case, expected datum or cost cap changes.
+cmd: LC_ALL=C.UTF-8 python3 test/perf/prim-alias-check.py standalone
 ** S4.2 Anvil MCP smoke exposes exactly 40 tools
 cmd: python3 test/perf/prim-alias-check.py mcp
 ** S4.3 End-to-end delivery has committed changes and recorded artifact identities
