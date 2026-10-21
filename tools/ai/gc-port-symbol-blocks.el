@@ -8,7 +8,10 @@
 ;;                                a fixnum, a two-element list);
 ;;   (nelisp--debug-switch 41 V)  how many cells of V still hold exactly
 ;;                                that, with no collector bit set;
-;;   (nelisp--debug-switch 42)    (LIVE FREE BLOCKS ALLOCATED) symbol cells.
+;;   (nelisp--debug-switch 42)    (LIVE FREE BLOCKS ALLOCATED) symbol cells;
+;;   (nelisp--debug-switch 43)    (SURVIVED OUTSIDE): a cons held only by
+;;                                native frames survives a collection, and
+;;                                its typed group lies outside the chunks.
 ;; The cells are never printed or handed to a symbol primitive: on this
 ;; line no symbol consumer reads a direct symbol WORD.
 ;; GCSB_MODE selects the run:
@@ -84,7 +87,14 @@
           (gcsb-check (= (gcsb-ok v) 900) "reused cells survive")
           (gcsb-check (= (nth 0 (gcsb-stats)) 2900) "2900 live")
           (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "kept cells unaffected"))))
-    (nelisp--debug-switch 29))
+    (nelisp--debug-switch 29)
+    ;; Doc 223 conservative scan: a cons held only by native frames, in a
+    ;; typed group outside the chunks' address range, survives (debug
+    ;; switch 43 answers (SURVIVED OUTSIDE)).  The scan envelope used to
+    ;; cover only the chunks.
+    (let ((r (nelisp--debug-switch 43)))
+      (gcsb-check (equal r '(1 1))
+                  (format "a cons held only by the native stack survives: %S" r))))
   (when (equal gcsb-mode "dump")
     (gcsb-gc)
     (gcsb-check (> (nelisp--arena-dump-image-stream (getenv "GCSB_IMAGE")) 0) "image dump")

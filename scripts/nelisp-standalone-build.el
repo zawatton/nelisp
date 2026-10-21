@@ -11062,8 +11062,33 @@ leave symbols unresolved at link time."
                                       (heap-read-u64 slots (* i 8)) i)))
                   (setq i (+ i 1))))
            good))))
+    ;; (nelisp--debug-switch 43): Doc 223 conservative-scan regression.  A
+    ;; cons held only by native frames survives a collection, as
+    ;; mark_maybe_pointer keeps it (alloc.c:4854).  Answers (SURVIVED
+    ;; OUTSIDE): SURVIVED 1 when the cell still holds its car afterwards,
+    ;; OUTSIDE 1 when its typed group lies outside every arena chunk's
+    ;; address range -- the case the scan envelope used to skip.
+    (defun nl_conserv_selftest_hold (c _pad)
+      (seq (nl_gc_collect_from_recorded_roots 0)
+           (if (= (heap-read-u64 (- c 2) 0) 173) 1 0)))
+    (defun nl_conserv_selftest_w (_pad)
+      (let* ((c (nelisp_cons_construct_w 173 3 0))
+             (g (logand c -524288))
+             (chunk (heap-read-u64 268436160 0)) (lo 0) (hi 0) (s 0) (e 0))
+        (seq
+         (while (> chunk 0)
+           (seq (setq s (heap-read-u64 chunk 24))
+                (setq e (nl_gc_chunk_end chunk))
+                (if (if (= lo 0) 1 (< s lo)) (setq lo s) 0)
+                (if (> e hi) (setq hi e) 0)
+                (setq chunk (heap-read-u64 chunk 48))))
+         (nelisp_cons_construct_w
+          (+ (* (nl_conserv_selftest_hold c 0) 4) 1)
+          (nelisp_cons_construct_w (if (if (< g lo) 1 (>= g hi)) 5 1) 3 0)
+          0))))
     (defun nl_symbol_selftest_w (args)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 43) (nl_conserv_selftest_w 0)
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
@@ -11076,9 +11101,9 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0)))))
+             0))))))
     (defun bf_debug_switch_w (args _pad)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 42) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
           (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
