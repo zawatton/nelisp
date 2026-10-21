@@ -30,7 +30,8 @@
 cmd: python3 tools/ai/strings-check.py plan
 
 * S1 Port and semantics
-** S1.1 Strings are header-less word-heap objects; bytes per 8-character string are at or below the word-heap S0 threshold; the census of string views and copies is 0
+** S1.1 Strings are header-less word-heap objects in GNU 31.1's layout: a 32-byte struct Lisp_String header in a string block plus sdata (sdata_size(8) = 24 B), so at most 56 B per 8-character string excluding block bookkeeping; the census of string views and copies is 0
+#+NOTE: 2026-10-21 coordinator: the strings lane stopped on a GNU-against-ledger contradiction (target/strings/blocker.json). GNU's Lisp_String is 32 B (lisp.h:1555-1579) and sdata_size(8) is 24 B (alloc.c:1352-1394), so GNU's own structure needs at least 56 B, above the word-heap S0-revised 48 B. That threshold predates the user's 2026-10-21 rule to imitate GNU's implementation, so GNU's layout is the target. The criteria count is unchanged.
 cmd: python3 tools/ai/strings-check.py layout
 ** S1.2 String data lives in GNU-style sdata blocks, and compact_small_strings reclaims fragmentation; a fragmentation test bounds string bytes after churn
 cmd: python3 tools/ai/strings-check.py compaction
