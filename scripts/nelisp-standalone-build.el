@@ -19458,7 +19458,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_cons_stash_void_function env name)
           (seq
            (ptr-write-u64 xw 0 fn)
-           (let* ((kind (m5_fx_site_kind cache fn argc))
+           (let* ((kind (m5_fx_site_kind cache fn argc env))
                   (direct (if (= kind 0) -3
                             (if (> kind 20) (m5_fx_globals_run kind stk sp argc resw env oslot)
                               (m5_fx_primitive_run kind stk sp argc resw env xw))))
@@ -19506,15 +19506,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; last definition seen, slot 2 its kind.  The definition itself is
     ;; the key, so a FSET or advice takes effect at the next call, and a
     ;; cached definition stays rooted, so its address cannot be reused.
-    (defun m5_fx_site_kind (cache fn argc)
-      (if (= cache 0) (m5_fx_callout_kind fn argc)
+    ;; Tier-3 workers decode without the cache, as they skip the cell cache
+    ;; (`m5_fx_callout'): two threads filling one site with different
+    ;; definitions could pair one's definition with the other's kind.  The
+    ;; kind is stored before the definition, so a reader that sees the new
+    ;; definition also sees its kind.
+    (defun m5_fx_site_kind (cache fn argc env)
+      (if (if (= cache 0) 1 (nl_sb_worker_p env)) (m5_fx_callout_kind fn argc)
         (if (= (nl_vector_slot_word cache 1) fn) (sar (nl_vector_slot_word cache 2) 2)
           (let* ((kind (m5_fx_callout_kind fn argc)))
             (seq
              (if (>= (nl_vector_length cache) 3)
                  (seq (wf_dirty)
-                      (ptr-write-u64 (+ (nl_word_payload cache) 16) 0 fn)
-                      (ptr-write-u64 (+ (nl_word_payload cache) 24) 0 (+ (shl kind 2) 1)))
+                      (ptr-write-u64 (+ (nl_word_payload cache) 24) 0 (+ (shl kind 2) 1))
+                      (ptr-write-u64 (+ (nl_word_payload cache) 16) 0 fn))
                0)
              kind)))))
     ;; The ordinary apply of FN to the ARGC words ending at STK[SP-1], under
