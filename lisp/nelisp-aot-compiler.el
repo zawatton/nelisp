@@ -18679,24 +18679,74 @@ compare A against B and materialize the boolean result."
   '((< . jge) (> . jle) (<= . jg) (>= . jl) (= . jne) (/= . je))
   "Map a comparison op to the x86-64 jump taken when it is FALSE.")
 
-(defun nelisp-aot-compiler--emit-test-jump-false (test buf false-lbl)
-  "x86-64: evaluate TEST and jump to FALSE-LBL when it is 0.
-A comparison test branches on the flags of its own `cmp' instead of
-materializing 0/1 with setCC/movzx and comparing that against 0 again --
-every `if' and `while' on a comparison did that three-instruction detour."
-  (let ((op (and (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
-                 (nelisp-aot-compiler--ir-get test :op))))
-    (if (and op (assq op nelisp-aot-compiler--cmp-false-jcc))
-        (progn
-          (nelisp-aot-compiler--emit-binary-operands
-           (nelisp-aot-compiler--ir-get test :a)
-           (nelisp-aot-compiler--ir-get test :b) buf)
-          (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
-          (nelisp-asm-x86_64-jcc-rel32
-           buf (cdr (assq op nelisp-aot-compiler--cmp-false-jcc)) false-lbl))
+(defconst nelisp-aot-compiler--cmp-true-jcc
+  '((< . jl) (> . jg) (<= . jle) (>= . jge) (= . je) (/= . jne))
+  "Map a comparison op to the x86-64 jump taken when it is TRUE.")
+
+(defun nelisp-aot-compiler--emit-cond-jump (test buf label jump-if-true)
+  "x86-64: jump to LABEL when TEST's truth is JUMP-IF-TRUE, else fall through.
+CG1 (Doc 224): GCC lowers `&&' and `||' conditions to chains of
+conditional jumps and never materializes a boolean.  A comparison
+branches on the flags of its own `cmp'; `and' and `or' chain their
+operands' jumps, through a local skip label where an operand cannot
+decide the jump on its own; an integer constant becomes an
+unconditional jump or nothing; anything else is evaluated and tested
+against 0.  Operands are evaluated in source order and only as far as
+the short circuit reaches, exactly as the value-position `and' / `or'
+do, so only the materialized 0/1 disappears."
+  (let ((kind (nelisp-aot-compiler--ir-kind test)))
+    (cond
+     ((and (eq kind 'cmp)
+           (assq (nelisp-aot-compiler--ir-get test :op)
+                 nelisp-aot-compiler--cmp-true-jcc))
+      (let ((op (nelisp-aot-compiler--ir-get test :op)))
+        (nelisp-aot-compiler--emit-binary-operands
+         (nelisp-aot-compiler--ir-get test :a)
+         (nelisp-aot-compiler--ir-get test :b) buf)
+        (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
+        (nelisp-asm-x86_64-jcc-rel32
+         buf (cdr (assq op (if jump-if-true
+                               nelisp-aot-compiler--cmp-true-jcc
+                             nelisp-aot-compiler--cmp-false-jcc)))
+         label)))
+     ((and (eq kind 'logic)
+           (memq (nelisp-aot-compiler--ir-get test :op) '(and or)))
+      (let* ((op (nelisp-aot-compiler--ir-get test :op))
+             (forms (nelisp-aot-compiler--ir-get test :forms))
+             ;; `and' is decided early by a false operand, `or' by a
+             ;; true one.
+             (early (eq op 'or)))
+        (cond
+         ((null forms)
+          ;; (and) is true and (or) is false.
+          (when (eq jump-if-true (eq op 'and))
+            (nelisp-asm-x86_64-jmp-rel32 buf label)))
+         ((eq jump-if-true early)
+          ;; Every operand that decides early also decides the jump.
+          (dolist (f forms)
+            (nelisp-aot-compiler--emit-cond-jump f buf label jump-if-true)))
+         (t
+          (let ((skip (nelisp-aot-compiler--gensym "cj-skip")))
+            (dolist (f (butlast forms))
+              (nelisp-aot-compiler--emit-cond-jump f buf skip early))
+            (nelisp-aot-compiler--emit-cond-jump
+             (car (last forms)) buf label jump-if-true)
+            (nelisp-asm-x86_64-define-label buf skip))))))
+     ((nelisp-aot-compiler--imm-int-p test)
+      (when (eq jump-if-true
+                (/= (nelisp-aot-compiler--ir-get test :value) 0))
+        (nelisp-asm-x86_64-jmp-rel32 buf label)))
+     (t
       (nelisp-aot-compiler--emit-value test buf)
       (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-      (nelisp-asm-x86_64-jz-rel32 buf false-lbl))))
+      (if jump-if-true
+          (nelisp-asm-x86_64-jnz-rel32 buf label)
+        (nelisp-asm-x86_64-jz-rel32 buf label))))))
+
+(defun nelisp-aot-compiler--emit-test-jump-false (test buf false-lbl)
+  "x86-64: evaluate TEST and jump to FALSE-LBL when it is 0.
+See `nelisp-aot-compiler--emit-cond-jump'."
+  (nelisp-aot-compiler--emit-cond-jump test buf false-lbl nil))
 
 (defun nelisp-aot-compiler--emit-if (node buf)
   "Emit `if' branching code; result in rax.
@@ -18757,12 +18807,17 @@ Layout:
           (nelisp-asm-arm64-b buf start-lbl)
           (nelisp-asm-arm64-define-label buf end-lbl)
           (nelisp-asm-arm64-mov-imm64 buf 'x0 0))
-      (nelisp-asm-x86_64-define-label buf start-lbl)
-      (nelisp-aot-compiler--emit-test-jump-false
-       (nelisp-aot-compiler--ir-get node :test) buf end-lbl)
-      (dolist (form (nelisp-aot-compiler--ir-get node :body))
-        (nelisp-aot-compiler--emit-value form buf))
-      (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
+      ;; CG1 (Doc 224): rotated loop, as GCC's loop header copying
+      ;; leaves it -- the test sits at the bottom and branches back, so
+      ;; an iteration costs no unconditional jump.
+      (let ((test-lbl (intern (format "%s-test" id))))
+        (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
+        (nelisp-asm-x86_64-define-label buf start-lbl)
+        (dolist (form (nelisp-aot-compiler--ir-get node :body))
+          (nelisp-aot-compiler--emit-value form buf))
+        (nelisp-asm-x86_64-define-label buf test-lbl)
+        (nelisp-aot-compiler--emit-cond-jump
+         (nelisp-aot-compiler--ir-get node :test) buf start-lbl t))
       (nelisp-asm-x86_64-define-label buf end-lbl)
       ;; mov rax, 0 — 7 bytes, fixed; cheaper to use xor in real
       ;; codegen but byte-length parity with mov-imm32 keeps the
@@ -18817,9 +18872,7 @@ body straight; `end-LABEL' is then defined immediately after."
             (nelisp-aot-compiler--emit-value body buf))
            (t
             (let ((next-lbl (intern (format "%s-next-%d" id k))))
-              (nelisp-aot-compiler--emit-value pred buf)
-              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-              (nelisp-asm-x86_64-jz-rel32 buf next-lbl)
+              (nelisp-aot-compiler--emit-cond-jump pred buf next-lbl nil)
               (nelisp-aot-compiler--emit-value body buf)
               (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
               (nelisp-asm-x86_64-define-label buf next-lbl))))))
