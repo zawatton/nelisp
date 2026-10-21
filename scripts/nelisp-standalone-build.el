@@ -19007,18 +19007,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; frame), INITIAL-FRAME (a rooted 32-byte frame) or INITIAL-ARGS (a
       ;; list view).  The value goes to word OUTW when it is non-zero, else
       ;; to the 32-byte OUT.
-      ;; Roots, contiguous: +0 the frame vector, +32 handlers, +64 unwinds,
-      ;; +96 binding-link, +128 unwind-bindings, +160 resume-dest, +192
-      ;; resume-sp, +224 resume-bindings, +256 catch-pool, +288.. +384 four
-      ;; boundary scratch slots (BX).  Word DEPTH of the frame is the result.
+      ;; GNU bytecode.c:366-376 bc_frame, 495-530 setup_frame: the locals and
+      ;; operand stack are one WORD frame on the root stack (`nl_root_frame')
+      ;; with a footer, as GNU's data stack carries its bc_frame.  Slots
+      ;; 0..DEPTH-1 are the stack, slot DEPTH the result, then the footer:
+      ;; +0 saved caller frame, +1 saved index, +2 saved pc (all nil in the
+      ;; frame an activation starts: GNU's saved_top and saved_pc are NULL in
+      ;; a frame called from C), +3 the code string, +4 the constants vector,
+      ;; +5 the aux block.  No raw pointers go in the frame: the collector
+      ;; marks every slot as a WORD.
+      ;; Roots, contiguous (still Sexp slots for the helpers that take views):
+      ;; +32 handlers, +64 unwinds, +96 binding-link, +128 unwind-bindings,
+      ;; +160 resume-dest, +192 resume-sp, +224 resume-bindings, +256
+      ;; catch-pool, +288.. +384 four boundary scratch slots (BX), then BT.
       (let* ((code-len (m5_strlen code))
              (code-data (nl_bi_strptr code))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
              (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 13)))
-             (vbox (if (= roots 0) 0 (nl_alloc_vector (+ depth 1))))
-             (mem (if (= roots 0) 0 (+ vbox 8)))
+             (fp (if (= roots 0) 0 (nl_root_frame env (+ depth 7))))
+             (mem fp)
+             (foot (+ mem (* (+ depth 1) 8)))
              (handlers (+ roots 32))
              (unwinds (+ roots 64))
              ;; Immutable nil needs no transport box or GC root (Doc 215).
@@ -19035,16 +19045,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (resw (+ mem (* depth 8)))
              (initial-slots (+ initial-maxargs initial-rest))
              (arg-cursor initial-args) (arg-index 0)
-             (pc 0) (sp initial-slots) (done (if (= roots 0) 5 0)) (bindings 0)
+             (pc 0) (sp initial-slots) (done (if (= fp 0) 5 0)) (bindings 0)
              (unwind-rc 0)
              (bad-op 255) (bad-offset 0) (i 0))
-        (if (= roots 0)
+        (if (= fp 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
           (seq
-         (while (<= i depth)
-           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
-         (ptr-write-u64 roots 0 8)
-         (ptr-write-u64 (+ roots 8) 0 vbox)
+         ;; The frame's slots start nil; the footer keeps the code and the
+         ;; constants alive and lets a frame be re-entered from them.
+         (ptr-write-u64 foot 24 code)
+         (ptr-write-u64 foot 32 constants)
          (if (and (= done 0) (> initial-slots depth))
              (seq (setq done 2) (setq bad-op 255)))
          (wf_write_nil handlers)
