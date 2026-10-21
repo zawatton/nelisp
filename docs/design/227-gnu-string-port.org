@@ -70,14 +70,12 @@ its line numbers below are approximate and are not patches to apply blindly.
   never allocate state in =nl_typed_alloc='s offsets.
 - Accounting: allocation charges =nl_gc_stats+0= and sweep adds surviving
   bytes to =nl_gc_stats+16=. Distinguish logical 56 B from block overhead.
-- Images: =nl_dump_include=, =nl_dump_compact_assign= and
-  =nl_dump_compact_write= must relocate both header and sdata or refuse.
-  Boot image strings are pdumper objects marked in the boot bitmap; do not
-  sweep them. Never move string data when conservative roots pinned it.
+- Images: see "Strings in the cold image" below. Dumped strings are
+  pdumper objects: never swept, never marked, never moved.
 
 This base calls the implemented String mark, reset, sweep and pin hooks.
 The placements above describe integration into gc-port after that lane
-merges. Dumping pooled Strings currently refuses before opening an image file.
+merges.
 
 * Implementation boundary
 
@@ -125,12 +123,48 @@ merge cannot reuse String's 100 decoder with a packed symbol header; agree
 that discriminator with the symbols/gc-port lanes before merging. Existing
 000, fixnum, nil and t encodings are unchanged.
 
-Live-only image output currently refuses before opening the destination:
-"String block image relocation is not implemented". The legacy image format
-only relocates arena and intern regions and cannot safely persist the new
-OS-backed headers/sdata. Old image strings remain legacy boot objects and
-are not enrolled into the new string sweep. Library-image criterion S3.2
-remains pending; do not treat a source-only MCP smoke as an image proof.
+* Strings in the cold image
+
+GNU dumps a string as a =Lisp_String= header inside the dump
+(pdumper.c:2084 =dump_string=) and lumps string data at the end of the dump
+(pdumper.c:3399 =dump_cold_string=), fixing up the header's =data= field. Dumped
+strings are =pdumper_object_p= objects: the collector marks them in a bitmap
+(alloc.c:4042 =string_marked_p=), =pin_string= leaves their data alone
+(alloc.c:2381), and no sweep or compaction sees them.
+
+NeLisp's stream dump (=nelisp--arena-dump-image-stream=, one function for the
+build's cold image and for library images) adapts that:
+
+- The walk marks nothing in a string. A String WORD field reaches
+  =nl_dump_string_logoff=: pass 1 flags the header (bit 2 of its intervals
+  word, which stays odd so the collector never reads it as a pointer), pass 2
+  numbers the flagged strings and pass 3 answers the header's slot in the image.
+  An unplaced target counts against the dump, which then fails.
+- The image carries the strings after the symbol region as three legacy blocks
+  (so the boot structures walk them like any block): a header area of N *
+  32-byte headers, the sdata of every string (back pointer, bytes, NUL, padding
+  to =sdata_size=), and a 32-byte footer naming the header area. A live filler
+  block before the header area makes it 32-byte aligned, so a restored header
+  validates exactly like a pool header (=(logand w 31) = 0=, data pointer set).
+  Two relocation entries per string (the header's data pointer and the sdata
+  back pointer) join the table; references to a string are ordinary WORD fields
+  with tag 4, which the loader now accepts (=nl_cold_reloc_table_valid_p=).
+- The loader (=nl_cold_load_arena=) calls =nl_string_image_attach=: the footer
+  gives the header area, which is registered in the string page index as mapping
+  kind 6 and widens the header range test. =nl_gc_mark_word= and
+  =nl_string_mark= skip headers in that area (no mark bit is written, the page
+  stays clean, and a string has no children). The area is never swept, moved or
+  compacted. An image header whose data later changes (aset that grows a
+  multibyte string) simply points at pool sdata, whose back pointer names the
+  image header.
+- A dump of a loaded image treats image strings exactly like pool strings: both
+  are valid headers, both are flagged, numbered and written again, so the next
+  image holds one copy of each string and library images stack.
+- Adapted from GNU: GNU keeps dump strings in the dump's own mapping; here they
+  live in chunk 0's boot range, as cons and symbol cells already do, so no
+  second address space or loader is needed. GNU writes only the =data= bytes
+  of =dump_cold_string=; the sdata back pointer is kept so every sdata has the
+  one layout.
 
 * Producer allocation paths
 

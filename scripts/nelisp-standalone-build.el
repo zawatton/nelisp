@@ -661,7 +661,7 @@ binary's own digest.  Returns the digest as a hex string."
   (let* ((sections (plist-get unit :sections))
          (bss (assq 'bss sections))
          (offset (logand (+ (cdr bss) 7) -8)))
-    (setcdr bss (+ offset 160))
+    (setcdr bss (+ offset 256))
     (plist-put unit :symbols
                (append (plist-get unit :symbols)
                        (list (nelisp-link-symbol "nl_strings_state" offset
@@ -2993,11 +2993,47 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                   (if (< addr (+ hdr (logand (heap-read-u64 hdr 0) 4294967288)))
                       (+ (heap-read-u64 arr (+ (* i 16) 8)) (- addr hdr))
                     (nl_dump_excluded addr)))))))))
+      ;; ---- Strings in the cold image (pdumper.c:2084 dump_string, :3399 dump_cold_string) ----
+      ;; The image carries every reached string after the symbol region as three
+      ;; legacy blocks: a header area (N * 32 bytes, 32-byte aligned so a restored
+      ;; header validates exactly like a pool header), the sdata of every string
+      ;; (back pointer first) and a footer.  While the dump runs a reached
+      ;; string's intervals word holds bit 2 (reached), bit 1 (the property
+      ;; marker) and, from pass 2, its index N in bits 3 and up; the word stays
+      ;; odd, so the collector never reads it as a pointer.  BSS
+      ;; `nl_strings_state': +160/+168 header area of a restored image, +176 N,
+      ;; +184 header address per index, +192 its bytes, +200 image offset of the
+      ;; header area, +208 of the data area, +216 data area bytes, +224 filler.
+      ;; Image offset of the string header H (WORD target of a field): pass 1
+      ;; marks it reached and answers 0, pass 2 answers its slot in the header
+      ;; area, anything else counts an excluded target (the dump fails).
+      ;; A target the image cannot place counts against the dump (st+384), which
+      ;; then fails: `nl_dump_excluded' counts only heap and typed addresses, and
+      ;; a string lives in neither.
+      (defun nl_dump_string_unplaced (h)
+        (let* ((st (data-addr nl_typed_alloc)))
+          (seq (ptr-write-u64 st 384 (+ (heap-read-u64 st 384) 1)) -1)))
+      (defun nl_dump_string_logoff (h)
+        (let* ((mode (heap-read-u64 (+ (data-addr nl_typed_alloc) 296) 0))
+               (w (heap-read-u64 h 16)))
+          (if (= (nl_string_header_p h) 0) (nl_dump_string_unplaced h)
+            (if (= mode 1)
+                (seq (if (= (logand w 4) 0)
+                         (ptr-write-u64 h 16 (logior (shl (logand w 1) 1) 5))
+                       0)
+                     0)
+              (if (if (= mode 2) (= (logand w 4) 4) 0)
+                  (+ (heap-read-u64 (data-addr nl_strings_state) 200) (* (sar w 3) 32))
+                (nl_dump_string_unplaced h))))))
       ;; Restore: the live address of image offset LOGOFF, or 0.  The
       ;; symbol region (Doc 226 D9) follows the cons cells; its rank table
       ;; (+456) lists the ranked cells.
       (defun nl_dump_compact_phys (logoff)
-        (let ((st (data-addr nl_typed_alloc)))
+        (let* ((st (data-addr nl_typed_alloc)) (ss (data-addr nl_strings_state))
+               (nstr (heap-read-u64 ss 176)) (hoff (heap-read-u64 ss 200)))
+          (if (if (> nstr 0) (if (>= logoff hoff) (< logoff (+ hoff (* nstr 32))) 0) 0)
+              (+ (heap-read-u64 (heap-read-u64 ss 184) (* (sar (- logoff hoff) 5) 8))
+                 (logand (- logoff hoff) 31))
           (if (if (> (heap-read-u64 st 448) 0) (>= logoff (heap-read-u64 st 472)) 0)
               (let* ((rel (- logoff (heap-read-u64 st 472)))
                      (r (/ rel ,scb)) (within (- (- rel (* r ,scb)) 8)))
@@ -3026,7 +3062,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               (if (< i 0) 0
                 (let ((arr (heap-read-u64 st 304)))
                   (+ (heap-read-u64 arr (* i 16))
-                     (- logoff (heap-read-u64 arr (+ (* i 16) 8))))))))))))))
+                     (- logoff (heap-read-u64 arr (+ (* i 16) 8)))))))))))))))
 
 (defun nelisp-standalone--typed-gc-forms ()
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
@@ -3275,6 +3311,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
            (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
            (ptr-write-u64 st 472 0)
+           (nl_dump_string_reset)
            (if (> incl 0) (nl_os_commit_range incl 0 bytes) 0)
            (if (if (> (heap-read-u64 st 208) 0) (= incl 0) 0) 0
              (seq (ptr-write-u64 st 296 1) 1)))))
@@ -3409,7 +3446,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                     (setq i (+ i 1))))
              (if (= ok 0) 0
                (if (= (nl_dump_compact_rank_cells st) 0) 0
-                 (nl_dump_compact_rank_symbols st)))))))
+                 (if (= (nl_dump_compact_rank_symbols st) 0) 0
+                   (nl_dump_string_assign))))))))
       ;; Doc 226 D9: give every symbol_block cell the walk reached (its
       ;; gcmarkbit) a rank in the symbol region, which follows the cons
       ;; cells (+472 = its image offset): the rank goes to the cell header's
@@ -3446,6 +3484,187 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (ptr-write-u64 st 448 r) (ptr-write-u64 st 456 arr)
                 (ptr-write-u64 st 464 bytes)
                 1))))))
+      ;; ---- Strings in the cold image: reached strings, layout, table and bytes ----
+      ;; One reached string at header H: MODE 1 numbers it (the inverse array
+      ;; INV gets its header at index N), MODE 2 puts the marker bit back.
+      ;; 1 when H is a reached string.
+      (defun nl_dump_string_visit (h mode n inv)
+        (let* ((w (heap-read-u64 h 16)))
+          (if (= (heap-read-u64 h 24) 0) 0
+            (if (= (logand w 4) 0) 0
+              (seq (if (= mode 1)
+                       (seq (ptr-write-u64 inv (* n 8) h)
+                            (ptr-write-u64 h 16 (logior (shl n 3) (logand w 7))))
+                     0)
+                   (if (= mode 2) (ptr-write-u64 h 16 (logand (sar w 1) 1)) 0)
+                   1)))))
+      ;; Every header slot of the pool and of a restored image's header area, in
+      ;; a fixed order; MODE 0 counts the reached strings.  Answers the count.
+      (defun nl_dump_string_walk (mode)
+        (let* ((ss (data-addr nl_strings_state)) (b (heap-read-u64 ss 0)) (n 0) (i 0)
+               (inv (heap-read-u64 ss 184)) (h (heap-read-u64 ss 160))
+               (hi (heap-read-u64 ss 168)))
+          (seq
+           (while (/= b 0)
+             (seq (setq i 0)
+                  (while (< i 1023)
+                    (seq (setq n (+ n (nl_dump_string_visit (+ b (* i 32)) mode n inv)))
+                         (setq i (+ i 1))))
+                  (setq b (heap-read-u64 b 32744))))
+           (while (< h hi)
+             (seq (setq n (+ n (nl_dump_string_visit h mode n inv)))
+                  (setq h (+ h 32))))
+           n)))
+      ;; Upper bound of the table bytes the strings need: 16 per header slot.
+      (defun nl_dump_string_slots ()
+        (let* ((ss (data-addr nl_strings_state)) (b (heap-read-u64 ss 0)) (n 0))
+          (seq (while (/= b 0)
+                 (seq (setq n (+ n 1023)) (setq b (heap-read-u64 b 32744))))
+               (* (+ n (sar (- (heap-read-u64 ss 168) (heap-read-u64 ss 160)) 5)) 64))))
+      (defun nl_dump_string_reset ()
+        (let* ((ss (data-addr nl_strings_state)) (k 176))
+          (seq (while (<= k 224) (seq (ptr-write-u64 ss k 0) (setq k (+ k 8)))) 0)))
+      ;; Pass 2 for strings: number the reached strings, size the three blocks
+      ;; and place them after the symbol region.  The header area starts 32-byte
+      ;; aligned (a live filler block makes up the difference).  1 on success.
+      (defun nl_dump_string_assign ()
+        (let* ((ss (data-addr nl_strings_state)) (tst (data-addr nl_typed_alloc))
+               (n (nl_dump_string_walk 0)) (bytes 0) (inv 0) (i 0) (sum 0) (r 0) (f 0))
+          (if (= n 0) 1
+            (seq
+             (setq bytes (nl_align_up (+ (* n 8) 8) 65536))
+             (setq inv (nl_os_alloc_chunk bytes))
+             (if (= inv 0) 0
+               (seq
+                (nl_os_commit_range inv 0 bytes)
+                (ptr-write-u64 ss 184 inv) (ptr-write-u64 ss 192 bytes) (ptr-write-u64 ss 176 n)
+                (nl_dump_string_walk 1)
+                (while (< i n)
+                  (seq (setq sum (+ sum (nl_string_sdata_size
+                                         (nl_string_nbytes (heap-read-u64 inv (* i 8))))))
+                       (setq i (+ i 1))))
+                (setq r (+ (+ (heap-read-u64 tst 328) (* (heap-read-u64 tst 336) ,cb))
+                           (* (heap-read-u64 tst 448) ,scb)))
+                (setq f (logand (- 24 r) 31))
+                (setq f (if (= f 0) 0 (if (< f 16) (+ f 32) f)))
+                (ptr-write-u64 ss 224 f)
+                (ptr-write-u64 ss 200 (+ r (+ f 8)))
+                (ptr-write-u64 ss 208 (+ (+ r f) (+ 16 (* n 32))))
+                (ptr-write-u64 ss 216 sum)
+                ;; a legacy block header holds its size in 32 bits
+                (if (> sum 4294967000) 0 (if (> (* n 32) 4294967000) 0 1))))))))
+      ;; Bytes the string blocks add to the image: filler, header area block,
+      ;; data area block and the 32-byte footer.
+      (defun nl_dump_string_bytes ()
+        (let* ((ss (data-addr nl_strings_state)) (n (heap-read-u64 ss 176)))
+          (if (= n 0) 0
+            (+ (+ (heap-read-u64 ss 224) (+ 8 (* n 32)))
+               (+ (+ 8 (heap-read-u64 ss 216)) 32)))))
+      ;; Relocation entries of the string blocks, two per string (the header's
+      ;; data pointer and the sdata back pointer), appended to the table TBL
+      ;; after AT entries.  Answers how many it added.
+      (defun nl_dump_string_table (tbl at)
+        (let* ((ss (data-addr nl_strings_state)) (n (heap-read-u64 ss 176))
+               (inv (heap-read-u64 ss 184)) (hoff (heap-read-u64 ss 200))
+               (doff (heap-read-u64 ss 208)) (i 0) (off 0) (e (+ tbl (* at 8))))
+          (seq
+           (while (< i n)
+             (seq (ptr-write-u64 e (* i 16) (+ (+ hoff (* i 32)) 24))
+                  (ptr-write-u64 e (+ (* i 16) 8) (+ doff off))
+                  (setq off (+ off (nl_string_sdata_size
+                                    (nl_string_nbytes (heap-read-u64 inv (* i 8))))))
+                  (setq i (+ i 1))))
+           (* n 2))))
+      ;; Write the string blocks through the 1 MiB buffer BUF (empty on entry):
+      ;; the filler, then the header area (size, size_byte, the marker, and the
+      ;; data pointer as an image offset), then every string's sdata (back
+      ;; pointer as an image offset, bytes, NUL, padding), then the footer.
+      ;; pdumper.c dump_cold_string lumps string data the same way.  Answers the
+      ;; bytes written.
+      (defun nl_dump_string_write (fd buf)
+        (let* ((ss (data-addr nl_strings_state)) (n (heap-read-u64 ss 176))
+               (inv (heap-read-u64 ss 184)) (hoff (heap-read-u64 ss 200))
+               (doff (heap-read-u64 ss 208)) (f (heap-read-u64 ss 224))
+               (sum (heap-read-u64 ss 216)) (fill 0) (written 0) (i 0) (off 0) (k 0)
+               (h 0) (nb 0) (dsz 0) (data 0))
+          (if (= n 0) 0
+            (seq
+             (if (> f 0)
+                 (seq (ptr-write-u64 buf 0 f) (setq k 8)
+                      (while (< k f) (seq (ptr-write-u64 buf k 0) (setq k (+ k 8))))
+                      (setq fill f))
+               0)
+             (ptr-write-u64 buf fill (+ 8 (* n 32)))
+             (setq fill (+ fill 8))
+             (while (< i n)
+               (seq
+                (if (> (+ fill 32) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (setq h (heap-read-u64 inv (* i 8)))
+                (ptr-write-u64 buf fill (logand (heap-read-u64 h 0) 9223372036854775807))
+                (ptr-write-u64 buf (+ fill 8) (heap-read-u64 h 8))
+                (ptr-write-u64 buf (+ fill 16) (logand (sar (heap-read-u64 h 16) 1) 1))
+                (ptr-write-u64 buf (+ fill 24) (+ (+ doff off) 8))
+                (setq off (+ off (nl_string_sdata_size (nl_string_nbytes h))))
+                (setq fill (+ fill 32))
+                (setq i (+ i 1))))
+             (if (> (+ fill 8) 1048576)
+                 (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                      (setq fill 0))
+               0)
+             (ptr-write-u64 buf fill (+ 8 sum))
+             (setq fill (+ fill 8))
+             (setq i 0)
+             (while (< i n)
+               (seq
+                (setq h (heap-read-u64 inv (* i 8)))
+                (setq nb (nl_string_nbytes h))
+                (setq dsz (nl_string_sdata_size nb))
+                (setq data (heap-read-u64 h 24))
+                (if (> (+ fill (+ dsz 16)) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (if (> dsz 65536)
+                    (seq
+                     (ptr-write-u64 buf fill (+ hoff (* i 32)))
+                     (setq written (+ written (nl_fa_write_all fd buf (+ fill 8) 0)))
+                     (setq written (+ written (nl_fa_write_all fd data nb 0)))
+                     (setq fill 0)
+                     (setq k 0)
+                     (while (< k (- dsz (+ 8 nb)))
+                       (seq (ptr-write-u8 buf k 0) (setq k (+ k 1))))
+                     (setq fill (- dsz (+ 8 nb))))
+                  (seq
+                   (ptr-write-u64 buf fill (+ hoff (* i 32)))
+                   (nl_string_copy_bytes data (+ buf (+ fill 8)) nb)
+                   (setq k (+ 8 nb))
+                   (while (< k dsz)
+                     (seq (ptr-write-u8 buf (+ fill k) 0) (setq k (+ k 1))))
+                   (setq fill (+ fill dsz))))
+                (setq i (+ i 1))))
+             (if (> (+ fill 32) 1048576)
+                 (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                      (setq fill 0))
+               0)
+             (ptr-write-u64 buf fill 32)
+             (ptr-write-u64 buf (+ fill 8) 21754191157611598)
+             (ptr-write-u64 buf (+ fill 16) hoff)
+             (ptr-write-u64 buf (+ fill 24) (+ hoff (* n 32)))
+             (setq fill (+ fill 32))
+             (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+             written))))
+      ;; End of the dump: every reached string's marker bit back, the inverse
+      ;; array released.
+      (defun nl_dump_string_end ()
+        (let* ((ss (data-addr nl_strings_state)))
+          (seq (nl_dump_string_walk 2)
+               (if (> (heap-read-u64 ss 184) 0)
+                   (nl_os_free_chunk (heap-read-u64 ss 184) (heap-read-u64 ss 192))
+                 0)
+               (nl_dump_string_reset))))
       ;; Write the image span: every included block in address order with its
       ;; mark bits cleared, then every reached cell as a headered legacy
       ;; payload block (header, then car and cdr as swizzled), through a
@@ -3523,6 +3742,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (setq fill (+ fill ,scb))
                 (setq r (+ r 1))))
              (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
+             (setq written (+ written (nl_dump_string_write fd buf)))
              (nl_os_free_chunk buf 1048576)
              written))))
       ;; End a live-only dump: mode 0 and every temporary table released.
@@ -3547,6 +3767,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                (nl_os_free_chunk (heap-read-u64 st 456) (heap-read-u64 st 464)) 0)
            (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
            (ptr-write-u64 st 472 0)
+           (nl_dump_string_end)
            (nl_symbol_clear_collector_bits)
            0)))
       ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
@@ -6151,10 +6372,13 @@ REPL-facing module it feeds."
             ;; native helper at the authenticated mark-word boundary.
             (let* ((s (- word 4)) (size (heap-read-u64 s 0)))
               (if (< size 0) 0
+                (if (if (>= s (heap-read-u64 (data-addr nl_strings_state) 160))
+                        (< s (heap-read-u64 (data-addr nl_strings_state) 168)) 0)
+                    0
                 (seq (nl_gc_typed_add 3 s (nl_string_nbytes s) 48 1)
                      (ptr-write-u64 s 0 (logior size -9223372036854775808))
                      (if (/= (heap-read-u64 s 16) 0)
-                         (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1)))
+                         (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1))))
         (if (= (logand word 7) 6)
             (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
           (if (= (logand word 7) 2)
@@ -11671,7 +11895,7 @@ leave symbols unresolved at link time."
                  (base (- ds 1024))
                  (ib (heap-read-u64 (+ base 832) 0))
                  (ie (heap-read-u64 (+ base 840) 0))
-                 (tlog (nl_mc_logoff tgt)))
+                 (tlog (if (= ptag 4) (nl_dump_string_logoff tgt) (nl_mc_logoff tgt))))
             (if (= dir 1)
                 (ptr-write-u64 loc 0 (heap-read-u64 waddr 0))
               (if (< tlog 0)
@@ -12883,7 +13107,7 @@ leave symbols unresolved at link time."
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_stream_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_stream keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_stream_w (args _pad)
-      (if (/= (heap-read-u64 (data-addr nl_strings_state) 0) 0)
+      (if 0
           (bf_string_image_refused_w)
         (seq
       (seq (nl_frame_stack_export_all 0 0)
@@ -12906,11 +13130,12 @@ leave symbols unresolved at link time."
              ;; Doc 223 region holding every cons-block cell as an image payload
              ;; upper bound for the relocation table: every chunk byte plus
              ;; every cons-block cell (Doc 223 packs the image to ctotal)
-             (total (+ (+ (nl_mc_total) (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 43392))
+             (total (+ (nl_dump_string_slots)
+                       (+ (+ (nl_mc_total) (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 43392))
                        ;; Doc 226 D9: every symbol-block cell as a 56-byte block.
                        (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 432) 0)
                           ,(* nelisp-standalone--symbol-block-size
-                              (+ 8 nelisp-standalone--symbol-cell-bytes)))))
+                              (+ 8 nelisp-standalone--symbol-cell-bytes))))))
              ;; Reloc-table scratch -- Increment 1 fix (multi-chunk cold-load).
              ;; The previous placement piggybacked on chunk-0's own leftover mmap
              ;; tail (single-chunk) or the interned-region's leftover mmap tail
@@ -12940,7 +13165,7 @@ leave symbols unresolved at link time."
              (ubox (if (= env 0) 0 (heap-read-u64 (+ env 72) 0)))
              (goff 0) (foff 0) (uoff 0)
              (ctotal 0) (cok 0) (cw 0)
-             (tlen 0) (fd 0)
+             (tlen 0) (tlive 0) (fd 0)
              ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                  '((written 0))))
         (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0)
@@ -12992,18 +13217,23 @@ leave symbols unresolved at link time."
               (if (= cok 1)
                   (seq
                    (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
-                   (setq ctotal (+ (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
+                   (setq ctotal (+ (nl_dump_string_bytes)
+                                   (+ (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
                                       (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
                                          ,(+ 8 nelisp-standalone--cons-cell-bytes)))
                                    ;; Doc 226 D9: the symbol region.
                                    (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
-                                      ,(+ 8 nelisp-standalone--symbol-cell-bytes))))
+                                      ,(+ 8 nelisp-standalone--symbol-cell-bytes)))))
                    (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
                    (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
                    ;; pass 3: swizzle in place through the packed layout
                    ;; (dest=ds=sstart: loc=waddr) and record the table.
-                   (nl_fa_live_roots sstart ctotal sstart cin cout 3))
+                   (nl_fa_live_roots sstart ctotal sstart cin cout 3)
+                   ;; the strings' own pointers, two entries each, after the
+                   ;; walk's; the live restore below covers only the walk's
+                   (setq tlive (heap-read-u64 cin 0))
+                   (ptr-write-u64 cin 0 (+ tlive (nl_dump_string_table tbl tlive))))
                 0)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
               (nl_gc_index_end)
@@ -13033,7 +13263,7 @@ leave symbols unresolved at link time."
               (nl_os_close_handle fd)
               ;; restore the live arena on every path that swizzled (mode 2)
               (if (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 296) 0) 2)
-                  (bf_arena_inplace_restore_mc tbl tlen ib ctotal) 0)
+                  (bf_arena_inplace_restore_mc tbl tlive ib ctotal) 0)
               ;; clear the walk's dedup marks (as `bf_arena_dump_image_to_file'
               ;; does): a block left at mark 1 reads as "already recursed" to
               ;; the next collection, so a post-dump child reachable only
@@ -42723,29 +42953,29 @@ Keep this source-only boundary usable by Windows preflight and host controls."
            (seq (setq ok (and (let* ((entry (heap-read-u64 (+ tbl (* i 8)) 0))
                          (ptag (logand entry 7))
                          (f (- entry ptag)))
-                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 6))
+                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 4) (/= ptag 6))
                             (< f 0) (> (+ f 8) slen)) 0 1))
                               (let* ((entry (heap-read-u64 (+ tbl (* (+ i 1) 8)) 0))
                          (ptag (logand entry 7))
                          (f (- entry ptag)))
-                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 6))
+                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 4) (/= ptag 6))
                             (< f 0) (> (+ f 8) slen)) 0 1))
                               (let* ((entry (heap-read-u64 (+ tbl (* (+ i 2) 8)) 0))
                          (ptag (logand entry 7))
                          (f (- entry ptag)))
-                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 6))
+                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 4) (/= ptag 6))
                             (< f 0) (> (+ f 8) slen)) 0 1))
                               (let* ((entry (heap-read-u64 (+ tbl (* (+ i 3) 8)) 0))
                          (ptag (logand entry 7))
                          (f (- entry ptag)))
-                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 6))
+                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 4) (/= ptag 6))
                             (< f 0) (> (+ f 8) slen)) 0 1))))
                 (setq i (+ i 4))))
          (while (and (= ok 1) (< i tlen))
            (seq (setq ok (let* ((entry (heap-read-u64 (+ tbl (* i 8)) 0))
                          (ptag (logand entry 7))
                          (f (- entry ptag)))
-                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 6))
+                    (if (or (and (/= ptag 0) (/= ptag 2) (/= ptag 4) (/= ptag 6))
                             (< f 0) (> (+ f 8) slen)) 0 1)))
                 (setq i (+ i 1))))
          ok)))
@@ -42983,6 +43213,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; invariant the boot constructors depend on.
                             (nl_cold_zero tbl (+ (* tlen 8) 48))
                             (nl_cold_clear_marks ds (+ ds slen))
+                            (nl_string_image_attach ds slen)
                             (ptr-write-u64 base 0 (+ 1024 slen))
                             ;; Keep the chunk-0 descriptor cursor in sync with
                             ;; the legacy bump cursor immediately after

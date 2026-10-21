@@ -11,6 +11,8 @@ import hashlib
 import select
 import signal
 import struct
+import resource
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/strings"
@@ -269,6 +271,47 @@ def speed(workload):
         print(f"PASS {kind}: GNU {row['gnu_ratio']:.4f}x; base {row['base_ratio']:.4f}x")
 
 
+def image():
+    """Cold image: the companion image starts the binary, and strings survive a dump and a reload."""
+    def limit():
+        resource.setrlimit(resource.RLIMIT_AS, (8 << 30, 8 << 30))
+    summary = []
+    for kind in ("dynamic", "static"):
+        binary = OUT / kind / "nelisp"
+        cold = Path(str(binary) + ".cold")
+        assert cold.exists() and cold.stat().st_size > (1 << 20), f"{kind}: no companion cold image"
+        times = []
+        for _ in range(5):
+            started = time.monotonic()
+            result = subprocess.run([str(binary), "--eval", "(princ (+ 1 2))"], capture_output=True,
+                                    timeout=60, preexec_fn=limit)
+            times.append(time.monotonic() - started)
+            assert result.stdout.startswith(b"3") and not result.stderr, f"{kind}: cold start output"
+        startup = sorted(times)[2]
+        # A prelude boot takes seconds; the companion image takes tens of milliseconds.
+        assert startup < 1.0, f"{kind}: startup {startup:.3f} s, the cold image was not used"
+        with tempfile.TemporaryDirectory(dir=OUT) as tmp:
+            dumped = Path(tmp) / "strings.img"
+            environment = dict(os.environ, STRINGS_IMAGE_OUT=str(dumped))
+            first = subprocess.run([str(binary), "--load", "tools/ai/strings-image-a.el"], cwd=ROOT,
+                                   env=environment, capture_output=True, timeout=120, preexec_fn=limit)
+            assert dumped.exists() and dumped.stat().st_size > (1 << 20), \
+                f"{kind}: the dump wrote no image: {first.stderr[-200:]!r}"
+            second = subprocess.run([str(binary), "--cold-load-from", str(dumped), "--load",
+                                     "tools/ai/strings-image-b.el"], cwd=ROOT, capture_output=True,
+                                    timeout=120, preexec_fn=limit)
+            (OUT / f"{kind}-image.out").write_bytes(second.stdout)
+            (OUT / f"{kind}-image.err").write_bytes(second.stderr)
+            lines = second.stdout.splitlines()
+            bad = [line for line in lines if line.endswith(b" FAIL")]
+            passed = [line for line in lines if line.endswith(b" ok")]
+            assert second.returncode == 0 and not second.stderr, f"{kind}: reload exit {second.returncode}"
+            assert not bad and b"STRINGS-IMAGE-TOTAL fails=0" in lines and len(passed) >= 36, \
+                f"{kind}: image check {bad[:3]}"
+            summary.append(f"{kind} {startup * 1000:.0f} ms, {len(passed)} checks, image {dumped.stat().st_size >> 20} MiB")
+    print("PASS image: " + "; ".join(summary))
+
+
 def final():
     report = json.loads((OUT / "final.json").read_text())
     assert report["groups"] == 11 and report["failures"] == 0
@@ -280,7 +323,7 @@ def final():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=["plan", "layout", "compaction", "semantics", "speed", "final"])
+    parser.add_argument("check", choices=["plan", "layout", "compaction", "semantics", "speed", "image", "final"])
     parser.add_argument("workload", nargs="?", choices=["producers", "pressure"])
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -294,6 +337,8 @@ def main():
         layout()
     elif args.check == "speed":
         speed(args.workload)
+    elif args.check == "image":
+        image()
     elif args.check == "final":
         final()
 

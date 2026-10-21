@@ -66,11 +66,12 @@
 		   (end
 		    (if (= block-kind 3) (+ base 32736)
 		      (if (= block-kind 4) (+ base 8192)
-			(heap-read-u64 base 8)))))
+			(if (= block-kind 6) (heap-read-u64 st 168)
+			  (heap-read-u64 base 8))))))
 		(if (and (>= w base) (< w end))
 		    (if (= kind 1)
 			(if
-			    (and (= block-kind 3) (= (logand w 31) 0)
+			    (and (or (= block-kind 3) (= block-kind 6)) (= (logand w 31) 0)
 				 (/= (heap-read-u64 w 24) 0))
 			    (seq (ptr-write-u64 st 136 w) 1)
 			  0)
@@ -163,6 +164,25 @@
       (let* ((n (heap-read-u64 s 8)))
         (if (< n 0) (logand (heap-read-u64 s 0) 9223372036854775807) n)))
     (defun nl_string_header_p (s) (nl_string_mapping_op s 0 1))
+    ;; Pool-less strings of a restored cold image (pdumper.c:2084 dump_string):
+    ;; the image's last block is a footer naming its header area, a run of
+    ;; 32-byte headers.  Registering the area as mapping kind 6 makes every
+    ;; header validate like a pool header; nothing ever sweeps, moves or marks
+    ;; them (pdumper_marked_p covers dump strings in GNU; strings have no
+    ;; children, so a skipped mark loses nothing).  1 when an area was attached.
+    (defun nl_string_image_attach (ds slen)
+      (let* ((st (data-addr nl_strings_state)) (f (+ ds (- slen 32))))
+        (if (< slen 64) 0
+          (if (/= (heap-read-u64 f 0) 32) 0
+            (if (/= (heap-read-u64 f 8) 21754191157611598) 0
+              (let* ((lo (+ ds (heap-read-u64 f 16))) (hi (+ ds (heap-read-u64 f 24))))
+                (if (or (> lo hi) (> hi f) (/= (logand lo 31) 0)) 0
+                  (if (= (nl_string_register_mapping lo hi 6) 0) 0
+                    (seq (ptr-write-u64 st 160 lo) (ptr-write-u64 st 168 hi)
+                         (if (or (= (heap-read-u64 st 96) 0) (< lo (heap-read-u64 st 96)))
+                             (ptr-write-u64 st 96 lo) 0)
+                         (if (> hi (heap-read-u64 st 104)) (ptr-write-u64 st 104 hi) 0)
+                         1)))))))))
 
     (defun nl_string_word_p (w)
       (if (= (logand w 7) 4) (nl_string_header_p (- w 4)) 0))
@@ -392,10 +412,12 @@
         (if (= s 0) 0 (+ s 4))))
     (defun nl_string_mark (s)
       (if (= (nl_string_header_p s) 0) 0
+        (if (if (>= s (heap-read-u64 (data-addr nl_strings_state) 160))
+                (< s (heap-read-u64 (data-addr nl_strings_state) 168)) 0) 0
         (if (< (heap-read-u64 s 0) 0) 0
           (seq (ptr-write-u64 s 0 (logior (heap-read-u64 s 0) -9223372036854775808))
                (if (/= (heap-read-u64 s 16) 0)
-                   (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1))))
+                   (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1)))))
     (defun nl_string_unmark ()
       (let* ((st (data-addr nl_strings_state)) (b (heap-read-u64 st 0)))
         (while (/= b 0)
