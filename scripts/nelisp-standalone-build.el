@@ -15497,11 +15497,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              1)))
     (defun wf_bytecode_error (env opcode offset out)
       (let* ((buf (alloc-bytes 56 1))
-             (mark (nl_root_mark env))
-             (fmt (nl_root_reserve env))
-             (nil-slot (nl_root_reserve env))
-             (offset-list (nl_root_reserve env))
-             (number-list (nl_root_reserve env)))
+             (fmt (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8))
+             (offset-list (alloc-bytes 32 8))
+             (number-list (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 buf 0 8245933071047814773)
          (ptr-write-u64 buf 8 7310601557486364020)
@@ -15519,7 +15518,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; own boundary: a signal stashed by this nested VM helper is lost
          ;; when its nonzero helper return is converted by the caller.
          (nelisp_cons_construct fmt number-list out)
-         (nl_root_release env mark)
          (ptr-write-u64 268436360 0 1)
          1)))
     (defun wf_bytecode_fail (env mark opcode offset out)
@@ -15558,44 +15556,39 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_call_named_value (env mem sp argc name name_len lisp_provider)
       ;; Bytecode opcodes that correspond directly to built-in primitives
       ;; resolve and call the native function through the same core path as
-      ;; ordinary bytecode calls.  Keep the argument list and result rooted
-      ;; across the call, then replace the first operand word with its result.
-      (let* ((mark (nl_root_mark env))
-             (arglist (nl_root_reserve env))
-             (call-result (nl_root_reserve env))
-             (sym-slot (nl_root_reserve env))
-             (builtin-slot (nl_root_reserve env))
-             (nil-slot (nl_root_reserve env))
-             (tail-slot (nl_root_reserve env))
-             (func-slot (nl_root_reserve env))
-             (first (- sp argc)))
+      ;; ordinary bytecode calls (GNU's Bcall of a subr).  The argument list
+      ;; and the callee are WORDs built from the operand words; the apply
+      ;; path keeps them in its activation.  The result replaces the first
+      ;; operand word.
+      (let* ((first (- sp argc))
+             (arglist 3) (k argc) (sym (alloc-bytes 32 8)) (func 0) (rw 0))
         (seq
-         (wf_write_nil arglist)
-         (wf_bytecode_w_build_args mem first argc arglist)
-         (nl_alloc_symbol name name_len sym-slot)
+         (while (> k 0)
+           (seq (setq arglist
+                      (wf_bytecode_w_cons2
+                       (heap-read-u64 (+ mem (* (+ first (- k 1)) 8)) 0) arglist))
+                (setq k (- k 1))))
+         (nl_alloc_symbol name name_len sym)
          ;; Apply a source-owned Lisp provider only when the opcode table
          ;; explicitly requests one; ordinary names use builtin tokens.
          (if (= lisp_provider 1)
-             (wf_bytecode_copy func-slot sym-slot)
-           (let ((builtin-name (alloc-bytes 8 8)))
+             (setq func sym)
+           (let ((builtin-name (alloc-bytes 8 8))
+                 (builtin-sym (alloc-bytes 32 8)))
              (seq
               (ptr-write-u8 builtin-name 0 98) (ptr-write-u8 builtin-name 1 117)
               (ptr-write-u8 builtin-name 2 105) (ptr-write-u8 builtin-name 3 108)
               (ptr-write-u8 builtin-name 4 116) (ptr-write-u8 builtin-name 5 105)
               (ptr-write-u8 builtin-name 6 110) (ptr-write-u8 builtin-name 7 0)
-              (nl_alloc_symbol builtin-name 7 builtin-slot)
-              (wf_write_nil nil-slot)
-              (nelisp_cons_construct sym-slot nil-slot tail-slot)
-              (nelisp_cons_construct builtin-slot tail-slot func-slot))))
+              (nl_alloc_symbol builtin-name 7 builtin-sym)
+              (setq func (wf_bytecode_w_cons2 builtin-sym (wf_bytecode_w_cons2 sym 3))))))
          ;; Use the same evaluator boundary as the generic native gateway.
          ;; Core symbol-cell operations (FSET and SYMBOL-FUNCTION, including
          ;; nil/t) are not fully represented by the reader-only dispatcher.
-         (let* ((rw (nl_apply_function_w func-slot arglist env 0)))
-           (if (/= rw 0)
-               (seq (wf_bytecode_w_store mem first rw)
-                    (nl_root_release env mark)
-                    0)
-             (seq (nl_root_release env mark) 1))))))
+         (setq rw (nl_apply_function_w func arglist env 0))
+         (if (/= rw 0)
+             (seq (ptr-write-u64 (+ mem (* first 8)) 0 rw) 0)
+           1))))
     ;; Existing evaluator/tagged-vector access (minimal-native clauses 1/2).
     ;; The VM operands already occupy precise root-stack slots. Retain the
     ;; checked primitive's mutation, persistence, and result-copy operations;
@@ -15866,13 +15859,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
           ((= opcode 127) (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 101) (ptr-write-u8 name 18 110) (ptr-write-u8 name 19 100) (ptr-write-u8 name 20 45) (ptr-write-u8 name 21 111) (ptr-write-u8 name 22 102) (ptr-write-u8 name 23 45) (ptr-write-u8 name 24 108) (ptr-write-u8 name 25 105) (ptr-write-u8 name 26 110) (ptr-write-u8 name 27 101)
              (wf_bytecode_call_named_value env mem sp 1 name 28 1)))
           (t 1))))
-    (defun wf_bytecode_call_throw (env slots arg-first argc)
-      ;; Operands are evaluated already; share GNU throw-site target checking.
-      (if (= argc 2)
-          (nl_ct_throw_after_val
-           0 (wf_bytecode_slot slots (+ arg-first 1))
-           (wf_bytecode_slot slots arg-first) env)
-        2))
     (defun wf_bytecode_call_root_frame (env argc)
       ;; Reserve function + argc operands + argument list + result + function
       ;; cell probe as one
@@ -15903,139 +15889,69 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_call_gateway (env function-slot slots arg-first argc out-slot)
       ;; Shared call boundary for the VM and native callers. FUNCTION-SLOT,
       ;; every argument slot in SLOTS, and OUT-SLOT are borrowed full Sexp
-      ;; slots that the caller keeps live across this call. Stage the function
-      ;; and arguments in contiguous root-stack slots before invoking anything;
-      ;; the input frame itself need not be a GC root. The gateway owns its
-      ;; staged slots, proper argument list, and result root through return.
+      ;; slots that the caller keeps live across this call. The function and
+      ;; arguments go into a WORD frame on the root stack before anything is
+      ;; invoked (the input frame itself need not be a GC root), and the call
+      ;; is the apply path's, which keeps its argument list in its activation.
       ;; Binding depth, handlers, and unwind state stay owned by the caller.
       ;; Returns 0 after OUT-SLOT receives a normal value, 1 with the existing
       ;; signal/nonlocal-exit stash intact, or 2 for an invalid slot range.
       (if (or (< argc 0) (< arg-first 0))
           2
         (let* ((mark (nl_root_mark env))
-               (roots (wf_bytecode_call_root_frame env argc)))
+               (roots (nl_root_frame env (+ argc 1))))
           (if (= roots 0)
               (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-            (let* ((function roots)
-                   (rooted-args (+ roots 32))
-                   (arglist (+ roots (* (+ argc 1) 32)))
-                   (result (+ roots (* (+ argc 2) 32)))
-                   (function-cell (+ roots (* (+ argc 3) 32)))
-                   (w 0)
-                   (i 0))
-             (seq
-           ;; These adjacent slots are visible to the precise root scanner.
-           (wf_bytecode_copy function function-slot)
-           (setq i 0)
-           (while (< i argc)
-             (seq (wf_bytecode_copy (+ rooted-args (* i 32))
-                                    (wf_bytecode_slot slots (+ arg-first i)))
-                  (setq i (+ i 1))))
-           (wf_write_nil arglist)
-           (let* ((throw-name (if (= (sexp-tag function) 4)
-                                  (= (symbol-name-eq function "throw") 1) 0))
-                  (lookup-rc (if (= (sexp-tag function) 4)
-                                 (nelisp_env_lookup_function
-                                  (+ env 0) (+ env 64) function function-cell)
-                               1))
-                  (builtin-throw (if (and (= throw-name 1)
-                                           (or (/= lookup-rc 0)
-                                               (= (sexp-tag function-cell) 1)))
-                                     1 0))
-                  (flat-os (if (and (= argc 3) (= lookup-rc 0))
-                               (wf_bytecode_flat_path_int_cell function-cell) 0))
-                  (rc (if (= flat-os 1)
-                          ;; The negative pointer is an internal evaluator ABI,
-                          ;; never a Lisp value: its published header is argc,
-                          ;; with the owned contiguous arguments just before it.
-                          (seq (wf_write_int arglist argc)
-                               (setq w (nl_apply_function_w function-cell (- 0 arglist) env 0))
-                               (if (= w 0) 1 0))
-                        (seq (wf_bytecode_build_args roots 1 argc arglist)
-                        (if (= builtin-throw 1)
-                          (if (= argc 2)
-                              (wf_bytecode_call_throw env roots 1 argc)
-                            (bf_wrong_number_of_args function argc))
-                        ;; A rebound function cell follows ordinary call
-                        ;; semantics, including its own arity checks.
-                        (seq (setq w (nl_apply_function_w function arglist env 0))
-                             (if (= w 0) 1 0)))))))
-             (seq
-              (if (and (= rc 0) (/= w 0)) (wf_bytecode_w_load out-slot w) 0)
-              (nl_root_release env mark)
-              rc))))))))
-    (defun wf_bytecode_call_interpreted_gateway (env function-slot slots arg-first argc out-slot)
-      ;; Shared call boundary for the VM and native callers. FUNCTION-SLOT,
-      ;; every argument slot in SLOTS, and OUT-SLOT are borrowed full Sexp
-      ;; slots that the caller keeps live across this call. Stage the function
-      ;; and arguments in contiguous root-stack slots before invoking anything;
-      ;; the input frame itself need not be a GC root. The gateway owns its
-      ;; staged slots, proper argument list, and result root through return.
-      ;; Binding depth, handlers, and unwind state stay owned by the caller.
-      ;; Returns 0 after OUT-SLOT receives a normal value, 1 with the existing
-      ;; signal/nonlocal-exit stash intact, or 2 for an invalid slot range.
-      (if (or (< argc 0) (< arg-first 0))
-          2
-        (let* ((mark (nl_root_mark env))
-               (roots (wf_bytecode_call_root_frame env argc)))
-          (if (= roots 0)
-              (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-            (let* ((function roots)
-                   (rooted-args (+ roots 32))
-                   (arglist (+ roots (* (+ argc 1) 32)))
-                   (result (+ roots (* (+ argc 2) 32)))
-                   (function-cell (+ roots (* (+ argc 3) 32)))
-                   (i 0))
-             (seq
-           ;; These adjacent slots are visible to the precise root scanner.
-           (wf_bytecode_copy function function-slot)
-           (setq i 0)
-           (while (< i argc)
-             (seq (wf_bytecode_copy (+ rooted-args (* i 32))
-                                    (wf_bytecode_slot slots (+ arg-first i)))
-                  (setq i (+ i 1))))
-           (wf_write_nil arglist)
-           (let* ((throw-name (if (= (sexp-tag function) 4)
-                                  (= (symbol-name-eq function "throw") 1) 0))
-                  (lookup-rc (if (= (sexp-tag function) 4)
-                                 (nelisp_env_lookup_function
-                                  (+ env 0) (+ env 64) function function-cell)
-                               1))
-                  (builtin-throw (if (and (= throw-name 1)
-                                           (or (/= lookup-rc 0)
-                                               (= (sexp-tag function-cell) 1)))
-                                     1 0))
-                  (native (if (= (sexp-tag function) 18) function
-                            (if (and (= lookup-rc 0) (= (sexp-tag function-cell) 18)) function-cell 0)))
-                  (direct (if (> native 0) (= (record-slot-count native) 10) 0))
-                  (rc (if (= direct 1)
-                          ;; The owned contiguous argument roots are already
-                          ;; published. A native subr consumes them directly,
-                          ;; avoiding an allocating intermediate proper list.
-                          (nl_apply_rooted_subr_frame native rooted-args argc env result)
-                        (if (= (wf_bytecode_builtin_difference
-                                (if (= lookup-rc 0) function-cell function)
-                                rooted-args argc result) 0)
-                            0
-                        (let ((bytecode-status
-                               (wf_bytecode_function_frame
-                                (if (= lookup-rc 0) function-cell function)
-                                rooted-args argc env result)))
-                          (if (/= bytecode-status 2) bytecode-status
-                        (seq (wf_bytecode_build_args roots 1 argc arglist)
-                        (if (= builtin-throw 1)
-                          (if (= argc 2)
-                              (wf_bytecode_call_throw env roots 1 argc)
-                            (bf_wrong_number_of_args function argc))
-                        ;; A rebound function cell follows ordinary call
-                        ;; semantics, including its own arity checks.
-                        (let ((aw (nl_apply_function_w function arglist env 0)))
-                          (if (= aw 0) 1
-                            (seq (wf_bytecode_w_load result aw) 0)))))))))))
-             (seq
-              (if (= rc 0) (wf_bytecode_copy out-slot result) 0)
-              (nl_root_release env mark)
-              rc))))))))
+            (let* ((i 0) (rc 0) (w 0))
+              (seq
+               (nl_val_clone_into function-slot roots)
+               (while (< i argc)
+                 (seq (nl_val_clone_into (wf_bytecode_slot slots (+ arg-first i))
+                                         (+ roots (* (+ i 1) 8)))
+                      (setq i (+ i 1))))
+               (let* ((function (heap-read-u64 roots 0))
+                      (ftag (nl_val_tag function))
+                      (fcell (if (= ftag 4)
+                                 (nelisp_env_lookup_function_w (+ env 0) (+ env 64) function 0)
+                               2))
+                      (builtin-throw (if (if (= ftag 4) (= (symbol-name-eq function "throw") 1) 0)
+                                         (if (= fcell 2) 1 (if (= (nl_val_tag fcell) 1) 1 0))
+                                       0))
+                      (flat-os (if (= argc 3)
+                                   (if (= fcell 2) 0 (wf_bytecode_flat_path_int_cell fcell))
+                                 0)))
+                 (if (= flat-os 1)
+                     ;; The negative pointer is an internal evaluator ABI,
+                     ;; never a Lisp value: its published header is argc,
+                     ;; with the owned contiguous arguments just before it.
+                     (let* ((blk (alloc-bytes (* (+ argc 1) 32) 8)) (j 0))
+                       (seq
+                        (while (< j argc)
+                          (seq (wf_bytecode_copy (+ blk (* j 32))
+                                                 (wf_bytecode_slot slots (+ arg-first j)))
+                               (setq j (+ j 1))))
+                        (wf_write_int (+ blk (* argc 32)) argc)
+                        (setq w (nl_apply_function_w fcell (- 0 (+ blk (* argc 32))) env 0))
+                        (setq rc (if (= w 0) 1 0))))
+                   (if (= builtin-throw 1)
+                       (setq rc (if (= argc 2)
+                                    (nl_ct_throw_words env (heap-read-u64 (+ roots 8) 0)
+                                                       (heap-read-u64 (+ roots 16) 0))
+                                  (bf_wrong_number_of_args function argc)))
+                     ;; A rebound function cell follows ordinary call
+                     ;; semantics, including its own arity checks.
+                     (let* ((arglist 3) (k argc))
+                       (seq
+                        (while (> k 0)
+                          (seq (setq arglist
+                                     (wf_bytecode_w_cons2
+                                      (heap-read-u64 (+ roots (* k 8)) 0) arglist))
+                               (setq k (- k 1))))
+                        (setq w (nl_apply_function_w function arglist env 0))
+                        (setq rc (if (= w 0) 1 0)))))))
+               (if (if (= rc 0) (/= w 0) 0) (wf_bytecode_w_load out-slot w) 0)
+               (nl_root_release env mark)
+               rc))))))
     ;; Evaluator entry (minimal-native clause 2). All words are authenticated
     ;; indices. The caller's roots remain published while the gateway stages
     ;; private roots; no heap value is carried in an unrooted machine local.
@@ -16884,27 +16800,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
            rc))))
     (defun wf_bytecode_legacy (env mem sp opcode argc)
       ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
-      ;; The rooted registry precedes user code; never use a public cell.
-      (let* ((mark (nl_root_mark env))
-             (registry (nl_root_reserve env))
-             (function (nl_root_reserve env))
-             (result (nl_root_reserve env))
+      ;; The registry precedes user code; never use a public cell.  The
+      ;; provider is applied to the operand words.
+      (let* ((rw (bf_dynamic_lookup_w env 'nelisp-bytecode-legacy-providers 0))
              (index (if (= opcode 139) 0 (if (= opcode 141) 1
                        (if (= opcode 143) 2 (if (= opcode 144) 3 4)))))
-             (rc (bf_dynamic_lookup env 'nelisp-bytecode-legacy-providers registry)))
-        (seq
-         (if (= rc 0)
-             (seq
-              (while (> index 0)
-                (seq (wf_bytecode_w_load registry (nl_cons_cdr_word registry))
-                     (setq index (- index 1))))
-              (wf_bytecode_w_load function (nl_cons_cdr_word (nl_cons_car_word registry)))
-              (let* ((st (wf_bytecode_w_stage env mem (- sp argc) argc)))
-                (setq rc (if (= st 0) (wf_bytecode_root_exhausted)
-                           (wf_bytecode_call_gateway env function st 0 argc result))))
-              (if (= rc 0)
-                  (wf_bytecode_w_store mem (- sp argc) result) 0)) 0)
-         (nl_root_release env mark) rc)))
+             (first (- sp argc))
+             (arglist 3) (k argc) (r 0))
+        (if (if (= rw 0) 1 (= rw 2))
+            1
+          (seq
+           (while (> index 0)
+             (seq (setq rw (nl_cons_cdr_word rw))
+                  (setq index (- index 1))))
+           (while (> k 0)
+             (seq (setq arglist
+                        (wf_bytecode_w_cons2
+                         (heap-read-u64 (+ mem (* (+ first (- k 1)) 8)) 0) arglist))
+                  (setq k (- k 1))))
+           (setq r (nl_apply_function_w
+                    (nl_cons_cdr_word (nl_cons_car_word rw)) arglist env 0))
+           (if (= r 0)
+               1
+             (seq (ptr-write-u64 (+ mem (* first 8)) 0 r) 0))))))
     (defun wf_bytecode_save_state (env aux opcode)
       ;; The interpreter and native frame policy use the SAME Lisp factory
       ;; (the value of `nelisp-bytecode-cleanup-factory'), called with the
@@ -17228,11 +17146,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (bf_wrong_type_listp value)))))
     (defun wf_bytecode_circular_list (env value)
       (let* ((sig-tag (alloc-bytes 32 8))
-             (sig-val (alloc-bytes 32 8))
-             (name (alloc-bytes 16 1))
-             (mark (nl_root_mark env))
-             (nil-slot (nl_root_reserve env))
-             (args (nl_root_reserve env)))
+             (name (alloc-bytes 16 1)))
         (seq
          (ptr-write-u64 name 0 8241988044500134243)
          (ptr-write-u64 (+ name 8) 0 500152495149)
@@ -17241,11 +17155,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; in VAL leaves TAG stale, so an enclosing condition-case cannot
          ;; match this error.
          (nl_alloc_symbol name 13 sig-tag)
-         (wf_write_nil nil-slot)
-         (nelisp_cons_construct value nil-slot args)
-         (wf_bytecode_copy sig-val args)
-         (nl_exit_signal_w sig-tag sig-val)
-         (nl_root_release env mark)
+         (nl_exit_signal_w sig-tag (wf_bytecode_w_cons2 value 3))
          1)))
     (defun wf_bytecode_nreverse_list (env value out)
       ;; Reverse the cdr words in place.  VALUE stays rooted by the caller,
@@ -17325,8 +17235,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_alloc_unibyte_str buf nbytes out)
           (nl_alloc_str buf nbytes out))))
     (defun wf_bytecode_rem (env slots sp)
-      (let* ((mark2 (nl_root_mark env))
-             (args (nl_root_reserve env))
+      (let* ((args (alloc-bytes 32 8))
              (left (wf_bytecode_slot slots (- sp 2)))
              (right (wf_bytecode_slot slots (- sp 1)))
              (status 0))
@@ -17355,7 +17264,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (wf_write_int left (- a (* b (/ a b))))))
                (seq (bf_wrong_type_int_or_marker bad)
                     (setq status 1)))))
-         (nl_root_release env mark2)
          status)))
     (defun wf_bytecode_predicate (opcode value)
       (let* ((tag (sexp-tag value)))
@@ -17464,38 +17372,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         -1)))
                 -1))
           -1)))
-    (defun wf_bytecode_copy_arg_tail (env source out)
+    (defun wf_bytecode_copy_arg_tail (env source)
       ;; &rest receives a fresh list spine, while its elements retain
-      ;; their original identities as in funcall_lambda.  RESULT roots the
-      ;; spine built so far; TAIL is its last cell.  SOURCE is a word.
-      (let* ((mark (nl_root_mark env))
-             (result (nl_root_reserve env))
-             (tmp (nl_root_reserve env))
-             (cursor source)
-             (tail 0) (cell 0))
-        (seq (wf_write_nil result)
-             (while (= (wf_bytecode_w_consp cursor) 1)
+      ;; their original identities as in funcall_lambda.  Answers the spine
+      ;; (a WORD); SOURCE is a word.  Allocation only, so nothing collects.
+      (let* ((result 3) (cursor source) (tail 0) (cell 0))
+        (seq (while (= (wf_bytecode_w_consp cursor) 1)
                (seq
-                (setq cell (wf_bytecode_w_cons (heap-read-u64 (nl_word_payload cursor) 0) 3 tmp))
+                (setq cell (wf_bytecode_w_cons2 (heap-read-u64 (nl_word_payload cursor) 0) 3))
                 (if (= tail 0)
-                    (wf_bytecode_w_load result cell)
+                    (setq result cell)
                   (seq (wf_dirty)
                        (ptr-write-u64 (nl_word_payload tail) 8 (nl_word_canon cell))))
                 (setq tail cell)
                 (setq cursor (heap-read-u64 (nl_word_payload cursor) 8))))
-             (wf_bytecode_copy out result)
-             (nl_root_release env mark)
-             0)))
+             result)))
     (defun wf_bytecode_bind_arglist (env formals args argc)
-      ;; FORMALS is a word, ARGS a rooted list view.  VALUE is reserved once,
-      ;; before any binder runs; the binder copies it.
-      (let* ((mark (nl_root_mark env))
-             (value (nl_root_reserve env))
-             (params formals)
+      ;; FORMALS is a word, ARGS a list word.  Each binder copies the value
+      ;; it is handed.
+      (let* ((params formals)
              (arg-cursor args)
              (index 0) (state 0) (bound 0) (done 0) (word 3))
         (seq
-         (wf_write_nil value)
          (while (if (= done 0) (wf_bytecode_w_consp params) 0)
            (let* ((name (heap-read-u64 (nl_word_payload params) 0))
                   (tail (heap-read-u64 (nl_word_payload params) 8)))
@@ -17503,23 +17401,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq (setq state 1) (setq params tail))
                (if (= (wf_bytecode_rest_marker_p name) 1)
                    (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0)))
-                     (seq (wf_bytecode_copy_arg_tail env arg-cursor value)
-                          (wf_bytecode_varbind env rest-name value)
+                     (seq (wf_bytecode_varbind env rest-name
+                                               (wf_bytecode_copy_arg_tail env arg-cursor))
                           (setq bound (+ bound 1))
                           (setq params 3)
                           (setq done 1)))
                  (seq
                   (if (< index argc)
                       (seq (setq word (heap-read-u64 (nl_word_payload arg-cursor) 0))
-                           (wf_bytecode_w_load value word)
                            (setq arg-cursor (heap-read-u64 (nl_word_payload arg-cursor) 8))
                            (setq index (+ index 1)))
-                    (seq (setq word 3) (wf_write_nil value)))
-                  (wf_bytecode_varbind env name
-                    (if (= (logand word 1) 1) word value))
+                    (setq word 3))
+                  (wf_bytecode_varbind env name word)
                   (setq bound (+ bound 1))
                   (setq params tail))))))
-         (nl_root_release env mark)
          bound)))
     (defun wf_bytecode_dynamic_function (func formals args argc env out)
       (let* ((shape (wf_bytecode_arglist_shape formals 0 0 0)))
@@ -17541,10 +17436,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_bind_argframe (env formals frame argc)
       ;; The caller keeps all FRAME values rooted. Rest owns one fresh spine;
       ;; no intermediate proper argument list is visible to the callee.
-      (let* ((mark (nl_root_mark env)) (value (nl_root_reserve_checked env))
+      (let* ((value (alloc-bytes 32 8))
              (params formals) (index 0) (bound 0) (done 0) (i 1))
         (if (= value 0)
-            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted) -1)
+            (seq (wf_bytecode_root_exhausted) -1)
           (seq
         (wf_write_nil value)
         (while (if (= done 0) (wf_bytecode_w_consp params) 0)
@@ -17570,7 +17465,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (wf_write_nil value))
                  (wf_bytecode_varbind env name value)
                  (setq bound (+ bound 1) params tail))))))
-        (nl_root_release env mark)
         bound))))
     (defun wf_bytecode_dynamic_function_frame (func formals frame argc env out)
       ;; Evaluator entry (clause 2), sharing the original formal validation,
@@ -17592,10 +17486,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             env out 0 0 0 0 0 0 0 0))))
                 (seq (if (< bound 0) 0 (wf_bytecode_unbind (+ env 32) bound)) rc)))))))
     (defun wf_bytecode_jit_dispatch_active_p (env)
-      (let* ((mark (nl_root_mark env))
-             (name-buf (alloc-bytes 40 8))
-             (name (nl_root_reserve env))
-             (value (nl_root_reserve env))
+      (let* ((name-buf (alloc-bytes 40 8))
+             (name (alloc-bytes 32 8))
+             (value (alloc-bytes 32 8))
              (active 0))
         (seq
          (ptr-write-u64 name-buf 0 7074434230661178734)
@@ -17612,7 +17505,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= (bf_dynamic_lookup env name value) 0)
                (if (= (sexp-tag value) 1) (setq active 1) 0)
              0))
-         (nl_root_release env mark)
          active)))
     ;; EvalCtx flags bit 2 is sticky after runtime hook installation.
     ;; The baked prelude has only the nil-returning fallback. Live hook and
@@ -17620,97 +17512,59 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_note_jit_install (name env)
       (if (= (sexp-name-eq name "nelisp-bytecode-jit--runtime-dispatch") 1)
           (ptr-write-u64 env 112 (logior (heap-read-u64 env 112) 4)) 0))
-    (defun wf_bytecode_try_jit_frame_w (func args argc env frame)
+    (defun wf_bytecode_try_jit_frame_w (func args argc env frame words)
       ;; 2 is a miss, 0 a stashed exit; all other results are value WORDs.
+      ;; The arguments come from the list ARGS, from the rooted views at
+      ;; FRAME or from the WORDs at WORDS.
       (if (> argc 2) 2
         (if (= (logand (heap-read-u64 env 112) 4) 0)
             ;; No callback can observe the call. Literal eligibility itself
             ;; validates a nullary descriptor; all other callers retain
             ;; their original executor and arity-error path.
             (if (= argc 0) (wf_bytecode_literal_value_w func 0) 2)
-        (let* ((mark (nl_root_mark env))
-               (name-buf (alloc-bytes 40 8))
-               (name-slot (nl_root_reserve env))
-               ;; An unbound JIT hook needs only its lookup roots. Callback
-               ;; argument/result slots are reserved after a callable is found.
-               (fn-slot 0) (arglist 0) (tail 0) (result 0) (nil-slot 0)
-               (status 2))
-          (seq
-           (ptr-write-u64 name-buf 0 7074434230661178734)
-           (ptr-write-u64 (+ name-buf 8) 0 3271131133926274169)
-           (ptr-write-u64 (+ name-buf 16) 0 7959393454808918378)
-           (ptr-write-u64 (+ name-buf 24) 0 8316288333054306676)
-           (ptr-write-u64 (+ name-buf 32) 0 448345170288)
-           (if (/= (nl_intern_lookup name-buf 37 name-slot) 0)
-               (seq
-                (setq fn-slot (nl_root_reserve env))
-                (let* ((mirror (+ env 0))
-                       (unbound (+ env 64))
-                       (lookup (nelisp_env_lookup_function mirror unbound name-slot fn-slot)))
-                  (if (= lookup 0)
-                      (if (= (wf_bytecode_jit_dispatch_active_p env) 0)
-                          (let* ((rc 2)
-                                 (call-result
-                                  (seq (setq arglist (nl_root_reserve env))
-                                       (setq tail (nl_root_reserve env))
-                                       (setq result (nl_root_reserve env))
-                                       (setq nil-slot (nl_root_reserve env))
-                                       (wf_write_nil tail) nil-slot)))
-                            ;; Reuse three already published roots as callback
-                            ;; arguments. The fourth root owns its result; the
-                            ;; original caller frame and function stay live.
-                            (if (and (> arglist 0) (= tail (+ arglist 32))
-                                     (= result (+ arglist 64))
-                                     (= nil-slot (+ arglist 96)))
-                                (seq
-                                 (wf_copy32 arglist func)
-                                 (if (> argc 0)
-                                     (wf_bytecode_w_view_into tail
-                                      (if (> frame 0) frame (nl_cons_car_word args))) 0)
-                                 (if (> argc 1)
-                                     (wf_bytecode_w_view_into result
-                                      (if (> frame 0) (+ frame 32)
-                                        (nl_cons_car_word (nl_cons_cdr_word args)))) 0)
-                                 (setq rc (wf_bytecode_function_frame
-                                           fn-slot arglist (+ argc 1) env nil-slot)))
-                              0)
-                            ;; Source closures, aliases, and other callable
-                            ;; representations retain their proper-list ABI.
-                            (if (= rc 2)
-                                (seq
-                                 (wf_write_nil arglist)
-                                 (wf_write_nil nil-slot)
-                                 (if (= argc 2)
-                                     (seq
-                                      (nelisp_cons_construct
-                                       (if (> frame 0) (+ frame 32)
-                                         (nl_cons_car_word (nl_cons_cdr_word args))) nil-slot tail)
-                                      (nelisp_cons_construct
-                                       (if (> frame 0) frame (nl_cons_car_word args)) tail arglist)
-                                      (nelisp_cons_construct func arglist tail))
-                                   (if (= argc 1)
-                                       (seq
-                                        (nelisp_cons_construct
-                                         (if (> frame 0) frame (nl_cons_car_word args)) nil-slot arglist)
-                                        (nelisp_cons_construct func arglist tail))
-                                     (seq
-                                      (wf_write_nil arglist)
-                                      (nelisp_cons_construct func arglist tail))))
-                                 (setq call-result (nl_apply_function_w fn-slot tail env 0))
-                                 (setq rc (if (= call-result 0) 1 0)))
-                              0)
-                             (if (/= rc 0)
-                                 (if (/= (heap-read-u64 268435472 0) 0) (setq status 0) 0)
-                               (if (and (= (wf_bytecode_w_tag call-result) 8)
-                                        (= (vector-len call-result) 2)
-                                        (= (wf_bytecode_w_tag (nl_vector_slot_word call-result 0)) 1))
-                                   (setq status (nl_vector_slot_word call-result 1))
-                                 0)))
-                        0)
-                    0)))
-             0)
-           (nl_root_release env mark)
-           status)))))
+          (let* ((name-buf (alloc-bytes 40 8))
+                 (name (alloc-bytes 32 8))
+                 (status 2))
+            (seq
+             (ptr-write-u64 name-buf 0 7074434230661178734)
+             (ptr-write-u64 (+ name-buf 8) 0 3271131133926274169)
+             (ptr-write-u64 (+ name-buf 16) 0 7959393454808918378)
+             (ptr-write-u64 (+ name-buf 24) 0 8316288333054306676)
+             (ptr-write-u64 (+ name-buf 32) 0 448345170288)
+             (if (/= (nl_intern_lookup name-buf 37 name) 0)
+                 (let* ((fnw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)))
+                   (if (= fnw 2)
+                       0
+                     (if (= (wf_bytecode_jit_dispatch_active_p env) 0)
+                         ;; The callback gets (FUNC ARG...) as a proper list.
+                         (let* ((a0 (if (> argc 0)
+                                        (if (> words 0) (heap-read-u64 words 0)
+                                          (if (> frame 0)
+                                              (nl_val_clone_into frame (alloc-bytes 8 8))
+                                            (nl_cons_car_word args)))
+                                      3))
+                                (a1 (if (> argc 1)
+                                        (if (> words 0) (heap-read-u64 (+ words 8) 0)
+                                          (if (> frame 0)
+                                              (nl_val_clone_into (+ frame 32) (alloc-bytes 8 8))
+                                            (nl_cons_car_word (nl_cons_cdr_word args))))
+                                      3))
+                                (lst (wf_bytecode_w_cons2
+                                      func
+                                      (if (= argc 2)
+                                          (wf_bytecode_w_cons2 a0 (wf_bytecode_w_cons2 a1 3))
+                                        (if (= argc 1) (wf_bytecode_w_cons2 a0 3) 3))))
+                                (r (nl_apply_function_w fnw lst env 0)))
+                           (if (= r 0)
+                               (if (/= (heap-read-u64 268435472 0) 0) (setq status 0) 0)
+                             (if (and (= (wf_bytecode_w_tag r) 8)
+                                      (= (vector-len r) 2)
+                                      (= (wf_bytecode_w_tag (nl_vector_slot_word r 0)) 1))
+                                 (setq status (nl_vector_slot_word r 1))
+                               0)))
+                       0)))
+               0)
+             status)))))
     (defun wf_bytecode_function_frame (func frame argc env out)
       ;; Evaluator entry (minimal-native clause 2). FRAME is a live,
       ;; contiguous caller-owned root frame. Retain the ordinary JIT callback
@@ -17723,7 +17577,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
                   (wf_bytecode_dynamic_function_frame func dw frame argc env out)
                 2)
-            (let* ((jit-word (wf_bytecode_try_jit_frame_w func 0 argc env frame)))
+            (let* ((jit-word (wf_bytecode_try_jit_frame_w func 0 argc env frame 0)))
               (if (= jit-word 0) 1
                 (if (/= jit-word 2) (seq (wf_bytecode_w_load out jit-word) 0)
                   (let* ((template (wf_bytecode_w_int dw))
@@ -17764,22 +17618,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
               2))
         2))
     (defun wf_bytecode_function_w (func args env _pad)
-      ;; The VM publishes its result WORD in a rooted vector. OUT is only
-      ;; error/JIT scratch; no physical result is decoded at this boundary.
+      ;; The VM publishes its result WORD in a one-slot WORD frame (GNU's
+      ;; exec_byte_code returns its value in a C local); no vector and no
+      ;; 32-byte view is made for a call.
       (let* ((mark (nl_root_mark env))
-             (out (nl_root_reserve env)) (result (nl_root_reserve env)))
+             (result (nl_root_frame env 1)))
         (if (= result 0)
             (seq (nl_root_release env mark) (nl_abi_fail (wf_bytecode_root_exhausted) 0))
-          (seq
-           (vector-make 1 result)
-           (let* ((word (wf_bytecode_function_result_w func args env out result)))
-             (seq (nl_root_release env mark) word))))))
-    (defun wf_bytecode_function_result_w (func args env out result)
+          (let* ((word (wf_bytecode_function_result_w func args env result)))
+            (seq (nl_root_release env mark) word)))))
+    (defun wf_bytecode_function_result_w (func args env result)
+      ;; RESULT is the address of the WORD slot that receives the value.
       (let* ((argc (bf_byte_code_arg_count args 0))
-             (dw (nl_record_slot_word func 0))
-             (outw (+ (nl_word_payload result) 8)))
+             (dw (nl_record_slot_word func 0)))
         (if (= (wf_bytecode_w_tag dw) 2)
-            (let* ((jit-word (wf_bytecode_try_jit_frame_w func args argc env 0)))
+            (let* ((jit-word (wf_bytecode_try_jit_frame_w func args argc env 0 0)))
               (if (/= jit-word 2)
                   jit-word
                   (let* ((template (wf_bytecode_w_int dw))
@@ -17795,8 +17648,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (nl_record_slot_word func 1)
                                    (nl_record_slot_word func 2)
                                    (wf_bytecode_w_int (nl_record_slot_word func 3))
-                                   env out args argc maxargs rest 0 0 outw 0)))
-                          (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
+                                   env 0 args argc maxargs rest 0 0 result 0)))
+                          (if (= rc 0) (heap-read-u64 result 0) 0)))))))
           (if (if (= (wf_bytecode_w_nilp dw) 1) 1 (wf_bytecode_w_consp dw))
               (let* ((shape (wf_bytecode_arglist_shape dw 0 0 0)))
                 (if (< shape 0)
@@ -17811,39 +17664,38 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (nl_record_slot_word func 1)
                                   (nl_record_slot_word func 2)
                                   (wf_bytecode_w_int (nl_record_slot_word func 3))
-                                  env out 0 0 0 0 0 0 outw 0)))
+                                  env 0 0 0 0 0 0 0 result 0)))
                         (seq (wf_bytecode_unbind (+ env 32) bound)
-                             (if (= rc 0) (nl_vector_slot_word result 0) 0)))))))
-            (nl_abi_fail (bf_wrong_type_fixnump (wf_bytecode_w_view dw out)) 0)))))
+                             (if (= rc 0) (heap-read-u64 result 0) 0)))))))
+            (nl_abi_fail (bf_wrong_type_fixnump (wf_bytecode_w_view dw (alloc-bytes 32 8))) 0)))))
     (defun wf_bytecode_w (args env initial-args initial-argc
                               initial-maxargs initial-rest)
       ;; The public byte-code primitive: ARGS is (CODE CONSTANTS DEPTH).
       ;; The VM publishes its canonical WORD before releasing its frame.
-      ;; OUT is a rooted error view, never the successful result transport.
+      ;; OUT is an error view, never the successful result transport.
       (let* ((c1 (nl_cons_cdr_word args))
              (cp (nl_cons_car_word args)) (vp (nl_cons_car_word c1))
              (depth (wf_bytecode_w_int (nl_cons_car_word (nl_cons_cdr_word c1))))
              (mark (nl_root_mark env))
-             (out (nl_root_reserve_checked env))
+             (out (alloc-bytes 32 8))
              (result (alloc-bytes 8 8)) (word 0))
-        (if (= out 0) (seq (wf_bytecode_root_exhausted) 0)
-          (seq
-           (ptr-write-u64 268436360 0 0)
-           (let* ((cd (nl_bi_strptr cp)) (clen (m5_strlen cp))
-                  (rc (if (and (= clen 2) (= (heap-read-u8 cd 0) 192)
-                               (= (heap-read-u8 cd 1) 135))
-                          (seq (ptr-write-u64 result 0 (nl_vector_slot_word vp 0)) 0)
-                        (wf_bytecode_execute_frame cp vp depth env out
-                         initial-args initial-argc initial-maxargs initial-rest
-                         0 0 result 0))))
-             (if (= (heap-read-u64 268436360 0) 1)
-                 (setq word (bf_error_w out 0))
-               (if (= rc 0) (setq word (heap-read-u64 result 0))
-                 ;; Preserve a pending THROW at the public byte-code boundary.
-                 (if (= (heap-read-u64 268435472 0) 2) 0
-                   (ptr-write-u64 268435472 0 1)))))
-           (nl_root_release env mark)
-           word))))
+        (seq
+         (ptr-write-u64 268436360 0 0)
+         (let* ((cd (nl_bi_strptr cp)) (clen (m5_strlen cp))
+                (rc (if (and (= clen 2) (= (heap-read-u8 cd 0) 192)
+                             (= (heap-read-u8 cd 1) 135))
+                        (seq (ptr-write-u64 result 0 (nl_vector_slot_word vp 0)) 0)
+                      (wf_bytecode_execute_frame cp vp depth env out
+                       initial-args initial-argc initial-maxargs initial-rest
+                       0 0 result 0))))
+           (if (= (heap-read-u64 268436360 0) 1)
+               (setq word (bf_error_w out 0))
+             (if (= rc 0) (setq word (heap-read-u64 result 0))
+               ;; Preserve a pending THROW at the public byte-code boundary.
+               (if (= (heap-read-u64 268435472 0) 2) 0
+                 (ptr-write-u64 268435472 0 1)))))
+         (nl_root_release env mark)
+         word)))
     (defun wf_bytecode_execute (code constants depth-p env out initial-args
                                     initial-argc initial-maxargs initial-rest)
       (wf_bytecode_execute_frame code constants (heap-read-u64 depth-p 8) env out
@@ -17946,7 +17798,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (ptr-write-u64 tmp 16 0)
              (ptr-write-u64 tmp 24 0)
              (+ cell 2))))
-    (defun wf_bytecode_w_list (mem first n tmp)
+    (defun wf_bytecode_w_list (mem first n)
       ;; Replace words FIRST .. FIRST+N-1 by the list of them in word FIRST.
       ;; The partial list lives in the last word, already consumed, so it
       ;; stays rooted while the next cell is allocated.
@@ -17954,11 +17806,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (ptr-write-u64 (+ mem (* first 8)) 0 3) 0)
         (let* ((last (+ mem (* (+ first (- n 1)) 8))) (k (- n 2)))
           (seq
-           (ptr-write-u64 last 0 (wf_bytecode_w_cons (heap-read-u64 last 0) 3 tmp))
+           (ptr-write-u64 last 0 (wf_bytecode_w_cons2 (heap-read-u64 last 0) 3))
            (while (>= k 0)
              (seq (ptr-write-u64
-                   last 0 (wf_bytecode_w_cons (heap-read-u64 (+ mem (* (+ first k) 8)) 0)
-                                              (heap-read-u64 last 0) tmp))
+                   last 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ mem (* (+ first k) 8)) 0)
+                                               (heap-read-u64 last 0)))
                   (setq k (- k 1))))
            (ptr-write-u64 (+ mem (* first 8)) 0 (heap-read-u64 last 0))
            0))))
@@ -17981,22 +17833,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (setq i (+ i 1))
                (setq valid 0))))
          (if (= valid 1) base 0))))
-    (defun wf_bytecode_w_stage (env mem first n)
-      ;; Views of words FIRST .. FIRST+N-1 in N contiguous checked roots, for
-      ;; a callee that takes a rooted 32-byte frame; 0 when the root region
-      ;; is exhausted.  N = 0 answers 1, a frame that is never read.
-      (if (= n 0)
-          1
-        (let* ((base (wf_bytecode_w_roots env n)) (i 0))
-          (seq
-           (if (= base 0)
-               0
-             (while (< i n)
-               (let* ((w (heap-read-u64 (+ mem (* (+ first i) 8)) 0))
-                      (dst (+ base (* i 32))))
-                 (seq (if (= (logand w 1) 0) (wf_copy32 dst w) (nl_sci_store_imm w dst))
-                      (setq i (+ i 1))))))
-           base))))
     (defun wf_bytecode_w_unbound_p (env w)
       (if (= (logand w 1) 1) 0
         (if (= (nl_val_tag w) 4) (symbol-eq w (+ env 64)) 0)))
@@ -18061,13 +17897,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((jit-word
                     (if (or (> argc 2)
                             (and (> argc 0) (= (logand (heap-read-u64 env 112) 4) 0))) 2
-                      (let* ((mark (nl_root_mark env))
-                             (st (wf_bytecode_w_stage env mem first argc))
-                             ;; Staging exhaustion has not stashed a signal.
-                             (word (if (= st 0) 2
-                                     (wf_bytecode_try_jit_frame_w func 0 argc env st))))
+                      (let* ((word (wf_bytecode_try_jit_frame_w func 0 argc env 0 (+ mem (* first 8)))))
                         (seq (if (and (/= word 0) (/= word 2)) (ptr-write-u64 outw 0 word) 0)
-                             (nl_root_release env mark)
                              word)))))
               (if (= jit-word 0) 1
                 (if (/= jit-word 2) 0
@@ -18076,7 +17907,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (rest (if (= (logand template 128) 0) 0 1))
                          (maxargs (/ template 256)))
                     (if (or (< template 0) (> maxargs 127))
-                        (bf_invalid_byte_code_object out)
+                        (bf_invalid_byte_code_object (if (= out 0) (alloc-bytes 32 8) out))
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
@@ -18102,93 +17933,113 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (nl_record_slot_word func 2)
                (wf_bytecode_w_int (nl_record_slot_word func 3))
                env out 0 argc 0 0 0 (+ mem (* first 8)) outw formals))))))
-    (defun wf_bytecode_call (env mem sp argc bx)
-      ;; Bcall.  A bytecode callee runs on the caller's argument words
-      ;; directly; anything else goes through the shared interpreted
-      ;; gateway on staged views.  The value replaces the function word.
+    (defun wf_bytecode_scratch (cell)
+      ;; The activation's 128-byte scratch, four 32-byte views for the helpers
+      ;; that take a Sexp view of a word.  Allocated on first use; the
+      ;; activation cell keeps the block alive (the collector marks it through
+      ;; the word) and its first view holds a valid nil.
+      (let* ((b (heap-read-u64 (+ cell 24) 0)))
+        (if (= b 3)
+            (let* ((n (alloc-bytes 128 8)))
+              (seq (ptr-write-u64 n 0 0) (ptr-write-u64 (+ n 8) 0 0)
+                   (ptr-write-u64 (+ n 16) 0 0) (ptr-write-u64 (+ n 24) 0 0)
+                   (ptr-write-u64 (+ cell 24) 0 n)
+                   n))
+          b)))
+    (defun wf_bytecode_call (env mem sp argc cell)
+      ;; Bcall (GNU bytecode.c:735-750, docall).  A bytecode callee runs on the
+      ;; caller's argument words directly; `throw' is GNU's Fthrow on the
+      ;; operand words; anything else is applied to an argument list consed
+      ;; from them.  The value replaces the function word.
       (let* ((fi (- sp (+ argc 1))))
         (if (< fi 0)
             2
           (let* ((fw (heap-read-u64 (+ mem (* fi 8)) 0))
-                 (fview (wf_bytecode_w_view fw bx))
-                 (cell (+ bx 32))
-                 (out (+ bx 96))
-                 (lookup (if (= (sexp-tag fview) 4)
-                             (nelisp_env_lookup_function (+ env 0) (+ env 64) fview cell)
-                           1))
-                 (target (if (= lookup 0) cell fview))
-                 (status (if (= (sexp-tag target) 17)
+                 (ftag (nl_val_tag fw))
+                 (fcell (if (= ftag 4)
+                            (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fw 0)
+                          2))
+                 (target (if (= fcell 2) fw fcell))
+                 (status (if (= (nl_val_tag target) 17)
                              (wf_bytecode_w_function target mem (+ fi 1) argc env
-                                                     (+ mem (* fi 8)) out)
+                                                     (+ mem (* fi 8)) 0)
                            2)))
             (if (/= status 2)
                 status
-              ;; Ordinary calls already own rooted WORD operands and return
-              ;; a WORD. Staging them as legacy views retained scalar boxes
-              ;; in every constructor called from bytecode. Keep the special
-              ;; throw/flat-OS adapters on their existing view protocol.
-              (if (if (= (sexp-tag fview) 4)
-                      (= (symbol-name-eq fview "throw") 1) 0)
-                  (wf_bytecode_w_call_views env fview mem fi argc out)
-                (if (if (and (= argc 3) (= lookup 0))
-                        (wf_bytecode_flat_path_int_cell cell) 0)
-                    (wf_bytecode_w_call_views env fview mem fi argc out)
-                  (wf_bytecode_w_call_words env fw mem fi argc out))))))))
-    (defun wf_bytecode_w_call_views (env fview mem fi argc out)
-      (let* ((mark (nl_root_mark env))
-                     (st (wf_bytecode_w_stage env mem (+ fi 1) argc)))
-                (if (= st 0)
-                    (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-                  (let* ((rc (wf_bytecode_call_interpreted_gateway env fview st 0 argc out)))
-                    (seq (if (= rc 0) (wf_bytecode_w_store mem fi out) 0)
-                         (nl_root_release env mark)
-                         rc)))))
+              ;; Ordinary calls own rooted WORD operands and return a WORD.
+              ;; The throw adapter takes the operands as they are; the flat
+              ;; OS-path call keeps its view protocol.
+              (if (if (= ftag 4) (= (symbol-name-eq fw "throw") 1) 0)
+                  (if (if (= fcell 2) 1 (= (nl_val_tag fcell) 1))
+                      (if (= argc 2)
+                          (nl_ct_throw_words env
+                                             (heap-read-u64 (+ mem (* (+ fi 1) 8)) 0)
+                                             (heap-read-u64 (+ mem (* (+ fi 2) 8)) 0))
+                        (bf_wrong_number_of_args fw argc))
+                    (wf_bytecode_w_call_words env fw mem fi argc 0))
+                (if (if (= argc 3)
+                        (if (= fcell 2) 0 (wf_bytecode_flat_path_int_cell fcell))
+                      0)
+                    (wf_bytecode_w_call_views env fw mem fi argc)
+                  (wf_bytecode_w_call_words env fw mem fi argc 0))))))))
+    (defun wf_bytecode_w_call_views (env fw mem fi argc)
+      ;; The flat OS-path call keeps the view protocol: the operands as
+      ;; 32-byte views in a scratch block, consed into the argument list.
+      (let* ((blk (alloc-bytes (+ (* argc 32) 32) 8))
+             (acc (+ blk (* argc 32))) (j 0) (aw 0))
+        (seq
+         (while (< j argc)
+           (seq (wf_bytecode_w_view_into
+                 (+ blk (* j 32)) (heap-read-u64 (+ mem (* (+ fi (+ 1 j)) 8)) 0))
+                (setq j (+ j 1))))
+         (wf_write_nil acc)
+         (wf_bytecode_build_args blk 0 argc acc)
+         (setq aw (nl_apply_function_w fw acc env 0))
+         (if (= aw 0)
+             1
+           (seq (ptr-write-u64 (+ mem (* fi 8)) 0 aw) 0)))))
     (defun wf_bytecode_w_call_words (env function mem fi argc _tmp)
-      ;; MEM is the VM's rooted WORD vector. Build a private argument spine,
-      ;; sharing its rooted values, and publish each partial list in ARGS.
-      ;; There is no evaluator safepoint between a new wrapper and its next
-      ;; cons edge; only the head payload is needed by the rooted list view.
-      (let* ((mark (nl_root_mark env))
-             (args (nl_root_reserve_checked env))
-             (tail 3) (i (- argc 1)) (word 0))
-        (if (= args 0)
-            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-          (seq
-           (wf_write_nil args)
-           (while (>= i 0)
-             (seq (setq tail (wf_bytecode_w_cons
-                              (heap-read-u64 (+ mem (* (+ fi (+ 1 i)) 8)) 0)
-                              tail args))
-                  (setq i (- i 1))))
-           (setq word (nl_apply_function_w function args env 0))
-           (if (= word 0) 0 (ptr-write-u64 (+ mem (* fi 8)) 0 word))
-           (nl_root_release env mark)
-           (if (= word 0) 1 0)))))
+      ;; MEM is the VM's rooted WORD vector.  Build a private argument spine,
+      ;; sharing its rooted values (allocation only, so nothing collects
+      ;; between a new cell and the next); the apply path keeps the list in
+      ;; its activation.
+      (let* ((tail 3) (i (- argc 1)) (word 0))
+        (seq
+         (while (>= i 0)
+           (seq (setq tail (wf_bytecode_w_cons2
+                            (heap-read-u64 (+ mem (* (+ fi (+ 1 i)) 8)) 0)
+                            tail))
+                (setq i (- i 1))))
+         (setq word (nl_apply_function_w function tail env 0))
+         (if (= word 0) 0 (ptr-write-u64 (+ mem (* fi 8)) 0 word))
+         (if (= word 0) 1 0))))
     (defun wf_bytecode_w_boxed (env mem sp k opcode bx)
       ;; Run a still-boxed opcode body (`wf_bytecode_boxed_op') on the K
-      ;; operands ending at SP-1, staged as views in K contiguous roots; its
-      ;; value, in staged slot 0, replaces word SP-K.  0, or 1 signalled.
-      (let* ((mark (nl_root_mark env))
-             (st (wf_bytecode_w_stage env mem (- sp k) k)))
-        (if (= st 0)
-            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-          (let* ((rc (wf_bytecode_boxed_op env st k opcode)))
-            (seq (if (= rc 0) (wf_bytecode_w_store mem (- sp k) st) 0)
-                 (nl_root_release env mark)
-                 rc)))))
+      ;; operands ending at SP-1, staged as views in the activation scratch
+      ;; BX (K <= 4) or in a fresh block; its value, in staged slot 0,
+      ;; replaces word SP-K.  0, or 1 signalled.  The bodies run no Lisp, so
+      ;; nothing collects while the views are live.
+      (let* ((st (if (<= k 4) bx (alloc-bytes (* k 32) 8)))
+             (i 0))
+        (seq
+         (while (< i k)
+           (seq (wf_bytecode_w_view_into
+                 (+ st (* i 32)) (heap-read-u64 (+ mem (* (+ (- sp k) i) 8)) 0))
+                (setq i (+ i 1))))
+         (let* ((rc (wf_bytecode_boxed_op env st k opcode)))
+           (seq (if (= rc 0) (wf_bytecode_w_store mem (- sp k) st) 0)
+                rc)))))
     (defun wf_bytecode_boxed_op (env slots sp base)
       ;; Opcode bodies not yet on words, over a staged frame of SP views.
       ;; The value goes to slot 0.  0, or 1 with a signal stashed.
       (cond
        ((= base 155)
-        (let* ((mark2 (nl_root_mark env))
-               (callargs (nl_root_reserve env))
+        (let* ((callargs (alloc-bytes 32 8))
                (dst (wf_bytecode_slot slots (- sp 2)))
                (rc 0))
           (seq (wf_write_nil callargs)
                (wf_bytecode_build_args slots (- sp 2) 2 callargs)
                (setq rc (if (= (wf_nthcdr callargs dst) 0) 0 1))
-               (nl_root_release env mark2)
                rc)))
        ((= base 157)
         (let* ((elt (wf_bytecode_slot slots (- sp 2)))
@@ -18203,14 +18054,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      0))
             (seq (bf_wrong_type_listp list) 1))))
        ((or (= base 80) (= base 81) (= base 82) (= base 176))
-        (let* ((mark2 (nl_root_mark env))
-               (callargs (nl_root_reserve env))
+        (let* ((callargs (alloc-bytes 32 8))
                (dst (wf_bytecode_slot slots 0))
                (rc 0))
           (seq (wf_write_nil callargs)
                (wf_bytecode_build_args slots 0 sp callargs)
                (setq rc (if (= (wf_bytecode_concat2 callargs dst) 0) 0 1))
-               (nl_root_release env mark2)
                rc)))
        ((or (= base 93) (= base 94))
         (if (= (wf_bytecode_minmax (wf_bytecode_slot slots 0) (wf_bytecode_slot slots 1)
@@ -18232,20 +18081,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (seq (bf_wrong_type_arrayp value) 1))))))))
        ((= base 166) (wf_bytecode_rem env slots sp))
        ((= base 56)
-        (let* ((mark2 (nl_root_mark env))
-               (alist (nl_root_reserve env))
+        (let* ((alist (alloc-bytes 32 8))
                (left (wf_bytecode_slot slots 0))
                (rc 0))
           (seq (wf_write_nil alist)
                (wf_bytecode_build_args slots 0 2 alist)
               (setq rc (nl_abi_word_to_rc (wf_bytecode_nth_w alist) left))
-               (nl_root_release env mark2)
                rc)))
        ((and (>= base 85) (<= base 90))
         ;; Type-aware chains for non-fixnum operands: floats, markers,
         ;; bignums and the GNU wrong-type-argument condition.
-        (let* ((mark2 (nl_root_mark env))
-               (alist (nl_root_reserve env))
+        (let* ((alist (alloc-bytes 32 8))
                (left (wf_bytecode_slot slots 0))
                (rc 0))
           (seq
@@ -18258,7 +18104,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (wf_first_non_number_or_bignum alist))
                           (setq rc 1))
                    (if (= f 1)
-                       (let* ((sc (nl_root_reserve env)))
+                       (let* ((sc (alloc-bytes 32 8)))
                          (seq (wf_fdiff alist sc) (wf_bytecode_copy left sc)))
                      (wf_diff alist left))))
              (let* ((cmp (if (= base 85) (wf_chain_eq alist)
@@ -18270,7 +18116,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (seq (bf_wrong_type_number_or_marker (wf_first_non_number alist))
                         (setq rc 1))
                  (if (= cmp 1) (wf_write_t left) (wf_write_nil left)))))
-           (nl_root_release env mark2)
            rc)))
        (t 1)))
     ;; ---- Lean dynamic binding ----
@@ -18575,7 +18420,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                             (heap-read-u64 dst 0)))
                                 (setq k (- k 1)))))
                      0)
-                   (ptr-write-u64 cell 8 fp2)
+                   (ptr-write-u64 cell 8 (+ (shl fp2 2) 1))
                    (+ maxargs rest (if (> argc maxargs) 65536 0))))))))))))))))))))))
     (defun wf_bytecode_frame_aux (env foot state)
       ;; The frame's aux block: the state the handler, unwind and binding
@@ -18626,7 +18471,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
     (defun wf_bytecode_w_fast_run
-        (data length mem depth constants nconst pc sp env bx cell)
+        (data length mem depth constants nconst pc sp env cell)
       (let*
           ((foot (+ mem (* (+ depth 1) 8)))
            (last-owner 0) (last-table 0) (last-table-data 0)
@@ -18969,10 +18814,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                     (if (= n4 1)
                                         (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
                                       0)
-                                    (ptr-write-u64 cell 16 1)
-                                    (ptr-write-u64 cell 8 caller)
+                                    (ptr-write-u64 cell 16 7)
+                                    (ptr-write-u64 cell 8 (+ (shl caller 2) 1))
                                     (seq
-                       (let* ((fp2 (heap-read-u64 cell 8))
+                       (let* ((fp2 (sar (heap-read-u64 cell 8) 2))
                               (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
                               (f2 (+ fp2 (* (+ d2 1) 8)))
                               (cw (heap-read-u64 f2 24))
@@ -19395,9 +19240,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                               (+ pc 1))))
                                                    (if (>= isp 0)
                                                        (seq
-                                                        (ptr-write-u64 cell 16 1)
+                                                        (ptr-write-u64 cell 16 7)
                                                         (seq
-                       (let* ((fp2 (heap-read-u64 cell 8))
+                       (let* ((fp2 (sar (heap-read-u64 cell 8) 2))
                               (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
                               (f2 (+ fp2 (* (+ d2 1) 8)))
                               (cw (heap-read-u64 f2 24))
@@ -19421,7 +19266,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                         (setq prev 0)
                                                         (setq sp (logand isp 65535)))
                                                      (if (= isp -2)
-                                                         (let* ((rc (wf_bytecode_call env mem sp argc bx)))
+                                                         (let* ((rc (wf_bytecode_call env mem sp argc cell)))
                                                            (seq
                                                             (setq last-name -1)
                                                             (if (= rc 0)
@@ -19430,7 +19275,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                               (seq (setq failed 1) (setq go 0)))))
                                                        (seq (setq failed 1) (setq go 0)))))))
                                            (seq (setq go 0))))))))))))))))))
-        (seq (ptr-write-u64 cell 8 mem)
+        (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
 
 
@@ -19460,22 +19305,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; views; a frame gets them as an aux block (`wf_bytecode_frame_aux') the
       ;; first time it pushes a handler, binds or unwinds, and a frame that
       ;; never does has none.
-      ;; Roots, contiguous: four boundary scratch views (BX; BT is the last)
-      ;; and the cell in which the fast loop leaves the frame it stopped in.
+      ;; Below the activation's first frame is a four-WORD frame, the
+      ;; activation cell (CURFP): +8 the frame the fast loop
+      ;; stopped in (fixnum-coded address), +16 t when a frame was pushed or
+      ;; popped, +24 the 128-byte scratch of four 32-byte views for the
+      ;; helpers that take a view of a word (`wf_bytecode_scratch', allocated
+      ;; on first use).  The activation reserves no Sexp root slot.
       (let* ((code-len (m5_strlen code))
              (code-data (nl_bi_strptr code))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 5)))
-             (fp (if (= roots 0) 0 (nl_root_frame env (+ depth 7))))
+             (cellf (if (or (< depth 0) (> depth 131063)) 0 (nl_root_frame env 4)))
+             (fp (if (= cellf 0) 0 (nl_root_frame env (+ depth 7))))
              (mem fp)
              (foot (+ mem (* (+ depth 1) 8)))
              (aux 0)
-             (bx roots)
-             (bt (+ roots 96))
-             (curfp (+ roots 128))
-             (binding-state (if (= roots 0) 0 (nl_n4_state env)))
+             (curfp cellf)
+             (binding-state (if (= fp 0) 0 (nl_n4_state env)))
              (nested 0) (reload 0) (again 1)
              (resw (+ mem (* depth 8)))
              (initial-slots (+ initial-maxargs initial-rest))
@@ -19492,7 +19339,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 foot 32 constants)
          (if (and (= done 0) (> initial-slots depth))
              (seq (setq done 2) (setq bad-op 255)))
-         (wf_write_int curfp 0)
+         
          ;; GNU Emacs pushes all fixed parameter slots before entering the
          ;; interpreter, filling omitted optionals with nil.  For &rest, the
          ;; final slot receives the arguments after the fixed slots.
@@ -19505,16 +19352,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (let* ((k (- initial-argc 1)))
                             (while (>= k initial-maxargs)
                               (seq (ptr-write-u64
-                                    dst 0 (wf_bytecode_w_cons
+                                    dst 0 (wf_bytecode_w_cons2
                                            (heap-read-u64 (+ initial-words (* k 8)) 0)
-                                           (heap-read-u64 dst 0) bt))
+                                           (heap-read-u64 dst 0)))
                                    (setq k (- k 1)))))
                         (if (> initial-frame 0)
-                            (seq (wf_write_nil bt)
+                            (seq (wf_write_nil (+ (wf_bytecode_scratch curfp) 96))
                                  (wf_bytecode_build_args
                                   initial-frame initial-maxargs
-                                  (- initial-argc initial-maxargs) bt)
-                                 (nl_val_clone_into bt dst))
+                                  (- initial-argc initial-maxargs) (+ (wf_bytecode_scratch curfp) 96))
+                                 (nl_val_clone_into (+ (wf_bytecode_scratch curfp) 96) dst))
                           ;; The untouched tail of the argument list.
                           (if (= arg-index 0)
                               (nl_val_clone_into arg-cursor dst)
@@ -19633,15 +19480,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
 			     (if (< first-op 192)
 				 (if (/= (logand 892 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
-                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env bx curfp)))
+                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env curfp)))
                         (seq
                          ;; The fast loop pushes and pops frames; the frame it
                          ;; stopped in is current from the next turn.
                          ;; (By flag, not by address: a frame popped and another
                          ;; pushed at the same address is a different frame.)
-                         (if (/= (heap-read-u64 curfp 16) 0)
-                             (seq (setq reload (heap-read-u64 curfp 8))
-                                  (ptr-write-u64 curfp 16 0))
+                         (if (= (heap-read-u64 curfp 16) 7)
+                             (seq (setq reload (sar (heap-read-u64 curfp 8) 2))
+                                  (ptr-write-u64 curfp 16 3))
                            0)
                          ;; -1: a call made from the fast loop signalled; the
                          ;; pending exit then unwinds as after the full Bcall arm.
@@ -19770,7 +19617,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                     (setq sp (- sp 1)) (setq done 4))
                               (if (< sp 2)
                                   (seq (setq bad-op raw) (setq done 2))
-                                (if (= (wf_bytecode_w_boxed env mem sp 2 base bx) 0)
+                                (if (= (wf_bytecode_w_boxed env mem sp 2 base (wf_bytecode_scratch curfp)) 0)
                                     (setq sp (- sp 1))
                                   (setq done 4)))))))))
                      ((= base 178)
@@ -19787,7 +19634,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (ptr-write-u64 top 0 (nl_cons_car_word w))
                           (if (if (= base 162) 1 (wf_bytecode_w_nilp w))
                               (ptr-write-u64 top 0 3)
-                            (seq (bf_wrong_type_listp (wf_bytecode_w_view w bx))
+                            (seq (bf_wrong_type_listp (wf_bytecode_w_view w (wf_bytecode_scratch curfp)))
                                  (setq done 4))))))
                      ((or (= base 65) (= base 163))
                       (let* ((w (heap-read-u64 top 0)))
@@ -19795,14 +19642,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (ptr-write-u64 top 0 (nl_cons_cdr_word w))
                           (if (if (= base 163) 1 (wf_bytecode_w_nilp w))
                               (ptr-write-u64 top 0 3)
-                            (seq (bf_wrong_type_listp (wf_bytecode_w_view w bx))
+                            (seq (bf_wrong_type_listp (wf_bytecode_w_view w (wf_bytecode_scratch curfp)))
                                  (setq done 4))))))
                      ((= base 8)
                       (if (if (< operand 0) 1 (if (< operand nconst) 0 1))
                           (seq (setq bad-op raw) (setq done 2))
                         (if (= (wf_bytecode_w_varref
                                 env (heap-read-u64 (+ cdata (* operand 8)) 0)
-                                (+ mem (* sp 8)) bt) 0)
+                                (+ mem (* sp 8)) (+ (wf_bytecode_scratch curfp) 96)) 0)
                             (setq sp (+ sp 1))
                           (setq done 4))))
                      ((or (= base 132) (= base 134))
@@ -19822,12 +19669,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      env curfp mem fi operand
                                      (heap-read-u64 (+ mem (* fi 8)) 0) pc))))
                         (if (>= isp 0)
-                            (seq (setq reload (heap-read-u64 curfp 8))
+                            (seq (setq reload (sar (heap-read-u64 curfp 8) 2))
                                  (setq pc 0)
                                  (setq sp (logand isp 65535)))
                           (if (= isp -1)
                               (setq done 4)
-                            (let* ((rc (wf_bytecode_call env mem sp operand bx)))
+                            (let* ((rc (wf_bytecode_call env mem sp operand curfp)))
                               (if (= rc 0)
                                   (setq sp (- sp operand))
                                 (if (= rc 2)
@@ -19847,12 +19694,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((= base 66)
                       (seq (ptr-write-u64 next 0 (wf_bytecode_w_cons
                                                   (heap-read-u64 next 0)
-                                                  (heap-read-u64 top 0) bt))
+                                                  (heap-read-u64 top 0) (+ (wf_bytecode_scratch curfp) 96)))
                            (setq sp (- sp 1))))
                      ((= base 61)
                       (seq (ptr-write-u64 next 0
                                           (if (= (wf_bytecode_w_eq (heap-read-u64 next 0)
-                                                                   (heap-read-u64 top 0) bx) 1)
+                                                                   (heap-read-u64 top 0) (wf_bytecode_scratch curfp)) 1)
                                               7 3))
                            (setq sp (- sp 1))))
                      ((= base 63)
@@ -19860,16 +19707,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((= base 58)
                       (ptr-write-u64 top 0 (if (= (wf_bytecode_w_consp (heap-read-u64 top 0)) 1) 7 3)))
                      ((= base 62)
-                      (if (= (wf_bytecode_w_memq mem sp bx) 0)
+                      (if (= (wf_bytecode_w_memq mem sp (wf_bytecode_scratch curfp)) 0)
                           (setq sp (- sp 1))
                         (setq done 4)))
                      ((= base 67)
-                      (ptr-write-u64 top 0 (wf_bytecode_w_cons (heap-read-u64 top 0) 3 bt)))
+                      (ptr-write-u64 top 0 (wf_bytecode_w_cons2 (heap-read-u64 top 0) 3)))
                      ((or (= base 68) (= base 69) (= base 70) (= base 175))
                       (let* ((count (if (= base 175) operand (- base 66))))
                         (if (> count sp)
                             (seq (setq bad-op raw) (setq done 2))
-                          (seq (wf_bytecode_w_list mem (- sp count) count bt)
+                          (seq (wf_bytecode_w_list mem (- sp count) count)
                                (setq sp (- sp (- count 1)))))))
                      ((or (= base 72) (= base 73))
                       (let ((rc (wf_bytecode_vector_primitive mem sp base)))
@@ -19887,7 +19734,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (setq sp (- sp 1))
                           (if (= (wf_bytecode_varbind
                                   env (heap-read-u64 (+ cdata (* operand 8)) 0)
-                                  (wf_bytecode_w_view (heap-read-u64 top 0) bx)) 0)
+                                  (wf_bytecode_w_view (heap-read-u64 top 0) (wf_bytecode_scratch curfp))) 0)
                               (seq (wf_bytecode_unwind_push env aux 0 3)
                                    (setq sp (- sp 1)) (setq bindings (+ bindings 1)))
                             (setq done 4)))))
@@ -19896,7 +19743,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (setq bad-op raw) (setq done 2))
                         (if (= (bf_set_dynamic_value
                                 env (heap-read-u64 (+ cdata (* operand 8)) 0)
-                                (wf_bytecode_w_view (heap-read-u64 top 0) bx)) 0)
+                                (wf_bytecode_w_view (heap-read-u64 top 0) (wf_bytecode_scratch curfp))) 0)
                             (setq sp (- sp 1))
                           (setq done 4))))
                      ((= base 74)
@@ -19905,11 +19752,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (if (or (= tag 4) (= tag 16))
                             (if (= (bf_keyword_raw w) 1)
                                 0
-                              (if (= (wf_bytecode_w_varref env w top bt) 0)
+                              (if (= (wf_bytecode_w_varref env w top 0) 0)
                                   0 (setq done 4)))
                           (if (or (= tag 0) (= tag 1))
                               0
-                            (seq (bf_wrong_type_symbolp (wf_bytecode_w_view w bx))
+                            (seq (bf_wrong_type_symbolp (wf_bytecode_w_view w (wf_bytecode_scratch curfp)))
                                  (setq done 4))))))
                      ((= base 76)
                       (let* ((symbol (heap-read-u64 next 0))
@@ -19917,25 +19764,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (tag (wf_bytecode_w_tag symbol)))
                         (if (or (= tag 4) (= tag 16))
                             (if (= (bf_keyword_raw symbol) 1)
-                                (if (= (wf_bytecode_w_eq symbol value bx) 1)
+                                (if (= (wf_bytecode_w_eq symbol value (wf_bytecode_scratch curfp)) 1)
                                     (seq (ptr-write-u64 next 0 value)
                                          (setq sp (- sp 1)))
                                   (seq (bf_setting_constant symbol)
                                        (setq done 4)))
                               (if (= (bf_set_dynamic_value
-                                      env symbol (wf_bytecode_w_view value bx)) 0)
+                                      env symbol (wf_bytecode_w_view value (wf_bytecode_scratch curfp))) 0)
                                   (seq (ptr-write-u64 next 0 value)
                                        (setq sp (- sp 1)))
                                 (setq done 4)))
                           (seq (if (or (= tag 0) (= tag 1))
-                                   (bf_setting_constant (wf_bytecode_w_view symbol bx))
-                                 (bf_wrong_type_symbolp (wf_bytecode_w_view symbol bx)))
+                                   (bf_setting_constant (wf_bytecode_w_view symbol (wf_bytecode_scratch curfp)))
+                                 (bf_wrong_type_symbolp (wf_bytecode_w_view symbol (wf_bytecode_scratch curfp))))
                                (setq done 4)))))
                      ((or (= base 59) (= base 167) (= base 168)
                           (= base 60) (= base 57))
                       (ptr-write-u64 top 0
                                      (if (= (wf_bytecode_predicate
-                                             base (wf_bytecode_w_view (heap-read-u64 top 0) bx)) 1)
+                                             base (wf_bytecode_w_view (heap-read-u64 top 0) (wf_bytecode_scratch curfp))) 1)
                                          7 3)))
                      ((= base 182)
                       (let* ((count (logand operand 127)))
@@ -19945,7 +19792,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (heap-read-u64 top 0))
                                (setq sp (- sp count))))))
                      ((= base 183)
-                      (let* ((target (wf_bytecode_switch mem sp code-len bx)))
+                      (let* ((target (wf_bytecode_switch mem sp code-len (wf_bytecode_scratch curfp))))
                         (if (< target -1)
                             (seq (setq bad-op raw) (setq done 2))
                           (seq
@@ -19955,8 +19802,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (setq pc target))))))
                      ((= base 71)
                       (if (= (bf_length_checked
-                              (wf_bytecode_w_view (heap-read-u64 top 0) bx) bt) 0)
-                          (wf_bytecode_w_store mem (- sp 1) bt)
+                              (wf_bytecode_w_view (heap-read-u64 top 0) (wf_bytecode_scratch curfp)) (+ (wf_bytecode_scratch curfp) 96)) 0)
+                          (wf_bytecode_w_store mem (- sp 1) (+ (wf_bytecode_scratch curfp) 96))
                         (setq done 4)))
                      ((or (= base 160) (= base 161))
                       (let* ((value (heap-read-u64 top 0))
@@ -19967,10 +19814,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                 (if (= base 160) 0 8) value)
                                  (ptr-write-u64 next 0 value)
                                  (setq sp (- sp 1)))
-                          (seq (bf_wrong_type_consp (wf_bytecode_w_view cell bx))
+                          (seq (bf_wrong_type_consp (wf_bytecode_w_view cell (wf_bytecode_scratch curfp)))
                                (setq done 4)))))
                      ((= base 164)
-                      (if (= (wf_bytecode_nconc2 env mem sp bx) 0)
+                      (if (= (wf_bytecode_nconc2 env mem sp (wf_bytecode_scratch curfp)) 0)
                           (setq sp (- sp 1))
                         (setq done 4)))
                      ((or (= base 147) (= base 148) (= base 149)
@@ -20026,7 +19873,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (if (= (wf_bytecode_varbind
                                            env 'standard-output
                                            (wf_bytecode_w_view
-                                            (heap-read-u64 (+ mem (* (- sp 1) 8)) 0) bx)) 0)
+                                            (heap-read-u64 (+ mem (* (- sp 1) 8)) 0) (wf_bytecode_scratch curfp))) 0)
                                        (seq (wf_bytecode_unwind_push env aux 0 3)
                                             (setq bindings (+ bindings 1)))
                                      (setq done 4))
@@ -20122,26 +19969,26 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (and (>= base 85) (<= base 90)))
                       (if (< sp 2)
                           (seq (setq bad-op raw) (setq done 2))
-                        (if (= (wf_bytecode_w_boxed env mem sp 2 base bx) 0)
+                        (if (= (wf_bytecode_w_boxed env mem sp 2 base (wf_bytecode_scratch curfp)) 0)
                             (setq sp (- sp 1))
                           (setq done 4))))
                      ((= base 159)
                       (if (< sp 1)
                           (seq (setq bad-op raw) (setq done 2))
-                        (if (= (wf_bytecode_w_boxed env mem sp 1 base bx) 0)
+                        (if (= (wf_bytecode_w_boxed env mem sp 1 base (wf_bytecode_scratch curfp)) 0)
                             0 (setq done 4))))
                      ((or (= base 80) (= base 81) (= base 82) (= base 176))
                       (let* ((count (if (= base 176) operand (- base 78))))
                         (if (> count sp)
                             (seq (setq bad-op raw) (setq done 2))
-                          (if (= (wf_bytecode_w_boxed env mem sp count base bx) 0)
+                          (if (= (wf_bytecode_w_boxed env mem sp count base (wf_bytecode_scratch curfp)) 0)
                               (setq sp (- sp (- count 1)))
                             (setq done 4)))))
                      ((= base 154)
                       (seq (ptr-write-u64 next 0
                                           (if (= (bf_equal2
-                                                  (wf_bytecode_w_view (heap-read-u64 next 0) bx)
-                                                  (wf_bytecode_w_view (heap-read-u64 top 0) (+ bx 32))) 1)
+                                                  (wf_bytecode_w_view (heap-read-u64 next 0) (wf_bytecode_scratch curfp))
+                                                  (wf_bytecode_w_view (heap-read-u64 top 0) (+ (wf_bytecode_scratch curfp) 32))) 1)
                                               7 3))
                            (setq sp (- sp 1))))
                      (t (seq (setq bad-op raw) (setq done 2))))))))))))) 0))
@@ -20177,9 +20024,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (if (= val 0) (setq done 4) 0))
                   0)
                 (if (= done 2)
-                    (seq (wf_bytecode_error env bad-op bad-offset out)
-                         (bf_error_w out 0)
-                         (setq done 4))
+                    (let* ((eo (if (= out 0) (alloc-bytes 32 8) out)))
+                      (seq (wf_bytecode_error env bad-op bad-offset eo)
+                           (bf_error_w eo 0)
+                           (setq done 4)))
                   0)
                 (if (= done 5)
                     (seq (wf_bytecode_signal_overflow) (setq done 4))
@@ -20208,13 +20056,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (nl_root_release env mark) 0)
                (seq (nl_root_release env mark) 1))
            (if (= done 3)
-               (seq (if (> outw 0) (nl_val_clone_into out outw) 0)
-                    (nl_root_release env mark) 0)
+               (seq (nl_root_release env mark) 0)
              (if (= done 4)
                  (seq (nl_root_release env mark) 1)
                (if (= unwind-rc 0)
-                   (seq (wf_bytecode_error env bad-op bad-offset out)
-                        (nl_root_release env mark) 1)
+                   (seq (wf_bytecode_error env bad-op bad-offset (if (= out 0) (alloc-bytes 32 8) out))
+                       (nl_root_release env mark) 1)
                  (seq (nl_root_release env mark) 1))))))))))
   )
   "P1 byte-code VM: rooted general path plus the fixnum loop fast path.")
