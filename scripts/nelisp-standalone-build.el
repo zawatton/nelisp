@@ -20986,13 +20986,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; GNU's eval_sub keeps ARGS_LEFT in a scanned local (eval.c:2686-2691):
     ;; a form that cuts its own argument list cannot free the rest, and N
     ;; bounds the walk if one lengthens it.  A non-cons tail ends it early.
+    ;; A variable is read in place, as GNU's eval_sub returns a symbol's
+    ;; lexical or global value before it counts depth or records a frame
+    ;; (eval.c:2585-2599); self-evaluating scalars and keywords are their
+    ;; own value.  Everything else goes through the evaluator's entry.
     (defun m5_fx_eval_forms (tail env base n)
-      (let* ((cur tail) (k 0) (rc 0) (w 0) (cslot (+ base (* n 8))))
+      (let* ((cur tail) (k 0) (rc 0) (w 0) (tag 0) (cslot (+ base (* n 8))))
         (seq
          (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
            (seq (ptr-write-u64 cslot 0 cur)
                 (setq w (nl_cons_car_word cur))
-                (let* ((ew (if (< (nl_val_tag w) 4) w (nelisp_eval_call_w w env 0))))
+                (setq tag (nl_val_tag w))
+                (let* ((ew (if (< tag 4) w
+                             (if (if (or (= tag 4) (= tag 16)) (= (nl_kw_is_keyword w) 0) 0)
+                                 (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
+                               (nelisp_eval_call_w w env 0)))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
@@ -48658,13 +48666,16 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; builtin), the evaluated WORDs become the ordinary apply's argument
     ;; list, so no argument is evaluated twice.  `funcall' has its own
     ;; WORD path, `nl_eic_funcall_w'.
+    ;; The primitive's id is decoded once (`m5_fx_primitive_id', funcall
+    ;; included); a builtin that is no WORD primitive answers 2 before any
+    ;; argument is evaluated, and the caller's ordinary path evaluates them.
     (defun nl_eic_primitive_w (fn tail env fw call_name)
       (let* ((name (m5_fx_builtin_name fn 0))
-             (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
-        (if (< argc 1) 2
-        (if (= (sexp-name-eq name "funcall") 1)
+             (argc (if (= name 0) 0 (m5_fx_form_count tail 0)))
+             (id (if (< argc 1) 0 (m5_fx_primitive_id name argc))))
+        (if (= id 0) 2
+        (if (= id 13)
             (nl_eic_funcall_w tail env argc fn fw call_name)
-        (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
               (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
@@ -48672,13 +48683,13 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  ;; The activation shows the evaluated arguments, as GNU's
                  ;; set_backtrace_args (eval.c:2693).
                  (m5_fx_frame_lazy env base argc 0)
-                 (let* ((st (m5_fx_primitive_named name base argc argc
-                                                   (+ base (* argc 8)) env 0)))
+                 (let* ((st (m5_fx_primitive_run id base argc argc
+                                                 (+ base (* argc 8)) env 0)))
                    (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
                      (if (= st -3)
                          (nl_eic_after_args_w (m5_fx_slot_list base argc)
                                               env fw call_name)
-                       0))))))))))))
+                       0)))))))))))
     ;; GNU Ffuncall (eval.c:3185) and funcall_general (eval.c:3149) on the
     ;; WORDs eval_sub evaluated.  FUNCTION and its arguments go into one
     ;; WORD frame, with three more slots: the resolved definition, the
