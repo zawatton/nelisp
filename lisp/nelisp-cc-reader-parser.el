@@ -329,7 +329,7 @@
     (defun nelisp_reader_p_symbol_name_kind (source name)
       ;; Symbol names inherit the reader input's representation, including
       ;; multibyte ASCII. Set it before the canonical name is registered.
-      (if (or (= (heap-read-u8 source 0) 14) (= (heap-read-u8 source 0) 15))
+      (if (or (= (sexp-tag source) 14) (= (sexp-tag source) 15))
           (ptr-write-u8 name 0 14)
         (seq (ptr-write-u8 name 0 5)
              (ptr-write-u64 name 8
@@ -358,7 +358,7 @@
                dest-slot
                (heap-read-u64 src-str-slot 16)
                (heap-read-u64 src-str-slot 24))))
-        (if (= (heap-read-u8 src-str-slot 0) 14)
+        (if (= (sexp-tag src-str-slot) 14)
             (nelisp_reader_p_prog2
              (ptr-write-u8 dest-slot 0 14)
              written)
@@ -1054,12 +1054,12 @@
       (if (= tag 5) 1 (if (= tag 6) 1 (if (= tag 14) 1 (if (= tag 15) 1 0)))))
 
     (defun nelisp_reader_p_bv_str_ptr (s)
-      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+      (if (if (= (sexp-tag s) 6) 1 (if (= (sexp-tag s) 15) 1 0))
           (heap-read-u64 (heap-read-u64 s 8) 8)
         (heap-read-u64 s 16)))
 
     (defun nelisp_reader_p_bv_str_len (s)
-      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+      (if (if (= (sexp-tag s) 6) 1 (if (= (sexp-tag s) 15) 1 0))
           (heap-read-u64 (heap-read-u64 s 8) 16)
         (heap-read-u64 s 24)))
 
@@ -1213,7 +1213,7 @@
     (cond
      ((= km (if (>= km 200) 304 102)) (heap-read-u64 head-slot 0))
      ((= km 110)
-      (if (= (heap-read-u64 head-slot 0) 3)
+      (if (= (sexp-tag head-slot) 3)
           (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
         (nelisp_reader_p_seq_dot_w str-ptr cursor-slot 0 slot-pool depth 0)))
      ((= (- km (if (>= km 200) 300 100)) -2)
@@ -1228,7 +1228,7 @@
                                                (- km (if (>= km 200) 300 100)))))
         (if (or (= item 0) (= item 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
           (let* ((node (nelisp_cons_construct_w item 3 0)))
-            (if (= (heap-read-u64 head-slot 0) 3)
+            (if (= (sexp-tag head-slot) 3)
                 (nelisp_reader_p_word_slot_set head-slot node)
               (cons-set-cdr (heap-read-u64 tail-slot 0) node))
             (nelisp_reader_p_word_slot_set tail-slot node)

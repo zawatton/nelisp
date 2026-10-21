@@ -71,7 +71,8 @@ def trailer(path):
         for _ in range(count):
             entry, = struct.unpack("<Q", stream.read(8))
             tag = entry & 7
-            need(tag in (0, 6) and (entry - tag) + 8 <= span,
+            # Doc 216: 2 is a direct cons field (S2.1), 6 a vectorlike (S4.1).
+            need(tag in (0, 2, 6) and (entry - tag) + 8 <= span,
                  "Invalid tagged relocation field")
             direct += tag == 6
         stream.seek(64 + count * 8 + span + intern)

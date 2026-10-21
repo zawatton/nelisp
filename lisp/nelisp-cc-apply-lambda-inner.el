@@ -499,7 +499,7 @@
     ;; WORD so nothing is materialised or allocated while the last value
     ;; word is live (same reading as `nl_sf_progn_next').  Arity 2 (even).
     (defun nl_ali_body_tail_nil (state-slot _pad)
-      (let ((tail (heap-read-u64 (heap-read-u64 state-slot 8) 8)))
+      (let ((tail (heap-read-u64 (nl_word_payload state-slot) 8)))
         (if (= (logand tail 1) 1)
             (if (= tail 3) 1 0)
           (if (= (sexp-tag tail) 0) 1 0))))

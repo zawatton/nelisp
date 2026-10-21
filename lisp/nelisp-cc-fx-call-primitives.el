@@ -62,9 +62,9 @@
            ((= argc 2)
             (cond
              ((and (= tag 7) (= (sexp-name-eq name "setcdr") 1))
-              (seq (wf_dirty) (ptr-write-u64 (heap-read-u64 a 8) 8 b) b))
+              (seq (wf_dirty) (ptr-write-u64 (nl_word_payload a) 8 b) b))
              ((and (= tag 7) (= (sexp-name-eq name "setcar") 1))
-              (seq (wf_dirty) (ptr-write-u64 (heap-read-u64 a 8) 0 b) b))
+              (seq (wf_dirty) (ptr-write-u64 (nl_word_payload a) 0 b) b))
              ((= (sexp-name-eq name "eq") 1)
               (if (= (wf_bytecode_w_eqw a b) 1) 7 3))
              ((and (= (sexp-name-eq name "<") 1)

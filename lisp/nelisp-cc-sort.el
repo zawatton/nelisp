@@ -239,7 +239,7 @@
             (let* ((cur sequence) (i 0))
               (seq (wf_dirty)
                    (while (< i n)
-                     (ptr-write-u64 (heap-read-u64 cur 8) 0 (heap-read-u64 data (* i 16)))
+                     (ptr-write-u64 (nl_word_payload cur) 0 (heap-read-u64 data (* i 16)))
                      (setq cur (nl_cons_cdr_word cur)) (setq i (+ i 1))) sequence))
           (let* ((result 3) (root (m5_fx_arg_words env 1)) (i (- n 1)))
             (seq (while (>= i 0)
