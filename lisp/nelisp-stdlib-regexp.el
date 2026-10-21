@@ -43,8 +43,22 @@ being recency-ordered (it is not; see `nlre--cache-touch').")
 (defvar nlre--case-table-reader
   (and (fboundp 'current-case-table) 'current-case-table))
 (defvar nlre--translate-table nil
-  "Canonical case translation table dynamically bound during compilation
+  "Canonical case translation descriptor bound during compilation
 and matching.  Nil selects the portable downcase fallback.")
+(defvar nlre--translate-cache (make-hash-table :test 'eq :weakness 'key)
+  "Canon identity -> [table, lookup, ASCII page, ASCII-fold, public lookup].
+Case-table helpers invalidate the canon identity when changing mappings.
+After raw writes to a derived canon, use `nlre--compiled-cache-clear', as
+with raw syntax-table writes and the syntax cache.")
+(defvar nlre--case-owner-cache (make-hash-table :test 'eq :weakness 'key)
+  "Case-table identity -> extra accessor, under `nlre--case-public-extra'.")
+(defvar nlre--case-public-extra nil)
+(defvar nlre--ascii-subject nil)
+(defvar nlre--ascii-subject-copy nil)
+(defvar nlre--ascii-subject-p nil)
+(defvar nlre--ascii-regexp nil)
+(defvar nlre--ascii-regexp-copy nil)
+(defvar nlre--ascii-regexp-p nil)
 (defvar nlre--syntax-signature-acc nil)
 (defvar nlre--compiled-cache-hits 0
   "Number of compiled regexp cache hits.")
@@ -63,11 +77,13 @@ and matching.  Nil selects the portable downcase fallback.")
   "Clear the compiled regexp cache and its entry count."
   ;; `clrhash' costs about 100ms even when this runtime's table is empty.
   (setq nlre--compiled-cache (make-hash-table :test 'equal)
+        nlre--translate-cache (make-hash-table :test 'eq :weakness 'key)
+        nlre--case-owner-cache (make-hash-table :test 'eq :weakness 'key)
         nlre--compiled-cache-count 0
         nlre--compiled-cache-lru nil
         nlre--compiled-cache-last nil))
 
-;; Entry: [PATTERN CASE-FOLD SEARCH-SPACES SYNTAX-DEPENDENT
+;; Entry: [PATTERN FOLD/TRANSLATE-KEY SEARCH-SPACES SYNTAX-DEPENDENT
 ;;         SYNTAX-SIGNATURE COMPILED TICK MULTIBYTE ORIGINAL-PATTERN].
 ;; `nlre--compiled-cache-lru'
 ;; is just the unordered list of all live entries, not an ordering; TICK
@@ -118,27 +134,108 @@ and matching.  Nil selects the portable downcase fallback.")
       (nreverse layers)))
    (t table)))
 
-(defun nlre--current-case-extra (slot)
-  ;; The foundation case-table package can arrive after this bootstrap file.
+(defun nlre--native-case-table-p (table)
+  "Whether TABLE is owned by the native runtime, independent of adapters."
+  (and (boundp 'nelisp-casetab--native-p)
+       (funcall nelisp-casetab--native-p table)))
+
+(defun nlre--current-translate-table ()
+  "Read the current canon once, retaining its live owner-specific lookup."
   (let* ((reader (or nlre--case-table-reader
                      (and (fboundp 'current-case-table)
                           (setq nlre--case-table-reader 'current-case-table))))
-         (case-table (and reader (funcall reader))))
-    ;; GNU search.c uses the buffer's canonical map.  Its buffer fields are
-    ;; represented here by extras, so apply casefiddle.c's preparation rule.
-    (when (and case-table
-               (null (if (fboundp 'nelisp-casetab--get-extra-slot)
-                         (nelisp-casetab--get-extra-slot case-table 1)
-                       (char-table-extra-slot case-table 1))))
-      (set-case-table case-table))
-    (and case-table
-         (cond ((fboundp 'nelisp-casetab--get-extra-slot)
-                (nelisp-casetab--get-extra-slot case-table slot))
-               ((fboundp 'char-table-extra-slot)
-                (char-table-extra-slot case-table slot))))))
+         (case-table (and reader (funcall reader)))
+         (public-extra (symbol-function 'char-table-extra-slot))
+         ;; Installing a different public owner invalidates its accessor
+         ;; selection.  Type dispatch is needed only on a new table.
+         (owner (when (eq public-extra nlre--case-public-extra)
+                  (and case-table (gethash case-table nlre--case-owner-cache))))
+         (extra
+          (if owner owner
+            (when case-table
+              (unless (eq public-extra nlre--case-public-extra)
+                (setq nlre--case-public-extra public-extra
+                      nlre--case-owner-cache (make-hash-table :test 'eq :weakness 'key)))
+              (let ((accessor (if (char-table-p case-table) public-extra
+                                (and (nlre--native-case-table-p case-table)
+                                     nelisp-casetab--native-extra))))
+                (puthash case-table accessor nlre--case-owner-cache)
+                accessor))))
+         ;; GNU search.c reads the buffer canon once.  NeLisp stores it in
+         ;; extra slot 1; prepare an invalidated case table before reading it.
+         (canon (when extra
+                  (or (funcall extra case-table 1)
+                      (progn (set-case-table case-table)
+                             (funcall extra case-table 1)))))
+         (public-lookup (symbol-function 'char-table-range))
+         (cached (and canon (gethash canon nlre--translate-cache))))
+    (if (and cached (eq public-lookup (aref cached 4))) cached
+      (let ((lookup (and canon
+                         (if (char-table-p canon) public-lookup
+                           (and (nlre--native-case-table-p canon)
+                                nelisp-casetab--native-range)))))
+        (when lookup
+          (let ((entry (vector canon lookup nil t public-lookup)))
+            ;; GNU's CHAR_TABLE_REF has a direct ASCII page.  Materialize that
+            ;; page once for a library representation whose public dispatch is
+            ;; expensive; actual native tables retain their live native lookup.
+            (let ((ascii (make-vector 256 nil)) (character 0))
+              (while (< character 256)
+		(let ((value (or (funcall lookup canon character) character)))
+                  (aset ascii character value)
+                  (when (and (< character 128)
+                             (or (not (integerp value))
+				 (/= value (if (and (>= character 65) (<= character 90))
+                                               (+ character 32) character))))
+                    (aset entry 3 nil)))
+		(setq character (1+ character)))
+              (unless (nlre--native-case-table-p canon) (aset entry 2 ascii)))
+            (puthash canon entry nlre--translate-cache)
+            entry))))))
 
-(defun nlre--current-translate-table ()
-  (nlre--current-case-extra 1))
+(defun nlre--ascii-search-string-p (text)
+  "Prove TEXT is ASCII using native string operations, preserving mutation.
+Unibyte strings need a content test: their byte count alone proves nothing."
+  (if (and (eq text nlre--ascii-subject)
+           (equal text nlre--ascii-subject-copy))
+      nlre--ascii-subject-p
+    (setq nlre--ascii-subject text
+          nlre--ascii-subject-copy (copy-sequence text)
+          nlre--ascii-subject-p
+          (let ((view (if (multibyte-string-p text) text
+                        (string-as-multibyte text))))
+            (= (length view) (string-bytes view))))))
+
+(defun nlre--ascii-search-regexp-p (regexp)
+  "Prove REGEXP cannot introduce non-ASCII members; retain a mutation-safe key."
+  (if (and (eq regexp nlre--ascii-regexp)
+           (equal regexp nlre--ascii-regexp-copy))
+      nlre--ascii-regexp-p
+    (setq nlre--ascii-regexp regexp
+          nlre--ascii-regexp-copy (copy-sequence regexp)
+          nlre--ascii-regexp-p
+          ;; Classes and escapes can introduce non-ASCII members even
+          ;; when their spelling is ASCII.  Keep their general translation.
+          (and (not (string-search "[" regexp))
+               (not (string-search "\\" regexp))
+               (let ((view (if (multibyte-string-p regexp) regexp
+                             (string-as-multibyte regexp))))
+                 (= (length view) (string-bytes view)))))))
+
+(defun nlre--search-translate-table (regexp text)
+  "Get translation once; reuse byte fast paths only on a proven ASCII domain."
+  (let ((table (nlre--current-translate-table)))
+    (if (and table (aref table 3) (null search-spaces-regexp)
+             (if (and (eq regexp nlre--ascii-regexp)
+                      (equal regexp nlre--ascii-regexp-copy))
+                 nlre--ascii-regexp-p
+               (nlre--ascii-search-regexp-p regexp))
+             (if (and (eq text nlre--ascii-subject)
+                      (equal text nlre--ascii-subject-copy))
+                 nlre--ascii-subject-p
+               (nlre--ascii-search-string-p text)))
+        nil
+      table)))
 
 (defun nlre--copy-key-value (value)
   (if (stringp value) (copy-sequence value) value))
@@ -146,7 +243,7 @@ and matching.  Nil selects the portable downcase fallback.")
 (defun nlre--cache-entry-match-p (e pat fold spaces)
   (and (equal pat (aref e 0))
        (eq (multibyte-string-p pat) (aref e 7))
-       (eq fold (aref e 1))
+       (eq (and fold (or nlre--translate-table t)) (aref e 1))
        (equal spaces (aref e 2))
        (or (not (aref e 3))
            (let ((table (and nlre--syntax-table-reader
@@ -185,7 +282,8 @@ and matching.  Nil selects the portable downcase fallback.")
   ;; hash and make the `eq' head shortcut return a stale program.
   (let* ((original pat)
          (pat (copy-sequence pat))
-         (e (vector pat fold (nlre--copy-key-value spaces)
+         (e (vector pat (and fold (or nlre--translate-table t))
+                   (nlre--copy-key-value spaces)
                    syntax-dependent syntax-signature compiled
                    (setq nlre--compiled-cache-tick (1+ nlre--compiled-cache-tick))
                    (multibyte-string-p pat) original)))
@@ -209,7 +307,7 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
              (equal pat (aref entry 0))
              (or (eq pat (aref entry 8))
                  (eq (multibyte-string-p pat) (aref entry 7)))
-             (eq (not case-fold-search) (not (aref entry 1)))
+             (eq (and case-fold-search (or nlre--translate-table t)) (aref entry 1))
              (equal search-spaces-regexp (aref entry 2)))
         (progn
           (setq nlre--compiled-cache-hits (1+ nlre--compiled-cache-hits))
@@ -228,7 +326,7 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
          (entry (if (and head
                          (equal pat (aref head 0))
                          (eq (multibyte-string-p pat) (aref head 7))
-                         (eq fold (aref head 1))
+                         (eq (and fold (or nlre--translate-table t)) (aref head 1))
                          (or (eq spaces (aref head 2))
                              (equal spaces (aref head 2)))
                          (or (not (aref head 3))
@@ -1159,24 +1257,15 @@ one, which would demote them to the interpreter)."
   (upcase c))
 
 (defun nlre--table-char (c table)
-  "Read a character mapping from a host or lightweight TABLE."
-  (or (cond ((and (fboundp 'emacs-char-table-p) (emacs-char-table-p table))
-             (emacs-char-table-ref table c))
-            ((vectorp table)
-                 (and (< c (length table)) (aref table c)))
-                ((and (fboundp 'recordp) (recordp table)
-                      (fboundp 'nelisp-casetab--char-table-range))
-                 (nelisp-casetab--char-table-range table c))
-                ((and (fboundp 'nelisp-casetab--char-table-p)
-                      (nelisp-casetab--char-table-p table))
-                 (nelisp-casetab--ref table c))
-                ((and (fboundp 'char-table-p) (char-table-p table))
-                 (aref table c)))
-      c))
+  "Read C through TABLE's cached ASCII page or live owner lookup."
+  (if (and (< c 256) (aref table 2))
+      (aref (aref table 2) c)
+    (or (funcall (aref table 1) (aref table 0) c) c)))
 
 (defun nlre--translate-char (c table)
   "Canonicalize C with TABLE, falling back to ordinary case folding."
-  (if table (nlre--table-char c table)
+  (if (and table (not (and (< c 128) (aref table 3))))
+      (nlre--table-char c table)
     (if (< c 128)
         (if (and (>= c ?A) (<= c ?Z)) (+ c 32) c)
       (if (fboundp 'nelisp-unicode-canonical-character)
@@ -1193,7 +1282,8 @@ one, which would demote them to the interpreter)."
 
 (defun nlre--literal-char-equal-p (pattern pmulti subject smulti)
   "Compare one literal with GNU's pattern and subject byte-kind rules."
-  (if (and (< pattern 128) (< subject 128) (null nlre--translate-table))
+  (if (and (< pattern 128) (< subject 128)
+           (or (null nlre--translate-table) (aref nlre--translate-table 3)))
       ;; Byte-kind conversion cannot change ASCII. Avoid the general byte
       ;; translation helpers on the portable path's many failed literals.
       (= (if (and nlre--fold (>= pattern ?A) (<= pattern ?Z)) (+ pattern 32) pattern)
@@ -1952,7 +2042,7 @@ of STRING.  Sets `nlre--match-data' as usual."
                    (format "%d" nlre--string-match-calls)))
   (let* ((nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
-                                      (nlre--current-translate-table)))
+                                      (nlre--search-translate-table regexp string)))
          (compiled (nlre--compiled-pattern regexp))
          (n (length string))
          (i (or start 0))
@@ -2334,7 +2424,7 @@ LOWER is the minimum candidate start and MAX-END bounds match consumption.
 The full STRING remains visible to anchors and boundary assertions."
   (let* ((nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
-                                      (nlre--current-translate-table)))
+                                      (nlre--search-translate-table regexp string)))
          (compiled (nlre--compiled-pattern regexp))
          (nlre--pattern-multibyte (aref compiled 5))
          (nlre--match-end-limit max-end)

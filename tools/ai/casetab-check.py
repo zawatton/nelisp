@@ -290,6 +290,29 @@ def verified_file(file, digest):
     return candidate
 
 
+def casefold():
+    "Verify the actual supplied-image timing and its original failing control."
+    report = json.loads((ROOT / "target/casetab-casefold/result.json").read_text())
+    if report["source_sha256"] != sha256(ROOT / "lisp/nelisp-stdlib-regexp.el"):
+        raise ValueError("stale case-fold timing source")
+    if report["fixture_sha256"] != sha256(ROOT / "test/standalone-casetab-casefold-probe.el"):
+        raise ValueError("stale case-fold timing fixture")
+    files = {key: verified_file(value["path"], value["sha256"])
+             for key, value in report["files"].items()}
+    output = files["output"].read_text()
+    values = {name: float(value) for name, value in re.findall(
+        r"^case-fold (nil|t): ([0-9.]+) ms/match$", output, re.M)}
+    if (report["rc"] != 0 or set(values) != {"nil", "t"} or
+            values["nil"] <= 0 or values["t"] > 1.5 * values["nil"] or
+            "CASETAB-CASEFOLD PASS" not in output or files["stderr"].read_bytes()):
+        raise ValueError("case-fold timing fails the unchanged 1.5x limit")
+    if (files["negative_rc"].read_text().strip() != "1" or
+            "CASETAB-CASEFOLD FAIL" not in files["negative_output"].read_text()):
+        raise ValueError("case-fold timing lacks its failing original-image control")
+    print(f"CASETAB casefold: nil {values['nil']:.6f}, t {values['t']:.6f} ms/match; "
+          f"{values['t']/values['nil']:.3f}x <= 1.5x PASS (provided image, module reload)")
+
+
 def final():
     check_sync()
     manifest_path = path(os.environ.get("CASETAB_FINAL_MANIFEST", relative(OUT / "final.json")))
@@ -375,7 +398,7 @@ def final():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=(*MODES, "final", "sync", "oracle", "base", "efficiency"))
+    parser.add_argument("mode", choices=(*MODES, "final", "sync", "oracle", "base", "efficiency", "casefold"))
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("CASETAB_TIMEOUT", "20")))
     args = parser.parse_args()
     if args.mode == "sync":
@@ -387,6 +410,8 @@ def main():
         efficiency(args.timeout)
     elif args.mode == "final":
         final()
+    elif args.mode == "casefold":
+        casefold()
     elif args.mode == "base":
         results = [run_mode(mode, "base", args.timeout) for mode in MODES]
         write_json(OUT / "red/summary.json", {"runs": results,
