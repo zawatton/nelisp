@@ -676,7 +676,7 @@ are nil, including characters with no standard case mapping.")
     (dolist (run runs)
       (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
         (while (<= character end)
-          (set-char-table-range table character (+ character offset))
+          (case-table--set-char-table-range table character (+ character offset))
           (setq character (1+ character))))))
   table)
 

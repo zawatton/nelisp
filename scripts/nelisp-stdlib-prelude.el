@@ -27248,6 +27248,19 @@ are skipped.")
 
 (put 'case-table 'char-table-extra-slots 3)
 
+;; GNU calls its C primitives directly.  Keep those operations when the
+;; optional foundation adapter later replaces the public Lisp function cells.
+(defvar case-table--native-p (symbol-function 'char-table-p))
+(defvar case-table--native-subtype (symbol-function 'char-table-subtype))
+(defvar case-table--native-range (symbol-function 'char-table-range))
+(defvar case-table--native-set-range (symbol-function 'set-char-table-range))
+(defvar case-table--native-extra (symbol-function 'char-table-extra-slot))
+(defvar case-table--native-set-extra (symbol-function 'set-char-table-extra-slot))
+(defvar case-table--native-map (symbol-function 'map-char-table))
+(defvar case-table--native-make (symbol-function 'make-char-table))
+(defvar case-table--native-parent (symbol-function 'char-table-parent))
+(defvar case-table--native-set-parent (symbol-function 'set-char-table-parent))
+
 (defun case-table--standalone-p ()
   "Return non-nil in the standalone NeLisp runtime."
   (or (fboundp 'nl-write-file) (not (boundp 'emacs-version))))
@@ -27262,17 +27275,17 @@ are skipped.")
 
 (defun case-table--char-table-p (table)
   "Return non-nil for a native or foundation char-table TABLE."
-  (or (char-table-p table) (case-table--sparse-table-p table)))
+  (or (funcall case-table--native-p table) (case-table--sparse-table-p table)))
 
 (defun case-table--char-table-subtype (table)
   (if (case-table--sparse-table-p table)
       (emacs-char-table-subtype table)
-    (char-table-subtype table)))
+    (funcall case-table--native-subtype table)))
 
 (defun case-table--char-table-range (table range)
   (if (case-table--sparse-table-p table)
       (emacs-char-table-range table range)
-    (char-table-range table range)))
+    (funcall case-table--native-range table range)))
 
 (defun case-table--set-char-table-range (table range value)
   (if (case-table--sparse-table-p table)
@@ -27282,7 +27295,7 @@ are skipped.")
           (unless (or (case-table--char-table-p table) (arrayp table))
             (signal 'wrong-type-argument (list 'arrayp table)))
           (aset table range value))
-      (set-char-table-range table range value))))
+      (funcall case-table--native-set-range table range value))))
 
 (defun case-table--aset (table character value)
   "Set one array entry with GNU aset's type and character checks.
@@ -27301,12 +27314,12 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 (defun case-table--get-extra-slot (table slot)
   (if (case-table--sparse-table-p table)
       (emacs-char-table-extra-slot table slot)
-    (char-table-extra-slot table slot)))
+    (funcall case-table--native-extra table slot)))
 
 (defun case-table--put-extra-slot (table slot value)
   (if (case-table--sparse-table-p table)
       (emacs-char-table-set-extra-slot table slot value)
-    (set-char-table-extra-slot table slot value)))
+    (funcall case-table--native-set-extra table slot value)))
 
 (defalias 'case-table--char-table-extra-slot #'case-table--get-extra-slot)
 (defalias 'case-table--set-char-table-extra-slot #'case-table--put-extra-slot)
@@ -27314,7 +27327,7 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 (defun case-table--map-char-table (function table)
   (if (case-table--sparse-table-p table)
       (emacs-char-table-map function table)
-    (map-char-table function table)))
+    (funcall case-table--native-map function table)))
 
 (defun case-table--ref (table character)
   (if (case-table--sparse-table-p table)
@@ -27323,7 +27336,7 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 
 (defun case-table--empty-table ()
   "Return an empty char-table of subtype `case-table'."
-  (make-char-table 'case-table nil))
+  (funcall case-table--native-make 'case-table nil))
 
 (defun case-table-p (object)
   "Return t if OBJECT is a case table, including valid auxiliary slots."
@@ -27491,15 +27504,15 @@ equivalence tables in extra slots 0, 1 and 2.  Missing tables are derived."
 This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   (if (case-table--sparse-table-p table)
       (emacs-char-table-copy table)
-    (let* ((parent (char-table-parent table))
-           (default (char-table-range table nil))
-           (subtype (char-table-subtype table))
+    (let* ((parent (funcall case-table--native-parent table))
+           (default (case-table--char-table-range table nil))
+           (subtype (case-table--char-table-subtype table))
            (properties (copy-sequence (symbol-plist subtype)))
            (slot 0) (extras nil) done copy)
       (while (not done)
         (condition-case nil
             (progn
-              (push (char-table-extra-slot table slot) extras)
+              (push (case-table--get-extra-slot table slot) extras)
               (setq slot (1+ slot)))
           (args-out-of-range (setq done t))))
       ;; A subtype's allocation property can change after TABLE was made.
@@ -27507,21 +27520,21 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
       (unwind-protect
           (progn
             (put subtype 'char-table-extra-slots slot)
-            (setq copy (make-char-table subtype nil)))
+            (setq copy (funcall case-table--native-make subtype nil)))
         (setplist subtype properties))
       (unwind-protect
           (progn
-            (set-char-table-parent table nil)
-            (set-char-table-range table nil nil)
-            (map-char-table
-             (lambda (range value) (set-char-table-range copy range value)) table))
-        (set-char-table-range table nil default)
-        (set-char-table-parent table parent))
-      (set-char-table-range copy nil default)
-      (set-char-table-parent copy parent)
+            (funcall case-table--native-set-parent table nil)
+            (case-table--set-char-table-range table nil nil)
+            (case-table--map-char-table
+             (lambda (range value) (case-table--set-char-table-range copy range value)) table))
+        (case-table--set-char-table-range table nil default)
+        (funcall case-table--native-set-parent table parent))
+      (case-table--set-char-table-range copy nil default)
+      (funcall case-table--native-set-parent copy parent)
       (setq slot 0)
       (dolist (extra (nreverse extras))
-        (set-char-table-extra-slot copy slot extra)
+        (case-table--put-extra-slot copy slot extra)
         (setq slot (1+ slot)))
       copy)))
 
@@ -28205,7 +28218,7 @@ are nil, including characters with no standard case mapping.")
     (dolist (run runs)
       (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
         (while (<= character end)
-          (set-char-table-range table character (+ character offset))
+          (case-table--set-char-table-range table character (+ character offset))
           (setq character (1+ character))))))
   table)
 
