@@ -1660,10 +1660,10 @@ the representation joins only ever meet raw-i64 and sexp-ptr."
     node))
 
 (defun nelisp-aot-compiler--lisp-stabilize (node env fenv defuns)
-  "Return NODE copied out of the dispatcher's shared OUT slot when it is there.
-The next delegated call overwrites OUT, and a GNU variable keeps its
-value, so a user `let' binding of a call result gets a slot of its own,
-as `setq' already gives it."
+  "Return NODE's value stable across a later write to shared OUT.
+The next delegated call overwrites OUT.  Snapshot fixnums, nil and t as
+immediate words, and clone any other value into a slot of its own, so a
+user `let' binding keeps its value as a GNU Lisp_Object does."
   (cond
    ((not (and (nelisp-aot-compiler--lisp-values-p)
               (nelisp-aot-compiler--lisp-aliases-out-p node)))
@@ -1673,16 +1673,50 @@ as `setq' already gives it."
           '(if cond let-rt let-rt-n let value-seq))
     (nelisp-aot-compiler--lisp-map-tail
      node (lambda (n) (nelisp-aot-compiler--lisp-stabilize n env fenv defuns))))
+   ;; Preserve the existing representation join for dispatcher-backed
+   ;; arithmetic arms.  Only a same-unit call has the unit-entry contract
+   ;; whose result is snapshotted here; changing a generic arm from a slot
+   ;; to a WORD can invalidate the enclosing raw-arithmetic inference.
+   ((not (and (eq (nelisp-aot-compiler--ir-kind node) 'call)
+              (nelisp-aot-compiler--ir-get node :internal-boundary-disp)))
+    (let ((stable (nelisp-aot-compiler--gensym "lisp-stable")))
+      (nelisp-aot-compiler--ir-with
+       (nelisp-aot-compiler--parse-value
+        `(let ((,stable (alloc-bytes 32 8)))
+           (seq (extern-call nl_sexp_clone_into
+                             (nelisp-aot--parsed-ir ,node) ,stable)
+                ,stable))
+        env fenv defuns)
+       :repr 'sexp-ptr)))
    (t
-      (let ((stable (nelisp-aot-compiler--gensym "lisp-stable")))
-        (nelisp-aot-compiler--ir-with
-         (nelisp-aot-compiler--parse-value
-          `(let ((,stable (alloc-bytes 32 8)))
-             (seq (extern-call nl_sexp_clone_into
-                               (nelisp-aot--parsed-ir ,node) ,stable)
-                  ,stable))
-          env fenv defuns)
-         :repr 'sexp-ptr)))))
+    ;; GNU comp.c:2500 returns the Lisp_Object value, independent of a
+    ;; later call.  OUT is a mutable Sexp slot here, so snapshot immediate
+    ;; values into words; only a slot value needs its own cloned slot.
+    (let ((value (nelisp-aot-compiler--gensym "lisp-value"))
+          (number (nelisp-aot-compiler--gensym "lisp-number"))
+          (immediate (nelisp-aot-compiler--gensym "lisp-immediate"))
+          (stable (nelisp-aot-compiler--gensym "lisp-stable")))
+      (nelisp-aot-compiler--ir-with
+       (nelisp-aot-compiler--parse-value
+        `(let ((,value (nelisp-aot--parsed-ir ,node)))
+           (let ((,immediate
+                  (cond
+                   ((= (sexp-tag ,value) ,nelisp-sexp--tag-int)
+                    (let ((,number (sexp-int-unwrap ,value)))
+                      (if (= (sar (shl ,number 2) 2) ,number)
+                          (logior (shl ,number 2) 1)
+                        0)))
+                   ((= (sexp-tag ,value) ,nelisp-sexp--tag-nil) 3)
+                   ((= (sexp-tag ,value) ,nelisp-sexp--tag-t) 7)
+                   (t 0))))
+             ;; No immediate has the bits 0, including fixnum zero.
+             (if (/= ,immediate 0)
+                 ,immediate
+               (let ((,stable (alloc-bytes 32 8)))
+                 (seq (extern-call nl_sexp_clone_into ,value ,stable)
+                      ,stable)))))
+        env fenv defuns)
+       :repr 'word)))))
 
 (defun nelisp-aot-compiler--lisp-binding-init (init)
   "Return the preprocessed INIT of a user `let' binding (Doc 229).

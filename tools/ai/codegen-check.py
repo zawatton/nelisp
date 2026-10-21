@@ -42,8 +42,8 @@ lispvalue-e2e [STAGE...]
               target/codegen/lispvalue-e2e.json: a build of this tree passes
               validate.sh with the Doc 229 stages (default 1 loader 2, or
               the STAGEs given) in the AOT differential,
-              and the five kernels compile byte-identically to 1042eedbc's
-              compiler (the dialect is untouched).
+              and the five kernels compile byte-identically to cdff33e46's
+              alignment-reference compiler (the dialect is untouched).
 
 Kernel sources live in test/perf/codegen-kernels/.  Build products and
 callgrind outputs go to target/codegen/kernels/.  Set CODEGEN_EMACS to pick

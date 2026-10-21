@@ -1,0 +1,10 @@
+;;; FNV fixture, including all possible tail lengths -*- lexical-binding: t; -*-
+(defun ck_main (n r)
+  (let ((data (ck_mmap 4096)) (i 0) (j 0) (s 0))
+    (while (< i 32) (ptr-write-u8 data i (+ (* i 7) 3)) (setq i (+ i 1)))
+    (while (< j r)
+      (setq i 0)
+      (while (< i n)
+        (setq s (+ s (nelisp_fnv1a_step4 2166136261 data 0 (+ 16 (logand i 3)) 4294967295)))
+        (setq i (+ i 1)))
+      (setq j (+ j 1))) s))

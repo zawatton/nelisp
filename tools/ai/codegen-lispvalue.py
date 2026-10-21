@@ -15,7 +15,7 @@ Usage:
       Record the end-to-end criterion in target/codegen/lispvalue-e2e.json:
       VALIDATE_LOG (target/codegen/validate.sh on BINARY, a build of this
       tree) and a byte-identity control for the dialect -- the five Doc 224
-      kernels compiled by this tree and by 1042eedbc's compiler.
+      kernels compiled by this tree and by the pinned alignment reference compiler.
 
 Cases run in chunks of reader processes, as the AOT differential driver
 does; a chunk that dies is rerun one case per process.  The runs are
@@ -232,7 +232,8 @@ def run(tag, root, binary):
     print("%s: %d cases, %d not passing" % (tag, len(cases), bad))
 
 
-PRE229 = "1042eedbc"
+# S5.1 changes only NOPs/layout; retain exact byte identity after alignment.
+KERNEL_REFERENCE = "cdff33e46"
 KERNELS = ("byte-scan", "list-walk", "fixnum-loop", "class-table", "vector-sum")
 
 
@@ -248,10 +249,10 @@ def build_kernel(kernel, exe, lisp_root):
 
 def e2e(log, binary):
     binary = os.path.realpath(binary)
-    pre = os.path.join(REPO, "target", "codegen", "pre229-src")
-    if not os.path.isdir(os.path.join(pre, "lisp")):
+    pre = os.path.join(REPO, "target", "codegen", "kernel-reference-" + KERNEL_REFERENCE)
+    if not os.path.isfile(os.path.join(pre, "vendor/staged-emacs-lisp/subr.el")):
         os.makedirs(pre, exist_ok=True)
-        sh("git archive %s lisp src | tar -x -C %s" % (PRE229, pre), REPO, 300)
+        sh("git archive %s lisp src vendor/staged-emacs-lisp | tar -x -C %s" % (KERNEL_REFERENCE, pre), REPO, 300)
     work = os.path.join(OUT, "kernels")
     os.makedirs(work, exist_ok=True)
     differ = []

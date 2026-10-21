@@ -1,0 +1,40 @@
+{
+  "nl_bytes_byte_at": {
+    "functions": [
+      "nl_bytes_byte_at"
+    ],
+    "coverage": "raw byte access over 32 offsets"
+  },
+  "nelisp_fnv1a_step4": {
+    "functions": [
+      "nl_bytes_byte_at",
+      "nelisp_fnv1a_step",
+      "nelisp_fnv1a_step4"
+    ],
+    "coverage": "16-byte names, four-byte recursion and byte tail"
+  },
+  "nelisp_symbol_key_equal": {
+    "functions": [
+      "nelisp_symbol_key_equal"
+    ],
+    "coverage": "interned shared data, uninterned identity, byte equality and mismatch"
+  },
+  "nl_root_frame": {
+    "functions": [
+      "nl_root_frame",
+      "nl_rootstack_end"
+    ],
+    "coverage": "main-thread fast path with 0 through 7 slots",
+    "data_addresses": {
+      "nl_rootstack_top": 402653184,
+      "nl_thread_registry": 402653192,
+      "nl_rootstack_region": 402653312
+    }
+  },
+  "wf_bytecode_w_fast_run": {
+    "functions": [
+      "wf_bytecode_w_fast_run"
+    ],
+    "coverage": "exact hot loop: add1/goto, 256 backedges, all cold externs trap"
+  }
+}
