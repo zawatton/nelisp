@@ -402,12 +402,37 @@ times the globals probe on CPU 13 and commits with the numbers.
   it) and its varref cache read GNU find_symbol_value's in-line cases
   through =nl_ent_plain_value=, everything else through
   =nl_sym_find_value_w=.
+- Step 5.3 (D9 stage 2): an uninterned symbol is a direct object.
+  =make-symbol= (=bf_make_symbol_w=, GNU Fmake_symbol) and the C-ABI
+  writers the reader's =#:= syntax and the native =make-symbol= use build
+  a kind-16 object whose name is the given string (GNU's =name=), whose
+  value and function cells hold one shared unbound-marker view
+  (=nl_sym_unbound=, rooted at 268436336 beside the shared symentry) and
+  whose identity is its backing address.  A legacy 32-byte view of it
+  (for the Sexp-slot ABI) carries that address at +8 and the name's bytes
+  at +16/+24, and every store canonicalizes the view back to the object's
+  WORD (=nl_val_clone_into=, =nl_word_canon=).  Lookups answer the object
+  itself, so the uninterned path no longer hashes.  String accessors read
+  a symbol object's name string (=nl_word_data=, =nl_word_length=,
+  =nl_bi_strptr=/=nl_bi_strlen=, =bf_str_ptr=/=bf_str_len=, and the
+  =str-len=, =str-bytes= and =str-byte-at= emitters on x86_64 and
+  aarch64); identity readers compare payloads (=nelisp_symbol_key_equal=,
+  =nl_sexp_eq=); =symbol-name= answers the name string; the printer
+  prints it.  The collector marks an object through its view
+  (=nl_gc_mark_symview=: validated through the typed registry, a swept
+  cell skipped by its dead marker) and the shared unbound view as a root.
+  An uninterned symbol never enters the mirror's buckets, so the NeLisp
+  enumerator =nelisp--native-variable-alias-pairs= (no GNU twin: GNU's
+  mapatoms never reaches an uninterned symbol) finds uninterned aliases
+  by walking the symbol blocks in sweep_symbols' order
+  (=nl_pa_uninterned_alias_pairs= over the arena's =nl_symbol_block_first=,
+  =nl_symbol_block_next= and =nl_symbol_block_cells=).  =make-symbol=
+  costs 48 B per symbol, GNU's sizeof (struct Lisp_Symbol).
 - Not reached in this lane:
-  - S1.1 header-less symbol WORDs.  A symbol WORD is still a 32-byte view
-    copied per occurrence; making it the object needs the GC to trace and
-    rewrite a view's object field (or a direct WORD that every symbol
-    consumer and the =symbol-eq= emitter accept).  =make-symbol= costs
-    56 B per symbol against GNU's 48 B.
-  - S2.1 own cost at GNU's level: each access still reaches the object
-    through view -> name buffer -> header index -> symbol table, plus the
-    builtin's classification, against GNU's single load.
+  - D9 stage 3, direct interned WORDs.  An interned symbol WORD is still
+    a 32-byte view (tag 4) copied per occurrence, reaching its object
+    through the name's cell index (=nl_symcell_entry=); an interned
+    object's =name= cell is filled lazily, on the first =symbol-name=.
+  - S2.1 own cost at GNU's level: an interned access still goes view ->
+    name buffer -> header index -> cell, plus the builtin's
+    classification, against GNU's single load.

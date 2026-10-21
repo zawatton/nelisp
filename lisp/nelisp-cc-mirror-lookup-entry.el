@@ -135,6 +135,11 @@ written wrong, so the check must fire.  Anything else: no check."
       ;; crashing the process.  A sound "not found" on a malformed key
       ;; matches the existing `wf_key_eq_depth' precedent (commit
       ;; 7aa3ed8b): a miss is always safe, a crash is not.
+      ;; Doc 226 D9: a symbol object's WORD (class 110, kind 4 or 16) lives
+      ;; in a symbol_block cell outside the chunks; its header is the check.
+      (if (= (logand sym-ptr 7) 6)
+          (if (or (= (logand (heap-read-u64 (- sym-ptr 6) 0) 63) 4)
+                  (= (logand (heap-read-u64 (- sym-ptr 6) 0) 63) 16)) 1 0)
       (if (and (= (extern-call nl_gc_in_arena sym-ptr) 0)
                (= (extern-call nl_root_pin_slot_active sym-ptr) 0)
                (= (extern-call nl_rootstack_slot_active sym-ptr) 0))
@@ -142,7 +147,7 @@ written wrong, so the check must fire.  Anything else: no check."
         (if (or (= (sexp-tag sym-ptr) 4) (= (sexp-tag sym-ptr) 16))
             1
           (if (or (= (sexp-tag sym-ptr) 5)
-                  (= (sexp-tag sym-ptr) 14)) 1 0))))
+                  (= (sexp-tag sym-ptr) 14)) 1 0)))))
     ;; perf/mirror-bucket-count-raw: `ht_rec.slots[0]' (the bucket count)
     ;; is `Sexp::Int' by this function's own precondition list below --
     ;; it is NEVER a pointer WORD -- so every call to
@@ -295,10 +300,14 @@ written wrong, so the check must fire.  Anything else: no check."
               (if (= cell 1)
                   (nelisp_mirror_lookup_hashed mirror-ptr name)
                 ,(nelisp-cc-mirror-lookup-entry--cell-use 'name)))
-          (if (or (= (sexp-tag name) 16)
-                  (= (sexp-tag name) 5) (= (sexp-tag name) 14))
-              (nelisp_mirror_lookup_hashed mirror-ptr name)
-            0))))
+          (if (= (sexp-tag name) 16)
+              ;; Doc 226 D9: an uninterned symbol is its own object.
+              (if (= (logand name 7) 6) name
+                (if (> (heap-read-u64 name 8) 65535) (+ (heap-read-u64 name 8) 6)
+                  (nelisp_mirror_lookup_hashed mirror-ptr name)))
+            (if (or (= (sexp-tag name) 5) (= (sexp-tag name) 14))
+                (nelisp_mirror_lookup_hashed mirror-ptr name)
+              0)))))
 
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
@@ -338,11 +347,15 @@ written wrong, so the check must fire.  Anything else: no check."
         ;; have no global entry (every lexical variable reference and
         ;; `setq' checks one) land on an empty bucket.  A pointer head is
         ;; the bucket's first Cons view.
+        (if (if (= (sexp-tag sym-ptr) 16)
+                (if (= (logand sym-ptr 7) 6) 1 (> (heap-read-u64 sym-ptr 8) 65535)) 0)
+            ;; Doc 226 D9: an uninterned symbol is its own object.
+            (if (= (logand sym-ptr 7) 6) sym-ptr (+ (heap-read-u64 sym-ptr 8) 6))
         (let ((cell (if (= (sexp-tag sym-ptr) 4)
                         (nl_symcell_entry mirror-ptr sym-ptr) 1)))
           (if (= cell 1)
               (nelisp_mirror_lookup_hashed mirror-ptr sym-ptr)
-            ,(nelisp-cc-mirror-lookup-entry--cell-use 'sym-ptr)))))
+            ,(nelisp-cc-mirror-lookup-entry--cell-use 'sym-ptr))))))
     ,@(when (nelisp-cc-mirror-lookup-entry--symcell-mode)
         '((defun nl_symcell_checked (mirror-ptr key cell)
             ;; CELL is the object answer, or 0 for "no object" (Doc 226

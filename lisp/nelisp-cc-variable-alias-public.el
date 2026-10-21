@@ -252,6 +252,36 @@
                                  result 0)) 0)) 0))
               (setq chain (nl_cons_cdr_word chain))))
           (setq i (+ i 1)))
+        ;; Doc 226 D9 stage 2: an uninterned symbol is its own object and
+        ;; never enters the buckets, so its aliases come from the symbol
+        ;; blocks.
+        (nl_pa_uninterned_alias_pairs result 0)))
+    ;; The uninterned half of `nelisp--native-variable-alias-pairs', a
+    ;; NeLisp enumerator with no GNU twin (GNU's mapatoms never reaches an
+    ;; uninterned symbol).  The walk visits every symbol_block cell (48
+    ;; bytes each); a live kind-16 cell whose redirect (header bits 8-9) is
+    ;; SYMBOL_VARALIAS adds (SYMBOL . TARGET) to RESULT.  A swept cell keeps
+    ;; its kind, so its dead marker (#xdead0 at +24) excludes it.  Symbols
+    ;; taken from the general heap in a parallel section, and symbols
+    ;; restored from an image, are not in a symbol_block and are not seen.
+    (defun nl_pa_uninterned_alias_pairs (result _pad)
+      (let* ((blk (nl_symbol_block_first)) (n 0) (i 0) (c 0) (h 0))
+        (while (> blk 0)
+          (setq n (nl_symbol_block_cells blk))
+          (setq i 0)
+          (while (< i n)
+            (setq c (+ blk (* i 48)))
+            (setq h (heap-read-u64 c 0))
+            (if (and (= (logand h 63) 16) (= (logand (sar h 8) 3) 1)
+                     (/= (heap-read-u64 c 24) 912080))
+                (setq result
+                      (nelisp_cons_construct_w
+                       (nelisp_cons_construct_w
+                        (+ c 6) (nl_pa_public_name (nl_ent_w (+ c 6) 4) 0) 0)
+                       result 0))
+              0)
+            (setq i (+ i 1)))
+          (setq blk (nl_symbol_block_next blk)))
         result))
     (defun nl_pa_default_w (op name value env)
       (let ((canonical (nl_pa_canonical env name)))

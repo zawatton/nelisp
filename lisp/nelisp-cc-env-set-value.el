@@ -245,12 +245,17 @@
     ;; miss precedent (commit 7aa3ed8b): never dereference a value that is
     ;; not provably what it claims to be.
     (defun nelisp_env_set_value_name_ok (name-ptr)
+      ;; Doc 226 D9: a symbol object's WORD (class 110, kind 4 or 16) lives
+      ;; in a symbol_block cell outside the chunks; its header is the check.
+      (if (= (logand name-ptr 7) 6)
+          (if (or (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 4)
+                  (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 16)) 1 0)
       (if (= (extern-call nl_gc_in_arena name-ptr) 0)
           0
         (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1
           (if (or (= (sexp-tag name-ptr) 5)
-                  (= (sexp-tag name-ptr) 14)) 1 0))))
+                  (= (sexp-tag name-ptr) 14)) 1 0)))))
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)

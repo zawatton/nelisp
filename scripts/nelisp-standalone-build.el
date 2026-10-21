@@ -2801,6 +2801,15 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                             (seq (ptr-write-u64 st 408 1) (nl_symbol_zero nb))))
                       (seq (ptr-write-u64 st 408 (+ i 1))
                            (nl_symbol_zero (+ b (* i ,scell)))))))))))))
+      ;; The symbol_block chain for a walk outside the collector, in
+      ;; sweep_symbols' order (alloc.c:6997): the newest block, a block's
+      ;; successor, and the cells a walk visits in BLK (the newest block up
+      ;; to its index, every other block whole).
+      (defun nl_symbol_block_first () (heap-read-u64 (data-addr nl_typed_alloc) 400))
+      (defun nl_symbol_block_next (blk) (heap-read-u64 blk ,next))
+      (defun nl_symbol_block_cells (blk)
+        (let* ((st (data-addr nl_typed_alloc)))
+          (if (= blk (heap-read-u64 st 400)) (heap-read-u64 st 408) ,sn)))
       ;; ---- Live-only image dump (pdumper.c dump_object, reached from the
       ;; roots) ----
       ;; A dump copies only the objects the image walk reaches, packed in
@@ -4454,9 +4463,20 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (let* ((bits (heap-read-u64 (if direct (- w 6) (heap-read-u64 w 8)) 0)))
               (if (/= (logand bits 128) 0) 13110
                 (if (/= (logand bits 64) 0) 13109 0)))
-          (heap-read-u64 w 16)))))
+          ;; Doc 226 D9: a symbol object's name is its name string at +8.
+          (if (if direct (if (= kind 4) 1 (= kind 16)) 0)
+              (let* ((nm (heap-read-u64 (- w 6) 8)))
+                (if (= (logand nm 7) 0) (heap-read-u64 nm 16) 0))
+            (heap-read-u64 w 16))))))
     (defun nl_word_length (w)
-      (if (= (logand w 7) 0) (heap-read-u64 w 24) 0))
+      (if (= (logand w 7) 0) (heap-read-u64 w 24)
+        (if (= (logand w 7) 6)
+            (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+              (if (if (= k 4) 1 (= k 16))
+                  (let* ((nm (heap-read-u64 (- w 6) 8)))
+                    (if (= (logand nm 7) 0) (heap-read-u64 nm 24) 0))
+                0))
+          0)))
     (defun nl_vector_length (v)
       (sar (heap-read-u64 (nl_word_payload v) 0) 8))
     (defun nl_record_length (v)
@@ -4473,13 +4493,23 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
     ;; cons view without metadata becomes its direct WORD (payload | 2);
     ;; anything else is returned unchanged.  Inlinable (no let).
+    ;; Doc 226 D9: the string a string accessor reads -- a symbol object's name
+    ;; string, anything else itself.
+    (defun nl_str_target (sx)
+      (if (= (logand sx 7) 6)
+          (let* ((k (logand (heap-read-u64 (- sx 6) 0) 63)))
+            (if (if (= k 4) 1 (= k 16)) (heap-read-u64 (- sx 6) 8) sx))
+        sx))
     (defun nl_word_canon (w)
       (if (= (logand w 7) 0)
           (if (< w 4096) w
             (if (= (heap-read-u8 w 0) 7)
                 ;; Only the special-form marker (13108) is metadata.
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
-              w))
+              ;; Doc 226 D9: an uninterned symbol's view stores its object.
+              (if (if (= (heap-read-u8 w 0) 16) (> (heap-read-u64 w 8) 65535) 0)
+                  (+ (heap-read-u64 w 8) 6)
+                w)))
         w))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
@@ -4686,6 +4716,54 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                       0))
                 0)))
         0))
+    ;; Doc 226 D9: a symbol's value and function cells start as GNU's
+    ;; Qunbound (alloc.c:3660 init_symbol).  NeLisp's unbound marker is
+    ;; the interned `nelisp--unbound-marker', recognized by name, so every
+    ;; object shares one view of it, made on first use and kept at
+    ;; 268436336 beside the shared symentry (268436328); the collector
+    ;; marks and moves both.
+    (defun nl_sym_unbound ()
+      (if (= (heap-read-u64 268436336 0) 0)
+          (let* ((ubuf (alloc-bytes 24 1)) (box (alloc-bytes 32 8)))
+            (seq (ptr-write-u64 ubuf 0 3255381746650998126)
+                 (ptr-write-u64 (+ ubuf 8) 0 3270860680036773493)
+                 (ptr-write-u64 (+ ubuf 16) 0 125779919921517)
+                 (nl_alloc_symbol ubuf 22 box)
+                 (ptr-write-u64 268436336 0 box)
+                 box))
+        (heap-read-u64 268436336 0)))
+    ;; GNU Fmake_symbol (alloc.c:3675): a new uninterned symbol whose name is
+    ;; NAME (a string WORD or Sexp slot), void value and function, empty
+    ;; plist.  Answers the symbol WORD, or 0 when memory is exhausted.
+    ;; SHARE 1 stores NAME itself, as GNU does, when it is a string box in
+    ;; the heap (a value the caller holds, never a scratch slot); otherwise
+    ;; the keystone stores a box of its own.
+    (defun nl_sym_make_uninterned (name share)
+      (let* ((b (nl_symbol_alloc)))
+        (if (= b 0) 0
+          (let* ((u (nl_sym_unbound)))
+            (seq (ptr-write-u64 b 0 16)
+                 (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
+                 (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                 (if (if (= share 1)
+                         (if (= (logand name 7) 0)
+                             (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
+                                 (nl_gc_in_arena name) 0)
+                           0)
+                       0)
+                     (ptr-write-u64 b 8 name)
+                   (nl_val_clone_into name (+ b 8)))
+                 (+ b 6))))))
+    ;; A legacy 32-byte view of a symbol object, for the Sexp-slot ABI: the
+    ;; tag, the object's backing address as its identity (the payload), and
+    ;; the name's bytes.  Storing the view canonicalizes it back to the
+    ;; object's WORD (`nl_val_clone_into').
+    (defun nl_sym_view_into (w dst)
+      (seq (ptr-write-u64 dst 0 (logand (heap-read-u64 (- w 6) 0) 63))
+           (ptr-write-u64 dst 8 (- w 6))
+           (ptr-write-u64 dst 16 (nl_word_data w))
+           (ptr-write-u64 dst 24 (nl_word_length w))
+           dst))
     ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
     ;; a pointer WORD passes through, an immediate gets a fresh view.
     (defun nl_ent_ptr (w k)
@@ -6619,12 +6697,14 @@ REPL-facing module it feeds."
                       (nl_gc_mark_buf (heap-read-u64 sp 16)) ; Str/UnibyteStr
                     (if (or (= tag 4) (= tag 16))
                         (nl_seq2
+                         (if (= tag 16) (nl_gc_mark_symview sp) 0)
+                        (nl_seq2
                          (nl_gc_mark_buf (heap-read-u64 sp 16))
                          (nl_gc_symname_mark_one
                           (if (= tag 4) 1 2)
                           (if (= tag 4) (heap-read-u64 sp 16)
                             (heap-read-u64 sp 8))
-                          (heap-read-u64 sp 24)))
+                          (heap-read-u64 sp 24))))
                       ;; Bignum (Doc 190 Phase A, tag 13): sign@sp+8,
                       ;; limb-ptr@sp+16, limb-count@sp+24 -- the same
                       ;; inline-pointer shape as Str/Symbol above (a raw
@@ -8142,10 +8222,12 @@ REPL-facing module it feeds."
                                 ;; lives in a growth chunk, not the interned region,
                                 ;; so a bare block-mark left it unmarked -> munmap'd
                                 ;; -> mirror name-compare dangles (SIGSEGV).
-                                (if (= (heap-read-u64 268436328 0) 0) 0
-                                  (nl_seq2
-                                   (nl_gc_mark_block (heap-read-u64 268436328 0))
-                                   (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+                                (nl_seq2
+                                 (if (= (heap-read-u64 268436328 0) 0) 0
+                                   (nl_seq2
+                                    (nl_gc_mark_block (heap-read-u64 268436328 0))
+                                    (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+                                 (nl_gc_mark_symunbound))
                                 ;; perf/macroexpansion-cache: keep every CURRENT-
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
@@ -8476,10 +8558,16 @@ REPL-facing module it feeds."
            ;; edge @ s+16 is rewritten (and that buffer block flipped 1->3 to be
            ;; moved) BEFORE phase 4 memmoves the slot to to-space.  Without the
            ;; slot walk the name buffer is never moved -> dangling name ptr.
-           (if (= (heap-read-u64 268436328 0) 0) 0
-             (let ((old (nl_compact_rw_edge 268436328)))
-               (nl_seq2 (nl_compact_rw_block old)
-                        (nl_compact_rw_slot old)))))))
+           (nl_seq2
+            (if (= (heap-read-u64 268436328 0) 0) 0
+              (let ((old (nl_compact_rw_edge 268436328)))
+                (nl_seq2 (nl_compact_rw_block old)
+                         (nl_compact_rw_slot old))))
+            ;; Doc 226 D9: the shared unbound view of symbol objects.
+            (if (= (heap-read-u64 268436336 0) 0) 0
+              (let ((old (nl_compact_rw_edge 268436336)))
+                (nl_seq2 (nl_compact_rw_block old)
+                         (nl_compact_rw_slot old))))))))
     ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
@@ -8776,9 +8864,30 @@ REPL-facing module it feeds."
     ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
     ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
     (defun nl_gc_mark_symentry ()
-      (if (= (heap-read-u64 268436328 0) 0) 0
-        (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436328 0))
-                 (nl_gc_mark_slot (heap-read-u64 268436328 0)))))
+      (nl_seq2
+       (if (= (heap-read-u64 268436328 0) 0) 0
+         (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436328 0))
+                  (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+       (nl_gc_mark_symunbound)))
+    ;; Doc 226 D9: the shared unbound-marker view of symbol objects
+    ;; (268436336, `nl_sym_unbound'), marked like the shared symentry.
+    (defun nl_gc_mark_symunbound ()
+      (if (= (heap-read-u64 268436336 0) 0) 0
+        (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436336 0))
+                 (nl_gc_mark_slot (heap-read-u64 268436336 0)))))
+    ;; Doc 226 D9: the view of an uninterned symbol object holds the
+    ;; object's backing address at +8 (a legacy identity number is small).
+    ;; A view can outlive its object off the precise paths (a dead scratch
+    ;; slot the conservative scan finds), so the address is validated
+    ;; first, and a swept symbol_block cell -- GNU's dead marker #xdead0 in
+    ;; `function', as live_symbol_holding (alloc.c:4675) tests -- is skipped.
+    (defun nl_gc_mark_symview (sp)
+      (let* ((base (heap-read-u64 sp 8)))
+        (if (> base 65535)
+            (if (= (nl_typed_find base) 2)
+                (if (= (heap-read-u64 base 24) 912080) 0 (nl_gc_mark_symbol base))
+              (if (= (nl_gc_in_arena base) 1) (nl_gc_mark_word (+ base 6)) 0))
+          0)))
     ;; Mode-split mid-form collector.  mode 0 = conservative scan allowed,
     ;; mode 1 = precise-only.  NL_GC_IN_PROGRESS (ctx+24) is a reentrancy guard.
     ;; Always mark+sweep (never compact): mid-form objects must stay put.  The
@@ -22517,13 +22626,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
   '(;; symbol-name str-bytes -> Symbol(tag4).  A Str (tag5) keeps ptr@16/len@24,
     ;; a MutStr (tag6) wraps NlStr* @8 with ptr@8/len@16.  nl_alloc_symbol takes
     ;; (bytes-ptr len result-slot).
-    (defun bf_str_ptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun bf_str_ptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 8)
           (heap-read-u64 sx 16))))
-    (defun bf_str_len (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun bf_str_len (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 16)
           (heap-read-u64 sx 24))))
@@ -22829,15 +22938,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (+ (logand (sar n (shl shift 2)) 15) 87)))
              (bf_mksym_hex n buf start (- shift 1)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; Doc 226 D9: GNU Fmake_symbol (alloc.c:3675) -- the symbol is a direct
+    ;; object whose name is the given string itself.
     (defun bf_make_symbol_w (sx _pad)
   (if (= (m5_string_tag_p (sexp-tag sx)) 0)
       (nl_abi_fail (bf_wrong_type_stringp sx) 0)
-    (let* ((identity (nl_next_symbol_identity)))
-      (if (> identity 0)
-          (let* ((w (nl_alloc_uninterned_symbol_named_w
-                     (bf_str_ptr sx) (bf_str_len sx) identity sx 0)))
-            (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))
-        (nl_abi_fail (bf_signal_overflow_error) 0)))))
+    (let* ((w (nl_sym_make_uninterned sx 1)))
+      (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))))
     ;; Doc 22 A14 (test harness): `record' / `recordp'.  The reader left these
     ;; VOID so no tag-12 Record could be built (and thus the aref-on-record
     ;; SEGFAULT could not be reproduced on the bare reader).  `(record TYPE
@@ -29439,13 +29546,13 @@ extern arms in dynamic builds."
 ;; ===================================================================
 (defconst nelisp-standalone--fileio-forms-part1
   '(
-    (defun nl_bi_strptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 8)
           (heap-read-u64 sx 16))))
-    (defun nl_bi_strlen (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strlen (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 16)
           (heap-read-u64 sx 24))))
@@ -33522,13 +33629,13 @@ outside it needs; copied rather than the whole block pulled in."
        (_
         '(defun nl_os_write_stderr (ptr len)
            (syscall-direct 1 2 ptr len 0 0 0))))
-    (defun nl_bi_strptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 8)
           (heap-read-u64 sx 16))))
-    (defun nl_bi_strlen (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strlen (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 16)
           (heap-read-u64 sx 24))))

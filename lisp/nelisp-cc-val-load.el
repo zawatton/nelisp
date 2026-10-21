@@ -185,7 +185,12 @@
                    (and (ptr-write-u64 box 0
                          (+ (logand (heap-read-u64 box 0) -64) tag))
                         (ptr-write-u64 dst_word_ptr 0 word)) word))
-              (nl_val_clone_legacy src_slot dst_word_ptr))))))))
+              ;; Doc 226 D9: an uninterned symbol's view holds its object's
+              ;; backing address; the stored WORD is the object.
+              (if (if (= tag 16) (> (heap-read-u64 src_slot 8) 65535) 0)
+                  (let ((word (+ (heap-read-u64 src_slot 8) 6)))
+                    (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
+                (nl_val_clone_legacy src_slot dst_word_ptr)))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

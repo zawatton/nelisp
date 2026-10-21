@@ -181,11 +181,15 @@
                   (ptr-write-u64 dst_ptr 24 0)) dst_ptr)
         (if (= (logand src 7) 6)
             (let ((base (- src 6)))
-              (nl_sci_prog2
-               (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
-                    (ptr-write-u64 dst_ptr 8 base)
-                    (ptr-write-u64 dst_ptr 16 0)
-                    (ptr-write-u64 dst_ptr 24 0)) dst_ptr))
+              ;; Doc 226 D9: a symbol object's view also carries its name.
+              (if (or (= (logand (heap-read-u8 base 0) 63) 4)
+                      (= (logand (heap-read-u8 base 0) 63) 16))
+                  (nl_sym_view_into src dst_ptr)
+                (nl_sci_prog2
+                 (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
+                      (ptr-write-u64 dst_ptr 8 base)
+                      (ptr-write-u64 dst_ptr 16 0)
+                      (ptr-write-u64 dst_ptr 24 0)) dst_ptr)))
           (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))
   "AOT source for nl_sexp_clone_into.
 

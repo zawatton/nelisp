@@ -16592,11 +16592,26 @@ Strategy (= inline word check, no extern call):
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
+(defun nelisp-aot-compiler--emit-symbol-name-redirect (buf reg tmp)
+  "Emit REG = its name string WORD when REG is a symbol object.
+Doc 226 D9: a symbol object is a class-110 WORD whose name string WORD sits
+at backing + 8 = REG + 2; string accessors then read that string's inline
+fields.  Any other WORD is left alone.  TMP is clobbered."
+  (let* ((id (nelisp-aot-compiler--gensym "symname"))
+         (done (intern (format "%s-done" id))))
+    (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
+    (nelisp-asm-x86_64-and-reg-reg buf tmp reg)
+    (nelisp-asm-x86_64-cmp-imm32 buf tmp 6)
+    (nelisp-asm-x86_64-jnz-rel32 buf done)
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf reg reg 2)
+    (nelisp-asm-x86_64-define-label buf done)))
+
 (defun nelisp-aot-compiler--emit-str-len (node buf)
   "Emit `mov rax, qword ptr [rdi + 24]' after computing NODE's :ptr."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-length)))
 
@@ -16605,6 +16620,7 @@ Strategy (= inline word check, no extern call):
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-ptr)))
 
@@ -16648,6 +16664,7 @@ Result: the selected UTF-8 byte zero-extended into rax."
     (nelisp-aot-compiler--emit-temp-push buf 'rax)
     (nelisp-aot-compiler--emit-temp-pop buf 'r10)
     (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
+    (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-ptr)
     (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
@@ -18201,10 +18218,24 @@ No tag check; caller guarantees :ptr is a `Sexp::Int'."
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0))
 
+(defun nelisp-aot-compiler--emit-symbol-name-redirect-arm64 (buf reg tmp)
+  "Emit REG = its name string WORD when REG is a symbol object (aarch64).
+See the x86_64 twin; the load is `sub REG, REG, 6' then `ldr REG, [REG, 8]'."
+  (let* ((id (nelisp-aot-compiler--gensym "symname-a64"))
+         (done (intern (format "%s-done" id))))
+    (nelisp-asm-arm64-mov-imm64 buf tmp 7)
+    (nelisp-asm-arm64-and-reg-reg buf tmp reg tmp)
+    (nelisp-asm-arm64-cmp-imm buf tmp 6)
+    (nelisp-asm-arm64-b-cond buf 'ne done)
+    (nelisp-asm-arm64-sub-imm buf reg reg 6)
+    (nelisp-heap-accessors-arm64-ldr-imm buf reg reg 8)
+    (nelisp-asm-arm64-define-label buf done)))
+
 (defun nelisp-aot-compiler--emit-str-len-arm64 (node buf)
   "Emit `str-len' for aarch64 — x0 = i64 length at [ptr+24]."
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-length))
 
 (defun nelisp-aot-compiler--emit-str-byte-at-arm64 (node buf)
@@ -18219,6 +18250,7 @@ result (zero-extended byte) in x0."
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push idx
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = idx (top)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x1 'x12)
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-ptr) ; x0 = buf ptr
   (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
   (nelisp-heap-accessors-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
@@ -18235,6 +18267,7 @@ result (zero-extended byte) in x0."
   "Emit `str-bytes' for aarch64 — x0 = String data pointer at +16."
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-ptr))
 
 (defun nelisp-aot-compiler--emit-str-bytes-ptr-arm64 (node buf)

@@ -76,7 +76,7 @@
       (let* ((left-tag (sexp-tag left)) (right-tag (sexp-tag right)))
         (if (= left-tag 16)
             (if (= right-tag 16)
-                (if (= (heap-read-u64 left 8) (heap-read-u64 right 8)) 1 0)
+                (if (= (nl_word_payload left) (nl_word_payload right)) 1 0)
               0)
           (if (= right-tag 16) 0
             ;; Interned symbols share their name buffer. Other string keys
@@ -189,9 +189,9 @@
              ;; These classes have physical inline String fields. Mutable
              ;; and unsupported kinds retain the existing bytes fallback.
              (bytes (if (or (= kind 4) (= kind 5) (= kind 14) (= kind 16))
-                        (heap-read-u64 str-ptr 16)
+                        (nl_word_data str-ptr)
                       (str-bytes-ptr str-ptr)))
-             (n (heap-read-u64 str-ptr 24))
+             (n (nl_word_length str-ptr))
              (h (+ (shl 1 31) 18652613)) (mask (- (shl 1 32) 1))
              (i 0) (quad 0))
         (seq

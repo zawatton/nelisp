@@ -265,6 +265,15 @@
       (dolist (s syms) (when (and (= (symbol-value s) (string-to-number (substring (symbol-name s) 8)))) (setq ok (1+ ok))))
       (list ok (length syms)))))
 
+(symfix-case u-churn
+  (let ((keep (make-symbol "symfix-keep")))
+    (set keep 'kept) (put keep 'p 'q)
+    (dotimes (i 20000) (let ((s (make-symbol "symfix-churn"))) (set s i) (put s 'p i)))
+    (garbage-collect)
+    (dotimes (_ 20000) (make-symbol "symfix-churn2"))
+    (garbage-collect)
+    (list (symbol-value keep) (get keep 'p) (symbol-name keep) (eq keep keep))))
+
 ;;; FORWARDED (GNU DEFVAR_INT max-lisp-eval-depth, DEFVAR_BOOL print-escape-newlines)
 (symfix-case fwd-int-let
   (let ((old max-lisp-eval-depth))

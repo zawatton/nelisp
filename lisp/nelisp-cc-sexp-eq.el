@@ -48,9 +48,12 @@
      ;; Step 1: tag-byte equality fast-reject.
      (if (= (sexp-tag a) (sexp-tag b))
          ;; Tags match — dispatch on tag value.
-         (if (or (= (sexp-tag a) 2) (= (sexp-tag a) 16))
+         (if (= (sexp-tag a) 2)
              ;; Int: compare i64 payload at offset 8.
              (if (= (sexp-int-unwrap a) (sexp-int-unwrap b)) 1 0)
+           (if (= (sexp-tag a) 16)
+               ;; Doc 226 D9: an uninterned symbol's identity is its object.
+               (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)
            (if (= (sexp-tag a) 4)
                ;; Symbol: inline name compare via symbol-eq.
                (symbol-eq a b)
@@ -88,7 +91,7 @@
                      ;; Cell(11) and any unknown tag: same test (ptr or 0).
                      (if (= (sexp-payload-ptr a) (sexp-payload-ptr b))
                          1
-                       0))))))))
+                       0)))))))))
        ;; Tags differ → not eq.
        0))
   "AOT source for `nl_sexp_eq'.

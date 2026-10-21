@@ -472,11 +472,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (/= (nl_uninterned_symbol_write bytes-ptr n identity result-slot char-buf) 0)
             result-slot
           (nl_abi_fail 1 0))))
+    ;; Doc 226 D9: uninterned symbols are direct objects (GNU Fmake_symbol,
+    ;; alloc.c:3675).  The C-ABI writers below build the object and write
+    ;; its view into RESULT-SLOT; IDENTITY is no longer used (the object's
+    ;; address is the identity).
     (defun nl_alloc_uninterned_symbol (bytes-ptr n identity result-slot)
-      (if (> identity 0)
-          (nl_uninterned_symbol_write bytes-ptr n identity result-slot
-                                      (alloc-bytes (if (= n 0) 1 n) 1))
-        0))
+      (let* ((name (alloc-bytes 32 8)))
+        (seq (nl_alloc_str bytes-ptr n name)
+             (let* ((w (nl_sym_make_uninterned name 0)))
+               (if (= w 0) 0 (seq (nl_sym_view_into w result-slot) 1))))))
     (defun nl_uninterned_symbol_equal (left right)
       (if (= (sexp-tag left) 16)
           (if (= (sexp-tag right) 16)
@@ -710,23 +714,24 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
     ;; that updated Sexp only after the destination buffer has been allocated.
     (defun nl_alloc_uninterned_symbol_named (bytes-ptr n identity name-slot result-slot)
-      (if (<= identity 0) 0
-        (let* ((alloc-n (if (= n 0) 1 n))
-               (char-buf (alloc-bytes alloc-n 1)))
-          (if (= (nl_uninterned_symbol_write
-                  (str-bytes-ptr name-slot) n identity result-slot char-buf) 0) 0
-            (nl_symbol_name_register 2 identity n name-slot)))))
+      (let* ((w (nl_sym_make_uninterned name-slot 0)))
+        (if (= w 0) 0 (seq (nl_sym_view_into w result-slot) 1))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_alloc_uninterned_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_alloc_uninterned_symbol_named_w (bytes-ptr n identity name-slot _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (if (/= (nl_alloc_uninterned_symbol_named bytes-ptr n identity name-slot result-slot) 0)
-            result-slot
-          (nl_abi_fail 1 0))))
+      (let* ((w (nl_sym_make_uninterned name-slot 0)))
+        (if (= w 0) (nl_abi_fail 1 0) w)))
 
     ;; Return the canonical original name Sexp for a symbol, lazily creating
     ;; it for symbols produced by the reader's byte-only construction path.
     (defun nl_symbol_name_value (env symbol-slot out)
+      ;; Doc 226 D9: a symbol object (or the view of one) holds its name.
+      ;; Answers 1 after writing OUT, as the C-ABI forms below do.
+      (if (= (logand symbol-slot 7) 6)
+          (seq (nl_sexp_clone_into (heap-read-u64 (- symbol-slot 6) 8) out) 1)
+      (if (if (= (heap-read-u8 symbol-slot 0) 16)
+              (> (heap-read-u64 symbol-slot 8) 65535) 0)
+          (seq (nl_sexp_clone_into (heap-read-u64 (heap-read-u64 symbol-slot 8) 8) out) 1)
       (let* ((tag (heap-read-u64 symbol-slot 0)))
         (if (= tag 4)
             (let* ((key (heap-read-u64 symbol-slot 16))
@@ -743,7 +748,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                 (if (/= entry 0)
                     (nl_symbol_name_copy_out entry out)
                   (nl_symbol_name_value_create env symbol-slot out)))
-            0))))
+            0))))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_value' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_value_w (env symbol-slot _pad)
