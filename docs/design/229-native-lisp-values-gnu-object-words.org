@@ -352,3 +352,28 @@ crashes ((defun a (x) (b x)) (defun b (x) (car (list x 2)))) -- on
 9d5f4a515 too.  The AOT dispatcher's =equal= crashes and =eql= answers nil
 for equal fixnums (a runtime builtin-dispatch defect, like its float =mod=);
 the evaluator's funcall of =equal= is correct.
+
+** S4.0 Same-unit calls
+
+A Lisp-mode defun reads the dispatcher boundary -- OUT, the mirror and
+frames, the scratch vector, the name slot and twelve callback slots --
+from seventeen hidden frame slots that only the loader's trampoline fills,
+before it jumps past the prologue into the body.  A call from one defun of
+an artifact to another went to the callee's normal entry, so a helper that
+called the runtime or read a constant found garbage there and crashed (on
+9d5f4a515 too).  GNU's same-unit calls simply share the unit's environment.
+
+Each internally called defun (x86-64 SysV, register parameters, no
+&rest, no parameter named like a boundary slot) now has an internal entry,
+=NAME$internal=, placed after its epilogue: the trampoline's frame setup
+and parameter spill, then the seventeen words copied from the caller's
+own hidden slots (=r10= points at the caller's OUT slot), then a jump to
+the body entry the trampoline uses.  A same-unit call sets =r10= with one
+=lea= and calls the internal entry.  An omitted optional argument of such a
+call is nil.  ARM64, Win64 and &rest callees keep the old entry.
+
+Corpus stage =unit=: 5 controls (a helper calling the runtime, a helper
+returning a constant, a three-deep chain, a recursive list length, an
+omitted optional) crash or are refused on 9d5f4a515 and pass now.  Timing
+(CPU 9, 7 paired rounds, recursive fib 22, new over previous compiler):
+x0.995 -- the seventeen-word copy is in the noise of a call.

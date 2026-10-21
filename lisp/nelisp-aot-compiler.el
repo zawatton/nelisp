@@ -351,6 +351,47 @@ the explicit `extern-call' surface.")
   "Return the encoded byte width of `push REG' in the current backend subset."
   (if (memq reg '(r8 r9)) 2 1))
 
+(defun nelisp-aot-compiler--lisp-internal-entry-p (arity &optional rest-p)
+  "Non-nil when a same-unit call to a defun of ARITY goes through its internal entry.
+Doc 229: a Lisp-mode defun reads the dispatcher boundary (OUT, the scratch
+vector, the name slot, ...) from hidden frame slots that only the loader's
+trampoline fills; the internal entry fills them from the caller's own, the
+way GNU's same-unit calls simply share the unit's environment.  x86-64
+SysV with register parameters, as the trampoline's body entry is."
+  (and (nelisp-aot-compiler--lisp-values-p)
+       (eq nelisp-aot-compiler--arch 'x86_64)
+       (eq nelisp-aot-compiler--abi 'sysv)
+       (<= arity 6)
+       (not rest-p)))
+
+(defun nelisp-aot-compiler--emit-internal-entry-x86 (defun-ir buf)
+  "Emit DEFUN-IR's internal entry: the loader trampoline with the caller's boundary.
+R10 holds the address of the caller's OUT hidden slot; the 17 hidden slots
+follow it downwards in every Lisp-mode frame.  The entry builds the
+callee frame exactly as the trampoline does, copies the 17 words, and
+jumps to the body entry."
+  (let* ((name (nelisp-aot-compiler--ir-get defun-ir :name))
+         (param-regs (nelisp-aot-compiler--ir-get defun-ir :param-regs))
+         (arity (length param-regs))
+         (rt (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
+         (rt-rounded (if (zerop (logand rt 1)) rt (1+ rt)))
+         (frame (+ (* 8 arity) (if (= 1 (logand arity 1)) 8 0) (* 8 rt-rounded))))
+    (nelisp-asm-x86_64-define-label buf (intern (format "%s$internal" name)))
+    (nelisp-asm-x86_64--push-inline buf 'rbp)
+    (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
+    (when (> frame 0)
+      (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame))
+    (let ((i 0))
+      (dolist (preg param-regs)
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x89) preg
+                                     (list :mem 'rbp nil 1 (- (* 8 (1+ i)))))
+        (setq i (1+ i))))
+    (dotimes (i (length nelisp-aot-compiler--object-hidden-boundary-symbols))
+      (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8b) 'rax (list :mem 'r10 nil 1 (- (* 8 i))))
+      (nelisp-aot-compiler--x86-op buf t (unibyte-string #x89) 'rax
+                                   (list :mem 'rbp nil 1 (- (* 8 (+ arity 1 i))))))
+    (nelisp-asm-x86_64-jmp-rel32 buf (intern (format "%s$body" name)))))
+
 (defun nelisp-aot-compiler--object-defun-body-offset (defun-ir)
   "Return the body-entry PC offset for DEFUN-IR in object mode, or nil.
 This is the offset immediately after the emitted prologue/spill sequence.
@@ -422,6 +463,33 @@ The caller knows and the compiler does not, so the caller says.")
 
 (defvar nelisp-aot-compiler--jit-checked-car-returning-names nil
   "Defun names whose every source return leaf is the checked-car intrinsic.")
+
+(defvar nelisp-aot-compiler--lisp-internal-entry-names nil
+  "Doc 229: defuns of the unit that get an internal entry (`NAME$internal').
+Internally called, at most six parameters, no &rest, and no parameter
+named like a hidden boundary slot -- so every one of them, and every
+caller, has the seventeen hidden slots in the same order.")
+
+(defun nelisp-aot-compiler--lisp-internal-entry-names (source called)
+  "Return the defuns of SOURCE among CALLED that get an internal entry."
+  (let ((out nil))
+    (when (and (nelisp-aot-compiler--lisp-values-p)
+               (eq nelisp-aot-compiler--arch 'x86_64)
+               (eq nelisp-aot-compiler--abi 'sysv))
+      (nelisp-aot-compiler--walk-source
+       source
+       (lambda (form)
+         (when (and (consp form) (eq (car form) 'defun) (symbolp (nth 1 form))
+                    (memq (nth 1 form) called)
+                    (listp (nth 2 form)))
+           (let ((params (seq-remove (lambda (p) (eq p '&optional)) (nth 2 form))))
+             (when (and (<= (length params) 6)
+                        (not (memq '&rest params))
+                        (not (seq-some (lambda (p)
+                                         (memq p nelisp-aot-compiler--object-hidden-boundary-symbols))
+                                       params)))
+               (push (nth 1 form) out)))))))
+    out))
 
 (defvar nelisp-aot-compiler--internally-called-names nil
   "Names this unit's own defun bodies call.
@@ -12775,14 +12843,27 @@ functions `((NAME . ARITY) ...)'."
               :repr (and nelisp-aot-compiler--runtime-entry-params
                         (memq name nelisp-aot-compiler--sexp-ptr-returning-names)
                         'sexp-ptr)
+              ;; Doc 229: enter a same-unit callee through its internal
+              ;; entry, with this frame's boundary (the OUT hidden slot).
+              :internal-boundary-disp
+              (let ((out-slot (plist-get (cdr (assq 'out fenv)) :slot)))
+                (and out-slot
+                     (memq name nelisp-aot-compiler--lisp-internal-entry-names)
+                     (cl-loop for sym in nelisp-aot-compiler--object-hidden-boundary-symbols
+                              for i from 0
+                              always (eql (plist-get (cdr (assq sym fenv)) :slot)
+                                          (+ out-slot i)))
+                     (- (* 8 (1+ out-slot)))))
               :args (mapcar (lambda (a)
                               (nelisp-aot-compiler--parse-value
                                (nelisp-aot-compiler--as-sexp-ptr-form
                                 a fenv)
                                env fenv defuns))
                             (append args
+                                    ;; An omitted optional is nil.
                                     (make-list (- arity (length args))
-                                               0)))))))
+                                               (if (nelisp-aot-compiler--lisp-values-p)
+                                                   nil 0))))))))
    ;; Doc 129.7AS: object-mode user modules may call functions defined
    ;; in other `.el' objects.  Same-unit calls still take the `call' IR
    ;; path above; this fallback emits a PLT relocation so the final
@@ -13333,6 +13414,11 @@ Returns one of:
                   ('raw-i64 'raw-i64)
                   ('raw-bool 'raw-bool)
                   (_ 'sexp-ptr))))
+              ;; Doc 229: same-unit callers enter through `NAME$internal'.
+              :internal-entry
+              (and (memq name nelisp-aot-compiler--lisp-internal-entry-names)
+                   (= hidden-boundary-count
+                      (length nelisp-aot-compiler--object-hidden-boundary-symbols)))
               :body root-managed-body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
@@ -16408,9 +16494,20 @@ count."
               (when fn-value
                 (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                  buf 'r11 (+ (* 8 stack-count) (if needs-align 8 0) (* 8 n)))))
-            (if fn-value
-                (nelisp-asm-x86_64-call-reg buf 'r11)
-              (nelisp-asm-x86_64-call-rel32 buf name))
+            (cond
+             (fn-value
+              (nelisp-asm-x86_64-call-reg buf 'r11))
+             ;; Doc 229: a same-unit call hands the callee this frame's
+             ;; dispatcher boundary (r10 = the OUT hidden slot).
+             ((nelisp-aot-compiler--ir-get node :internal-boundary-disp)
+              (nelisp-aot-compiler--x86-op
+               buf t (unibyte-string #x8d) 'r10
+               (list :mem 'rbp nil 1
+                     (nelisp-aot-compiler--ir-get node :internal-boundary-disp)))
+              (nelisp-asm-x86_64-call-rel32
+               buf (intern (format "%s$internal" name))))
+             (t
+              (nelisp-asm-x86_64-call-rel32 buf name)))
             (if win64-p
                 (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)
               (when (> stack-count 0)
@@ -16479,9 +16576,19 @@ count."
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
     ;; call <NAME> — intra-text rel32 resolved at finalize time, or
     ;; CALL r11 (indirect through the fn-ptr stashed at step 2b).
-    (if fn-value
-        (nelisp-asm-x86_64-call-reg buf 'r11)
-      (nelisp-asm-x86_64-call-rel32 buf name))
+    (cond
+     (fn-value
+      (nelisp-asm-x86_64-call-reg buf 'r11))
+     ;; Doc 229: a same-unit call hands the callee this frame's dispatcher
+     ;; boundary (r10 = the OUT hidden slot) through its internal entry.
+     ((nelisp-aot-compiler--ir-get node :internal-boundary-disp)
+      (nelisp-aot-compiler--x86-op
+       buf t (unibyte-string #x8d) 'r10
+       (list :mem 'rbp nil 1
+             (nelisp-aot-compiler--ir-get node :internal-boundary-disp)))
+      (nelisp-asm-x86_64-call-rel32 buf (intern (format "%s$internal" name))))
+     (t
+      (nelisp-asm-x86_64-call-rel32 buf name)))
     ;; Reclaim shadow space.
     (when (> shadow 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
@@ -21308,7 +21415,12 @@ return reg, untouched by epilogue)."
             (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
                                   rt-slot-count
                                 (1+ rt-slot-count))))
-              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-rounded)))))
+              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-rounded))))
+          ;; Doc 229: the body entry the loader trampoline jumps to, which
+          ;; the internal entry jumps to as well.
+          (when (nelisp-aot-compiler--ir-get defun-ir :internal-entry)
+            (nelisp-asm-x86_64-define-label
+             buf (intern (format "%s$body" name)))))
          ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
          ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
          ;; ROUNDED is `arity' rounded up to the next even value
@@ -21401,7 +21513,9 @@ return reg, untouched by epilogue)."
          buf 'rbx 'rbp (- (* 8 (1+ (+ param-slot-rounded rt-slot-rounded))))))
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rsp 'rbp)
       (nelisp-asm-x86_64--pop-inline buf 'rbp)
-      (nelisp-asm-x86_64--ret-inline buf))))
+      (nelisp-asm-x86_64--ret-inline buf)
+      (when (nelisp-aot-compiler--ir-get defun-ir :internal-entry)
+        (nelisp-aot-compiler--emit-internal-entry-x86 defun-ir buf)))))
 
 ;; ---- §97.6 orchestrator ----
 
@@ -23150,6 +23264,9 @@ register budgeting while ELF/Mach-O keep SysV."
          (nelisp-aot-compiler--internally-called-names
           (and nelisp-aot-compiler--runtime-entry-params
                (nelisp-aot-compiler--internally-called-defun-names source)))
+         (nelisp-aot-compiler--lisp-internal-entry-names
+          (nelisp-aot-compiler--lisp-internal-entry-names
+           source nelisp-aot-compiler--internally-called-names))
          (nelisp-aot-compiler--sexp-ptr-returning-names
           (and nelisp-aot-compiler--internally-called-names
                (nelisp-aot-compiler--sexp-ptr-returning-names

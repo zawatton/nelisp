@@ -95,6 +95,9 @@ cmd: python3 tools/ai/codegen-check.py lispvalue-e2e
 # in its own commit with a differential control that fails before it and a
 # CPU 9 timing.  The dispatcher's float mod (gc-port S5) and keeping values
 # in registers across calls (gc-port) are routed elsewhere.
+** S4.0 Same-unit calls: a defun calling another defun of its artifact hands it the dispatcher boundary, so a helper that calls the runtime or reads a constant answers as the interpreter (the controls crash on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue unit
+#+NOTE: 2026-10-22 coordinator's priority (a).  5 controls -- 4 crash and 1 is refused on 9d5f4a515 -- pass now: every internally called defun has an internal entry that copies the caller's 17 hidden boundary slots (r10) and jumps to the trampoline's body entry.  CPU 9, recursive fib 22 new over previous compiler x0.995.
 ** S4.1 funcall and apply: an artifact holding them loads and answers as the interpreter (the controls are refused on 9d5f4a515: nelisp_aot_funcall*/apply* unbridged)
 cmd: python3 tools/ai/codegen-check.py lispvalue apply
 #+NOTE: 2026-10-21 9 controls (funcall of a quoted symbol, of #'car, of a variable, with 2, 3 and 5 arguments; apply over a list, a spread (list ...), and leading arguments) are refused on 9d5f4a515 and answer as the interpreter now: reader providers for the six entries (GNU Ffuncall/Fapply, eval.c), the names appended to both bridge lists, arguments evaluated into variables before the call, and GNU's byte-optimize-funcall/-apply ported.  CPU 9, native/evaluator per call: constant designator x0.083 and x0.054, variable designator x2.43 (the provider's list building).
@@ -108,4 +111,4 @@ cmd: python3 tools/ai/codegen-check.py lispvalue overflow
 ** S4.5 Signals: an error signalled inside a native artifact reaches the caller with GNU's error symbol and data, and condition-case inside an artifact catches it (the controls differ on 9d5f4a515)
 cmd: python3 tools/ai/codegen-check.py lispvalue signal
 ** S4.6 End to end: a fresh build of the tip passes validate.sh with every S3 and S4 stage in the AOT differential, and the five kernels compile byte-identically to 1042eedbc's compiler
-cmd: python3 tools/ai/codegen-check.py lispvalue-e2e 1 loader 2 apply const word overflow signal
+cmd: python3 tools/ai/codegen-check.py lispvalue-e2e 1 loader 2 apply const unit word overflow signal

@@ -58,7 +58,8 @@ cons constant loadable.")
 ;; STAGE says which step of Doc 229 makes the controls pass: 1 nil, t,
 ;; booleans, truth tests and variables, `loader' quoted list constants, 2
 ;; numbers (arithmetic and comparison on boxed numbers, float literals,
-;; floor, mod), `apply' funcall and apply.  SOURCE may define, after the
+;; floor, mod), `apply' funcall and apply, `const' quoted constants,
+;; `unit' same-unit calls.  SOURCE may define, after the
 ;; defun the case calls, a helper it calls.  The whole list runs through
 ;; tools/ai/codegen-lispvalue.py against both compilers.
 (defconst nelisp-aot-differential-lisp-value-cases
@@ -145,10 +146,18 @@ cons constant loadable.")
     ;; A constructor stays fresh: two (list 1 2) are two objects (refused
     ;; on 9d5f4a515, the folded list being a cons literal).
     (const control "(defun lv-const-fresh (a) (let ((x (list 1 2)) (y (list 1 2))) (list (eq x y) (eq (car x) (car y)))))" (0))
-    (const control "(defun lv-lone-string (a) \"abc\")" (0)))
+    (const control "(defun lv-lone-string (a) \"abc\")" (0))
+    ;; Same-unit calls: the callee reads the dispatcher boundary from hidden
+    ;; slots only the loader's trampoline filled, so a helper that calls the
+    ;; runtime or reads a constant crashed (on 9d5f4a515 too).
+    (unit control "(defun lv-unit-call (a) (lv-unit-car a)) (defun lv-unit-car (a) (car (list a 2)))" (7))
+    (unit control "(defun lv-unit-const (a) (length (lv-unit-k a))) (defun lv-unit-k (a) '(1 2 3))" (0))
+    (unit control "(defun lv-unit-chain (x) (+ (lv-unit-b x) 1)) (defun lv-unit-b (x) (length (lv-unit-c x))) (defun lv-unit-c (x) (list x x x))" (1))
+    (unit control "(defun lv-unit-len (l) (if l (+ 1 (lv-unit-len (cdr l))) 0))" ((1 2 3) nil))
+    (unit control "(defun lv-unit-opt (a) (lv-unit-o a)) (defun lv-unit-o (a &optional b) (list a b))" (1)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")
