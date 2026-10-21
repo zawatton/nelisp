@@ -45,7 +45,13 @@ being recency-ordered (it is not; see `nlre--cache-touch').")
 (defvar nlre--translate-table nil
   "Canonical case translation table dynamically bound during compilation
 and matching.  Nil selects the portable downcase fallback.")
-(defvar nlre--syntax-signature-acc nil)
+(defvar nlre--syntax-cache-generation 0
+  "Global generation of syntax-dependent compiled regexp entries.")
+(defvar nlre--syntax-cache-wrapper nil
+  "Function cell installed for syntax-cache invalidation.")
+(defvar nlre--syntax-cache-original-function nil
+  "Underlying mutator last captured by the syntax-cache wrapper.")
+(defvar nlre--syntax-cache-installing nil)
 (defvar nlre--compiled-cache-hits 0
   "Number of compiled regexp cache hits.")
 (defvar nlre--compiled-cache-misses 0
@@ -68,7 +74,7 @@ and matching.  Nil selects the portable downcase fallback.")
         nlre--compiled-cache-last nil))
 
 ;; Entry: [PATTERN CASE-FOLD SEARCH-SPACES SYNTAX-DEPENDENT
-;;         SYNTAX-SIGNATURE COMPILED TICK MULTIBYTE ORIGINAL-PATTERN].
+;;         SYNTAX-TABLE COMPILED TICK MULTIBYTE ORIGINAL-PATTERN GENERATION].
 ;; `nlre--compiled-cache-lru'
 ;; is just the unordered list of all live entries, not an ordering; TICK
 ;; (a per-entry stamp from the monotonic `nlre--compiled-cache-tick'
@@ -93,30 +99,43 @@ and matching.  Nil selects the portable downcase fallback.")
         (setq i (1+ i))))
     hit))
 
-(defun nlre--syntax-signature-add (key value)
-  (setq nlre--syntax-signature-acc
-        (cons (cons key value) nlre--syntax-signature-acc)))
+;;;###autoload
+(defun nlre-clear-syntax-cache ()
+  "Invalidate all syntax-dependent compiled regexps; return nil.
+Call after successful `modify-syntax-entry', including changes to a parent
+or unrelated table: inheritance can affect other cached tables.  Repeated
+calls are harmless, and non-syntax entries remain usable.  Like GNU Emacs,
+direct `aset' on a syntax table does not clear this cache; callers making
+such changes must invalidate explicitly.  Hits compare table identity and
+this global generation without walking the table."
+  (setq nlre--syntax-cache-generation (1+ nlre--syntax-cache-generation))
+  nil)
 
-(defun nlre--syntax-signature (table)
-  "Return a content signature for syntax TABLE, or TABLE as a fallback."
-  (cond
-   ((and table (fboundp 'char-table-p) (char-table-p table)
-         (fboundp 'map-char-table))
-    (let ((nlre--syntax-signature-acc nil))
-      (map-char-table 'nlre--syntax-signature-add table)
-      (nreverse nlre--syntax-signature-acc)))
-   ((and table (fboundp 'recordp) (recordp table)
-         (> (length table) 2) (eq (aref table 0) 'nelisp--syntax-table))
-    (let ((current table) layers)
-      (while (and current (recordp current)
-                  (> (length current) 2)
-                  (eq (aref current 0) 'nelisp--syntax-table))
-        (let ((nlre--syntax-signature-acc nil))
-          (maphash 'nlre--syntax-signature-add (aref current 1))
-          (setq layers (cons (nreverse nlre--syntax-signature-acc) layers)
-                current (aref current 2))))
-      (nreverse layers)))
-   (t table)))
+(defun nlre--install-syntax-cache-hook ()
+  "Connect public syntax-table mutation before caching a compiled regexp.
+The library may also call `nlre-clear-syntax-cache' directly from its mutator.
+Observe function-cell replacement in constant time: this bootstrap's raw
+defalias does not preserve advice when a later library supplies its mutator.
+Capture that callable directly instead of autoloading the nadvice substrate."
+  (unless (or nlre--syntax-cache-installing
+              (and nlre--syntax-cache-wrapper
+                   (eq nlre--syntax-cache-wrapper
+                       (symbol-function 'modify-syntax-entry))))
+    (when (fboundp 'modify-syntax-entry)
+      (let ((nlre--syntax-cache-installing t)
+            (original (symbol-function 'modify-syntax-entry)))
+        ;; Retain the provider's documentation and its argument/error checks.
+        ;; ORIGINAL is a lexical capture: a later installation cannot change
+        ;; the callable used by an already retained wrapper.
+        (when (fboundp 'documentation)
+          (put 'modify-syntax-entry 'function-documentation (documentation original t)))
+        (fset 'modify-syntax-entry
+              (lambda (&rest args)
+                (prog1 (apply original args) (nlre-clear-syntax-cache))))
+        (setq nlre--syntax-cache-original-function original
+              nlre--syntax-cache-wrapper (symbol-function 'modify-syntax-entry))
+        ;; A replacement could have mutated tables before this next lookup.
+        (nlre-clear-syntax-cache)))))
 
 (defun nlre--current-case-extra (slot)
   ;; The foundation case-table package can arrive after this bootstrap file.
@@ -142,9 +161,12 @@ and matching.  Nil selects the portable downcase fallback.")
        (eq fold (aref e 1))
        (equal spaces (aref e 2))
        (or (not (aref e 3))
-           (let ((table (and nlre--syntax-table-reader
-                             (funcall nlre--syntax-table-reader))))
-             (equal (nlre--syntax-signature table) (aref e 4))))))
+           (progn
+             (nlre--install-syntax-cache-hook)
+             (and (= nlre--syntax-cache-generation (aref e 9))
+                  (eq (and nlre--syntax-table-reader
+                           (funcall nlre--syntax-table-reader))
+                      (aref e 4)))))))
 
 (defun nlre--cache-find (pat fold spaces)
   (let ((xs (gethash pat nlre--compiled-cache)) hit)
@@ -172,16 +194,17 @@ and matching.  Nil selects the portable downcase fallback.")
         (remhash pat nlre--compiled-cache))
       (setq nlre--compiled-cache-count (1- nlre--compiled-cache-count)))))
 
-(defun nlre--cache-add (pat fold spaces syntax-dependent syntax-signature compiled)
+(defun nlre--cache-add (pat fold spaces syntax-dependent syntax-table compiled)
   ;; Key on a private copy: a caller may mutate PAT in place afterwards
   ;; (GNU recompiles on content), and a mutated key would both poison the
   ;; hash and make the `eq' head shortcut return a stale program.
   (let* ((original pat)
          (pat (copy-sequence pat))
          (e (vector pat fold (nlre--copy-key-value spaces)
-                   syntax-dependent syntax-signature compiled
+                   syntax-dependent syntax-table compiled
                    (setq nlre--compiled-cache-tick (1+ nlre--compiled-cache-tick))
-                   (multibyte-string-p pat) original)))
+                   (multibyte-string-p pat) original
+                   nlre--syntax-cache-generation)))
     (puthash pat (cons e (gethash pat nlre--compiled-cache))
              nlre--compiled-cache)
     (setq nlre--compiled-cache-lru (cons e nlre--compiled-cache-lru)
@@ -197,13 +220,20 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
   (let ((entry nlre--compiled-cache-last))
     ;; String kind cannot change in place.  Identity avoids the kind query,
     ;; while the private content snapshot still detects ASET on the caller's
-    ;; original string.  Syntax-dependent entries use the full validator.
-    (if (and entry (not (aref entry 3))
+    ;; original string.  Syntax validation is constant-time as well.
+    (if (and entry
              (equal pat (aref entry 0))
              (or (eq pat (aref entry 8))
                  (eq (multibyte-string-p pat) (aref entry 7)))
              (eq (not case-fold-search) (not (aref entry 1)))
-             (equal search-spaces-regexp (aref entry 2)))
+             (equal search-spaces-regexp (aref entry 2))
+             (or (not (aref entry 3))
+                 (progn
+                   (nlre--install-syntax-cache-hook)
+                   (and (= nlre--syntax-cache-generation (aref entry 9))
+                        (eq (and nlre--syntax-table-reader
+                                 (funcall nlre--syntax-table-reader))
+                            (aref entry 4))))))
         (progn
           (setq nlre--compiled-cache-hits (1+ nlre--compiled-cache-hits))
           (aref entry 5))
@@ -225,11 +255,12 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
                          (or (eq spaces (aref head 2))
                              (equal spaces (aref head 2)))
                          (or (not (aref head 3))
-                             (let ((table
-                                    (and nlre--syntax-table-reader
-                                         (funcall nlre--syntax-table-reader))))
-                               (equal (nlre--syntax-signature table)
-                                      (aref head 4)))))
+                             (progn
+                               (nlre--install-syntax-cache-hook)
+                               (and (= nlre--syntax-cache-generation (aref head 9))
+                                    (eq (and nlre--syntax-table-reader
+                                             (funcall nlre--syntax-table-reader))
+                                        (aref head 4))))))
                     head
                   (nlre--cache-find pat fold spaces))))
     (if entry
@@ -237,14 +268,13 @@ The result is [AST GROUP-COUNT FAST-PLAN]."
           (setq nlre--compiled-cache-hits (1+ nlre--compiled-cache-hits))
           (unless (eq entry head) (nlre--cache-touch entry))
           (aref entry 5))
+      (nlre--install-syntax-cache-hook)
       (setq nlre--compiled-cache-misses (1+ nlre--compiled-cache-misses))
       (let* ((syntax-dependent (and (nlre--pattern-syntax-dependent-p pat) t))
              (syntax-table (and syntax-dependent nlre--syntax-table-reader
                                 (funcall nlre--syntax-table-reader)))
-             (syntax-signature (and syntax-dependent
-                                    (nlre--syntax-signature syntax-table)))
              (compiled (nlre--compile-pattern pat fold spaces)))
-        (nlre--cache-add pat fold spaces syntax-dependent syntax-signature compiled)))))
+        (nlre--cache-add pat fold spaces syntax-dependent syntax-table compiled)))))
 
 (defun nlre--parse (pat)
   "Parse PAT into a top-level node (a :seq or :alt). Sets group count."
@@ -359,8 +389,16 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
           (let ((k (+ i 2)) (shy nil) (explicit nil))
             (when (and (< k n) (eq (aref pat k) ?\?))
               (let ((m (1+ k)) (num nil))
+                ;; GNU regex-emacs.c:2225-2229 rejects a leading zero,
+                ;; including explicitly numbered group 0 and 01.
+                (when (and (< m n) (eq (aref pat m) ?0))
+                  (signal 'invalid-regexp (list "Invalid regular expression")))
                 (while (and (< m n) (>= (aref pat m) ?0) (<= (aref pat m) ?9))
                   (setq num (+ (* (or num 0) 10) (- (aref pat m) ?0)))
+                  ;; GNU's regnum_t is int; checked arithmetic rejects
+                  ;; overflow here (regex-emacs.c:2233-2235).
+                  (when (> num #x7fffffff)
+                    (signal 'invalid-regexp (list "Regular expression too big")))
                   (setq m (1+ m)))
                 (when (and (< m n) (eq (aref pat m) ?:))
                   (if num (setq explicit num) (setq shy t))
@@ -377,7 +415,9 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                              (eq (aref pat (1+ j)) ?\)))
                   (signal 'invalid-regexp (list "Unmatched ( or \\(")))
                 (setq j (+ j 2))
-                (cons (if shy inner (list :group gn inner)) j)))))
+                ;; GNU's one-byte capture opcodes omit registers above
+                ;; 255, while their logical numbers still affect later groups.
+                (cons (if (or shy (> gn 255)) inner (list :group gn inner)) j)))))
          ((eq d ?w) (cons (list :word nil) (+ i 2)))
          ((eq d ?W) (cons (list :word t) (+ i 2)))
          ((eq d ?b) (cons (list :wordb nil) (+ i 2)))
@@ -1097,11 +1137,47 @@ after the fixed prefix is impossible in any complete anchored match."
         (setq probes (cdr probes)))
       result)))
 
+(defun nlre--syntax-run-classes (node)
+  "Return NODE's positive one-character syntax alternatives, or nil.
+Only syntax designators are retained; no syntax-table contents are read."
+  (cond
+   ((and (eq (car node) :syntax) (not (nth 2 node)))
+    (list (if (eq (nth 1 node) ?-) 32 (nth 1 node))))
+   ((eq (car node) :seq)
+    (and (= (length (nth 1 node)) 1)
+         (nlre--syntax-run-classes (car (nth 1 node)))))
+   ((eq (car node) :alt)
+    (let ((branches (nth 1 node)) (valid t) classes)
+      (while (and branches valid)
+        (let ((part (nlre--syntax-run-classes (list :seq (car branches)))))
+          (if part (setq classes (append part classes)) (setq valid nil)))
+        (setq branches (cdr branches)))
+      (and valid classes)))))
+
+(defun nlre--syntax-run-plan (ast)
+  "Plan a whole-string greedy syntax run with at most one capture.
+Every alternative consumes one character and has no internal captures, so
+branch choice cannot affect a later match or the last repeated capture."
+  (let ((nodes (and (eq (car ast) :seq) (nth 1 ast))))
+    (when (and (= (length nodes) 3)
+               (eq (car (nth 0 nodes)) :bos)
+               (memq (car (nth 1 nodes)) '(:star :plus))
+               (eq (car (nth 2 nodes)) :eos))
+      (let* ((repeat (nth 1 nodes))
+             (body (nth 1 repeat))
+             (group-p (eq (car body) :group))
+             (group (and group-p (nth 1 body)))
+             (classes (and (or (not group-p) (and (integerp group) (> group 0)))
+                           (nlre--syntax-run-classes
+                            (if group-p (nth 2 body) body)))))
+        (and classes (vector :syntax-run classes group
+                             (if (eq (car repeat) :plus) 1 0)))))))
+
 (defun nlre--compile-pattern (pat fold &optional spaces)
   (let* ((nlre--pattern-multibyte (multibyte-string-p pat))
          (nlre--fold fold)
          (source (nlre--expand-search-spaces pat spaces))
-         (ast (nlre--parse source)) (ng (1+ nlre--gcount))
+         (ast (nlre--parse source)) (ng (1+ (min nlre--gcount 255)))
          (literal (nlre--literal-text ast))
          (literal (and literal (nlre--pattern-kind-text literal)))
          (atom (and (not literal) (nlre--single-atom-node ast)))
@@ -1113,7 +1189,8 @@ after the fixed prefix is impossible in any complete anchored match."
                               (nlre--ascii-fold-text literal)
                               (nlre--ascii-text-p literal)))
              (atom (vector :atom atom))
-             (t (or (nlre--greedy-suffix-plan ast ng fold)
+             (t (or (nlre--syntax-run-plan ast)
+                    (nlre--greedy-suffix-plan ast ng fold)
                     (nlre--suffix-plan ast ng fold)))))
             ;; The prefilter's character strings use Unicode, so they cannot
             ;; prove absence of non-ASCII bytes in a unibyte regexp.  Retain
@@ -1665,6 +1742,22 @@ one, which would demote them to the interpreter)."
              (min n nlre--match-end-limit)
            n)))
 
+(defun nlre--syntax-run-plan-match (plan string start n caps)
+  "Match PLAN using live syntax classes and fill CAPS on success.
+GNU regex-emacs.c:5175-5200 reads the current syntax class per character;
+its capture registers at :4593-4628 retain the final repeated iteration.
+The compiled plan contains only class designators, so direct table edits
+remain visible even when they do not invalidate the compiled cache."
+  (when (and (= start 0) (>= n (aref plan 3)))
+    (let ((classes (aref plan 1)) (end 0))
+      (while (and (< end n) (memq (char-syntax (aref string end)) classes))
+        (setq end (1+ end)))
+      (when (= end n)
+        (aset caps 0 (cons 0 n))
+        (when (and (aref plan 2) (> n 0))
+          (aset caps (aref plan 2) (cons (1- n) n)))
+        0))))
+
 (defun nlre--match-atom1 (node s pos n)
   "Match a single non-quantified atom NODE at POS; return end-pos or nil.
 Does NOT continue to any rest (used for one repetition)."
@@ -1701,7 +1794,9 @@ Does NOT continue to any rest (used for one repetition)."
      ((eq tag :wordb)
       (let* ((before (and (> pos 0) (nlre--word-p (aref s (1- pos))) t))
              (after (and (< pos n) (nlre--word-p (aref s pos)) t))
-             (boundary (not (eq before after))))
+             ;; GNU regex-emacs.c:4972-4974 accepts both string edges,
+             ;; even when the adjoining character is not a word constituent.
+             (boundary (or (= pos 0) (= pos n) (not (eq before after)))))
         (and (if (nth 1 node) (not boundary) boundary) pos)))
      ((eq tag :backref)
       ;; Matches the text the numbered group last captured (fold-aware);
@@ -2002,6 +2097,10 @@ of STRING.  Sets `nlre--match-data' as usual."
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
             hit (nlre--atom-plan-match plan string i n))
       (when hit (aset caps 0 (cons hit (1+ hit)))))
+     ((and (null max-end) plan (eq (aref plan 0) :syntax-run)
+           (fboundp 'char-syntax))
+      (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
+            hit (nlre--syntax-run-plan-match plan string i n caps)))
      (t
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
              (pre (or (and (null nlre--translate-table)
@@ -2582,6 +2681,9 @@ result, as in Emacs."
             (setq pos (1+ mb))))
          (t (setq pos me)))))
     (concat out (substring string (min pos len) len))))
+
+;; Source reload must discard entries with the former signature slot layout.
+(nlre--compiled-cache-clear)
 
 (provide 'nelisp-stdlib-regexp)
 ;;; nelisp-stdlib-regexp.el ends here
