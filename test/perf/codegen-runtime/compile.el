@@ -77,7 +77,10 @@
            (available (boundp 'nelisp-aot-compiler--vector-value-convention)))
       (when (and (eq mode 'compact-word) (not available))
         (error "Compiler compact-word vector convention is not available"))
-      (let ((nelisp-aot-compiler--vector-value-convention mode))
+      ;; Match standalone raw-unit production policy; API default is unchanged.
+      (let ((nelisp-aot-compiler--vector-value-convention mode)
+            (nelisp-aot-compiler-tco-enabled
+             (not (equal (getenv "NELISP_TCO") "0"))))
     (if (cdr (assq 'unit_frontend (cdr entry)))
         (let* ((nelisp-standalone--target 'linux-x86_64)
                (body (cons 'seq (append (butlast (cdr source))

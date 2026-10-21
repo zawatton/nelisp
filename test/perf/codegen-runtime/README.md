@@ -60,7 +60,9 @@ with the explicit `compact-word` vector convention. Legacy compilation is an
 intentional architectural failure: it reads a length at payload+16. No fake
 legacy fields are planted in the fixture. Set
 `CODEGEN_RUNTIME_VECTOR_CONVENTION=legacy-view` to reproduce that control.
-The fixture fails clearly if the compiler has no compact convention setting.
+The fixture fails clearly if the compiler has no compact convention setting. Raw fixture compilation follows the production
+standalone policy: TCO is on unless `NELISP_TCO=0`. The general compiler/API
+default is unchanged; wall receipts record the effective raw setting.
 
 The two semantic heap-field operations are the exact mappings from pinned
 callpath `nelisp-heap-accessors.el`, implemented by small Lisp wrappers to the

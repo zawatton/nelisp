@@ -4674,14 +4674,16 @@ frame per iteration."
         `(seq (setq ,@(nreverse pairs)) 0)))))
 
 (defun nelisp-aot-compiler--tco-walk (form name params required cont
-                                           temps found-cell)
+                                           temps found-cell &optional return-slot)
   "Rewrite tail-position self-calls to NAME inside preprocessed FORM.
 Allowlist walker (Doc 171 sec 5): forms not listed are opaque -- their
 interiors are never tail positions, so unknown forms only cost the
 optimization, never correctness.  FOUND-CELL is a one-element list
-whose car is set to t when a rewrite happened."
+whose car is set to t when a rewrite happened.  When RETURN-SLOT is
+non-nil, terminal values store there; back-edges leave it untouched.
+Short-circuit forms retain the whole-value store when needed."
   (cond
-   ((not (consp form)) form)
+   ((not (consp form)) (if return-slot `(setq ,return-slot ,form) form))
    ;; The tail self-call itself.
    ((and (eq (car form) name)
          (not (memq name '(lambda defalias when unless prog2 dolist throw)))
@@ -4691,16 +4693,22 @@ whose car is set to t when a rewrite happened."
                       form params required cont temps)))
       (if rewritten
           (progn (setcar found-cell t) rewritten)
-        form)))
+        (if return-slot `(setq ,return-slot ,form) form))))
    ((eq (car form) 'seq)
     (if (null (cdr form))
-        form
+        (if return-slot `(setq ,return-slot ,form) form)
       (let* ((body (cdr form))
              (head (butlast body))
              (tail (car (last body))))
         `(seq ,@head
               ,(nelisp-aot-compiler--tco-walk tail name params required
-                                              cont temps found-cell)))))
+                                              cont temps found-cell return-slot)))))
+   ((and return-slot
+         (or (and (eq (car form) 'if) (null (nthcdr 3 form)))
+             (memq (car form) '(cond and or))))
+    `(setq ,return-slot
+           ,(nelisp-aot-compiler--tco-walk form name params required cont
+                                           temps found-cell)))
    ((eq (car form) 'if)
     ;; (if C THEN [ELSE...]) -- ELSE tail is the last else form.
     (let ((c (nth 1 form))
@@ -4708,23 +4716,30 @@ whose car is set to t when a rewrite happened."
           (else (nthcdr 3 form)))
       `(if ,c
            ,(nelisp-aot-compiler--tco-walk then name params required
-                                           cont temps found-cell)
+                                           cont temps found-cell return-slot)
          ,@(if else
                (append (butlast else)
                        (list (nelisp-aot-compiler--tco-walk
                               (car (last else)) name params required
-                              cont temps found-cell)))
+                              cont temps found-cell return-slot)))
              nil))))
    ((eq (car form) 'let)
     (let ((bindings (nth 1 form))
           (body (nthcdr 2 form)))
       (if (or (null body)
-              (nelisp-aot-compiler--tco-let-special-p bindings))
-          form
+              (nelisp-aot-compiler--tco-let-special-p bindings)
+              ;; A back-edge must update the loop parameters, not a
+              ;; same-named lexical binding inside this tail position.
+              (seq-some
+               (lambda (binding)
+                 (let ((var (if (consp binding) (car binding) binding)))
+                   (memq (if (consp var) (car var) var) params)))
+               bindings))
+          (if return-slot `(setq ,return-slot ,form) form)
         `(let ,bindings
            ,@(butlast body)
            ,(nelisp-aot-compiler--tco-walk (car (last body)) name params
-                                           required cont temps found-cell)))))
+                                           required cont temps found-cell return-slot)))))
    ((eq (car form) 'cond)
     ;; Preprocess keeps `cond' (the if-chain desugar happens at parse
     ;; time), so each clause's final body form is a tail position.
@@ -4751,7 +4766,7 @@ whose car is set to t when a rewrite happened."
    ;; Everything else (while / catch / condition-case /
    ;; unwind-protect / calls / setq ...): interior is not a tail
    ;; position.  Self-calls there stay ordinary recursion.
-   (t form)))
+   (t (if return-slot `(setq ,return-slot ,form) form))))
 
 (defun nelisp-aot-compiler--tco-maybe-rewrite (name params raw-body body)
   "Return the TCO loop form for defun NAME, or nil when not applied.
@@ -4777,6 +4792,33 @@ and the defun compiles exactly as before."
                      (dolist (p plain) (unless (symbolp p) (setq ok nil)))
                      ok))
         (throw 'nelisp-tco-skip nil))
+      ;; GCC's tree-tailcall separates the recursive back-edge from the
+      ;; terminal return.  For a raw GP continuation branch, place the
+      ;; terminal expression after the loop: an exit-only helper call then
+      ;; cannot block the existing call-free loop register promotion.
+      (when (and (not (nelisp-aot-compiler--lisp-values-p))
+                 (seq-every-p #'symbolp params)
+                 (not (seq-some #'nelisp-aot-compiler--special-var-p plain))
+                 (not (memq name '(lambda defalias when unless prog2 dolist
+                                  throw seq if let and or while)))
+                 (eq (car-safe body) 'if) (= (length body) 4)
+                 (eq (car-safe (nth 2 body)) name)
+                 (not (nelisp-aot-compiler--tco-refs-p (nth 3 body) name)))
+        (let* ((cont (nelisp-aot-compiler--gensym "nelisp-tco-unused"))
+               (temps (mapcar (lambda (param)
+                                (nelisp-aot-compiler--gensym
+                                 (format "nelisp-tco-%s" param))) plain))
+               (edge (nelisp-aot-compiler--tco-rewrite-call
+                      (nth 2 body) plain required cont temps)))
+          (when edge
+            (let* ((pairs (butlast (cdr (nth 1 edge)) 2))
+                   (used (seq-filter (lambda (temp) (memq temp pairs)) temps)))
+              (push name nelisp-aot-compiler--tco-log)
+              (throw 'nelisp-tco-skip
+                     `(let (,@(mapcar (lambda (param) (list param param)) plain)
+                            ,@(mapcar (lambda (temp) (list temp 0)) used))
+                        (seq (while ,(nth 1 body) (setq ,@pairs))
+                             ,(nth 3 body))))))))
       (let* ((cont (nelisp-aot-compiler--gensym "nelisp-tco-cont"))
              (ret (nelisp-aot-compiler--gensym "nelisp-tco-ret"))
              ;; One temporary per parameter position, bound once by the
@@ -4789,17 +4831,31 @@ and the defun compiles exactly as before."
                                (format "nelisp-tco-%s" p)))
                             plain))
              (found (list nil))
+             (word-loop (and (nelisp-aot-compiler--lisp-values-p)
+                             (not (seq-some #'nelisp-aot-compiler--special-var-p plain))))
              (new-body (nelisp-aot-compiler--tco-walk
-                        body name plain required cont temps found)))
+                        body name plain required cont temps found
+                        (and word-loop ret))))
         (unless (car found)
           (throw 'nelisp-tco-skip nil))
         (push name nelisp-aot-compiler--tco-log)
-        `(let ((,cont 1) (,ret 0)
-               ,@(mapcar (lambda (tmp) (list tmp 0)) temps))
-           (seq (while (= ,cont 1)
-                  (seq (setq ,cont 0)
-                       (setq ,ret ,new-body)))
-                ,ret))))))
+        (let ((loop
+               `(let ((,cont 1) (,ret 0)
+                      ,@(mapcar (lambda (tmp) (list tmp 0)) temps))
+                  (seq (while (= ,cont 1)
+                         (seq (setq ,cont 0)
+                              ,(if word-loop new-body `(setq ,ret ,new-body))))
+                       ,ret))))
+          ;; GCC's tree-tailcall loop carries parameter values in PHIs.
+          ;; Lisp entry parameters arrive as Sexp pointers; mutating their
+          ;; slots makes the loop join box both updates on every back-edge.
+          ;; Local loop values use Lisp_Object words, as `nl-loop' does,
+          ;; so fixnum updates stay immediate.  Keep special parameters in
+          ;; their existing bindings instead of adding a dynamic `let'.
+          (if word-loop
+              `(let ,(mapcar (lambda (param) (list param param)) plain)
+                 ,loop)
+            loop))))))
 
 (defun nelisp-aot-compiler--preprocess-let*-bindings (bindings body)
   "Desugar `let*' BINDINGS and BODY into nested AOT `let' forms."

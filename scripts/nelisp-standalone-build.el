@@ -299,10 +299,12 @@ environment-only mode switch cannot reuse units compiled under another mode."
                  (symbol-name target)))
          (base (if (getenv "NELISP_READER_DYNAMIC") (concat base "-dyn") base))
          ;; Doc 171 G2: the TCO pass changes unit bytes but the content key
-         ;; does not include this environment flag, so NELISP_TCO=1 gets its own
-         ;; cache (same split rationale as `-dyn' above) -- otherwise a
-         ;; flag flip silently links stale objects from the other mode.
-         (base (if (equal (getenv "NELISP_TCO") "1") (concat base "-tco") base)))
+         ;; does not include this environment flag.  Raw standalone units
+         ;; enable TCO by default; NELISP_TCO=0 selects the separate old cache.
+         ;; Lisp artifact compilation keeps its explicit opt-in behavior.
+         (base (if (and (not (nelisp-aot-compiler--lisp-values-p))
+                        (not (equal (getenv "NELISP_TCO") "0")))
+                   (concat base "-tco") base)))
     (setq base (if (nelisp-standalone--runtime-reload-enabled-p)
                    (concat base "-reload")
                  base))
@@ -1956,12 +1958,12 @@ twice appears twice; readers keep the last occurrence of each unit."
          (nelisp-aot-compiler--os (nelisp-standalone--target-os))
          (nelisp-aot-compiler--allow-external-user-calls t)
          (nelisp-aot-compiler--abi resolved-abi)
-         ;; Doc 171: self-tail-call optimization, off unless the build
-         ;; opts in via NELISP_TCO=1 (byte-identity gate, Doc 171 G2).
-         ;; `make TARGET NELISP_TCO=1' works: command-line make
-         ;; variables are exported into recipe environments.
+         ;; Doc 171: raw standalone units use self-tail-call optimization
+         ;; unless NELISP_TCO=0.  Keep Lisp artifact/API defaults unchanged
+         ;; and keep this predicate identical to the cache-mode predicate.
          (nelisp-aot-compiler-tco-enabled
-          (equal (getenv "NELISP_TCO") "1"))
+          (and (not (nelisp-aot-compiler--lisp-values-p))
+               (not (equal (getenv "NELISP_TCO") "0"))))
          (nelisp--tco-log-start (length nelisp-aot-compiler--tco-log))
          (ir (nelisp-aot-compiler--parse source nil))
          (defuns (nelisp-aot-compiler--collect-defuns ir))
@@ -6584,7 +6586,7 @@ REPL-facing module it feeds."
     ;; on a large live vector during compaction, which is on by default
     ;; -- the same shape that killed `nl_gc_poison_fill' (~2.48M frame
     ;; ceiling on windows-x86_64).  The TCO pass would fix this too, but
-    ;; only in NELISP_TCO=1 builds, so the loop is written out here.
+    ;; only when enabled, so retain the explicit loop for opt-out builds.
     (defun nl_compact_rw_vec_slots (data i len)
       (if (= (nl_gc_in_arena data) 0) 0
         (seq

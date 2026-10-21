@@ -477,6 +477,12 @@ def wall(name):
     result = {"name": name, "cpu": cpu, "n": N, "repeats": repeats, "rounds": rounds,
               "source_revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0",
+              "fixture_input_sha256": {f: sha(SRC / f) for f in
+                  ("runtime.nl.el", "pins.json", "dependencies.nl.el", "heap-fields.nl.el",
+                   "fixtures.json", "compile.el", "harness.h", "harness.nl.el", "intrinsics.h",
+                   name + ".c", name + ".nl.el") if (SRC / f).exists()},
+              "generated_c_sha256": sha(generated(name) / "runtime.c"),
               "median_paired_ratio": ratio, "pass": ok, "sha256": {v: sha(p) for v, p in bins.items()}}
     save(name + ".wall.json", result)
     print("%s: wall NL/gcc -O2 x%.4f, cap 1.5, seven pairs: %s" % (name, ratio, "PASS" if ok else "FAIL"))
@@ -496,7 +502,9 @@ def heavy_run():
 def ir(name):
     bins = fixture(name)
     count = int(os.environ.get("CODEGEN_RUNTIME_IR_N", "1000" if name == "wf_bytecode_w_fast_run" else str(N)))
-    result = {"name": name, "diagnostic_only": True, "n": count, "variants": {}, "source_sha256": sha(SRC / "runtime.nl.el")}
+    result = {"name": name, "diagnostic_only": True, "n": count, "variants": {}, "source_sha256": sha(SRC / "runtime.nl.el"),
+              "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0"}
     for variant, exe in bins.items():
         counts, outputs, owners = [], [], []
         for n in (count, 0):
