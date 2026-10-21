@@ -3429,14 +3429,87 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
         (let ((k 0)) (while (and seq (<= k n)) (setq k (1+ k) seq (cdr seq))) (> k n))
       (> (length seq) n))))
 (defun nelisp--message-quoting-style ()
-  "Return the effective quoting style for messages.
-Use the terminal-aware primitive when available.  The standalone's
-Unicode output uses curved quotes by default."
+  "Return the effective quoting style for messages: the function
+`text-quoting-style' (below), or, while the prelude is still loading,
+the variable's value with curved quotes for nil."
   (if (fboundp 'text-quoting-style)
       (text-quoting-style)
     (let ((style (condition-case nil text-quoting-style
                    (void-variable nil))))
       (if (memq style '(straight grave)) style 'curve))))
+
+;; GNU doc.c text_quoting_style and emacs.c using_utf8.
+(defvar text-quoting-style nil
+  "Style to use for single quotes in help and messages.
+The value determines how grave accents and apostrophes are substituted
+in help output and in functions like `message' and `format-message',
+but not in `format'.  It should be one of these symbols:
+  `curve':    quote with curved single quotes.
+  `straight': quote with straight apostrophes \\='like this\\='.
+  `grave':    quote with grave accent and apostrophe \\=`like this\\=';
+              i.e., do not alter the original quote marks.
+  nil:        like `curve' if curved single quotes are displayable,
+              and like `grave' otherwise.  This is the default.
+Read the effective style with the function `text-quoting-style'.")
+
+(defvar internal--text-quoting-flag nil
+  "If nil, a nil `text-quoting-style' is treated as `grave'.
+GNU's emacs.c main sets it at startup when the locale's character set is
+UTF-8 (using_utf8).  Here the prelude and every cold boot set it with
+`nelisp--using-utf8-p'.")
+
+(defvar nelisp--text-quoting-owned (not (fboundp 'text-quoting-style))
+  "Non-nil when this runtime defines `text-quoting-style' and so sets
+`internal--text-quoting-flag'; host Emacs keeps its own.")
+
+(defun nelisp--using-utf8-p ()
+  "Non-nil if the process locale's character set is UTF-8: GNU emacs.c
+using_utf8, which asks the C library after setlocale (LC_ALL, \"\").
+The C library takes the first non-empty of LC_ALL, LC_CTYPE and LANG;
+this reads the codeset after its dot (any @modifier dropped).  It cannot
+tell that a named locale is not installed, which the C library treats
+as \"C\"."
+  (let ((vars '("LC_ALL" "LC_CTYPE" "LANG")) (name nil))
+    (while (and vars (null name))
+      (let ((value (getenv (car vars))))
+        (if (and value (not (equal value ""))) (setq name value)))
+      (setq vars (cdr vars)))
+    (let ((dot (and name (string-search "." name))))
+      (if dot
+          (let* ((codeset (downcase (substring name (1+ dot))))
+                 (at (string-search "@" codeset)))
+            (if at (setq codeset (substring codeset 0 at)))
+            (if (member codeset '("utf-8" "utf8")) t nil))
+        nil))))
+
+(unless (fboundp 'text-quoting-style)
+  (defun text-quoting-style ()
+    "Return the current effective text quoting style.
+If the variable `text-quoting-style' is `grave', `straight' or
+`curve', just return that value.  If it is nil (the default), return
+`grave' if curved quotes cannot be displayed (for instance, on a
+terminal with no support for these characters), otherwise return
+`curve'.  Any other value is treated as `curve'.
+
+Note that in contrast to the variable `text-quoting-style', this
+function will never return nil."
+    ;; doc.c Ftext_quoting_style; the nil case is
+    ;; default_to_grave_quoting_style: grave without the startup flag, or
+    ;; when `standard-display-table' shows a left quote as a grave accent.
+    (cond ((null text-quoting-style)
+           (if (or (not internal--text-quoting-flag)
+                   (let ((table (and (boundp 'standard-display-table)
+                                     standard-display-table)))
+                     (and (char-table-p table)
+                          (eq (char-table-subtype table) 'display-table)
+                          (let ((glyphs (aref table 8216)))
+                            (and (vectorp glyphs) (= (length glyphs) 1)
+                                 (eq (aref glyphs 0) 96))))))
+               'grave
+             'curve))
+          ((eq text-quoting-style 'grave) 'grave)
+          ((eq text-quoting-style 'straight) 'straight)
+          (t 'curve))))
 
 (defun nelisp--message-quote-template (template style)
   "Replace literal quotes in TEMPLATE according to STYLE.
@@ -5505,6 +5578,29 @@ path, which asks for a NUMBER first and only then for an integer."
 ;; came out with the ASCII quotes vendor Emacs replaces.  Only the format
 ;; string is curved, never the arguments -- that is Emacs's rule, and it is
 ;; what keeps a file name or a user string from being rewritten.
+(defun nelisp--substitute-quotes (string)
+  "GNU help.el `substitute-quotes': STRING with each grave accent and
+apostrophe replaced by the left and right quote `text-quoting-style'
+selects."
+  (let ((style (nelisp--message-quoting-style)))
+    (cond ((eq style 'curve)
+           (string-replace "`" (char-to-string 8216)
+                           (string-replace "'" (char-to-string 8217) string)))
+          ((eq style 'straight) (string-replace "`" "'" string))
+          (t string))))
+
+(defun nelisp--substitute-error-message (message)
+  "MESSAGE, an error symbol's `error-message', as GNU print.c
+print_error_message prints it: through `substitute-command-keys' when
+that is defined, keeping MESSAGE if that fails (safe_call1), else with
+its quotes substituted for `text-quoting-style'."
+  (cond ((not (stringp message)) message)
+        ((fboundp 'substitute-command-keys)
+         (or (condition-case nil (substitute-command-keys message)
+               (error nil))
+             message))
+        (t (nelisp--substitute-quotes message))))
+
 (defun nelisp--curve-quotes (s)
   (let ((i 0) (n (length s)) (out ""))
     (while (< i n)
@@ -21381,6 +21477,11 @@ first `getenv' is not overwritten by the value the process started with."
   (defun getenv (variable)
     (nelisp--environment-load)
     (cdr (assoc variable nelisp--environment))))
+;; GNU emacs.c main: text_quoting_flag = using_utf8 ().  A cold image froze
+;; this value at build time; `nelisp-standalone--cold-boot-reinit-source'
+;; re-derives it on every boot (keep in sync).
+(when nelisp--text-quoting-owned
+  (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
 (unless (fboundp 'setenv)
   (defun setenv (variable value &optional _substitute)
     (nelisp--environment-load)
@@ -23385,8 +23486,8 @@ on a DOS/Windows machine, it returns FILENAME in expanded form."
                               (memq 'file-error (get errname 'error-conditions))))
              (body (if from-data (cdr error-descriptor) error-descriptor))
              (errmsg (if from-data (car body)
-                       (nelisp--curve-quotes (or (get errname 'error-message)
-                                                 "peculiar error"))))
+                       (nelisp--substitute-error-message
+                        (or (get errname 'error-message) "peculiar error"))))
              (tail (cdr body))
              (plain (or file-error (eq errname 'end-of-file)
                         (eq errname 'user-error))))

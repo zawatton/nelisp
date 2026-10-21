@@ -32677,6 +32677,8 @@ The registry is consulted only after argument binding has failed."
         (setq process-environment
               (mapcar (lambda (cell) (concat (car cell) \"=\" (cdr cell)))
                       nelisp--environment)))
+    (if (and (boundp 'nelisp--text-quoting-owned) nelisp--text-quoting-owned)
+        (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
     (if (boundp 'temporary-file-directory)
         (setq temporary-file-directory (or (getenv \"TMPDIR\") \"/tmp\")))
     (if (boundp 'user-emacs-directory)
