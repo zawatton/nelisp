@@ -170,11 +170,11 @@
             (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
           (let ((tag (heap-read-u8 src_slot 0)))
             (if (if (= tag 7)
-                    ;; A special-form definition keeps a marker in its
-                    ;; view's data word (nl_apply_do_fset); such a view
-                    ;; stays a legacy box so the marker survives.
-                    (if (= (heap-read-u64 src_slot 16) 0)
-                        (= (heap-read-u64 src_slot 24) 0) 0) 0)
+                    ;; A special-form definition keeps a marker (13108) in
+                    ;; its view's data word (nl_apply_do_fset); such a view
+                    ;; stays a legacy box so the marker survives.  Any
+                    ;; other word there is stale slot content.
+                    (/= (heap-read-u64 src_slot 16) 13108) 0)
                 ;; Doc 216 S2.1: a cons is stored as its payload | 2 (GNU's
                 ;; Lisp_Cons tag), never as another 32-byte header alias.
                 (let ((word (+ (heap-read-u64 src_slot 8) 2)))

@@ -235,10 +235,28 @@ halves:
 
 Retained arena bytes per cons dropped from 72 (base) to 16 on both
 populations (individual conses and one make-list).  The build-time image
-is 34.4 MB.  It still holds 47 cons views: 21 special-form definitions
-whose marker (13108) lives in the view's data word
-(=nl_apply_do_fset=, =nl_n3_special_object=), and 26 from legacy list
-producers.  Word-heap S2.1/S2.2 stay red until both are gone.
+is 34.4 MB and holds no cons header view (4dd3167b8).  The last legacy
+producers were the &rest spine copier, the special-form marker test
+(which kept every tag-7 view with a nonzero data word) and the dump's
+walk of the recorded driver scratch.  The live-only dump now starts from
+the Lisp roots only (=nl_fa_live_roots=), as pdumper does.
+
+** Special forms: interim encoding
+
+GNU represents a special form as a subr object with =max_args=
+=UNEVALLED= (lisp.h:2175 =struct Lisp_Subr=, =PVEC_SUBR= at lisp.h:1000;
+=eval_sub= dispatches at eval.c:2651).  NeLisp's function cell for a
+special form holds the list =(builtin NAME ...)= inside a tag-7 view
+whose data word carries the marker 13108 (=nl_apply_do_fset= sets it;
+=nl_n3_special_object= and the post-lookup test read it).  This is an
+interim encoding.  word-heap-census.py counts such a view as a
+special-form subr object, not a cons header alias, but only when it
+carries the marker, is a function cell (slot 1 of a mirror-entry
+record) and holds =(builtin NAME ...)= for one of GNU 31.1's 22 special
+forms.  There are 21 today, at boot and after a cons population.
+Word-heap S5.3 (gc-port S1.7) stays red until special forms are subr
+objects.  That change crosses the evaluator's dispatch, the function
+cells and subrp/functionp/func-arity, and the printer.
 
 ** Planned: scanning callee-saved registers (codegen backlog)
 

@@ -53,11 +53,13 @@ cmd: python3 tools/ai/gc-port-check.py all-types
 #+NOTE: Added 2026-10-21 with S1.4-S1.6 (denominator 9 -> 13) at the coordinator's request: the representation criteria from the word-heap ledger, checked by tools/ai/word-heap-stage-check.py, whose cmd lines are proposed for word-heap-progress.org too. Slopes come from word-heap-objsize.el (individual conses) and word-heap-cons-list.el (one make-list) on both linkages; the base binary is the negative control.
 #+NOTE: 2026-10-21 c6 (16adbe722): 56 B per cons on both linkages and both populations (a 40-byte legacy view plus a 16-byte cell); 172,394 cons header views in the image. Needs Doc 216's tag-010 header-less cons.
 #+NOTE: 2026-10-21 c23 (458117db8): direct cons WORDs (payload | 2) -- 16 B per cons on both linkages and both populations; the image still holds 47 cons views (21 special-form definitions carrying the 13108 marker in the view's data word, 26 from legacy list producers), so this stays red.
+#+NOTE: 2026-10-21 c27 (4dd3167b8): PASS on both linkages -- 16 B per cons on both populations, no cons header view in the image; the 21 special-form definitions count as interim special-form subrs (coordinator-approved, conditions in the census and S1.7), 21 at boot and after a 4000-cons population.
 cmd: python3 tools/ai/word-heap-stage-check.py s2.1 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
 
 ** S1.4 Word-heap S2.2: cons refcount removed, at most 24 arena bytes per retained cons (cell at most 16 B), no count reader or writer linked
 #+NOTE: 2026-10-21 c6 (16adbe722): the count is gone (no lock-prefixed instruction or nl_atomic_fetch_add call in nelisp_nlconsbox_clone, nl_alloc_consbox or nl_alloc_consbox_init on either ELF; nelisp_nlconsbox_drop not linked; 16-byte cells), but 56 B per cons until the tag-010 view retirement (S1.3).
 #+NOTE: 2026-10-21 c23: 16-byte cells, count gone, 16 B per cons; red only on the same 47 image cons views as S1.3.
+#+NOTE: 2026-10-21 c27: PASS on both linkages (16-byte cells, no count reader or writer linked, no cons view in the image).
 cmd: python3 tools/ai/word-heap-stage-check.py s2.2 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
 
 ** S1.5 Word-heap S5.1: no object type allocates a 32 B header box (image census by type), float <= 24, one-limb bignum <= 32 and detached marker <= 40 arena bytes, GNU numeric/error parity
@@ -68,6 +70,10 @@ cmd: python3 tools/ai/word-heap-stage-check.py s5.1 --dyn target/gc-port/cur/nel
 #+NOTE: 2026-10-21 c6 static census: 93 nl_root_reserve sites in 47 functions outside the call path (special forms, nl_n3_notify, nl_n4_*, bf_load_* and others), 154 inside it. The coordinator put the byte-code VM (wf_bytecode_*, about 60 sites) in the call path, which callpath-perf owns; callpath-perf confirmed CALL_PATH on 2026-10-21 and added nl_eval_arg_list, nl_sb_, nelisp_env_lookup_function and nl_n4_(apply|direct_apply|named_apply|push|finish), which have no root site today.
 cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census target/gc-port/cur/census.tsv
 
+** S1.7 Word-heap S5.3: special forms are subr objects (GNU PVEC_SUBR, max_args UNEVALLED); census of special-form tag-7 views = 0
+#+NOTE: Added 2026-10-21 (denominator 13 -> 14) with word-heap S5.3, so the GNU representation is not lost while S1.3/S1.4 count the interim encoding. Known-red: 21 special-form definitions are tag-7 views carrying the marker 13108. Cross-lane; the coordinator assigns it.
+cmd: python3 tools/ai/word-heap-stage-check.py s5-subr --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
+
 * S2 Speed
 ** S2.1 Cons churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1567.1M Ir vs GNU 157.0M (x9.98); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
@@ -75,6 +81,7 @@ cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census target/gc-port/cur/
 #+NOTE: 2026-10-21 step 2 (image objects as pdumper objects), decided on paired ratios per COMMON (median of 7 rounds, in-process, warmed up, taskset 8, cpu8 4053-4356 MHz): candidate/GNU x12.88, candidate/base x0.539 (target/gc-port/wall/final.json).
 #+NOTE: 2026-10-21 step 3 (live-only image dump), paired in-process ratios on CPU 8 (4299-4450 MHz): candidate/GNU x9.62, candidate/base x0.346 (target/gc-port/wall/c5.json). The remaining gap is marking cost per object and the census an explicit garbage-collect runs; the image hole walk is gone.
 #+NOTE: 2026-10-21 c23 (header-less cons, 16-byte cells), paired on CPU 8 (4226-4437 MHz): candidate/GNU x7.23, candidate/base x0.272 (target/gc-port/wall/c23.json).
+#+NOTE: 2026-10-21 c27 (S2.1/S2.2 green), paired on CPU 8 (4316-4488 MHz): candidate/GNU x7.18, candidate/base x0.270 (target/gc-port/wall/c27.json).
 cmd: python3 tools/ai/gc-port-check.py wall cons
 ** S2.2 String churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1585.8M Ir vs GNU 157.2M (x10.08); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
@@ -82,6 +89,7 @@ cmd: python3 tools/ai/gc-port-check.py wall cons
 #+NOTE: 2026-10-21 step 2 (image objects as pdumper objects), decided on paired ratios per COMMON (median of 7 rounds, in-process, warmed up, taskset 8, cpu8 4050-4356 MHz): candidate/GNU x12.89, candidate/base x0.541 (target/gc-port/wall/final.json).
 #+NOTE: 2026-10-21 step 3 (live-only image dump), paired in-process ratios on CPU 8 (4156-4356 MHz): candidate/GNU x7.25, candidate/base x0.349 (target/gc-port/wall/c5.json). The remaining gap is marking cost per object and the census an explicit garbage-collect runs; the image hole walk is gone.
 #+NOTE: 2026-10-21 c23 (header-less cons, 16-byte cells), paired on CPU 8 (4283-4479 MHz): candidate/GNU x7.75, candidate/base x0.273 (target/gc-port/wall/c23.json).
+#+NOTE: 2026-10-21 c27 (S2.1/S2.2 green), paired on CPU 8 (4376-4487 MHz): candidate/GNU x7.41, candidate/base x0.277 (target/gc-port/wall/c27.json).
 cmd: python3 tools/ai/gc-port-check.py wall string
 ** S2.3 Vector churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1564.8M Ir vs GNU 157.4M (x9.94); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
@@ -89,6 +97,7 @@ cmd: python3 tools/ai/gc-port-check.py wall string
 #+NOTE: 2026-10-21 step 2 (image objects as pdumper objects), decided on paired ratios per COMMON (median of 7 rounds, in-process, warmed up, taskset 8, cpu8 4164-4425 MHz): candidate/GNU x12.27, candidate/base x0.527 (target/gc-port/wall/final.json).
 #+NOTE: 2026-10-21 step 3 (live-only image dump), paired in-process ratios on CPU 8 (4168-4287 MHz): candidate/GNU x6.86, candidate/base x0.328 (target/gc-port/wall/c5.json). The remaining gap is marking cost per object and the census an explicit garbage-collect runs; the image hole walk is gone.
 #+NOTE: 2026-10-21 c23 (header-less cons, 16-byte cells), paired on CPU 8 (4256-4441 MHz): candidate/GNU x7.07, candidate/base x0.266 (target/gc-port/wall/c23.json).
+#+NOTE: 2026-10-21 c27 (S2.1/S2.2 green), paired on CPU 8 (4375-4499 MHz): candidate/GNU x7.20, candidate/base x0.264 (target/gc-port/wall/c27.json).
 cmd: python3 tools/ai/gc-port-check.py wall vector
 ** S2.4 The company workload's wall-clock on this branch is at most 0.67x the base's
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "the GC plus allocation share of total Ir falls from 42.79% to at most 15%". 0.67 is the wall-clock equivalent with the rest unchanged (0.5721 / 0.85 = 0.673). The NOTE reports the GNU ratio once measured.
@@ -103,6 +112,7 @@ cmd: python3 tools/ai/gc-port-check.py company
 #+NOTE: 2026-10-21 step 3 re-verification on c5 (dyn 22cbb287, static 6230d77f, source 33c4b4c14; target/gc-port/final -> final-c5): checks.sh 11 cases 0 failures (maphash-sparse known-red), standalone-checks PASS (90 cases), anvil MCP 40 tools, the word-heap binary criteria PASS on both linkages, thread smokes 5/5 each on static under a 4 GB cap, word-heap-vectorlike-image round trip 32 checks on both linkages (mid-run dumps are live-only too).
 #+NOTE: 2026-10-21 c7 = 3482cd823, the merge of eval/integ-20261021w (eval/core 7d2d49fa3 plus word heap through S4.2) with c6 (dyn ab0f8dbd, static d23c88b9; target/gc-port/final -> final-c7): checks.sh 11 cases 0 failures, standalone-checks PASS, anvil MCP 40 tools, word-heap binary criteria PASS; focused GC checks pass on both linkages; image round trip 32 checks. Wall on CPU 8 (paired): cons x8.60 GNU / x0.334 base, string x9.12 / x0.343, vector x8.86 / x0.337.
 #+NOTE: 2026-10-21 c23 = 458117db8 (dyn 0df0ff40, static c7b66701; final -> final-c23): checks.sh 11 cases 0 failures, standalone-checks PASS, anvil MCP 40 tools (image mode), word-heap binary criteria PASS, thread smokes 5/5 each on static, image round trip 32 checks, 28 GNU-parity list cases identical.
+#+NOTE: 2026-10-21 c27 = 4dd3167b8 (dyn 4e0c584e, static 692c846e; final -> final-c27): checks.sh 11 cases 0 failures, standalone-checks PASS, anvil MCP 40 tools (image mode), word-heap binary criteria PASS, thread smokes 5/5 each on static, image round trip 32 checks.
 cmd: python3 tools/ai/gc-port-check.py final
 ** S3.2 End to end: notes-65's S1.3 init on a library image from this branch, alternated with 9d5f4, is faster, and ccore stays 374/374
 pending

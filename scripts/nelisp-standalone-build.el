@@ -4138,9 +4138,8 @@ WORD (Doc 216 S2.2 removed the refcount word).")
       (if (= (logand w 7) 0)
           (if (< w 4096) w
             (if (= (heap-read-u8 w 0) 7)
-                (if (= (heap-read-u64 w 16) 0)
-                    (if (= (heap-read-u64 w 24) 0) (+ (heap-read-u64 w 8) 2) w)
-                  w)
+                ;; Only the special-form marker (13108) is metadata.
+                (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
               w))
         w))
     (defun nl_word_clone (w)
@@ -12367,7 +12366,7 @@ leave symbols unresolved at link time."
               (setq cok (nl_dump_compact_begin))
               (if (= cok 1)
                   (seq (nl_dump_include gbox) (nl_dump_include fbox) (nl_dump_include ubox)
-                       (nl_fa_roots sstart total sstart cin cout 1)
+                       (nl_fa_live_roots sstart total sstart cin cout 1)
                        ;; pass 2: image offsets for the included blocks and cells
                        (setq cok (nl_dump_compact_assign)))
                 0)
@@ -12384,7 +12383,7 @@ leave symbols unresolved at link time."
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
                    ;; pass 3: swizzle in place through the packed layout
                    ;; (dest=ds=sstart: loc=waddr) and record the table.
-                   (nl_fa_roots sstart ctotal sstart cin cout 3))
+                   (nl_fa_live_roots sstart ctotal sstart cin cout 3))
                 0)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
               (nl_gc_index_end)
@@ -12846,6 +12845,24 @@ leave symbols unresolved at link time."
           (nl_seq2 (nl_fa_recorded_slot (heap-read-u64 base 32) ds span dest cin cout dir)
            (nl_seq2 (nl_fa_recorded_slot (heap-read-u64 base 40) ds span dest cin cout dir)
                     (nl_fa_recorded_slot (heap-read-u64 base 48) ds span dest cin cout dir))))))))
+    ;; The live-only dump's roots (pdumper dumps from the Lisp roots, never
+    ;; the C stack): each recorded frame's environment, the root stack and
+    ;; the symbol entries.  The recorded driver scratch -- result, pool and
+    ;; reader slots -- belongs to the dumping process's current evaluation,
+    ;; and a restored process never reads it.
+    (defun nl_fa_live_frames (i depth ds span dest cin cout dir)
+      (if (< i depth)
+          (nl_seq2
+           (nl_fa_recorded_env (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) (+ 64 (* i 56))) 0)
+                               ds span dest cin cout dir)
+           (nl_fa_live_frames (+ i 1) depth ds span dest cin cout dir))
+        0))
+    (defun nl_fa_live_roots (ds span dest cin cout dir)
+      (nl_seq2
+       (nl_fa_live_frames 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 0)
+                          ds span dest cin cout dir)
+       (nl_seq2 (nl_fa_rootstack ds span dest cin cout dir)
+                (nl_fa_symentry ds span dest cin cout dir))))
     (defun nl_fa_frames_from (i depth ds span dest cin cout dir)
       (if (< i depth)
           (nl_seq2
@@ -45644,7 +45661,7 @@ match a special-form name tested in FORM."
                    (nl_sexp_clone_into durable-node head_slot)
                    (nl_sexp_clone_into durable-node tail_slot))
                 (seq
-                 (ptr-write-u64 (+ (heap-read-u64 tail_slot 8) 8) 0 durable-node)
+                 (ptr-write-u64 (+ (nl_word_payload tail_slot) 8) 0 (nl_word_canon durable-node))
                  (nl_sexp_clone_into durable-node tail_slot)))
               (nl_sexp_clone_into (nl_cons_cdr_ptr cur) cur)))))
         (if (= (sexp-tag head_slot) 0)
