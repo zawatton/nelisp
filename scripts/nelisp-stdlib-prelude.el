@@ -27766,7 +27766,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
              (when (> depth maxdepth) (setq maxdepth depth)))
-           (dolist (x items) (push x out) (setq pc (1+ pc))))
+           ;; GNU bytecomp.el's byte-compile-out retains one instruction
+           ;; per output entry; assembly flattens it only after emission.
+           (push items out)
+           (setq pc (+ pc (length items))))
          (label () (setq nlab (1+ nlab)) nlab)
          (place (l) (push (cons l pc) labels))
          ;; One `emit' for the opcode and its placeholder target, so the
@@ -27896,8 +27899,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
         ;; allocates; it is never executed.
-        (push (+ maxdepth 2) out)
-        (let ((code (vconcat (nreverse out))))
+        (push (list (+ maxdepth 2)) out)
+        (let ((code (apply #'vconcat (nreverse out))))
           (dolist (p patches)
             (aset code (car p) (cdr (assq (cdr p) labels))))
           (when lexlets
