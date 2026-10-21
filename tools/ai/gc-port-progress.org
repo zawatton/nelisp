@@ -1,0 +1,58 @@
+#+TITLE: GC and allocator: port GNU Emacs 31.1 alloc.c's typed blocks, side mark bits, per-type free lists and sweep
+
+# User direction 2026-10-21: imitate GNU rather than tune incrementally;
+# implementation first; Claude Opus 5.5 approved as an implementer.
+#
+# Doc 220
+# (../gc-cost-study-20261021/docs/design/220-gc-cost-gnu-comparison.org,
+# commit d53fa3a64) measured (require 'company) in the library image.
+# Memory management is 42.79% of 43.85G Ir: GC 23.69%, allocation 19.11%.
+# The hot owners are:
+#   common allocator entry      9.58%
+#   heap-wide sweep/coalescing  7.19%
+#   exact-start index prepare   4.62%
+#   exact-start checks          1.85%
+#   zeroing                     1.46%
+# notes-65 measured one garbage-collect at 0.71 s.
+#
+# GNU uses typed blocks (cons, float, symbol, string and sdata, vector
+# blocks, large vectors), side mark bitmaps, persistent address-range
+# metadata (the mem_node tree) for conservative scanning, and per-type
+# free lists rebuilt by per-type sweeps. NeLisp uses a general block
+# allocator, separate header and payload allocations, a temporary
+# exact-start index rebuilt each GC, and heap-wide coalescing. Doc 216 (the
+# word heap) removes header boxes but provides no typed pools; this
+# objective adds them inside the word-heap design.
+#
+# Base: eval/wh-s4f-20261021 at 3883d1672 (word heap through S4.2).
+# Speed bar: on the Doc 220 churn microbenchmarks, NeLisp GC plus
+# allocation Ir <= GNU's, four-layout mean, GC included.
+
+* S0 Port plan
+** S0.1 docs/design/223-gnu-alloc-port.org maps every alloc.c mechanism to its NeLisp structure, marked ported, adapted or impossible (with the reason), with each one's interaction with Doc 216 and the implementation order
+The mechanisms are block types, mark bits, free lists, sweep_conses, sweep_floats, sweep_symbols, sweep_strings with compact_small_strings, sweep_vectors, the mem_node tree with mem_find and live_*_p, mark_memory and the GC threshold.
+cmd: python3 tools/ai/gc-port-check.py portplan
+
+* S1 Implementation and semantics
+** S1.1 Conses are allocated from GNU-style cons blocks
+The blocks carry side mark bits and a free list. Sweeping is per type, and there is no exact-start index or heap-wide coalescing for conses. Semantics hold: the GC stress and conservative-scanning tests pass on dynamic and static.
+cmd: python3 tools/ai/gc-port-check.py conses
+** S1.2 Floats, symbols, strings (headers plus compacted sdata) and vectors (small vector blocks plus large vectors) follow GNU's typed blocks and sweeps
+Conservative scanning validates candidate pointers through persistent block metadata, as mem_find does.
+cmd: python3 tools/ai/gc-port-check.py all-types
+
+* S2 Speed
+** S2.1 Cons churn: GC plus allocation Ir <= GNU
+cmd: python3 tools/ai/gc-port-check.py speed cons
+** S2.2 String churn: GC plus allocation Ir <= GNU
+cmd: python3 tools/ai/gc-port-check.py speed string
+** S2.3 Vector churn: GC plus allocation Ir <= GNU
+cmd: python3 tools/ai/gc-port-check.py speed vector
+** S2.4 The company profile workload: the GC plus allocation share of total Ir falls from 42.79% to at most 15%
+cmd: python3 tools/ai/gc-port-check.py company
+
+* S3 End to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, the MCP smoke with 40 tools, and the word-heap ledger's previous PASS criteria still passing
+cmd: python3 tools/ai/gc-port-check.py final
+** S3.2 End to end: notes-65's S1.3 init on a library image from this branch, alternated with 9d5f4, is faster, and ccore stays 374/374
+pending
