@@ -1,0 +1,79 @@
+#+TITLE: Doc 227 — GNU 31.1 string blocks, sdata and compaction
+#+STATUS: IN-PROGRESS
+#+LEDGER: tools/ai/strings-progress.org
+
+* Reference and representation
+
+GNU Emacs 31.1 is the implementation reference. This port owns strings,
+not symbols, the GC driver, buffers or compiler optimizations.
+
+| GNU mechanism | Reference | NeLisp boundary |
+| Lisp_String: size, size_byte, intervals, data | lisp.h:1555-1579 | 32-byte headers, direct WORD tag 100 |
+| Header blocks and free list | alloc.c:1318-1456,1670-1726 | string blocks, no per-header arena prefix |
+| sdata back-pointer, dead nbytes union | alloc.c:1352-1394 | data points eight bytes beyond its owner pointer |
+| sdata_size including NUL and alignment | alloc.c:1478-1492 | max(16,align8(nbytes+9)) |
+| allocate_string_data | alloc.c:1729-1823 | small 8192-byte sblocks; large strings above 1024 bytes |
+| sweep_strings | alloc.c:1826-1925 | nl_sweep_strings; retain two empty header blocks |
+| compact_small_strings | alloc.c:1959-2055 | nl_compact_small_strings; oldest-to-youngest sliding and back-pointer repair |
+| Unibyte size_byte=-1; multibyte size_byte>=0 | lisp.h:1562-1570,1601-1640 | preserve representation separately from ASCII contents |
+| Byte8 characters and multibyte decoding | character.h:105-155,223-254 | preserve GNU byte8 encoding, not Unicode-only UTF-8 |
+| concat sizing then one output allocation | fns.c:833 onwards | replace grow/finalize/copy producer chain |
+| substring byte/character bounds and properties | fns.c:1577-1668 | allocate independent data; preserve intervals |
+
+The initial 48 B word-heap S0 target contradicts GNU's physical structure.
+The coordinator authorized 56 B: 32 B header plus sdata_size(8)=24 B,
+excluding block bookkeeping. GNU's reported 41 B GC statistic excludes
+sdata's back-pointer and padding; it is not physical storage. Do not use it
+to satisfy the arena criterion. No speed criterion changes.
+
+* Initial source census
+
+The census covers executable DSL definitions in direct lisp/*.el and
+scripts/nelisp-standalone-build.el. It identifies transport and producer
+boundaries; it does not count comments or equate necessary output-byte
+copies with redundant representation copies. The initial classified set
+contains 14 definitions:
+
+| Family | Existing definitions | Required change |
+| Views and transport | nl_word_clone, wf_word_view, nl_sexp_clone_into | strings retain one canonical WORD; legacy out slots only transport it |
+| Aliases | nl_sci_copy, nl_sci_dispatch | remove aliased string headers; symbol behavior remains separate |
+| Allocation | nl_alloc_str_w, nl_alloc_unibyte_str_w, nelisp_sexp_write_str | allocate the canonical header and sdata directly |
+| Redundant byte copies | nl_alloc_str_copy_loop, nl_mut_str_finalize_copy_loop, nl_mut_str_finalize | keep necessary independent-value copies; eliminate builder-finalization copies |
+| Field readers | nl_str_bytes_ptr, nl_str_char_count | read size/size_byte/data from the canonical header |
+| Producer publication | m5_finish_string_w | publish a canonical string without a fresh view |
+
+Raw physical slot accesses also exist in parser, error, image, text-property,
+comparison and mutation helpers. They must either become semantic accesses
+or stay explicitly confined to legacy scratch buffers. A census of the
+14 named definitions alone does not prove all those callers migrated.
+
+* GC integration
+
+Until gc-port merges, wire the string collector into this branch's existing
+collector. The destination branch is eval/gc-port-20261021 at d9c0d94fc;
+its line numbers below are approximate and are not patches to apply blindly.
+
+- Sweep: call =(nl_sweep_strings)= before =(nl_sweep_conses)= in
+  =nl_gc_sweep= (~6595) and =nl_gc_collect='s compacting path (~8208).
+  =nl_compact_small_strings= runs at the end of =nl_sweep_strings=.
+- Mark: =MARK_STRING= belongs in =nl_gc_mark_legacy_slot= (~5950).
+  Legacy tags 5/14 currently mark sp+16; tags 6/15 mark the NlStr at sp+8
+  and then its buffer. Canonical strings mark the header and intervals;
+  their sdata is owned by the string collector.
+- Unmark: reset string marks in =nl_gc_mark_reset_all= (~6889) and the
+  base case of =bf_arena_mr_chunks= (~10648), including no-sweep probes.
+- Conservative roots: add =live_string_holding= in =nl_gc_conserv_typed=
+  (~3378). Type 1 is cons; type 2 is reserved for vectors. Validate block
+  ownership before dereferencing a candidate. Any pin disables data movement.
+- Blocks: gc-port's =nl_ablock_alloc/nl_ablock_free= provide 32 KiB aligned
+  blocks with the type word at block+32752. Strings own their BSS symbol;
+  never allocate state in =nl_typed_alloc='s offsets.
+- Accounting: allocation charges =nl_gc_stats+0= and sweep adds surviving
+  bytes to =nl_gc_stats+16=. Distinguish logical 56 B from block overhead.
+- Images: =nl_dump_include=, =nl_dump_compact_assign= and
+  =nl_dump_compact_write= must relocate both header and sdata or refuse.
+  Boot image strings are pdumper objects marked in the boot bitmap; do not
+  sweep them. Never move string data when conservative roots pinned it.
+
+These are integration requirements, not claims that the hooks are already
+exported or that image conversion is complete.

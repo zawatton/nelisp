@@ -27,6 +27,7 @@
 
 * S0 Plan
 ** S0.1 docs/design/227-gnu-string-port.org maps the GNU string mechanisms (alloc.c string_block, sdata, compaction; character.h and fns.c producers) to NeLisp, with a census of string view, copy and alias sites
+#+NOTE: 2026-10-21 S0: Doc 227 maps alloc.c:1318-2055, lisp.h:1555-1640, character.h byte8 rules and fns.c producers. The initial census classifies 14 executable definitions and explicitly includes raw parser/image/mutation callers beyond that set. strings-check.py plan passes. No runtime changed; allocation and CPU-14 timings remain required in the implementation increments. GNU 56 B supersedes the historical 48 B string threshold as authorized in c20eb1d8f.
 cmd: python3 tools/ai/strings-check.py plan
 
 * S1 Port and semantics
