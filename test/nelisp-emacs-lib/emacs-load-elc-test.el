@@ -11,13 +11,14 @@
          (source (expand-file-name "sample.el" directory))
          (compiled (concat source "c"))
          (load-file-name "enclosing.el")
+         (load-in-progress nil)
          (emacs-load-auto-native-compile t))
     (unwind-protect
         (progn
           (with-temp-file source
             (insert ";;; -*- lexical-binding: t; -*-\n"
                     "(defvar emacs-load-elc-test--value nil)\n"
-                    "(setq emacs-load-elc-test--value (list load-file-name 42))\n"
+                    "(setq emacs-load-elc-test--value (list load-file-name load-in-progress 42))\n"
                     "(defun emacs-load-elc-test--plus (n) \"Add two.\" (+ n 2))\n"))
           (byte-compile-file source)
           (delete-file source)
@@ -25,8 +26,9 @@
           (should (byte-code-function-p
                    (symbol-function 'emacs-load-elc-test--plus)))
           (should (= (emacs-load-elc-test--plus 5) 7))
-          (should (equal emacs-load-elc-test--value (list compiled 42)))
-          (should (equal load-file-name "enclosing.el")))
+          (should (equal emacs-load-elc-test--value (list compiled t 42)))
+          (should (equal load-file-name "enclosing.el"))
+          (should-not load-in-progress))
       (fmakunbound 'emacs-load-elc-test--plus)
       (delete-directory directory t))))
 

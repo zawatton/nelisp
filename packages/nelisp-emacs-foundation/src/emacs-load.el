@@ -3995,7 +3995,9 @@ loader's defalias rewrites or native artifact compilation.  Top-level
                                (char-to-string 8217)
                                " was not compiled in Emacs")))))
         (signal 'error (list (format template resolved)))))
+    ;; GNU lread.c:1491-1494 exposes the active load to compiled callees.
     (let ((load-file-name resolved)
+          (load-in-progress t)
           (lexical-binding nil)
           (position 0)
           (limit (length source))
