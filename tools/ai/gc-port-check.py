@@ -369,6 +369,67 @@ def cmd_wall(kind):
     return 0
 
 
+BASE02 = Path('/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/'
+              'callpath-perf-20261021/target/callpath-perf/base/nelisp')
+
+
+def while_verdict(ratio):
+    """S2.5 bar: the 1.03 regression guard on paired candidate/base02 ratios."""
+    return ratio <= 1.03
+
+
+def cmd_while_floor():
+    """S2.5 (coordinator 2026-10-22): the word-heap line's `while' floor.  The
+    own cost of `pcf-while' (callpath-perf's floors fixture, GNU-compiled
+    bytecode.el, PCF_MODE bytecode with 5,000,000 iterations and vm with
+    1,000,000) on this line's dynamic binary against callpath-perf's base02:
+    7 alternating rounds on CPU 8 under taskset, setarch -R and the 8 GiB
+    cap (callpath-perf-wall.py's process recipe), median paired ratio per
+    mode at most 1.03."""
+    import importlib.util
+    import re
+    import statistics
+    if while_verdict(1.04) or not while_verdict(1.03):
+        return fail('while-floor: negative control passed')
+    spec = importlib.util.spec_from_file_location('cpw', ROOT / 'tools/ai/callpath-perf-wall.py')
+    cpw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cpw)
+    cpw.CPUS = '8'
+    setup, _ = cpw.fixture('floors')
+    # GCPORT_WHILE_CANDIDATE / GCPORT_WHILE_BASE: other binaries, for the
+    # investigation (the criterion itself measures cur against base02).
+    cand = Path(os.environ.get('GCPORT_WHILE_CANDIDATE') or binaries()[0]).resolve()
+    base = Path(os.environ.get('GCPORT_WHILE_BASE') or BASE02).resolve()
+    if not cand.exists() or not base.exists():
+        return fail(f'while-floor: missing {cand} or {base}')
+    ratios = {}
+    for mode in ('bytecode', 'vm'):
+        n = cpw.ITERATIONS[mode]
+        ratios[mode] = []
+        for r in range(7):
+            order = [('candidate', cand), ('base', base)]
+            if r % 2:
+                order.reverse()
+            own = {}
+            for name, binary in order:
+                proc, _ = cpw.run([str(binary), '--load', str(setup), '--eval',
+                                   cpw.timing_form(['pcf-while'], n)], cpw.mode_env(mode, name))
+                m = re.search(rb'PCF-WALL (.*)\n', proc.stdout)
+                if proc.returncode != 0 or not m:
+                    return fail(f'while-floor: {name} {mode} round {r}: rc={proc.returncode}')
+                secs = dict(kv.split('=') for kv in m.group(1).decode().split())
+                own[name] = float(secs['pcf-while']) / n
+            ratios[mode].append(own['candidate'] / own['base'])
+    med = {mode: statistics.median(v) for mode, v in ratios.items()}
+    line = ('while-floor: candidate/base02 ' +
+            ', '.join(f'{mode} x{v:.3f}' for mode, v in med.items()) +
+            f' (medians of 7 paired rounds, CPU 8; {cand.name})')
+    if not all(while_verdict(v) for v in med.values()):
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
 def not_ready(name):
     return fail(f'{name}: implementation or acceptance evidence outstanding')
 
@@ -392,7 +453,9 @@ def main(argv):
         return cmd_speed(argv[1])
     if cmd == 'wall' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
         return cmd_wall(argv[1])
-    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final')
+    if cmd == 'while-floor':
+        return cmd_while_floor()
+    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final|while-floor')
     return 2
 
 

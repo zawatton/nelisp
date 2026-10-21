@@ -60,7 +60,7 @@ this stage (the blocking NeLisp layer is named). GNU source:
 | Free lists | alloc.c:2599 =Fcons= (=cons_free_list=), alloc.c:2864 =vector_free_lists= | One free list per type, rebuilt by its sweep | ported | none |
 | sweep_conses | alloc.c:6814 =sweep_conses= | =nl_sweep_conses=: per block, per mark word; all-marked words take the fast path; dead cells are chained and get the dead marker in car; a wholly free block is released once more than one block of free cells is already held | ported | none |
 | sweep_floats | alloc.c:6894 =sweep_floats=, alloc.c:2431 =float_block= | none | impossible in this stage: a float is a caller-allocated 32-byte slot written in place (result-slot protocol), so no allocation site knows it is a float. Blocking layer: word-heap S5 (header-less floats) | S5 gives floats a constructor, then =float_block= ports like cons |
-| sweep_symbols | alloc.c:6997 =sweep_symbols=, alloc.c:3616 =SYMBOL_BLOCK_SIZE= | none | impossible in this stage: symbol objects are 32-byte slots plus the symbol-name sidecar and the intern mirror; the slot is allocated before its type is written. Blocking layer: word-heap S3 | S3 |
+| sweep_symbols | alloc.c:6997 =sweep_symbols=, alloc.c:3616 =SYMBOL_BLOCK_SIZE=, alloc.c:3675 =Fmake_symbol= | =nl_symbol_alloc=, =nl_sweep_symbols=, =nl_live_symbol_holding= | ported for Doc 226 D9 direct symbols (see "Symbol blocks"): 48-byte cells in 32 KiB typed blocks (adapted size), gcmarkbit in the header | S3 |
 | sweep_strings, compact_small_strings | alloc.c:1826 =sweep_strings=, alloc.c:1959 =compact_small_strings=, alloc.c:1405 =struct sblock=, alloc.c:1343 =SBLOCK_SIZE= | none | impossible in this stage: compaction moves each sdata and updates its single owner through the sdata back pointer; NeLisp string headers are copyable 32-byte views that alias one character buffer (Doc 149), so a buffer has no single owner to update. Blocking layer: word-heap S3 (one canonical string header) and S6 (clone_into = 0) | S3/S6 |
 | sweep_vectors, vector blocks, large vectors | alloc.c:3241 =sweep_vectors=, alloc.c:2845 =struct vector_block=, alloc.c:2969 =allocate_vector_from_block=, alloc.c:2826 =struct large_vector=, alloc.c:3353 =allocate_vectorlike= | Tag-110 backings up to =VBLOCK_BYTES_MAX= come from vector blocks with size-class free lists; larger ones stay headered general blocks (the large_vectors analogue) | adapted: the mark bit moves into the kind/length word (GNU's =ARRAY_MARK_FLAG=); vector blocks are 32 KiB ablocks rather than malloc'd 4 KiB blocks | Fits S4.1: the backing address is WORD - 6 |
 | mem_node tree, mem_find, live_*_p | alloc.c:4213 =mem_find=, alloc.c:4236 =mem_insert=, alloc.c:4440 =mem_delete=, alloc.c:4627 =live_cons_holding=, alloc.c:4664 =live_cons_p= | A persistent open-addressing registry keyed by 512 KiB ablocks group; each 32 KiB block records its type in its last word. =nl_live_cons_holding= ports GNU's checks: offset inside the cell array, index below =cons_block_index= in the current block, cell not dead | adapted: hash of aligned groups instead of a red-black tree of arbitrary malloc ranges, because NeLisp controls block alignment; lookup is O(1) and updated only when groups are mapped or unmapped | none |
@@ -257,6 +257,83 @@ forms.  There are 21 today, at boot and after a cons population.
 Word-heap S5.3 (gc-port S1.7) stays red until special forms are subr
 objects.  That change crosses the evaluator's dispatch, the function
 cells and subrp/functionp/func-arity, and the printer.
+
+** Symbol blocks (Doc 226 D9)
+
+GNU allocates a symbol from a =symbol_block= (alloc.c:3616-3626).  Such a
+block is about 1 KiB from =lisp_malloc=, registered as =MEM_TYPE_SYMBOL=
+in the mem_node tree.  The allocation path is Fmake_symbol (alloc.c:3675):
+it pops =symbol_free_list=, else bumps =symbol_block_index=, else takes a
+new block, and init_symbol (alloc.c:3660) fills the cell.  The gcmarkbit
+lives in the 48-byte =struct Lisp_Symbol= itself (lisp.h:786, 794).
+=symbol_marked_p= and =set_symbol_marked= (alloc.c:4057, 4065) use the
+pdumper bitmap instead for a dumped symbol.  process_mark_stack's
+Lisp_Symbol case (alloc.c:6626) marks function, plist and the =val=
+member.  sweep_symbols (alloc.c:6997) rebuilds the free list:
+=function= = dead_object, =next= = the link (alloc.c:7032-7033).  It
+frees a wholly free block once more than a block of free symbols is held
+(alloc.c:7050).  live_symbol_holding (alloc.c:4675) accepts only a
+symbol's address or the address of one of its fields.
+
+Here (gc-port, for the symbols lane's direct symbol WORDs, class 110,
+kinds 4 and 16):
+- Blocks (adapted size).  A symbol block is a 32 KiB typed block of
+  type 2 from the 512 KiB groups, the size cons blocks use.  The typed
+  registry plays mem_find, so the block size follows the registry rather
+  than malloc.  It holds 682 cells of 48 bytes.  The =next= block link
+  at 32736 is the same as a cons block's, and the type word is at 32752.
+- Allocation (ported).  =nl_symbol_alloc= pops the free list (link at
+  +40), else the next cell of the current block, else a new block.  It
+  charges 48 bytes to the GC debt and returns the backing address of a
+  zeroed cell, or 0 when memory is exhausted.  The symbols lane fills the
+  cell, header first.  In a parallel section the cell comes zeroed from
+  the general heap: the free list has a single writer, as for conses.
+- Mark (ported, adapted bit).  The collector owns header bits 24 and up.
+  Bit 24 is the gcmarkbit; bits 0-23 are the symbols lane's (kind,
+  redirect, trapped_write, interned, declared_special, pinned, FORWARDED
+  type).  At the three class-110 WORD edges (=nl_gc_mark_word=, the cdr
+  path of =nl_gc_mark_cons=, the WORD slot path), an inline header test
+  recognizes kinds 4 and 16 before anything reads a length, because their
+  header bits are flags.  A separate inlinable helper for that test, and
+  a non-inlined =nl_symbol_mark_cell=, each cost the F1 prelink closure a
+  record.  callpath-perf's merge left the closure at its 304-record
+  bound, so both are written inline.  =nl_gc_mark_symbol= marks a block cell through its
+  gcmarkbit, and an image or general-heap symbol through its block mark,
+  as symbol_marked_p does.  Then it traces name, val, function and plist
+  (+8..+32).  Every =val= member is a WORD or an immediate (D9), so all
+  four are traced; =next= is raw.  =nl_gc_mark_vectorlike= is unchanged:
+  it still validates boxes taken from legacy views.  =nl_gc_mark_symbol=
+  takes a =let=, so the inlined mark helpers carry one call, not four
+  mark expansions.  That keeps the F1 prelink closure's root evidence
+  small, and the closure includes this mark path.  The image walk's
+  class-110 dedup goes through the same =nl_gc_mark_vbox=.
+- Sweep (ported).  =nl_sweep_symbols=, beside =nl_sweep_conses= in both
+  sweep paths.  Live cells feed the debt threshold and the gcstat symbol
+  count.  Every mark-without-sweep reset clears the bits as it does for
+  cons blocks: =nl_gc_mark_reset_all= and =bf_arena_mr_chunks=.
+- Conservative scan (ported).  =nl_gc_conserv_typed= resolves a typed
+  type-2 word through =nl_live_symbol_holding=.  The accepted offsets are
+  the cell, the WORD (+6) and the five fields.  The scan envelope
+  (=nl_gc_index_prepare=) now covers the typed groups as well as the
+  chunks.  Before this change, a stack word naming a cons or symbol cell
+  in a group outside the chunks' range was skipped before it reached the
+  typed check.
+- Image dump (ported, as for cons cells).  Pass 2 ranks the reached
+  cells after the cons cells, in the symbol region.  During the dump the
+  rank sits in header bits 32-63, with bit 25 meaning "ranked", and
+  =+456= lists the cells by rank.  The writer emits each cell as a
+  56-byte headered legacy block with its collector bits cleared.
+  Relocation and the restore mapping go through
+  =nl_dump_compact_logoff= and =nl_dump_compact_phys=.  A restored
+  symbol is an image object, so it is never swept and is marked in the
+  boot bitmap, as GNU's dumped symbols are.
+- No moving.  Moving compaction is a debug path, gated off once any
+  symbol cell has ever been allocated: symbols never move, so eq and
+  eq-hash identity is the cell's address.
+- Self-test.  =nelisp--debug-switch= 40 (make N cells), 41 (verify) and
+  42 (counts) exercise the paths on this line, where no Lisp operation
+  makes a symbol cell yet.  =tools/ai/gc-port-symbol-blocks.py= runs
+  them, including a dump and restore, on both linkages (gc-port S1.8).
 
 ** Planned: scanning callee-saved registers (codegen backlog)
 

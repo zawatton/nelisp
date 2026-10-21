@@ -2547,6 +2547,19 @@ WORD (Doc 216 S2.2 removed the refcount word).")
   "Offset of a cons block's `next' link (alloc.c:2544).")
 (defconst nelisp-standalone--cons-dead-word #xdead0
   "car of a free cons cell: GNU's dead_object (never a valid WORD).")
+(defconst nelisp-standalone--symbol-cell-bytes 48
+  "GNU's 48-byte struct Lisp_Symbol (lisp.h:786), Doc 226 D9's layout:
++0 flags (kind in bits 0-5; bits 24 and up belong to the collector), +8
+name, +16 val, +24 function, +32 plist, +40 next (raw).")
+(defconst nelisp-standalone--symbol-block-size
+  (/ nelisp-standalone--cons-next-offset nelisp-standalone--symbol-cell-bytes)
+  "Cells per symbol block: 682, filling a 32 KiB typed block up to the
+`next' link it shares with cons blocks.  GNU's SYMBOL_BLOCK_SIZE
+(alloc.c:3616) sizes a ~1 KiB lisp_malloc block that mem_find locates; here
+the typed-block registry plays mem_find, so a symbol block is a typed block.")
+(defconst nelisp-standalone--symbol-mark-bit (ash 1 24)
+  "A symbol_block cell's gcmarkbit (lisp.h:794): header bit 24, the first
+collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
 
 (defun nelisp-standalone--typed-alloc-forms ()
   "Return the Doc 223 typed-block allocation forms for arena.o."
@@ -2562,11 +2575,18 @@ WORD (Doc 216 S2.2 removed the refcount word).")
         ;; Windows maps an aligned group with `nl_os_alloc_aligned_group'
         ;; instead of trimming a POSIX mapping (see that function).
         (win (memq (nelisp-standalone-arena-rewrite-target)
-                   '(windows-x86_64 windows-aarch64))))
+                   '(windows-x86_64 windows-aarch64)))
+        (sn nelisp-standalone--symbol-block-size)
+        (scell nelisp-standalone--symbol-cell-bytes)
+        ;; A dumped symbol is a headered legacy block: 8 + 48 bytes.
+        (scb (+ 8 nelisp-standalone--symbol-cell-bytes)))
     ;; The link and the block ordinal (NEXT+8) sit below the type word; the
     ;; dump's rank table holds a cell index in 16 bits.
     (unless (and (= cell 16) (= n 2030) (<= (+ next 16) ty) (< n 65535))
       (error "Doc 223 cons block geometry changed: %S %S" n next))
+    ;; Symbol cells end exactly at the shared `next' link.
+    (unless (and (= scell 48) (= sn 682) (= (* sn scell) next))
+      (error "Doc 226 D9 symbol block geometry changed: %S %S" sn next))
     `(;; Registry probe start for group base G (a 512 KiB multiple).
       (defun nl_typed_hash (g mask) (logand (+ (sar g 19) (sar g 29)) mask))
       ;; Entry (16 bytes: group base, busy blocks) of group G, or 0.
@@ -2725,6 +2745,61 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                        (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
       ;; GNU's dead_object marker for free cells.
       (defun nl_cons_dead_word () ,dead)
+      ;; ---- Doc 226 D9 symbol blocks (alloc.c:3616-3700) ----
+      ;; A symbol block holds 682 cells of GNU's 48-byte struct Lisp_Symbol
+      ;; from offset 0, then the `next' block link at NEXT and the block type
+      ;; (2) at the type word.  A cell's gcmarkbit is its own header bit 24
+      ;; (lisp.h:794, set_symbol_marked alloc.c:4065).  A free cell holds the
+      ;; dead marker in `function' (+24) and the free-list link in `next'
+      ;; (+40), as sweep_symbols leaves it (alloc.c:7032-7033).  Cells never
+      ;; move.  BSS `nl_typed_alloc': +392 symbol_free_list, +400
+      ;; symbol_block (current block, list head), +408 symbol_block_index,
+      ;; +416 live symbols after the last sweep, +424 free symbols after it,
+      ;; +432 symbol blocks in use, +440 symbol cells allocated (every path),
+      ;; +448..+472 the image dump's symbol region (`nl_dump_compact_rank_
+      ;; symbols').
+      (defun nl_symbol_alloc_block (st)
+        (let ((nb (nl_ablock_alloc st 2)))
+          (if (= nb 0) 0
+            (seq
+             (ptr-write-u64 nb ,next (heap-read-u64 st 400))
+             (ptr-write-u64 st 400 nb)
+             (ptr-write-u64 st 408 0)
+             (ptr-write-u64 st 432 (+ (heap-read-u64 st 432) 1))
+             nb))))
+      (defun nl_symbol_zero (c)
+        (seq (ptr-write-u64 c 0 0) (ptr-write-u64 c 8 0) (ptr-write-u64 c 16 0)
+             (ptr-write-u64 c 24 0) (ptr-write-u64 c 32 0) (ptr-write-u64 c 40 0)
+             c))
+      ;; Fmake_symbol's allocation (alloc.c:3675-3700): pop symbol_free_list,
+      ;; else the next cell of the current symbol_block, else a new block,
+      ;; and charge the cell to the GC debt as tally_consing does.  Answers
+      ;; the backing address of a zeroed 48-byte cell -- the symbol WORD is
+      ;; that address | 6, and the caller fills the cell as init_symbol does
+      ;; (alloc.c:3660), header first -- or 0 when memory is exhausted.  A
+      ;; parallel section (268435624 = 1) takes a zeroed general-heap cell
+      ;; instead, as `nl_cons_alloc' falls back to a legacy payload: GNU's
+      ;; free list has a single writer.
+      (defun nl_symbol_alloc ()
+        (let ((st (data-addr nl_typed_alloc)))
+          (seq
+           (ptr-write-u64 st 440 (+ (heap-read-u64 st 440) 1))
+           (if (= (heap-read-u64 268435624 0) 1)
+               (let ((g (alloc-bytes ,scell 8)))
+                 (if (= g 0) 0 (nl_symbol_zero g)))
+             (let ((p (heap-read-u64 st 392)))
+               (seq
+                (ptr-write-u64 (data-addr nl_gc_stats) 0
+                               (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,scell))
+                (if (> p 0)
+                    (seq (ptr-write-u64 st 392 (heap-read-u64 p 40)) (nl_symbol_zero p))
+                  (let ((i (heap-read-u64 st 408)) (b (heap-read-u64 st 400)))
+                    (if (if (= b 0) 1 (if (= i ,sn) 1 0))
+                        (let ((nb (nl_symbol_alloc_block st)))
+                          (if (= nb 0) 0
+                            (seq (ptr-write-u64 st 408 1) (nl_symbol_zero nb))))
+                      (seq (ptr-write-u64 st 408 (+ i 1))
+                           (nl_symbol_zero (+ b (* i ,scell)))))))))))))
       ;; ---- Live-only image dump (pdumper.c dump_object, reached from the
       ;; roots) ----
       ;; A dump copies only the objects the image walk reaches, packed in
@@ -2825,7 +2900,7 @@ WORD (Doc 216 S2.2 removed the refcount word).")
       (defun nl_dump_include (addr)
         (let* ((st (data-addr nl_typed_alloc)) (blo (heap-read-u64 st 200)))
           (if (= (logand addr 7) 0)
-              (if (= (nl_typed_find addr) 1) 0
+              (if (> (nl_typed_find addr) 0) 0
                 (if (if (>= addr blo) (if (< addr (heap-read-u64 st 208))
                                           (= (nl_dump_hole_p addr) 0) 0) 0)
                     (let* ((o (nl_dump_boot_owner addr)) (g (sar (- o blo) 3))
@@ -2853,13 +2928,27 @@ WORD (Doc 216 S2.2 removed the refcount word).")
            ans)))
       (defun nl_dump_excluded (addr)
         (let ((st (data-addr nl_typed_alloc)))
-          (seq (if (if (= (nl_typed_find addr) 1) 1 (nl_dump_in_heap addr))
+          (seq (if (if (> (nl_typed_find addr) 0) 1 (nl_dump_in_heap addr))
                    (ptr-write-u64 st 384 (+ (heap-read-u64 st 384) 1)) 0)
                -1)))
+      ;; Doc 226 D9: image offset of ADDR inside a symbol_block cell: the
+      ;; symbol region after the cons cells, one headered 56-byte block per
+      ;; ranked cell (`nl_dump_compact_rank_symbols' keeps the rank in the
+      ;; cell header's bits 32-63, bit 25 = ranked), or -1 (counted).
+      (defun nl_dump_symbol_logoff (addr)
+        (let* ((st (data-addr nl_typed_alloc))
+               (blk (logand addr -32768)) (off (- addr blk)))
+          (if (>= off ,(* sn scell)) (nl_dump_excluded addr)
+            (let* ((idx (/ off ,scell)) (c (+ blk (* idx ,scell)))
+                   (h (heap-read-u64 c 0)))
+              (if (= (logand h 33554432) 0) (nl_dump_excluded addr)
+                (+ (heap-read-u64 st 472)
+                   (+ (* (sar h 32) ,scb) (+ 8 (- addr c)))))))))
       ;; Pass 3: image offset of ADDR, or -1 (counting heap addresses that
       ;; have none).
       (defun nl_dump_compact_logoff (addr)
         (let ((st (data-addr nl_typed_alloc)))
+          (if (= (nl_typed_find addr) 2) (nl_dump_symbol_logoff addr)
           (if (= (nl_typed_find addr) 1)
               (let* ((blk (logand addr -32768)) (off (- addr blk))
                      (idx (/ off ,cell)) (within (- off (* idx ,cell)))
@@ -2876,10 +2965,18 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                        (hdr (heap-read-u64 arr (* i 16))))
                   (if (< addr (+ hdr (logand (heap-read-u64 hdr 0) 4294967288)))
                       (+ (heap-read-u64 arr (+ (* i 16) 8)) (- addr hdr))
-                    (nl_dump_excluded addr))))))))
-      ;; Restore: the live address of image offset LOGOFF, or 0.
+                    (nl_dump_excluded addr)))))))))
+      ;; Restore: the live address of image offset LOGOFF, or 0.  The
+      ;; symbol region (Doc 226 D9) follows the cons cells; its rank table
+      ;; (+456) lists the ranked cells.
       (defun nl_dump_compact_phys (logoff)
         (let ((st (data-addr nl_typed_alloc)))
+          (if (if (> (heap-read-u64 st 448) 0) (>= logoff (heap-read-u64 st 472)) 0)
+              (let* ((rel (- logoff (heap-read-u64 st 472)))
+                     (r (/ rel ,scb)) (within (- (- rel (* r ,scb)) 8)))
+                (if (< within 0) 0
+                  (if (>= r (heap-read-u64 st 448)) 0
+                    (+ (heap-read-u64 (heap-read-u64 st 456) (* r 8)) within))))
           (if (>= logoff (heap-read-u64 st 328))
               (let* ((rel (- logoff (heap-read-u64 st 328)))
                      (g (/ rel ,cb)) (within (- (- rel (* g ,cb)) 8))
@@ -2902,7 +2999,7 @@ WORD (Doc 216 S2.2 removed the refcount word).")
               (if (< i 0) 0
                 (let ((arr (heap-read-u64 st 304)))
                   (+ (heap-read-u64 arr (* i 16))
-                     (- logoff (heap-read-u64 arr (+ (* i 16) 8)))))))))))))
+                     (- logoff (heap-read-u64 arr (+ (* i 16) 8))))))))))))))
 
 (defun nelisp-standalone--typed-gc-forms ()
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
@@ -2912,7 +3009,11 @@ WORD (Doc 216 S2.2 removed the refcount word).")
         (cb (+ 8 nelisp-standalone--cons-cell-bytes))
         (marks nelisp-standalone--cons-marks-offset)
         (next nelisp-standalone--cons-next-offset)
-        (dead nelisp-standalone--cons-dead-word))
+        (dead nelisp-standalone--cons-dead-word)
+        (sn nelisp-standalone--symbol-block-size)
+        (scell nelisp-standalone--symbol-cell-bytes)
+        (scb (+ 8 nelisp-standalone--symbol-cell-bytes))
+        (smark nelisp-standalone--symbol-mark-bit))
     `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
       (defun nl_cons_mark_cell (box)
         (let* ((blk (logand box -32768))
@@ -2929,6 +3030,133 @@ WORD (Doc 216 S2.2 removed the refcount word).")
       (defun nl_gc_mark_cons_payload (box)
         (if (= (nl_typed_find box) 1) (nl_cons_mark_cell box)
           (nl_gc_mark_block box)))
+      ;; ---- Doc 226 D9 symbol blocks, collector side ----
+      ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
+      ;; marked.
+      (defun nl_symbol_mark_cell (box)
+        ;; No `let': inlined into `nl_gc_mark_symbol', so the F1 prelink
+        ;; closure (which holds the GC mark path) gains no record for it.
+        (if (= (logand (heap-read-u64 box 0) ,smark) 0)
+            (seq (ptr-write-u64 box 0 (logior (heap-read-u64 box 0) ,smark)) 1)
+          0))
+      ;; The dedup mark of the class-110 object at BOX: a symbol_block cell
+      ;; takes its gcmarkbit; anything else -- a legacy vectorlike, an image
+      ;; object, a general-heap symbol cell -- its block mark (as
+      ;; symbol_marked_p, alloc.c:4057, tests the pdumper bitmap for a
+      ;; dumped symbol).  1 = newly marked.
+      (defun nl_gc_mark_vbox (box)
+        (if (= (nl_typed_find box) 2) (nl_symbol_mark_cell box)
+          (nl_gc_mark_block box)))
+      ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
+      ;; mark, then name, val, function and plist (+8..+32).  Every val
+      ;; member is a WORD or an immediate (Doc 226 D9), so all four are
+      ;; traced; `next' (+40) is raw.  The `let' keeps this out of the
+      ;; inlined mark helpers' copies.
+      (defun nl_gc_mark_symbol (box)
+        (let ((i 8))
+          (if (= (nl_gc_mark_vbox box) 0) 0
+            (seq (while (< i 40)
+                   (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
+                 0))))
+      ;; Clear every symbol_block cell's gcmarkbit (a mark phase without a
+      ;; sweep).  An image dump's rank bits stay.
+      (defun nl_symbol_unmark_all ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (b (heap-read-u64 st 400)) (lim (heap-read-u64 st 408))
+               (i 0) (c 0) (h 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,scell)))
+                         (setq h (heap-read-u64 c 0))
+                         (if (= (logand h ,smark) 0) 0 (ptr-write-u64 c 0 (- h ,smark)))
+                         (setq i (+ i 1))))
+                  (setq lim ,sn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; Clear every collector bit (24 and up) of every symbol_block cell:
+      ;; the end of an image dump, whose ranks sat in bits 25 and 32-63.
+      (defun nl_symbol_clear_collector_bits ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (b (heap-read-u64 st 400)) (lim (heap-read-u64 st 408))
+               (i 0) (c 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,scell)))
+                         (ptr-write-u64 c 0 (logand (heap-read-u64 c 0) 16777215))
+                         (setq i (+ i 1))))
+                  (setq lim ,sn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; sweep_symbols (alloc.c:6997): rebuild symbol_free_list from the
+      ;; gcmarkbits -- an unmarked cell takes the dead marker in `function'
+      ;; and the free-list link in `next', a marked one loses its mark -- and
+      ;; free a wholly free block once more than one block of free cells is
+      ;; held (alloc.c:7050).  Live cells feed the GC debt threshold
+      ;; (nl_gc_stats+16) and, during an explicit `garbage-collect', the
+      ;; census symbol count (gcstat).
+      (defun nl_sweep_symbols ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (sprev (+ st 400))
+               (sblk (heap-read-u64 st 400))
+               (lim (heap-read-u64 st 408))
+               (free 0) (num_free 0) (num_used 0)
+               (i 0) (this_free 0) (c 0) (h 0))
+          (seq
+           (while (> sblk 0)
+             (seq
+              (setq i 0) (setq this_free 0)
+              (while (< i lim)
+                (seq
+                 (setq c (+ sblk (* i ,scell)))
+                 (setq h (heap-read-u64 c 0))
+                 (if (= (logand h ,smark) 0)
+                     (seq (ptr-write-u64 c 40 free)
+                          (setq free c)
+                          (ptr-write-u64 c 24 ,dead)
+                          (setq this_free (+ this_free 1)))
+                   (seq (ptr-write-u64 c 0 (- h ,smark))
+                        (setq num_used (+ num_used 1))))
+                 (setq i (+ i 1))))
+              (setq lim ,sn)
+              (if (if (= this_free ,sn) (> num_free ,sn) 0)
+                  (let ((nx (heap-read-u64 sblk ,next)))
+                    (seq
+                     (ptr-write-u64 sprev 0 nx)
+                     (setq free (heap-read-u64 sblk 40))
+                     (ptr-write-u64 st 432 (- (heap-read-u64 st 432) 1))
+                     (nl_ablock_free st sblk)
+                     (setq sblk nx)))
+                (seq (setq num_free (+ num_free this_free))
+                     (setq sprev (+ sblk ,next))
+                     (setq sblk (heap-read-u64 sblk ,next))))))
+           (ptr-write-u64 st 392 free)
+           (ptr-write-u64 st 416 num_used)
+           (ptr-write-u64 st 424 num_free)
+           (ptr-write-u64 (data-addr nl_gc_stats) 16
+                          (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,scell)))
+           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+               (ptr-write-u64 (data-addr nl_gc_typed_state) 40
+                              (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) num_used))
+             0)
+           0)))
+      ;; live_symbol_holding (alloc.c:4675): the live cell P points at, or 0.
+      ;; P must be the cell's address, its WORD (address | 6) or the address
+      ;; of one of its fields; a cell beyond symbol_block_index in the current
+      ;; block was never allocated; a dead `function' marks a free cell.
+      (defun nl_live_symbol_holding (p)
+        (let* ((st (data-addr nl_typed_alloc))
+               (blk (logand p -32768))
+               (off (- p blk)))
+          (if (>= off ,(* sn scell)) 0
+            (let* ((idx (/ off ,scell)) (within (- off (* idx ,scell))))
+              (if (if (= within 6) 0 (if (= (logand within 7) 0) 0 1)) 0
+                (if (if (= blk (heap-read-u64 st 400)) (>= idx (heap-read-u64 st 408)) 0) 0
+                  (let ((c (+ blk (* idx ,scell))))
+                    (if (= (heap-read-u64 c 24) ,dead) 0 c))))))))
       ;; Clear every cons block's mark bits (a mark phase without a sweep:
       ;; conservative failure, image walks, census-only walks).
       (defun nl_cons_unmark_all ()
@@ -3018,6 +3246,8 @@ WORD (Doc 216 S2.2 removed the refcount word).")
            (ptr-write-u64 st 376 incl) (ptr-write-u64 st 384 0)
            (ptr-write-u64 st 304 0) (ptr-write-u64 st 312 0)
            (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
+           (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
+           (ptr-write-u64 st 472 0)
            (if (> incl 0) (nl_os_commit_range incl 0 bytes) 0)
            (if (if (> (heap-read-u64 st 208) 0) (= incl 0) 0) 0
              (seq (ptr-write-u64 st 296 1) 1)))))
@@ -3150,7 +3380,45 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                             0 (setq ok 0))
                       0)
                     (setq i (+ i 1))))
-             (if (= ok 0) 0 (nl_dump_compact_rank_cells st))))))
+             (if (= ok 0) 0
+               (if (= (nl_dump_compact_rank_cells st) 0) 0
+                 (nl_dump_compact_rank_symbols st)))))))
+      ;; Doc 226 D9: give every symbol_block cell the walk reached (its
+      ;; gcmarkbit) a rank in the symbol region, which follows the cons
+      ;; cells (+472 = its image offset): the rank goes to the cell header's
+      ;; bits 32-63 with bit 25 as "ranked", the mark is cleared for pass 3's
+      ;; walk, and +456 lists the cells by rank (+448 of them, +464 bytes)
+      ;; for the restore mapping and the writer.  1 on success.
+      (defun nl_dump_compact_rank_symbols (st)
+        (let* ((nb (heap-read-u64 st 432))
+               (bytes (nl_align_up (+ (* nb ,(* sn 8)) 8) 65536))
+               (arr (if (= nb 0) 0 (nl_os_alloc_chunk bytes)))
+               (b (heap-read-u64 st 400)) (lim (heap-read-u64 st 408))
+               (i 0) (r 0) (c 0) (h 0))
+          (seq
+           (ptr-write-u64 st 472 (+ (heap-read-u64 st 328) (* (heap-read-u64 st 336) ,cb)))
+           (if (= nb 0) 1
+             (if (= arr 0) 0
+               (seq
+                (nl_os_commit_range arr 0 bytes)
+                (while (> b 0)
+                  (seq
+                   (setq i 0)
+                   (while (< i lim)
+                     (seq
+                      (setq c (+ b (* i ,scell)))
+                      (setq h (heap-read-u64 c 0))
+                      (if (= (logand h ,smark) 0) 0
+                        (seq (ptr-write-u64 arr (* r 8) c)
+                             (ptr-write-u64 c 0 (logior (logand h 16777215)
+                                                        (logior 33554432 (shl r 32))))
+                             (setq r (+ r 1))))
+                      (setq i (+ i 1))))
+                   (setq lim ,sn)
+                   (setq b (heap-read-u64 b ,next))))
+                (ptr-write-u64 st 448 r) (ptr-write-u64 st 456 arr)
+                (ptr-write-u64 st 464 bytes)
+                1))))))
       ;; Write the image span: every included block in address order with its
       ;; mark bits cleared, then every reached cell as a headered legacy
       ;; payload block (header, then car and cdr as swizzled), through a
@@ -3207,6 +3475,26 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                    (setq fill (+ fill ,cb))
                    (setq r (+ r 1))))
                 (setq o (+ o 1))))
+             ;; Doc 226 D9: every ranked symbol cell as a headered legacy
+             ;; block -- header 56, then the cell with its collector bits
+             ;; (24 and up) cleared and its fields as swizzled.
+             (setq r 0)
+             (while (< r (heap-read-u64 st 448))
+               (seq
+                (if (> (+ fill ,scb) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (setq c (heap-read-u64 (heap-read-u64 st 456) (* r 8)))
+                (ptr-write-u64 buf fill ,scb)
+                (ptr-write-u64 buf (+ fill 8) (logand (heap-read-u64 c 0) 16777215))
+                (ptr-write-u64 buf (+ fill 16) (heap-read-u64 c 8))
+                (ptr-write-u64 buf (+ fill 24) (heap-read-u64 c 16))
+                (ptr-write-u64 buf (+ fill 32) (heap-read-u64 c 24))
+                (ptr-write-u64 buf (+ fill 40) (heap-read-u64 c 32))
+                (ptr-write-u64 buf (+ fill 48) (heap-read-u64 c 40))
+                (setq fill (+ fill ,scb))
+                (setq r (+ r 1))))
              (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
              (nl_os_free_chunk buf 1048576)
              written))))
@@ -3228,6 +3516,11 @@ WORD (Doc 216 S2.2 removed the refcount word).")
              0)
            (ptr-write-u64 st 376 0) (ptr-write-u64 st 304 0) (ptr-write-u64 st 312 0)
            (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
+           (if (> (heap-read-u64 st 456) 0)
+               (nl_os_free_chunk (heap-read-u64 st 456) (heap-read-u64 st 464)) 0)
+           (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
+           (ptr-write-u64 st 472 0)
+           (nl_symbol_clear_collector_bits)
            0)))
       ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
       ;; Objects of a restored cold image are immortal.  GNU never sweeps
@@ -3456,7 +3749,12 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                        (seq (nl_gc_mark_word (heap-read-u64 c 0))
                             (nl_gc_mark_word (heap-read-u64 c 8)))))
                    1))
-          0)))))
+          ;; Doc 226 D9: mark_maybe_pointer's MEM_TYPE_SYMBOL case
+          ;; (alloc.c:4932) through live_symbol_holding.
+          (if (= (nl_typed_find w) 2)
+              (let ((c (nl_live_symbol_holding w)))
+                (seq (if (= c 0) 0 (nl_gc_mark_symbol c)) 1))
+            0))))))
 
 (defconst nelisp-standalone--arena-source
   (append
@@ -4163,6 +4461,14 @@ WORD (Doc 216 S2.2 removed the refcount word).")
 
     ;; A container slot WORD as the value record-slot-ref / vector-ref
     ;; produced: immediates as they are, a heap value cloned into a fresh box.
+    ;; Doc 216 S6.2: one precise WORD root (nil) for the caller's dynamic
+    ;; extent, released with the caller's `nl_root_release' mark -- the
+    ;; WORD frame of `nl_root_frame', as GNU keeps a Lisp_Object on the
+    ;; stack.  On a full root stack, unrooted scratch like
+    ;; `nl_root_reserve''s legacy fallback.
+    (defun nl_root_word (env)
+      (let* ((s (nl_root_frame env 1)))
+        (if (= s 0) (alloc-bytes 8 8) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
     ;; cons view without metadata becomes its direct WORD (payload | 2);
     ;; anything else is returned unchanged.  Inlinable (no let).
@@ -4174,6 +4480,15 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
               w))
         w))
+    ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
+    ;; for nil, t and a cons (a list).  Any other view comes back as V;
+    ;; callers use this only where V holds a list or nil.
+    (defun nl_word_canon_view (v)
+      (if (/= (logand v 7) 0) v
+        (if (< v 4096) v
+          (if (= (heap-read-u8 v 0) 0) 3
+            (if (= (heap-read-u8 v 0) 1) 7
+              (nl_word_canon v))))))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
@@ -5622,8 +5937,21 @@ REPL-facing module it feeds."
              (seq
               (nl_alloc_zero_fill entry 0 need)
               (ptr-write-u64 ctx 24 count)
-              (ptr-write-u64 entry (* count 24) minimum)
-              (ptr-write-u64 entry (+ (* count 24) 8) maximum)
+              ;; The scan envelope also covers the typed groups (Doc 223),
+              ;; mapped outside the chunks: without them a stack word
+              ;; naming a cons or symbol cell never reached
+              ;; `nl_gc_conserv_typed'.  Words in the envelope but in no
+              ;; chunk still fail `nl_gc_in_arena'.
+              (ptr-write-u64 entry (* count 24)
+                             (if (if (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 96) 0) 0)
+                                     (< (heap-read-u64 (+ (data-addr nl_typed_alloc) 96) 0) minimum)
+                                   0)
+                                 (heap-read-u64 (+ (data-addr nl_typed_alloc) 96) 0)
+                               minimum))
+              (ptr-write-u64 entry (+ (* count 24) 8)
+                             (if (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 104) 0) maximum)
+                                 (heap-read-u64 (+ (data-addr nl_typed_alloc) 104) 0)
+                               maximum))
               (setq chunk (heap-read-u64 268436160 0))
               (while (and (= ok 1) (> chunk 0))
                 (seq
@@ -5767,7 +6095,7 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 6)
-            (nl_gc_mark_vectorlike (- word 6))
+            (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
             (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))
@@ -5851,7 +6179,7 @@ REPL-facing module it feeds."
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (nl_gc_mark_vectorlike (- dw 6))
+                      (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
                         (if (= (logand dw 7) 2)
                             (seq (setq sp dw) (setq go 1))
                           (if (= (nl_gc_mark_block dw) 0) 0
@@ -6115,7 +6443,7 @@ REPL-facing module it feeds."
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
     (defun nl_gc_mark_slot (sp)
-      (if (= (logand sp 7) 6) (nl_gc_mark_vectorlike (- sp 6))
+      (if (= (logand sp 7) 6) (if (or (= (logand (heap-read-u64 (- sp 6) 0) 63) 4) (= (logand (heap-read-u64 (- sp 6) 0) 63) 16)) (nl_gc_mark_symbol (- sp 6)) (nl_gc_mark_vectorlike (- sp 6)))
         (if (= (logand sp 7) 2) (nl_gc_mark_cons sp)
           (nl_gc_mark_legacy_slot sp))))
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
@@ -6788,9 +7116,11 @@ REPL-facing module it feeds."
        (nl_alloc_run_reset)
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (heap-read-u64 268436160 0))
-       ;; Doc 223: sweep_conses (alloc.c:6814) for cons-block cells, then
-       ;; pdumper_clear_marks (gc_sweep alloc.c:7114) for image objects.
+       ;; Doc 223: sweep_conses (alloc.c:6814) for cons-block cells and
+       ;; sweep_symbols (alloc.c:6997, Doc 226 D9) for symbol-block cells,
+       ;; then pdumper_clear_marks (gc_sweep alloc.c:7114) for image objects.
        (nl_sweep_conses)
+       (nl_sweep_symbols)
        (nl_boot_clear_marks)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_swept_chunks
@@ -7101,6 +7431,7 @@ REPL-facing module it feeds."
           (nl_gc_mark_reset_chunk chunk)
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
         (nl_cons_unmark_all)
+        (nl_symbol_unmark_all)
         (nl_boot_clear_marks)
         0))
     (defun nl_gc_conserv_rollback ()
@@ -7794,10 +8125,17 @@ REPL-facing module it feeds."
       (if (= (nl_compact_rw_block box) 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
+          ;; Doc 226 D9: a legacy-block symbol's four edges (compaction
+          ;; never runs once a symbol cell exists; image symbols stay put).
+          (if (or (= kind 4) (= kind 16))
+              (seq (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 8)))
+                   (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 16)))
+                   (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
+                   (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
-              (if (= kind 9) (nl_compact_rw_char_table box) 0))))))
+              (if (= kind 9) (nl_compact_rw_char_table box) 0)))))))
     (defun nl_compact_rw_char_table (box)
       (seq (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 8)))
            (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 16)))
@@ -8418,11 +8756,15 @@ REPL-facing module it feeds."
                         (= (nl_gc_conserv_pinned_p) 0) ; raw roots cannot move
                         ;; Doc 223: GNU never moves conses, and cons-block
                         ;; cells hold edges this path cannot rewrite.
-                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 0))
+                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 0)
+                        ;; Doc 226 D9: symbols never move -- eq and eq-hash
+                        ;; identity is the cell's address -- so no symbol
+                        ;; cell (typed or parallel-section) may exist.
+                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 440) 0) 0))
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_seq2 (nl_seq2 (nl_sweep_conses)
+                          (nl_seq2 (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_sweep_symbols))
                                             (nl_seq2 (nl_boot_clear_marks) (nl_gc_debt_rearm)))
                                    (nl_gc_conserv_state_clear)))
                  (nl_seq2 (nl_gc_sweep)
@@ -10681,7 +11023,111 @@ leave symbols unresolved at link time."
                                  (nl_seq2 (nl_gc_debt_refresh_limit) 0)))
                             0))))))))))))
     ;; Doc 215 builtin word ABI: bf_debug_switch_w returns the result WORD (0 = signal stashed); bf_debug_switch keeps the (rc, OUT) ABI.
+    ;; Doc 226 D9 self-test of the symbol_block allocator and its collector
+    ;; support, for a line where no Lisp operation makes a symbol cell yet.
+    ;; (nelisp--debug-switch 40 N): a fresh vector of N cells, each an
+    ;; uninterned symbol (kind 16) whose name is a legacy cons view, val a
+    ;; direct cons, function a fixnum and plist a two-element list, all
+    ;; holding its index.  (nelisp--debug-switch 41 V): how many cells of V
+    ;; still hold exactly that, with no collector bit set.
+    ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
+    ;; Never print V's elements: no symbol consumer reads a direct symbol
+    ;; WORD on this line.  Native allocation never collects, and every
+    ;; object is stored where the vector reaches it before the next one.
+    (defun nl_symbol_selftest_make (n)
+      (let* ((vec (nl_w_vector_make n 0))
+             (slots (+ (nl_word_payload vec) 8))
+             (i 0) (c 0) (fx 0) (b 0) (w 0) (ok 1))
+        (seq
+         (while (if (= ok 1) (< i n) 0)
+           (seq
+            (setq c (nl_symbol_alloc))
+            (if (= c 0) (setq ok 0)
+              (seq
+               (setq fx (+ (* i 4) 1))
+               (ptr-write-u64 c 0 16)
+               (ptr-write-u64 slots (* i 8) (+ c 6))
+               (setq b (alloc-bytes 32 8))
+               (wf_write_nil b)
+               (ptr-write-u64 c 8 b)
+               (nl_sexp_clone_into (nelisp_cons_construct_w fx 3 0) b)
+               (ptr-write-u64 c 16 (nelisp_cons_construct_w fx 3 0))
+               (ptr-write-u64 c 24 fx)
+               (ptr-write-u64 c 32 (nelisp_cons_construct_w fx 3 0))
+               (setq w (nelisp_cons_construct_w fx (heap-read-u64 c 32) 0))
+               (ptr-write-u64 c 32 w)))
+            (setq i (+ i 1))))
+         (if (= ok 1) vec 3))))
+    (defun nl_symbol_selftest_cell_ok (sw i)
+      (let* ((fx (+ (* i 4) 1)) (c (- sw 6)))
+        (if (/= (logand sw 7) 6) 0
+          (if (/= (heap-read-u64 c 0) 16) 0
+            (if (/= (nl_val_tag (heap-read-u64 c 8)) 7) 0
+              (if (/= (heap-read-u64 (nl_word_payload (heap-read-u64 c 8)) 0) fx) 0
+                (if (/= (logand (heap-read-u64 c 16) 7) 2) 0
+                  (if (/= (heap-read-u64 (- (heap-read-u64 c 16) 2) 0) fx) 0
+                    (if (/= (heap-read-u64 (- (heap-read-u64 c 16) 2) 8) 3) 0
+                      (if (/= (heap-read-u64 c 24) fx) 0
+                        (if (/= (logand (heap-read-u64 c 32) 7) 2) 0
+                          (let* ((p (- (heap-read-u64 c 32) 2)) (q (heap-read-u64 p 8)))
+                            (if (/= (heap-read-u64 p 0) fx) 0
+                              (if (/= (logand q 7) 2) 0
+                                (if (/= (heap-read-u64 (- q 2) 0) fx) 0
+                                  (if (/= (heap-read-u64 (- q 2) 8) 3) 0
+                                    (if (/= (heap-read-u64 c 40) 0) 0 1)))))))))))))))))
+    (defun nl_symbol_selftest_check (v)
+      (if (/= (nl_val_tag v) 8) -1
+        (let* ((n (nl_vector_length v)) (slots (+ (nl_word_payload v) 8))
+               (i 0) (good 0))
+          (seq
+           (while (< i n)
+             (seq (setq good (+ good (nl_symbol_selftest_cell_ok
+                                      (heap-read-u64 slots (* i 8)) i)))
+                  (setq i (+ i 1))))
+           good))))
+    ;; (nelisp--debug-switch 43): Doc 223 conservative-scan regression.  A
+    ;; cons held only by native frames survives a collection, as
+    ;; mark_maybe_pointer keeps it (alloc.c:4854).  Answers (SURVIVED
+    ;; OUTSIDE): SURVIVED 1 when the cell still holds its car afterwards,
+    ;; OUTSIDE 1 when its typed group lies outside every arena chunk's
+    ;; address range -- the case the scan envelope used to skip.
+    (defun nl_conserv_selftest_hold (c _pad)
+      (seq (nl_gc_collect_from_recorded_roots 0)
+           (if (= (heap-read-u64 (- c 2) 0) 173) 1 0)))
+    (defun nl_conserv_selftest_w (_pad)
+      (let* ((c (nelisp_cons_construct_w 173 3 0))
+             (g (logand c -524288))
+             (chunk (heap-read-u64 268436160 0)) (lo 0) (hi 0) (s 0) (e 0))
+        (seq
+         (while (> chunk 0)
+           (seq (setq s (heap-read-u64 chunk 24))
+                (setq e (nl_gc_chunk_end chunk))
+                (if (if (= lo 0) 1 (< s lo)) (setq lo s) 0)
+                (if (> e hi) (setq hi e) 0)
+                (setq chunk (heap-read-u64 chunk 48))))
+         (nelisp_cons_construct_w
+          (+ (* (nl_conserv_selftest_hold c 0) 4) 1)
+          (nelisp_cons_construct_w (if (if (< g lo) 1 (>= g hi)) 5 1) 3 0)
+          0))))
+    (defun nl_symbol_selftest_w (args)
+      (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 43) (nl_conserv_selftest_w 0)
+        (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
+          (if (= op 41)
+              (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
+            (nelisp_cons_construct_w
+             (+ (* (heap-read-u64 st 416) 4) 1)
+             (nelisp_cons_construct_w
+              (+ (* (heap-read-u64 st 424) 4) 1)
+              (nelisp_cons_construct_w
+               (+ (* (heap-read-u64 st 432) 4) 1)
+               (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
+               0)
+              0)
+             0))))))
     (defun bf_debug_switch_w (args _pad)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
+          (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
           (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
@@ -10787,7 +11233,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
@@ -10979,7 +11425,8 @@ leave symbols unresolved at link time."
          0)))
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
-          (nl_seq2 (nl_cons_unmark_all) (nl_boot_clear_marks))
+          (nl_seq2 (nl_seq2 (nl_cons_unmark_all) (nl_symbol_unmark_all))
+                   (nl_boot_clear_marks))
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
                                      reach total))))
@@ -12226,9 +12673,11 @@ leave symbols unresolved at link time."
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_to_file_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_to_file keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_to_file_w (args _pad)
       ;; Doc 223: this single-chunk copy dump has no converted cons region;
-      ;; with cons blocks in use it refuses (`nelisp--arena-dump-image-stream'
-      ;; converts them).
-      (if (> (heap-read-u64 (data-addr nl_typed_alloc) 40) 0) (wf_write_int_w 0 -1)
+      ;; with cons or symbol blocks in use it refuses
+      ;; (`nelisp--arena-dump-image-stream' converts them).
+      (if (> (+ (heap-read-u64 (data-addr nl_typed_alloc) 40)
+                (heap-read-u64 (data-addr nl_typed_alloc) 432)) 0)
+          (wf_write_int_w 0 -1)
       (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (heap-read-u64 268436160 0))
@@ -12347,7 +12796,11 @@ leave symbols unresolved at link time."
              ;; Doc 223 region holding every cons-block cell as an image payload
              ;; upper bound for the relocation table: every chunk byte plus
              ;; every cons-block cell (Doc 223 packs the image to ctotal)
-             (total (+ (nl_mc_total) (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 43392)))
+             (total (+ (+ (nl_mc_total) (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 43392))
+                       ;; Doc 226 D9: every symbol-block cell as a 56-byte block.
+                       (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 432) 0)
+                          ,(* nelisp-standalone--symbol-block-size
+                              (+ 8 nelisp-standalone--symbol-cell-bytes)))))
              ;; Reloc-table scratch -- Increment 1 fix (multi-chunk cold-load).
              ;; The previous placement piggybacked on chunk-0's own leftover mmap
              ;; tail (single-chunk) or the interned-region's leftover mmap tail
@@ -12429,9 +12882,12 @@ leave symbols unresolved at link time."
               (if (= cok 1)
                   (seq
                    (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
-                   (setq ctotal (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
-                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
-                                      ,(+ 8 nelisp-standalone--cons-cell-bytes))))
+                   (setq ctotal (+ (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
+                                      (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
+                                         ,(+ 8 nelisp-standalone--cons-cell-bytes)))
+                                   ;; Doc 226 D9: the symbol region.
+                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
+                                      ,(+ 8 nelisp-standalone--symbol-cell-bytes))))
                    (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
                    (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
@@ -12705,18 +13161,22 @@ leave symbols unresolved at link time."
     ;; `nl_fa_roots'/`bf_arena_mr_chunks'.
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
       (if (= (nl_gc_in_arena data_ptr) 0) 0
-        (let ((k i))
-          (while (< k len)
-            (nl_seq2
-             (let ((vw (heap-read-u64 (+ data_ptr (* k 8)) 0)))
-               (if (= (logand vw 1) 1) 0
-                 (nl_seq2 (nl_fa_word_field (+ data_ptr (* k 8)) vw ds span dest cin cout dir)
-                          (if (= (logand vw 7) 2)
-                              (nl_fa_cons vw ds span dest cin cout dir)
-                            (if (= (nl_gc_mark_block (if (= (logand vw 7) 6) (- vw 6) vw)) 0) 0
-                              (nl_fa_slot vw ds span dest cin cout dir))))))
-             (setq k (+ k 1))))
-          0)))
+        (nl_fa_word_slots data_ptr i len ds span dest cin cout dir)))
+    ;; WORD slots I..LEN-1 at DATA_PTR, which the caller knows to be live
+    ;; storage (a symbol_block cell lies outside every arena chunk).
+    (defun nl_fa_word_slots (data_ptr i len ds span dest cin cout dir)
+      (let ((k i))
+        (while (< k len)
+          (nl_seq2
+           (let ((vw (heap-read-u64 (+ data_ptr (* k 8)) 0)))
+             (if (= (logand vw 1) 1) 0
+               (nl_seq2 (nl_fa_word_field (+ data_ptr (* k 8)) vw ds span dest cin cout dir)
+                        (if (= (logand vw 7) 2)
+                            (nl_fa_cons vw ds span dest cin cout dir)
+                          (if (= (if (= (logand vw 7) 6) (nl_gc_mark_vbox (- vw 6)) (nl_gc_mark_block vw)) 0) 0
+                            (nl_fa_slot vw ds span dest cin cout dir))))))
+           (setq k (+ k 1))))
+        0))
     ;; SP is a cons view or a direct cons WORD (payload | 2, Doc 216).  The
     ;; cdr chain is walked iteratively; only a car recurses.  Every source
     ;; pointer is read before its field is swizzled (dir 3).
@@ -12736,14 +13196,14 @@ leave symbols unresolved at link time."
                    (nl_seq2 (nl_fa_word_field box cw ds span dest cin cout dir)
                             (if (= (logand cw 7) 2)
                                 (nl_fa_cons cw ds span dest cin cout dir)
-                              (if (= (nl_gc_mark_block (if (= (logand cw 7) 6) (- cw 6) cw)) 0) 0
+                              (if (= (if (= (logand cw 7) 6) (nl_gc_mark_vbox (- cw 6)) (nl_gc_mark_block cw)) 0) 0
                                 (nl_fa_slot cw ds span dest cin cout dir)))))
                  (if (= (logand dw 1) 1) 0
                    (seq
                     (nl_fa_word_field (+ box 8) dw ds span dest cin cout dir)
                     (if (= (logand dw 7) 2)
                         (seq (setq box (- dw 2)) (setq go 1))
-                      (if (= (nl_gc_mark_block (if (= (logand dw 7) 6) (- dw 6) dw)) 0) 0
+                      (if (= (if (= (logand dw 7) 6) (nl_gc_mark_vbox (- dw 6)) (nl_gc_mark_block dw)) 0) 0
                         (if (= (nl_val_tag dw) 7)
                             (let ((nb (heap-read-u64 dw 8)))
                               (seq (nl_fa_field (+ dw 8) nb ds span dest cin cout dir)
@@ -12785,7 +13245,11 @@ leave symbols unresolved at link time."
       (if (= (nl_gc_mark_block box) 0) 0
         (if (< (nl_hdr_bt (- box 8)) 88) 0
           (nl_fa_char_table_fields box ds span dest cin cout dir))))
+    ;; Doc 226 D9: a symbol (kinds 4 and 16) carries name, val, function
+    ;; and plist as WORDs at +8..+32 of GNU's fixed 48-byte layout.
     (defun nl_fa_vectorlike_fields (box tag ds span dest cin cout dir)
+      (if (or (= tag 4) (= tag 16))
+          (nl_fa_word_slots (+ box 8) 0 4 ds span dest cin cout dir)
       (if (= tag 8)
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
@@ -12794,7 +13258,7 @@ leave symbols unresolved at link time."
                              ds span dest cin cout dir)
           (if (= tag 9)
               (nl_fa_char_table_fields box ds span dest cin cout dir)
-            0))))
+            0)))))
     (defun nl_fa_slot (sp ds span dest cin cout dir)
       (let ((tag (nl_val_tag sp)))
         (if (= (logand sp 7) 6)
@@ -12869,7 +13333,7 @@ leave symbols unresolved at link time."
     (defun nl_fa_recorded_slot (sp ds span dest cin cout dir)
       (if (= sp 0) 0
         (if (= (logand sp 7) 6)
-            (if (= (nl_gc_mark_block (- sp 6)) 0) 0
+            (if (= (nl_gc_mark_vbox (- sp 6)) 0) 0
               (nl_fa_slot sp ds span dest cin cout dir))
           (nl_fa_slot sp ds span dest cin cout dir))))
     (defun nl_fa_recorded_env (env ds span dest cin cout dir)
@@ -12939,7 +13403,7 @@ leave symbols unresolved at link time."
                         (nl_seq2 (nl_fa_word_field (+ p (+ 32 (* k 8))) vw ds span dest cin cout dir)
                                  (if (= (logand vw 7) 2)
                                      (nl_fa_cons vw ds span dest cin cout dir)
-                                   (if (= (nl_gc_mark_block (if (= (logand vw 7) 6) (- vw 6) vw)) 0) 0
+                                   (if (= (if (= (logand vw 7) 6) (nl_gc_mark_vbox (- vw 6)) (nl_gc_mark_block vw)) 0) 0
                                      (nl_fa_slot vw ds span dest cin cout dir))))))
                     (setq k (+ k 1))))
                  (nl_fa_rootstack_walk (+ p (+ 32 (logand (+ (* n 8) 31) -32))) end
@@ -30455,11 +30919,22 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; is the previous link, unused +16 is the rooted tag-slot address.  The
     ;; collector ignores those integer metadata words, while the separately
     ;; registered tag remains live.  No arena scratch link survives a GC.
-    (defun nl_ct_target_p (node tag_slot)
+    (defun nl_ct_target_p (node tagw)
       ;; GNU deliberately forbids throwing to nil, including catch nil.
-      (if (if (= (sexp-tag tag_slot) 0) 1 (= node 0)) 0
-        (if (= (nl_ct_tag_eq (heap-read-u64 node 16) tag_slot) 1) 1
-          (nl_ct_target_p (heap-read-u64 node 8) tag_slot))))
+      ;; Doc 216 S6.2: NODE+16 is the catch's tag -- a WORD for a
+      ;; special-form catch, a 32-byte tag slot for a bytecode or native one.
+      (if (if (= (sexp-tag tagw) 0) 1 (= node 0)) 0
+        (if (= (nl_ct_tag_eq_w (heap-read-u64 node 16) tagw) 1) 1
+          (nl_ct_target_p (heap-read-u64 node 8) tagw))))
+    ;; EQ on two tags, each a WORD or a 32-byte tag slot: the same WORD,
+    ;; else the view comparison of `nl_ct_tag_eq' with each side as a view
+    ;; (`nl_val_load' materializes an immediate, direct cons or vectorlike
+    ;; into scratch), so a bytecode catch's fixnum view matches a throw's
+    ;; fixnum WORD and symbol views compare by symbol.
+    (defun nl_ct_tag_eq_w (a b)
+      (if (= a b) 1
+        (nl_ct_tag_eq (nl_val_load a (alloc-bytes 32 8))
+                      (nl_val_load b (alloc-bytes 32 8)))))
     ;; Shared raw-v1 handler ABI for evaluator, VM and U8b native code.
     ;; Push: ENV, rooted TAG_SLOT, integer metadata root NODE (32 bytes).
     ;; Pop: ENV, NODE in strict LIFO order, before releasing either root.
@@ -30475,45 +30950,47 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_ct_active_finish 0 (nl_ct_head_slot env) (heap-read-u64 node 8)))
     (defun nl_ct_active_finish (rc head_slot previous)
       (seq (ptr-write-u64 head_slot 0 previous) rc))
-    (defun nl_ct_active_prepare_w (body tag_slot env _pad head_slot node)
+    (defun nl_ct_active_prepare_w (body tagw env _pad head_slot node)
+      ;; Doc 216 S6.2: NODE is a three-WORD root frame, as GNU's struct
+      ;; handler sits on the C stack (eval.c internal_catch): +0 the fixnum
+      ;; 0, +8 the previous node (a raw root-stack or pool address, which the
+      ;; collector skips), +16 the tag WORD (traced, so the tag lives for the
+      ;; body's extent).
       (seq
-       (sexp-int-make node (heap-read-u64 head_slot 0))
-       (ptr-write-u64 node 16 tag_slot)
+       (ptr-write-u64 node 0 1)
+       (ptr-write-u64 node 8 (heap-read-u64 head_slot 0))
+       (ptr-write-u64 node 16 tagw)
        (ptr-write-u64 head_slot 0 node)
        (nl_ct_active_finish
-        (nl_ct_catch_body_w body tag_slot env 0 0 0)
+        (nl_ct_catch_body_w body tagw env 0 0 0)
         head_slot (heap-read-u64 node 8))))
-    (defun nl_ct_active_body_w (body tag_slot env _pad)
-      (nl_ct_active_prepare_w body tag_slot env 0
-                              (nl_ct_head_slot env) (nl_root_reserve env)))
-    (defun nl_ct_no_catch_publish (env data error_slot name_buf)
-      (seq
-       (ptr-write-u64 name_buf 0 7521983764263432046)
-       (nl_alloc_symbol name_buf 8 error_slot)
-       (cons-make-with-clone error_slot data data)
-       (nl_env_stash_signal env data)))
-    (defun nl_ct_no_catch_build (env tag_slot val_slot nil_slot data error_slot)
-      (seq
-       (cons-make-with-clone val_slot nil_slot data)
-       (cons-make-with-clone tag_slot data data)
-       (nl_ct_no_catch_publish env data error_slot (alloc-bytes 8 1))))
-    (defun nl_ct_no_catch_rooted (env tag_slot val_slot rooted_val)
-      (seq
-       (wf_copy32 rooted_val val_slot)
-       (nl_ct_no_catch_build env tag_slot rooted_val
-                             (nl_root_reserve env) (nl_root_reserve env)
-                             (nl_root_reserve env))))
-    (defun nl_ct_no_catch (env tag_slot val_slot)
-      (nl_ct_no_catch_rooted env tag_slot val_slot (nl_root_reserve env)))
+    (defun nl_ct_no_catch (env tagw valw)
+      ;; (no-catch TAG VALUE), Fthrow's xsignal2 (eval.c), as WORD conses.
+      ;; Native allocation never collects; the throw's frame roots TAGW and
+      ;; VALW.  Answers the stash's 1.
+      (let* ((name_buf (alloc-bytes 8 1)) (error_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 name_buf 0 7521983764263432046)
+         (nl_alloc_symbol name_buf 8 error_slot)
+         (nl_env_stash_signal
+          env
+          (nelisp_cons_construct_w
+           error_slot
+           (nelisp_cons_construct_w tagw (nelisp_cons_construct_w valw 3 0) 0)
+           0)))))
     ;; Validate the complete operand list before evaluating any operand.
     ;; Errors use rooted data and the same signal publication as no-catch.
     ;; KIND 0 is arity (DATUM is a count); KIND 1 is a dotted-tail type error
     ;; (DATUM is a Sexp slot). Runtime values travel in helper arguments.
     (defun nl_ct_arg_error_name (env name_word kind data symbol_slot buffer)
+      ;; (wrong-number-of-arguments NAME VALUE) (KIND 0) or
+      ;; (wrong-type-argument NAME VALUE): DATA is the WORD list (VALUE).
+      ;; Native allocation never collects.  Answers the stash's 1.
       (seq
        (ptr-write-u64 buffer 0 name_word)
        (nl_alloc_symbol buffer 5 symbol_slot)
-       (cons-make-with-clone symbol_slot data data)
+       (setq data (nelisp_cons_construct_w symbol_slot data 0))
+       (setq symbol_slot (alloc-bytes 32 8))
        (if (= kind 0)
            (seq
             (ptr-write-u64 buffer 0 8461750672133419639)
@@ -30525,26 +31002,16 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           (ptr-write-u64 buffer 8 7887324063363589488)
           (ptr-write-u64 buffer 16 7630437)))
        (nl_alloc_symbol buffer (if (= kind 0) 25 19) symbol_slot)
-       (cons-make-with-clone symbol_slot data data)
-       (nl_env_stash_signal env data)))
-    (defun nl_ct_arg_error_build (env name_word kind value nil_slot data)
-      (seq
-       (cons-make-with-clone value nil_slot data)
-       (nl_ct_arg_error_name env name_word kind data
-                             (nl_root_reserve env) (alloc-bytes 32 8))))
-    (defun nl_ct_arg_error_value (env datum name_word kind marker value)
-      (seq
-       (if (= kind 0) (sexp-int-make value datum)
-         (wf_copy32 value datum))
-       (nl_ct_root_finish
-        env marker
-        (nl_ct_arg_error_build env name_word kind value
-                              (nl_root_reserve env) (nl_root_reserve env)))))
-    (defun nl_ct_arg_error_mark (env datum name_word kind marker)
-      (nl_ct_arg_error_value env datum name_word kind
-                            marker (nl_root_reserve env)))
+       (nl_env_stash_signal env (nelisp_cons_construct_w symbol_slot data 0))))
     (defun nl_ct_arg_error (env datum name_word kind)
-      (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
+      ;; DATUM is the argument count (KIND 0) or the offending value, a WORD
+      ;; or a view that may be scratch: a fresh copy goes into the data.
+      (nl_ct_arg_error_name
+       env name_word kind
+       (nelisp_cons_construct_w
+        (if (= kind 0) (+ (* datum 4) 1) (nl_word_canon_view (nl_word_clone datum)))
+        3 0)
+       (alloc-bytes 32 8) (alloc-bytes 32 8)))
     ;; Doc 215 word ABI: catch / throw answer the result WORD (0 = signal
     ;; or throw in flight).  `throw' never returns a value.
     (defun nl_ct_args_done_w (count args env _pad mode)
@@ -30563,53 +31030,46 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           (nl_abi_fail (nl_ct_arg_error env tail 482990057836 1) 0))))
     ;;================= THROW =================
     (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
+      ;; The bytecode VM's throw (`wf_bytecode_call_throw') passes its
+      ;; evaluated operand slots, which it may reuse: their canonical WORDs
+      ;; go to `nl_ct_throw_words'.  Native allocation never collects.
       (if (= rc 0)
-          ;; Detect missing targets before unwinding, so a condition-case
-          ;; surrounding this throw can catch no-catch in the same scope.
-          (if (= (nl_ct_target_p
-                  (heap-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
-              (nl_ct_no_catch env tag_slot val_slot)
-          (seq
-           ;; GNU Fthrow (eval.c:1464-1478).  Kind 2 = `throw' (vs 1 =
-           ;; signal/error): the one pending exit serves BOTH throw and
-           ;; signal; the distinct kind lets `condition-case' trap ONLY
-           ;; signals and `catch' trap ONLY throws, so a `throw' never
-           ;; matches an `error'/`t' condition-case handler.
-           (nl_exit_raise_w 2 tag_slot val_slot)
-           1))
+          (let* ((buf (alloc-bytes 16 8)))
+            (seq (nl_val_clone_into tag_slot buf)
+                 (nl_val_clone_into val_slot (+ buf 8))
+                 (nl_ct_throw_words env (heap-read-u64 buf 0) (heap-read-u64 buf 8))))
         1))
-    (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
-      (if (= rc 0)
-          (nl_ct_throw_after_val
-           (extern-call nelisp_eval_call val_form env val_slot)
-           val_slot tag_slot env)
-        1))
-    (defun nl_ct_throw_eval_tag (tag_form val_form env _pad tag_slot val_slot)
-      (nl_ct_throw_after_tag
-       (extern-call nelisp_eval_call tag_form env tag_slot)
-       val_form env 0 tag_slot val_slot))
-    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env _pad tag_slot val_slot)
-      (nl_ct_throw_eval_tag
-       tag_form
-       (extern-call nl_cons_car_ptr cdr1)
-       env 0 tag_slot val_slot))
-    (defun nl_ct_throw_got_tag_form (tag_form args env _pad tag_slot val_slot)
-      (nl_ct_throw_got_cdr1
-       (extern-call nl_cons_cdr_word args)
-       tag_form env 0 tag_slot val_slot))
+    ;; Fthrow (eval.c): the innermost catch for TAGW, else (no-catch TAG
+    ;; VALUE).  Answers 1: an exit or a signal is stashed.
+    (defun nl_ct_throw_words (env tagw valw)
+      (if (= (nl_ct_target_p (heap-read-u64 (nl_ct_head_slot env) 0) tagw) 0)
+          (nl_ct_no_catch env tagw valw)
+        (seq (nl_exit_raise_w 2 tagw valw) 1)))
+    (defun nl_ct_throw_after_tag (tagw args env roots)
+      ;; Doc 216 S6.2: TAG and VALUE are WORDs in ROOTS, a two-WORD frame.
+      (if (= tagw 0) 1
+        (seq
+         (ptr-write-u64 roots 0 tagw)
+         (let* ((valw (nelisp_eval_call_w (nl_cons_car_word (nl_cons_cdr_word args)) env 0)))
+           (if (= valw 0) 1
+             (seq (ptr-write-u64 roots 8 valw)
+                  (nl_ct_throw_words env (heap-read-u64 roots 0) valw)))))))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
     ;; back blanked, the copy stashed a nil tag, and the throw missed its
     ;; own `catch': `(catch 'tg (throw 'tg (f)))' answered `no-catch: (0 7)'.
     ;; Rooted for the whole of `nl_sf_throw'; VAL_SLOT is written by the eval
     ;; and read immediately after, so it needs no root of its own.
-    (defun nl_sf_throw_run_w (args env _pad tag_slot val_slot root_mark)
-      (nl_ct_root_finish env root_mark
-                         (nl_abi_fail (nl_ct_throw_got_tag_form (nl_cons_car_ptr args)
-                                                                args env 0 tag_slot val_slot)
-                                      0)))
+    (defun nl_sf_throw_run_w (args env roots root_mark)
+      (nl_ct_root_finish
+       env root_mark
+       (if (= roots 0) (nl_abi_fail (bf_signal_memory_full) 0)
+         (nl_abi_fail (nl_ct_throw_after_tag
+                       (nelisp_eval_call_w (nl_cons_car_word args) env 0)
+                       args env roots)
+                      0))))
     (defun nl_sf_throw_mark_w (args env _pad root_mark)
-      (nl_sf_throw_run_w args env 0 (nl_root_reserve env) (alloc-bytes 32 8) root_mark))
+      (nl_sf_throw_run_w args env (nl_root_frame env 2) root_mark))
     (defun nl_sf_throw_w (args env _pad _pad1)
       (nl_ct_args_check_w args 0 args env 0 0))
     (defun nl_sf_throw (args env out _pad)
@@ -30668,16 +31128,17 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; Boxed atoms are valid WORDs too; retain their physical representation
     ;; rather than decoding the copied box into an immediate. No safepoint
     ;; lies between this copy and the return.
-    (defun nl_ct_caught_word (box _pad)
-      (seq (wf_copy32 box (nl_exit_val_w))
-           (ptr-write-u64 268435472 0 0)
+    (defun nl_ct_caught_word (w _pad)
+      ;; internal_catch's landing (eval.c): the exit's value WORD, the exit
+      ;; cleared.
+      (seq (ptr-write-u64 268435472 0 0)
            (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-           box))
-    (defun nl_ct_catch_on_match_w (eqres _p1 _p2 _p3)
-      (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
-    (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
+           w))
+    (defun nl_ct_catch_caught_w (tagw env _pad _p3)
       (if (= (heap-read-u64 268435472 0) 2)
-          (nl_ct_catch_on_match_w (nl_ct_tag_eq (nl_exit_tag_w) tag_slot) 0 0 0)
+          (if (= (nl_ct_tag_eq_w (nl_exit_tag_w) tagw) 1)
+              (nl_ct_caught_word (nl_exit_val_w) 0)
+            0)
         0))
     ;; The body list's cdr is taken AFTER the body form's own eval, not before:
     ;; a one-form body ends in Nil, `nl_cons_cdr_ptr' materialises an unrooted
@@ -30685,35 +31146,30 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; walker.  Same shape as the nine walkers closed earlier on this branch.
     ;; The body is a progn; a signal or throw out of it is checked against
     ;; this catch's tag.
-    (defun nl_ct_catch_result_w (w tag_slot env _pad)
-      (if (= w 0) (nl_ct_catch_caught_w tag_slot env 0 0) w))
-    (defun nl_ct_catch_body_w (body tag_slot env _pad _p4 _p5)
-      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tag_slot env 0))
-    (defun nl_ct_catch_after_tag_w (rc body tag_slot env _pad eqres_slot)
-      (if (= rc 0) (nl_ct_active_body_w body tag_slot env 0) (nl_abi_fail rc 0)))
+    (defun nl_ct_catch_result_w (w tagw env _pad)
+      (if (= w 0) (nl_ct_catch_caught_w tagw env 0 0) w))
+    (defun nl_ct_catch_body_w (body tagw env _pad _p4 _p5)
+      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tagw env 0))
     ;; The tag is evaluated into its reserved root slot (it must survive the
     ;; body), through the legacy adapter.
-    (defun nl_ct_catch_got_body_w (body tag_form env _pad tag_slot eqres_slot)
-      (nl_ct_catch_after_tag_w (extern-call nelisp_eval_call tag_form env tag_slot)
-                               body tag_slot env 0 eqres_slot))
-    (defun nl_ct_catch_got_tag_form_w (tag_form args env _pad tag_slot eqres_slot)
-      (nl_ct_catch_got_body_w (extern-call nl_cons_cdr_word args)
-                              tag_form env 0 tag_slot eqres_slot))
     ;; TAG_SLOT holds the evaluated catch tag for the whole body evaluation, so
     ;; it has to be a GC root.  As an `alloc-bytes' scratch a collection inside
     ;; the body freed it, `nl_ct_tag_eq' then compared a `throw' against a
     ;; blanked slot and answered no-match, and the throw escaped its own
     ;; `catch' as `no-catch' -- no crash, just a wrong answer.
-    (defun nl_sf_catch_run_w (args env _pad tag_slot eqres_slot root_mark)
-      (nl_ct_root_finish env root_mark
-                         (nl_ct_catch_got_tag_form_w (nl_cons_car_ptr args)
-                                                     args env 0 tag_slot eqres_slot)))
+    (defun nl_sf_catch_run_w (args env node root_mark)
+      ;; NODE is the catch's three-WORD frame (`nl_ct_active_prepare_w').
+      (nl_ct_root_finish
+       env root_mark
+       (if (= node 0) (nl_abi_fail (bf_signal_memory_full) 0)
+         (let* ((tagw (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
+           (if (= tagw 0) 0
+             (nl_ct_active_prepare_w (nl_cons_cdr_word args) tagw env 0
+                                     (nl_ct_head_slot env) node))))))
     (defun nl_ct_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
-    (defun nl_sf_catch_slots_w (args env _pad root_mark tag_slot)
-      (nl_sf_catch_run_w args env 0 tag_slot (alloc-bytes 32 8) root_mark))
     (defun nl_sf_catch_mark_w (args env _pad root_mark)
-      (nl_sf_catch_slots_w args env 0 root_mark (nl_root_reserve env)))
+      (nl_sf_catch_run_w args env (nl_root_frame env 3) root_mark))
     (defun nl_sf_catch_w (args env _pad _pad1)
       (nl_ct_args_check_w args 0 args env 0 1))
     (defun nl_sf_catch (args env out _pad)
@@ -31397,18 +31853,19 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
   '((defun nl_sf_prog_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
 
+    ;; Doc 216 S6.2: HOLDER is a WORD root slot holding prog1's value.
     (defun nl_sf_prog_body_w (body env holder _pad)
-  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (nl_cons_car_word holder)))
+  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (heap-read-u64 holder 0)))
     (defun nl_sf_prog1_slot_w (args env mark vslot)
   (let* ((word (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
     (nl_sf_prog_release_w
      (if (= word 0) 0
-       (let* ((holder (nelisp_cons_construct_w word 3 0)))
-         (seq (wf_word_store_out vslot holder)
-              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0))))
+       (seq (ptr-write-u64 vslot 0 word)
+            (nl_sf_prog_body_w (nl_cons_cdr_word args) env vslot 0)))
      env mark 0)))
+    ;; Like GNU's Fprog1, which keeps VAL on the C stack: one WORD frame.
     (defun nl_sf_prog1_marked_w (args env mark _pad)
-      (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
+      (nl_sf_prog1_slot_w args env mark (nl_root_word env))))
   "prog1's rooted value slot (Doc 215 R2).")
 
 (defun nelisp-standalone--sf-word-adapter (name)
@@ -45322,7 +45779,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (nl_sf_lambda_captured_w
                   (nl_env_capture_lexical_filtered_w env args 0 0) args roots)
                (let* ((sym (alloc-bytes 32 8)) (buf (alloc-bytes 8 1)))
-                 (seq (nl_capture_root_set_word roots 2 sym)
+                 ;; ROOTS is nl_sf_lambda_w's WORD frame (Doc 216 S6.2).
+                 (seq (ptr-write-u64 roots 16 sym)
                       (ptr-write-u64 buf 0 107083775959404)
                       (nl_alloc_symbol buf 6 sym)
                       (nelisp_cons_construct_w sym args 0))))

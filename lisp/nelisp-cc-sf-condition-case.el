@@ -115,14 +115,17 @@
     ;; and run as a progn.  Its WORD crosses only the root release and the
     ;; frame pop, neither a safepoint (Doc 215 R2).
     (defun nl_sf_cc_body_cloned_w (clone-rc root-slot root-mark env)
-      (nl_sf_cc_finish_w (nl_sf_progn_w root-slot env 0 0) root-mark env 0))
+      (nl_sf_cc_finish_w (nl_sf_progn_w (heap-read-u64 root-slot 0) env 0 0)
+                         root-mark env 0))
 
+    ;; Doc 216 S6.2: the handler body (a list in BODY, a view) is kept as a
+    ;; WORD in one root-stack WORD slot while it runs.
     (defun nl_sf_cc_body_slot_w (root-slot body root-mark env)
-      (nl_sf_cc_body_cloned_w (extern-call nl_sexp_clone_into body root-slot)
+      (nl_sf_cc_body_cloned_w (ptr-write-u64 root-slot 0 (nl_word_canon_view body))
                               root-slot root-mark env))
 
     (defun nl_sf_cc_body_mark_w (root-mark body env _pad)
-      (nl_sf_cc_body_slot_w (extern-call nl_root_reserve env) body root-mark env))
+      (nl_sf_cc_body_slot_w (extern-call nl_root_word env) body root-mark env))
 
     (defun nl_sf_cc_body_w (body env _pad _pad1)
       (nl_sf_cc_body_mark_w (extern-call nl_root_mark env) body env 0))
@@ -141,7 +144,7 @@
     (defun nl_sf_cc_after_success_w (succ-rc env pv s1)
       (if (= succ-rc 0)
           (nl_sf_cc_body_w s1 env 0 0)
-        (nl_cons_car_word pv)))
+        (heap-read-u64 pv 0)))
 
     (defun nl_sf_cc_try_success_w (clone-rc clauses-ptr var-ptr env pv s1)
       (nl_sf_cc_after_success_w
@@ -151,8 +154,8 @@
     (defun nl_sf_cc_after_eval_w (w clauses-ptr var-ptr env pv s1)
       (if (/= w 0)
           (seq
-           (nl_abi_word_to_rc (nelisp_cons_construct_w w 3 0) pv)
-           (nl_sf_cc_try_success_w (nl_abi_word_to_rc (nl_cons_car_word pv) s1)
+           (ptr-write-u64 pv 0 w)
+           (nl_sf_cc_try_success_w (nl_abi_word_to_rc (heap-read-u64 pv 0) s1)
                                    clauses-ptr var-ptr env pv s1))
         (nl_sf_cc_after_match_w
          (extern-call nl_cc_match_and_bind clauses-ptr s1 var-ptr env)
@@ -161,7 +164,7 @@
     ;; Keep the saved WORD in a checked root until matching/handler evaluation
     ;; finishes. Only the error datum remains in the legacy S1 view.
     (defun nl_sf_cc_dispatch_w (clauses-ptr var-ptr protected-ptr env _pad s1)
-      (let* ((mark (nl_root_mark env)) (pv (nl_root_reserve env)))
+      (let* ((mark (nl_root_mark env)) (pv (nl_root_word env)))
         (if (= pv 0)
             (seq (nl_root_release env mark) (nl_abi_fail 1 0))
           (let* ((w (nl_sf_cc_after_eval_w

@@ -266,9 +266,12 @@ def census(path):
     inbound, outbound = {containing(a) for a in image_roots}, set()
     if relfields is not None:
         for field in relfields:
-            value = read_words(field, 1)[0]
+            # A field entry carries its pointer class (0, 2 or 6) in its low
+            # bits; the field itself is the aligned word.  Reading at the
+            # tagged offset ran past the span for a last-word field.
+            value = read_words(field & ~7, 1)[0]
             inbound.add(containing(value))
-            outbound.add(containing(field))
+            outbound.add(containing(field & ~7))
     for a, (bt, mark) in blocks.items():
         if owners.get(a):
             continue
