@@ -1,0 +1,52 @@
+#+TITLE: Call-path performance (word-heap S4.2): builtin arity safety and Doc 219 candidates C1-C3
+
+# User direction 2026-10-21: prioritize the call path (S4.2); proceed in
+# parallel while studying GNU's implementation.
+# Base: eval/wh-s4f-20261021 at 6cf24d3d9 (S4.2 frames plus the env-capture
+# crash fix 7181d1cfd and its regression test). The branch merges back
+# into eval/wh-s4f.
+#
+# The plan comes from Doc 219
+# (../callpath-study-20261021/docs/design/219-call-path-gnu-comparison.org,
+# commit 08f6293a6). It measured funcall per call (four layouts, GC
+# included) on a fresh matching fixture:
+#   interpreter  19,648 Ir vs GNU 1,023  (19.2x)
+#   VM           15,556 Ir vs GNU 1,023  (15.2x)
+#   bytecode      2,838 Ir vs GNU   207  (13.7x)
+# Its candidates, with predicted savings (interp/VM/byte):
+#   C1 nil-formal view borrowing   800 / 450 /   0
+#   C2 WORD argv                 1,800 / 1,000 / 0
+#   C3 coherent direct cells     2,500 / 1,200 / 400
+#
+# Thresholds:
+# - The S2 caps are milestones: each mode's measured Ir minus 75% of the
+#   summed predicted savings. The original S4.2 caps (5x VM/bytecode, 10x
+#   interpreter) remain the word-heap ledger's criteria and stay red there
+#   until met.
+# - The session-3a values are the no-regression bars:
+#     builtin interp 137,059 dynamic / 15,324 static; VM 4,791; byte 1,801
+#     let/while VM 2.95x / 1.08x; byte 4.08x / 4.43x
+#     dynamic boot/files/regex at or below baseline.
+
+* S1 Safety
+** S1.1 Builtin arity: every reader builtin called with fewer arguments than its minimum, or more than its maximum, signals wrong-number-of-arguments instead of crashing, on dynamic and static
+GNU's funcall_subr checks arity (eval.c). A sweep covers all builtins, and a control shows the base build crashes on `(nelisp--string-search "a")`, exit 139.
+cmd: python3 tools/ai/callpath-perf-check.py arity
+
+* S2 Call cost (milestones)
+** S2.1 Interpreter funcall four-layout mean Ir <= 15,823
+19,648 - 0.75 x 5,100.
+cmd: python3 tools/ai/callpath-perf-check.py funcall interp 15823
+** S2.2 VM funcall four-layout mean Ir <= 13,568
+15,556 - 0.75 x 2,650.
+cmd: python3 tools/ai/callpath-perf-check.py funcall vm 13568
+** S2.3 Bytecode funcall four-layout mean Ir <= 2,538
+2,838 - 0.75 x 400.
+cmd: python3 tools/ai/callpath-perf-check.py funcall byte 2538
+** S2.4 No regression against the session-3a bars on every mode: builtin floors, let and while, and dynamic boot/files/regex
+cmd: python3 tools/ai/callpath-perf-check.py noregress
+
+* S3 End to end
+** S3.1 Semantics and final verification
+The callfloor semantic corpus and the eight S4.2 capture cases match GNU 31.1. The env-capture regression check passes. COMMON.md gives 11 groups with 0 failures, the standalone checks pass, and the anvil MCP smoke shows 40 tools, on fresh dynamic and static builds of HEAD.
+cmd: python3 tools/ai/callpath-perf-check.py final
