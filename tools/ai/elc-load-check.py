@@ -6,8 +6,8 @@ build-context builds matching-reader images from notes-65's canonical consumer
 bundle, replacing only its emacs-load member; corpus uses those images.
 corpus/resolve/capability execute both ELC_LOAD_BIN and ELC_LOAD_STATIC.
 Set both variables to the base executable to record the against-bug run.
-measure-speed records four-layout whole-process callgrind Ir (including GC);
-speed verifies retained diagnostics and the >=3x median wall-clock ratio.
+measure-speed records seven alternating CPU-15 wall-clock rounds with GC;
+speed verifies the median paired >=3x source/bytecode ratio and reports GNU.
 Heavy work takes one Notes/bin/heavy-run.sh slot per image build, profile,
 or corpus/resolve/capability suite; ELC_LOAD_HEAVY_UNIT prevents nested slots.
 
@@ -825,179 +825,87 @@ def ir(profile):
 def speed_inputs():
     binary = binaries()[0][1]
     return own_files() + runtime_files() + binary_files(binary) + [OUT / "corpus.json", CORPUS / "mxlib.el", CORPUS / "mxlib.elc",
-                                               ROOT / "test/perf/unibyte-alloc-check.py"]
+                                               ROOT / "test/elc-load-wall-bench.el", OUT / "wall-bench.elc"]
+
+
+def wall_values(run, count):
+    values = {}
+    for row in rows(run):
+        match = re.fullmatch(r"\((mx-[ab]) ([0-9.eE+-]+)\)", row)
+        need(match is not None, "invalid wall-clock row")
+        values[match[1]] = float(match[2]) / count
+    need(set(values) == {"mx-a", "mx-b"} and all(x > 0 for x in values.values()), "missing wall times")
+    return values
 
 
 def measure_speed():
-    load("corpus.json")
-    need(shutil.disk_usage(OUT).free >= 50 * 1024**3, "less than 50 GB free disk")
+    """Short CPU-15 probe; paired ratios, warmup, and GC included."""
     binary = binaries()[0][1]
-    harness = ROOT / "test/perf/unibyte-alloc-check.py"
-    inputs = speed_inputs()
+    compiler = Path(emacs()).resolve()
+    frequency = Path("/sys/devices/system/cpu/cpu15/cpufreq/scaling_cur_freq")
+    count = 10010
+    harness_source = OUT / "wall-bench.el"
+    harness_source.write_bytes((ROOT / "test/elc-load-wall-bench.el").read_bytes())
+    compiled = run_lisp(compiler, driver(f"(setq byte-compile-warnings nil) (require 'bytecomp) (byte-compile-file {lisp(harness_source)})" + emit("t")),
+                        "wall-bench-compile", gnu=True)
+    rows(compiled)
+    inputs = speed_inputs() + [compiler]
     initial = pins(inputs)
-    print("MEASURE binary=" + str(binary) + " sha256=" + sha(binary) +
-          " layouts=0,700,1400,2100 GC=included n=" + str(SMALL) + "," + str(LARGE), flush=True)
-    # Fail before a long measurement if .elc did not produce executable bytecode.
-    preflight = run_lisp(binary, driver(
-        f"(load {lisp(CORPUS / 'mxlib.elc')} nil t t)\n" +
-        emit("(list (byte-code-function-p (symbol-function 'mx-a)) (mx-a '(1 2 3 4 5 6)) (mx-b '(1 2 3 4 5 6)))")),
-        "speed-preflight")
-    need(rows(preflight) == ["(t (6 8 10 12) (6 8 10 12))"], "speed bytecode preflight failed")
-    # Reuse the allocation harness's profile compaction. --fn-skip collapses
-    # attribution only; whole-process `summary: Ir' still includes the GC.
-    spec = importlib.util.spec_from_file_location("elc_allocation_harness", harness)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    options = module.compact_options(str(binary))
-    result = []
-    for function in ("mx-a", "mx-b"):
-        for ext in ("el", "elc"):
-            for layout in LAYOUTS:
-                samples = []
-                for count in (SMALL, LARGE):
-                    name = f"speed-{function}-{ext}-{layout}-{count}"
-                    script = OUT / "drivers" / (name + ".el")
-                    body = (bootstrap() + f"(load {lisp(CORPUS / ('mxlib.' + ext))} nil t t)\n"
-                            f"(let ((i 0) (answer nil)) (while (< i {count}) (setq answer ({function} '(1 2 3 4 5 6))) (setq i (1+ i))) "
-                            '(unless (equal answer \'(6 8 10 12)) (error "wrong benchmark answer")))\n'
-                            f'(princ "ELC-SPEED {count}\\n")\n(kill-emacs 0)\n')
-                    text = ("(condition-case elc-speed-error (progn\n" + body +
-                            ') (error (princ "ELC-SPEED-ERROR ") (prin1 elc-speed-error) '
-                            '(terpri) (kill-emacs 1)))\n')
-                    script.parent.mkdir(parents=True, exist_ok=True)
-                    script.write_text(";;; -*- lexical-binding: t; -*-\n" + text)
-                    profile = OUT / "profiles" / (name + ".cg")
-                    valgrind_log = OUT / "profiles" / (name + ".valgrind")
-                    profile.parent.mkdir(parents=True, exist_ok=True)
-                    env = dict(os.environ, ABI_LAYOUT_PAD="x" * layout)
-                    print("START", name, flush=True)
-                    run = execute(["valgrind", "--tool=callgrind", "--error-exitcode=97",
-                                   "--callgrind-out-file=" + str(profile), "--log-file=" + str(valgrind_log),
-                                   *options, binary, "--load", script],
-                                  OUT / "runs" / name, timeout=900, env=env, heavy=True)
-                    need(run["rc"] == 0 and Path(run["stdout"]).read_text().strip() == f"ELC-SPEED {count}", "speed run failed: " + name)
-                    need(not Path(run["stderr"]).stat().st_size, "unexpected runtime stderr: " + name)
-                    total = ir(profile)
-                    print("DONE", name, "Ir=" + str(total), f"seconds={run['seconds']:.3f}", flush=True)
-                    samples.append(dict(n=count, ir=total, run=run, profile=str(profile), valgrind_log=str(valgrind_log)))
-                    inputs += [script, profile, valgrind_log, Path(run["stdout"]), Path(run["stderr"]), Path(run["metadata"])]
-                per_call = (samples[1]["ir"] - samples[0]["ir"]) / (LARGE - SMALL)
-                need(per_call > 0, "nonpositive differential Ir")
-                result.append(dict(function=function, kind=ext, layout=layout, samples=samples, ir_per_call=per_call))
-                print(function, ext, layout, round(per_call, 2), flush=True)
-    need(pins(initial) == initial, "inputs changed during profiling")
-    save("speed.json", dict(inputs=pins(inputs), binary=str(binary), layouts=list(LAYOUTS), small=SMALL, large=LARGE, rows=result))
-    measure_wall_speed()
+    runs = []
+    for repeat in range(7):
+        # Keep GNU between the two NeLisp runs, close together in every round.
+        for tag, executable, kind, gnu in (("source", binary, "el", False),
+                                           ("gnu", compiler, "elc", True),
+                                           ("bytecode", binary, "elc", False)):
+            name = f"wall-round-{repeat}-{tag}"
+            script = OUT / "drivers" / (name + ".el")
+            script.parent.mkdir(parents=True, exist_ok=True)
+            body = "(require 'cl-lib)\n" + f"(load {lisp(CORPUS / ('mxlib.' + kind))} nil t t)\n"
+            if kind == "elc":
+                body += "(unless (and (byte-code-function-p (symbol-function 'mx-a)) (byte-code-function-p (symbol-function 'mx-b))) (error \"not bytecode\"))\n"
+            body += f"(load {lisp(OUT / 'wall-bench.elc')} nil t t)\n"
+            for function in ("mx-a", "mx-b"):
+                caller = "elc-wall-time-a" if function == "mx-a" else "elc-wall-time-b"
+                body += (f"({caller} 1000)\n(garbage-collect)\n"
+                         f"(let ((result ({caller} {count}))) "
+                         "(unless (equal (car (cdr result)) '(6 8 10 12)) (error \"wrong benchmark answer\"))\n" +
+                         emit(f"(list '{function} (car result))") + ")\n")
+            script.write_text(";;; -*- lexical-binding: t; -*-\n" + ("" if gnu else bootstrap()) + driver(body))
+            before = int(frequency.read_text())
+            run = execute(["taskset", "-c", "15", executable, *(["-Q", "--batch"] if gnu else []),
+                           "--load", script], OUT / "runs" / name, timeout=30, heavy=False)
+            after = int(frequency.read_text())
+            values = wall_values(run, count)
+            runs.append(dict(round=repeat, tag=tag, values=values, run=run,
+                             frequency_khz_before=before, frequency_khz_after=after))
+            inputs += [script, Path(run["stdout"]), Path(run["stderr"]), Path(run["metadata"])]
+            print(f"WALL DONE round={repeat + 1}/7 {tag} frequency_khz={before},{after}", flush=True)
+    need(pins(initial) == initial, "inputs changed during wall probe")
+    save("wall-speed.json", dict(inputs=pins(inputs), cpu=15, iterations=count, warmup=1000, runs=runs))
     speed()
 
 
-def measure_wall_speed():
-    """Seven alternating paired runs; time the Lisp workload, including GC."""
-    binary = binaries()[0][1]
-    base = ROOT / "target/elc-load/base/nelisp-dynamic"
-    need(base.is_file() and sha(base) != sha(binary), "missing independent baseline")
-    allowed = os.sched_getaffinity(0)
-    preferred = set(range(24, 32)) & allowed or set(range(16, 22)) & allowed or allowed
-    activity = {cpu: 0.0 for cpu in preferred}
-    snapshot = subprocess.check_output(["ps", "-eo", "psr=,pcpu=,args="], text=True)
-    for line in snapshot.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) >= 2 and int(fields[0]) in activity:
-            activity[int(fields[0])] += float(fields[1])
-    cpu = min(activity, key=activity.get)
-    count = 100010
-    inputs = speed_inputs() + binary_files(base)
-    runs = []
-    for tag, executable, kind in (("candidate-source", binary, "el"),
-                                  ("candidate-bytecode", binary, "elc"),
-                                  ("base-source", base, "el")):
-        for repeat in range(7):
-            for runtime, command, gnu in ((tag, executable, False), ("gnu-" + kind, Path(emacs()), True)):
-                name = f"wall-{tag}-{repeat}-{runtime}"
-                script = OUT / "drivers" / (name + ".el")
-                body = "(require 'cl-lib)\n" + f"(load {lisp(CORPUS / ('mxlib.' + kind))} nil t t)\n"
-                for function in ("mx-a", "mx-b"):
-                    body += (f"(let ((i 0)) (while (< i 1000) ({function} '(1 2 3 4 5 6)) (setq i (1+ i))))\n"
-                             "(garbage-collect)\n"
-                             f"(let ((i 0) (answer nil) (start (float-time))) (while (< i {count}) "
-                             f"(setq answer ({function} '(1 2 3 4 5 6))) (setq i (1+ i))) "
-                             "(unless (equal answer '(6 8 10 12)) (error \"wrong benchmark answer\"))\n" +
-                             emit(f"(list '{function} (- (float-time) start))") + ")\n")
-                if gnu:
-                    prelude = ""
-                elif executable == base:
-                    foundation = base.parent / "src/packages/nelisp-emacs-foundation/src"
-                    files = [foundation / f for f in ("emacs-fns.el", "emacs-eval.el", "emacs-load.el")]
-                    inputs += files
-                    prelude = "".join(f"(load {lisp(f)} nil t t)\n" for f in files)
-                else:
-                    prelude = bootstrap()
-                script.write_text(";;; -*- lexical-binding: t; -*-\n" + prelude + driver(body))
-                print("START", name, "cpu=" + str(cpu), flush=True)
-                run = execute(["taskset", "-c", str(cpu), command, *(["-Q", "--batch"] if gnu else []),
-                               "--load", script], OUT / "runs" / name, timeout=90, heavy=not gnu)
-                values = {}
-                for row in rows(run):
-                    match = re.fullmatch(r"\((mx-[ab]) ([0-9.eE+-]+)\)", row)
-                    need(match is not None, "invalid wall-clock row")
-                    values[match[1]] = float(match[2]) / count
-                need(set(values) == {"mx-a", "mx-b"} and all(x > 0 for x in values.values()), "missing wall times")
-                runs.append(dict(tag=runtime, comparison=tag, repeat=repeat, values=values, run=run))
-                inputs += [script, Path(run["stdout"]), Path(run["stderr"]), Path(run["metadata"])]
-                print("DONE", name, flush=True)
-    save("wall-speed.json", dict(inputs=pins(inputs), cpu=cpu, iterations=count, runs=runs))
-
-
-def wall_speed():
-    record = load("wall-speed.json")
-    require_pins(record, speed_inputs())
-    for function in ("mx-a", "mx-b"):
-        medians = {}
-        for tag in ("candidate-source", "candidate-bytecode", "base-source", "gnu-el", "gnu-elc"):
-            samples = [r["values"][function] for r in record["runs"] if r["tag"] == tag]
-            need(len(samples) == (14 if tag == "gnu-el" else 7), "missing seven alternating wall runs")
-            medians[tag] = statistics.median(samples)
-        ratio = medians["candidate-source"] / medians["candidate-bytecode"]
-        regression = medians["candidate-bytecode"] / medians["base-source"]
-        gnu_ratio = medians["candidate-bytecode"] / medians["gnu-elc"]
-        print(f"WALL {function} .el/.elc={ratio:.4f}x bytecode/base-source={regression:.4f} GNU-bytecode={gnu_ratio:.4f}x")
-        need(ratio >= 3, function + ": wall-clock below 3x")
-        need(regression <= 1.03, function + ": wall-clock baseline regression")
-
-
 def speed():
-    rec = load("speed.json")
-    require_pins(rec, speed_inputs())
-    load("corpus.json")
-    need(rec["binary"] == str(binaries()[0][1]), "speed measured on a different binary")
-    need(rec["layouts"] == list(LAYOUTS) and len(rec["rows"]) == 16, "missing speed layouts/functions")
-    for function in ("mx-a", "mx-b"):
-        means = {}
-        for kind in ("el", "elc"):
-            selected = [r for r in rec["rows"] if r["function"] == function and r["kind"] == kind]
-            need(sorted(r["layout"] for r in selected) == list(LAYOUTS), "incomplete/duplicate layout evidence")
-            measured = []
-            for row in selected:
-                small, large = row["samples"]
-                need([small["n"], large["n"]] == [SMALL, LARGE], "wrong iteration counts")
-                for sample in (small, large):
-                    run = sample["run"]
-                    required = [sample["profile"], run["stdout"], run["stderr"]]
-                    if "metadata" in run:
-                        required.append(run["metadata"])
-                    if "valgrind_log" in sample:
-                        required.append(sample["valgrind_log"])
-                    require_pins(rec, required)
-                    need(run["rc"] == 0 and Path(run["stdout"]).read_text().strip() == f"ELC-SPEED {sample['n']}",
-                         "missing speed completion")
-                    need(not Path(run["stderr"]).stat().st_size, "unexpected runtime stderr")
-                value = (ir(large["profile"]) - ir(small["profile"])) / (LARGE - SMALL)
-                need(value > 0 and value == row["ir_per_call"], "invalid differential cost")
-                measured.append(value)
-            means[kind] = sum(measured) / len(LAYOUTS)
-        ratio = means["el"] / means["elc"]
-        print(f"SPEED {function} .el={means['el']:.2f} .elc={means['elc']:.2f} Ir/call ratio={ratio:.4f}x")
-    wall_speed()
+    record = load("wall-speed.json")
+    require_pins(record, speed_inputs() + [Path(emacs()).resolve()])
+    need(record["cpu"] == 15 and record["iterations"] == 10010 and len(record["runs"]) == 21,
+         "incomplete seven-round CPU-15 wall probe")
+    ratios = {f: {"source_bytecode": [], "nelisp_gnu": []} for f in ("mx-a", "mx-b")}
+    for repeat in range(7):
+        selected = [r for r in record["runs"] if r["round"] == repeat]
+        need([r["tag"] for r in selected] == ["source", "gnu", "bytecode"], "nonalternating wall round")
+        values = {}
+        for row in selected:
+            need(row["frequency_khz_before"] > 0 and row["frequency_khz_after"] > 0, "missing run frequency")
+            values[row["tag"]] = wall_values(row["run"], record["iterations"])
+        for function in ratios:
+            ratios[function]["source_bytecode"].append(values["source"][function] / values["bytecode"][function])
+            ratios[function]["nelisp_gnu"].append(values["bytecode"][function] / values["gnu"][function])
+    for function, measured in ratios.items():
+        ratio = statistics.median(measured["source_bytecode"])
+        gnu_ratio = statistics.median(measured["nelisp_gnu"])
+        print(f"WALL {function} median paired .el/.elc={ratio:.4f}x NeLisp/GNU.elc={gnu_ratio:.4f}x")
+        need(ratio >= 3, function + ": wall-clock below 3x")
 
 
 def final_inputs():

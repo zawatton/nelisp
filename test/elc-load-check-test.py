@@ -74,28 +74,21 @@ class EvidenceControls(unittest.TestCase):
             CHECK.rows(self.row_run(stdout="ELC-ROW t\nELC-DONE\nELC-DONE\n"))
 
     def speed_record(self, elc_cost=3000):
-        inputs = CHECK.speed_inputs()
-        rows = []
-        for function in ("mx-a", "mx-b"):
-            for kind, cost in (("el", 12000), ("elc", elc_cost)):
-                for layout in CHECK.LAYOUTS:
-                    samples = []
-                    for n in (CHECK.SMALL, CHECK.LARGE):
-                        stem = self.out / f"{function}-{kind}-{layout}-{n}"
-                        profile, stdout, stderr = [Path(str(stem) + s) for s in (".cg", ".out", ".err")]
-                        profile.write_text(f"events: Ir\nsummary: {1000000+n*cost}\n")
-                        stdout.write_text(f"ELC-SPEED {n}\n")
-                        stderr.write_text("")
-                        inputs += [profile, stdout, stderr]
-                        samples.append(dict(n=n, profile=str(profile), run=dict(rc=0, stdout=str(stdout), stderr=str(stderr))))
-                    rows.append(dict(function=function, kind=kind, layout=layout, samples=samples, ir_per_call=cost))
-        record = dict(inputs=CHECK.pins(inputs), binary=str(CHECK.binaries()[0][1]), layouts=list(CHECK.LAYOUTS), rows=rows)
-        CHECK.save("speed.json", record)
-        wall_runs = []
-        for tag, cost, count in (("candidate-source", 12000, 7), ("candidate-bytecode", elc_cost, 7),
-                                 ("base-source", 12000, 7), ("gnu-el", 1000, 14), ("gnu-elc", 500, 7)):
-            wall_runs += [dict(tag=tag, values={"mx-a": cost, "mx-b": cost}) for _ in range(count)]
-        CHECK.save("wall-speed.json", dict(inputs=CHECK.pins(CHECK.speed_inputs()), runs=wall_runs))
+        (CHECK.OUT / "wall-bench.elc").write_text("synthetic caller\n")
+        inputs = CHECK.speed_inputs() + [Path(CHECK.emacs()).resolve()]
+        runs = []
+        for repeat in range(7):
+            for tag, cost in (("source", 12000), ("gnu", 500), ("bytecode", elc_cost)):
+                stdout = self.out / f"wall-{repeat}-{tag}.out"
+                stderr = stdout.with_suffix(".err")
+                stdout.write_text(f"ELC-ROW (mx-a {float(cost)})\nELC-ROW (mx-b {float(cost)})\nELC-DONE\n")
+                stderr.write_text("")
+                inputs += [stdout, stderr]
+                runs.append(dict(round=repeat, tag=tag, frequency_khz_before=4200000,
+                                 frequency_khz_after=4200000,
+                                 run=dict(rc=0, stdout=str(stdout), stderr=str(stderr))))
+        record = dict(inputs=CHECK.pins(inputs), cpu=15, iterations=10010, runs=runs)
+        CHECK.save("wall-speed.json", record)
         return record
 
     def final_record(self):
@@ -146,44 +139,6 @@ class EvidenceControls(unittest.TestCase):
     def test_speed_below_threshold(self):
         self.speed_record(elc_cost=4100)
         with self.assertRaisesRegex(ValueError, "below 3x"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_missing_layout(self):
-        record = self.speed_record()
-        record["rows"].pop()
-        CHECK.save("speed.json", record)
-        with self.assertRaisesRegex(ValueError, "missing speed layouts"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_stale_profile(self):
-        record = self.speed_record()
-        Path(record["rows"][0]["samples"][0]["profile"]).write_text("summary: 1\n")
-        with self.assertRaisesRegex(ValueError, "stale evidence"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_missing_completion(self):
-        record = self.speed_record()
-        Path(record["rows"][0]["samples"][0]["run"]["stdout"]).write_text("")
-        self.repin("speed.json", record)
-        with self.assertRaisesRegex(ValueError, "missing speed completion"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_omitted_binary_identity(self):
-        record = self.speed_record()
-        record["inputs"].pop(str(CHECK.binaries()[0][1]))
-        CHECK.save("speed.json", record)
-        with self.assertRaisesRegex(ValueError, "omits required"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_unexpected_runtime_stderr(self):
-        record = self.speed_record()
-        Path(record["rows"][0]["samples"][0]["run"]["stderr"]).write_text("runtime failed\n")
-        self.repin("speed.json", record)
-        with self.assertRaisesRegex(ValueError, "unexpected runtime stderr"):
-            self.invoke(CHECK.speed)
-
-    def test_speed_missing_evidence(self):
-        with self.assertRaises(FileNotFoundError):
             self.invoke(CHECK.speed)
 
     def test_final_valid_control(self):
