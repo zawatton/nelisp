@@ -11328,6 +11328,7 @@ leave symbols unresolved at link time."
     ;; holding its index.  (nelisp--debug-switch 41 V): how many cells of V
     ;; still hold exactly that, with no collector bit set.
     ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
+    ;; (nelisp--debug-switch 43 SYM OFFSET): a stale view's mark, below.
     ;; Never print V's elements: no symbol consumer reads a direct symbol
     ;; WORD on this line.  Native allocation never collects, and every
     ;; object is stored where the vector reaches it before the next one.
@@ -11382,11 +11383,57 @@ leave symbols unresolved at link time."
                                       (heap-read-u64 slots (* i 8)) i)))
                   (setq i (+ i 1))))
            good))))
+    ;; (nelisp--debug-switch 43 SYM OFFSET): the collector's view marker on a
+    ;; stale tag-16 view whose +8 is not the start of a live cell.  The view
+    ;; points OFFSET bytes into SYM's cell (1 to 47), or, for OFFSET -1, at
+    ;; the first never-allocated cell of the current symbol_block.  Result:
+    ;; how many words of the three cells around that address the marker
+    ;; changed.  GNU marks a symbol only through live_symbol_holding
+    ;; (alloc.c:4675), so 0 is right; -1 means SYM is no symbol_block cell,
+    ;; OFFSET is out of range, or every cell of the block was allocated.
+    ;; 682 and 48 are the block's cells and a cell's bytes.
+    (defun nl_symview_selftest (sw off)
+      (let* ((st (data-addr nl_typed_alloc))
+             (c (- sw 6))
+             (idx (heap-read-u64 st 408))
+             (target (if (< off 0) (+ (heap-read-u64 st 400) (* idx 48)) (+ c off))))
+        (if (if (/= (logand sw 7) 6) 1
+              (if (/= (nl_typed_find c) 2) 1
+                (if (> off 47) 1
+                  (if (< off -1) 1
+                    (if (< off 0) (if (< idx 682) 0 1) (if (= off 0) 1 0))))))
+            -3
+          (let* ((blk (logand target -32768))
+                 (lo0 (logand (- target 48) -8))
+                 (lo (if (< lo0 blk) blk lo0))
+                 (hi0 (+ target 96))
+                 (hi (if (> hi0 (+ blk 32768)) (+ blk 32768) hi0))
+                 (words (/ (- hi lo) 8))
+                 (snap (alloc-bytes 160 8))
+                 (v (alloc-bytes 32 8))
+                 (i 0) (changed 0))
+            (seq
+             (while (< i words)
+               (seq (ptr-write-u64 snap (* i 8) (heap-read-u64 lo (* i 8)))
+                    (setq i (+ i 1))))
+             (ptr-write-u64 v 0 16)
+             (ptr-write-u64 v 8 target)
+             (ptr-write-u64 v 16 0)
+             (ptr-write-u64 v 24 0)
+             (nl_gc_mark_symview v)
+             (setq i 0)
+             (while (< i words)
+               (seq (if (= (heap-read-u64 snap (* i 8)) (heap-read-u64 lo (* i 8))) 0
+                      (setq changed (+ changed 1)))
+                    (setq i (+ i 1))))
+             (+ (* changed 4) 1))))))
     (defun nl_symbol_selftest_w (args)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
+          (if (= op 43)
+              (nl_symview_selftest (wf_arg_word args 1) (wf_argval args 2))
             (nelisp_cons_construct_w
              (+ (* (heap-read-u64 st 416) 4) 1)
              (nelisp_cons_construct_w
@@ -11396,9 +11443,9 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0)))))
+             0))))))
     (defun bf_debug_switch_w (args _pad)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 42) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
           (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
