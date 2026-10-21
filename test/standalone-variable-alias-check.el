@@ -73,8 +73,9 @@
   ;; Exercise the native resolver's valid missing-terminal sentinel without
   ;; defvaralias's usual terminal autovivification hiding the handoff edge.
   (defvar pa-bytecode-missing-terminal 1)
-  (let ((entry (nelisp--env-globals-op 'variable-entry 'pa-bytecode-missing-terminal nil)))
-    (nelisp--record-set entry 4 (make-symbol "missing-terminal"))
+  (progn
+    (nelisp--env-globals-op 'variable-entry-slot-set 'pa-bytecode-missing-terminal
+                            (cons 4 (make-symbol "missing-terminal")))
     (unless (eq (condition-case e
                     (funcall (make-byte-code 0 (unibyte-string 8 135)
                                              [pa-bytecode-missing-terminal] 1))

@@ -4666,6 +4666,26 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
              (ptr-write-u64 268435472 0 1)
              (atomic-fetch-add 268435544 1)
              0)))
+    ;; GNU find_symbol_value's in-line cases (data.c:1619): the value WORD of
+    ;; ENTRY when its redirect is PLAINVAL or FORWARDED (the unbound marker
+    ;; when void), else 0 and the caller takes `nl_sym_find_value_w'.  A
+    ;; nine-slot record entry is plain when its alias and local slots are
+    ;; nil.  Callers test `nl_sym_direct_env_p' first (Doc 199 workers bind
+    ;; deeply).
+    (defun nl_ent_plain_value (entry)
+      (if (= (logand entry 7) 6)
+          (let* ((b (- entry 6)) (h (heap-read-u64 b 0)) (kind (logand h 63)))
+            (if (if (= kind 4) 1 (= kind 16))
+                (let* ((r (logand (sar h 8) 3)))
+                  (if (or (= r 0) (= r 3)) (heap-read-u64 b 16) 0))
+              (if (= kind 12)
+                  (let* ((n (sar h 8)))
+                    (if (if (> n 4) (= (heap-read-u64 b 48) 3) 1)
+                        (if (if (> n 5) (= (heap-read-u64 b 56) 3) 1)
+                            (heap-read-u64 b 16) 0)
+                      0))
+                0)))
+        0))
     ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
     ;; a pointer WORD passes through, an immediate gets a fresh view.
     (defun nl_ent_ptr (w k)
@@ -18046,32 +18066,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; shallow-bound: its mirror entry holds the current value word.
       ;; NAME is a live WORD from a rooted constants/operand vector. The
       ;; owned lookup retains type checks and needs no heap-membership scan.
-      (let* ((entry (if (or (= (nl_sb_worker_p env) 1)
-                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
-                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
-                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
-                      (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
-             (w (if (= entry 0) 0
-                  ;; Retain the common slot-4 classification for the alias
-                  ;; reader, just as the interpreter does. The plain test
-                  ;; is identical to nl_sb_plain_entry_p after ENTRY != 0.
-                  (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
-                    (if (and (= candidate 3)
-                             (if (> (nl_ent_n entry) 5)
-                                 (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
-                        (nl_ent_w entry 0)
-                      (let ((alias (nl_pa_alias_read_w env (+ env 32) entry
-                                                      (= candidate 0))))
-                        (if (or (= alias 2) (= alias 6)) 0 alias)))))))
+      ;; Doc 226 D9: GNU Bvarref reads find_symbol_value (data.c:1619); its
+      ;; PLAINVAL and FORWARDED cases are in line (`nl_ent_plain_value'),
+      ;; the rest is `nl_sym_find_value_w' (VARALIAS chains, LOCALIZED and
+      ;; Doc 199 workers through the general path).
+      (let* ((entry (if (= (nl_sym_direct_env_p env) 1)
+                        (nelisp_mirror_lookup_entry_owned (+ env 0) name) 0))
+             (w (if (= entry 0) 0 (nl_ent_plain_value entry))))
         (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
             (seq (ptr-write-u64 dst 0 w) 0)
-          ;; The fallback lookup also has a WORD ABI. A legacy OUT view
-          ;; followed by nl_val_clone_into turned every dynamic nil/t/int
-          ;; reference into a retained scalar box.
-          (let* ((value (bf_dynamic_lookup_w env name 0)))
-            (if (or (= value 0) (= value 2))
-                (seq (nl_stash_void_variable env name) 1)
-              (seq (ptr-write-u64 dst 0 value) 0))))))
+          (let* ((value (nl_sym_find_value_w env name 0)))
+            (if (= value 0) 1
+              (if (= value 2) (seq (nl_stash_void_variable env name) 1)
+                (seq (ptr-write-u64 dst 0 value) 0)))))))
     (defun wf_bytecode_w_memq (mem sp scratch)
       (let* ((x (heap-read-u64 (+ mem (* (- sp 2) 8)) 0))
              (l (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
@@ -18519,19 +18526,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               last-table-data 32)
                                              last-count)
                                             (setq go 0)
-                                          (if
-                                              (if (> last-slots 4)
-                                                  (/= (nl_ent_w last-entry 4) 3)
-                                                0)
+                                          ;; Doc 226 D9: find_symbol_value's
+                                          ;; in-line cases only.
+                                          (if (= (nl_ent_plain_value last-entry) 0)
                                               (setq go 0)
-                                            (if
-                                                (if (> last-slots 5)
-                                                  (/= (nl_ent_w last-entry 5) 3)
-                                                0)
-                                                (setq go 0)
                                               (seq
                                                   (setq last-index index)
-                                                  (setq last-value 0)))))))))))))))))
+                                                  (setq last-value 0))))))))))))))))
                                 0)
                               (if (> go 0)
 (seq
@@ -34789,8 +34790,10 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                                                       (lambda (row) (equal (nth 3 row) "adopt"))
                                                       (nth 2 compiled)))
                                              #'string<)
-                                       '("nelisp-buffer-local--entry"
-                                         "nelisp-buffer-local--redirect"
+                                       ;; Doc 226 D9: Lisp reaches the redirect
+                                       ;; vector, never the symbol object.
+                                       '("nelisp-buffer-local--redirect"
+                                         "nelisp-buffer-local--redirect-vector"
                                          "nelisp-buffer-local-default"
                                          "nelisp-buffer-local-kill"
                                          "nelisp-buffer-local-make"
@@ -47160,7 +47163,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
           3))
 
   (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
-          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot-create") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot-set") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-aliases") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-value") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-boundp") 1)
@@ -48554,14 +48559,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                      (setq entry (heap-read-u64 state 32))) 0)
             (let* ((value 3))
               (seq
-               ;; Doc 226 D1: every symbol object has the alias and blv
-               ;; slots (4, 5) from creation, so the redirect is read live
-               ;; (as GNU's find_symbol_value switch does) instead of from a
-               ;; setup-time slot-count flag.
-               (if (or (and (/= entry 0)
-                            (> (sar (heap-read-u64 (- entry 6) 0) 8) 5)
-                            (or (/= (heap-read-u64 entry 42) 3)
-                                (/= (heap-read-u64 entry 50) 3)))
+               ;; Doc 226 D9: the redirect is read live, as GNU's
+               ;; find_symbol_value switch does: PLAINVAL and FORWARDED
+               ;; answer in line (`nl_ent_plain_value'), VARALIAS and
+               ;; LOCALIZED take the general path.
+               (if (or (and (/= entry 0) (= (nl_ent_plain_value entry) 0))
                        (/= (heap-read-u64 env 168) 0)
                        ;; A registered worker can retain a pre-publication entry.
                        ;; Resolve the shared mirror afresh without cross-thread writes.
@@ -48571,8 +48573,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    ;; Its selected-cell answer also owns dynamic binding order.
                    (setq value (bf_dynamic_lookup_w env (heap-read-u64 state 48) 0))
                  (seq
-                  ;; Setup stores payload+6; slot0 is at WORD+10.
-                  (setq value (if (= entry 0) 3 (heap-read-u64 entry 10)))
+                  (setq value (if (= entry 0) 3 (nl_ent_plain_value entry)))
                   (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
                            (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
                            (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))

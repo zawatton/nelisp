@@ -317,13 +317,31 @@
                 (= (sexp-name-eq op "variable-default-boundp") 1)
                 (= (sexp-name-eq op "variable-set-default") 1))
             (nl_pa_default_w op name (nl_apply_list_nth args 2) env)
-        (if (= (sexp-name-eq op "variable-entry") 1)
-            (let ((canonical (nl_pa_canonical env name)))
+        ;; Doc 226 D9: Lisp reads and writes D1's entry slots by number;
+        ;; the symbol object itself never reaches Lisp.  NAME K reads slot K
+        ;; (`-create' makes the canonical variable's object first); NAME
+        ;; (K . VALUE) stores VALUE and answers the slot's new value.
+        (if (or (= (sexp-name-eq op "variable-entry-slot") 1)
+                (= (sexp-name-eq op "variable-entry-slot-create") 1))
+            ;; The list accessor answers a view, so K is read as an Int.
+            (let* ((canonical (nl_pa_canonical env name))
+                   (kv (nl_apply_list_nth args 2))
+                   (k (if (= (logand kv 3) 1) (sar kv 2) (heap-read-u64 kv 8))))
               (if (= canonical 0) 0
-                (if (= (nl_val_tag (nl_apply_list_nth args 2)) 0)
-                    (let ((entry (nelisp_mirror_lookup_entry env canonical)))
-                      (if (= entry 0) 3 entry))
-                  (nl_pa_local_entry env canonical))))
+                (let ((entry (if (= (sexp-name-eq op "variable-entry-slot") 1)
+                                 (nelisp_mirror_lookup_entry env canonical)
+                               (nl_pa_local_entry env canonical))))
+                  (if (= entry 0) 3 (nl_ent_w entry k)))))
+        (if (= (sexp-name-eq op "variable-entry-slot-set") 1)
+            (let ((canonical (nl_pa_canonical env name))
+                  (cell (nl_apply_list_nth args 2)))
+              (if (= canonical 0) 0
+                (let ((entry (nl_pa_local_entry env canonical))
+                      (k (sar (nl_cons_car_word cell) 2)))
+                  (if (= entry 0) 0
+                    (seq (wf_dirty)
+                         (nl_ent_set entry k (nl_cons_cdr_word cell))
+                         (nl_ent_w entry k))))))
         (if (= (sexp-name-eq op "variable-alias-source-kind") 1)
             (nl_pa_source_kind env name)
         (if (= (sexp-name-eq op "variable-alias-set") 1)
@@ -343,7 +361,7 @@
               (if (= canonical 0) 0
                 (if (= (sexp-name-eq op "constant-variable-p") 1)
                     (if (= (nelisp_mirror_is_constant env canonical) 1) 7 3)
-                  (nl_pa_public_name canonical 0))))))))))))))))
+                  (nl_pa_public_name canonical 0)))))))))))))))))
   "WORD-only variable alias operations; no additional public native entry.")
 
 (provide 'nelisp-cc-variable-alias-public)

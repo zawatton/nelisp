@@ -72,15 +72,23 @@
      ;; 6 bit fields (redirect, trapped_write, interned, declared_special),
      ;; 7 FORWARDED descriptor (val.fwd), 8 name.  It is allocated with all
      ;; nine slots once, so no later writer needs a larger copy.
-     (let ((entry (alloc-bytes 32 8)))
-       (seq
-        ;; The record allocator nil-fills slots 4-8.
-        (record-make tag-sym-ptr 9 entry)
-        (record-slot-set entry 0 value-ptr)
-        (record-slot-set entry 1 function-ptr)
-        (record-slot-set entry 2 plist-ptr)
-        (record-slot-set entry 3 constant-ptr)
-        entry)))
+     ;; Doc 226 D9: the object is GNU's 48-byte struct Lisp_Symbol from
+     ;; `nl_symbol_alloc', kind 4 with interned INTERNED_IN_INITIAL_OBARRAY
+     ;; (8192), PLAINVAL, the name filled on first `symbol-name'.  The
+     ;; constant flag is trapped_write NOWRITE (1024).  TAG-SYM-PTR (the
+     ;; old record type) is no longer needed.
+     (let ((b (nl_symbol_alloc)))
+       (if (= b 0) 0
+         (seq
+          (ptr-write-u64 b 0 8196)
+          (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 3)
+          (ptr-write-u64 b 24 3) (ptr-write-u64 b 32 3)
+          (extern-call nl_val_clone_into value-ptr (+ b 16))
+          (extern-call nl_val_clone_into function-ptr (+ b 24))
+          (extern-call nl_val_clone_into plist-ptr (+ b 32))
+          (if (= (nl_val_tag constant-ptr) 0) 0
+            (ptr-write-u64 b 0 (logior (heap-read-u64 b 0) 1024)))
+          (+ b 6)))))
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh nine-slot `symbol-entry' Record (Doc 226 D1) via

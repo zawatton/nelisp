@@ -392,6 +392,16 @@ times the globals probe on CPU 13 and commits with the numbers.
   inliner (=sf-env-set-value2-epoch.o=, =sf-mirror-is-const.o=).
   Unreferenced legacy units (the alias stage: =nelisp_mirror_alias_install=
   and its helpers) keep their record accessors; nothing calls them.
+- Step 5.2 (D9 stage 1): every symbol object is GNU's 48-byte struct
+  Lisp_Symbol from gc-port's =nl_symbol_alloc= (symbol_block cells,
+  merged from 406ae630f), kind 4 with interned INTERNED_IN_INITIAL_OBARRAY;
+  the nine-slot record is gone.  Lisp never holds the object: the
+  buffer-local layer reads and writes D1 slots 3 and 5 through the globals
+  operations =variable-entry-slot= and =variable-entry-slot-set=.  The VM's
+  Bvarref (=wf_bytecode_w_varref=, and callpath-perf's VARREF op through
+  it) and its varref cache read GNU find_symbol_value's in-line cases
+  through =nl_ent_plain_value=, everything else through
+  =nl_sym_find_value_w=.
 - Not reached in this lane:
   - S1.1 header-less symbol WORDs.  A symbol WORD is still a 32-byte view
     copied per occurrence; making it the object needs the GC to trace and

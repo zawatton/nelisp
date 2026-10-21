@@ -65,34 +65,37 @@
       (unless (nelisp--record-ref entry 5)
         (nelisp--record-set entry 5 (vector 'nelisp--current-buffer nil))))
     entry))
-(defun nelisp-buffer-local--entry (variable &optional create)
-  "Return VARIABLE's entry without bootstrapping a native compiler."
+(defun nelisp-buffer-local--redirect-vector (variable &optional create)
+  "Return VARIABLE's redirect vector without bootstrapping a native compiler.
+The vector is [CURRENT-BUFFER-SYMBOL ((BUFFER . CELL-SYMBOL) ...)].  CREATE
+makes it, refusing constants.  Natively it is the symbol's LOCALIZED state
+(Doc 226 D9), read and written as the entry's slot 5 by the globals
+operations; the symbol object itself never reaches Lisp."
   (if (not (and (boundp 'nelisp--native-variable-aliases) nelisp--native-variable-aliases))
-      (nelisp-buffer-local--legacy-entry variable create)
+      (let ((entry (nelisp-buffer-local--legacy-entry variable create)))
+        (and entry (> (length entry) 6) (nelisp--record-ref entry 5)))
     (unless (symbolp variable) (signal 'wrong-type-argument (list 'symbolp variable)))
     (let ((name (indirect-variable variable)))
-      (when (and create (or (memq name '(nil t)) (keywordp name)))
+      (when (and create (or (memq name '(nil t)) (keywordp name)
+                            (nelisp--env-globals-op 'variable-entry-slot name 3)))
         (signal 'setting-constant (list variable)))
-      (let ((entry (nelisp--env-globals-op 'variable-entry name nil)))
-        (when create
-          (when (and entry (nelisp--record-ref entry 3))
-            (signal 'setting-constant (list variable)))
-          (setq entry (nelisp--env-globals-op 'variable-entry name t))
-          (unless (nelisp--record-ref entry 5)
-            (nelisp--record-set entry 5 (vector 'nelisp--current-buffer nil))))
-        entry))))
+      (let ((redirect (nelisp--env-globals-op
+                       (if create 'variable-entry-slot-create 'variable-entry-slot) name 5)))
+        (cond ((vectorp redirect) redirect)
+              (create (nelisp--env-globals-op
+                       'variable-entry-slot-set name
+                       (cons 5 (vector 'nelisp--current-buffer nil))))
+              (t nil))))))
 (defun nelisp-buffer-local--redirect (variable)
   ;; An explicit local can only have been made after the mirror was opened.
   ;; A read-only predicate must not bootstrap the compiler during a watcher.
-  (let ((entry (and (or (and (boundp 'nelisp--native-variable-aliases)
-                             nelisp--native-variable-aliases)
-                        nelisp-buffer-local--mirror)
-                    (nelisp-buffer-local--entry variable))))
-    (and entry (> (length entry) 6) (nelisp--record-ref entry 5))))
+  (and (or (and (boundp 'nelisp--native-variable-aliases)
+                nelisp--native-variable-aliases)
+           nelisp-buffer-local--mirror)
+       (nelisp-buffer-local--redirect-vector variable)))
 (defun nelisp-buffer-local-make (variable)
   "Create VARIABLE's explicit local cell in the current buffer, preserving void."
-  (let* ((entry (nelisp-buffer-local--entry variable t))
-         (redirect (nelisp--record-ref entry 5))
+  (let* ((redirect (nelisp-buffer-local--redirect-vector variable t))
          (buffer (current-buffer)))
     (unless (assq buffer (aref redirect 1))
       (let ((cell (intern (format "nelisp-buffer-local--cell-%d"
@@ -140,7 +143,7 @@
     (let ((redirect (nelisp-buffer-local--redirect variable)))
       (when redirect
         ;; CREATE authenticates the mutation guard even when no resize is needed.
-        (nelisp-buffer-local--entry variable t)
+        (nelisp-buffer-local--redirect-vector variable t)
         (aset redirect 1 (assq-delete-all (current-buffer) (aref redirect 1))))))
   variable)
 (when (fboundp 'nelisp--native-env)
