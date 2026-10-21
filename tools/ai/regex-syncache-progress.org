@@ -1,0 +1,49 @@
+#+TITLE: Regexp cache: key syntax-dependent patterns on table identity, as GNU does
+
+# Proposal from notes-65 (2026-10-21), accepted by the coordinator.
+#
+# Problem. In lisp/nelisp-stdlib-regexp.el, nlre--compiled-pattern-slow and
+# nlre--cache-entry-match-p recompute (nlre--syntax-signature TABLE), a
+# map-char-table walk of the whole table, on EVERY cache hit of a
+# syntax-dependent pattern (\s \S \w \W \b \B \< \> \_).
+#
+# Measured in the 9d5f4 library image:
+# (string-match "\\`\\(\\sw\\|\\s_\\)*\\'" "unsigned_long") costs 37-92 ms
+# per call, against 0.001 ms in GNU. With the signature stubbed to the
+# table itself:
+# - cc-fonts load went from 85 s to 17 s;
+# - 1105 string-match calls went from 64 s to 3.8 s;
+# - the S1.3 js phase went from 148 s to 70 s (one run).
+#
+# GNU 31.1:
+# - search.c:222: a cache entry matches when cp->syntax_table is Qt or
+#   BASE_EQ to the buffer's syntax table. That is identity, not content.
+# - syntax.c:1293: Fmodify_syntax_entry calls clear_regexp_cache().
+# - search.c:166: clear_regexp_cache drops every syntax-dependent entry,
+#   because modifying one table can change others through inheritance.
+#
+# Base: eval/core-20261017 at 9d5f4a515. Lands on eval/core next to
+# candidate 3.
+
+* S1 Mechanism
+** S1.1 Semantics match GNU 31.1 on a pinned fixture, on dynamic and static
+The fixture covers:
+- syntax-dependent matches before and after modify-syntax-entry, with the clear call made where GNU's modify-syntax-entry makes it;
+- switching syntax tables between calls;
+- a child table whose parent is modified;
+- a non-syntax pattern that must stay cached across a clear.
+cmd: python3 tools/ai/regex-syncache-check.py semantics
+** S1.2 A cache hit of a syntax-dependent pattern costs no more than twice the same-shape non-syntax pattern
+Four-layout mean Ir per call, GC included. The pair is "\\`\\(\\sw\\|\\s_\\)*\\'" against "\\`[a-z_]*\\'", both on "unsigned_long", with the standard syntax table. The base build serves as the failing control.
+cmd: python3 tools/ai/regex-syncache-check.py speed
+** S1.3 Public clear function `nlre-clear-syntax-cache`
+It is documented, idempotent and drops only syntax-dependent entries. It bumps the generation that hits compare. The library will call it from modify-syntax-entry, guarded by fboundp.
+cmd: python3 tools/ai/regex-syncache-check.py api
+
+* S2 No regression and end to end
+** S2.1 Final verification
+The existing regexp suites pass: test/nelisp-regexp-diff-test.el, nelisp-regex-replacement-test.el, standalone-regexp-backtracking-check.el and standalone-regexp-tramp-check.el. COMMON.md gives 11 groups with 0 failures, the standalone checks pass, and the MCP smoke shows 40 tools.
+cmd: python3 tools/ai/regex-syncache-check.py final
+** S2.2 End to end: notes-65 reruns cc-fonts load and the S1.3 pair on a library image built from this branch with the clear call wired
+The bar is that cc-fonts loads at least 3x faster than on 9d5f4.
+pending
