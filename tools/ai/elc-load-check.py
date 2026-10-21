@@ -46,6 +46,18 @@ LAYOUTS = (0, 700, 1400, 2100)
 SMALL, LARGE = 10, 2010
 ADDRESS_SPACE_CAP = 8 * 1024**3
 HEAVY_UNIT_ENV = "ELC_LOAD_HEAVY_UNIT"
+HEAVY_QUEUE_TIMEOUT = 300
+HEAVY_ACQUIRE = """import json, os, pathlib, sys, time
+stamp = time.monotonic()
+path = pathlib.Path(sys.argv[1])
+temporary = path.with_suffix(path.suffix + '.tmp')
+allowed = stamp <= float(sys.argv[2])
+temporary.write_text(json.dumps(dict(acquired_monotonic=stamp, execute=allowed)))
+os.replace(temporary, path)
+if not allowed:
+    sys.exit(125)
+os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
+"""
 VENDOR = {
     "vendor/emacs-lisp/emacs-lisp/ring.el": "2f66173b2e84e4b033d0ebccfd612d64470a58d61e8709996eeade0a77ee6a32",
     "vendor/emacs-lisp/emacs-lisp/text-property-search.el": "5f15fbbee8d66de226da059fe7338c52a1a5642d0973b6cac229d7c947848470",
@@ -216,15 +228,33 @@ def heavy_command(command, env=None):
 
 def enter_suite_slot(mode):
     if mode in ("corpus", "resolve", "capability") and os.environ.get(HEAVY_UNIT_ENV) != "1":
-        command, environment = heavy_command([sys.executable, Path(__file__), *sys.argv[1:]])
-        os.execve(command[0], command, environment)
+        run = execute([sys.executable, Path(__file__), *sys.argv[1:]], OUT / ("suite-" + mode),
+                      timeout=190 if mode == "corpus" else 90, heavy=True)
+        sys.stdout.write(Path(run["stdout"]).read_text())
+        sys.stderr.write(Path(run["stderr"]).read_text())
+        raise SystemExit(run["rc"])
 
 
 def execute(command, stem, *, timeout=180, env=None, heavy=False):
     stem.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    queued = heavy and (os.environ if env is None else env).get(HEAVY_UNIT_ENV) != "1"
+    marker = Path(str(stem) + ".acquired.json") if queued else None
+    acquired_at = None if queued else started
+    queue_rejected = False
     if heavy:
+        if queued:
+            marker.unlink(missing_ok=True)
+            command = [sys.executable, "-c", HEAVY_ACQUIRE, str(marker),
+                       str(started + HEAVY_QUEUE_TIMEOUT), *[str(value) for value in command]]
         command, env = heavy_command(command, env)
+    def acquisition():
+        nonlocal acquired_at, queue_rejected
+        if marker is not None and acquired_at is None and marker.is_file():
+            record = json.loads(marker.read_text())
+            queue_rejected = not record["execute"]
+            if not queue_rejected:
+                acquired_at = record["acquired_monotonic"]
     def child_limit():
         soft, hard = resource.getrlimit(resource.RLIMIT_AS)
         caps = [ADDRESS_SPACE_CAP] + [v for v in (soft, hard) if v != resource.RLIM_INFINITY]
@@ -265,6 +295,11 @@ def execute(command, stem, *, timeout=180, env=None, heavy=False):
     def finish_memory():
         stopped.set()
         sampler.join()
+        acquisition()
+        finished = time.monotonic()
+        memory["queue_seconds"] = max(0, (acquired_at or finished) - started) if queued else 0
+        memory["execution_seconds"] = max(0, finished - acquired_at) if acquired_at is not None else 0
+        memory["execution_state"] = "RUN" if acquired_at is not None else "NOTRUN"
         usage = getattr(process, "child_usage", None)
         memory["peak_rss_kib"] = usage.ru_maxrss if usage is not None else None
         memory["peak_rss_source"] = "wait4" if usage is not None else "unavailable"
@@ -289,13 +324,32 @@ def execute(command, stem, *, timeout=180, env=None, heavy=False):
             except ProcessLookupError:
                 pass
         return process.communicate()
+    queue_expired = False
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        while True:
+            acquisition()
+            deadline = started + HEAVY_QUEUE_TIMEOUT if acquired_at is None else acquired_at + timeout
+            remaining = deadline - time.monotonic()
+            if queue_rejected or remaining <= 0:
+                queue_expired = acquired_at is None
+                raise subprocess.TimeoutExpired(command, HEAVY_QUEUE_TIMEOUT if queue_expired else timeout)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+            acquisition()
+            if queue_rejected:
+                queue_expired = True
+                raise subprocess.TimeoutExpired(command, HEAVY_QUEUE_TIMEOUT)
+            if acquired_at is not None and time.monotonic() > acquired_at + timeout:
+                raise subprocess.TimeoutExpired(command, timeout)
+            break
     except subprocess.TimeoutExpired as exc:
         stdout, stderr = stop_group()
         (Path(str(stem) + ".stdout")).write_bytes(stdout)
         (Path(str(stem) + ".stderr")).write_bytes(stderr)
-        raise ValueError("timeout: " + str(stem)) from exc
+        reason = "NOTRUN heavy slot queue expired: " if queue_expired else "timeout: "
+        raise ValueError(reason + str(stem)) from exc
     except BaseException:
         stop_group()
         raise
@@ -317,7 +371,7 @@ def run_lisp(binary, text, name, *, gnu=False, timeout=180, env=None, runtime_bo
                       ("" if gnu else prelude) + text + "\n")
     options = ["-Q", "--batch"] if gnu else (["--cold-load-from", context_image] if context_image else [])
     return execute([binary, *options, "--load", script],
-                   OUT / "runs" / name, timeout=timeout, env=env)
+                   OUT / "runs" / name, timeout=timeout, env=env, heavy=not gnu)
 
 
 def rows(run):

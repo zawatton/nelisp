@@ -344,24 +344,59 @@ class EvidenceControls(unittest.TestCase):
         self.assertEqual(environment, {"KEEP": "value", CHECK.HEAVY_UNIT_ENV: "1"})
 
     def test_heavy_suite_enters_once_without_nesting(self):
-        runner = self.out / "heavy-run.sh"
         with patch.dict(os.environ, {CHECK.HEAVY_UNIT_ENV: ""}), \
              patch.object(sys, "argv", [str(CHECK.__file__), "resolve"]), \
-             patch.object(CHECK, "heavy_runner", return_value=runner) as locate, \
-             patch.object(os, "execve", side_effect=RuntimeError("intercepted exec")) as reexec:
+             patch.object(CHECK, "execute", side_effect=RuntimeError("intercepted supervision")) as supervise:
             CHECK.enter_suite_slot("prepare")
-            reexec.assert_not_called()
-            with self.assertRaisesRegex(RuntimeError, "intercepted exec"):
+            supervise.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "intercepted supervision"):
                 CHECK.enter_suite_slot("resolve")
-            command = reexec.call_args.args[1]
-            environment = reexec.call_args.args[2]
-            self.assertEqual(command, [str(runner), sys.executable, str(CHECK.__file__), "resolve"])
-            with patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(supervise.call_args.args[0], [sys.executable, Path(CHECK.__file__), "resolve"])
+            self.assertEqual(supervise.call_args.kwargs, dict(timeout=90, heavy=True))
+            with patch.dict(os.environ, {CHECK.HEAVY_UNIT_ENV: "1"}), \
+                 patch.object(CHECK, "heavy_runner", side_effect=AssertionError("nested slot")):
                 CHECK.enter_suite_slot("resolve")
-                nested, _ = CHECK.heavy_command(["child"], environment)
+                nested, _ = CHECK.heavy_command(["child"])
             self.assertEqual(nested, ["child"])
-            self.assertEqual(reexec.call_count, 1)
-            self.assertEqual(locate.call_count, 1)
+            self.assertEqual(supervise.call_count, 1)
+
+    def delayed_heavy_runner(self, delay):
+        runner = self.out / "heavy-run.sh"
+        runner.write_text(f"#!{sys.executable}\nimport os, sys, time\ntime.sleep({delay})\n"
+                          "os.execvpe(sys.argv[1], sys.argv[1:], os.environ)\n")
+        runner.chmod(0o755)
+        return runner
+
+    def test_heavy_queue_does_not_consume_runtime_budget(self):
+        with patch.object(CHECK, "heavy_runner", return_value=self.delayed_heavy_runner(0.25)):
+            run = CHECK.execute([sys.executable, "-c", "print('ran')"], self.out / "queued",
+                                timeout=0.15, heavy=True, env=dict(os.environ, ELC_LOAD_HEAVY_UNIT=""))
+        self.assertEqual(run["rc"], 0)
+        self.assertEqual(Path(run["stdout"]).read_text(), "ran\n")
+        self.assertGreater(run["memory"]["queue_seconds"], 0.2)
+        self.assertLess(run["memory"]["execution_seconds"], 0.15)
+
+    def test_heavy_runtime_deadline_still_expires(self):
+        stem = self.out / "runtime-expiry"
+        with patch.object(CHECK, "heavy_runner", return_value=self.delayed_heavy_runner(0.05)):
+            with self.assertRaisesRegex(ValueError, "^timeout:"):
+                CHECK.execute([sys.executable, "-c", "import time; time.sleep(30)"], stem,
+                              timeout=0.08, heavy=True, env=dict(os.environ, ELC_LOAD_HEAVY_UNIT=""))
+        metadata = json.loads(Path(str(stem) + ".metadata.json").read_text())
+        self.assertEqual(metadata["execution_state"], "RUN")
+        self.assertGreaterEqual(metadata["execution_seconds"], 0.07)
+
+    def test_heavy_queue_expiry_never_starts_command(self):
+        stem, child = self.out / "queue-expiry", self.out / "should-not-run"
+        with patch.object(CHECK, "heavy_runner", return_value=self.delayed_heavy_runner(0.4)), \
+             patch.object(CHECK, "HEAVY_QUEUE_TIMEOUT", 0.05):
+            with self.assertRaisesRegex(ValueError, "^NOTRUN heavy slot queue expired:"):
+                CHECK.execute([sys.executable, "-c", f"open({str(child)!r}, 'w').close()"], stem,
+                              timeout=0.08, heavy=True, env=dict(os.environ, ELC_LOAD_HEAVY_UNIT=""))
+        metadata = json.loads(Path(str(stem) + ".metadata.json").read_text())
+        self.assertFalse(child.exists())
+        self.assertEqual(metadata["execution_state"], "NOTRUN")
+        self.assertEqual(metadata["execution_seconds"], 0)
 
     def test_child_address_space_limit_and_memory_record(self):
         run = CHECK.execute([sys.executable, "-c",
