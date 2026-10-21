@@ -118,7 +118,14 @@ equality test and the port-count test both check it.")
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2" "nl_native_poll_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2")
+   ;; Doc 229: funcall and apply in an artifact (GNU Ffuncall / Fapply),
+   ;; provided by nelisp-cc-evalport-aot-apply.  Appended, so every earlier
+   ;; index stays where it was.
+   '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
+   ;; S4.5 reuses the existing VM condition hierarchy matcher.
+   '("wf_bytecode_condition_matches"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -745,8 +752,8 @@ every problem at once rather than the first one hit."
         (let ((required (plist-get meta :rest-required-count)))
           (unless (and (integerp required) (>= required 0)
                        (= (plist-get meta :arity) (1+ required))
-                       (eq (plist-get meta :param-repr) 'sexp-ptr)
-                       (eq (plist-get meta :return-repr) 'sexp-ptr))
+                       (memq (plist-get meta :param-repr) '(sexp-ptr word))
+                       (memq (plist-get meta :return-repr) '(sexp-ptr word)))
             (setq problems (cons (list :invalid-rest-call-abi required)
                                  problems)))))
       (unless (integerp (plist-get meta :body-offset))
@@ -1026,7 +1033,9 @@ preserved. Floats and bignums use the same authenticated copy when the reader
 provides it, preserving IEEE bits and bignum identity; otherwise they are
 decoded while rooted by the active pin frame. Without that context, strings
 retain the legacy byte conversion and conses, floats, and bignums are refused."
-  (let ((tag (ptr-read-u64 addr 0)))
+  ;; Native Sexp writers set the tag byte; the remaining header bytes are
+  ;; padding and may retain data when a result slot is reused.
+  (let ((tag (logand (ptr-read-u64 addr 0) 255)))
     (cond
      ((= tag nelisp-native-load-tag-nil) nil)
      ((= tag nelisp-native-load-tag-t) t)
@@ -1490,7 +1499,7 @@ string a loaded defun returns and far short of a runaway.")
 
 ;;;; Loading ----------------------------------------------------------
 
-(defun nelisp-native-load--make-scratch-vector (addr)
+(defun nelisp-native-load--make-scratch-vector (addr &optional size)
   "Write a fresh scratch vector Sexp into root slot ADDR.
 
 `nl_alloc_vector' returns the NlVector box; the Sexp that names it is
@@ -1498,7 +1507,7 @@ tag 8 with the box at payload+8, which is the shape the reader's own
 `nl_logic_build_scratch' builds and the shape `nl_vector_slot_ptr'
 expects -- it derefs payload+8 to reach the box."
   (let ((box (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_vector")
-                       nelisp-native-load-scratch-slots 0 0 0 0 0)))
+                       (or size nelisp-native-load-scratch-slots) 0 0 0 0 0)))
     (ptr-write-u64 addr 0 0)
     (ptr-write-u64 addr 8 0)
     (ptr-write-u64 addr 16 0)
@@ -5801,8 +5810,12 @@ what a cache wants and what the demo did."
         (while rest
           (let ((offset (+ stub-base (* nelisp-native-load-stub-bytes idx))))
             (setq stub-offsets (cons (cons (car rest) offset) stub-offsets))
+            ;; Shared data uses the same address getter as raw v2 units.
             (nelisp-native-load--poke-bytes
-             codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
+             codepage offset
+             (if (member (car rest) nelisp-native-load-raw-v2-data-symbols)
+                 '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3)
+               '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
             (ptr-write-u64 (+ codepage offset) 2
                            (nelisp-native-load--symbol-addr (car rest))))
           (setq idx (1+ idx))
@@ -5875,6 +5888,14 @@ what a cache wants and what the demo did."
             :return-repr (or (plist-get meta :return-repr) 'unknown)
             :rest-required-count (plist-get meta :rest-required-count)
             :arg-slots (+ slots arg-slot-base)
+            ;; Doc 229 S4.2: the artifact's quoted constants, created once
+            ;; here and handed to every call through the scratch vector, so
+            ;; eq between two evaluations of one quoted list is t (GNU's
+            ;; constant vector).
+            :constants (vconcat
+                        (mapcar (lambda (printed) (car (read-from-string printed)))
+                                (let ((c (plist-get native :constants)))
+                                  (if (and (symbolp c) (null c)) nil c))))
             :name name
             :path path))))
 
@@ -5908,6 +5929,29 @@ what a cache wants and what the demo did."
       (nelisp-native-load-unbox raw))
      (t raw))))
 
+(defun nelisp-native-load--resume-native-exit (kind tag-slot value-slot env pin-frame)
+  "Resume a frozen native exit after the call's cleanup has completed.
+The already-running public caller copied the pair into pinned roots and
+cleared the shared stash before any cleanup or cold helper dispatch."
+  (unless (= kind 0)
+    (unless (memq kind '(1 2))
+      (error "nelisp-native-load: invalid native exit kind %S" kind))
+    (let ((tag (nelisp-native-load-unbox tag-slot env pin-frame))
+          (value (nelisp-native-load-unbox value-slot env pin-frame)))
+      (if (= kind 2) (throw tag value)
+        (unless (and (symbolp tag) tag)
+          (error "nelisp-native-load: malformed native signal"))
+        (signal tag value)))))
+
+(defun nelisp-native-load--immediate-word (value)
+  "Return VALUE's immediate native word, or nil when it needs a root."
+  (cond ((null value) 3)
+        ((eq value t) 7)
+        ((and (integerp value)
+              (>= value -2305843009213693952)
+              (<= value 2305843009213693951))
+         (logior (ash value 2) 1))))
+
 (defun nelisp-native-load-call (handle args)
   "Call the function in HANDLE with ARGS and return its value.
 
@@ -5927,7 +5971,7 @@ including nested native calls and cleanup after an error."
          ;; the artifact records; the inference stays for artifacts written
          ;; before it did.
          (param-boxed (let ((repr (plist-get handle :param-repr)))
-                        (cond ((eq repr 'sexp-ptr) t)
+                        (cond ((memq repr '(sexp-ptr word)) t)
                               ((eq repr 'raw-i64) nil)
                               (t boxed)))))
     (unless (= (length args) arity)
@@ -5950,6 +5994,13 @@ including nested native calls and cleanup after an error."
                    (frames (+ env 32))
                    (scratch (nelisp-native-load--pin-reserve env pin-frame))
                    (name-slot (nelisp-native-load--pin-reserve env pin-frame))
+                   ;; Resolve and reserve while no native exit is pending.
+                   ;; Cold helper entry and munmap can enter the evaluator.
+                   (exit-arena (ptr-read-u64
+                                (nelisp-native-load--symbol-addr "nl_arena_base") 0))
+                   (exit-tag (nelisp-native-load--pin-reserve env pin-frame))
+                   (exit-value (nelisp-native-load--pin-reserve env pin-frame))
+                   (exit-kind 0)
                    (callbacks
                     (let ((i 0) (slots nil))
                       (while (< i nelisp-native-load-callback-slots)
@@ -5972,7 +6023,9 @@ including nested native calls and cleanup after an error."
                    (patch-offsets (plist-get handle :boundary-imm64-offsets))
                    (patch-values (append (list out mirror frames scratch name-slot)
                                          callbacks)))
-              (nelisp-native-load--make-scratch-vector scratch)
+              (nelisp-native-load--make-scratch-vector
+               scratch (+ nelisp-native-load-scratch-slots
+                          (length (plist-get handle :constants))))
               ;; Keep each vector element pointer-backed for compiled code
               ;; that retains slot addresses across nested native calls.
               (while (< scratch-i nelisp-native-load-scratch-slots)
@@ -5980,16 +6033,35 @@ including nested native calls and cleanup after an error."
                 (ptr-call scratch-set-slot (ptr-read-u64 scratch 8)
                           scratch-i scratch-cell 0 0 0)
                 (setq scratch-i (1+ scratch-i)))
+              ;; Doc 229 S4.2: the quoted constants follow the temporaries.
+              (let ((constants (plist-get handle :constants))
+                    (k 0))
+                (while (< k (length constants))
+                  ;; The object itself, not a copy: `nelisp--native-pin-copy'
+                  ;; roots the value's own word, where `nelisp-native-load-box'
+                  ;; would rebuild a list and lose its identity.
+                  (ptr-call scratch-set-slot (ptr-read-u64 scratch 8)
+                            (+ nelisp-native-load-scratch-slots k)
+                            (if (fboundp 'nelisp--native-pin-copy)
+                                (nelisp--native-pin-copy env pin-frame
+                                                         (aref constants k))
+                              (nelisp-native-load-box scratch-cell
+                                                      (aref constants k)
+                                                      env pin-frame))
+                            0 0 0)
+                  (setq k (1+ k))))
               (while rest
                 (let ((slot
-                       (if (fboundp 'nelisp--native-pin-copy)
+                       (or (and (eq (plist-get handle :return-repr) 'word)
+                                (nelisp-native-load--immediate-word (car rest)))
+                           (if (fboundp 'nelisp--native-pin-copy)
                            (nelisp--native-pin-copy env pin-frame (car rest))
                          (let ((legacy-slot
                                 (nelisp-native-load--pin-reserve env pin-frame)))
                            (nelisp-native-load-box
                             legacy-slot (car rest) env pin-frame)
-                           legacy-slot))))
-                  (unless (and (integerp slot) (> slot 0))
+                           legacy-slot)))))
+                  (unless (and (integerp slot) (/= slot 0))
                     (error "nelisp-native-load: cannot pin argument value"))
                   (setq passed (cons slot passed)))
                 (setq rest (cdr rest)))
@@ -6012,11 +6084,25 @@ including nested native calls and cleanup after an error."
                                    (plist-get handle :trampoline-entry-imm64-offset)
                                    (+ (plist-get handle :codepage)
                                       (plist-get handle :body-entry)))
-                    (setq raw (apply (function ptr-call) call-entry passed)))
+                    (setq raw (apply (function ptr-call) call-entry passed))
+                    ;; Capture inline before cleanup or the first invocation
+                    ;; of a helper can clear the evaluator's shared stash.
+                    (setq exit-kind (ptr-read-u64 exit-arena 16))
+                    (unless (= exit-kind 0)
+                      (let ((i 0))
+                        (while (< i 8)
+                          (ptr-write-u32 exit-tag (* i 4)
+                                         (ptr-read-u32 exit-arena (+ 24 (* i 4))))
+                          (ptr-write-u32 exit-value (* i 4)
+                                         (ptr-read-u32 exit-arena (+ 56 (* i 4))))
+                          (setq i (1+ i))))
+                      (ptr-write-u64 exit-arena 16 0)))
                 (let ((rc (nelisp-native-load--unmap call-entry call-size)))
                   (unless (= rc 0)
                     (error "nelisp-native-load: temporary trampoline munmap failed (%d)"
                            rc))))
+              (nelisp-native-load--resume-native-exit
+               exit-kind exit-tag exit-value env pin-frame)
               ;; Some bodies carry dispatcher externs while returning a raw
               ;; register value.  Their metadata settles raw-bool exactly;
               ;; otherwise retain the existing low-address guard.
@@ -6024,13 +6110,22 @@ including nested native calls and cleanup after an error."
                          (< raw nelisp-native-load-page-bytes))
                 (setq boxed nil))
               (cond
+               ((and (eq (plist-get handle :return-repr) 'word)
+                     (= (logand raw 3) 1))
+                (ash raw -2))
+               ((and (eq (plist-get handle :return-repr) 'word) (= raw 3)) nil)
+               ((and (eq (plist-get handle :return-repr) 'word) (= raw 7)) t)
                ((eq (plist-get handle :return-repr) 'raw-bool)
                 (let ((value (nelisp-native-load--decode-raw-bool raw)))
                   (nelisp-native-load-box out value env pin-frame)
                   value))
-               ((or (eq (plist-get handle :return-repr) 'sexp-ptr)
+               ((or (memq (plist-get handle :return-repr) '(sexp-ptr word))
                     (and boxed (eq (plist-get handle :return-repr) 'unknown)))
                 (progn
+                  (when (and (eq (plist-get handle :return-repr) 'word)
+                             (or (< raw nelisp-native-load-page-bytes)
+                                 (/= (logand raw 7) 0)))
+                    (error "nelisp-native-load: invalid native result word"))
                   ;; The native body may return a temporary slot.  Copy it
                   ;; into the pinned output root before Lisp decoding can
                   ;; allocate and move the referenced object.

@@ -362,7 +362,11 @@ ACC and BYTES are unibyte-strings or vectors; BYTES may be nil."
 
 (defun nelisp-link--unit-section-alignment (section-name machine)
   "Return the required start alignment for SECTION-NAME on MACHINE."
-  (if (and (eq section-name 'text) (eq machine 'aarch64)) 4 1))
+  (if (eq section-name 'text)
+      (cond ((eq machine 'aarch64) 4)
+            ((memq machine '(x86_64 62)) 16)
+            (t 1))
+    1))
 
 (defun nelisp-link--padding-bytes (n)
   "Return N zero bytes for inter-unit padding."
@@ -395,8 +399,8 @@ time the unit was visited."
                        (> align 1))
               (let ((aligned (nelisp-link--align-up off align)))
                 (when (> aligned off)
-                  ;; AArch64 alignment gaps can be 1-3 bytes, so zero-fill is
-                  ;; the only exact padding that preserves entry alignment.
+                  ;; Units never fall through into each other.  Zero-fill
+                  ;; preserves exact offsets on both target architectures.
                   (setq acc (nelisp-link--bytes-append
                              acc (nelisp-link--padding-bytes (- aligned off))))
                   (setq off aligned))))
@@ -612,11 +616,12 @@ Returns 0 if the section entry is absent."
           ((eq section-name 'bss) bytes)
           (t (length bytes)))))
 
-(defun nelisp-link--compute-layout (combined &optional base-va page-size)
+(defun nelisp-link--compute-layout (combined &optional base-va page-size text-alignment)
   "Compute section VA layout matching the Doc 91 ELF writer.
 COMBINED is the alist returned by `nelisp-link-combine-sections'.
 BASE-VA defaults to `nelisp-link--default-base-va' (= #x400000),
 PAGE-SIZE defaults to `nelisp-link--default-page-size' (= 4 KB).
+TEXT-ALIGNMENT defaults to 1; x86-64 callers pass 16, matching the writer.
 Returns an alist `((SECTION-NAME . VA) ...)' covering `text',
 `rodata', `data', `bss'.  Placement strategy mirrors
 `nelisp-elf--build-rich': Ehdr + Phdrs precede `.text', `.rodata'
@@ -631,8 +636,10 @@ page (= RW segment), `.bss' immediately follows `.data'.  PHNUM =
          (bss-size    (nelisp-link--section-len combined 'bss))
          (have-rw     (or (> data-size 0) (> bss-size 0)))
          (phnum       (if have-rw 2 1))
-         (text-off    (+ nelisp-link--ehdr-size
-                         (* nelisp-link--phdr-size phnum)))
+         (text-off    (nelisp-link--align-up
+                       (+ nelisp-link--ehdr-size
+                          (* nelisp-link--phdr-size phnum))
+                       (or text-alignment 1)))
          (text-va     (+ bv text-off))
          (rodata-off  (+ text-off text-size))
          (rodata-va   (+ bv rodata-off))
@@ -710,9 +717,11 @@ relocs are fully resolved into the bytes already, so the writer
 must NOT emit a `.rela.text' section).  Returns FILE-PATH."
   (require 'nelisp-elf-write)
   (let* ((mach (or machine 'x86_64))
+         (text-alignment (if (memq mach '(x86_64 62)) 16 1))
          (combined (nelisp-link-combine-sections units mach))
          (layout (or section-layout
-                     (nelisp-link--compute-layout combined)))
+                     (nelisp-link--compute-layout
+                      combined nil nil text-alignment)))
          (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
@@ -723,6 +732,7 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
          (bss-size (or (cdr (assq 'bss bytes)) 0))
          (entry (or entry-sym "_start"))
          (plist (list :text text
+                      :text-alignment text-alignment
                       :rodata rodata
                       :data data
                       :bss-size bss-size
@@ -802,7 +812,9 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
 
 (defun nelisp-link--pe-thunk-size (machine)
   "Per-import thunk size in bytes for MACHINE (`x86_64' / `aarch64')."
-  (if (eq machine 'aarch64) 16 6))
+  ;; A thunk is a function entry too; preserve 16-byte x86 placement.
+  (ignore machine)
+  16)
 
 (defun nelisp-link--pe-arm64-thunk-words (thunk-va iat-va)
   "Return the 4 instruction words of an ARM64 IAT thunk at THUNK-VA.
@@ -848,7 +860,11 @@ function so direct call relocations can target them."
               (nelisp-pe--write-le32 cbuf w))
           (let ((disp (- iat-va (+ thunk-va 6))))
             (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x25))
-            (nelisp-pe--write-le32 cbuf disp)))
+            (nelisp-pe--write-le32 cbuf disp)
+            ;; The unconditional jump never executes the padding.
+            (nelisp-pe--write-bytes
+             cbuf (unibyte-string #x66 #x0f #x1f #x84 #x00
+                                  #x00 #x00 #x00 #x00 #x90))))
         (setq cursor (+ cursor size))))
     (nelisp-link-unit-make "pe-import-thunks.o"
                            (list (cons 'text (nelisp-pe--buffer-bytes cbuf)))
@@ -881,15 +897,18 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
                                     (list (nelisp-link--pe-empty-import-thunk-unit
                                            normalized-imports machine)))
                           units))
-         (predict-combined (nelisp-link-combine-sections predict-units))
+         (predict-combined (nelisp-link-combine-sections predict-units machine))
          (predict-rvas (nelisp-link--pe-section-rvas predict-combined
                                                      normalized-imports))
          (idata-info (and normalized-imports
                           (nelisp-pe--build-idata
                            (plist-get predict-rvas :idata-rva)
                            normalized-imports)))
-         (orig-combined (nelisp-link-combine-sections units))
-         (orig-text-size (nelisp-link--section-len orig-combined 'text))
+         (orig-combined (nelisp-link-combine-sections units machine))
+         (orig-text-size
+          (nelisp-link--align-up
+           (nelisp-link--section-len orig-combined 'text)
+           (nelisp-link--unit-section-alignment 'text machine)))
          (predict-layout (nelisp-link--pe-layout predict-combined
                                                  normalized-imports))
          (text-va (cdr (assq 'text predict-layout)))
@@ -899,9 +918,9 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
                                        normalized-imports text-va
                                        orig-text-size idata-info machine)))
                       units))
-         (combined (nelisp-link-combine-sections all-units))
+         (combined (nelisp-link-combine-sections all-units machine))
          (layout (nelisp-link--pe-layout combined normalized-imports))
-         (link-result (nelisp-link-units-2pass all-units layout))
+         (link-result (nelisp-link-units-2pass all-units layout machine))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
          (text (nelisp-link--bytes-or-empty bytes 'text))
@@ -1011,7 +1030,7 @@ GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
                     (text-size imports &optional interp rodata-size data-size
                                bss-size))
   (declare-function nelisp-elf-build-dynamic-binary "nelisp-elf-write" (plist))
-  (let* ((combined (nelisp-link-combine-sections units))
+  (let* ((combined (nelisp-link-combine-sections units 'x86_64))
          (text-size (nelisp-link--section-len combined 'text))
          (rodata-size (nelisp-link--section-len combined 'rodata))
          (data-size (nelisp-link--section-len combined 'data))

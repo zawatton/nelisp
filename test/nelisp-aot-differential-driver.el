@@ -4,6 +4,8 @@
 
 ;; Runs each generated program twice inside the reader -- once through
 ;; the interpreter, once as loaded native code -- and compares.
+;; Keep values and signals in distinct packets, preserving the full error
+;; symbol and data. The execution-path labels belong only in diagnostics.
 ;;
 ;; The expected answer is computed, not written down.  That is the whole
 ;; difference from `nelisp-native-load-driver.el': a fixture with a
@@ -36,9 +38,18 @@ run inside the arena rather than making the population smaller.")
 (defvar nelisp-aot-differential--checked 0)
 (defvar nelisp-aot-differential--skipped 0)
 
+(defun nelisp-aot-differential--define (source)
+  "Evaluate every form of SOURCE in the interpreter."
+  ;; Every form, so a case can define a helper next to the defun it calls.
+  (let ((pos 0) (read nil))
+    (while (setq read (condition-case nil (read-from-string source pos)
+                        (end-of-file nil)))
+      (eval (car read) t)
+      (setq pos (cdr read)))))
+
 (defun nelisp-aot-differential--interpreted (source name arg)
   "Define SOURCE in the interpreter and call NAME with ARG."
-  (eval (car (read-from-string source)) t)
+  (nelisp-aot-differential--define source)
   (funcall (intern name) arg))
 
 (defun nelisp-aot-differential--native (name args)
@@ -53,8 +64,9 @@ through (exit 137).  Load once, answer both arguments, release."
                  name))
         (out nil))
     (dolist (arg args)
-      (push (condition-case e (nelisp-native-load-call handle (list arg))
-              (error (list 'native-error e)))
+      (push (condition-case e
+                (list 'value (nelisp-native-load-call handle (list arg)))
+              (error (list 'signal e)))
             out))
     (nelisp-native-load-unload handle)
     (nreverse out)))
@@ -74,6 +86,10 @@ through (exit 137).  Load once, answer both arguments, release."
         ;; caller falls back to byte code.  Slower, not wrong.
         (setq nelisp-aot-differential--skipped
               (1+ nelisp-aot-differential--skipped))
+      ;; GNU's `load' defines every defun of a file before any is called,
+      ;; so the native NAME runs with its file's other defuns defined --
+      ;; a helper it calls by name is there, as after an artifact load.
+      (condition-case nil (nelisp-aot-differential--define source) (error nil))
       (let ((gots (condition-case e
                       (nelisp-aot-differential--native name args)
                     (error (mapcar (lambda (_) (list 'native-error e)) args))))
@@ -83,9 +99,10 @@ through (exit 137).  Load once, answer both arguments, release."
                 (got (car gots))
                 (want nil))
             (setq want (condition-case e
-                           (nelisp-aot-differential--interpreted
-                            source name arg)
-                         (error (list 'interpreter-error e))))
+                           (list 'value
+                                 (nelisp-aot-differential--interpreted
+                                  source name arg))
+                         (error (list 'signal e))))
             (setq nelisp-aot-differential--checked
                   (1+ nelisp-aot-differential--checked))
             (unless (equal want got)

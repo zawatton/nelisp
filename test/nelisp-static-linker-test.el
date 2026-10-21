@@ -1224,9 +1224,10 @@ the lea)."
             (set-buffer-multibyte nil)
             (insert-file-contents-literally path)
             (let* ((bytes (buffer-string))
-                   ;; text-off = 0x78, text-size = 14, rodata-off =
-                   ;; 0x78 + 14 = 0x86.
-                   (ro-pos (+ #x78 14)))
+                   ;; x86 text starts at the next 16-byte boundary;
+                   ;; rodata follows the 14-byte text without padding.
+                   (ro-pos (+ #x80 14)))
+              (should (= (nelisp-elf--read-le64 bytes 24) #x400080))
               (should (equal (substring bytes ro-pos
                                         (+ ro-pos 6))
                              (unibyte-string ?h ?e ?l ?l ?o ?\n))))))
@@ -1410,13 +1411,13 @@ the writer went on to emit, which is the whole point of sharing
             (should (= (nelisp-link-test--read-le16 bytes file-off) #x8664))
             (should (= (nelisp-link-test--read-le32 bytes (+ opt-off 16)) #x1000))
             ;; The original call targets the synthesized thunk appended at
-            ;; text offset 15, so rel32 from next-instruction offset 14 is 1.
-            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 10)) 1))
-            (should (equal (substring bytes (+ text-raw 15) (+ text-raw 17))
+            ;; text offset 16, so rel32 from next-instruction offset 14 is 2.
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 10)) 2))
+            (should (equal (substring bytes (+ text-raw 16) (+ text-raw 18))
                            (unibyte-string #xff #x25)))
             ;; Thunk: jmp qword ptr [rip + IAT], IAT is at RVA 0x2038.
-            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 17))
-                       #x1023))
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 18))
+                       #x1022))
             (should (string-prefix-p "ExitProcess"
                                      (substring bytes (+ hint-off 2)
                                                 (+ hint-off 14))))))

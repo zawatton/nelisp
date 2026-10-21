@@ -1,0 +1,10 @@
+{
+  "revision": "bf8b39924",
+  "provider": "lisp/nelisp-heap-accessors.el",
+  "provider_sha256": "1424c5f170a3c2c527077ac024bf89f2ddbf92b14f6958897e08727da0a57d54",
+  "mappings": {
+    "heap-sexp-tag-word": "nl_word_tag64",
+    "heap-sexp-payload": "nl_word_payload"
+  },
+  "adaptation": "genuine semantic lowering via Lisp wrappers, followed by normal small-defun inlining"
+}

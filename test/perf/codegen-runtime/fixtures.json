@@ -1,0 +1,172 @@
+{
+  "nl_bytes_byte_at": {
+    "functions": [
+      "nl_bytes_byte_at"
+    ],
+    "coverage": "raw byte access over 32 offsets"
+  },
+  "nelisp_fnv1a_step4": {
+    "functions": [
+      "nl_bytes_byte_at",
+      "nelisp_fnv1a_step",
+      "nelisp_fnv1a_step4"
+    ],
+    "coverage": "16-byte names, four-byte recursion and byte tail"
+  },
+  "nelisp_symbol_key_equal": {
+    "functions": [
+      "nelisp_symbol_key_equal"
+    ],
+    "coverage": "interned shared data, uninterned identity, byte equality and mismatch"
+  },
+  "nl_root_frame": {
+    "functions": [
+      "nl_root_frame",
+      "nl_rootstack_end"
+    ],
+    "coverage": "main-thread fast path with 0 through 7 slots",
+    "data_addresses": {
+      "nl_rootstack_top": 402653184,
+      "nl_thread_registry": 402653192,
+      "nl_rootstack_region": 402653312
+    }
+  },
+  "wf_bytecode_w_fast_run": {
+    "functions": [
+      "wf_bytecode_w_fast_run"
+    ],
+    "coverage": "exact hot loop: add1/goto, 256 backedges, all cold externs trap"
+  },
+  "nl_alloc_bytes": {
+    "functions": [
+      "nl_alloc_bytes",
+      "nl_alloc_pop_fast",
+      "nl_alloc_pop_in_arena",
+      "nl_alloc_bytes_run"
+    ],
+    "lower_driver": true,
+    "coverage": "alternating run-carve and free-list-pop with actual allocator helpers and independently checked header, mask, zeros, stats",
+    "data_addresses": {
+      "nl_alloc_check": 402653184,
+      "nl_alloc_diag": 402653216,
+      "nl_gc_diag": 402653312,
+      "nl_freelist_small_mask": 402653440,
+      "nl_gc_stats": 402653472
+    }
+  },
+  "nl_gc_sweep_merge_range": {
+    "functions": [
+      "nl_gc_sweep_merge_range"
+    ],
+    "lower_driver": true,
+    "coverage": "four marked/live blocks, clearing marks and updating kept/live counters; cold freeing/link paths trap",
+    "data_addresses": {
+      "nl_boot_hole_map": 402653184,
+      "nl_alloc_check": 402653216,
+      "nl_gc_diag": 402653312,
+      "nl_gc_stats": 402653472
+    }
+  },
+  "nelisp_mirror_lookup_entry": {
+    "functions": [
+      "nelisp_mirror_lookup_entry",
+      "nelisp_mirror_lookup_entry_valid_key",
+      "nl_symcell_entry",
+      "nl_gc_in_arena"
+    ],
+    "lower_driver": true,
+    "coverage": "actual arena-valid interned-symbol key, two symbol-cell hits through genuine table/cell helpers; hashed miss and root-pin alternatives trap"
+  },
+  "nelisp_eval_call_w": {
+    "functions": [
+      "nelisp_eval_call_w",
+      "nelisp_eval_call_inner_w",
+      "nl_rootstack_init",
+      "nl_thread_park_safepoint",
+      "nl_thread_park_safepoint_at",
+      "nl_thread_registry_find",
+      "nl_eval_depth_limit",
+      "nl_seq2",
+      "nl_gc_frame_record_armed_p",
+      "nl_eval_inner_w",
+      "nelisp_eval_call_done",
+      "nl_record_slot_word",
+      "nl_word_payload"
+    ],
+    "lower_driver": true,
+    "auto_cold": true,
+    "coverage": "nested evaluator entry on immediate fixnum forms through genuine inner eval, root init, safepoints, depth limit, and recursion restoration; outer lexical scope and recorded-context branches trap",
+    "data_addresses": {
+      "nl_gc_loop_ctx": 402653184,
+      "nl_rootstack_region": 402718720,
+      "nl_rootstack_top": 402654208,
+      "nl_thread_parallel_ctx": 402654720,
+      "nl_thread_registry": 402655232
+    }
+  },
+  "wf_bytecode_execute_frame": {
+    "functions": [
+      "wf_bytecode_execute_frame",
+      "nl_alloc_bytes",
+      "nl_alloc_pop_fast",
+      "nl_alloc_pop_in_arena",
+      "nl_alloc_bytes_run",
+      "nl_root_mark",
+      "wf_bytecode_w_roots",
+      "nl_root_reserve_checked",
+      "nl_root_reserve",
+      "nl_root_reserve_at",
+      "nl_root_release",
+      "nl_root_release_at",
+      "nl_alloc_vector",
+      "nl_alloc_vector_fill",
+      "nl_n4_state",
+      "m5_strlen",
+      "nl_bi_strlen",
+      "nl_bi_strptr",
+      "wf_write_nil",
+      "wf_write_int",
+      "nelisp_frame_slot_raw_word",
+      "nl_word_payload",
+      "nl_word_tag64",
+      "nl_record_slot_word",
+      "nl_rootstack_init",
+      "nl_thread_registry_find",
+      "wf_bytecode_literal_value_w",
+      "heap-sexp-tag-word",
+      "heap-sexp-payload",
+      "nl_root_mark_at",
+      "nl_rootstack_end",
+      "nl_root_reserve_slot",
+      "wf_bytecode_w_fast_run",
+      "wf_bytecode_unwind_to",
+      "wf_bytecode_unwind_step",
+      "wf_bytecode_w_eqw",
+      "wf_bytecode_w_eqv",
+      "nl_val_tag",
+      "wf_bytecode_handlers_drop_to"
+    ],
+    "lower_driver": true,
+    "auto_cold": true,
+    "coverage": "constant/return bytecode on true compact vector input, genuine root/vector/allocator setup and teardown; current legacy compiler representation mismatch must FAIL",
+    "data_addresses": {
+      "nl_alloc_check": 402653184,
+      "nl_alloc_diag": 402653696,
+      "nl_bt_snapshot": 402654208,
+      "nl_freelist_small_mask": 402654720,
+      "nl_gc_diag": 402655232,
+      "nl_gc_stats": 402655744,
+      "nl_rootstack_region": 402718720,
+      "nl_rootstack_top": 402656768,
+      "nl_thread_registry": 402657280
+    },
+    "frontend_adaptations": [
+      "heap-fields.json"
+    ],
+    "unit_frontend": true,
+    "native_cold": {
+      "nl_alloc_symbol": 2
+    },
+    "vector_convention": "compact-word"
+  }
+}

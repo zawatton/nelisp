@@ -331,10 +331,12 @@ environment-only mode switch cannot reuse units compiled under another mode."
                  (symbol-name target)))
          (base (if (getenv "NELISP_READER_DYNAMIC") (concat base "-dyn") base))
          ;; Doc 171 G2: the TCO pass changes unit bytes but the content key
-         ;; does not include this environment flag, so NELISP_TCO=1 gets its own
-         ;; cache (same split rationale as `-dyn' above) -- otherwise a
-         ;; flag flip silently links stale objects from the other mode.
-         (base (if (equal (getenv "NELISP_TCO") "1") (concat base "-tco") base)))
+         ;; does not include this environment flag.  Raw standalone units
+         ;; enable TCO by default; NELISP_TCO=0 selects the separate old cache.
+         ;; Lisp artifact compilation keeps its explicit opt-in behavior.
+         (base (if (and (not (nelisp-aot-compiler--lisp-values-p))
+                        (not (equal (getenv "NELISP_TCO") "0")))
+                   (concat base "-tco") base)))
     (setq base (if (nelisp-standalone--runtime-reload-enabled-p)
                    (concat base "-reload")
                  base))
@@ -1988,12 +1990,12 @@ twice appears twice; readers keep the last occurrence of each unit."
          (nelisp-aot-compiler--os (nelisp-standalone--target-os))
          (nelisp-aot-compiler--allow-external-user-calls t)
          (nelisp-aot-compiler--abi resolved-abi)
-         ;; Doc 171: self-tail-call optimization, off unless the build
-         ;; opts in via NELISP_TCO=1 (byte-identity gate, Doc 171 G2).
-         ;; `make TARGET NELISP_TCO=1' works: command-line make
-         ;; variables are exported into recipe environments.
+         ;; Doc 171: raw standalone units use self-tail-call optimization
+         ;; unless NELISP_TCO=0.  Keep Lisp artifact/API defaults unchanged
+         ;; and keep this predicate identical to the cache-mode predicate.
          (nelisp-aot-compiler-tco-enabled
-          (equal (getenv "NELISP_TCO") "1"))
+          (and (not (nelisp-aot-compiler--lisp-values-p))
+               (not (equal (getenv "NELISP_TCO") "0"))))
          (nelisp--tco-log-start (length nelisp-aot-compiler--tco-log))
          (ir (nelisp-aot-compiler--parse source nil))
          (defuns (nelisp-aot-compiler--collect-defuns ir))
@@ -2172,6 +2174,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
+                               (format "jump-tables=%s\0" nelisp-aot-compiler--x86-jump-tables-enabled)
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)))))
 
@@ -6616,7 +6619,7 @@ REPL-facing module it feeds."
     ;; on a large live vector during compaction, which is on by default
     ;; -- the same shape that killed `nl_gc_poison_fill' (~2.48M frame
     ;; ceiling on windows-x86_64).  The TCO pass would fix this too, but
-    ;; only in NELISP_TCO=1 builds, so the loop is written out here.
+    ;; only when enabled, so retain the explicit loop for opt-out builds.
     (defun nl_compact_rw_vec_slots (data i len)
       (if (= (nl_gc_in_arena data) 0) 0
         (seq
@@ -7821,7 +7824,7 @@ argument (reachability + in-arena bounds checks).")
                               (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail rest (wf_elem_fbits (nl_cons_car_ptr args) b) b) b))
                             (if (= (wf_zero_divisor rest) 1)
                                 (nl_abi_fail (bf_arith_error) 0)
-                              (wf_write_int_w 0 (wf_quot rest (wf_argval args 0)))))
+                              (wf_write_integer_w 0 (wf_quot rest (wf_argval args 0)))))
                         (if (= f 1)
                             (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail args (wf_int_fbits 1 b) b) b))
                           (if (= (wf_argval args 0) 0)
@@ -7849,7 +7852,7 @@ argument (reachability + in-arena bounds checks).")
                               (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail rest (wf_elem_fbits (nl_cons_car_ptr args) b) b) b))
                             (if (= (wf_zero_divisor rest) 1)
                                 (nl_abi_fail (bf_arith_error) 0)
-                              (wf_write_int_w 0 (wf_quot rest (wf_argval args 0)))))
+                              (wf_write_integer_w 0 (wf_quot rest (wf_argval args 0)))))
                         (if (= f 1)
                             (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail args (wf_int_fbits 1 b) b) b))
                           (if (= (wf_argval args 0) 0)
@@ -8877,6 +8880,44 @@ leave symbols unresolved at link time."
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
     (defun wf_argval (args n) (nl_word_payload (wf_arg_word args n)))
+    ;; ptr-call is a raw signed-i64 boundary; tag13 +8 is a sign, not a value.
+    (defun wf_ptr_call_i64_fits (w)
+      (if (= (nl_word_tag64 w) 13)
+          (nl_bignum_mag_le_bound
+           (ptr-read-u64 w 16) (ptr-read-u64 w 24)
+           (if (= (ptr-read-u64 w 8) 0) 2147483647 2147483648)
+           (if (= (ptr-read-u64 w 8) 0) 4294967295 0))
+        1))
+    (defun wf_ptr_call_i64_value (w)
+      (if (= (nl_word_tag64 w) 13)
+          (let* ((limbs (ptr-read-u64 w 16)) (n (ptr-read-u64 w 24))
+                 (lo (if (> n 0) (ptr-read-u32 limbs 0) 0))
+                 (hi (if (> n 1) (ptr-read-u32 limbs 4) 0))
+                 (m (+ lo (shl hi 32))))
+            (if (= (ptr-read-u64 w 8) 0) m (- 0 m)))
+        (nl_word_payload w)))
+    (defun wf_ptr_call_w (args)
+      (let* ((w0 (wf_arg_word args 0)) (w1 (wf_arg_word args 1))
+             (w2 (wf_arg_word args 2)) (w3 (wf_arg_word args 3))
+             (w4 (wf_arg_word args 4)) (w5 (wf_arg_word args 5))
+             (w6 (wf_arg_word args 6))
+             (bad (cond ((= (wf_ptr_call_i64_fits w0) 0) w0)
+                        ((= (wf_ptr_call_i64_fits w1) 0) w1)
+                        ((= (wf_ptr_call_i64_fits w2) 0) w2)
+                        ((= (wf_ptr_call_i64_fits w3) 0) w3)
+                        ((= (wf_ptr_call_i64_fits w4) 0) w4)
+                        ((= (wf_ptr_call_i64_fits w5) 0) w5)
+                        ((= (wf_ptr_call_i64_fits w6) 0) w6)
+                        (t 3))))
+        (if (= bad 3)
+            (wf_write_int_w
+             0 (call-ptr (wf_ptr_call_i64_value w0) (wf_ptr_call_i64_value w1)
+                         (wf_ptr_call_i64_value w2) (wf_ptr_call_i64_value w3)
+                         (wf_ptr_call_i64_value w4) (wf_ptr_call_i64_value w5)
+                         (wf_ptr_call_i64_value w6)))
+          (nl_abi_fail
+           (bf_args_out_of_range3 bad (wf_write_int_w 0 -9223372036854775808)
+                                 (wf_write_int_w 0 9223372036854775807)) 0))))
     ;; Doc 190 Phase A: tag 13 (Bignum) has NO stable pointer at offset 8
     ;; (that word is the sign, 0/1 -- almost always 0) -- the generic
     ;; offset-8 compare below would make most positive bignums mutually
@@ -9175,6 +9216,17 @@ leave symbols unresolved at link time."
           (let* ((s (alloc-bytes 32 8)))
             (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
                  (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
+        (nl_imm_int v)))
+    ;; GNU data.c arith_driver returns make_int(accum), and lisp.h
+    ;; make_int promotes a machine integer outside the fixnum range.
+    ;; Keep raw compatibility writers unchanged; arithmetic boundaries
+    ;; needing a canonical Lisp integer use the existing bignum finish.
+    (defun wf_write_integer_w (_pad v)
+      (if (or (< v -2305843009213693952) (> v 2305843009213693951))
+          (let* ((limbs (alloc-bytes 8 4))
+                 (sign (nl_bignum_int_limbs v limbs))
+                 (count (nl_bignum_canon_count limbs 2)))
+            (nl_bignum_finish_w sign limbs count 0))
         (nl_imm_int v)))
     ;; The (rc, OUT) writers keep their direct stores: an adapter through
     ;; the WORD would encode the value only for nl_sci_store_imm to decode
@@ -25075,7 +25127,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; wrong-number-of-arguments check before this arm reads any operand slot.
     ;; Same `call-ptr' grammar op the compiler emits, so no new Rust.  Callers
     ;; pad unused trailing native arguments with 0.
-    ((:lit "ptr-call") :word . (wf_write_int_w 0 (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
+    ((:lit "ptr-call") :word . (wf_ptr_call_w args))
     ((:lit "thread-spawn") :word . (bf_thread_spawn_w args env 0))
     ((:lit "nelisp-spin-until") :word . (bf_thread_join_w args env 0))
     ((:lit "fork-spawn") :word . (bf_fork_spawn_w args env 0))
@@ -35584,7 +35636,12 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2" "nl_native_poll_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2")
+   ;; Doc 229: funcall and apply providers (nelisp-cc-evalport-aot-apply).
+   '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
+   ;; S4.5 exports an existing VM helper; no reader builtin is added.
+   '("wf_bytecode_condition_matches"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
@@ -41790,6 +41847,7 @@ correctly."
     ("env-leaves-frame.o"  nelisp-cc-evalport-env-leaves-frame   nelisp-cc-evalport-env-leaves-frame--source)
     ("aot-builtin-call1.o" nelisp-cc-evalport-aot-builtin-call1  nelisp-cc-evalport-aot-builtin-call1--source)
     ("aot-builtin-calln.o" nelisp-cc-evalport-aot-builtin-calln  nelisp-cc-evalport-aot-builtin-calln--source)
+    ("aot-apply.o"         nelisp-cc-evalport-aot-apply          nelisp-cc-evalport-aot-apply--source)
     ("sf-eval-is-truthy.o" nelisp-cc-eval-is-truthy              nelisp-cc-eval-is-truthy--source)
     ("sf-let-setup.o"      nelisp-cc-evalport-env-leaves-logic   nelisp-cc-evalport-env-leaves-logic--source)
     ("sf-env-set-value.o"  nelisp-cc-evalport-env-leaves-bind    nelisp-cc-evalport-env-leaves-bind--source)
@@ -45296,7 +45354,13 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; was updated by name instead of by kind, so :raw is excluded as a
          ;; class -- any future :raw manifest entry needs the same explicit
          ;; reader-side binding and must not double up here either.
-         (helpers (delq nil
+         ;; Frozen manifest helpers supply the authenticated direct-only
+         ;; closure. Keep its decoder contract, like GCC -fno-jump-tables;
+         ;; the separately compiled applyfn/VM keeps the normal policy.
+         (helpers (let ((nelisp-aot-compiler--x86-jump-tables-enabled
+                         (and nelisp-aot-compiler--x86-jump-tables-enabled
+                              (nelisp-standalone--runtime-reload-enabled-p))))
+                    (delq nil
                         (mapcar (lambda (entry)
                                   (pcase-let ((`(,name ,kind ,_src) entry))
                                     (unless (or (memq kind '(:start :driver :raw))
@@ -45334,7 +45398,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                         (nelisp-standalone--reader-extra-unit-epoch
                                          entry '(nelisp_mirror_set_function_or_insert)))
                                        (t (nelisp-standalone--unit-for entry))))))
-                                nelisp-standalone--manifest)))
+                                nelisp-standalone--manifest))))
          ;; Full reader applyfn (arithmetic + HT + strings/format + file I/O).
          (applyfn (nelisp-standalone--cached-unit
                    "applyfn-reader.o" (nelisp-standalone--patch-autoload-lookups

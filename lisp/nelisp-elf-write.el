@@ -1622,7 +1622,11 @@ Doc 91 §91.c."
          ;; ---- RX segment layout (= Ehdr + Phdrs + .text + .rodata).
          (phnum      (if have-rw 2 1))
          (phdr-off   nelisp-elf--ehdr-size)
-         (text-off   (+ phdr-off (* nelisp-elf--phdr-size phnum)))
+         ;; Native compiler units align entry offsets from the text origin.
+         ;; Keep their requested alignment at the final mapped address too.
+         (text-off   (nelisp-elf--align-up
+                      (+ phdr-off (* nelisp-elf--phdr-size phnum))
+                      (or (plist-get plist :text-alignment) 1)))
          (rodata-off (+ text-off text-size))
          (text-vaddr   (+ vaddr-base text-off))
          (rodata-vaddr (+ vaddr-base rodata-off))
@@ -1984,6 +1988,8 @@ Doc 91 §91.c."
         (logand (ash page-size -48) #xff)
         (logand (ash page-size -56) #xff))))
     ;; ---- .text ----
+    (when (> text-off (nelisp-elf-buffer-length cbuf))
+      (nelisp-elf--write-pad cbuf (- text-off (nelisp-elf-buffer-length cbuf))))
     (unless (= (nelisp-elf-buffer-length cbuf) text-off)
       (error "nelisp-elf: .text offset drift (length=%d expected=%d)"
              (nelisp-elf-buffer-length cbuf) text-off))
