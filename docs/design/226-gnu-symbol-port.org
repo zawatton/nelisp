@@ -253,22 +253,97 @@ the word-heap S0 threshold of 32 arena bytes, so S1.1 targets GNU's 48
 bytes per uninterned symbol (coordinator rule 2026-10-21, from the strings
 lane), with the shared name charged separately.
 
+** D9 Direct symbol objects (step 5; ported layout, adapted class)
+
+GNU (lisp.h:786) has no object header for a symbol: 48 bytes holding a
+flags word (=gcmarkbit=, =redirect=, =trapped_write=, =interned=,
+=declared_special=, =pinned=; enums lisp.h:764-784), =name=, =val= (a
+union of value, alias, blv and fwd, selected by =redirect=), =function=,
+=plist= and =next=.  A symbol Lisp_Object is the struct's address with
+the symbol tag (lisp.h:1120 =XSYMBOL=, 1144 =make_lisp_symbol=).
+=make-symbol= takes a cell from a =symbol_block= (alloc.c:3616-3700) and
+=init_symbol= (alloc.c:3660) stores the given name string, the unbound
+value, nil function and plist, PLAINVAL and UNINTERNED.  The collector
+marks function, plist and the =val= member that =redirect= selects
+(alloc.c:6625) and sweeps the blocks (alloc.c:6997).
+
+Class (adapted; coordinator decision 2026-10-21).  Doc 216's tag space
+has four pointer classes and none is free for GNU's separate symbol tag:
+010 is the cons, 100 GNU's =Lisp_String= (Doc 227), 110 the vectorlike.
+A direct symbol WORD is its backing address | 6, and the header's kind
+field (bits 0-5) carries the symbol type as GNU's pseudovector header
+carries a PVEC type.  The kind is the semantic tag, 4 interned and 16
+uninterned, so =nl_val_tag= answers unchanged.
+
+Layout (ported, 48 bytes):
+
+| offset | GNU field | contents |
+|-+-+-|
+| +0 | flags | kind (bits 0-5), =redirect= (8-9), =trapped_write= (10-11), =interned= (12-13), =declared_special= (14), =pinned= (15), FORWARDED type (16-17); bits 18-23 free; bits 24 and up belong to the collector (24 is =gcmarkbit=) |
+| +8 | name | the name string WORD |
+| +16 | val | PLAINVAL value or the unbound marker; VARALIAS target symbol; LOCALIZED blv; FORWARDED value |
+| +24 | function | function cell |
+| +32 | plist | property list |
+| +40 | next | raw, 0: the initial obarray is the native intern table (D6) |
+
+For kinds 4 and 16 the header bits above 7 are flags, not a length; the
+collector's walkers use the fixed layout.  =val=, =function= and =plist=
+sit at the offsets of D1's slots 0-2.  D1's slots 3-8 fold into the flags
+word and the union: constant becomes =trapped_write= NOWRITE, the alias
+target and the blv move into =val=, the declared-special bit into bit 14,
+the FORWARDED descriptor into bits 16-17, the name to +8.
+
+FORWARDED (adapted).  GNU's =val.fwd= points at a typed C variable that
+C code reads directly.  NeLisp has no C variable: the runtime reads the
+symbol's =val= (the frame-depth check, D5), so =val= keeps the value and
+the flags word keeps the forwarding type (1 integer, 2 boolean).  Every
+=val= is a WORD or an immediate, so the collector traces all four edges
+unconditionally.
+
+LOCALIZED.  =val= holds the blv; the default value lives in it, as GNU's
+=defcell= does (see the interop plan).
+
+Allocation.  =nl_symbol_alloc= returns the backing address of a zeroed
+48-byte cell, or 0 when memory is exhausted; the WORD is that address
+| 6.  gc-port allocates the cells from =symbol_block= typed
+blocks, with marking, sweeping, the image walk, relocation and the
+conservative scan, and never moves them (coordinator routing
+2026-10-21).  Until then the cells come from the general allocator (an
+8-byte prefix, 56 bytes charged) and the three vectorlike walkers trace
+kinds 4 and 16 as four inline WORDs.
+
+Stages.
+1. Every symbol object takes this layout; an interned symbol's WORD is
+   still a view that reaches its object by D2's hop.
+2. =make-symbol= returns the direct WORD (no view, no identity number, no
+   copied name buffer, no hashed walk); its name is the string given, so
+   =(eq (symbol-name s) name)= holds as in GNU.  Every symbol consumer
+   accepts the direct WORD, including the =symbol-eq=, =symbol-name-eq= and
+   =sexp-name-eq= emitters (on this branch, coordinator routing).
+3. Interned symbols' WORDs become direct once the reader and the intern
+   table hand them out; =eq= is then a pointer compare everywhere.
+
 * LOCALIZED interop with buffer-native
 
-buffer-native (Doc 222) ports =Lisp_Buffer_Local_Value= as an expansion of
-slot 5 with =where=, =found= and =valcell=, slot 0 serving as the default
-cell.  After it is merged onto this base:
-1. Installing a blv sets =redirect= to LOCALIZED in slot 6 (one write in
-   buffer-native's make-local and make-variable-buffer-local paths);
-   removing the last local resets it to PLAINVAL.
+buffer-native (Doc 222) ports =Lisp_Buffer_Local_Value= with =where=,
+=found=, =valcell= and the default cell.  D9 places the blv in =val=,
+selected by =redirect=, and the default value in the blv as GNU's
+=defcell= (coordinator agreement 2026-10-21; buffer-native adapts its
+slot-5 reads when it is rebased onto the word-heap line).  After it is
+merged onto this base:
+1. Installing a blv stores it in =val= and sets =redirect= to LOCALIZED
+   in the flags word (one write in buffer-native's make-local and
+   make-variable-buffer-local paths); removing the last local restores
+   PLAINVAL with the default value in =val=.
 2. =nl_sym_find_value= and =nl_sym_set_internal= call buffer-native's
    =swap_in_symval_forwarding= analog and valcell write for LOCALIZED,
    exactly where GNU's switch does; =nl_sym_default_value= reads slot 0.
 3. =nl_sym_specbind= records LET_LOCAL (with the buffer) or LET_DEFAULT
    as GNU's specbind does, and unbind calls the LOCALIZED write.
 4. The per-buffer cell symbols and the slot-5 name substitution retire.
-Until then LOCALIZED symbols are recognized by slot 5 and keep the existing
-path, and no blv code is changed here.
+Until then the existing buffer-local path keeps its logic: from D9 stage 1
+its per-buffer redirect vector and the default value travel together in
+the blv held by =val= (redirect LOCALIZED) instead of slots 5 and 0.
 
 * Steps
 
@@ -279,7 +354,9 @@ times the globals probe on CPU 13 and commits with the numbers.
 2. Redirect dispatch for PLAINVAL, VARALIAS and FORWARDED (D3, D5).
 3. specbind/unbind_to on the cells (D4).
 4. Obarray and intern (D6).
-5. Uninterned symbols as header-less objects (S1.1).
+5. Direct symbol objects (D9): the GNU layout for every symbol object,
+   then direct WORDs for uninterned symbols (S1.1, S1.2), then for
+   interned symbols.
 
 * Status (2026-10-21)
 
