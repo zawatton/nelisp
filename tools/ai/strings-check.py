@@ -87,6 +87,19 @@ def semantics():
         assert len(outputs[kind]) >= 10, f"{kind} incomplete fixture"
     assert outputs["dynamic"] == outputs["gnu"], "dynamic GNU fixture differs; see saved outputs"
     assert outputs["static"] == outputs["gnu"], "static GNU fixture differs; see saved outputs"
+    # GNU fns.c:951-1021 copies intervals only for a string that has them: the
+    # marker-guarded concat/substring paths, second generation included.
+    props = {}
+    for kind, command in runtimes:
+        result = subprocess.run(command + ["--load", "tools/ai/strings-props.el"],
+                                cwd=ROOT, capture_output=True, timeout=40)
+        (OUT / f"{kind}-props.out").write_bytes(result.stdout)
+        (OUT / f"{kind}-props.err").write_bytes(result.stderr)
+        assert result.returncode == 0 and not result.stderr, f"{kind} property fixture failed"
+        props[kind] = [line for line in result.stdout.splitlines() if line.startswith(b"STRINGS-PROP ")]
+        assert len(props[kind]) == 8, f"{kind} incomplete property fixture"
+    assert props["dynamic"] == props["gnu"], "dynamic GNU property fixture differs; see saved outputs"
+    assert props["static"] == props["gnu"], "static GNU property fixture differs; see saved outputs"
     # Reuse the existing byte-mutation oracle: final checks exposed a
     # multibyte symbol-name boundary regression absent from the short fixture.
     matrix = {}
@@ -99,7 +112,7 @@ def semantics():
         matrix[kind] = result.stdout
     assert matrix["dynamic"] == matrix["gnu"], "dynamic GNU unibyte/symbol-name matrix differs"
     assert matrix["static"] == matrix["gnu"], "static GNU unibyte/symbol-name matrix differs"
-    print(f"PASS semantics: {len(outputs['gnu'])} GNU cases and existing unibyte matrix on dynamic/static")
+    print(f"PASS semantics: {len(outputs['gnu'])} GNU cases, {len(props['gnu'])} property cases and existing unibyte matrix on dynamic/static")
 
 
 def root_layout(binary, symbols, n, mode):

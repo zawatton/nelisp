@@ -2856,6 +2856,10 @@
      "converted": false
     },
     {
+     "name": "nelisp--string-mark-intervals",
+     "converted": false
+    },
+    {
      "name": "nelisp--byte-code-wrap-test",
      "converted": false
     },
@@ -4346,6 +4350,7 @@
    "signal",
    "error",
    "nelisp--clear-string-bytes",
+   "nelisp--string-mark-intervals",
    "nelisp--equal-leaf",
    "equal",
    "load",

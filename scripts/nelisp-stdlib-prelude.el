@@ -656,13 +656,14 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
         (signal 'args-out-of-range (list b start end)))
       (nelisp-buffer-substring s e b))))
 ;; `substring' always allocates a fresh string (native arm, like real
-;; Emacs), never `eq' to its input, so the result here is never a key
-;; already sitting in `nelisp--tp-string-properties' -- no properties to
-;; strip, even though strings can carry them since Doc 210.
+;; Emacs), never `eq' to its input, but it copies the source's text
+;; properties onto that result (GNU Fsubstring, Doc 227), so they are
+;; stripped again here.
 (unless (fboundp 'substring-no-properties)
   (defun substring-no-properties (string &optional from to)
     (let ((result (substring string from to)))
-      (remhash result nelisp--tp-string-properties)
+      (when (gethash result nelisp--tp-string-properties)
+        (nelisp--tp-set-intervals result nil))
       result)))
 ;; Doc 210: strings can carry properties now, so this can no longer be
 ;; plain `equal' -- it additionally requires the same property plist
@@ -12592,10 +12593,22 @@ point, since it appends TEXT straight onto it."
 (defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
   "STRING (by identity) -> its text-property interval list, 0-based.")
 
-;; GNU fns.c copies intervals together with character data.  Until the
-;; Lisp interval engine writes Lisp_String.intervals directly, mirror that
-;; ownership operation in its identity table. Install only on first write.
-(defvar nelisp--tp-string-copies-installed nil)
+;; GNU fns.c:951-1021 (concat_to_string) tests string_intervals (arg) inside
+;; its native copy loop and calls add_text_properties_from_list only for a
+;; string that has intervals; Fsubstring (fns.c:1577-1668) reaches
+;; copy_text_properties (textprop.c:1970) the same way, and that function
+;; returns at once for a source without intervals.  The interval engine here
+;; is Lisp and keeps the lists in the identity table above, so the header's
+;; Lisp_String.intervals slot (Doc 227) holds a marker exactly while that table
+;; has an entry for the string; `nelisp--string-mark-intervals' sets and clears
+;; it.  The native concat/substring arms test the slot and call the two
+;; functions below with their fresh result only in that case.  A string without
+;; properties therefore pays no Lisp call, and `concat' and `substring' stay
+;; the native subrs for every caller.
+;; A binary older than the marker arm has nothing to mark, and its concat and
+;; substring consult no marker.
+(unless (fboundp 'nelisp--string-mark-intervals)
+  (defun nelisp--string-mark-intervals (_string flag) flag))
 (defun nelisp--tp-copy-range (source from to shift)
   (let (result)
     (dolist (iv (gethash source nelisp--tp-string-properties))
@@ -12604,35 +12617,26 @@ point, since it appends TEXT straight onto it."
           (push (list (+ shift (- start from)) (+ shift (- end from))
                       (copy-sequence (nth 2 iv))) result))))
     (nreverse result)))
-(defun nelisp--tp-install-string-copies ()
-  (unless nelisp--tp-string-copies-installed
-    (setq nelisp--tp-string-copies-installed t)
-    (fset 'nelisp--concat-without-property-copy (symbol-function 'concat))
-    (fset 'nelisp--substring-without-property-copy (symbol-function 'substring))
-    (fset 'concat
-          (lambda (&rest sequences)
-            (let ((result (apply #'nelisp--concat-without-property-copy sequences))
-                  (position 0) intervals)
-              (dolist (source sequences)
-                (when (stringp source)
-                  (setq intervals
-                        (append intervals (nelisp--tp-copy-range
-                                           source 0 (length source) position))))
-                (setq position (+ position (length source))))
-              (when intervals (puthash result intervals nelisp--tp-string-properties))
-              result)))
-    (fset 'substring
-          (lambda (source &optional from to)
-            (let ((result (if to
-                              (nelisp--substring-without-property-copy source from to)
-                            (nelisp--substring-without-property-copy source from))))
-              (when (stringp source)
-                (let* ((n (length source)) (start (or from 0)) (end (or to n))
-                       (intervals (nelisp--tp-copy-range
-                                   source (if (< start 0) (+ n start) start)
-                                   (if (< end 0) (+ n end) end) 0)))
-                  (when intervals (puthash result intervals nelisp--tp-string-properties))))
-              result)))))
+(defun nelisp--tp-cat-props (result &rest sources)
+  "Copy the intervals of the strings in SOURCES onto RESULT, concat's output."
+  (let ((position 0) intervals)
+    (dolist (source sources)
+      (when (stringp source)
+        (setq intervals
+              (append intervals (nelisp--tp-copy-range
+                                 source 0 (length source) position))))
+      (setq position (+ position (length source))))
+    (when intervals (nelisp--tp-set-intervals result intervals))
+    result))
+(defun nelisp--tp-sub-props (result source &optional from to)
+  "Copy the intervals of SOURCE's [FROM, TO) onto RESULT, substring's output."
+  (when (stringp source)
+    (let* ((n (length source)) (start (or from 0)) (end (or to n))
+           (intervals (nelisp--tp-copy-range
+                       source (if (< start 0) (+ n start) start)
+                       (if (< end 0) (+ n end) end) 0)))
+      (when intervals (nelisp--tp-set-intervals result intervals))))
+  result)
 
 (defun nelisp--tp-plist-at (pos intervals)
   "Return the PLIST covering POS in INTERVALS, or nil if none does."
@@ -12764,9 +12768,10 @@ range change nothing)."
   "Store NEW as OBJECT's interval list (nil = current buffer)."
   (if (stringp object)
       (if new
-          (progn (nelisp--tp-install-string-copies)
-                 (puthash object new nelisp--tp-string-properties))
-        (remhash object nelisp--tp-string-properties))
+          (progn (puthash object new nelisp--tp-string-properties)
+                 (nelisp--string-mark-intervals object t))
+        (remhash object nelisp--tp-string-properties)
+        (nelisp--string-mark-intervals object nil))
     (setf (nelisp-buffer-text-properties (or object nelisp--current-buffer)) new)))
 
 (defun nelisp--tp-lo (object)
@@ -23649,7 +23654,7 @@ any other -- to find the final function binding and return it."
        make-symbol type-of identity abs sin cos 1+ 1- number-to-string string-bytes
        char-to-string string-to-char lognot special-form-p
        nelisp--declare-local-special)
-    (2 nelisp--equal-leaf cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
+    (2 nelisp--equal-leaf nelisp--string-mark-intervals cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
        nelisp--native-pin-eq-slots
        string< make-vector fset ash)
     (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference)
@@ -25898,7 +25903,7 @@ With ENSURE, print only when the stream is not at the start of a line."
   (defun clear-string (string)
     "Zero STRING's bytes in place and make the same object unibyte."
     (nelisp--check-string string)
-    (remhash string nelisp--tp-string-properties)
+    (nelisp--tp-set-intervals string nil)
     (nelisp--clear-string-bytes string)
     nil))
 

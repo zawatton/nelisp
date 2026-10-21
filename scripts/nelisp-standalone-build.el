@@ -9832,7 +9832,19 @@ argument (reachability + in-arena bounds checks).")
                                                   (m5_concat_walk sb args)
                                                   (m5_builder_allocate_string sb all-unibyte)
                                                   (m5_concat_walk sb args)
-                                                  (nl_g4arm_finish_string_w sb (- 1 all-unibyte)))))
+                                                  ;; GNU fns.c:951-1021: copy intervals only when a
+                                                  ;; source string has them (header+16, lisp.h:4035).
+                                                  (let* ((res (nl_g4arm_finish_string_w sb (- 1 all-unibyte))))
+                                                    (if (= res 0) 0
+                                                      (let* ((cur args) (found 0))
+                                                        (seq (while (and (= found 0) (= (nl_val_tag cur) 7))
+                                                               (let* ((w (nl_cons_car_word cur)))
+                                                                 (seq (if (= (logand w 7) 4)
+                                                                          (if (/= (ptr-read-u64 (- w 4) 16) 0) (setq found 1) 0)
+                                                                        0)
+                                                                      (setq cur (nl_cons_cdr_word cur)))))
+                                                             (if (= found 0) res
+                                                               (wf_string_props_finish_w res args env 0)))))))))
                                      (let* ((bad (m5_concat_first_bad_ptr args)))
                                        (if (= why 1)
                                            (nl_abi_fail (bf_wrong_type_sequencep bad) 0)
@@ -9845,113 +9857,121 @@ argument (reachability + in-arena bounds checks).")
     ;; slicing with a computed index had no way to learn the index was wrong.
     ;; (substring '(1) 32 'foo) named the INDEX as out of range.  Emacs looks
     ;; at the sequence first: a list is not an array, whatever the indices say.
-    ((:lit "substring")        :word . (if (= (bf_arrayp_raw (wf_arg_ptr args 0)) 0)
-                            (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 123666628244065 0 0 6) 0)
-                          (if (= (sexp-tag (wf_arg_ptr args 1)) 2)
-                            ;; TO is read as an integer and never checked, so a non-integer answered a
-                            ;; slice instead of signalling: (nelisp--native-substring "abcdef" 1 "z")
-                            ;; was "", the string's second word read as a count.  The prelude wrapper
-                            ;; checks it, which is why nothing in the tree ever saw this, and is also
-                            ;; why the wrapper could not simply delegate to this arm.  Checked before
-                            ;; the range arithmetic below, so (substring "abcdef" 12354 "z") still
-                            ;; names "z" rather than a range computed from it.
-                            (if (if (= (heap-read-u64 (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)) 0) 7)
-                                    (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0
-                                      (if (= (sexp-tag (wf_arg_ptr args 2)) 2) 0 1))
-                                  0)
-                                (nl_abi_fail (bf_wrong_type_integerp (wf_arg_ptr args 2)) 0)
-                              (let* ((s (wf_arg_ptr args 0))
-                                        (nb (m5_strlen s))
-                                        (from-box (wf_arg_ptr args 1))
-                                        (from (heap-read-u64 from-box 8))
-                                        (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
-                                        (has-to (if (= (sexp-tag rest) 7)
-                                                    (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0 1)
-                                                  0))
-                                        (to-box (if (= (sexp-tag rest) 7)
-                                                    (wf_arg_ptr args 2)
-                                                  3))
-                                        (to-raw (if (= has-to 1) (heap-read-u64 (wf_arg_ptr args 2) 8) -1))
-                                        ;; FAST PATH eligibility: FROM/TO both given and
-                                        ;; non-negative on a genuinely multibyte (tag 5)
-                                        ;; string -- the shape `(substring s i (1+ i))'
-                                        ;; needs -- skips `m5_length' (a whole-string
-                                        ;; `nl_str_charlen' walk) entirely by using the
-                                        ;; O(1)-amortized cache's INCLUSIVE bounds check
-                                        ;; (`nl_str_sub_byte_off') to validate FROM/TO
-                                        ;; instead: it answers -1 for an out-of-range
-                                        ;; index without ever needing the exact char
-                                        ;; length, the same way `bf_aref_checked' above
-                                        ;; fuses its bounds check into the walk.  A
-                                        ;; negative FROM/TO or an omitted TO still needs
-                                        ;; the true char length (for negative-index
-                                        ;; normalisation or the default), so those keep
-                                        ;; the unchanged slow path below.
-                                        (fast-p (if (>= from 0)
-                                                    (if (= has-to 1)
-                                                        (if (>= to-raw 0)
-                                                            (if (= (heap-read-u64 s 0) 5) 1 0)
+    ((:lit "substring")        :word . (let* ((res (if (= (bf_arrayp_raw (wf_arg_ptr args 0)) 0)
+                                                    (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 123666628244065 0 0 6) 0)
+                                                  (if (= (sexp-tag (wf_arg_ptr args 1)) 2)
+                                                    ;; TO is read as an integer and never checked, so a non-integer answered a
+                                                    ;; slice instead of signalling: (nelisp--native-substring "abcdef" 1 "z")
+                                                    ;; was "", the string's second word read as a count.  The prelude wrapper
+                                                    ;; checks it, which is why nothing in the tree ever saw this, and is also
+                                                    ;; why the wrapper could not simply delegate to this arm.  Checked before
+                                                    ;; the range arithmetic below, so (substring "abcdef" 12354 "z") still
+                                                    ;; names "z" rather than a range computed from it.
+                                                    (if (if (= (heap-read-u64 (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)) 0) 7)
+                                                            (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0
+                                                              (if (= (sexp-tag (wf_arg_ptr args 2)) 2) 0 1))
                                                           0)
-                                                      0)
-                                                  0)))
-                                   (if (= fast-p 1)
-                                       (seq
-                                        (if (> from to-raw)
-                                            (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
-                                          ;; A string whose cached char count equals its byte
-                                          ;; count is all ASCII (`nl_str_charlen' counts every
-                                          ;; byte that is not a continuation byte), so its char
-                                          ;; indices are byte offsets and it is observably
-                                          ;; unibyte unless forced multibyte.  Both used to
-                                          ;; walk the string on every call, whatever the slice
-                                          ;; length: the cursor from wherever it was cached, and
-                                          ;; `m5_observably_unibyte_p' over every byte, twice --
-                                          ;; 17 ms for 512 bytes of a 246 KB source, which is
-                                          ;; how `load' slices a file for the reader.
-                                          (let* ((ascii (if (= (nl_str_charlen_c s) nb) 1 0))
-                                                 (cf-byte (if (= ascii 1)
-                                                              (if (> from nb) -1 from)
-                                                            (nl_str_sub_byte_off s nb from)))
-                                                 (ct-byte (if (= ascii 1)
-                                                              (if (> to-raw nb) -1 to-raw)
-                                                            (nl_str_sub_byte_off s nb to-raw)))
-                                                 (uni (if (= ascii 1)
-                                                          (- 1 (m5_forced_multibyte_p s))
-                                                        0)))
-                                            (if (if (< cf-byte 0) 1 (if (< ct-byte 0) 1 0))
-                                                (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
-                                              (nl_string_new (+ (bf_str_ptr s) cf-byte)
-                                                             (- ct-byte cf-byte) uni)))))
-                                     (let* ((clen (m5_length s))
-                                            (to (if (= has-to 1) to-raw clen))
-                                            (cf (if (< from 0) (+ clen from) from))
-                                            (ct (if (< to 0) (+ clen to) to))
-                                            ;; The fast path's shortcut, for a string of any
-                                            ;; tag: char count = byte count means char
-                                            ;; indices are byte offsets and no byte needs
-                                            ;; scanning.  Other arrays keep the walks below.
-                                            (direct (if (= (m5_string_tag_p (heap-read-u64 s 0)) 1)
-                                                        (if (= clen nb) 1 0)
-                                                      0)))
-                                       (seq
-                                        (if (if (< cf 0) 1
-                                              (if (> cf clen) 1
-                                                (if (< ct 0) 1
-                                                  (if (> ct clen) 1 (if (> cf ct) 1 0)))))
-                                           (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
-                                         (let* ((uni (if (= direct 1)
-                                                         (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1)
-                                                             1
-                                                           (- 1 (m5_forced_multibyte_p s)))
-                                                       (m5_observably_unibyte_p s))))
-                                           (let* ((begin (if (= direct 1) cf
-                                                            (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) cf
-                                                              (nl_u8_cidx_byte s 0 nb 0 cf))))
-                                                  (end (if (= direct 1) ct
-                                                          (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) ct
-                                                            (nl_u8_cidx_byte s 0 nb 0 ct)))))
-                                             (nl_string_new (+ (bf_str_ptr s) begin) (- end begin) uni)))))))))
-                          (nl_abi_fail (bf_wrong_type_integerp (wf_arg_ptr args 1)) 0))))
+                                                        (nl_abi_fail (bf_wrong_type_integerp (wf_arg_ptr args 2)) 0)
+                                                      (let* ((s (wf_arg_ptr args 0))
+                                                                (nb (m5_strlen s))
+                                                                (from-box (wf_arg_ptr args 1))
+                                                                (from (heap-read-u64 from-box 8))
+                                                                (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
+                                                                (has-to (if (= (sexp-tag rest) 7)
+                                                                            (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0 1)
+                                                                          0))
+                                                                (to-box (if (= (sexp-tag rest) 7)
+                                                                            (wf_arg_ptr args 2)
+                                                                          3))
+                                                                (to-raw (if (= has-to 1) (heap-read-u64 (wf_arg_ptr args 2) 8) -1))
+                                                                ;; FAST PATH eligibility: FROM/TO both given and
+                                                                ;; non-negative on a genuinely multibyte (tag 5)
+                                                                ;; string -- the shape `(substring s i (1+ i))'
+                                                                ;; needs -- skips `m5_length' (a whole-string
+                                                                ;; `nl_str_charlen' walk) entirely by using the
+                                                                ;; O(1)-amortized cache's INCLUSIVE bounds check
+                                                                ;; (`nl_str_sub_byte_off') to validate FROM/TO
+                                                                ;; instead: it answers -1 for an out-of-range
+                                                                ;; index without ever needing the exact char
+                                                                ;; length, the same way `bf_aref_checked' above
+                                                                ;; fuses its bounds check into the walk.  A
+                                                                ;; negative FROM/TO or an omitted TO still needs
+                                                                ;; the true char length (for negative-index
+                                                                ;; normalisation or the default), so those keep
+                                                                ;; the unchanged slow path below.
+                                                                (fast-p (if (>= from 0)
+                                                                            (if (= has-to 1)
+                                                                                (if (>= to-raw 0)
+                                                                                    (if (= (heap-read-u64 s 0) 5) 1 0)
+                                                                                  0)
+                                                                              0)
+                                                                          0)))
+                                                           (if (= fast-p 1)
+                                                               (seq
+                                                                (if (> from to-raw)
+                                                                    (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
+                                                                  ;; A string whose cached char count equals its byte
+                                                                  ;; count is all ASCII (`nl_str_charlen' counts every
+                                                                  ;; byte that is not a continuation byte), so its char
+                                                                  ;; indices are byte offsets and it is observably
+                                                                  ;; unibyte unless forced multibyte.  Both used to
+                                                                  ;; walk the string on every call, whatever the slice
+                                                                  ;; length: the cursor from wherever it was cached, and
+                                                                  ;; `m5_observably_unibyte_p' over every byte, twice --
+                                                                  ;; 17 ms for 512 bytes of a 246 KB source, which is
+                                                                  ;; how `load' slices a file for the reader.
+                                                                  (let* ((ascii (if (= (nl_str_charlen_c s) nb) 1 0))
+                                                                         (cf-byte (if (= ascii 1)
+                                                                                      (if (> from nb) -1 from)
+                                                                                    (nl_str_sub_byte_off s nb from)))
+                                                                         (ct-byte (if (= ascii 1)
+                                                                                      (if (> to-raw nb) -1 to-raw)
+                                                                                    (nl_str_sub_byte_off s nb to-raw)))
+                                                                         (uni (if (= ascii 1)
+                                                                                  (- 1 (m5_forced_multibyte_p s))
+                                                                                0)))
+                                                                    (if (if (< cf-byte 0) 1 (if (< ct-byte 0) 1 0))
+                                                                        (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
+                                                                      (nl_string_new (+ (bf_str_ptr s) cf-byte)
+                                                                                     (- ct-byte cf-byte) uni)))))
+                                                             (let* ((clen (m5_length s))
+                                                                    (to (if (= has-to 1) to-raw clen))
+                                                                    (cf (if (< from 0) (+ clen from) from))
+                                                                    (ct (if (< to 0) (+ clen to) to))
+                                                                    ;; The fast path's shortcut, for a string of any
+                                                                    ;; tag: char count = byte count means char
+                                                                    ;; indices are byte offsets and no byte needs
+                                                                    ;; scanning.  Other arrays keep the walks below.
+                                                                    (direct (if (= (m5_string_tag_p (heap-read-u64 s 0)) 1)
+                                                                                (if (= clen nb) 1 0)
+                                                                              0)))
+                                                               (seq
+                                                                (if (if (< cf 0) 1
+                                                                      (if (> cf clen) 1
+                                                                        (if (< ct 0) 1
+                                                                          (if (> ct clen) 1 (if (> cf ct) 1 0)))))
+                                                                   (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
+                                                                 (let* ((uni (if (= direct 1)
+                                                                                 (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1)
+                                                                                     1
+                                                                                   (- 1 (m5_forced_multibyte_p s)))
+                                                                               (m5_observably_unibyte_p s))))
+                                                                   (let* ((begin (if (= direct 1) cf
+                                                                                    (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) cf
+                                                                                      (nl_u8_cidx_byte s 0 nb 0 cf))))
+                                                                          (end (if (= direct 1) ct
+                                                                                  (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) ct
+                                                                                    (nl_u8_cidx_byte s 0 nb 0 ct)))))
+                                                                     (nl_string_new (+ (bf_str_ptr s) begin) (- end begin) uni)))))))))
+                                                  (nl_abi_fail (bf_wrong_type_integerp (wf_arg_ptr args 1)) 0)))))
+                                   ;; GNU Fsubstring reaches copy_text_properties, which returns
+                                   ;; at once for a source without intervals (textprop.c:1970).
+                                   (if (= res 0) 0
+                                     (let* ((w (wf_arg_word args 0)))
+                                       (if (= (logand w 7) 4)
+                                           (if (= (ptr-read-u64 (- w 4) 16) 0) res
+                                             (wf_string_props_finish_w res args env 1))
+                                         res)))))
     ((:lit "format")           :word . (let* ((fmt (wf_arg_ptr args 0))
                                         (all-unibyte (m5_concat_all_unibyte_p args)))
                                      (let ((sb (alloc-bytes 32 8)))
@@ -15054,6 +15074,27 @@ eval applyfn.")
             (if (and (/= function-word 0) (/= function-word 2))
                 (nl_apply_function_w function-word args env 0)
               (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
+    ;; GNU fns.c:1003-1021 add_text_properties_from_list after concat_to_string,
+    ;; and Fsubstring's copy_text_properties: the producer arm has already
+    ;; written RESULT. A source string with intervals sends RESULT and the
+    ;; original arguments to the Lisp interval engine (kind 0: concat, 1:
+    ;; substring), which copies the intervals onto RESULT and answers it.
+    ;; RESULT and the call list stay rooted across the callback.
+    (defun wf_string_props_finish_w (result args env kind)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8))
+             (mark (nl_root_mark env)) (roots (nl_root_words env 2)))
+        (seq (ptr-write-u64 roots 0 result)
+             (ptr-write-u64 buf 0 3255381746650998126)
+             (ptr-write-u64 (+ buf 8) 0 (if (= kind 0) 8083244867824480372 8083225162782961780))
+             (ptr-write-u64 (+ buf 16) 0 1936748402)
+             (nl_alloc_symbol buf 20 sym_slot)
+             (ptr-write-u64 roots 8 (nelisp_cons_construct_w result args 0))
+             (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+               (if (and (/= function-word 0) (/= function-word 2))
+                   (let* ((rc (nl_apply_function_w function-word (heap-read-u64 roots 8) env 0)))
+                     (seq (nl_root_release env mark) (if (= rc 0) 0 result)))
+                 (seq (nl_root_release env mark)
+                      (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))))
     (defun wf_append_w (args env _pad)
   (if (= (nl_val_tag args) 0) 3
     (if (= (nl_val_tag (nl_cons_cdr_word args)) 0) (nl_cons_car_word args)
@@ -27826,6 +27867,15 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "error")       :word . (bf_error_w args 0))
     ;; equal (member/assoc use it).  eq is REPLACED (not appended) in the table.
     ((:lit "nelisp--clear-string-bytes") :word . (bf_clear_string_bytes_w args env 0))
+    ;; Lisp_String.intervals marker (Doc 227): header+16 is nonzero exactly while the
+    ;; Lisp interval engine has an entry for the string. Only a canonical String WORD
+    ;; has a header; legacy boot-image views keep their properties in the table alone.
+    ((:lit "nelisp--string-mark-intervals") :word .
+     (let* ((value (wf_arg_word args 0)) (flag (wf_arg_word args 1)))
+       (seq (if (= (logand value 7) 4)
+                (ptr-write-u64 (- value 4) 16 (if (= flag 3) 0 1))
+              0)
+            flag)))
     ((:lit "nelisp--equal-leaf") :word . (bf_equal_w args 0))
     ((:lit "equal")       :word . (bf_n2_call_lisp_equal_w args env 0))
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
@@ -28083,7 +28133,7 @@ families.")
     "char-table-parent" "set-char-table-parent"
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
-    "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "setcar" "setcdr" "load"
+    "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
     "syscall-direct" "atomic-fetch-add" "garbage-collect"
@@ -28982,6 +29032,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; SERVER-NAME), (nelisp-tls-send CONTEXT STRING) and
       ;; (nelisp-tls-recv CONTEXT MAX-BYTES).
       nelisp-tls-connect nelisp-tls-send nelisp-tls-recv
+      nelisp--string-mark-intervals
       % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot
       char-table-range cons elt eq equal make-bool-vector make-vector map-char-table
       mapcar maphash member memq mod nelisp--arena-value-survival nelisp--assoc-raw
@@ -33995,7 +34046,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--fx-run" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
-    "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--build-digest"
+    "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--pool-root-coverage" "nelisp--arena-swizzle-verify"
@@ -47767,6 +47818,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 (defun nelisp-standalone--patch-autoload-lookups (src &optional with-helpers)
   "Return SRC (a `(seq (defun ...) ...)') with call-dispatch lookups made
 autoload-aware; append the helpers when WITH-HELPERS."
+  ;; The dispatcher is one deep right-nested chain; this walker recurses along
+  ;; both car and cdr, so adding an arm must not trip the default 1600 limit.
+  (let ((max-lisp-eval-depth (max max-lisp-eval-depth 40000)))
   (cons (car src)
         (append
          (mapcar (lambda (form)
@@ -47791,7 +47845,7 @@ autoload-aware; append the helpers when WITH-HELPERS."
                        (nelisp-standalone--autoload-rewrite-lookups form)
                      form))))
                  (cdr src))
-         (and with-helpers nelisp-standalone--autoload-lookup-helpers))))
+         (and with-helpers nelisp-standalone--autoload-lookup-helpers)))))
 
 ;; WAVE-2 (PATCH 4): condition-case clears the M6 arena signal flag on a clause
 ;; MATCH.  Pairs with PATCH 1 (the errstub no longer clears flag@268435472), so a
