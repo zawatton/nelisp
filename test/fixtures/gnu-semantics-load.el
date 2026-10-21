@@ -33,4 +33,34 @@
                            gs-load-hook-after gs-load-hook-calls))
               (terpri)))
         (fset 'internal-macroexpand-for-load saved)))))
+(defvar gs-load-forward-calls nil)
+(let ((saved (symbol-function 'internal-macroexpand-for-load)))
+  (dolist (mode '(replace remove alias))
+    (let ((gs-load-hook-after nil) (gs-load-forward-calls nil))
+      (unwind-protect
+          (progn
+            (fset 'gs-load-forward-expander
+                  (lambda (form full)
+                    (push (list 'new full) gs-load-forward-calls)
+                    form))
+            (fset 'internal-macroexpand-for-load
+                  (lambda (form full)
+                    (push (list 'old full) gs-load-forward-calls)
+                    (unless full
+                      (cond ((eq mode 'remove)
+                             (fmakunbound 'internal-macroexpand-for-load))
+                            ((eq mode 'alias)
+                             (fset 'internal-macroexpand-for-load 'gs-load-forward-expander))
+                            (t (fset 'internal-macroexpand-for-load
+                                     (symbol-function 'gs-load-forward-expander)))))
+                    form))
+            (let ((result
+                   (condition-case err
+                       (load (expand-file-name "test/fixtures/gnu-semantics-load-forward-library.el") nil t)
+                     (error err))))
+              (prin1 (list 'expander-resolved-per-call mode result
+                           gs-load-hook-after (nreverse gs-load-forward-calls)))
+              (terpri)))
+        (fset 'internal-macroexpand-for-load saved)
+        (fmakunbound 'gs-load-forward-expander)))))
 (kill-emacs 0)

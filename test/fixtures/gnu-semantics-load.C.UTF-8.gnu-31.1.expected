@@ -7,3 +7,6 @@
 (abort nil expansion-environment-restored t)
 (expander-selected-at-file-start remove (void-function internal-macroexpand-for-load) nil 0)
 (expander-selected-at-file-start define t t 0)
+(expander-resolved-per-call replace t ran ((old nil) (new t)))
+(expander-resolved-per-call remove (void-function internal-macroexpand-for-load) nil ((old nil)))
+(expander-resolved-per-call alias t ran ((old nil) (new t)))

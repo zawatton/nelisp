@@ -12,6 +12,75 @@
          (d3 (cons d2 d2)))
     (cons d3 d3)))
 
+(defconst nelisp-prelude-bytecode-parity--fx-helper-cases
+  '((nelisp--fx-env-ok-p
+     (mapcar #'nelisp--fx-env-ok-p
+             '(nil t 7 (t) (t declared) (declared) ((bound . 1))
+               (t . tail) (t nil) (t 7))))
+    (nelisp--fx-special-p
+     (let ((nelisp--fx-declared '(nelisp-parity--fx-declared))
+           (special (make-symbol "nelisp-parity--fx-special"))
+           (bound (make-symbol "nelisp-parity--fx-bound"))
+           (unbound (make-symbol "nelisp-parity--fx-unbound"))
+           (original (symbol-function 'special-variable-p)))
+       (unwind-protect
+           (progn
+             (eval (list 'defvar special nil))
+             (set bound 9)
+             (list (nelisp--fx-special-p 'nelisp-parity--fx-declared)
+                   (nelisp--fx-special-p special)
+                   (nelisp--fx-special-p bound)
+                   (nelisp--fx-special-p unbound)
+                   (progn
+                     (fmakunbound 'special-variable-p)
+                     (list (nelisp--fx-special-p 'nelisp-parity--fx-declared)
+                           (nelisp--fx-special-p bound)
+                           (nelisp--fx-special-p unbound)))))
+         (fset 'special-variable-p original)
+         (makunbound special)
+         (makunbound bound))))
+    (nelisp--fx-hopeless-p
+     (let ((nelisp--fx-hopeless-heads '(lambda catch)))
+       (mapcar #'nelisp--fx-hopeless-p
+               '(nil atom ((+ a 1)) ((quote (lambda (x) x)))
+                 ((\` (catch tag body))) ((ordinary (catch tag body)))
+                 ((function (lambda (x) x))) ((let ((lambda 1)) lambda))))))
+    (nelisp--fx-arglist-shape
+     (mapcar
+      (lambda (args)
+        (condition-case err (nelisp--fx-arglist-shape args) (error err)))
+      '(nil (a b) (a &optional b c) (a &optional b &rest rest)
+        (&rest rest) (a a) (a &optional a) (a &optional b &rest a)
+        (&rest) (&rest t) (&rest a b) (a &optional b &optional c)
+        (nil) (t) (1) (:key) (a . tail))))
+    (nelisp--fx-macros-used
+     (let ((first 'nelisp-parity--fx-temporary-macro-a)
+           (second 'nelisp-parity--fx-temporary-macro-b)
+           (old-first (and (fboundp 'nelisp-parity--fx-temporary-macro-a)
+                           (symbol-function 'nelisp-parity--fx-temporary-macro-a)))
+           (old-second (and (fboundp 'nelisp-parity--fx-temporary-macro-b)
+                            (symbol-function 'nelisp-parity--fx-temporary-macro-b))))
+       (unwind-protect
+           (progn
+             (fset first (cons 'macro (lambda (&rest args) nil)))
+             (fset second (cons 'macro (lambda (&rest args) nil)))
+             (list
+              (nelisp--fx-macros-used
+               '((nelisp-parity--fx-temporary-macro-a x)
+                 (nelisp-parity--fx-ordinary (nelisp-parity--fx-temporary-macro-b y))
+                 (nelisp-parity--fx-temporary-macro-a z)
+                 (quote (nelisp-parity--fx-temporary-macro-b ignored))))
+              (nelisp--fx-macros-used
+               '((quote (nelisp-parity--fx-temporary-macro-a x))
+                 (quote (nelisp-parity--fx-temporary-macro-b y))))
+              (nelisp--fx-macros-used
+               '((nelisp-parity--fx-temporary-macro-a
+                  (nelisp-parity--fx-temporary-macro-b nested))))
+              (nelisp--fx-macros-used 'atom)))
+         (if old-first (fset first old-first) (fmakunbound first))
+         (if old-second (fset second old-second) (fmakunbound second))))))
+  "Branch cases for the pure support functions used by the FX compiler.")
+
 (defconst nelisp-prelude-bytecode-parity--cases
   (append
    '((obarrayp (obarrayp (make-vector 3 nil)))
@@ -167,6 +236,7 @@
     (point-min (with-temp-buffer (point-min)))
     (point-max (with-temp-buffer (insert "x") (point-max)))
     (point (with-temp-buffer (insert "xy") (point))))
+   nelisp-prelude-bytecode-parity--fx-helper-cases
    (mapcar (lambda (name)
              (list name (list name (list 'quote nelisp-prelude-bytecode-parity--cxxr-tree))))
            nelisp-prelude-bytecode-parity--cxxr-names))

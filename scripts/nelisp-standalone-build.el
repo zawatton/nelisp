@@ -22724,7 +22724,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (seq
                          (wf_word_store_out arguments
                            (nelisp_cons_construct_w word (nelisp_cons_construct_w 7 3 0) 0))
-                         (let* ((full (nl_n4_named_apply_w name function arguments env 0)))
+                         ;; GNU calln resolves the symbol again: the nil
+                         ;; expansion may replace or unbind the expander.
+                         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name function) 0)
+                             (if (= (bf_fboundp_cell_p function) 1) 0 (setq enabled 0))
+                           (setq enabled 0))
+                         (let* ((full (if (= enabled 0)
+                                          (seq (nl_cons_stash_void_function env name) 0)
+                                        (nl_n4_named_apply_w name function arguments env 0))))
                            (if (= full 0) 0
                              (seq (wf_word_store_out expanded full)
                                   (setq answer (nelisp_eval_call_w expanded env 0)))))))))))))))

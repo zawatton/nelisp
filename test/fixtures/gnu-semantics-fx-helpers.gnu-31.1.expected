@@ -1,0 +1,5 @@
+(nelisp--fx-env-ok-p (nil nil nil t t t nil nil nil nil))
+(nelisp--fx-special-p (t t nil nil (t t nil)))
+(nelisp--fx-hopeless-p (nil nil nil nil nil t t t))
+(nelisp--fx-arglist-shape ((nil 0 0 -1) ((a b) 2 2 -1) ((a b c) 1 3 -1) ((a b rest) 1 -1 2) ((rest) 0 -1 0) nil nil nil nil nil nil nil nil nil nil nil (wrong-type-argument listp tail)))
+(nelisp--fx-macros-used ((nelisp-parity--fx-temporary-macro-b nelisp-parity--fx-temporary-macro-a) nil (nelisp-parity--fx-temporary-macro-b nelisp-parity--fx-temporary-macro-a) nil))
