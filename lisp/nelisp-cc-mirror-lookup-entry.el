@@ -168,16 +168,23 @@ written wrong, so the check must fire.  Anything else: no check."
     (defun nelisp_mirror_slot_raw_word (rec-ptr idx)
       (nl_record_slot_word rec-ptr idx))
 
-    ;; Doc 221 M02/M23, the symbol's own cell.  GNU reads it without a name
-    ;; hash: XSYMBOL (fun)->u.s.function (eval.c:3153, bytecode.c:803) and
-    ;; the SYMBOL_PLAINVAL value (bytecode.c:640, data.c:1630); lisp.h:786-822.
+    ;; Doc 221 M02/M23 and Doc 226 D2, the symbol's own object.  GNU reads
+    ;; the cells in the symbol itself, without a name hash:
+    ;; XSYMBOL (fun)->u.s.function (eval.c:3153, bytecode.c:803) and the
+    ;; SYMBOL_PLAINVAL value (bytecode.c:640, data.c:1630); lisp.h:786.
     ;; Adapted: a NeLisp symbol box (tag 4) is a view of its canonical
-    ;; interned name buffer (+16), whose header holds the symbol's cell
-    ;; index (`nl_intern_bump'); the mirror table's slot 3 vector maps the
-    ;; index to the symbol's entry record (value 0, function 1, plist 2).
-    ;; Answers that entry WORD, or 0 when NAME has no cell (not interned,
-    ;; never given an entry, or a table without cells); the hashed path
-    ;; then decides, as GNU's non-plain redirects fall to Fsymbol_value.
+    ;; interned name buffer (+16), whose header holds the symbol's index
+    ;; (`nl_intern_bump'); the mirror table's slot 3 vector maps the index
+    ;; to the symbol's one object (a nine-slot symbol-entry record).
+    ;; Answers:
+    ;;   the object WORD -- NAME's symbol has an object;
+    ;;   0 -- NAME is an interned symbol without an object, i.e. without
+    ;;        state (void value and function, empty plist).  Every writer
+    ;;        that creates an object stores it here (`nl_symcell_refresh'),
+    ;;        so this is answered without the hash;
+    ;;   1 -- NAME cannot have an object slot (its name buffer is outside
+    ;;        the intern arena, or the table has no slot 3); the caller
+    ;;        walks the hashed chain.
     ;; Every hop is an inline load (no accessor calls): a WORD's payload
     ;; is W-6 for a compact vectorlike and [W+8] for a box; a record keeps
     ;; its slot count in header>>8 and slot I at payload+16+8I, a vector
@@ -187,20 +194,20 @@ written wrong, so the check must fire.  Anything else: no check."
              (base (heap-read-u64 268436288 0)))
         (if (and (> buf (+ base 16777224))
                  (< buf (heap-read-u64 268436296 0)))
-            (let* ((idx (logand (heap-read-u64 (- buf 8) 0) 4294967295)))
-              (if (= idx 0) 0
-                (let* ((mp (if (= (logand mirror-ptr 7) 6) (- mirror-ptr 6)
-                             (heap-read-u64 mirror-ptr 8)))
-                       (hw (heap-read-u64 mp 16))
-                       (ht (if (= (logand hw 7) 6) (- hw 6) (heap-read-u64 hw 8))))
-                  (if (< (sar (heap-read-u64 ht 0) 8) 4) 0
+            (let* ((mp (if (= (logand mirror-ptr 7) 6) (- mirror-ptr 6)
+                         (heap-read-u64 mirror-ptr 8)))
+                   (hw (heap-read-u64 mp 16))
+                   (ht (if (= (logand hw 7) 6) (- hw 6) (heap-read-u64 hw 8))))
+              (if (< (sar (heap-read-u64 ht 0) 8) 4) 1
+                (let* ((idx (logand (heap-read-u64 (- buf 8) 0) 4294967295)))
+                  (if (= idx 0) 0
                     (let* ((cw (heap-read-u64 ht 40))
                            (cells (if (= (logand cw 7) 6) (- cw 6)
                                     (heap-read-u64 cw 8))))
                       (if (>= idx (sar (heap-read-u64 cells 0) 8)) 0
                         (let* ((entry (heap-read-u64 (+ cells (* idx 8)) 8)))
                           (if (= (logand entry 1) 1) 0 entry))))))))
-          0)))
+          1)))
 
     ;; The hashed bucket walk, kept for keys without a cell and as the
     ;; authority `nl_symcell_refresh' copies into a cell.  KEY is a valid
@@ -253,6 +260,19 @@ written wrong, so the check must fire.  Anything else: no check."
                 (if (= (nl_symcell_reserve mirror-ptr idx) 0) 0
                   (let* ((entry (nelisp_mirror_lookup_hashed mirror-ptr key)))
                     (seq
+                     ;; Doc 226 D1 (verify builds): a symbol's object is never
+                     ;; replaced, so a writer that publishes a different first
+                     ;; entry for a key whose slot holds an object has made a
+                     ;; second object.  Inline: the F1 prelink closure is capped.
+                     ,@(when (nelisp-cc-mirror-lookup-entry--symcell-mode)
+                         '((let* ((cells (nl_record_slot_word
+                                          (nl_record_slot_word mirror-ptr 0) 3))
+                                  (old (if (< idx (nl_vector_length cells))
+                                           (nl_vector_slot_word cells idx) 3)))
+                             (if (or (= (logand old 1) 1) (= entry 0)
+                                     (= (nl_word_payload old) (nl_word_payload entry)))
+                                 0
+                               (syscall-direct 231 97 0 0 0 0 0)))))
                      (extern-call nl_vector_set_slot
                                   (nl_word_payload
                                    (nl_record_slot_word
@@ -270,11 +290,11 @@ written wrong, so the check must fire.  Anything else: no check."
       ;; without this ownership proof (including its cold-load hardening).
       (if (if (= name 0) 1 (= (logand name 1) 1)) 0
         (if (= (sexp-tag name) 4)
-            (let* ((cell (if (= (logand name 7) 6) 0
+            (let* ((cell (if (= (logand name 7) 6) 1
                            (nl_symcell_entry mirror-ptr name))))
-              (if (/= cell 0)
-                  ,(nelisp-cc-mirror-lookup-entry--cell-use 'name)
-                (nelisp_mirror_lookup_hashed mirror-ptr name)))
+              (if (= cell 1)
+                  (nelisp_mirror_lookup_hashed mirror-ptr name)
+                ,(nelisp-cc-mirror-lookup-entry--cell-use 'name)))
           (if (or (= (sexp-tag name) 16)
                   (= (sexp-tag name) 5) (= (sexp-tag name) 14))
               (nelisp_mirror_lookup_hashed mirror-ptr name)
@@ -319,15 +339,18 @@ written wrong, so the check must fire.  Anything else: no check."
         ;; `setq' checks one) land on an empty bucket.  A pointer head is
         ;; the bucket's first Cons view.
         (let ((cell (if (= (sexp-tag sym-ptr) 4)
-                        (nl_symcell_entry mirror-ptr sym-ptr) 0)))
-          (if (/= cell 0)
-              ,(nelisp-cc-mirror-lookup-entry--cell-use 'sym-ptr)
-            (nelisp_mirror_lookup_hashed mirror-ptr sym-ptr)))))
+                        (nl_symcell_entry mirror-ptr sym-ptr) 1)))
+          (if (= cell 1)
+              (nelisp_mirror_lookup_hashed mirror-ptr sym-ptr)
+            ,(nelisp-cc-mirror-lookup-entry--cell-use 'sym-ptr)))))
     ,@(when (nelisp-cc-mirror-lookup-entry--symcell-mode)
         '((defun nl_symcell_checked (mirror-ptr key cell)
+            ;; CELL is the object answer, or 0 for "no object" (Doc 226
+            ;; D2); the hashed walk must agree in both cases.
             (let* ((hashed (nelisp_mirror_lookup_hashed mirror-ptr key)))
-              (if (and (/= hashed 0)
-                       (= (nl_word_payload hashed) (nl_word_payload cell)))
+              (if (if (= cell 0) (= hashed 0)
+                    (and (/= hashed 0)
+                         (= (nl_word_payload hashed) (nl_word_payload cell))))
                   cell
                 (syscall-direct 231 97 0 0 0 0 0))))
           ;; A wrong entry: the previous index's cell when it has one.

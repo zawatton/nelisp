@@ -16,8 +16,12 @@ Helpers:
 """
 import bisect
 import collections
+import hashlib
 import json
+import os
 import re
+import resource
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +181,350 @@ def cmd_plan(_args):
     print(f"PLAN PASS refs={len(refs)} ops={len(named)} census-rows={len(want) - 1}")
 
 
+# ---------------------------------------------------------------- S1.2 census
+CENSUS = OUT / "census"
+CENSUS_PATHS = ("plain-read", "plain-write", "plain-bind", "alias-read", "alias-write",
+                "alias-bind", "fwd-read", "fwd-write", "fwd-bind", "uninterned-read")
+CENSUS_TARGETS = ("nelisp_mirror_lookup_hashed", "nelisp_mirror_bucket_prepend_unchecked")
+CENSUS_N = 1000
+
+
+def callgrind_calls(path, targets):
+    """Total calls into each target function in a callgrind profile."""
+    names, counts = {}, collections.Counter()
+    callee = None
+    for line in Path(path).read_text(errors="replace").splitlines():
+        if line.startswith(("fn=", "cfn=", "cfi=", "cob=")) is False and not line.startswith("calls="):
+            continue
+        if line.startswith("cfn="):
+            m = re.match(r"cfn=\((\d+)\)(?: (.*))?", line)
+            if m:
+                if m.group(2):
+                    names[m.group(1)] = m.group(2)
+                callee = names.get(m.group(1))
+            else:
+                callee = line[4:]
+        elif line.startswith("fn="):
+            m = re.match(r"fn=\((\d+)\)(?: (.*))?", line)
+            if m and m.group(2):
+                names[m.group(1)] = m.group(2)
+            callee = None
+        elif line.startswith("calls=") and callee in targets:
+            counts[callee] += int(line[6:].split()[0])
+    return counts
+
+
+def symbol_addresses(binary, names):
+    """The callgrind function labels of NAMES: callgrind cannot read the
+    runtime's ELF symbols, so it labels each function by its entry address."""
+    out = subprocess.run(["nm", binary], capture_output=True, text=True, check=True).stdout
+    found = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] in names:
+            found["0x%016x" % int(parts[0], 16)] = parts[2]
+    need(set(found.values()) == set(names), "missing census symbols in " + str(binary))
+    return found
+
+
+def census_run(binary, path, n, tag):
+    dest = CENSUS / tag
+    dest.mkdir(parents=True, exist_ok=True)
+    prefix = dest / f"{path}-{n}"
+    command = ["taskset", "-c", CPU, "valgrind", "--tool=callgrind",
+               f"--callgrind-out-file={prefix}.cg", binary, "--load",
+               str(ROOT / "test/perf/symbols-census-probe.el")]
+    proc = subprocess.run(command, env=dict(os.environ, SYMC_N=str(n), SYMC_PATH=path),
+                          capture_output=True, preexec_fn=cap_memory, timeout=1800)
+    Path(f"{prefix}.out").write_bytes(proc.stdout)
+    Path(f"{prefix}.err").write_bytes(proc.stderr)
+    need(proc.returncode == 0 and f"SYMC {path} {n} ".encode() in proc.stdout,
+         f"census run {path} N={n} failed")
+    labels = symbol_addresses(binary, CENSUS_TARGETS)
+    counts = callgrind_calls(f"{prefix}.cg", set(labels) | set(CENSUS_TARGETS))
+    result = collections.Counter()
+    for label, count in counts.items():
+        result[labels.get(label, label)] += count
+    return result
+
+
+def measure_census(binary, tag):
+    rows = {}
+    for path in CENSUS_PATHS:
+        zero = census_run(binary, path, 0, tag)
+        full = census_run(binary, path, CENSUS_N, tag)
+        rows[path] = {t: (full[t] - zero[t]) / CENSUS_N for t in CENSUS_TARGETS}
+    report = {"schema": 1, "tag": tag, "binary": pin(binary), "source": source_head(binary),
+              "n": CENSUS_N, "probe": pin(ROOT / "test/perf/symbols-census-probe.el"),
+              "per_iteration": rows}
+    CENSUS.mkdir(parents=True, exist_ok=True)
+    for name in ("census-" + tag + ".json", "census.json"):
+        (CENSUS / name).write_text(json.dumps(report, indent=1) + "\n")
+    return report
+
+
+def cmd_census(args):
+    if args and args[0] == "--measure":
+        report = measure_census(args[1], args[2])
+    else:
+        need((CENSUS / "census.json").is_file(), "no census recorded")
+        report = json.loads((CENSUS / "census.json").read_text())
+        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        need(report["source"][0] == head, "census evidence is not from a build of HEAD")
+    print("| path | hashed walks/iter | insertions/iter |")
+    failures = []
+    for path, row in report["per_iteration"].items():
+        a, b = (row[t] for t in CENSUS_TARGETS)
+        print(f"| {path} | {a:.3f} | {b:.3f} |")
+        if not path.startswith("uninterned") and (a > 0.001 or b > 0.001):
+            failures.append(path)
+    need(not failures, "mirror-table lookups on " + ", ".join(failures))
+    print("CENSUS PASS")
+
+
+# ---------------------------------------------------------------- S2 speed
+# COMMON.md "Measurement": wall-clock, seven alternating rounds (candidate,
+# GNU, base; reversed on odd rounds), pinned to the lane's CPU, warmed up,
+# GC included, decided on per-round paired comparisons.  An own cost is
+# (operation loop - same-shape trivial subr loop) / N in one process.
+GNU = os.environ.get("SYMBOLS_GNU", "/usr/local/bin/emacs")
+CPU = os.environ.get("SYMBOLS_CPU", "13")
+ROUNDS = 7
+SPEED = OUT / "speed"
+OWN = {"symbol-value": ("symp-value", "symp-trivial1"),
+       "set": ("symp-set", "symp-trivial2"),
+       "boundp": ("symp-boundp", "symp-trivial1")}
+# Iterations per engine and mode: long enough that each loop takes tenths
+# of a second on that engine.
+GLOBALS_N = {("gnu", "interpreter"): 2000000, ("gnu", "bytecode"): 5000000,
+             ("nelisp", "interpreter"): 200000, ("nelisp", "bytecode"): 1000000}
+MXLIB_N = 100010
+BYTECODE_GEN = r"""
+(let* ((src (getenv "SYM_SRC")) (out (getenv "SYM_OUT")) (forms nil))
+  (setq byte-compile-warnings nil)
+  (with-temp-buffer
+    (insert-file-contents src)
+    (goto-char (point-min))
+    (condition-case nil
+        (while t (push (read (current-buffer)) forms))
+      (end-of-file nil)))
+  (setq forms (nreverse forms))
+  (load src nil t)
+  (with-temp-file out
+    (insert ";;; -*- lexical-binding: t -*-\n")
+    (dolist (f forms)
+      (cond
+       ((eq (car-safe f) 'defun)
+        (byte-compile (cadr f))
+        (insert (format "(fset '%s %S)\n" (cadr f) (symbol-function (cadr f)))))
+       ((memq (car-safe f) '(defvar defconst))
+        (insert (format "%S\n" f)))))))
+"""
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def pin(path):
+    path = Path(path).resolve()
+    return {"path": str(path), "sha256": sha(path)}
+
+
+def cap_memory():
+    resource.setrlimit(resource.RLIMIT_AS, (8388608 * 1024, 8388608 * 1024))
+
+
+def cpu_khz():
+    try:
+        return int(Path(f"/sys/devices/system/cpu/cpu{CPU}/cpufreq/scaling_cur_freq").read_text())
+    except OSError:
+        return None
+
+
+def bytecode_fixture(name, sources):
+    """GNU 31.1 bytecode of SOURCES, printed as fset forms NeLisp reads."""
+    SPEED.mkdir(parents=True, exist_ok=True)
+    src = SPEED / (name + ".el")
+    src.write_text(";;; -*- lexical-binding: t; -*-\n"
+                   + "".join(Path(s).read_text() for s in sources))
+    out = SPEED / (name + "-bytecode.el")
+    proc = subprocess.run([GNU, "-Q", "--batch", "--eval", BYTECODE_GEN],
+                          env=dict(os.environ, SYM_SRC=str(src), SYM_OUT=str(out)),
+                          capture_output=True, preexec_fn=cap_memory, timeout=300)
+    need(proc.returncode == 0 and out.is_file(), "GNU bytecode generation failed: "
+         + proc.stderr.decode(errors="replace")[-400:])
+    return out
+
+
+def run_probe(engine, binary, probe, env, marker):
+    command = ["taskset", "-c", CPU, binary]
+    command += ["-Q", "--batch", "-l", str(probe)] if engine == "gnu" else ["--load", str(probe)]
+    before = cpu_khz()
+    proc = subprocess.run(command, env=dict(os.environ, **env), capture_output=True,
+                          preexec_fn=cap_memory, timeout=3600)
+    after = cpu_khz()
+    line = next((l for l in proc.stdout.decode(errors="replace").splitlines()
+                 if l.startswith(marker + " ")), None)
+    need(proc.returncode == 0 and line, f"{engine} {binary} probe failed rc={proc.returncode}: "
+         + proc.stderr.decode(errors="replace")[-300:])
+    fields = line.split()
+    times = dict(f.split("=", 1) for f in fields if "=" in f)
+    return {"command": command, "env": env, "n": int(fields[1]), "khz": [before, after],
+            "times": {k: float(v) for k, v in times.items()}}
+
+
+def source_head(binary):
+    head = Path(binary).resolve().parent / "SOURCE-HEAD"
+    diff = Path(binary).resolve().parent / "SOURCE-DIFF-SHA"
+    return (head.read_text().strip() if head.is_file() else None,
+            diff.read_text().split()[0] if diff.is_file() else None)
+
+
+def measure_globals(cand, base, tag):
+    probe = ROOT / "test/perf/symbols-globals-probe.el"
+    functions = ROOT / "test/perf/symbols-globals-functions.el"
+    bytecode = bytecode_fixture("globals", [functions])
+    engines = {"candidate": cand, "gnu": GNU, "base": base}
+    runs = []
+    for r in range(ROUNDS):
+        order = ["candidate", "gnu", "base"]
+        if r % 2:
+            order.reverse()
+        for mode in ("interpreter", "bytecode"):
+            for name in order:
+                kind = "gnu" if name == "gnu" else "nelisp"
+                env = {"SYMP_N": str(GLOBALS_N[(kind, mode)])}
+                if mode == "bytecode":
+                    env["SYMP_ELC"] = str(bytecode)
+                elif kind == "nelisp":
+                    env["NELISP_FX_DISABLE"] = "1"
+                row = run_probe(kind, engines[name], probe, env, "SYMP")
+                row.update(round=r, mode=mode, engine=name)
+                runs.append(row)
+    report = {"schema": 1, "tag": tag, "cpu": CPU, "rounds": ROUNDS,
+              "binaries": {k: pin(v) for k, v in engines.items()},
+              "source": {k: source_head(v) for k, v in (("candidate", cand), ("base", base))},
+              "inputs": [pin(probe), pin(functions), pin(bytecode)], "runs": runs}
+    SPEED.mkdir(parents=True, exist_ok=True)
+    for name in ("globals-" + tag + ".json", "globals.json"):
+        (SPEED / name).write_text(json.dumps(report, indent=1) + "\n")
+    return report
+
+
+def own_costs(report):
+    """{(mode, op): {engine: [ns per round]}} and the workload per-call times."""
+    own = collections.defaultdict(lambda: collections.defaultdict(list))
+    for row in report["runs"]:
+        t, n = row["times"], row["n"]
+        for op, (loop, trivial) in OWN.items():
+            own[(row["mode"], op)][row["engine"]].append((t[loop] - t[trivial]) / n * 1e9)
+        own[(row["mode"], "call-global")][row["engine"]].append(t["symp-call-global"] / n * 1e9)
+    return own
+
+
+def globals_table(report):
+    rows = []
+    own = own_costs(report)
+    for (mode, op), by in sorted(own.items()):
+        c, g, b = by["candidate"], by["gnu"], by["base"]
+        diff = statistics.median(x - y for x, y in zip(c, g))
+        ratio_g = statistics.median(x / y for x, y in zip(c, g)) if min(g) > 0 else None
+        ratio_b = statistics.median(x / y for x, y in zip(c, b)) if min(b) > 0 else None
+        rows.append(dict(mode=mode, op=op, candidate=statistics.median(c),
+                         gnu=statistics.median(g), base=statistics.median(b),
+                         diff_gnu=diff, ratio_gnu=ratio_g, ratio_base=ratio_b))
+    return rows
+
+
+def measure_mxlib(cand, base, tag):
+    corpus = OUT / "corpus/mxlib.el"
+    need(corpus.is_file(), "missing target/symbols/corpus/mxlib.el (notes-65 copy)")
+    loops = ROOT / "test/perf/symbols-mxlib-loops.el"
+    probe = ROOT / "test/perf/symbols-mxlib-probe.el"
+    bytecode = bytecode_fixture("mxlib", [corpus, loops])
+    engines = {"candidate": cand, "gnu": GNU, "base": base}
+    runs = []
+    for r in range(ROUNDS):
+        order = ["candidate", "gnu", "base"]
+        if r % 2:
+            order.reverse()
+        for name in order:
+            kind = "gnu" if name == "gnu" else "nelisp"
+            row = run_probe(kind, engines[name], probe,
+                            {"SYMX_N": str(MXLIB_N), "SYMP_ELC": str(bytecode)}, "SYMX")
+            row.update(round=r, engine=name)
+            runs.append(row)
+    report = {"schema": 1, "tag": tag, "cpu": CPU, "rounds": ROUNDS,
+              "binaries": {k: pin(v) for k, v in engines.items()},
+              "source": {k: source_head(v) for k, v in (("candidate", cand), ("base", base))},
+              "inputs": [pin(corpus), pin(loops), pin(probe), pin(bytecode)], "runs": runs}
+    for name in ("mxlib-" + tag + ".json", "mxlib.json"):
+        (SPEED / name).write_text(json.dumps(report, indent=1) + "\n")
+    return report
+
+
+def fmt(x):
+    return "-" if x is None else f"{x:.3f}"
+
+
+def current_build_ok(report):
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+    src = report["source"]["candidate"]
+    return src[0] == head
+
+
+def cmd_speed(args):
+    need(args and args[0] in ("globals", "workloads"), "usage: speed globals|workloads [--measure CAND BASE TAG]")
+    what = args[0]
+    if len(args) > 1 and args[1] == "--measure":
+        cand, base, tag = args[2:5]
+        if what == "globals":
+            report = measure_globals(cand, base, tag)
+        else:
+            report = measure_mxlib(cand, base, tag)
+    else:
+        name = "globals.json" if what == "globals" else "mxlib.json"
+        need((SPEED / name).is_file(), f"no {what} measurement recorded")
+        report = json.loads((SPEED / name).read_text())
+        need(current_build_ok(report), f"{what} evidence is not from a build of HEAD")
+    failures = []
+    if what == "globals":
+        print("| mode | op | cand ns | GNU ns | base ns | median(cand-GNU) | cand/GNU | cand/base |")
+        for row in globals_table(report):
+            if row["op"] == "call-global":
+                continue
+            print(f"| {row['mode']} | {row['op']} | {fmt(row['candidate'])} | {fmt(row['gnu'])} | "
+                  f"{fmt(row['base'])} | {fmt(row['diff_gnu'])} | {fmt(row['ratio_gnu'])} | {fmt(row['ratio_base'])} |")
+            if row["diff_gnu"] > 0:
+                failures.append(f"{row['mode']}/{row['op']} own cost {row['candidate']:.2f} ns > GNU {row['gnu']:.2f} ns")
+    else:
+        need((SPEED / "globals.json").is_file(), "no globals measurement (call-global) recorded")
+        greport = json.loads((SPEED / "globals.json").read_text())
+        rows = [r for r in globals_table(greport) if r["op"] == "call-global" and r["mode"] == "interpreter"]
+        times = collections.defaultdict(lambda: collections.defaultdict(list))
+        for row in report["runs"]:
+            for loop, sec in row["times"].items():
+                times[loop][row["engine"]].append(sec / row["n"] * 1e9)
+        print("| workload | cand ns/call | GNU ns/call | base ns/call | cand/base | cand/GNU |")
+        for loop, by in sorted(times.items()):
+            rb = statistics.median(x / y for x, y in zip(by["candidate"], by["base"]))
+            rg = statistics.median(x / y for x, y in zip(by["candidate"], by["gnu"]))
+            print(f"| {loop} (bytecode) | {fmt(statistics.median(by['candidate']))} | "
+                  f"{fmt(statistics.median(by['gnu']))} | {fmt(statistics.median(by['base']))} | {fmt(rb)} | {fmt(rg)} |")
+            if rb >= 1.0:
+                failures.append(f"{loop} cand/base {rb:.3f} >= 1.0")
+        for row in rows:
+            print(f"| call-global (interpreter) | {fmt(row['candidate'])} | {fmt(row['gnu'])} | "
+                  f"{fmt(row['base'])} | {fmt(row['ratio_base'])} | {fmt(row['ratio_gnu'])} |")
+            if row["ratio_base"] is None or row["ratio_base"] >= 1.0:
+                failures.append(f"call-global cand/base {fmt(row['ratio_base'])} >= 1.0")
+    need(not failures, "; ".join(failures))
+    print(f"SPEED {what.upper()} PASS")
+
+
 def not_yet(name):
     def run(_args):
         need(False, f"{name}: implementation or acceptance evidence outstanding")
@@ -187,9 +535,9 @@ COMMANDS = {
     "plan": cmd_plan,
     "census-static": cmd_census_static,
     "layout": not_yet("S1.1"),
-    "census": not_yet("S1.2"),
+    "census": cmd_census,
     "semantics": not_yet("S1.3"),
-    "speed": not_yet("S2"),
+    "speed": cmd_speed,
     "final": not_yet("S3.1"),
 }
 

@@ -46427,7 +46427,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                      (setq entry (heap-read-u64 state 32))) 0)
             (let* ((value 3))
               (seq
-               (if (or (= (heap-read-u64 state 56) 1)
+               ;; Doc 226 D1: every symbol object has the alias and blv
+               ;; slots (4, 5) from creation, so the redirect is read live
+               ;; (as GNU's find_symbol_value switch does) instead of from a
+               ;; setup-time slot-count flag.
+               (if (or (and (/= entry 0)
+                            (> (sar (heap-read-u64 (- entry 6) 0) 8) 5)
+                            (or (/= (heap-read-u64 entry 42) 3)
+                                (/= (heap-read-u64 entry 50) 3)))
                        (/= (heap-read-u64 env 168) 0)
                        ;; A registered worker can retain a pre-publication entry.
                        ;; Resolve the shared mirror afresh without cross-thread writes.

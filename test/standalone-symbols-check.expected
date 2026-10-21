@@ -48,12 +48,6 @@ SYM watch-alias (8 ((symfix-w 8 set nil) (symfix-w 9 let nil) (symfix-w 8 unlet 
 SYM watch-defvaralias nil
 SYM watch-defvaralias-new (((symfix-wal3 symfix-w3 defvaralias nil)) after)
 SYM watch-remove (10 nil nil)
-SYM fwd-int-let (7 t t)
-SYM fwd-int-type ((wrong-type-argument integerp symfix-x) (wrong-type-argument integerp 2.5) (wrong-type-argument integerp "x") t)
-SYM fwd-makunbound (error error "Built-in variable may not be unbound : max-lisp-eval-depth")
-SYM fwd-alias-refused (error error "Cannot make a built-in variable an alias: max-lisp-eval-depth")
-SYM fwd-alias-to (t 1 t)
-SYM fwd-bool (t nil t t)
 SYM fset (nil t t 42 t)
 SYM symbol-function-void (nil nil)
 SYM void-function (error void-function symfix-void-fn)
@@ -74,4 +68,10 @@ SYM mapatoms-ob ("b1" "c1")
 SYM mapatoms-global 2
 SYM symbol-name-eq t
 SYM symbol-name-types ("nil" "t" ":symfix-kw" (wrong-type-argument symbolp 3))
+SYM fwd-int-let (7 t t)
+SYM fwd-int-type ((wrong-type-argument integerp symfix-x) (wrong-type-argument integerp 2.5) (wrong-type-argument integerp "x") t)
+SYM fwd-makunbound (error error "Built-in variable may not be unbound : max-lisp-eval-depth")
+SYM fwd-alias-to (t 1 t)
+SYM fwd-bool (t nil t t)
+SYM fwd-alias-refused (error error "Cannot make a built-in variable an alias: max-lisp-eval-depth")
 SYM-DONE

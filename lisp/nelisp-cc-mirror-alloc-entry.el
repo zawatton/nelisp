@@ -66,10 +66,16 @@
      ;; the caller's stack values stay live across the call.  When the
      ;; caller's frame unwinds, each box's refcount drops back to its
      ;; pre-call value while the record retains its own ref.
+     ;; Doc 226 D1: the entry is the symbol's one object and carries
+     ;; GNU's struct Lisp_Symbol fields (lisp.h:786): 0 value, 1 function,
+     ;; 2 plist, 3 constant flag, 4 alias (val.alias), 5 blv (val.blv),
+     ;; 6 bit fields (redirect, trapped_write, interned, declared_special),
+     ;; 7 FORWARDED descriptor (val.fwd), 8 name.  It is allocated with all
+     ;; nine slots once, so no later writer needs a larger copy.
      (let ((entry (alloc-bytes 32 8)))
        (seq
-        ;; The record allocator nil-fills slot 4.
-        (record-make tag-sym-ptr 5 entry)
+        ;; The record allocator nil-fills slots 4-8.
+        (record-make tag-sym-ptr 9 entry)
         (record-slot-set entry 0 value-ptr)
         (record-slot-set entry 1 function-ptr)
         (record-slot-set entry 2 plist-ptr)
@@ -77,8 +83,8 @@
         entry)))
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
-Allocates a fresh five-slot `symbol-entry' Record via `record-make'
-(§115.3); slot 4 starts nil and four refcount-safe `record-slot-set'
+Allocates a fresh nine-slot `symbol-entry' Record (Doc 226 D1) via
+`record-make' (§115.3); slots 4-8 start nil and four refcount-safe `record-slot-set'
 (§111.B) installs populate slots 0-3. Replaces
 the ~12 LOC Rust helper `Env::mirror_insert_new_entry' (= the
 slot-pre-resolution + `Sexp::record(...)' allocator branch).

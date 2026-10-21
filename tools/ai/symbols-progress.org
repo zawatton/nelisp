@@ -35,12 +35,16 @@
 cmd: python3 tools/ai/symbols-check.py plan
 
 * S1 Port and semantics
-** S1.1 Symbols are header-less word-heap objects with direct name, value, function and plist cells; bytes per uninterned symbol are at or below the word-heap S0 threshold
+** S1.1 Symbols are header-less word-heap objects with direct name, value, function and plist cells; bytes per uninterned symbol are at or below GNU 31.1's 48 B (sizeof struct Lisp_Symbol)
+#+NOTE: 2026-10-21 criterion revision (coordinator rule from the strings lane; criterion count unchanged at 8): old "at or below the word-heap S0 threshold" (an uninterned symbol handle <=32 arena B, shared name charged separately) -> new "at or below GNU 31.1's 48 B", shared name still charged separately. Reason: GNU's struct Lisp_Symbol (lisp.h:786-829) still has the obarray chain field `next' after the obarray rework and is 48 bytes; the S0 threshold predates the decision to imitate GNU's layout (Doc 226 D8).
 cmd: python3 tools/ai/symbols-check.py layout
 ** S1.2 PLAINVAL, VARALIAS and FORWARDED variables are read and written through the symbol's own cells; the census of mirror-table lookups on those paths is 0
+#+NOTE: 2026-10-21 sequencing (Doc 226 D2): interned symbols reach their object without hashing from step 1; uninterned (tag 16) symbols keep the identity-keyed hashed mirror until their WORD addresses their object (S1.1, step 5), so this criterion is claimed only after step 5. The census counts calls of the mirror's hashed walk (nelisp_mirror_lookup_hashed) and entry insertions (nelisp_mirror_bucket_prepend_unchecked) per iteration of each PLAINVAL, VARALIAS and FORWARDED read/write/bind path, from callgrind call counts of an N-iteration run minus a 0-iteration run.
+#+NOTE: 2026-10-21 step 1 (Doc 226 D1/D2; GNU lisp.h:786 struct Lisp_Symbol, adapted: the cells live in one nine-slot word-heap record per symbol, reached from a view through the name header index): every symbol object is allocated with all GNU fields once (no 6-slot replacement copy), and an interned symbol whose slot is empty has no state, answered without the hash. Dynamic census on dynamic builds, hashed walks per iteration base 915e1a17a -> step 1: plain-read 7.17 -> 2.04, plain-write 4.00 -> 2.00, plain-bind 4.00 -> 2.00, alias-read 7.17 -> 2.04, alias-write 4.00 -> 2.00, alias-bind 3.00 -> 1.00, fwd-read 4.14 -> 0.04, fwd-write 3.00 -> 0.00, fwd-bind 4.00 -> 1.00, uninterned-read (control) 8.11 -> 4.04. The remaining walks are the special-variable registry lookup (bf_special_registry builds a non-canonical view) and uninterned keys.
 cmd: python3 tools/ai/symbols-check.py census
 ** S1.3 A GNU 31.1 oracle fixture matches on dynamic and static
 The fixture covers symbol-value, set, setq, let and let* (special and lexical), defvar, defconst, defvaralias with watchers, indirect-variable, makunbound, boundp, default-value, fboundp, fset, symbol-function, fmakunbound, intern, intern-soft, unintern, obarray-make, mapatoms and symbol-plist/get/put.
+#+NOTE: 2026-10-21 fixture scope: the fset case tests (functionp ...) of the new closure instead of printing it, because the printed captured environment of an interpreted closure differs from GNU ((symfix-new t) vs (symfix-new)), which belongs to the evaluator lane, not to symbols. The base (915e1a17a) differs from GNU in 8 of 76 cases: FORWARDED type/unbind semantics (4), the void `obarray' (3) and global mapatoms (1).
 cmd: python3 tools/ai/symbols-check.py semantics
 
 * S2 Speed (wall-clock against GNU, paired ratios, CPU 13)

@@ -140,32 +140,6 @@
                                  (setq symfix-w 10)
                                  (list symfix-w (symfix-take-log) (get-variable-watchers 'symfix-w))))
 
-;;; FORWARDED (GNU DEFVAR_INT max-lisp-eval-depth, DEFVAR_BOOL print-escape-newlines)
-(symfix-case fwd-int-let
-  (let ((old max-lisp-eval-depth))
-    (list (let ((max-lisp-eval-depth (+ old 7))) (- max-lisp-eval-depth old))
-          (= old max-lisp-eval-depth) (special-variable-p 'max-lisp-eval-depth))))
-(symfix-case fwd-int-type
-  (let ((old max-lisp-eval-depth))
-    (list (condition-case e (setq max-lisp-eval-depth 'symfix-x) (error e))
-          (condition-case e (set 'max-lisp-eval-depth 2.5) (error e))
-          (condition-case e (let ((max-lisp-eval-depth "x")) 1) (error e))
-          (= old max-lisp-eval-depth))))
-(symfix-case fwd-makunbound (makunbound 'max-lisp-eval-depth))
-(symfix-case fwd-alias-refused (defvaralias 'max-lisp-eval-depth 'symfix-a))
-(symfix-case fwd-alias-to
-  (let ((old max-lisp-eval-depth))
-    (defvaralias 'symfix-depth 'max-lisp-eval-depth)
-    (list (= symfix-depth old)
-          (let ((symfix-depth (+ old 1))) (- max-lisp-eval-depth old))
-          (= old max-lisp-eval-depth))))
-(symfix-case fwd-bool
-  (list (let ((print-escape-newlines 5)) print-escape-newlines)
-        print-escape-newlines
-        (progn (setq print-escape-newlines 'yes)
-               (prog1 print-escape-newlines (setq print-escape-newlines nil)))
-        (boundp 'print-escape-newlines)))
-
 ;;; Function cells
 (symfix-case fset (list (fboundp 'symfix-f) (functionp (fset 'symfix-f (lambda (x) (* x 2))))
                         (fboundp 'symfix-f) (funcall 'symfix-f 21)
@@ -222,5 +196,31 @@
 (symfix-case symbol-name-eq (let ((s (intern "symfix-name"))) (eq (symbol-name s) (symbol-name s))))
 (symfix-case symbol-name-types (list (symbol-name nil) (symbol-name t) (symbol-name :symfix-kw)
                                      (condition-case e (symbol-name 3) (error e))))
+
+;;; FORWARDED (GNU DEFVAR_INT max-lisp-eval-depth, DEFVAR_BOOL print-escape-newlines)
+(symfix-case fwd-int-let
+  (let ((old max-lisp-eval-depth))
+    (list (let ((max-lisp-eval-depth (+ old 7))) (- max-lisp-eval-depth old))
+          (= old max-lisp-eval-depth) (special-variable-p 'max-lisp-eval-depth))))
+(symfix-case fwd-int-type
+  (let ((old max-lisp-eval-depth))
+    (list (condition-case e (setq max-lisp-eval-depth 'symfix-x) (error e))
+          (condition-case e (set 'max-lisp-eval-depth 2.5) (error e))
+          (condition-case e (let ((max-lisp-eval-depth "x")) 1) (error e))
+          (= old max-lisp-eval-depth))))
+(symfix-case fwd-makunbound (makunbound 'max-lisp-eval-depth))
+(symfix-case fwd-alias-to
+  (let ((old max-lisp-eval-depth))
+    (defvaralias 'symfix-depth 'max-lisp-eval-depth)
+    (list (= symfix-depth old)
+          (let ((symfix-depth (+ old 1))) (- max-lisp-eval-depth old))
+          (= old max-lisp-eval-depth))))
+(symfix-case fwd-bool
+  (list (let ((print-escape-newlines 5)) print-escape-newlines)
+        print-escape-newlines
+        (progn (setq print-escape-newlines 'yes)
+               (prog1 print-escape-newlines (setq print-escape-newlines nil)))
+        (boundp 'print-escape-newlines)))
+(symfix-case fwd-alias-refused (defvaralias 'max-lisp-eval-depth 'symfix-a))
 
 (princ "SYM-DONE\n")

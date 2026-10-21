@@ -149,7 +149,7 @@
           (if (> (record-slot-count old) 5) old
             (let ((entry (alloc-bytes 32 8)) (scratch (alloc-bytes 32 8)) (i 0))
               (seq
-               (record-make (nl_record_type_word old) 6 entry)
+               (record-make (nl_record_type_word old) 9 entry)
                (while (< i (record-slot-count old))
                  (record-slot-set entry i (nl_record_slot_word old i))
                  (setq i (+ i 1)))
