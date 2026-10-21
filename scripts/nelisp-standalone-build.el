@@ -11333,7 +11333,7 @@ leave symbols unresolved at link time."
     ;; holding its index.  (nelisp--debug-switch 41 V): how many cells of V
     ;; still hold exactly that, with no collector bit set.
     ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
-    ;; (nelisp--debug-switch 43 SYM OFFSET): a stale view's mark, below.
+    ;; (nelisp--debug-switch 43 (SYM . OFFSET)): a stale view's mark, below.
     ;; Never print V's elements: no symbol consumer reads a direct symbol
     ;; WORD on this line.  Native allocation never collects, and every
     ;; object is stored where the vector reaches it before the next one.
@@ -11388,8 +11388,9 @@ leave symbols unresolved at link time."
                                       (heap-read-u64 slots (* i 8)) i)))
                   (setq i (+ i 1))))
            good))))
-    ;; (nelisp--debug-switch 43 SYM OFFSET): the collector's view marker on a
-    ;; stale tag-16 view whose +8 is not the start of a live cell.  The view
+    ;; (nelisp--debug-switch 43 (SYM . OFFSET)): the collector's view marker on
+    ;; a stale tag-16 view whose +8 is not the start of a live cell.  The
+    ;; builtin takes at most two arguments, so the pair is one.  The view
     ;; points OFFSET bytes into SYM's cell (1 to 47), or, for OFFSET -1, at
     ;; the first never-allocated cell of the current symbol_block.  Result:
     ;; how many words of the three cells around that address the marker
@@ -11438,7 +11439,8 @@ leave symbols unresolved at link time."
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
           (if (= op 43)
-              (nl_symview_selftest (wf_arg_word args 1) (wf_argval args 2))
+              (let ((pair (wf_arg_word args 1)))
+                (nl_symview_selftest (nl_cons_car_word pair) (nl_word_int (nl_cons_cdr_word pair))))
             (nelisp_cons_construct_w
              (+ (* (heap-read-u64 st 416) 4) 1)
              (nelisp_cons_construct_w
