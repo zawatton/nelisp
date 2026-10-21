@@ -313,6 +313,32 @@ target.
   Lisp-to-AOT representation tracking ("Representation joins" in
   nelisp-aot-compiler.el) and the loader.
 
+  The root cause is wider than the predicates: the Lisp-to-AOT path (the
+  native artifacts of Lisp source, =nelisp-artifact-compile-file= with
+  ='neln=; the standalone's default execution is the byte-code VM) has no
+  Lisp notion of nil.  =nil=/=t= literals and comparison results are raw
+  0/1, raw values box as fixnums at the dispatcher boundary, and an =if=
+  on a Sexp value tests the pointer word against 0.  Control probes, each
+  a body in the corpus wrapper, interpreter answer against native answer,
+  identical with the 9d5f4a515 compiler and binary:
+
+  | body                                                                  | interpreter | native   |
+  |-----------------------------------------------------------------------+-------------+----------|
+  | =(if (aref (vector nil 1) 0) (setq acc 1) (setq acc 2))=              | 2           | 1        |
+  | =(let ((x (aref (vector nil 1) 0))) (if (null x) ...1 ...2))=         | 1           | 2        |
+  | =(let ((x (aref (vector t 1) 0))) (if (symbolp x) ...1 ...2))=        | 1           | 2        |
+  | =(let ((x nil)) (setq acc (length (list x x))))=                      | 2           | segfault |
+  | =(let ((x nil)) (if x ...1 ...2))=                                    | 2           | 2        |
+  | =(let ((x (< 1 2))) (if (symbolp x) ...1 ...2))=                      | 1           | 2        |
+  | =(let ((x 0)) (if (null x) ...1 ...2))=                               | 2           | segfault |
+
+  With nil and fixnum 0 sharing the raw word 0 no local change to the
+  predicates is right for both, so the fix is a representation change:
+  Lisp values as object words (nil 3, t 7, tagged fixnums) everywhere in
+  the artifact path, raw words only for arithmetic and branch flags, a
+  not-nil test for =if= on object words, no fixnum boxing of booleans,
+  gated so the runtime's dialect units keep nil = 0 and the != 0 test.
+
 - list-walk: 2 Ir per element of representation (above).  Owner: the
   object representation, not the compiler.
 - Loops with calls (the VM dispatch loop, list walks through
