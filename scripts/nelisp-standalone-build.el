@@ -16408,7 +16408,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (shl (heap-read-u8 data (+ pc 2)) 8)))
                           (if (< target length) (setq pc target)
                             (setq go 0))))
-                     (if (and (>= raw 8) (< raw 14))
+                     (if (or (= raw 64) (= raw 65))
+                         ;; GNU bytecode.c:658-666 CASE (Bcar) and the Bcdr
+                         ;; case: a cons TOP becomes its car/cdr, nil stays
+                         ;; nil, anything else leaves for the full
+                         ;; dispatcher, which signals wrong-type-argument.
+                         (if (<= sp 0) (setq go 0)
+                           (let* ((top (+ mem (* (- sp 1) 8)))
+                                  (w (heap-read-u64 top 0))
+                                  (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
+                                         (if (= (logand w 7) 6)
+                                             (logand (heap-read-u8 (- w 6) 0) 63)
+                                           (heap-read-u8 w 0)))))
+                             (if (= tag 7)
+                                 (seq (ptr-write-u64 top 0
+                                                     (heap-read-u64
+                                                      (+ (heap-read-u64 w 8)
+                                                         (if (= raw 64) 0 8)) 0))
+                                      (setq pc (+ pc 1)))
+                               (if (= tag 0)
+                                   (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
+                                 (setq go 0)))))
+                       (if (and (>= raw 8) (< raw 14))
                          (let* ((index (- raw 8)) (value 0))
                            (if (>= sp depth) (setq go 0)
                              (seq
@@ -17048,7 +17069,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                   (+ mem (* (- sp 1) 8)) 0
                                                   word)
                                                  (setq pc (+ pc 1)))))))))
-                                     (seq (setq go 0)))))))))))))))
+                                     (seq (setq go 0))))))))))))))))
         (+ (shl pc 17) sp)))
 
 
