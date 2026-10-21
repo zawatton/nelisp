@@ -526,16 +526,27 @@ lifetime of a Sexp value.  No `let' binding needed.")
             (nl_intern_probe table (logand (+ idx 1) 1048575) p n (+ k 1))))))
     ;; 1 when N more bytes (1 for an empty name) still fit in the name
     ;; arena [base+16MiB, base+64MiB).  The bump pointer used to advance
-    ;; past the end of the mapping unchecked.
+    ;; past the end of the mapping unchecked.  The 24 extra bytes cover the
+    ;; one-time cell-index counter, the header alignment and the header.
     (defun nl_intern_arena_fits (n)
-      (if (<= (+ (heap-read-u64 268436296 0) (if (= n 0) 1 n))
+      (if (<= (+ (heap-read-u64 268436296 0) (+ 24 (if (= n 0) 1 n)))
               (+ (heap-read-u64 268436288 0) 67108864))
           1
         0))
+    ;; GNU lisp.h:786-822: a symbol owns its value and function cells.  A
+    ;; NeLisp symbol box is a per-occurrence view of one canonical interned
+    ;; name buffer, so that buffer stands for the symbol: an 8-aligned
+    ;; 8-byte header just before its bytes holds the symbol's cell index
+    ;; (0 = none yet; see `nl_symcell_assign').  The arena's first word is
+    ;; the dense index counter.  Both live in the dumped [base, bump) span.
     (defun nl_intern_bump (n)
-      (and (ptr-write-u64 268436296 0
-                          (+ (heap-read-u64 268436296 0) (if (= n 0) 1 n)))
-           (- (heap-read-u64 268436296 0) (if (= n 0) 1 n))))
+      (let* ((arena (+ (heap-read-u64 268436288 0) 16777216))
+             (b0 (heap-read-u64 268436296 0))
+             (b1 (if (= b0 arena) (+ arena 8) b0))
+             (hdr (logand (+ b1 7) -8)))
+        (seq (ptr-write-u64 hdr 0 0)
+             (ptr-write-u64 268436296 0 (+ (+ hdr 8) (if (= n 0) 1 n)))
+             (+ hdr 8))))
     (defun nl_intern_write_sexp (dest-slot buf n)
       (and (ptr-write-u8  dest-slot 0  4)
            (ptr-write-u64 dest-slot 8  (if (= n 0) 1 n))
@@ -897,6 +908,33 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; `nl_intern_lookup' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_intern_lookup_w (bytes-ptr len _pad)
       (nl_intern_lookup_pos_w bytes-ptr (if (< len 0) 0 len) 0))
+
+    ;; The canonical interned name buffer of BYTES-PTR/N, 0 when the name
+    ;; is not in the intern table (region disabled, plain overflow name).
+    (defun nl_intern_canonical_buf (bytes-ptr n)
+      (if (= (heap-read-u64 268436288 0) 0)
+          0
+        (let* ((slot (nl_intern_probe
+                      (heap-read-u64 268436288 0)
+                      (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
+                      bytes-ptr n 0)))
+          (if (= slot 0) 0
+            (if (= (heap-read-u64 slot 0) 0) 0 (heap-read-u64 slot 8))))))
+    ;; The cell index of the interned name BYTES-PTR/N, assigned from the
+    ;; arena counter on first use (see `nl_intern_bump').  0 when the name
+    ;; has no canonical buffer: such keys keep the hashed mirror path, like
+    ;; GNU's non-SYMBOL_PLAINVAL redirects falling back to Fsymbol_value.
+    ;; Only the mirror's entry writers call this, never a reader.
+    (defun nl_symcell_assign (bytes-ptr n)
+      (let* ((buf (nl_intern_canonical_buf bytes-ptr n)))
+        (if (= buf 0) 0
+          (let* ((idx (heap-read-u64 (- buf 8) 0)))
+            (if (/= idx 0) idx
+              (let* ((counter (+ (heap-read-u64 268436288 0) 16777216))
+                     (next (+ (heap-read-u64 counter 0) 1)))
+                (seq (ptr-write-u64 counter 0 next)
+                     (ptr-write-u64 (- buf 8) 0 next)
+                     next)))))))
 
     ;; Internal read-only cursor used by native diagnostics and future
     ;; obarray work.  CURSOR is a slot index in [0, 2^20].  A hit writes the

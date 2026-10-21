@@ -44,8 +44,28 @@
 
 ;;; Code:
 
+(defun nelisp-cc-mirror-lookup-entry--symcell-mode ()
+  "Build-time symbol-cell check mode (Doc 221 M02 negative controls).
+\"1\": every cell answer is compared with the hashed walk, and a mismatch
+exits with status 97.  \"fault\": the same, plus cells are deliberately
+written wrong, so the check must fire.  Anything else: no check."
+  (cdr (assoc (getenv "NELISP_SYMCELL_VERIFY")
+              '(("1" . verify) ("fault" . fault)))))
+
+(defun nelisp-cc-mirror-lookup-entry--cell-use (key)
+  "The form answering the symbol cell `cell' found for KEY."
+  (if (nelisp-cc-mirror-lookup-entry--symcell-mode)
+      `(nl_symcell_checked mirror-ptr ,key cell)
+    'cell))
+
+(defun nelisp-cc-mirror-lookup-entry--cell-store ()
+  "The entry WORD form `nl_symcell_refresh' stores at `idx'."
+  (if (eq (nelisp-cc-mirror-lookup-entry--symcell-mode) 'fault)
+      '(nl_symcell_fault_entry mirror-ptr idx (if (= entry 0) 3 entry))
+    '(if (= entry 0) 3 entry)))
+
 (defconst nelisp-cc-mirror-lookup-entry--source
-  '(seq
+  `(seq
     (defun nelisp_mirror_walk_bucket (cell-ptr sym-ptr)
       ;; Tail-recursive walk over a bucket's cons chain.
       ;;
@@ -148,6 +168,90 @@
     (defun nelisp_mirror_slot_raw_word (rec-ptr idx)
       (nl_record_slot_word rec-ptr idx))
 
+    ;; Doc 221 M02/M23, the symbol's own cell.  GNU reads it without a name
+    ;; hash: XSYMBOL (fun)->u.s.function (eval.c:3153, bytecode.c:803) and
+    ;; the SYMBOL_PLAINVAL value (bytecode.c:640, data.c:1630); lisp.h:786-822.
+    ;; Adapted: a NeLisp symbol box (tag 4) is a view of its canonical
+    ;; interned name buffer (+16), whose header holds the symbol's cell
+    ;; index (`nl_intern_bump'); the mirror table's slot 3 vector maps the
+    ;; index to the symbol's entry record (value 0, function 1, plist 2).
+    ;; Answers that entry WORD, or 0 when NAME has no cell (not interned,
+    ;; never given an entry, or a table without cells); the hashed path
+    ;; then decides, as GNU's non-plain redirects fall to Fsymbol_value.
+    (defun nl_symcell_entry (mirror-ptr name)
+      (let* ((buf (heap-read-u64 name 16))
+             (base (heap-read-u64 268436288 0)))
+        (if (and (> buf (+ base 16777224))
+                 (< buf (heap-read-u64 268436296 0)))
+            (let* ((idx (heap-read-u64 (- buf 8) 0)))
+              (if (= idx 0) 0
+                (let* ((ht (nl_record_slot_word mirror-ptr 0)))
+                  (if (< (nl_record_length ht) 4) 0
+                    (let* ((cells (nl_record_slot_word ht 3)))
+                      (if (>= idx (nl_vector_length cells)) 0
+                        (let* ((entry (nl_vector_slot_word cells idx)))
+                          (if (= (logand entry 1) 1) 0 entry))))))))
+          0)))
+
+    ;; The hashed bucket walk, kept for keys without a cell and as the
+    ;; authority `nl_symcell_refresh' copies into a cell.  KEY is a valid
+    ;; symbol or string key.
+    (defun nelisp_mirror_lookup_hashed (mirror-ptr key)
+      (let* ((ht (nl_record_slot_word mirror-ptr 0))
+             (head (heap-read-u64
+                    (+ (+ (nl_word_payload (nl_record_slot_word ht 1)) 8)
+                       (* (logand (extern-call nelisp_fnv1a key)
+                                  (- (sar (nelisp_mirror_slot_raw_word ht 0) 2) 1)) 8)) 0)))
+        (if (= (logand head 1) 1) 0
+          (nelisp_mirror_walk_bucket head key))))
+
+    ;; Cell maintenance.  Every writer that prepends a mirror entry calls
+    ;; `nl_symcell_refresh' for its key after the bucket store, so a
+    ;; non-empty cell always names the first entry of the key's chain,
+    ;; which is what the hashed walk answers.  There is no unlink path.
+    (defun nl_symcell_capacity (m idx)
+      (if (> m idx) m (nl_symcell_capacity (* m 2) idx)))
+    ;; 1 when the table has a cell vector holding IDX, growing it first;
+    ;; 0 when the table has no cells.  Allocation may move the table, so
+    ;; the old vector is reread after it.
+    (defun nl_symcell_reserve (mirror-ptr idx)
+      (let* ((ht (nl_record_slot_word mirror-ptr 0)))
+        (if (< (nl_record_length ht) 4) 0
+          (let* ((n (nl_vector_length (nl_record_slot_word ht 3))))
+            (if (< idx n) 1
+              (let* ((fresh (extern-call nl_alloc_vector
+                                         (nl_symcell_capacity
+                                          (if (< n 8) 16 (* n 2)) idx)))
+                     (old (nl_word_payload
+                           (nl_record_slot_word
+                            (nl_record_slot_word mirror-ptr 0) 3)))
+                     (i 0))
+                (seq
+                 (while (< i n)
+                   (seq (ptr-write-u64 (+ (+ fresh 8) (* i 8)) 0
+                                       (heap-read-u64 (+ (+ old 8) (* i 8)) 0))
+                        (setq i (+ i 1))))
+                 (extern-call nl_record_set_slot
+                              (nl_word_payload (nl_record_slot_word mirror-ptr 0))
+                              3 (+ fresh 6))
+                 1)))))))
+    (defun nl_symcell_refresh (mirror-ptr key)
+      (if (if (= key 0) 1 (= (logand key 1) 1)) 0
+        (if (or (= (sexp-tag key) 4) (= (sexp-tag key) 5))
+            (let* ((idx (extern-call nl_symcell_assign
+                                     (str-bytes-ptr key) (str-len key))))
+              (if (= idx 0) 0
+                (if (= (nl_symcell_reserve mirror-ptr idx) 0) 0
+                  (let* ((entry (nelisp_mirror_lookup_hashed mirror-ptr key)))
+                    (seq
+                     (extern-call nl_vector_set_slot
+                                  (nl_word_payload
+                                   (nl_record_slot_word
+                                    (nl_record_slot_word mirror-ptr 0) 3))
+                                  idx ,(nelisp-cc-mirror-lookup-entry--cell-store))
+                     1)))))
+          0)))
+
     (defun nelisp_mirror_lookup_entry_owned (mirror-ptr name)
       ;; Clause 1: NAME is a live value from an owning/rooted container,
       ;; not an arbitrary borrowed address. As in frame-stack-find's WORD
@@ -156,16 +260,16 @@
       ;; generic entry below retains full address authentication for callers
       ;; without this ownership proof (including its cold-load hardening).
       (if (if (= name 0) 1 (= (logand name 1) 1)) 0
-        (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16)
-                (= (sexp-tag name) 5) (= (sexp-tag name) 14))
-            (let* ((ht (nl_record_slot_word mirror-ptr 0))
-                   (head (heap-read-u64
-                          (+ (+ (nl_word_payload (nl_record_slot_word ht 1)) 8)
-                             (* (logand (extern-call nelisp_fnv1a name)
-                                        (- (sar (nelisp_mirror_slot_raw_word ht 0) 2) 1)) 8)) 0)))
-              (if (= (logand head 1) 1) 0
-                (nelisp_mirror_walk_bucket head name)))
-          0)))
+        (if (= (sexp-tag name) 4)
+            (let* ((cell (if (= (logand name 7) 6) 0
+                           (nl_symcell_entry mirror-ptr name))))
+              (if (/= cell 0)
+                  ,(nelisp-cc-mirror-lookup-entry--cell-use 'name)
+                (nelisp_mirror_lookup_hashed mirror-ptr name)))
+          (if (or (= (sexp-tag name) 16)
+                  (= (sexp-tag name) 5) (= (sexp-tag name) 14))
+              (nelisp_mirror_lookup_hashed mirror-ptr name)
+            0))))
 
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
@@ -197,21 +301,34 @@
       ;; commentary above for the invariant.
       (if (= (nelisp_mirror_lookup_entry_valid_key sym-ptr) 0)
           0
-        ;; The bucket head is read as a raw word (Vector box at payload+8,
-        ;; data at box+8): `vector-ref-ptr' boxed the Nil of an empty
-        ;; bucket into a fresh heap slot, and with a table sized for a GUI
-        ;; image most lookups of names that have no global entry (every
-        ;; lexical variable reference and `setq' checks one) land on an
-        ;; empty bucket.  A pointer head is the bucket's first Cons view.
-        (let ((ht-rec-ptr (nl_record_slot_word mirror-ptr 0)))
-          (let ((head (nl_vector_slot_word
-                       (nl_record_slot_word ht-rec-ptr 1)
-                       (logand
-                        (extern-call nelisp_fnv1a sym-ptr)
-                        (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1)))))
-            (if (= (logand head 1) 1)
-                0
-              (nelisp_mirror_walk_bucket head sym-ptr)))))))
+        ;; A symbol with a cell is answered from it (Doc 221 M02, see
+        ;; `nl_symcell_entry'); otherwise the bucket head is read as a raw
+        ;; word (Vector box at payload+8, data at box+8): `vector-ref-ptr'
+        ;; boxed the Nil of an empty bucket into a fresh heap slot, and
+        ;; with a table sized for a GUI image most lookups of names that
+        ;; have no global entry (every lexical variable reference and
+        ;; `setq' checks one) land on an empty bucket.  A pointer head is
+        ;; the bucket's first Cons view.
+        (let ((cell (if (= (sexp-tag sym-ptr) 4)
+                        (nl_symcell_entry mirror-ptr sym-ptr) 0)))
+          (if (/= cell 0)
+              ,(nelisp-cc-mirror-lookup-entry--cell-use 'sym-ptr)
+            (nelisp_mirror_lookup_hashed mirror-ptr sym-ptr)))))
+    ,@(when (nelisp-cc-mirror-lookup-entry--symcell-mode)
+        '((defun nl_symcell_checked (mirror-ptr key cell)
+            (let* ((hashed (nelisp_mirror_lookup_hashed mirror-ptr key)))
+              (if (and (/= hashed 0)
+                       (= (nl_word_payload hashed) (nl_word_payload cell)))
+                  cell
+                (syscall-direct 231 97 0 0 0 0 0))))
+          ;; A wrong entry: the previous index's cell when it has one.
+          (defun nl_symcell_fault_entry (mirror-ptr idx entry)
+            (if (< idx 2) entry
+              (let* ((prev (nl_vector_slot_word
+                            (nl_record_slot_word
+                             (nl_record_slot_word mirror-ptr 0) 3)
+                            (- idx 1))))
+                (if (= (logand prev 1) 1) entry prev)))))))
   "AOT source for Doc 111 §111.E #1 `mirror_lookup_entry'.
 
 Composes record-slot-ref-ptr (§111.B) + vector-ref-ptr (§111.C) +

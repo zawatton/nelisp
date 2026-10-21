@@ -26,9 +26,12 @@ entry. Binding, regex, version and loader code retain their authorities.
    =nl_gnu_funcall_w= entry preserves the original function, checks
    quit/depth, records the activation, checks GC, resolves aliases and
    retries autoload from the original function, dispatches, then finishes
-   the activation once. =nl_gnu_function_cell_w= initially adapts the
-   authoritative mirror-cell read; M02's direct symbol field is blocked
-   as described below. No new function-cache experiment. Alias cycles
+   the activation once. The function and value cells are read through
+   the direct symbol cells of the section below (step 1a), before the
+   entry itself is restructured (step 1b); the hot per-call state GNU
+   keeps in C globals must not cost a hashed lookup per call (the
+   unverified first entry doubled the interpreter loop for that reason).
+   No new function-cache experiment. Alias cycles
    need GNU's =fset= rejection (=data.c:912=) and a safe resolver when an
    internal writer has bypassed that invariant.
 2. =funcall_subr= / =apply_lambda= (=eval.c:3254,3302,3322=): pass
@@ -89,7 +92,7 @@ once only after the implemented path and original caps are satisfied.
 | ID | Method | GNU anchor | Concrete transfer / current constraint |
 |----+--------+------------+----------------------------------------|
 | M01 | adapted | eval.c:3185 | =nl_gnu_funcall_w=, one activation/depth/quit/GC entry and finish. |
-| M02 | impossible | eval.c:3153; lisp.h:819 | Direct symbol function field needs stable symbol/cell ownership; current mirror adapter still hashes. See prerequisite below. |
+| M02 | adapted | eval.c:3153; lisp.h:819 | Interned name =buf-8= header holds the symbol's cell index; mirror table slot 3 vector maps it to the entry record. Keys without a cell keep the hashed mirror walk. See section below. |
 | M03 | ported | eval.c:3149 | Common tag dispatch after resolution; preserve original function through errors/autoload retry. |
 | M04 | adapted | eval.c:3322 | =nl_gnu_argv= traced per-worker reserve with saved top/offsets; reacquire addresses after growth/reentry. Compiler lacks C stack allocation. |
 | M05 | ported | eval.c:2626 | Evaluate left to right into WORD argv; no ordinary argument cons spine. |
@@ -110,7 +113,7 @@ once only after the implemented path and original caps are satisfied.
 | M20 | ported | bytecode.c:894 | Breturn restores caller function/PC/top/frame; only the external sentinel returns to the host. |
 | M21 | ported | bytecode.c:535 | Packed min/max/rest decoding; GNU arity error data is =((MIN . MAX) NARGS)=. |
 | M22 | ported | bytecode.c:542 | Copy WORD arguments, nil-fill optionals, construct only a rest list. |
-| M23 | impossible | bytecode.c:803 | Bare-symbol direct cell fast path depends on M02; do not label mirror lookup a direct cell read. |
+| M23 | adapted | bytecode.c:803 | Bcall/Bvarref read the M02 cell through =nelisp_mirror_lookup_entry_owned=; no name hash for interned symbols. |
 | M24 | ported | eval.c:3455 | Enter progn/body from lambda dispatch; preserve existing evaluator semantics. |
 | M25 | adapted | lisp.h:597 | WORD transport throughout the call ABI; materialize existing physical views only at explicit compatibility APIs. |
 | M26 | impossible | bytecode.c:396; lisp.h:4444; alloc.c:5226 | Blanket per-call root removal lacks worker stack/register publication and precise-only compatibility. Shared bytecode arena requires active-prefix tracing. |
@@ -124,7 +127,41 @@ once only after the implemented path and original caps are satisfied.
 | M34 | ported | bytecode.c:494 | Normal constant/return execution replaces per-call literal-program eligibility scanning; preserve mutable bytecode and JIT observability. |
 | M35 | impossible | eval.c:2585 | GNU has no FX VM opcode engine. Adapt its calls to the common WORD ABI; the unchanged 5x gate still applies. |
 
-* Direct-cell prerequisite and scope boundary
+* Direct symbol cells (M02/M23, revised 2026-10-21)
+
+GNU keeps a symbol's value and function in the symbol object itself
+(=lisp.h:786-822=) and reads them without a name hash (=eval.c:3153=,
+=bytecode.c:640,803=, =data.c:1630=). A NeLisp symbol box is a
+per-occurrence 32-byte view whose +16 field points at the canonical
+interned name buffer; the intern region is a permanent raw mmap that the
+image dumper copies as =[base, bump)=. One globals record is shared by
+every thread (=nl_make_thread_env= copies the env+0 view).
+
+The adaptation therefore makes the canonical name buffer stand for the
+symbol:
+- =nl_intern_bump= places an 8-aligned header before every name; it holds
+  the symbol's dense cell index, assigned by =nl_symcell_assign= from a
+  counter in the arena's first word. Indices are integers, so dumping and
+  relocation need no change.
+- The mirror's fast-hash-table record gains slot 3, a vector of entry
+  WORDs indexed by cell. The collector traces and rewrites it like any
+  vector, so moving compaction needs no change.
+- Every entry writer (=nelisp_mirror_bucket_prepend_unchecked=,
+  =nelisp_mirror_alias_stage_publish=, =nelisp_mirror_alias_stage_commit_pair=
+  after its table install) calls =nl_symcell_refresh=, which copies the
+  key's first chain entry into its cell. Chains only grow by prepending.
+- Readers (=nelisp_mirror_lookup_entry= and =_owned=) answer a non-empty
+  cell directly. A key without a cell (uninterned, plain overflow name,
+  string key, a table without slot 3) uses the hashed walk, as GNU's
+  non-=SYMBOL_PLAINVAL= redirects fall back to =Fsymbol_value=.
+- A build with =NELISP_SYMCELL_VERIFY=1= compares every cell answer with
+  the hashed walk and exits 97 on a difference; =fault= also writes wrong
+  cells, so the check must fire.
+
+Residual: =nelisp_mirror_lookup_entry= still authenticates arbitrary key
+addresses (=nelisp_mirror_lookup_entry_valid_key=) before the cell read.
+
+* Direct-cell prerequisite and scope boundary (original analysis)
 
 =nl_alloc_symbol_write=, =nl_intern_write_sexp= and =nl_make_symbol_write=
 in =lisp/nelisp-cc-nlstr-direct-ops.el:248,539,460= use the symbol payload
