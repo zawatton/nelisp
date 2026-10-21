@@ -570,7 +570,9 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96
+     ;; Doc 223: `nl_typed_alloc', the GNU typed-block allocator state.
+     512 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -910,6 +912,9 @@ storage — not an arena reservation."
     ;; Doc 216 S4.2: transient descriptor registry and opt-in counters.
     (list (nelisp-link-symbol "nl_frame_stack_registry"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_typed_alloc"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -2443,6 +2448,432 @@ directory tracks the tree rather than accumulating every key ever built."
 ;;
 ;; The bump allocator still NEVER auto-frees mid-eval; reclamation is the
 ;; GC sweep at the top-level form boundary (see the reader driver).
+
+;; ===================================================================
+;; Doc 223: GNU Emacs 31.1 alloc.c typed blocks.
+;;
+;; GNU allocates each Lisp type from fixed-layout blocks with mark bits
+;; beside the objects (alloc.c:2539 struct cons_block), carves the blocks
+;; from aligned groups (alloc.c:937 BLOCK_ALIGN, alloc.c:979 ABLOCKS_SIZE,
+;; alloc.c:1060 lisp_align_malloc) and finds the block of an arbitrary
+;; address through persistent metadata (alloc.c:4213 mem_find).  Here a
+;; group is 16 blocks of 32 KiB aligned to its own 512 KiB size, mapped
+;; outside the arena chunk list, so no legacy header walker (index, sweep,
+;; image coalescing) ever sees a typed block.  The registry is an
+;; open-addressing table of group bases (the mem_node tree's role); each
+;; block records its type in its trailer word.
+;;
+;; BSS `nl_typed_alloc' (512 bytes):
+;;   +0  cons_free_list        +8  cons_block (current block, list head)
+;;   +16 cons_block_index      +24 live conses after the last sweep
+;;   +32 free conses after it  +40 cons blocks in use
+;;   +48 registry table        +56 registry capacity (power of two)
+;;   +64 registered groups     +72 free_ablock list
+;;   +80 1 = typed conses disabled (every cons uses the legacy payload)
+;;   +88 cons cells allocated  +96 lowest group base  +104 highest group end
+;;   +112 cons cells in image-converted blocks (dump bookkeeping)
+;; A cons block: cells (car WORD, cdr WORD, refcount) from offset 0, the
+;; side mark bitmap, the `next' block link, the block type at 32752.  A
+;; free cell holds the dead marker in car and the free-list link in cdr
+;; (alloc.c:6814 sweep_conses, alloc.c:4627 live_cons_holding).
+;; ===================================================================
+
+(defconst nelisp-standalone--gc-block-align 32768
+  "GNU BLOCK_ALIGN (alloc.c:937, 1 << 15): one typed block.")
+(defconst nelisp-standalone--gc-group-bytes (* 16 32768)
+  "GNU ABLOCKS_SIZE blocks (alloc.c:979) per group, aligned to this size.")
+(defconst nelisp-standalone--gc-block-type-offset 32752
+  "Offset of a typed block's type word (1 = cons; 0 = free).")
+(defconst nelisp-standalone--cons-cell-bytes 24
+  "NeLisp cons payload: car WORD, cdr WORD and the refcount word that
+`nelisp_nlconsbox_clone' still increments (Doc 216 S2.2 removes it).")
+(defconst nelisp-standalone--cons-block-size
+  (/ (* (- (- 32768 8) 8 (- nelisp-standalone--cons-cell-bytes 8)) 8)
+     (1+ (* nelisp-standalone--cons-cell-bytes 8)))
+  "GNU CONS_BLOCK_SIZE (alloc.c:2526) for 24-byte cells: 1356.")
+(defconst nelisp-standalone--cons-marks-offset
+  (* nelisp-standalone--cons-block-size nelisp-standalone--cons-cell-bytes)
+  "Offset of a cons block's gcmarkbits (alloc.c:2543).")
+(defconst nelisp-standalone--cons-marks-bytes
+  (* 8 (1+ (/ nelisp-standalone--cons-block-size 64)))
+  "Bytes of a cons block's gcmarkbits, 1 + CONS_BLOCK_SIZE / 64 words.")
+(defconst nelisp-standalone--cons-next-offset
+  (+ nelisp-standalone--cons-marks-offset nelisp-standalone--cons-marks-bytes)
+  "Offset of a cons block's `next' link (alloc.c:2544).")
+(defconst nelisp-standalone--cons-dead-word #xdead0
+  "car of a free cons cell: GNU's dead_object (never a valid WORD).")
+
+(defun nelisp-standalone--typed-alloc-forms ()
+  "Return the Doc 223 typed-block allocation forms for arena.o."
+  (let ((n nelisp-standalone--cons-block-size)
+        (cell nelisp-standalone--cons-cell-bytes)
+        (marks nelisp-standalone--cons-marks-offset)
+        (next nelisp-standalone--cons-next-offset)
+        (ty nelisp-standalone--gc-block-type-offset)
+        (dead nelisp-standalone--cons-dead-word))
+    (unless (and (= n 1356) (<= (+ next 8) ty))
+      (error "Doc 223 cons block geometry changed: %S %S" n next))
+    `(;; Registry probe start for group base G (a 512 KiB multiple).
+      (defun nl_typed_hash (g mask) (logand (+ (sar g 19) (sar g 29)) mask))
+      ;; Entry (16 bytes: group base, busy blocks) of group G, or 0.
+      (defun nl_typed_registry_lookup (g)
+        (let* ((st (data-addr nl_typed_alloc))
+               (tbl (heap-read-u64 st 48)))
+          (if (= tbl 0) 0
+            (let* ((mask (- (heap-read-u64 st 56) 1))
+                   (i (nl_typed_hash g mask))
+                   (found 0) (go 1))
+              (seq
+               (while (= go 1)
+                 (let ((k (heap-read-u64 tbl (* i 16))))
+                   (if (= k g) (seq (setq found (+ tbl (* i 16))) (setq go 0))
+                     (if (= k 0) (setq go 0)
+                       (setq i (logand (+ i 1) mask))))))
+               found)))))
+      ;; mem_find (alloc.c:4213) plus the block type: 0 unless P lies in a
+      ;; registered typed block.  The bounds test is GNU's
+      ;; min_heap_address/max_heap_address rejection.
+      (defun nl_typed_find (p)
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (< p (heap-read-u64 st 96)) 0
+            (if (>= p (heap-read-u64 st 104)) 0
+              (if (= (nl_typed_registry_lookup (logand p -524288)) 0) 0
+                (heap-read-u64 (logand p -32768) ,ty))))))
+      (defun nl_typed_registry_put (tbl cap g busy)
+        (let* ((mask (- cap 1)) (i (nl_typed_hash g mask)))
+          (seq
+           (while (> (heap-read-u64 tbl (* i 16)) 0)
+             (setq i (logand (+ i 1) mask)))
+           (ptr-write-u64 tbl (* i 16) g)
+           (ptr-write-u64 tbl (+ (* i 16) 8) busy)
+           (+ tbl (* i 16)))))
+      ;; Double the table (mem_insert's growth); 1 on success.
+      (defun nl_typed_registry_grow (st)
+        (let* ((old (heap-read-u64 st 48))
+               (oldcap (heap-read-u64 st 56))
+               (cap (if (= oldcap 0) 256 (* oldcap 2)))
+               (tbl (nl_os_alloc_chunk (* cap 16))))
+          (if (= tbl 0) 0
+            (if (= (nl_os_commit_range tbl 0 (* cap 16)) 0) 0
+              (let ((i 0))
+                (seq
+                 (while (< i oldcap)
+                   (let ((k (heap-read-u64 old (* i 16))))
+                     (if (> k 0)
+                         (nl_typed_registry_put tbl cap k
+                                                (heap-read-u64 old (+ (* i 16) 8)))
+                       0))
+                   (setq i (+ i 1)))
+                 (ptr-write-u64 st 48 tbl)
+                 (ptr-write-u64 st 56 cap)
+                 (if (= old 0) 0 (nl_os_free_chunk old (* oldcap 16)))
+                 1))))))
+      ;; lisp_align_malloc's refill (alloc.c:1060): map a group aligned to
+      ;; its size, register it, and chain its 16 blocks on free_ablock.
+      (defun nl_ablock_new_group (st)
+        (if (if (>= (* (+ (heap-read-u64 st 64) 1) 2) (heap-read-u64 st 56))
+                (= (nl_typed_registry_grow st) 0) 0)
+            0
+          (let ((raw (nl_os_alloc_chunk 1048576)))
+            (if (= raw 0) 0
+              (let* ((g (logand (+ raw 524287) -524288))
+                     (k 15))
+                (seq
+                 (if (> g raw) (nl_os_free_chunk raw (- g raw)) 0)
+                 (if (< (+ g 524288) (+ raw 1048576))
+                     (nl_os_free_chunk (+ g 524288) (- (+ raw 1048576) (+ g 524288)))
+                   0)
+                 (nl_os_commit_range g 0 524288)
+                 (nl_typed_registry_put (heap-read-u64 st 48) (heap-read-u64 st 56) g 0)
+                 (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
+                 (if (if (= (heap-read-u64 st 96) 0) 1 (< g (heap-read-u64 st 96)))
+                     (ptr-write-u64 st 96 g) 0)
+                 (if (> (+ g 524288) (heap-read-u64 st 104))
+                     (ptr-write-u64 st 104 (+ g 524288)) 0)
+                 (while (>= k 0)
+                   (let ((b (+ g (* k 32768))))
+                     (seq (ptr-write-u64 b 0 (heap-read-u64 st 72))
+                          (ptr-write-u64 b ,ty 0)
+                          (ptr-write-u64 st 72 b)))
+                   (setq k (- k 1)))
+                 1))))))
+      ;; lisp_align_malloc (alloc.c:1060): one 32 KiB block of TYPE, or 0.
+      (defun nl_ablock_alloc (st type)
+        (if (if (= (heap-read-u64 st 72) 0) (= (nl_ablock_new_group st) 0) 0) 0
+          (let* ((b (heap-read-u64 st 72))
+                 (e (nl_typed_registry_lookup (logand b -524288))))
+            (seq
+             (ptr-write-u64 st 72 (heap-read-u64 b 0))
+             (ptr-write-u64 e 8 (+ (heap-read-u64 e 8) 1))
+             (ptr-write-u64 b ,ty type)
+             b))))
+      ;; lisp_align_free (alloc.c:1157): the block returns to free_ablock and
+      ;; its pages to the OS.  Groups stay mapped and registered (adapted:
+      ;; GNU also frees a group once all 16 blocks are free).
+      (defun nl_ablock_free (st b)
+        (let ((e (nl_typed_registry_lookup (logand b -524288))))
+          (seq
+           (nl_os_discard_free_pages b 32768)
+           (ptr-write-u64 b ,ty 0)
+           (ptr-write-u64 b 0 (heap-read-u64 st 72))
+           (ptr-write-u64 st 72 b)
+           (ptr-write-u64 e 8 (- (heap-read-u64 e 8) 1))
+           0)))
+      ;; Fcons's new-block branch (alloc.c:2611-2622).
+      (defun nl_cons_alloc_block (st)
+        (let ((nb (nl_ablock_alloc st 1)))
+          (if (= nb 0) 0
+            (let ((i ,marks))
+              (seq
+               (while (< i ,next) (seq (ptr-write-u64 nb i 0) (setq i (+ i 8))))
+               (ptr-write-u64 nb ,next (heap-read-u64 st 8))
+               (ptr-write-u64 st 8 nb)
+               (ptr-write-u64 st 16 1)
+               (ptr-write-u64 st 40 (+ (heap-read-u64 st 40) 1))
+               nb)))))
+      ;; Fcons (alloc.c:2599): pop cons_free_list, else the next cell of the
+      ;; current cons_block, else a new block; charge the cell to the GC debt
+      ;; as consing_until_gc does.  0 = use the legacy headered payload:
+      ;; parallel sections run the CAS bump allocator with free-list reuse
+      ;; off (268435624 = 1) and GNU's free list has a single writer.
+      (defun nl_cons_alloc ()
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (= (heap-read-u64 st 80) 1) 0
+            (if (= (heap-read-u64 268435624 0) 1) 0
+              (let ((p (heap-read-u64 st 0)))
+                (seq
+                 (ptr-write-u64 (data-addr nl_gc_stats) 0
+                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,cell))
+                 (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) 1))
+                 (if (> p 0)
+                     (seq (ptr-write-u64 st 0 (heap-read-u64 p 8)) p)
+                   (let ((i (heap-read-u64 st 16)) (b (heap-read-u64 st 8)))
+                     (if (if (= b 0) 1 (if (= i ,n) 1 0))
+                         (nl_cons_alloc_block st)
+                       (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
+      ;; GNU's dead_object marker for free cells.
+      (defun nl_cons_dead_word () ,dead)
+      ;; Image dumps (pdumper's object copy; GNU keeps dumped objects out of
+      ;; its blocks and marks them through pdumper.c:5259).  While an image
+      ;; is dumped every cons-block cell owns a legacy headered payload
+      ;; (8-byte header, then the 24-byte cell) in a region appended to the
+      ;; coalesced span, block by block in list order, so the loaded image
+      ;; holds ordinary immortal image conses and the loader is unchanged.
+      ;; +120 region start (logical offset), +128 ordinal table, +136 blocks,
+      ;; +144 1 while active, +152 1 when the ordinal table could not be
+      ;; mapped (the dump must fail).  The ordinal lives at block+NEXT+8.
+      ;; Returns the region's byte length.
+      (defun nl_dump_cons_begin (span)
+        (let* ((st (data-addr nl_typed_alloc))
+               (nb (heap-read-u64 st 40))
+               (arr (if (= nb 0) 0 (nl_os_alloc_chunk (* nb 8))))
+               (b (heap-read-u64 st 8)) (o 0))
+          (seq
+           (ptr-write-u64 st 152 0)
+           (if (= nb 0) 0
+             (if (= arr 0) (seq (ptr-write-u64 st 152 1) 0)
+               (seq
+                (while (if (> b 0) (< o nb) 0)
+                  (seq (ptr-write-u64 arr (* o 8) b)
+                       (ptr-write-u64 b ,(+ next 8) o)
+                       (setq o (+ o 1))
+                       (setq b (heap-read-u64 b ,next))))
+                (ptr-write-u64 st 120 span)
+                (ptr-write-u64 st 128 arr)
+                (ptr-write-u64 st 136 o)
+                (ptr-write-u64 st 144 1)
+                (* o ,(* n 32))))))))
+      (defun nl_dump_cons_end ()
+        (let ((st (data-addr nl_typed_alloc)))
+          (seq
+           (if (> (heap-read-u64 st 128) 0)
+               (nl_os_free_chunk (heap-read-u64 st 128) (* (heap-read-u64 st 40) 8)) 0)
+           (ptr-write-u64 st 120 0) (ptr-write-u64 st 128 0)
+           (ptr-write-u64 st 136 0) (ptr-write-u64 st 144 0)
+           0)))
+      ;; Logical image offset of ADDR inside a cons-block cell, or -1.
+      (defun nl_dump_cons_logoff (addr)
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (= (heap-read-u64 st 144) 0) -1
+            (if (= (nl_typed_find addr) 1)
+                (let* ((blk (logand addr -32768))
+                       (off (- addr blk)))
+                  (if (>= off ,marks) -1
+                    (let* ((idx (/ off ,cell))
+                           (within (- off (* idx ,cell))))
+                      (+ (heap-read-u64 st 120)
+                         (+ (* (heap-read-u64 blk ,(+ next 8)) ,(* n 32))
+                            (+ (* idx 32) (+ 8 within)))))))
+              -1))))
+      ;; Cell address of LOGOFF inside the converted region, or 0 (inactive,
+      ;; outside it, or a header word).
+      (defun nl_dump_cons_phys (logoff)
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (= (heap-read-u64 st 144) 0) 0
+            (if (< logoff (heap-read-u64 st 120)) 0
+              (let* ((rel (- logoff (heap-read-u64 st 120)))
+                     (o (/ rel ,(* n 32)))
+                     (r (- rel (* o ,(* n 32))))
+                     (i (/ r 32))
+                     (within (- (- r (* i 32)) 8)))
+                (if (>= o (heap-read-u64 st 136)) 0
+                  (if (< within 0) 0
+                    (+ (heap-read-u64 (heap-read-u64 st 128) (* o 8))
+                       (+ (* i ,cell) within))))))))))))
+
+(defun nelisp-standalone--typed-gc-forms ()
+  "Return the Doc 223 typed-block collector forms for reader-gc.o."
+  (let ((n nelisp-standalone--cons-block-size)
+        (cell nelisp-standalone--cons-cell-bytes)
+        (marks nelisp-standalone--cons-marks-offset)
+        (next nelisp-standalone--cons-next-offset)
+        (dead nelisp-standalone--cons-dead-word))
+    `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
+      (defun nl_cons_mark_cell (box)
+        (let* ((blk (logand box -32768))
+               (idx (/ (- box blk) ,cell))
+               (w (+ blk (+ ,marks (* (sar idx 6) 8))))
+               (bit (shl 1 (logand idx 63)))
+               (m (heap-read-u64 w 0)))
+          (if (= (logand m bit) 0)
+              (seq (ptr-write-u64 w 0 (logior m bit)) 1)
+            0)))
+      ;; mark_object's cons case (alloc.c:6733): a cons-block cell takes its
+      ;; side bit with no exact-start probe; a legacy payload (cold image,
+      ;; parallel section) keeps its header mark.
+      (defun nl_gc_mark_cons_payload (box)
+        (if (= (nl_typed_find box) 1) (nl_cons_mark_cell box)
+          (nl_gc_mark_block box)))
+      ;; Clear every cons block's mark bits (a mark phase without a sweep:
+      ;; conservative failure, image walks, census-only walks).
+      (defun nl_cons_unmark_all ()
+        (let ((b (heap-read-u64 (data-addr nl_typed_alloc) 8)))
+          (seq
+           (while (> b 0)
+             (let ((i ,marks))
+               (seq (while (< i ,next) (seq (ptr-write-u64 b i 0) (setq i (+ i 8))))
+                    (setq b (heap-read-u64 b ,next)))))
+           0)))
+      ;; sweep_conses (alloc.c:6814): rebuild cons_free_list from the mark
+      ;; bits, one mark word at a time with the all-marked fast path; free a
+      ;; wholly free block once more than one block of free cells is held.
+      ;; Live cells feed the GC debt threshold (nl_gc_stats+16) and, during
+      ;; an explicit `garbage-collect', the census cons count (gcstat).
+      (defun nl_sweep_conses ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (cprev (+ st 8))
+               (cblk (heap-read-u64 st 8))
+               (lim (heap-read-u64 st 16))
+               (free 0) (num_free 0) (num_used 0))
+          (seq
+           (while (> cblk 0)
+             (let* ((i 0) (this_free 0) (ilim (/ (+ lim 63) 64)))
+               (seq
+                (while (< i ilim)
+                  (let* ((wa (+ cblk (+ ,marks (* i 8))))
+                         (w (heap-read-u64 wa 0)))
+                    (seq
+                     (if (= w -1)
+                         (setq num_used (+ num_used 64))
+                       (let* ((start (* i 64))
+                              (stop (+ start (if (< (- lim start) 64) (- lim start) 64)))
+                              (pos start))
+                         (while (< pos stop)
+                           (if (= (logand (sar w (- pos start)) 1) 0)
+                               (let ((c (+ cblk (* pos ,cell))))
+                                 (seq (setq this_free (+ this_free 1))
+                                      (ptr-write-u64 c 8 free)
+                                      (setq free c)
+                                      (ptr-write-u64 c 0 ,dead)))
+                             (setq num_used (+ num_used 1)))
+                           (setq pos (+ pos 1)))))
+                     (ptr-write-u64 wa 0 0)))
+                  (setq i (+ i 1)))
+                (setq lim ,n)
+                (if (if (= this_free ,n) (> num_free ,n) 0)
+                    (let ((nx (heap-read-u64 cblk ,next)))
+                      (seq
+                       (ptr-write-u64 cprev 0 nx)
+                       (setq free (heap-read-u64 cblk 8))
+                       (ptr-write-u64 st 40 (- (heap-read-u64 st 40) 1))
+                       (nl_ablock_free st cblk)
+                       (setq cblk nx)))
+                  (seq (setq num_free (+ num_free this_free))
+                       (setq cprev (+ cblk ,next))
+                       (setq cblk (heap-read-u64 cblk ,next)))))))
+           (ptr-write-u64 st 0 free)
+           (ptr-write-u64 st 24 num_used)
+           (ptr-write-u64 st 32 num_free)
+           (ptr-write-u64 (data-addr nl_gc_stats) 16
+                          (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,cell)))
+           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+               (ptr-write-u64 (data-addr nl_gc_typed_state) 32
+                              (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) num_used))
+             0)
+           0)))
+      ;; live_cons_holding (alloc.c:4627): the live cell P points into, or 0.
+      ;; A cell beyond cons_block_index in the current block was never
+      ;; allocated; a dead car marks a free cell.
+      (defun nl_live_cons_holding (p)
+        (let* ((st (data-addr nl_typed_alloc))
+               (blk (logand p -32768))
+               (off (- p blk)))
+          (if (>= off ,marks) 0
+            (let ((idx (/ off ,cell)))
+              (if (if (= blk (heap-read-u64 st 8)) (>= idx (heap-read-u64 st 16)) 0) 0
+                (let ((c (+ blk (* idx ,cell))))
+                  (if (= (heap-read-u64 c 0) ,dead) 0 c)))))))
+      ;; Image dump: write the converted cons region (see
+      ;; `nl_dump_cons_begin'), block by block in ordinal order.  A cell the
+      ;; image walk reached becomes a live 32-byte legacy payload block
+      ;; (header, then car/cdr as swizzled in place, then the refcount); any
+      ;; other cell becomes a free block, a hole of the loaded image.
+      ;; Returns the bytes written.
+      (defun nl_dump_cons_write (fd)
+        (let* ((st (data-addr nl_typed_alloc))
+               (nb (heap-read-u64 st 136))
+               (buf (if (= nb 0) 0 (nl_os_alloc_chunk ,(* n 32))))
+               (o 0) (written 0))
+          (if (= nb 0) 0
+            (if (= buf 0) (seq (ptr-write-u64 st 152 1) -1)
+              (seq
+               (while (< o nb)
+                 (let* ((blk (heap-read-u64 (heap-read-u64 st 128) (* o 8)))
+                        (i 0))
+                   (seq
+                    (while (< i ,n)
+                      (let* ((c (+ blk (* i ,cell)))
+                             (d (+ buf (* i 32))))
+                        (if (= (logand (sar (heap-read-u64 blk (+ ,marks (* (sar i 6) 8)))
+                                            (logand i 63))
+                                       1)
+                               1)
+                            (seq (ptr-write-u64 d 0 32)
+                                 (ptr-write-u64 d 8 (heap-read-u64 c 0))
+                                 (ptr-write-u64 d 16 (heap-read-u64 c 8))
+                                 (ptr-write-u64 d 24 (heap-read-u64 c 16)))
+                          (seq (ptr-write-u64 d 0 34)
+                               (ptr-write-u64 d 8 0)
+                               (ptr-write-u64 d 16 0)
+                               (ptr-write-u64 d 24 0))))
+                      (setq i (+ i 1)))
+                    (setq written (+ written (nl_fa_write_all fd buf ,(* n 32) 0)))
+                    (setq o (+ o 1)))))
+               (nl_os_free_chunk buf ,(* n 32))
+               written)))))
+      ;; mark_maybe_pointer (alloc.c:4854) for typed blocks: a conservative
+      ;; word inside a live cell marks that cons like mark_object.  1 when W
+      ;; lay in a cons block (handled), 0 to continue on the legacy path.
+      (defun nl_gc_conserv_typed (w)
+        (if (= (nl_typed_find w) 1)
+            (let ((c (nl_live_cons_holding w)))
+              (seq (if (= c 0) 0
+                     (if (= (nl_cons_mark_cell c) 0) 0
+                       (seq (nl_gc_mark_word (heap-read-u64 c 0))
+                            (nl_gc_mark_word (heap-read-u64 c 8)))))
+                   1))
+          0)))))
+
 (defconst nelisp-standalone--arena-source
   (append
    '(seq
@@ -3232,7 +3663,9 @@ directory tracks the tree rather than accumulating every key ever built."
    ;; Doc 170 Stage 2: checked-allocator wrapper + guard stamping /
    ;; verification (see the commentary at the generator).  The wrapper
    ;; re-defines `nl_alloc_bytes' around `nl_alloc_bytes_uncheck' above.
-   (nelisp-standalone--alloc-check-arena-forms)))
+   (nelisp-standalone--alloc-check-arena-forms)
+   ;; Doc 223: GNU typed blocks (cons blocks, groups, registry).
+   (nelisp-standalone--typed-alloc-forms)))
 
 (defconst nelisp-standalone--windows-stack-reserve #x40000000
   "Windows standalone PE stack reserve size.
@@ -4226,7 +4659,7 @@ REPL-facing module it feeds."
 ;; keeps tag-9 values in the global mirror.  Their owned child blocks therefore
 ;; have to be enumerated just like every other live box.
 (defconst nelisp-standalone--gc-source
-  '(seq
+  `(seq
 
     ;; N2: clauses 1/2. A request-scoped identity set counts logical objects,
     ;; not the evaluator's transient Sexp views. It is external scratch, never
@@ -4306,27 +4739,37 @@ REPL-facing module it feeds."
                   (if (= (heap-read-u64 sp 8) (heap-read-u64 st 80))
                       (ptr-write-u8 sp 0 15) 0) 0))
           (if (= mode 1)
+              ;; Doc 223, GNU gcstat: cons-block cells are counted by
+              ;; sweep_conses, and image objects are not counted, as GNU
+              ;; never counts pdumper objects (they live outside its
+              ;; blocks).  Only legacy heap objects remain for the census.
               (cond
                ((= tag 7)
-                (if (= (nl_gc_object_start_p (heap-read-u64 sp 8)) 0) 0
-                  (nl_gc_typed_add 1 (heap-read-u64 sp 8) 0 32 1)))
+                (let ((p (heap-read-u64 sp 8)))
+                  (if (= (nl_typed_find p) 1) 0
+                    (if (= (nl_gc_is_boot p) 1) 0
+                      (if (= (nl_gc_object_start_p p) 0) 0
+                        (nl_gc_typed_add 1 p 0 32 1))))))
                ((or (= tag 4) (= tag 16))
                 (nl_gc_typed_add (if (= tag 4) 2 6)
                                 (heap-read-u64 sp (if (= tag 4) 16 8))
                                 (heap-read-u64 sp 24) 40 1))
                ((or (= tag 5) (= tag 14))
                 (let ((ptr (heap-read-u64 sp 16)) (len (heap-read-u64 sp 24)))
+                  (if (= (nl_gc_is_boot ptr) 1) 0
                   (if (= (nl_gc_object_start_p ptr) 0) 0
                     (if (or (< len 0) (> len (nl_gc_block_elem_cap ptr 1))) 0
-                      (nl_gc_typed_add 3 (if (= len 0) 1 ptr) len 48 1)))))
+                      (nl_gc_typed_add 3 (if (= len 0) 1 ptr) len 48 1))))))
                ((or (= tag 6) (= tag 15))
                 (let ((box (heap-read-u64 sp 8)))
+                  (if (= (nl_gc_is_boot box) 1) 0
                   (if (= (nl_gc_object_start_p box) 0) 0
                     (if (< (nl_hdr_bt (- box 8)) 40) 0
-                      (nl_gc_typed_add 4 box (heap-read-u64 box 16) 48 1)))))
+                      (nl_gc_typed_add 4 box (heap-read-u64 box 16) 48 1))))))
                ((or (= tag 8) (= tag 12) (= tag 17) (= tag 18)
                     (= tag 19) (= tag 9) (= tag 10))
                 (let* ((box (heap-read-u64 sp 8)))
+                  (if (= (nl_gc_is_boot box) 1) 0
                   (if (= (nl_gc_object_start_p box) 0) 0
                     (let* ((len (if (= tag 8) (sar (heap-read-u64 box 0) 8)
                               (if (or (= tag 12) (= tag 17) (= tag 18))
@@ -4334,7 +4777,7 @@ REPL-facing module it feeds."
                        (before (heap-read-u64 st 64)))
                   (seq (nl_gc_typed_add 5 box 0 64 1)
                        (if (> (heap-read-u64 st 64) before)
-                           (ptr-write-u64 st 72 (+ (heap-read-u64 st 72) len)) 0))))))
+                           (ptr-write-u64 st 72 (+ (heap-read-u64 st 72) len)) 0)))))))
                (t 0)) 0))))
     (defun nl_gc_typed_interns (slot)
       (let ((cursor 0))
@@ -4709,7 +5152,7 @@ REPL-facing module it feeds."
     (defun nl_gc_typed_vectorlike (box kind n)
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
-        (if (= (heap-read-u64 state 0) 1)
+        (if (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)
             (seq (nl_gc_typed_add 5 box 0 64 1)
                  (if (> (heap-read-u64 state 64) before)
                      (ptr-write-u64 state 72
@@ -4756,13 +5199,15 @@ REPL-facing module it feeds."
     ;; ceiling on windows-x86_64, the same shape that killed
     ;; `nl_gc_poison_fill'.  The car side stays recursive: its depth is
     ;; bounded by object nesting, not by list length.
+;; Doc 223 GC-side forms: spliced in by `nelisp-standalone--typed-gc-forms'.
+    ,@(nelisp-standalone--typed-gc-forms)
     (defun nl_gc_mark_cons (sp)
       (let ((go 1))
         (seq (while (= go 1)
           (seq (setq go 0)
             (let ((box (heap-read-u64 sp 8)))
               (nl_gc_typed_slot sp 7)
-              (if (= (nl_gc_mark_block box) 0) 0
+              (if (= (nl_gc_mark_cons_payload box) 0) 0
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
@@ -5616,6 +6061,8 @@ REPL-facing module it feeds."
        (nl_alloc_run_reset)
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (heap-read-u64 268436160 0))
+       ;; Doc 223: sweep_conses (alloc.c:6814) for cons-block cells.
+       (nl_sweep_conses)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (heap-read-u64 268436160 0)
@@ -5843,8 +6290,9 @@ REPL-facing module it feeds."
     ;; callers in the precise path no longer use it.
     (defun nl_gc_conserv_owner (w) (nl_gc_conserv_pin w))
     (defun nl_gc_conserv_word (w)
-      (let ((owner (nl_gc_conserv_resolve w)))
-        (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
+      (if (= (nl_gc_conserv_typed w) 1) 0
+        (let ((owner (nl_gc_conserv_resolve w)))
+          (if (= owner 0) 0 (nl_gc_conserv_pin owner)))))
     (defun nl_gc_conserv_scan (p0 top)
       (let ((p p0))
         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
@@ -5903,6 +6351,7 @@ REPL-facing module it feeds."
         (while (> chunk 0)
           (nl_gc_mark_reset_chunk chunk)
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
+        (nl_cons_unmark_all)
         0))
     (defun nl_gc_conserv_rollback ()
       (let ((chunk (heap-read-u64 268436160 0)))
@@ -7214,7 +7663,7 @@ REPL-facing module it feeds."
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_seq2 (nl_gc_debt_rearm)
+                          (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_gc_debt_rearm))
                                    (nl_gc_conserv_state_clear)))
                  (nl_seq2 (nl_gc_sweep)
                           (nl_gc_conserv_state_clear)))))))))
@@ -9496,6 +9945,9 @@ leave symbols unresolved at link time."
       (let* ((bump (heap-read-u64 268435456 0))
              (used (bf_arena_chunks_used (heap-read-u64 268436160 0) 0))
              (nil-slot (alloc-bytes 32 8))
+             (s14 (alloc-bytes 32 8))
+             (s13 (alloc-bytes 32 8))
+             (s12 (alloc-bytes 32 8))
              (s11 (alloc-bytes 32 8))
              (s10 (alloc-bytes 32 8))
              (s9 (alloc-bytes 32 8))
@@ -9511,7 +9963,12 @@ leave symbols unresolved at link time."
          (ptr-write-u64 268436192 0 used) ; chunk-bytes-used
          (ptr-write-u64 268436240 0 bump) ; chunk0.cursor mirrors bump offset
          (wf_write_nil nil-slot)
-         (wf_cons_int used nil-slot s11)
+         ;; Doc 223 (appended): cons blocks in use, live and free conses
+         ;; counted by the last sweep_conses (GNU's gcstat).
+         (wf_cons_int (heap-read-u64 (data-addr nl_typed_alloc) 32) nil-slot s14)
+         (wf_cons_int (heap-read-u64 (data-addr nl_typed_alloc) 24) s14 s13)
+         (wf_cons_int (heap-read-u64 (data-addr nl_typed_alloc) 40) s13 s12)
+         (wf_cons_int used s12 s11)
          (wf_cons_int (heap-read-u64 268436184 0) s11 s10)
          (wf_cons_int (heap-read-u64 268436176 0) s10 s9)
          (wf_cons_int (heap-read-u64 268435624 0) s9 s8)
@@ -9645,7 +10102,7 @@ leave symbols unresolved at link time."
          0)))
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
-          0
+          (nl_cons_unmark_all)
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
                                      reach total))))
@@ -9716,7 +10173,8 @@ leave symbols unresolved at link time."
               (+ acc (- addr cds))
             (nl_mc_logoff_walk (heap-read-u64 (+ chunk 48) 0) addr (+ acc cused))))))
     (defun nl_mc_logoff (addr)
-      (nl_mc_logoff_walk (heap-read-u64 268436160 0) addr 0))
+      (let ((r (nl_mc_logoff_walk (heap-read-u64 268436160 0) addr 0)))
+        (if (< r 0) (nl_dump_cons_logoff addr) r)))
     (defun nl_mc_phys_walk (chunk logoff acc)
       (if (= chunk 0) 0
         (let* ((cbase (heap-read-u64 chunk 0))
@@ -9725,7 +10183,8 @@ leave symbols unresolved at link time."
               (+ (+ cbase 1024) (- logoff acc))
             (nl_mc_phys_walk (heap-read-u64 (+ chunk 48) 0) logoff (+ acc cused))))))
     (defun nl_mc_phys (logoff)
-      (nl_mc_phys_walk (heap-read-u64 268436160 0) logoff 0))
+      (let ((c (nl_dump_cons_phys logoff)))
+        (if (= c 0) (nl_mc_phys_walk (heap-read-u64 268436160 0) logoff 0) c)))
     (defun nl_mc_total_walk (chunk acc)
       (if (= chunk 0) acc
         (nl_mc_total_walk (heap-read-u64 (+ chunk 48) 0)
@@ -10886,6 +11345,10 @@ leave symbols unresolved at link time."
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_to_file_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_to_file keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_to_file_w (args _pad)
+      ;; Doc 223: this single-chunk copy dump has no converted cons region;
+      ;; with cons blocks in use it refuses (`nelisp--arena-dump-image-stream'
+      ;; converts them).
+      (if (> (heap-read-u64 (data-addr nl_typed_alloc) 40) 0) (wf_write_int_w 0 -1)
       (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (heap-read-u64 268436160 0))
@@ -10945,7 +11408,7 @@ leave symbols unresolved at link time."
             (nl_fa_write_all fd tbl (* tlen 8) 0)
             (nl_fa_write_all fd dest (+ slen isz) 0)
             (nl_os_close_handle fd)
-            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz))))))))))
+            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz)))))))))))
     (defun bf_arena_dump_image_to_file (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_to_file_w args 0) out))
     ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
@@ -11000,7 +11463,9 @@ leave symbols unresolved at link time."
              (ib (heap-read-u64 (+ abase 832) 0))
              (ie (heap-read-u64 (+ abase 840) 0))
              (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
-             (total (nl_mc_total))                    ; coalesced size = sum of ALL chunks' used bytes
+             ;; coalesced size = sum of ALL chunks' used bytes, plus the
+             ;; Doc 223 region holding every cons-block cell as an image payload
+             (total (let ((span (nl_mc_total))) (+ span (nl_dump_cons_begin span))))
              ;; Reloc-table scratch -- Increment 1 fix (multi-chunk cold-load).
              ;; The previous placement piggybacked on chunk-0's own leftover mmap
              ;; tail (single-chunk) or the interned-region's leftover mmap tail
@@ -11035,10 +11500,12 @@ leave symbols unresolved at link time."
              ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                  '((written 0))))
         (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0)
+                (= (heap-read-u64 (data-addr nl_typed_alloc) 152) 1)
                 ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                     '((= (nl_os_commit_range tblbase 0 tblcap) 0))))
             ;; an unstamped build cannot vouch for its image: refuse.
             (seq (if (= tblbase 0) 0 (nl_os_free_chunk tblbase tblcap))
+                 (nl_dump_cons_end)
                  (wf_write_int_w 0 -1))
           (seq
            (nl_build_digest_trailer trl)
@@ -11049,7 +11516,8 @@ leave symbols unresolved at link time."
            (ptr-write-u64 hdr 56 ib)
            (setq fd (nl_os_open_write_truncate cpath))
            (if (< fd 0)
-               (nl_seq2 (nl_os_free_chunk tblbase tblcap) (wf_write_int_w 0 -1))
+               (nl_seq2 (nl_os_free_chunk tblbase tblcap)
+                        (nl_seq2 (nl_dump_cons_end) (wf_write_int_w 0 -1)))
              (seq
               ;; route nl_fa_emit's table to the dedicated scratch mmap
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
@@ -11083,11 +11551,13 @@ leave symbols unresolved at link time."
                     '((setq written (nl_fa_write_all fd hdr 64 0))
                       (setq written (+ written (nl_fa_write_all fd tbl (* tlen 8) 0)))
                       (setq written (+ written (nl_mc_write_chunks fd head)))
+                      (setq written (+ written (nl_dump_cons_write fd)))
                       (setq written (+ written (nl_fa_write_all fd ib isz 0)))
                       (setq written (+ written (nl_fa_write_all fd trl 48 0))))
                   '((nl_fa_write_all fd hdr 64 0)
                     (nl_fa_write_all fd tbl (* tlen 8) 0)
                     (nl_mc_write_chunks fd head)
+                    (nl_dump_cons_write fd)
                     (nl_fa_write_all fd ib isz 0)
                     (nl_fa_write_all fd trl 48 0)))
               (nl_os_close_handle fd)
@@ -11097,11 +11567,15 @@ leave symbols unresolved at link time."
               ;; the next collection, so a post-dump child reachable only
               ;; through it would be swept while still live.
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cout cout)
+              (nl_dump_cons_end)
               (nl_os_free_chunk tblbase tblcap)
               (wf_write_int_w 0 ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                                  '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
                                       written -1)
-                               '(+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
+                               ;; Doc 223: a converted cons region that could
+                               ;; not be written fails the dump.
+                               '(if (= (heap-read-u64 (data-addr nl_typed_alloc) 152) 1) -1
+                                  (+ 64 (+ (* tlen 8) (+ total (+ isz 48))))))))))))
 )))
     (defun bf_arena_dump_image_stream (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_stream_w args 0) out))
@@ -11339,7 +11813,7 @@ leave symbols unresolved at link time."
     (defun nl_fa_cons (sp ds span dest cin cout dir)
       (let ((box (heap-read-u64 sp 8)))
         (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
-          (if (= (nl_gc_mark_block box) 0) 0
+          (if (= (nl_gc_mark_cons_payload box) 0) 0
             (nl_seq2
              (let ((cw (heap-read-u64 box 0)))
                (if (= (logand cw 1) 1) 0

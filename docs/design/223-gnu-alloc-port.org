@@ -90,6 +90,56 @@ itself is the cell address plus 2 and =CONS_BLOCK= applies directly.
 3. Vector blocks with size-class free lists and large-vector fallback.
 4. Floats, symbols and strings after word-heap S3/S5 (see the map).
 
+* Implementation status (2026-10-21)
+
+** Cons blocks (S1.1)
+
+=nelisp-standalone--typed-alloc-forms= (arena.o) and
+=nelisp-standalone--typed-gc-forms= (reader-gc.o) hold the port.
+
+- Allocation: =nl_alloc_consbox= takes its payload from =nl_cons_alloc=
+  (Fcons): =cons_free_list=, then =cons_block_index=, then a new block from
+  =nl_ablock_alloc= (lisp_align_malloc). Each cell charges 24 bytes to the
+  collector debt, as =consing_until_gc= does.
+- Metadata: the registry maps a 512 KiB group base to its entry; a block's
+  type word sits at offset 32752. =nl_typed_find= rejects addresses outside
+  the lowest and highest group first, as =mem_find= does with
+  =min_heap_address= and =max_heap_address=.
+- Marking: a cons view whose payload is a block cell sets the cell's side bit
+  (=nl_cons_mark_cell=) and never probes the exact-start index. Cold-image and
+  parallel-section payloads keep their legacy header marks.
+- Sweeping: =nl_sweep_conses= runs inside =nl_gc_sweep= (and after a
+  compaction) and rebuilds =cons_free_list=.
+- Conservative scanning: =nl_gc_conserv_word= first asks =nl_gc_conserv_typed=
+  (mark_maybe_pointer); =nl_live_cons_holding= rejects cells past
+  =cons_block_index= in the current block and cells whose car is the dead
+  marker.
+- Statistics: =nelisp--arena-stats= appends the cons block count and the live
+  and free conses of the last sweep. An explicit =garbage-collect= counts
+  block conses from the sweep and skips image objects, as GNU's gcstat skips
+  pdumper objects; only legacy heap objects still go through the census.
+- Images: =nelisp--arena-dump-image-stream= appends one converted region after
+  the coalesced chunks, one 32-byte legacy block per cell (=nl_dump_cons_*=).
+  Cells the image walk reached are live payloads, the rest are free blocks.
+  =nl_mc_logoff= and =nl_mc_phys= map cells to the region and back, so the
+  in-place swizzle, the relocation table, the restore and the loader are
+  unchanged. The single-chunk copy dump refuses to run while cons blocks are
+  in use.
+
+** Next increment: vector blocks
+
+Tag-110 backings up to GNU's =VBLOCK_BYTES_MAX= (2040 bytes) move to 32 KiB
+vector blocks with GNU's size-class free lists (=allocate_vector_from_block=)
+and =sweep_vectors=' coalescing; larger backings stay headered general blocks
+(the large-vector list). Two structural decisions are needed first:
+
+- Mark storage: GNU sets =ARRAY_MARK_FLAG= in the header word. NeLisp's
+  kind/length word is read during a collection, by marking, the census and
+  the image walk, without masking, so a side bitmap with one bit per 8-byte
+  granule is the lower-risk adaptation.
+- Image conversion: variable sizes need a per-block granule-to-image-offset
+  table so that =nl_mc_logoff= stays O(1) for interior field addresses.
+
 * Expected effect and the remaining gap (S2)
 
 Doc 220's churn profiles (base 9d5f4a515, four-layout means, millions of

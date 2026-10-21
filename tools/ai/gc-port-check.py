@@ -100,6 +100,130 @@ def cmd_portplan():
     return 0
 
 
+CUR = ROOT / 'target/gc-port/cur'
+CONS_BLOCK_SIZE = 1356
+
+
+def binaries():
+    """The candidate dynamic and static binaries (env overrides)."""
+    return [Path(os.environ.get('GC_PORT_DYN', CUR / 'nelisp-dyn')),
+            Path(os.environ.get('GC_PORT_STATIC', CUR / 'nelisp-static'))]
+
+
+def run_nelisp(binary, path, timeout=300):
+    import subprocess
+    cmd = ['bash', '-c', 'ulimit -v 8388608; exec timeout "$0" "$1" --load "$2"',
+           str(timeout), str(binary), str(path)]
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def cons_probe_problems(binary):
+    rc, out, err = run_nelisp(binary, ROOT / 'tools/ai/gc-port-cons-probe.el')
+    m = re.search(r'^GCPORT-CONS (.*)$', out, re.M)
+    if rc != 0 or not m or 'uncaught error' in err:
+        return [f'{binary.name}: probe rc={rc}']
+    v = {k: int(x) for k, x in (kv.split('=') for kv in m.group(1).split())}
+    problems = []
+    if min(v.values()) < 0:
+        problems.append('no cons-block fields in nelisp--arena-stats')
+    if v['sum3'] != 1249975000 or v['len3'] != 50000:
+        problems.append('wrong list contents')
+    if v['live1'] - v['live0'] < 100000:
+        problems.append(f"sweep counted {v['live1'] - v['live0']} new live conses, not 100000")
+    if v['blocks1'] * CONS_BLOCK_SIZE < v['live1']:
+        problems.append('more live conses than block cells')
+    if v['live1'] - v['live2'] < 99000 or v['free2'] <= 0:
+        problems.append(f"drop freed {v['live1'] - v['live2']} (free list {v['free2']})")
+    if v['blocks2'] >= v['blocks1']:
+        problems.append('sweep_conses released no wholly free block')
+    if v['blocks3'] > v['blocks1'] or v['live3'] - v['live2'] < 50000:
+        problems.append('second allocation grew past the earlier peak')
+    return problems
+
+
+def cmd_conses():
+    src = (ROOT / 'scripts/nelisp-standalone-build.el').read_text()
+    alloc = (ROOT / 'lisp/nelisp-cc-nlconsbox-alloc.el').read_text()
+    problems = []
+    for name in ('nl_cons_alloc', 'nl_sweep_conses', 'nl_cons_mark_cell',
+                 'nl_live_cons_holding', 'nl_gc_mark_cons_payload', 'nl_ablock_alloc',
+                 'nl_typed_find'):
+        if f'(defun {name} ' not in src:
+            problems.append(f'source lacks {name}')
+    if 'extern-call nl_cons_alloc' not in alloc:
+        problems.append('nl_alloc_consbox does not allocate from cons blocks')
+    m = re.search(r'\(defun nl_gc_mark_cons_payload \(box\)\n(.*?)\n      ;;', src, re.S)
+    if not m or 'nl_gc_object_start_p' in m.group(1) or '(nl_cons_mark_cell box)' not in m.group(1):
+        problems.append('cons-block marking still probes the start index')
+    if '(nl_sweep_conses)' not in src:
+        problems.append('no per-type cons sweep in the collector')
+    for binary in binaries():
+        if not binary.exists():
+            problems.append(f'missing binary {binary}')
+            continue
+        problems += cons_probe_problems(binary)
+        for test in ('test/standalone-gc-pressure-check.el',
+                     'test/standalone-gc-conservative-cost-check.el'):
+            rc, out, err = run_nelisp(binary, ROOT / test)
+            if rc != 0 or 'PASS' not in out or 'uncaught error' in err:
+                problems.append(f'{binary.name}: {test} rc={rc}')
+    base = Path(os.environ.get('GC_PORT_BASE', ROOT / 'target/gc-port/base/nelisp-dyn'))
+    if not base.exists() or not cons_probe_problems(base):
+        problems.append(f'negative control: base binary {base} passed the probe or is missing')
+    if problems:
+        return fail('conses: ' + '; '.join(problems[:8]))
+    print('PASS conses: cons-block allocation, side marks, sweep_conses and free-list reuse '
+          'on dynamic and static; GC pressure and conservative checks pass; base binary rejected')
+    return 0
+
+
+SPEED = ROOT / 'target/gc-port/speed'
+LAYOUTS = (0, 700, 1400, 2100)
+
+
+def speed_means(kind, binary):
+    """Four-layout mean GC+alloc Ir for GNU and NeLisp, or a problem string."""
+    import hashlib
+    import json
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest() if binary.exists() else None
+    means = {}
+    for engine in ('gnu', 'nelisp'):
+        values = []
+        for layout in LAYOUTS:
+            path = SPEED / f'{engine}-{kind}-{layout}' / 'summary.json'
+            if not path.exists():
+                return None, f'missing {path.relative_to(ROOT)}'
+            meta = json.loads(path.read_text())
+            if engine == 'nelisp' and meta['binary_sha256'] != digest:
+                return None, f'{path.relative_to(ROOT)} profiles another binary'
+            if not meta.get('output_ok') or meta.get('returncode') != 0:
+                return None, f'{path.relative_to(ROOT)} failed'
+            values.append(meta['gc_alloc_ir'])
+        means[engine] = sum(values) / len(values)
+    return means, None
+
+
+def speed_verdict(means):
+    return means['nelisp'] <= means['gnu']
+
+
+def cmd_speed(kind):
+    binary = binaries()[0]
+    if speed_verdict({'nelisp': 2.0, 'gnu': 1.0}):
+        return fail('speed: negative control passed')
+    means, problem = speed_means(kind, binary)
+    if problem:
+        return fail(f'speed {kind}: {problem}')
+    ratio = means['nelisp'] / means['gnu']
+    line = (f"speed {kind}: NeLisp GC+alloc {means['nelisp']/1e6:.1f}M Ir vs GNU "
+            f"{means['gnu']/1e6:.1f}M Ir (x{ratio:.2f}, four-layout means)")
+    if not speed_verdict(means):
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
 def not_ready(name):
     return fail(f'{name}: implementation or acceptance evidence outstanding')
 
@@ -111,10 +235,12 @@ def main(argv):
     cmd = argv[0]
     if cmd == 'portplan':
         return cmd_portplan()
-    if cmd in ('conses', 'all-types', 'company', 'final'):
+    if cmd == 'conses':
+        return cmd_conses()
+    if cmd in ('all-types', 'company', 'final'):
         return not_ready(cmd)
     if cmd == 'speed' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
-        return not_ready('speed ' + argv[1])
+        return cmd_speed(argv[1])
     print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|company|final')
     return 2
 
