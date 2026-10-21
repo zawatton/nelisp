@@ -1,0 +1,18 @@
+{
+  "interpreter": {
+    "funcall": 10,
+    "builtin": 10
+  },
+  "vm": {
+    "funcall": 5,
+    "builtin": 5,
+    "let": 5,
+    "while": 5
+  },
+  "bytecode": {
+    "funcall": 5,
+    "builtin": 5,
+    "let": 5,
+    "while": 5
+  }
+}

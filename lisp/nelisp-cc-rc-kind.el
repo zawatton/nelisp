@@ -81,7 +81,7 @@
      ;; zero-extended u8 load and returns the byte as i64).  Same
      ;; zero-extension contract as `variant_tag' in `sexp.rs:234' —
      ;; 0xFF returns 255, not -1.
-     (ptr-read-u8 sexp-ptr 0))
+     (heap-read-u8 sexp-ptr 0))
   "AOT source for the Doc 123 §123.C kind-byte reader kernel.
 
 Single-arg function — AOT's SysV AMD64 prologue spills the

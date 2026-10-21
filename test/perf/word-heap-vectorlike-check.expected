@@ -1,0 +1,1 @@
+WORD-HEAP-VECTORLIKE ((t t t t t t t t t t t t 29 changed) (args-out-of-range [17] 3) (wrong-type-argument wholenump -1) (wrong-type-argument char-table-p 17) (args-out-of-range #s(whv-bounds nil) -1) (args-out-of-range #s(whv-bounds nil) 2) (wrong-type-argument integerp []) (wrong-type-argument characterp []) (wrong-type-argument characterp []))

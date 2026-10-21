@@ -16,7 +16,9 @@
 ;; A tagged WORD is 8 bytes:
 ;;   low bit 1 = immediate  (Int = (n<<2)|1, Nil = 3, T = 7)
 ;;   low bit 0 = 8-aligned pointer to a 32-byte `Sexp' box (unchanged).
-;; Child Sexp boxes stay 32B; only the container SLOTS shrink.
+;; Doc 216 S4.1 adds low bits 110 for vectorlike backing objects. Their
+;; kind/length word precedes inline WORD slots; no child Sexp box is kept.
+;; Other heap kinds retain their legacy 32-byte boxes.
 ;;
 ;; `Sexp' is a 32-byte `#[repr(C, u8)]' slot: tag (u8) @ 0, payload @ 8.
 ;;
@@ -24,8 +26,8 @@
 ;;
 ;;   nl_val_load(word, scratch32) -> *const Sexp
 ;;     - (logand word 1) == 0  (already a 32B-slot pointer): return WORD.
-;;     - else (immediate): nl_sci_store_imm(word, scratch32) materialises
-;;       the immediate as a 32-byte storage Sexp at SCRATCH32; return
+;;     - else (immediate or direct vectorlike): nl_sexp_clone_into
+;;       materialises a 32-byte storage Sexp at SCRATCH32; return
 ;;       SCRATCH32.  The caller owns SCRATCH32 (a transient 32B slot);
 ;;       the returned VIEW is valid only for the consumer's read.  This
 ;;       is the inverse of the Doc 146 producer (storage Sexp -> word)
@@ -37,8 +39,10 @@
 ;;   nl_val_clone_into(src_slot, dst_word_ptr) -> word
 ;;     Construction side: turn a 32B-slot SRC into a tagged WORD stored
 ;;     at *DST_WORD_PTR (8 bytes), returning that word.
-;;     - immediate SRC (low bit 1): write the 8B word straight to
+;;     - immediate or direct-vectorlike SRC: write the 8B word straight to
 ;;       DST_WORD_PTR and return it.
+;;     - vectorlike storage view: store its backing address with tag 110;
+;;       transient views never become retained per-object headers.
 ;;     - post-boot arena Symbol/String SRC (low bit 0, `nl_gc_in_arena'
 ;;       true, `nl_gc_is_boot' false, tag 4/5): allocate a fresh 32-byte
 ;;       Sexp box, copy the four Sexp words, and store the fresh box
@@ -93,9 +97,8 @@
     ;; 32-byte storage Sexp at SCRATCH32 via nl_sci_store_imm, and the
     ;; SCRATCH32 view is returned.
     (defun nl_val_load (word scratch32)
-      (if (= (logand word 1) 0)
-          word
-        (extern-call nl_sci_store_imm word scratch32)))
+      (if (and (= (logand word 1) 0) (/= (logand word 7) 6)) word
+        (extern-call nl_sexp_clone_into word scratch32)))
 
     ;; Boxed/string construction path: clone the 32B-slot child SRC into a
     ;; FRESH 32-byte box (alloc-bytes 32 8 -> 8-aligned, low bit 0), then
@@ -114,10 +117,10 @@
 
     (defun nl_vci_copy32 (src dst_ptr)
       (nl_vl_prog2
-       (and (ptr-write-u64 dst_ptr 0  (ptr-read-u64 src 0))
-            (ptr-write-u64 dst_ptr 8  (ptr-read-u64 src 8))
-            (ptr-write-u64 dst_ptr 16 (ptr-read-u64 src 16))
-            (ptr-write-u64 dst_ptr 24 (ptr-read-u64 src 24)))
+       (and (ptr-write-u64 dst_ptr 0  (heap-read-u64 src 0))
+            (ptr-write-u64 dst_ptr 8  (heap-read-u64 src 8))
+            (ptr-write-u64 dst_ptr 16 (heap-read-u64 src 16))
+            (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)))
        dst_ptr))
 
     ;; Shallow rebox path for immutable Symbol/String slots.  SRC may be
@@ -136,7 +139,7 @@
     ;; decoded here. Use a shallow rebox when SRC is already arena-owned;
     ;; otherwise use the legacy fresh-box clone.  A BSS flag exposed by
     ;; `nl_bind_clone_force_flag' forces the legacy path.
-    (defun nl_val_clone_into (src_slot dst_word_ptr)
+    (defun nl_val_clone_legacy (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
         (if (extern-call nl_bind_clone_force_flag)
@@ -144,19 +147,32 @@
               ;; Scalar slots already clone as a verbatim 32-byte copy.
               ;; Retain their physical representation in a fresh owned box;
               ;; do not decode them into canonical immediate WORDs.
-              (if (< (ptr-read-u8 src_slot 0) 4)
+              (if (< (heap-read-u8 src_slot 0) 4)
                   (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
               ;; Membership only chooses the shallow symbol/string path.
               ;; Every other tag takes the same fresh clone on either side
               ;; of that test, so avoid walking the chunk chain for it.
-              (if (and (or (= (ptr-read-u8 src_slot 0) 4)
-                           (= (ptr-read-u8 src_slot 0) 5)
-                           (= (ptr-read-u8 src_slot 0) 14))
+              (if (and (or (= (heap-read-u8 src_slot 0) 4)
+                           (= (heap-read-u8 src_slot 0) 5)
+                           (= (heap-read-u8 src_slot 0) 14))
                        (extern-call nl_gc_in_arena src_slot))
                   (if (extern-call nl_gc_is_boot src_slot)
                       (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
                     (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
-                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))))
+                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
+    (defun nl_val_clone_into (src_slot dst_word_ptr)
+      (if (= (logand src_slot 1) 1)
+          (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
+        (if (= (logand src_slot 7) 6)
+            (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
+          (let ((tag (heap-read-u8 src_slot 0)))
+            (if (or (= tag 8) (= tag 9) (= tag 12) (= tag 17) (= tag 18))
+                (let* ((box (heap-read-u64 src_slot 8)) (word (+ box 6)))
+                  (nl_vl_prog2
+                   (and (ptr-write-u64 box 0
+                         (+ (logand (heap-read-u64 box 0) -64) tag))
+                        (ptr-write-u64 dst_word_ptr 0 word)) word))
+              (nl_val_clone_legacy src_slot dst_word_ptr)))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

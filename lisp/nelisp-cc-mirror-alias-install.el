@@ -126,8 +126,7 @@
                    (setq done 1)
                  ;; Doc 215: the slot's own WORD; nil is 3, any other
                  ;; immediate is not a symbol.
-                 (setq next (ptr-read-u64
-                             (+ (ptr-read-u64 (ptr-read-u64 entry 8) 32) 32) 0))
+                 (setq next (nl_record_slot_word entry 4))
                  (if (if (= next 3) 1
                        (if (= (logand next 1) 1) 0 (= (sexp-tag next) 0)))
                      (setq done 1)
@@ -153,7 +152,8 @@
                                 target-ptr 0)))
          0)
        status)))
-  "Private alias installer; status 0=installed, 1=invalid/unsupported, 2=cycle or hop limit, 5=mutation guard refused.")
+  "Private alias installer; status 0=installed, 1=invalid/unsupported,
+2=cycle or hop limit, 5=mutation guard refused.")
 
 (defconst nelisp-cc-mirror-alias-install-source
   nelisp-cc-mirror-alias-install--source

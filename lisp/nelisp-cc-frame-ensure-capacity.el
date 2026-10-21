@@ -167,6 +167,22 @@
          ;; Exit code 87 = frame-stack capacity guard.  The per-target
          ;; helper terminates every task, including native library workers.
          (nl_os_exit_process 87))))
+    (defun nelisp_frame_stack_ensure_capacity_unchecked (frames-ptr needed scratch-slot)
+      ;; Private shared capacity body: callers establish the upper bound.
+      ;; The generic entry below retains its fatal >2^32 guard; S4.2's
+      ;; transient push establishes 0 <= depth < 2^20 before needed=depth+1.
+      ;; Keep the original three-argument ABI and the four-argument, even-
+      ;; arity grow call. Copy-before-install and SCRATCH ownership are unchanged.
+      (if (< (vector-len (record-slot-ref-ptr frames-ptr 0)) needed)
+            (nelisp_frame_stack_ensure_capacity_grow
+             frames-ptr
+             scratch-slot
+             (nelisp_frame_stack_ensure_capacity_compute_cap
+              (nelisp_frame_stack_ensure_capacity_initial
+               (vector-len (record-slot-ref-ptr frames-ptr 0)))
+              needed)
+             0) ; _pad — Doc 124.F-blocker even-arity fix
+          (vector-len (record-slot-ref-ptr frames-ptr 0))))
     (defun nelisp_frame_stack_ensure_capacity (frames-ptr needed scratch-slot)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record (=
       ;;               Sexp::Record(`nelisp-lexframe-stack')).
@@ -185,16 +201,7 @@
       ;; record shape meets the precondition.
       (if (> needed 4294967296)
           (nelisp_frame_stack_ensure_capacity_bad_needed needed)
-        (if (< (vector-len (record-slot-ref-ptr frames-ptr 0)) needed)
-            (nelisp_frame_stack_ensure_capacity_grow
-             frames-ptr
-             scratch-slot
-             (nelisp_frame_stack_ensure_capacity_compute_cap
-              (nelisp_frame_stack_ensure_capacity_initial
-               (vector-len (record-slot-ref-ptr frames-ptr 0)))
-              needed)
-             0) ; _pad — Doc 124.F-blocker even-arity fix
-          (vector-len (record-slot-ref-ptr frames-ptr 0))))))
+        (nelisp_frame_stack_ensure_capacity_unchecked frames-ptr needed scratch-slot))))
   "AOT source for Doc 111 §111.E #20 / Doc 115 §115.1
 `frame_stack_ensure_capacity'.
 

@@ -1824,6 +1824,7 @@ standalone build pipeline."
                  "nelisp-cc-runtime.el"
                  "nelisp-elf-write.el"
                  "nelisp-sexp-layout.el"
+                 "nelisp-heap-accessors.el"
                  "nelisp-wasm-write.el"
                  "nelisp-aot-compiler.el")))
     (dolist (dep deps)

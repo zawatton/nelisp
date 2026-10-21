@@ -74,7 +74,7 @@
          data
          (+ i 1)
          len
-         (+ acc (if (= (logand (ptr-read-u8 data i) 192) 128)
+         (+ acc (if (= (logand (heap-read-u8 data i) 192) 128)
                     0
                   1)))))
 
@@ -87,8 +87,8 @@
     ;; nlstr: *const NlStr (= [sexp+8] for MutStr).
     (defun nl_str_char_count_mutstr (nlstr)
       (nl_str_char_count_str
-       (ptr-read-u64 nlstr 8)    ; String.ptr  = [NlStr*+8]
-       (ptr-read-u64 nlstr 16))) ; String.len  = [NlStr*+16]
+       (heap-read-u64 nlstr 8)    ; String.ptr  = [NlStr*+8]
+       (heap-read-u64 nlstr 16))) ; String.len  = [NlStr*+16]
 
     ;; Public entry: nl_str_char_count(str_ptr) -> i64.
     ;; str_ptr: *const Sexp — any string-y variant (Str/Symbol/MutStr).
@@ -96,23 +96,23 @@
     (defun nl_str_char_count (str-ptr)
       (if (= (sexp-tag str-ptr) 15)
           ;; UnibyteMutStr: character count is its boxed byte length.
-          (ptr-read-u64 (ptr-read-u64 str-ptr 8) 16)
+          (heap-read-u64 (heap-read-u64 str-ptr 8) 16)
         (if (= (sexp-tag str-ptr) 14)
             ;; UnibyteStr: character count is its inline byte length.
-            (ptr-read-u64 str-ptr 24)
+            (heap-read-u64 str-ptr 24)
         (if (= (sexp-tag str-ptr) 6)
           ;; MutStr: hop through NlStr box
-          (nl_str_char_count_mutstr (ptr-read-u64 str-ptr 8))
+          (nl_str_char_count_mutstr (heap-read-u64 str-ptr 8))
         (if (= (sexp-tag str-ptr) 5)
             ;; Str: inline String
             (nl_str_char_count_str
-             (ptr-read-u64 str-ptr 16)   ; String.ptr
-             (ptr-read-u64 str-ptr 24))  ; String.len
+             (heap-read-u64 str-ptr 16)   ; String.ptr
+             (heap-read-u64 str-ptr 24))  ; String.len
           (if (= (sexp-tag str-ptr) 4)
               ;; Symbol: same layout as Str
               (nl_str_char_count_str
-               (ptr-read-u64 str-ptr 16)
-               (ptr-read-u64 str-ptr 24))
+               (heap-read-u64 str-ptr 16)
+               (heap-read-u64 str-ptr 24))
             0)))))))
   "AOT direct-symbol source for `nl_str_char_count'.
 
@@ -177,17 +177,17 @@ fields ptr@16, len@24.")
             (if (< (+ idx 1) len)
                 (and (ptr-write-u64 out-cp 0
                        (+ 4194176 (* (logand b0 1) 64)
-                          (logand (ptr-read-u8 data (+ idx 1)) 63)))
+                          (logand (heap-read-u8 data (+ idx 1)) 63)))
                      (ptr-write-u64 out-bw 0 2) 1)
               0)
         (if (= b0 248)
             ;; GNU's extended non-Unicode characters have a five-byte form.
             (if (< (+ idx 4) len)
                 (and (ptr-write-u64 out-cp 0
-                       (logior (* (logand (ptr-read-u8 data (+ idx 1)) 15) 262144)
-                         (logior (* (logand (ptr-read-u8 data (+ idx 2)) 63) 4096)
-                           (logior (* (logand (ptr-read-u8 data (+ idx 3)) 63) 64)
-                                   (logand (ptr-read-u8 data (+ idx 4)) 63)))))
+                       (logior (* (logand (heap-read-u8 data (+ idx 1)) 15) 262144)
+                         (logior (* (logand (heap-read-u8 data (+ idx 2)) 63) 4096)
+                           (logior (* (logand (heap-read-u8 data (+ idx 3)) 63) 64)
+                                   (logand (heap-read-u8 data (+ idx 4)) 63)))))
                      (ptr-write-u64 out-bw 0 5) 1)
               0)
         (if (= (logand b0 224) 192)
@@ -195,7 +195,7 @@ fields ptr@16, len@24.")
             (if (< (+ idx 1) len)
                 (and (ptr-write-u64 out-cp 0
                        (logior (* (logand b0 31) 64)
-                               (logand (ptr-read-u8 data (+ idx 1)) 63)))
+                               (logand (heap-read-u8 data (+ idx 1)) 63)))
                      (ptr-write-u64 out-bw 0 2)
                      1)
               0)
@@ -204,8 +204,8 @@ fields ptr@16, len@24.")
               (if (< (+ idx 2) len)
                   (and (ptr-write-u64 out-cp 0
                          (logior (* (logand b0 15) 4096)
-                                 (logior (* (logand (ptr-read-u8 data (+ idx 1)) 63) 64)
-                                         (logand (ptr-read-u8 data (+ idx 2)) 63))))
+                                 (logior (* (logand (heap-read-u8 data (+ idx 1)) 63) 64)
+                                         (logand (heap-read-u8 data (+ idx 2)) 63))))
                        (ptr-write-u64 out-bw 0 3)
                        1)
                 0)
@@ -214,9 +214,9 @@ fields ptr@16, len@24.")
                 (if (< (+ idx 3) len)
                     (and (ptr-write-u64 out-cp 0
                            (logior (* (logand b0 7) 262144)
-                                   (logior (* (logand (ptr-read-u8 data (+ idx 1)) 63) 4096)
-                                           (logior (* (logand (ptr-read-u8 data (+ idx 2)) 63) 64)
-                                                   (logand (ptr-read-u8 data (+ idx 3)) 63)))))
+                                   (logior (* (logand (heap-read-u8 data (+ idx 1)) 63) 4096)
+                                           (logior (* (logand (heap-read-u8 data (+ idx 2)) 63) 64)
+                                                   (logand (heap-read-u8 data (+ idx 3)) 63)))))
                          (ptr-write-u64 out-bw 0 4)
                          1)
                   0)
@@ -235,42 +235,42 @@ fields ptr@16, len@24.")
     (defun nl_str_codepoint_at_ptr (data idx len out-cp out-bw)
       (nl_str_codepoint_at_b0
        data idx len out-cp out-bw
-       (ptr-read-u8 data idx)))
+       (heap-read-u8 data idx)))
 
     ;; Str/Symbol variant: read inline String ptr@16, len@24.
     ;; sexp: *const Sexp, byte-idx: i64, out-cp: *mut i64, out-bw: *mut i64.
     (defun nl_str_codepoint_at_str (sexp byte-idx out-cp out-bw)
       (nl_str_codepoint_at_ptr
-       (ptr-read-u64 sexp 16)   ; String.ptr
+       (heap-read-u64 sexp 16)   ; String.ptr
        byte-idx
-       (ptr-read-u64 sexp 24)   ; String.len
+       (heap-read-u64 sexp 24)   ; String.len
        out-cp out-bw))
 
     ;; MutStr variant: NlStr* @8, then String.ptr@8, String.len@16.
     (defun nl_str_codepoint_at_mutstr (sexp byte-idx out-cp out-bw)
       (nl_str_codepoint_at_ptr
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 8)   ; NlStr*.String.ptr
+       (heap-read-u64 (heap-read-u64 sexp 8) 8)   ; NlStr*.String.ptr
        byte-idx
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 16)  ; NlStr*.String.len
+       (heap-read-u64 (heap-read-u64 sexp 8) 16)  ; NlStr*.String.len
        out-cp out-bw))
 
     ;; Raw-byte variants: every byte is one character, including >= 128.
     (defun nl_str_codepoint_at_unibyte_ptr (data byte-idx len out-cp out-bw)
       (if (< byte-idx len)
-          (and (ptr-write-u64 out-cp 0 (ptr-read-u8 data byte-idx))
+          (and (ptr-write-u64 out-cp 0 (heap-read-u8 data byte-idx))
                (ptr-write-u64 out-bw 0 1)
                1)
         0))
 
     (defun nl_str_codepoint_at_unibyte_str (sexp byte-idx out-cp out-bw)
       (nl_str_codepoint_at_unibyte_ptr
-       (ptr-read-u64 sexp 16) byte-idx (ptr-read-u64 sexp 24) out-cp out-bw))
+       (heap-read-u64 sexp 16) byte-idx (heap-read-u64 sexp 24) out-cp out-bw))
 
     (defun nl_str_codepoint_at_unibyte_mutstr (sexp byte-idx out-cp out-bw)
       (nl_str_codepoint_at_unibyte_ptr
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 8)
+       (heap-read-u64 (heap-read-u64 sexp 8) 8)
        byte-idx
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 16)
+       (heap-read-u64 (heap-read-u64 sexp 8) 16)
        out-cp out-bw))
 
     ;; Public entry: nl_str_codepoint_at(str_ptr, byte_idx, out_codepoint, out_byte_width) -> i64.
@@ -346,24 +346,24 @@ runtime values as extra parameters.")
             (if (< (+ idx 1) len)
                 (extern-call nl_is_char_alphanumeric
                   (logior (* (logand b0 31) 64)
-                          (logand (ptr-read-u8 data (+ idx 1)) 63)))
+                          (logand (heap-read-u8 data (+ idx 1)) 63)))
               0)
           (if (= (logand b0 240) 224)
               ;; 3-byte sequence
               (if (< (+ idx 2) len)
                   (extern-call nl_is_char_alphanumeric
                     (logior (* (logand b0 15) 4096)
-                            (logior (* (logand (ptr-read-u8 data (+ idx 1)) 63) 64)
-                                    (logand (ptr-read-u8 data (+ idx 2)) 63))))
+                            (logior (* (logand (heap-read-u8 data (+ idx 1)) 63) 64)
+                                    (logand (heap-read-u8 data (+ idx 2)) 63))))
                 0)
             (if (= (logand b0 248) 240)
                 ;; 4-byte sequence
                 (if (< (+ idx 3) len)
                     (extern-call nl_is_char_alphanumeric
                       (logior (* (logand b0 7) 262144)
-                              (logior (* (logand (ptr-read-u8 data (+ idx 1)) 63) 4096)
-                                      (logior (* (logand (ptr-read-u8 data (+ idx 2)) 63) 64)
-                                              (logand (ptr-read-u8 data (+ idx 3)) 63)))))
+                              (logior (* (logand (heap-read-u8 data (+ idx 1)) 63) 4096)
+                                      (logior (* (logand (heap-read-u8 data (+ idx 2)) 63) 64)
+                                              (logand (heap-read-u8 data (+ idx 3)) 63)))))
                   0)
               ;; invalid leading byte
               0)))))
@@ -390,42 +390,42 @@ runtime values as extra parameters.")
 
     ;; Read b0 at data[idx]; idx bounds already checked by caller.
     (defun nl_str_is_alnum_ptr (data idx len)
-      (nl_str_is_alnum_b0 data idx len (ptr-read-u8 data idx)))
+      (nl_str_is_alnum_b0 data idx len (heap-read-u8 data idx)))
 
     ;; Str/Symbol: read data-ptr@16, len@24; check idx < len.
     (defun nl_str_is_alnum_str (sexp byte-idx)
-      (if (< byte-idx (ptr-read-u64 sexp 24))
+      (if (< byte-idx (heap-read-u64 sexp 24))
           (nl_str_is_alnum_ptr
-           (ptr-read-u64 sexp 16)   ; String.ptr
+           (heap-read-u64 sexp 16)   ; String.ptr
            byte-idx
-           (ptr-read-u64 sexp 24))  ; String.len
+           (heap-read-u64 sexp 24))  ; String.len
         0))
 
     ;; MutStr: NlStr*@8, String.ptr@[NlStr*+8], String.len@[NlStr*+16].
     (defun nl_str_is_alnum_mutstr (sexp byte-idx)
-      (if (< byte-idx (ptr-read-u64 (ptr-read-u64 sexp 8) 16))
+      (if (< byte-idx (heap-read-u64 (heap-read-u64 sexp 8) 16))
           (nl_str_is_alnum_ptr
-           (ptr-read-u64 (ptr-read-u64 sexp 8) 8)   ; NlStr*.String.ptr
+           (heap-read-u64 (heap-read-u64 sexp 8) 8)   ; NlStr*.String.ptr
            byte-idx
-           (ptr-read-u64 (ptr-read-u64 sexp 8) 16)) ; NlStr*.String.len
+           (heap-read-u64 (heap-read-u64 sexp 8) 16)) ; NlStr*.String.len
         0))
 
     ;; Unibyte variants treat the indexed raw byte as the character value;
     ;; never feed a high byte into the UTF-8 decoder.
     (defun nl_str_is_alnum_unibyte_ptr (data idx len)
       (if (< idx len)
-          (extern-call nl_is_char_alphanumeric (ptr-read-u8 data idx))
+          (extern-call nl_is_char_alphanumeric (heap-read-u8 data idx))
         0))
 
     (defun nl_str_is_alnum_unibyte_str (sexp byte-idx)
       (nl_str_is_alnum_unibyte_ptr
-       (ptr-read-u64 sexp 16) byte-idx (ptr-read-u64 sexp 24)))
+       (heap-read-u64 sexp 16) byte-idx (heap-read-u64 sexp 24)))
 
     (defun nl_str_is_alnum_unibyte_mutstr (sexp byte-idx)
       (nl_str_is_alnum_unibyte_ptr
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 8)
+       (heap-read-u64 (heap-read-u64 sexp 8) 8)
        byte-idx
-       (ptr-read-u64 (ptr-read-u64 sexp 8) 16)))
+       (heap-read-u64 (heap-read-u64 sexp 8) 16)))
 
     ;; Public entry: nl_str_is_alphanumeric_at(str_ptr, byte_idx) -> i64.
     ;; Returns 1 if alphanumeric, 0 otherwise.

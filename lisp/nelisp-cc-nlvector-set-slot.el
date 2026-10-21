@@ -69,8 +69,7 @@
     ;; drop, and re-cloning a pointer slot is refcount-correct because
     ;; nl_val_clone_into deep-clones into a fresh box (no aliasing).
     (defun nl_vector_set_slot (vec-ptr n val)
-      (let ((dst (+ (ptr-read-u64 vec-ptr 8) (* n 8))))
-        (extern-call nl_val_clone_into val dst))))
+      (extern-call nl_val_clone_into val (+ (+ vec-ptr 8) (* n 8)))))
   "AOT source for the `nl_vector_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

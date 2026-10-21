@@ -450,6 +450,159 @@
         (let ((s (format (string-as-unibyte "key-%d/%s")
                          42 (number-to-string 123))))
           (if (and (equal s "key-42/123") (not (multibyte-string-p s))) 1 0)))
+    ;; WORD global reads retain the owned object across the next callout.
+    (70 shared
+        (let* ((pg-word-cell (make-symbol "global-word-cell"))
+               (pg-word-other (make-symbol "global-word-other"))
+               (pg-word-value (vector 'global-word-value)))
+          (set pg-word-cell pg-word-value)
+          (set pg-word-other (vector 'scratch))
+          (let ((pg-word-held (symbol-value pg-word-cell))
+                (pg-word-observed (symbol-value pg-word-other)))
+            (if (and (eq pg-word-held pg-word-value)
+                     (eq (aref pg-word-observed 0) 'scratch)
+                     (eq (symbol-value pg-word-cell) pg-word-value)) 1 0))))
+    (67 shared
+        (progn
+          (makunbound 'ps-corpus-shadow)
+          (let ((ps-corpus-current
+                 (eval '(let ((ps-corpus-shadow 7))
+                          (defvar ps-corpus-shadow 9)
+                          ps-corpus-shadow) nil)))
+            (if (and (= ps-corpus-current 7)
+                     (boundp 'ps-corpus-shadow)
+                     (= ps-corpus-shadow 9)) 1 0))))
+    (68 shared
+        (if (equal (condition-case e (eval '(setq :prim-integ-keyword 9))
+                     (error e))
+                   '(setting-constant :prim-integ-keyword)) 1 0))
+    (69 shared
+        (if (equal (condition-case e (sort (list 2 1) 12) (error e))
+                   '(invalid-function 12)) 1 0))
+    ;; Doc 216 S4: one captured vector/record/char-table graph survives GC.
+    ;; Switch 28 precedes construction; unwind 29 restores native-stack scanning.
+    (71 shared
+        (if (equal
+             (progn
+               (put 'whv-parity-table 'char-table-extra-slots 1)
+               (unwind-protect
+                   (progn
+                     (when (fboundp 'nelisp--debug-switch) (nelisp--debug-switch 28))
+                     (eval
+                      '(let* ((type (make-symbol "whv-record-type"))
+                              (reader
+                               (let* ((shared (vector (cons 'seed nil) 17))
+                                      (object (make-record type 2 nil))
+                                      (parent (make-char-table 'whv-parent shared))
+                                      (table (make-char-table 'whv-parity-table nil))
+                                      (pair (cons shared object)))
+                                 (aset object 1 shared)
+                                 (aset object 2 table)
+                                 (set-char-table-parent table parent)
+                                 (set-char-table-extra-slot table 0 (vector object shared))
+                                 (aset table 97 shared)
+                                 (aset table 144470 pair)
+                                 (aset table 200 table)
+                                 (lambda (operation)
+                                   (when (eq operation 'change)
+                                     (aset object 0 17)
+                                     (aset object 1 nil)
+                                     (unless (and (eq (aref object 0) 17) (null (aref object 1)))
+                                       (error "WHV record mutation before GC: %S %S"
+                                              (aref object 0) (aref object 1)))
+                                     (garbage-collect)
+                                     (unless (and (eq (aref object 0) 17) (null (aref object 1)))
+                                       (error "WHV record mutation after GC: %S %S"
+                                              (aref object 0) (aref object 1)))
+                                     (aset object 0 type)
+                                     (aset object 1 shared)
+                                     (aset (aref object 1) 1 29)
+                                     (setcar (aref shared 0) 'changed))
+                                   (list (eq (aref object 0) type)
+                                         (eq (car pair) (aref object 1))
+                                         (eq (cdr pair) object)
+                                         (eq (aref table 97) shared)
+                                         (eq (aref table 98) shared)
+                                         (eq (aref table 144470) pair)
+                                         (eq (aref table 200) table)
+                                         (eq (aref (char-table-extra-slot table 0) 0) object)
+                                         (eq (aref (char-table-extra-slot table 0) 1) shared)
+                                         (eq (catch 'whv-result (throw 'whv-result shared)) shared)
+                                         (eq (apply #'identity (list (aref object 1))) shared)
+                                         (funcall (lambda (frame-value)
+                                            (garbage-collect)
+                                            (eq frame-value pair)) pair)
+                                         (aref shared 1) (car (aref shared 0)))))))
+                         (dotimes (_ 4) (garbage-collect))
+                         (funcall reader 'change)
+                         (dotimes (_ 4) (garbage-collect))
+                         (list (funcall reader 'read)
+                               (condition-case e (aref (vector 17) 3) (error e))
+                               (condition-case e (make-vector -1 nil) (error e))
+                               (condition-case e (char-table-subtype 17) (error e))
+                               (condition-case e (aref (make-record 'whv-bounds 1 nil) -1) (error e))
+                               (condition-case e (aref (make-record 'whv-bounds 1 nil) 2) (error e))
+                               (condition-case e (unibyte-string []) (error e))
+                               (condition-case e (char-table-range (make-char-table 'x nil) (cons [] 65)) (error e))
+                               (condition-case e (char-table-range (make-char-table 'x nil) (cons 65 [])) (error e))))
+                      t)
+                     )
+                 (when (fboundp 'nelisp--debug-switch) (nelisp--debug-switch 29))))
+             (quote ((t t t t t t t t t t t t 29 changed) (args-out-of-range [17] 3) (wrong-type-argument wholenump -1) (wrong-type-argument char-table-p 17) (args-out-of-range #s(whv-bounds nil) -1) (args-out-of-range #s(whv-bounds nil) 2) (wrong-type-argument integerp []) (wrong-type-argument characterp []) (wrong-type-argument characterp [])))) 1 0))
+    ;; Doc 216 S4.2: escaped sibling cells survive frame reuse, collection,
+    ;; nested throws and an intervening condition-case without losing aliasing.
+    (72 shared
+        (if (equal
+             (eval
+              '(let ((events nil) (pair nil) (held nil))
+                 (setq pair
+                       (funcall
+                        (lambda ()
+                          (let ((cell (list 'initial)))
+                            (list (lambda () cell)
+                                  (lambda (value) (setq cell value)))))))
+                 (dotimes (i 16)
+                   (let ((cell (list 'pressure i))) (car cell)))
+                 (garbage-collect)
+                 (let ((before (funcall (car pair))))
+                   (funcall (cadr pair) (list 'updated 7))
+                   (setq held
+                         (catch 'whf-corpus72-return
+                           (condition-case data
+                               (funcall
+                                (lambda (argument)
+                                  (let ((retained (list argument)))
+                                    (unwind-protect
+                                        (funcall
+                                         (lambda ()
+                                           (throw 'whf-corpus72-return
+                                                  (lambda ()
+                                                    (list (car retained)
+                                                          (funcall (car pair)))))))
+                                      (setq events (cons 'unwound events)))))
+                                19)
+                             (error (list 'unexpected data)))))
+                   (garbage-collect)
+                   (let ((after (funcall (car pair)))
+                         (escaped (funcall held)))
+                     (funcall (cadr pair) (list 'final 11))
+                     (garbage-collect)
+                     (list before after escaped (funcall held) events
+                           (condition-case data
+                               (funcall
+                                (lambda (argument)
+                                  (let ((owned (list argument)))
+                                    (garbage-collect)
+                                    (funcall
+                                     (lambda ()
+                                       (signal 'error (list 'frame (car owned)))))))
+                                23)
+                             (error data))))))
+              t)
+             '((initial) (updated 7) (19 (updated 7)) (19 (final 11))
+               (unwound) (error frame 23)))
+            1 0))
+
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

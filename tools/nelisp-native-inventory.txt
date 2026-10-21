@@ -13,11 +13,11 @@ truncate	native-review	No classification row; review against Doc 211 §6.
 ceiling	native-review	No classification row; review against Doc 211 §6.
 sin	native-demotable	Lisp range reduction + polynomial (fdlibm __kernel_sin port, GNU calls libm)
 cos	native-demotable	as sin
-=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
-<	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
->	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
-<=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
->=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el; exact integer/IEEE ordering in lisp/nelisp-cc-number-order.el (clauses 1/5), GNU oracle in tools/ai/prim-sort-number-host.py
+<	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el; exact integer/IEEE ordering in lisp/nelisp-cc-number-order.el (clauses 1/5), GNU oracle in tools/ai/prim-sort-number-host.py
+>	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el; exact integer/IEEE ordering in lisp/nelisp-cc-number-order.el (clauses 1/5), GNU oracle in tools/ai/prim-sort-number-host.py
+<=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el; exact integer/IEEE ordering in lisp/nelisp-cc-number-order.el (clauses 1/5), GNU oracle in tools/ai/prim-sort-number-host.py
+>=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el; exact integer/IEEE ordering in lisp/nelisp-cc-number-order.el (clauses 1/5), GNU oracle in tools/ai/prim-sort-number-host.py
 car	native-must-stay	allocation/tagged-object primitive
 cdr	native-must-stay	allocation/tagged-object primitive
 cons	native-must-stay	allocation/tagged-object primitive
@@ -26,7 +26,7 @@ eq	native-must-stay	type predicate on tag bits
 null	native-must-stay	type predicate on tag bits
 not	native-review	No classification row; review against Doc 211 §6.
 special-form-p	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
-nelisp--env-globals-op	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nelisp--env-globals-op	native-must-stay	Minimal native surface clauses 1/2: symbol-entry access and N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/, lisp/nelisp-buffer-local.el (legacy entry reader) and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation. variable-entry returns an existing mirror-owned record through WORD transport without exposing raw pointers.
 make-hash-table	native-review	No classification row; review against Doc 211 §6.
 puthash	native-must-stay	hash-table core
 gethash	native-must-stay	Minimal native surface clause 1: tagged hash-table buckets; eq/eql string identity fallback after byte mutation (GNU reference test/nelisp-n2-reference.el)
@@ -330,3 +330,4 @@ nelisp--native-runtime-contract-word	native-must-stay	Build-embedded ABI identit
 nl_native_funcall_v2	native-must-stay	Evaluator entry (clause 2), authenticated rooted funcall and exit publication; Lisp reference nelisp-native-funcall-v2-reference; measurements in F1.1/F1.2.
 nl_native_frame_v2	native-must-stay	Evaluator entry (clause 2), authenticated activation watermark, rooted frame installation/removal and ordered cleanup callbacks and U8 status-return handler landing (clause 2), authenticated operand-bank full-slot copies (clause 1); Lisp references nelisp-native-frame-v2-source and nelisp-bytecode-cleanup-source; measurements and limitations in F2.2 and native-handlers-u8-progress.org.
 nl_native_poll_v2	native-must-stay	GC/evaluator entry (clause 2), authenticated cyclic-edge flag/debt gate; Lisp reference nelisp-bytecode-native-rooted-cfg-poll-function; measurements in P3.2.
+sort	native-review	Explicit BRIEF Run 2 native-sort exception (2026-10-20); WORD stable merge kernel with evaluator callbacks (clauses 1/2). Lisp reference nelisp--sort-reference in scripts/nelisp-stdlib-prelude.el; measured acceptance in tools/ai/prim-sort-progress.org.

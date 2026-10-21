@@ -51,7 +51,7 @@
                (extern-call nl_mut_str_set_codepoint_raw
                             arg
                             idx
-                            (ptr-read-u64 val 8)
+                            (heap-read-u64 val 8)
                             out)
              1)
          1)))

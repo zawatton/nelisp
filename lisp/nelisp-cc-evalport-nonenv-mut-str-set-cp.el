@@ -8,9 +8,9 @@
        (ptr-write-u64 (+ out 8) 0 val-cp)
        0))
     (defun nl_msscp_unibyte_write (arg idx val-cp)
-      (let* ((nlstr (ptr-read-u64 (+ arg 8) 0))
-             (data (ptr-read-u64 (+ nlstr 8) 0))
-             (len (ptr-read-u64 (+ nlstr 16) 0)))
+      (let* ((nlstr (heap-read-u64 (+ arg 8) 0))
+             (data (heap-read-u64 (+ nlstr 8) 0))
+             (len (heap-read-u64 (+ nlstr 16) 0)))
         (if (if (< val-cp 0) 1 (if (> val-cp 255) 1 0))
             1
           (if (>= idx len)
@@ -22,13 +22,13 @@
                               arg byte-idx scratch (+ scratch 8))))
         (if (= ok 0)
             1
-          (let* ((old-cp (ptr-read-u64 scratch 0))
-                 (width (ptr-read-u64 (+ scratch 8) 0)))
+          (let* ((old-cp (heap-read-u64 scratch 0))
+                 (width (heap-read-u64 (+ scratch 8) 0)))
             (if (= char-idx idx)
                 (if (>= old-cp 128)
                     1
-                  (let* ((nlstr (ptr-read-u64 (+ arg 8) 0))
-                         (data (ptr-read-u64 (+ nlstr 8) 0)))
+                  (let* ((nlstr (heap-read-u64 (+ arg 8) 0))
+                         (data (heap-read-u64 (+ nlstr 8) 0)))
                     (seq
                      (nelisp_ptr_write_u8 data byte-idx val-cp)
                      0)))
@@ -46,7 +46,7 @@
     (defun nl_mut_str_set_codepoint_raw (arg idx val-cp out)
       (if (< idx 0)
           1
-        (let* ((tag (nelisp_ptr_read_u8 arg 0))
+        (let* ((tag (heap-native-read-u8 arg 0))
                (rc (if (= tag 15)
                        (nl_msscp_unibyte_write arg idx val-cp)
                      (if (= tag 6)

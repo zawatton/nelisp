@@ -87,7 +87,7 @@
      ;; non-Cons-returns-0 branch of `bi_nl_rc_payload_ptr') is the
      ;; caller's responsibility; this kernel performs the raw load
      ;; unconditionally.
-     (ptr-read-u64 sexp-ptr 8))
+     (heap-read-u64 sexp-ptr 8))
   "AOT source for the Doc 123 §123.D payload-ptr reader kernel.
 
 Single-arg function — AOT's SysV AMD64 prologue spills the

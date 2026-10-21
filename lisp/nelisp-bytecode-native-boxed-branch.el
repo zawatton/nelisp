@@ -9,6 +9,8 @@
 
 ;;; Code:
 
+(require 'nelisp-heap-accessors)
+
 (require 'cl-lib)
 (require 'nelisp-bytecode-frame-ir)
 (require 'nelisp-asm-x86_64)
@@ -347,7 +349,7 @@ Truthiness reads the tag from each rooted Sexp argument cell."
                     ;; Boxed ABI arguments are pointers to rooted Sexp cells,
                     ;; not direct object pointers. The tag word at offset zero
                     ;; is 0 for nil, 1 for t, and 7 for cons.
-                    (nelisp-asm-x86_64-mov-reg-mem-disp8
+                    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
                      asm 'rax condition-reg 0)
                     (when optional-shape
                       ;; The taken edge reaches the return join directly.
@@ -367,7 +369,7 @@ Truthiness reads the tag from each rooted Sexp argument cell."
                 (if join-block
                     (if (eq block join-block)
                         (progn
-                          (nelisp-asm-x86_64-mov-reg-mem-rsp-disp asm 'rax 0)
+                          (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp asm 'rax 0)
                           (nelisp-asm-x86_64-mov-reg-reg asm 'rsp 'rbp)
                           (nelisp-asm-x86_64-pop asm 'rbp)
                           (nelisp-asm-x86_64-ret asm))

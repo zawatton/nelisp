@@ -188,7 +188,7 @@ does not write an artifact or invoke a backend."
                       `(let ((,slot (extern-call nl_root_pin_slot_v2
                                                  env ticket ,condition 0 0 0)))
                          (if (= ,slot 0) 2
-                           (if (= (ptr-read-u64 ,slot 0) 0)
+                           (if (= (heap-read-u64 ,slot 0) 0)
                                ,(if nil-branch
                                     (block-form taken start path phi-roots)
                                   (block-form fallthrough start path phi-roots))

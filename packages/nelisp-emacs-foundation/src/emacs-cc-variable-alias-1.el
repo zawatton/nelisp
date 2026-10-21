@@ -33,6 +33,8 @@
 ;; the registered canonical variable.  Native special-form dispatch defers
 ;; to this function when its function cell is installed.
 (when (and (fboundp 'nelisp--repr)
+           (not (and (boundp 'nelisp--native-variable-aliases)
+                     nelisp--native-variable-aliases))
            (not (and (boundp 'nelisp--alias-provider-installed)
                      nelisp--alias-provider-installed)))
   (defvar nelisp--alias-provider-installed nil)

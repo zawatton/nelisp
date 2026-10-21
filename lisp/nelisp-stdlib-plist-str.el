@@ -468,11 +468,15 @@ Return (FROM . TO).  STR, START, and END are used only for the
            (n1 (- b a))
            (n2 (- d c))
            (n (if (< n1 n2) n1 n2))
+           (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
+           (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
            (i 0)
            (result t))
       (while (and (< i n) (eq result t))
         (let* ((ch1 (aref str1 (+ a i)))
                (ch2 (aref str2 (+ c i)))
+               (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
+               (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
                (k1 (if ignore-case (upcase ch1) ch1))
                (k2 (if ignore-case (upcase ch2) ch2)))
           (cond
@@ -573,8 +577,21 @@ Result keeps the trailing slash."
 ;; in practice and is dropped here.
 (defun string-lessp (str1 str2)
   "Return t if STR1 sorts before STR2 lexicographically by codepoint."
-  (let ((r (compare-strings str1 0 nil str2 0 nil)))
-    (and (numberp r) (< r 0))))
+  ;; Ordering does not promote mixed unibyte characters to byte8, unlike
+  ;; compare-strings. Keep the same reference algorithm as the prelude.
+  (unless (or (stringp str1) (symbolp str1))
+    (signal 'wrong-type-argument (list 'stringp str1)))
+  (unless (or (stringp str2) (symbolp str2))
+    (signal 'wrong-type-argument (list 'stringp str2)))
+  (let* ((sa (if (symbolp str1) (symbol-name str1) str1))
+         (sb (if (symbolp str2) (symbol-name str2) str2))
+         (la (length sa)) (lb (length sb)) (i 0) (result nil) (done nil))
+    (while (and (not done) (< i la) (< i lb))
+      (let ((ca (aref sa i)) (cb (aref sb i)))
+        (cond ((< ca cb) (setq result t done t))
+              ((> ca cb) (setq result nil done t))))
+      (setq i (1+ i)))
+    (if done result (< la lb))))
 
 ;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `file-name-extension'
 ;; was a pure-string slicer in `bi_file_name_extension' — `rsplit('/')'

@@ -76,20 +76,23 @@
       ;; under the recursive descent).
       (if (= cell-ptr 0)
           0
-        ;; Doc 215: walk by WORD.  Cells, pairs, keys and entries are all
-        ;; boxed, so their WORDs are the same pointers the views were; an
-        ;; immediate key or entry (malformed bucket) is rejected, not boxed.
         (if (= (nl_val_tag cell-ptr) 7)
-            (let* ((pair (nl_cons_car_word cell-ptr))
-                   (key (if (= (nl_val_tag pair) 7) (nl_cons_car_word pair) 3)))
-              (if (if (= (logand key 1) 0)
-                      (= (extern-call nelisp_symbol_key_equal key sym-ptr) 1)
-                    0)
-                  (let ((entry (nl_cons_cdr_word pair)))
-                    (if (= (logand entry 1) 0) entry 0))
+            ;; The validated Cons payload is physical storage. Read each
+            ;; edge directly instead of repeating its WORD tag/payload decode.
+            (let* ((cell-box (nl_word_payload cell-ptr))
+                   (pair (heap-read-u64 cell-box 0)))
+              (if (= (nl_val_tag pair) 7)
+                  (let* ((pair-box (nl_word_payload pair))
+                         (key (heap-read-u64 pair-box 0)))
+                    (if (if (= (logand key 1) 0)
+                            (= (extern-call nelisp_symbol_key_equal key sym-ptr) 1)
+                          0)
+                        (let ((entry (heap-read-u64 pair-box 8)))
+                          (if (= (logand entry 1) 0) entry 0))
+                      (nelisp_mirror_walk_bucket
+                       (heap-read-u64 cell-box 8) sym-ptr)))
                 (nelisp_mirror_walk_bucket
-                 (nl_cons_cdr_word cell-ptr)
-                 sym-ptr)))
+                 (heap-read-u64 cell-box 8) sym-ptr)))
           0)))
     (defun nelisp_mirror_lookup_entry_valid_key (sym-ptr)
       ;; Cold-load hardening (segfault fix, 2026-07): a caller-supplied
@@ -143,9 +146,26 @@
     ;; (`ht_rec' below), whose slot 0 is provably never a pointer WORD,
     ;; so no behavior changes for any value this slot can hold.
     (defun nelisp_mirror_slot_raw_word (rec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
-       0))
+      (nl_record_slot_word rec-ptr idx))
+
+    (defun nelisp_mirror_lookup_entry_owned (mirror-ptr name)
+      ;; Clause 1: NAME is a live value from an owning/rooted container,
+      ;; not an arbitrary borrowed address. As in frame-stack-find's WORD
+      ;; walk, its owner makes a tag check sufficient. No allocation or
+      ;; safepoint occurs here. Reject non-key values before hashing; the
+      ;; generic entry below retains full address authentication for callers
+      ;; without this ownership proof (including its cold-load hardening).
+      (if (if (= name 0) 1 (= (logand name 1) 1)) 0
+        (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16)
+                (= (sexp-tag name) 5) (= (sexp-tag name) 14))
+            (let* ((ht (nl_record_slot_word mirror-ptr 0))
+                   (head (heap-read-u64
+                          (+ (+ (nl_word_payload (nl_record_slot_word ht 1)) 8)
+                             (* (logand (extern-call nelisp_fnv1a name)
+                                        (- (sar (nelisp_mirror_slot_raw_word ht 0) 2) 1)) 8)) 0)))
+              (if (= (logand head 1) 1) 0
+                (nelisp_mirror_walk_bucket head name)))
+          0)))
 
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
@@ -184,14 +204,11 @@
         ;; lexical variable reference and `setq' checks one) land on an
         ;; empty bucket.  A pointer head is the bucket's first Cons view.
         (let ((ht-rec-ptr (nl_record_slot_word mirror-ptr 0)))
-          (let ((head (ptr-read-u64
-                       (+ (ptr-read-u64
-                           (nl_word_payload (nl_record_slot_word ht-rec-ptr 1)) 8)
-                          (* (logand
-                              (extern-call nelisp_fnv1a sym-ptr)
-                              (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1))
-                             8))
-                       0)))
+          (let ((head (nl_vector_slot_word
+                       (nl_record_slot_word ht-rec-ptr 1)
+                       (logand
+                        (extern-call nelisp_fnv1a sym-ptr)
+                        (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1)))))
             (if (= (logand head 1) 1)
                 0
               (nelisp_mirror_walk_bucket head sym-ptr)))))))

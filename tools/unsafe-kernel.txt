@@ -281,3 +281,10 @@ pinned-kernel-touch lisp/nelisp-native-funcall-v2.el
 pinned-kernel-touch lisp/nelisp-native-gccjit.el
 pinned-kernel-touch lisp/nelisp-process-buffer.el
 pinned-kernel-touch lisp/nelisp-standalone-arena-rewrite.el
+
+# Native aliases (2026-10-20): the existing globals-op's WORD symbol-entry
+# access, alias routing and explicit-local entry expansion. No public native
+# entry is added. Admit this one generator; preserve the four pre-existing
+# excess kernel files and every out-of-kernel failure.
+kernel-files 119
+pinned-kernel-touch lisp/nelisp-cc-variable-alias-public.el

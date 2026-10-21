@@ -86,7 +86,7 @@
      ;; level (= the AOT emitter still uses the PLT path for
      ;; symmetry with the write ops; cost ~2 cycles per call which
      ;; the refcount-snapshot fast path can absorb).
-     (ptr-read-u64 box-ptr 64))
+     (heap-read-u64 box-ptr 64))
   "AOT source for the Doc 123 §123.C refcount-read kernel.
 
 Single-arg function — AOT's SysV AMD64 prologue spills the

@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(require 'nelisp-heap-accessors)
+
 (require 'cl-lib)
 (require 'nelisp-bytecode-frame-ir)
 (require 'nelisp-asm-x86_64)
@@ -247,7 +249,7 @@ backedges while keeping initial raw arguments unproven."
                       (not (equal source (car (last stack)))))
              (setq failure "dup input is not the top live slot"))
            (when (integerp source)
-             (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))
+             (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))
              (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buffer (* 8 slot) 'rax)
              (setq values (cl-remove slot values :key #'cdr :test #'=))
              (setq stack (append stack (list slot)))
@@ -258,7 +260,7 @@ backedges while keeping initial raw arguments unproven."
                           (integerp source) (equal source top))
                (setq failure "byte-not requires a live top boolean slot"))
              (when (integerp source)
-               (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))
+               (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))
                (nelisp-asm-x86_64-cmp-imm32 buffer 'rax 0)
                (nelisp-asm-x86_64-sete-al buffer)
                (nelisp-asm-x86_64-movzx-eax-al buffer)
@@ -278,7 +280,7 @@ backedges while keeping initial raw arguments unproven."
              (unless (equal source (car (last stack)))
                (setq failure "conditional does not consume the top live slot"))
              (when (integerp source)
-               (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source)))
+               (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source)))
              (when (memq (plist-get instruction :opcode) '(131 132))
                (let ((discarded (car (last stack))))
                  (setq stack (butlast stack)
@@ -300,7 +302,7 @@ backedges while keeping initial raw arguments unproven."
                    (let ((next-label
                           (intern (format "nelisp-bc-switch-%d-%d"
                                           (plist-get instruction :pc) index))))
-                     (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                     (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp
                       buffer 'rax (* 8 selector-slot))
                      (nelisp-asm-x86_64-cmp-imm32 buffer 'rax key)
                      (nelisp-asm-x86_64-jnz-rel32 buffer next-label)
@@ -326,7 +328,7 @@ backedges while keeping initial raw arguments unproven."
            (unless (equal source (car (last stack)))
              (setq failure "return does not consume the top live slot"))
            (when (integerp source)
-             (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))))
+             (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp buffer 'rax (* 8 source))))
           (_ (setq failure (format "unsupported frame operation %S" kind))))))
     (unless failure
       (cond

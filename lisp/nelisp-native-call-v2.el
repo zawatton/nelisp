@@ -13,13 +13,13 @@
 (defconst nelisp-native-call-v2--source
   '(seq
     (defun nl_native_call_v2_copy (to from)
-      (seq (ptr-write-u64 to 0 (ptr-read-u64 from 0))
-           (ptr-write-u64 to 8 (ptr-read-u64 from 8))
-           (ptr-write-u64 to 16 (ptr-read-u64 from 16))
-           (ptr-write-u64 to 24 (ptr-read-u64 from 24)) 0))
+      (seq (ptr-write-u64 to 0 (heap-read-u64 from 0))
+           (ptr-write-u64 to 8 (heap-read-u64 from 8))
+           (ptr-write-u64 to 16 (heap-read-u64 from 16))
+           (ptr-write-u64 to 24 (heap-read-u64 from 24)) 0))
     (defun nl_native_call_v2_exit (kind tag value outer-kind outer-tag outer-value)
-      (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
-             (flag (ptr-read-u64 base 16)))
+      (let* ((base (heap-read-u64 (data-addr nl_arena_base) 0))
+             (flag (heap-read-u64 base 16)))
         (if (or (= flag 1) (= flag 2))
             (seq
              (nl_native_call_v2_copy tag (+ base 24))
@@ -67,10 +67,10 @@
                        (setq i (+ i 1))
                      (setq valid 0)))
                  (if (or (= valid 0)
-                         (/= (ptr-read-u64 link 0) 2)
-                         (/= (ptr-read-u64 link 8) marker)
-                         (/= (ptr-read-u64 link 16) ticket)
-                         (/= (ptr-read-u64 link 24) first))
+                         (/= (heap-read-u64 link 0) 2)
+                         (/= (heap-read-u64 link 8) marker)
+                         (/= (heap-read-u64 link 16) ticket)
+                         (/= (heap-read-u64 link 24) first))
                      2
                    (if (= rc 0)
                        (seq (nl_native_call_v2_copy output result)
@@ -110,7 +110,7 @@
                      (setq i (+ i 1))
                    (setq valid 0)))
                ;; Nil and t have their own tags; tag 16 is an uninterned symbol.
-               (if (or (= valid 0) (/= (ptr-read-u64 function 0) 4))
+               (if (or (= valid 0) (/= (heap-read-u64 function 0) 4))
                    2
                  (let* ((nested (nl_root_pin_begin_v2 env)))
                    (if (= nested 0) 2

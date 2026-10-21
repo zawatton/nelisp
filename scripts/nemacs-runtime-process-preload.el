@@ -366,7 +366,7 @@
            (setq rc (syscall-direct emacs-process--bidi-NR-pipe buf 0 0 0 0 0))
            (if (< rc 0)
                nil
-             (cons (ptr-read-u32 buf 0) (ptr-read-u32 buf 4))))))
+             (cons (heap-read-u32 buf 0) (heap-read-u32 buf 4))))))
 
 (fset 'emacs-process--bidi-close
       '(lambda (fd)
@@ -448,7 +448,7 @@
             ((< n 0) "")                  ; EAGAIN / transient
             (t
              (while (< i n)
-               (setq s (concat s (char-to-string (ptr-read-u8 buf i))))
+               (setq s (concat s (char-to-string (heap-read-u8 buf i))))
                (setq i (+ i 1)))
              s)))))
 
@@ -483,7 +483,7 @@
                  (aset process 5 -1)
                  t)
                 (t
-                 (setq raw (ptr-read-u32 statusp 0))
+                 (setq raw (heap-read-u32 statusp 0))
                  (setq sig (logand raw 127))
                  (if (= sig 0)
                      (progn

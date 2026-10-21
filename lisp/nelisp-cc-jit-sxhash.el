@@ -143,7 +143,7 @@
        ;; Float (3): mix tag byte (3) then f64 bit-pattern read as u64.
        ;; f64 lives at offset 8, same as Int — read raw bits via ptr-read-u64.
        ((= tag 3)
-        (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 3) (ptr-read-u64 ptr 8)))
+        (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 3) (heap-read-u64 ptr 8)))
        ;; Symbol (4): mix tag byte (4) then FNV-1a of the symbol bytes.
        ((= tag 4)
         (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 4)

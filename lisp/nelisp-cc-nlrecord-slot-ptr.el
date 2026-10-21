@@ -8,6 +8,12 @@
 
 ;;; Commentary:
 
+;; Doc 216 S4 contract: pointer slots return their canonical WORD unchanged,
+;; including tag-6 vectorlikes. Read through semantic accessors; callers
+;; needing physical storage explicitly materialise it with nl_val_load.
+;; Immediate slots still receive fresh 32-byte views. The Phase 2 background
+;; below describes the earlier physical-view transport.
+
 ;; Doc 147 Phase 2 — the word->32B-slot materialiser for the Record
 ;; `record-slot-ref-ptr' / `record-slot-ptr-core' read path.  Sibling
 ;; of `nelisp-cc-nlvector-slot-ptr.el'; identical shape modulo the
@@ -51,10 +57,10 @@
     ;; WORD materialises into a FRESH box (one per call -> no
     ;; shared-scratch clobber).
     (defun nl_record_slot_ptr (sexp-ptr idx)
-      (let ((word (ptr-read-u64
-                   (+ (ptr-read-u64 (ptr-read-u64 sexp-ptr 8) 32) (* idx 8))
-                   0)))
+      (let ((word (nl_record_slot_word sexp-ptr idx)))
         (if (= (logand word 1) 0)
+            ;; Consumers read through semantic accessors; a tagged object
+            ;; already denotes the live backing and needs no fresh view.
             word
           (extern-call nl_val_load word (alloc-bytes 32 8))))))
   "AOT source for the `nl_record_slot_ptr' Doc 147 Phase 2 helper.

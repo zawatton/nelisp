@@ -73,7 +73,7 @@
       ;; bytes-ptr: *const u8, i: i64, n: i64, buf: *mut Sexp::MutStr
       (if (= i n)
           0
-        (and (mut-str-push-byte buf (ptr-read-u8 bytes-ptr i))
+        (and (mut-str-push-byte buf (heap-read-u8 bytes-ptr i))
              (nl_fmt_sexp_write_bytes bytes-ptr (+ i 1) n buf))))
 
     ;; -----------------------------------------------------------------------
@@ -96,7 +96,7 @@
     (defun nl_fmt_sexp_write_quoted_bytes (bytes-ptr i n buf)
       (if (= i n)
           0
-        (and (nl_fmt_sexp_write_quoted_byte (ptr-read-u8 bytes-ptr i) buf)
+        (and (nl_fmt_sexp_write_quoted_byte (heap-read-u8 bytes-ptr i) buf)
              (nl_fmt_sexp_write_quoted_bytes bytes-ptr (+ i 1) n buf))))
 
     ;; -----------------------------------------------------------------------
@@ -147,10 +147,10 @@
       (if (= i n)
           1
         (and (if (= (nl_fmt_sexp_symbol_byte_needs_escape
-                     (ptr-read-u8 bytes-ptr i)) 1)
+                     (heap-read-u8 bytes-ptr i)) 1)
                  (mut-str-push-byte buf 92)
                1)
-             (mut-str-push-byte buf (ptr-read-u8 bytes-ptr i))
+             (mut-str-push-byte buf (heap-read-u8 bytes-ptr i))
              (nl_fmt_sexp_write_symbol_bytes bytes-ptr (+ i 1) n buf))))
 
     ;; -----------------------------------------------------------------------
@@ -243,8 +243,8 @@
     ;; -----------------------------------------------------------------------
     (defun nl_fmt_sexp_write_char_table (ct-ptr buf)
       ;; ct-ptr: NlCharTable* (= sexp-payload-ptr of CharTable Sexp)
-      ;; CharTableInner layout: subtype Sexp at offset 0, default_val at offset 32,
-      ;;   entries Vec<(i64,Sexp)> at offset 64 (ptr=64,cap=72,len=80)
+      ;; Compact header at 0, subtype WORD at 8, default WORD at 16,
+      ;; entries pointer/capacity/length at 24/32/40.
       ;; Write: "#<char-table" [" " subtype] " default=" default_val " entries=" N ">"
       (and
        ;; "#<char-table"
@@ -260,11 +260,11 @@
        (mut-str-push-byte buf 98)   ; b
        (mut-str-push-byte buf 108)  ; l
        (mut-str-push-byte buf 101)  ; e
-       ;; Conditional subtype: ct-ptr itself is &subtype (offset 0)
-       (if (= (sexp-tag ct-ptr) 0)
+       ;; The semantic formatter accepts canonical WORDs directly.
+       (if (= (nl_val_tag (heap-read-u64 ct-ptr 8)) 0)
            1  ; Nil subtype: skip
          (and (mut-str-push-byte buf 32)  ; space
-              (nl_fmt_sexp_dispatch ct-ptr buf)))
+              (nl_fmt_sexp_dispatch (heap-read-u64 ct-ptr 8) buf)))
        ;; " default="
        (mut-str-push-byte buf 32)   ; space
        (mut-str-push-byte buf 100)  ; d
@@ -275,8 +275,7 @@
        (mut-str-push-byte buf 108)  ; l
        (mut-str-push-byte buf 116)  ; t
        (mut-str-push-byte buf 61)   ; =
-       ;; default_val at offset 32
-       (nl_fmt_sexp_dispatch (+ ct-ptr 32) buf)
+       (nl_fmt_sexp_dispatch (heap-read-u64 ct-ptr 16) buf)
        ;; " entries="
        (mut-str-push-byte buf 32)   ; space
        (mut-str-push-byte buf 101)  ; e
@@ -287,8 +286,7 @@
        (mut-str-push-byte buf 101)  ; e
        (mut-str-push-byte buf 115)  ; s
        (mut-str-push-byte buf 61)   ; =
-       ;; entries.len at offset 80 (Vec<(i64,Sexp)>: ptr=64, cap=72, len=80)
-       (extern-call nl_i64_append_to_mut_str (ptr-read-u64 ct-ptr 80) buf)
+       (extern-call nl_i64_append_to_mut_str (heap-read-u64 ct-ptr 40) buf)
        (mut-str-push-byte buf 62)   ; >
        1))
 
@@ -313,7 +311,7 @@
     (defun nl_fmt_sexp_write_unibyte_bytes (bytes-ptr i n buf)
       (if (= i n)
           0
-        (and (nl_fmt_sexp_write_unibyte_byte (ptr-read-u8 bytes-ptr i) buf)
+        (and (nl_fmt_sexp_write_unibyte_byte (heap-read-u8 bytes-ptr i) buf)
              (nl_fmt_sexp_write_unibyte_bytes bytes-ptr (+ i 1) n buf))))
 
     ;; Write one byte: octal-escape if control (<32), non-ASCII (>=127), " or \
@@ -330,7 +328,7 @@
           byte-val
         (nl_fmt_sexp_build_bool_chunk
          data-ptr base n (+ bit 1)
-         (if (= (ptr-read-u8 data-ptr (+ base bit)) 0)
+         (if (= (heap-read-u8 data-ptr (+ base bit)) 0)
              byte-val
            (logior byte-val (shl 1 bit))))))
 
@@ -350,12 +348,12 @@
       (and
        (mut-str-push-byte buf 35)  ; #
        (mut-str-push-byte buf 38)  ; &
-       (extern-call nl_i64_append_to_mut_str (ptr-read-u64 bv-ptr 16) buf)  ; len
+       (extern-call nl_i64_append_to_mut_str (heap-read-u64 bv-ptr 16) buf)  ; len
        (mut-str-push-byte buf 34)  ; "
        (nl_fmt_sexp_write_bool_chunks
-        (ptr-read-u64 bv-ptr 0)  ; data pointer
+        (heap-read-u64 bv-ptr 0)  ; data pointer
         0
-        (ptr-read-u64 bv-ptr 16)  ; length
+        (heap-read-u64 bv-ptr 16)  ; length
         buf)
        (mut-str-push-byte buf 34)  ; "
        1))
@@ -373,13 +371,13 @@
 
     (defun nl_fmt_sexp_write_record (s buf)
       ;; s: *const Sexp::Record, buf: *mut Sexp::MutStr
-      ;; NlRecord: type_tag at offset 0 = sexp-payload-ptr(s) itself (*const Sexp)
-      ;; record-slot-count(s) reads NlRecord.slots.len
+      ;; The record type is a WORD; the formatter's semantic tag/int
+      ;; operations accept it directly, just like a canonical record slot.
       (and
        (mut-str-push-byte buf 35)  ; #
        (mut-str-push-byte buf 115) ; s
        (mut-str-push-byte buf 40)  ; (
-       (nl_fmt_sexp_dispatch (sexp-payload-ptr s) buf)  ; type_tag at offset 0
+       (nl_fmt_sexp_dispatch (nl_record_type_word s) buf)
        (nl_fmt_sexp_write_record_slots s 0 (record-slot-count s) buf)
        (mut-str-push-byte buf 41)  ; )
        1))
@@ -390,9 +388,9 @@
       ;; first requested, using the immutable symbol bytes as fallback.
       (let* ((tag (sexp-tag s))
              (kind (if (= tag 16) 2 1))
-             (key (if (= tag 16) (ptr-read-u64 s 8) (ptr-read-u64 s 16)))
-             (name-ptr (ptr-read-u64 s 16))
-             (name-len (ptr-read-u64 s 24))
+             (key (if (= tag 16) (heap-read-u64 s 8) (heap-read-u64 s 16)))
+             (name-ptr (heap-read-u64 s 16))
+             (name-len (heap-read-u64 s 24))
              (entry (nl_symbol_name_entry_for kind key name-len)))
         (if (= entry 0)
             (nl_fmt_sexp_write_symbol_bytes name-ptr 0 name-len buf)
@@ -426,7 +424,7 @@
          ;; Float (tag=3) → read f64 bits at offset 8
          ((= (sexp-tag s) 3)
           (and (= (extern-call nl_f64_bits_append_to_mut_str
-                               (ptr-read-u64 s 8) buf) 0)
+                               (heap-read-u64 s 8) buf) 0)
                1))
          ;; Symbol (tag=4) → readable escaped atom
          ((or (= (sexp-tag s) 4) (= (sexp-tag s) 16))

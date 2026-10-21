@@ -72,7 +72,7 @@ OPERATION is `car' or `cdr'; every other verified frame is unsupported."
          (if (/= root-count 5) 3
        (let ((condition-slot (extern-call nl_root_pin_slot_v2 env ticket 1 0 0 0)))
          (if (= condition-slot 0) 2
-           (if (= (ptr-read-u64 condition-slot 0) 0)
+           (if (= (heap-read-u64 condition-slot 0) 0)
                (let ((gateway-status
                       (extern-call ,gateway env ticket 3 4 0 0)))
                  (if (= gateway-status 0) 0

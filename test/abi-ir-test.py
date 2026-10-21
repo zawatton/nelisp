@@ -91,6 +91,21 @@ class ProfileCounterTest(unittest.TestCase):
             "cfn=(3) 0x0000000000002000'2\ncalls=20 0\n"))
 
 
+class AccessorVerdictTest(unittest.TestCase):
+    def test_s1_exact_half_percent_boundary_and_original_cap(self):
+        samples = [(k, (1000, 0, b"done"), (1005, 0, b"done")) for k in gate.LAYOUTS]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(gate.summarize("boot", samples, 1.005))
+            self.assertFalse(gate.summarize("boot", samples))
+            samples[-1] = (2100, (1000, 0, b"done"), (1006, 0, b"done"))
+            self.assertFalse(gate.summarize("boot", samples, 1.005))
+
+    def test_s1_manifest_cannot_substitute_for_full_abi_evidence(self):
+        self.assertEqual(24, len(gate.completed_jobs(gate.ACCESSOR_MODES)))
+        self.assertEqual(40, len(gate.completed_jobs()))
+        self.assertNotEqual(gate.ir_artifacts(gate.ACCESSOR_MODES), gate.ir_artifacts())
+
+
 class ProfileCommandTest(unittest.TestCase):
     def test_explicit_output_keeps_profiles_in_requested_directory(self):
         def profile(directory, mode, who, binary, layout, cancel=None):

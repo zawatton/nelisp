@@ -31,6 +31,8 @@
 
 ;;; Code:
 
+(require 'nelisp-heap-accessors)
+
 (require 'cl-lib)
 (require 'nl-ffi)
 (require 'nelisp-eln-system-loader)
@@ -88,14 +90,14 @@ check (Doc 210 I1).  The transfer is `push r11; ret' after rsp is set, which
 leaves rsp exactly as saved."
   (nelisp-asm-x86_64-define-label buf label)
   (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r11 'rdi 56)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r10 'rdi 48)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbx 'rdi 0)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbp 'rdi 8)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r12 'rdi 16)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r13 'rdi 24)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r14 'rdi 32)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r15 'rdi 40)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r11 'rdi 56)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r10 'rdi 48)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rbx 'rdi 0)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rbp 'rdi 8)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r12 'rdi 16)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r13 'rdi 24)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r14 'rdi 32)
+  (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'r15 'rdi 40)
   (nelisp-asm-x86_64-mov-imm32 buf 'r9 0)
   (dolist (offset '(0 8 16 24 32 40 48 56))
     (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi offset 'r9))

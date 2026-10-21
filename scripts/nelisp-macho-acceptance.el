@@ -57,6 +57,8 @@
 
 ;;; Code:
 
+(require 'nelisp-heap-accessors)
+
 (require 'nelisp-macos-build)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-mach-o-write)
@@ -76,7 +78,7 @@ to ARM64_RELOC_PAGE21 / PAGEOFF12."
     (nelisp-asm-arm64-adrp buf 'x0 "magic")
     (nelisp-asm-arm64-add-abs-lo12-nc buf 'x0 'x0 "magic")
     (nelisp-asm-arm64-mov-imm-z buf 'x1 0)
-    (nelisp-asm-arm64-ldr-reg-reg buf 'x0 'x0 'x1)
+    (nelisp-heap-accessors-arm64-ldr-reg-reg buf 'x0 'x0 'x1)
     (nelisp-asm-arm64-ret buf)
     (let ((text (nelisp-asm-arm64-buffer-bytes buf))
           (relocs (mapcar (lambda (r) (append r (list :section 'text)))
@@ -106,12 +108,12 @@ passing check."
     (nelisp-asm-arm64-adrp buf 'x0 "answer")
     (nelisp-asm-arm64-add-abs-lo12-nc buf 'x0 'x0 "answer")
     (nelisp-asm-arm64-mov-imm-z buf 'x1 0)
-    (nelisp-asm-arm64-ldr-reg-reg buf 'x0 'x0 'x1)
+    (nelisp-heap-accessors-arm64-ldr-reg-reg buf 'x0 'x0 'x1)
     (nelisp-asm-arm64-adrp buf 'x2 "counter")
     (nelisp-asm-arm64-add-abs-lo12-nc buf 'x2 'x2 "counter")
     (nelisp-asm-arm64-str-reg-reg buf 'x0 'x2 'x1)
     (nelisp-asm-arm64-mov-imm-z buf 'x0 0)
-    (nelisp-asm-arm64-ldr-reg-reg buf 'x0 'x2 'x1)
+    (nelisp-heap-accessors-arm64-ldr-reg-reg buf 'x0 'x2 'x1)
     (nelisp-asm-arm64-mov-imm-z buf 'x16 1)   ; SYS_exit
     (nelisp-asm-arm64-svc buf #x80)
     (let* ((text (nelisp-asm-arm64-buffer-bytes buf))

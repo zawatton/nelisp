@@ -280,7 +280,7 @@
            (if (or (= f1_source_0 0) (= f1_destination_0 0)) 2
              (progn
                ,@(mapcar (lambda (offset) `(ptr-write-u64 f1_destination_0 ,offset
-                                                          (ptr-read-u64 f1_source_0 ,offset))) '(0 8 16 24))
+                                                          (heap-read-u64 f1_source_0 ,offset))) '(0 8 16 24))
                ,body))))
     (cl-labels
         ((selector (values)
@@ -312,7 +312,7 @@
                    (setq f1_copy_status 2)
                  (progn
                    ,@(mapcar (lambda (offset) `(ptr-write-u64 f1_copy_destination ,offset
-                                                              (ptr-read-u64 f1_copy_source ,offset))) '(0 8 16 24))
+                                                              (heap-read-u64 f1_copy_source ,offset))) '(0 8 16 24))
                    0)))
              (setq f1_copy_index (+ f1_copy_index 1)))
            (if (= f1_copy_status 0) ,body f1_copy_status))))))
@@ -343,9 +343,9 @@ larger fixnums use the existing exact numeric operation, never wrapped math."
          (if (or (= fast_left 0) (or (= fast_right 0) (= fast_out 0))) 2
            ;; Payload reads are safe for any authenticated full Sexp slot.
            ;; Only tagged, bounded inputs can evaluate the arithmetic itself.
-           (let* ((fast_a (ptr-read-u64 fast_left 8)) (fast_b (ptr-read-u64 fast_right 8))
-                  (fast_valid (and (= (ptr-read-u64 fast_left 0) 2)
-                                   (and (= (ptr-read-u64 fast_right 0) 2)
+           (let* ((fast_a (heap-read-u64 fast_left 8)) (fast_b (heap-read-u64 fast_right 8))
+                  (fast_valid (and (= (heap-read-u64 fast_left 0) 2)
+                                   (and (= (heap-read-u64 fast_right 0) 2)
                                         (and (>= fast_a ,lower)
                                              (and (<= fast_a ,bounds)
                                                   (and (>= fast_b ,lower) (<= fast_b ,bounds)))))))
@@ -370,7 +370,7 @@ symbol and special boxed/string cases use the existing runtime implementation."
                    (167 '(or (= value_tag 2) (or (= value_tag 3) (= value_tag 13))))
                    (168 '(or (= value_tag 2) (= value_tag 13)))
                    (61 '(and (= value_tag other_tag)
-                             (= (ptr-read-u64 value_left 8) (ptr-read-u64 value_right 8))))))
+                             (= (heap-read-u64 value_left 8) (heap-read-u64 value_right 8))))))
            (safe (if binary
                      '(or (/= value_tag other_tag)
                           (or (<= value_tag 2)
@@ -386,8 +386,8 @@ symbol and special boxed/string cases use the existing runtime implementation."
               (value_right ,(if binary `(extern-call nl_root_pin_slot_v2 env ticket ,(cadr inputs) 0 0 0) 'value_left))
               (value_out (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
          (if (or (= value_left 0) (or (= value_right 0) (= value_out 0))) 2
-           (let ((value_tag (ptr-read-u64 value_left 0))
-                 (other_tag (ptr-read-u64 value_right 0)))
+           (let ((value_tag (heap-read-u64 value_left 0))
+                 (other_tag (heap-read-u64 value_right 0)))
              (if ,safe
                  (progn (ptr-write-u64 value_out 0 (if ,test 1 0))
                         (ptr-write-u64 value_out 8 0) (ptr-write-u64 value_out 16 0)

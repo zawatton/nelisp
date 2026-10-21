@@ -499,7 +499,7 @@
     ;; WORD so nothing is materialised or allocated while the last value
     ;; word is live (same reading as `nl_sf_progn_next').  Arity 2 (even).
     (defun nl_ali_body_tail_nil (state-slot _pad)
-      (let ((tail (ptr-read-u64 (ptr-read-u64 state-slot 8) 8)))
+      (let ((tail (heap-read-u64 (heap-read-u64 state-slot 8) 8)))
         (if (= (logand tail 1) 1)
             (if (= tail 3) 1 0)
           (if (= (sexp-tag tail) 0) 1 0))))
@@ -632,6 +632,20 @@
               0)
           0)))
 
+    ;; A literal-only body cannot inspect its lexical frame, signal or call
+    ;; Lisp. With no formals/arguments, both binding and capture installation
+    ;; are therefore unobservable. WORD 2 means an executable form or an
+    ;; improper body: retain the ordinary evaluator/binder in those cases.
+    (defun nl_ali_literal_body_w (body _pad)
+      (let* ((cursor body) (value 3) (eligible 1))
+        (seq
+         (while (and (= eligible 1) (= (sexp-tag cursor) 7))
+           (let* ((word (nl_cons_car_word cursor)) (tag (nl_val_tag word)))
+             (if (or (= tag 4) (= tag 16) (= tag 7))
+                 (setq eligible 0)
+               (seq (setq value word) (setq cursor (nl_cons_cdr_word cursor))))))
+         (if (and (= eligible 1) (= (sexp-tag cursor) 0)) value 2))))
+
     ;; Public entry, word form.
     ;; captured:  *const Sexp — Nil or captured alist.
     ;; formals:   *const Sexp — cons list of formal parameter symbols.
@@ -643,13 +657,19 @@
     ;; reuse slots); the WORD carries nil itself.
     ;; Arity 6 (even).
     (defun nl_apply_lambda_inner_w (captured formals body-list args-list env _pad)
-      (if (= (nl_ali_cap_none captured 0) 1)
+      (let* ((literal
+              (if (and (= (sexp-tag formals) 0)
+                       (if (= args-list 0) 1 (= (sexp-tag args-list) 0))
+                       (= (nl_ali_cap_none captured 0) 1))
+                  (nl_ali_literal_body_w body-list 0) 2)))
+       (if (/= literal 2) literal
+        (if (= (nl_ali_cap_none captured 0) 1)
           ;; No captured env: skip push_captured, cap-flag=0.
           (nl_ali_push_frame formals body-list args-list env 0 0)
         ;; Has captured env: push it FIRST ✓, cap-flag=1 on success.
         (nl_ali_after_cap
          (extern-call nl_env_push_captured env captured)
-         formals body-list args-list env 0)))
+         formals body-list args-list env 0)))))
 
     ;; (rc, OUT) adapter: rc 0 with the value in OUT, rc 1 on failure.
     (defun nl_apply_lambda_inner (captured formals body-list args-list env out)

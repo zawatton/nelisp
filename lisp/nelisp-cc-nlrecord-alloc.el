@@ -8,65 +8,13 @@
 
 ;;; Commentary:
 
-;; Replaces the Rust `nl_alloc_record' body in
-;; `build-tool/src/eval/nlrecord.rs' with a AOT-compiled elisp
-;; object.  Mechanical sibling of `nelisp-cc-nlvector-alloc.el' with
-;; an additional type_tag Sexp clone step.
+;; Doc 216 compact record allocation. One aligned body contains the packed
+;; kind/length header at +0, an owned type WORD at +8, and n inline user
+;; WORD slots at +16. The canonical record WORD is body|6; no separate Sexp,
+;; Vec metadata, slot buffer, or refcount belongs to the record body.
 ;;
-;; NlRecord HEADER layout (UNCHANGED by Doc 147 Phase 2 — pinned by
-;; `#[repr(C)]' + compile-time asserts):
-;;
-;;   type_tag: Sexp    @ 0   (32 bytes — STAYS INLINE 32B)
-;;   slots: Vec<Sexp>  @ 32  (24 bytes)
-;;     Vec.data_ptr    @ 32  (8 bytes — *mut Sexp-word buffer)
-;;     Vec.capacity    @ 40  (8 bytes — element count)
-;;     Vec.len         @ 48  (8 bytes — element count)
-;;   refcount          @ 56  (8 bytes — AtomicUsize)
-;;   total = 64 bytes, align = 8
-;;
-;; Doc 147 Phase 2 — the inline `type_tag' STAYS a 32B Sexp (header
-;; offsets unchanged); ONLY the separately-allocated SLOTS BUFFER (the
-;; one `Vec.data_ptr' points at) shrinks from `n * 32B` (one inline
-;; `Sexp' per slot) to `n * 8B` (one tagged WORD per slot).  A tagged
-;; WORD is 8 bytes: low bit 1 = immediate (Nil = 3, T = 7,
-;; Int = (n<<2)|1); low bit 0 = 8-aligned pointer to a 32B child Sexp
-;; box (children stay 32B; only the slot CELLS shrink).
-;;
-;; Vec field order is `(data_ptr, capacity, len)' for the pinned
-;; toolchain; this matches `nelisp-nlrecord--offset-slots-ptr = 32'.
-;;
-;; Three-helper + public entry structure mirrors `nelisp-cc-nlvector-alloc.el':
-;;
-;;   nl_alloc_record_fill (data-ptr i n) — recursive Nil-fill loop for
-;;     the slots Vec element buffer.
-;;
-;;   nl_alloc_record_build (box-ptr data-ptr tag-ptr n) — writes all
-;;     five words of the NlRecord struct:
-;;       [box-ptr +  0..32] = clone of *tag-ptr  (type_tag Sexp)
-;;       [box-ptr + 32] = data-ptr (Vec.data_ptr)
-;;       [box-ptr + 40] = n     (Vec.capacity count)
-;;       [box-ptr + 48] = n     (Vec.len)
-;;       [box-ptr + 56] = 1     (refcount)
-;;
-;;   nl_alloc_record_with_data (box-ptr data-ptr tag-ptr n) — chains
-;;     fill + build.
-;;
-;;   nl_alloc_record (type-tag-ptr slot-count) — public entry.
-;;
-;; `extern-call nl_sexp_clone_into tag-ptr box-ptr' writes a
-;; refcount-aware clone of *tag-ptr into box-ptr+0 (= the 32-byte
-;; type_tag field).  The destination is uninitialized (= freshly
-;; allocated), matching `nl_sexp_clone_into''s contract ("*dst treated
-;; as uninit").
-;;
-;; The `(or ... 1)' wrapper around the extern-call guarantees the `and'
-;; chain sees a non-zero value even if rax is 0 after the Rust-unit
-;; return (= same idiom as `nelisp-cc-nlcell-alloc.el').
-;;
-;; Build wiring: `scripts/compile-elisp-objects.el' manifest entry;
-;; `build.rs' compiles into `nl_alloc_record.o' and archives it.
-;; The Rust `nlrecord.rs' body is deleted entirely — integration tests
-;; use `NlRecordRef::new', not the raw extern.
+;; `nl_record_type_own' keeps canonical values unchanged, shares an owned
+;; interned type symbol per name, and owns other borrowed legacy type views.
 
 ;;; Code:
 
@@ -82,72 +30,18 @@
                (nl_alloc_record_fill data-ptr (+ i 1) n))
         data-ptr))
 
-    ;; Write all NlRecord fields and return box-ptr. TAG-PTR is a WORD;
-    ;; heap callers may supply a borrowed view, which is cloned inline.
-    ;; Records have a fixed slot count, so the old Vec capacity field can
-    ;; retain the canonical type WORD without growing the slot allocation.
-    ;;
-    ;;   [box-ptr +  0..32] = clone of *tag-ptr  (type_tag Sexp, 32 bytes)
-    ;;   [box-ptr + 32] = data-ptr — Vec<Sexp>.data_ptr
-    ;;   [box-ptr + 40] = type WORD (formerly the unused Vec capacity)
-    ;;   [box-ptr + 48] = n        — Vec<Sexp>.len
-    ;;   [box-ptr + 56] = 1        — NlRecord.refcount
-    ;;
-    ;; `ptr-write-u64' returns 1, so the `and' chain never short-circuits.
-    ;; The `(or ... 1)' around extern-call guards against undefined rax
-    ;; from the Rust-unit `nl_sexp_clone_into' return.
-    (defun nl_alloc_record_build (box-ptr data-ptr tag-ptr n)
-      (and (or (extern-call nl_sexp_clone_into tag-ptr box-ptr) 1)
-           (ptr-write-u64 box-ptr 32 data-ptr)
-           (ptr-write-u64 box-ptr 40
-                          (if (= (logand tag-ptr 1) 1) tag-ptr box-ptr))
-           (ptr-write-u64 box-ptr 48 n)
-           (ptr-write-u64 box-ptr 56 1)
-           box-ptr))
-
-    ;; Bridge: fill slots buffer, then build the struct.
-    (defun nl_alloc_record_with_data (box-ptr data-ptr tag-ptr n)
-      (nl_alloc_record_build
-       box-ptr
-       (nl_alloc_record_fill data-ptr 0 n)
-       tag-ptr
-       n))
-
-    ;; Public entry.  Clamps negative slot-count to 0, allocates the
-    ;; 64-byte NlRecord struct and the n*8-byte slot WORD buffer (Doc
-    ;; 147 Phase 2 stride shrink 32 -> 8), then delegates to
-    ;; `nl_alloc_record_with_data'.
+    ;; Public entry. Type normalization precedes body allocation, so a
+    ;; returned record never points into a caller's temporary root view.
     (defun nl_alloc_record (type-tag-ptr slot-count)
-      (nl_alloc_record_with_data
-       (alloc-bytes 64 8)
-       (alloc-bytes (* (if (< slot-count 0) 0 slot-count) 8) 8)
-       type-tag-ptr
-       (if (< slot-count 0) 0 slot-count))))
-  "AOT source for the `nl_alloc_record' allocator swap.
-
-Four-entry `(seq DEFUN ...)' manifest:
-- `nl_alloc_record_fill (data-ptr i n) -> data-ptr' — recursive
-  Nil-fill loop for the slots Vec element buffer.
-- `nl_alloc_record_build (box-ptr data-ptr tag-ptr n) -> box-ptr' —
-  writes type_tag (via nl_sexp_clone_into) + Vec header + refcount.
-- `nl_alloc_record_with_data (box-ptr data-ptr tag-ptr n) -> box-ptr'
-  — chains fill + build.
-- `nl_alloc_record (type-tag-ptr slot-count) -> *mut NlRecord' —
-  public entry.
-
-AOT ops consumed:
-  `alloc-bytes'                    — 64B struct + n*8B slot WORD buffer
-                                     (Doc 147 Phase 2 stride shrink).
-  `extern-call nl_sexp_clone_into' — clones type_tag into box-ptr+0
-                                     (type_tag STAYS inline 32B).
-  `ptr-write-u64'                  — Nil-WORD (= 3) fill per slot + 4
-                                     Vec header / refcount writes.
-  `if' / `<' / `*' / `+'          — control flow + arithmetic.
-
-Net Rust delta: deletes the 15-LOC `nl_alloc_record' body + safety
-comment from `build-tool/src/eval/nlrecord.rs'.  No Rust shim needed
-because `nlrecord_integration.rs' uses `NlRecordRef::new', not the raw
-`nl_alloc_record' extern.")
+      (let* ((n (if (< slot-count 0) 0 slot-count))
+             (type-word (nl_record_type_own type-tag-ptr))
+             (box (alloc-bytes (+ 16 (* n 8)) 8)))
+        (and (ptr-write-u64 box 0 (+ 12 (* n 256)))
+             (ptr-write-u64 box 8 type-word)
+             (nl_alloc_record_fill (+ box 16) 0 n) box))))
+  "AOT source for compact records: a 16-byte prefix and n inline WORDs.
+`nl_alloc_record_fill' initializes user slots to nil; `nl_alloc_record'
+owns the type WORD and returns the raw aligned body for legacy writers.")
 
 (provide 'nelisp-cc-nlrecord-alloc)
 

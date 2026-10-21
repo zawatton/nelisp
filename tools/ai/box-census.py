@@ -18,13 +18,20 @@ A unit recorded more than once keeps only its last record.
 Debt idioms: every counted idiom except `defun'.  Families are defun-name
 patterns (FAMILIES below); a defun belongs to the first family that matches.
 """
+import importlib.util
 import json, re, sys
+from pathlib import Path
+
+_heap_spec = importlib.util.spec_from_file_location(
+    "heap_accessors", Path(__file__).with_name("word-heap-accessors.py"))
+heap = importlib.util.module_from_spec(_heap_spec)
+_heap_spec.loader.exec_module(heap)
 
 DEBT = ["alloc-bytes-32-8", "nl_cons_car_ptr", "nl_cons_cdr_ptr",
         "record-slot-ref-ptr", "vector-ref-ptr", "nl_vector_slot_ptr",
         "nl_record_slot_ptr", "clone_into", "wf_copy32", "nl_root_reserve",
         "nl_val_store_word", "nl_sci_store_imm", "nl_abi_rc_to_word", "nl_abi_rc2_to_word",
-        "inline-box-to-word"]
+        "inline-box-to-word", "raw-header-read"]
 CONS = ["nl_cons_car_ptr", "nl_cons_cdr_ptr"]
 CONVERSION_CALLS = ("nl_val_store_word", "nl_abi_rc_to_word", "nl_abi_rc2_to_word")
 CONVERSION_WALK_VERSION = "conversion-walk-v3"
@@ -69,6 +76,7 @@ def inline_conversions(source):
     of a tag read. Count those when a fresh box is passed to a producer.
     Returning a freshly written heap box alone is deliberately not debt.
     """
+    source = heap.lower(source)
     result = {}
     for fn in forms(source):
         if fn[0] != "defun":
@@ -122,6 +130,7 @@ def conversion_rows(source):
     Keep the historical traversal for the other census idioms so their
     baseline is unchanged. The zero certificate lets S6.2 reject old scans.
     """
+    source = heap.lower(source)
     rows = {}
 
     def visit(x, fn="-"):
@@ -192,7 +201,7 @@ def tally(units):
     by_idiom, by_family, by_unit, by_fn, defuns = {}, {}, {}, {}, 0
     for unit, rows in units.items():
         for fn, idiom, n in rows:
-            if idiom == CONVERSION_WALK_VERSION:
+            if idiom in (CONVERSION_WALK_VERSION, heap.VERSION, "header-accessor"):
                 continue
             if idiom == "defun":
                 defuns += 1
@@ -218,8 +227,12 @@ def main(a):
         for fn, n in inline_conversions(d).items():
             print(f"{path}\t{fn}\tinline-box-to-word\t{n}")
         return
-    if cmd == "conversion-rows":
-        for (fn, idiom), n in conversion_rows(json.load(sys.stdin)).items():
+    if cmd in ("conversion-rows", "audit-rows"):
+        source = json.load(sys.stdin)
+        rows = conversion_rows(source)
+        if cmd == "audit-rows":
+            rows.update(heap.header_rows(source))
+        for (fn, idiom), n in rows.items():
             print(f"{path}\t{fn}\t{idiom}\t{n}")
         return
     if cmd == "from-dump":
@@ -255,6 +268,7 @@ def main(a):
                         walk(y, fn)
                 walk(source)
                 rows.update(conversion_rows(source))
+                rows.update(heap.header_rows(source))
                 for (fn, idiom), n in rows.items():
                     out.write(f"{unit}\t{fn}\t{idiom}\t{n}\n")
         return
@@ -290,7 +304,14 @@ def main(a):
         fam = a[a.index("--family") + 1]
         limit = int(a[a.index("--max") + 1])
         idioms = [a[i + 1] for i in range(len(a)) if a[i] == "--idiom"] or DEBT
-        fams = STAGE1 if fam == "stage1" else [fam]
+        fams = STAGE1 if fam == "stage1" else [f for f, _ in FAMILIES] if fam == "all" else [fam]
+        if "raw-header-read" in idioms:
+            if not summary["units"]:
+                sys.exit("empty header-read census; regenerate")
+            missing = [u for u, rows in load(path).items()
+                       if not any(k == heap.VERSION for _, k, _ in rows)]
+            if missing:
+                sys.exit("missing header-read census certificate; regenerate: " + ",".join(missing))
         got = sum(summary["families"].get(f, {}).get(k, 0) for f in fams for k in idioms)
         ok = got <= limit
         print("BOX-CENSUS %s %s %d (limit %d) %s" % (fam, ",".join(idioms), got, limit,
