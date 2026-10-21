@@ -1268,6 +1268,72 @@ The defun then runs in the evaluator, which signals it."
         `(let ((,tmp ,(car args)))
            (if ,tmp ,tmp ,(cons 'or (cdr args)))))))))
 
+(defun nelisp-aot-compiler--lisp-numeric-op (op a b env fenv defuns)
+  "Return Lisp OP on the parsed operands A and B, at least one not a known fixnum.
+GNU's structure (bytecode.c:1331 Bplus, 1278 Blss): when both operands
+are fixnums the machine operation runs, otherwise the runtime's own
+function does -- for a float, a marker, or a wrong type, which it
+signals.  A division takes the fast path only for a nonzero divisor, so
+the generic function answers the zero divisor as GNU does."
+  (let* ((ta (nelisp-aot-compiler--gensym "lisp-num"))
+         (tb (nelisp-aot-compiler--gensym "lisp-num"))
+         ;; A's value may be the dispatcher's OUT slot, which evaluating B
+         ;; can overwrite before the operation reads A.
+         (a-form (if (memq (nelisp-aot-compiler--ir-kind b) '(imm ref))
+                     `(nelisp-aot--parsed-ir ,a)
+                   `(nelisp-aot--user-init (nelisp-aot--parsed-ir ,a))))
+         (guards (delq nil
+                       (list
+                        (unless (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64)
+                          `(nelisp-aot--fixnump ,ta))
+                        (unless (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64)
+                          `(nelisp-aot--fixnump ,tb))
+                        (when (memq op '(/ mod))
+                          `(nelisp-aot--raw-op /= ,tb 0))))))
+    (nelisp-aot-compiler--parse-value
+     `(let ((,ta ,a-form))
+        (let ((,tb (nelisp-aot--parsed-ir ,b)))
+          (if ,(if (cdr guards) `(and ,@guards) (car guards))
+              ,(if (eq op 'mod)
+                   ;; GNU `mod' is floored (data.c Fmod): the machine
+                   ;; remainder takes the divisor's sign when it differs.
+                   (let ((r (nelisp-aot-compiler--gensym "lisp-mod")))
+                     `(let ((,r (nelisp-aot--raw-op mod ,ta ,tb)))
+                        (if (and (nelisp-aot--raw-op /= ,r 0)
+                                 (nelisp-aot--raw-op
+                                  < (nelisp-aot--raw-op logxor ,r ,tb) 0))
+                            (nelisp-aot--raw-op + ,r ,tb)
+                          ,r)))
+                 `(nelisp-aot--raw-op ,op ,ta ,tb))
+            (nelisp-aot--generic-call ,op ,ta ,tb))))
+     env fenv defuns)))
+
+(defun nelisp-aot-compiler--lisp-raw-op (op a b)
+  "Return the machine operation OP on A and B, both fixnums by now."
+  (let ((ra (nelisp-aot-compiler--ir-as-raw-i64 a))
+        (rb (nelisp-aot-compiler--ir-as-raw-i64 b)))
+    (if (memq op nelisp-aot-compiler--cmp-ops)
+        (nelisp-aot-compiler--make-ir 'cmp
+              :op op :repr 'raw-bool :a ra :b rb)
+      (nelisp-aot-compiler--make-ir 'arith
+            :op op :repr 'raw-i64 :a ra :b rb))))
+
+(defun nelisp-aot-compiler--lisp-float-bits (x)
+  "Return the IEEE 754 bits of the finite float X as a signed 64-bit integer.
+Nil for an infinity, a NaN or a subnormal, which then keep the old path."
+  (cond
+   ((or (isnan x) (= x 1.0e+INF) (= x -1.0e+INF)) nil)
+   ((= x 0.0) (if (< (copysign 1.0 x) 0) (- (ash 1 63)) 0))
+   (t
+    (let* ((neg (< x 0))
+           (fr (frexp (abs x)))
+           (m (car fr))
+           (e (+ (cdr fr) 1022))
+           (frac (truncate (ldexp (- (* 2 m) 1.0) 52))))
+      (when (and (> e 0) (< e 2047))
+        (let ((bits (logior (ash e 52) frac)))
+          (if neg (- bits (ash 1 63)) bits)))))))
+
 (defun nelisp-aot-compiler--lisp-test (node)
   "Return NODE as a branch condition: its truth in Lisp mode, else NODE."
   (if (nelisp-aot-compiler--lisp-values-p)
@@ -10068,6 +10134,24 @@ functions `((NAME . ARITY) ...)'."
    ;; Doc 229: an already parsed IR node spliced into a source form.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--parsed-ir))
     (cadr sexp))
+   ;; Doc 229 stage 2: FIXNUMP, the raw operation, the generic function.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--fixnump))
+    (let ((v (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)))
+      (if (eq (nelisp-aot-compiler--lisp-repr v) 'raw-i64)
+          (nelisp-aot-compiler--lisp-with-effects v 1)
+        (nelisp-aot-compiler--make-ir 'cmp
+              :op '= :repr 'raw-bool
+              :a (nelisp-aot-compiler--make-ir 'sexp-tag :ptr v)
+              :b (nelisp-aot-compiler--make-ir 'imm :value nelisp-sexp--tag-int)))))
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--raw-op))
+    (nelisp-aot-compiler--lisp-raw-op
+     (nth 1 sexp)
+     (nelisp-aot-compiler--parse-value (nth 2 sexp) env fenv defuns)
+     (nelisp-aot-compiler--parse-value (nth 3 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--generic-call))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-aot-builtinn-call (cdr sexp) env fenv defuns)
+     :repr 'sexp-ptr))
    ;; Doc 229: a user `let' binding's value, in a slot of its own.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--user-init))
     (nelisp-aot-compiler--lisp-stabilize
@@ -10089,6 +10173,19 @@ functions `((NAME . ARITY) ...)'."
 	   ;; Object compatibility: common timeout math uses float literals
 	   ;; such as 1000.0 and 0.005.  Keep these in the integer IR surface
 	   ;; until full boxed float literals are wired.
+	   ;; Doc 229: in native artifacts a float literal is the float, a
+	   ;; Sexp::Float box (tag 3, IEEE bits at offset 8) written in place.
+	   ((and (nelisp-aot-compiler--lisp-values-p) (floatp sexp)
+	         (nelisp-aot-compiler--lisp-float-bits sexp))
+	    (let ((slot (nelisp-aot-compiler--gensym "lisp-float")))
+	      (nelisp-aot-compiler--ir-with
+	       (nelisp-aot-compiler--parse-value
+	        `(let ((,slot (alloc-bytes 32 8)))
+	           (seq (ptr-write-u64 ,slot 0 ,nelisp-sexp--tag-float)
+	                (ptr-write-u64 ,slot 8 ,(nelisp-aot-compiler--lisp-float-bits sexp))
+	                ,slot))
+	        env fenv defuns)
+	       :repr 'sexp-ptr)))
 	   ((and nelisp-aot-compiler--allow-external-user-calls
 	         (floatp sexp))
 	    (nelisp-aot-compiler--make-ir 'imm
@@ -10292,7 +10389,15 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :integer-math-arity (car sexp) sexp)))
-    (nelisp-aot-compiler--parse-value (nth 1 sexp) env fenv defuns))
+    (let ((v (nelisp-aot-compiler--parse-value (nth 1 sexp) env fenv defuns)))
+      (if (or (not (nelisp-aot-compiler--lisp-values-p))
+              (eq (nelisp-aot-compiler--lisp-repr v) 'raw-i64))
+          v
+        ;; Doc 229: only a fixnum is its own integer part; a float or a
+        ;; marker goes to the runtime's own function.
+        (nelisp-aot-compiler--parse-value
+         `(nelisp-aot--generic-call ,(car sexp) (nelisp-aot--parsed-ir ,v))
+         env fenv defuns))))
    ((and (consp sexp) (eq (car sexp) 'abs))
     (unless (= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
@@ -10328,11 +10433,16 @@ functions `((NAME . ARITY) ...)'."
               (nth 2 sexp) env fenv defuns)))
       (when (nelisp-aot-compiler--lisp-values-p)
         (nelisp-aot-compiler--lisp-check-numbers sexp a b))
+      (if (and (nelisp-aot-compiler--lisp-values-p)
+               (or (memq (car sexp) '(/ mod))
+                   (not (and (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64)
+                             (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64)))))
+          (nelisp-aot-compiler--lisp-numeric-op (car sexp) a b env fenv defuns)
       (nelisp-aot-compiler--make-ir 'arith
             :op (car sexp)
             :repr 'raw-i64
             :a (nelisp-aot-compiler--ir-as-raw-i64 a)
-            :b (nelisp-aot-compiler--ir-as-raw-i64 b))))
+            :b (nelisp-aot-compiler--ir-as-raw-i64 b)))))
    ;; Doc 110 §110.E.1 f64 arithmetic — flat binop form only
    ;; (`f64-add' / `f64-sub' / `f64-mul' / `f64-div').  Each arm
    ;; is `(f64-OP A B)' where A, B are themselves value-producing
@@ -10409,12 +10519,16 @@ functions `((NAME . ARITY) ...)'."
               (nth 2 sexp) env fenv defuns)))
       (when (nelisp-aot-compiler--lisp-values-p)
         (nelisp-aot-compiler--lisp-check-numbers sexp a b))
+      (if (and (nelisp-aot-compiler--lisp-values-p)
+               (not (and (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64)
+                         (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64))))
+          (nelisp-aot-compiler--lisp-numeric-op (car sexp) a b env fenv defuns)
       (nelisp-aot-compiler--make-ir 'cmp
             :op (car sexp)
             ;; Doc 229: a comparison yields t or nil (bytecode.c:1278).
             :repr (if (nelisp-aot-compiler--lisp-values-p) 'raw-bool 'raw-i64)
             :a (nelisp-aot-compiler--ir-as-raw-i64 a)
-            :b (nelisp-aot-compiler--ir-as-raw-i64 b))))
+            :b (nelisp-aot-compiler--ir-as-raw-i64 b)))))
    ;; (if TEST THEN ELSE) — control-flow value form.
    ((and (consp sexp) (eq (car sexp) 'if))
     (unless (= (length sexp) 4)

@@ -86,7 +86,7 @@ cons constant loadable.")
     (1 control "(defun lv-vector-bools (a) (vector nil t (< a 1)))" (0 5))
     (1 control "(defun lv-while-value (a) (let ((i 0)) (while (< i a) (setq i (+ i 1)))))" (0 3))
     (1 control "(defun lv-setq-nil (a) (let ((x 5)) (when (< a 1) (setq x nil)) x))" (0 3))
-    (1 control "(defun lv-big-return (a) (+ (length a) 5000))" ("ab"))
+    (1 guard "(defun lv-big-return (a) (+ (length a) 5000))" ("ab"))
     (1 guard "(defun lv-big-raw-return (a) (* a 1000))" (5))
     (1 control "(defun lv-mixed-if-value (a) (if (< a 1) 5000 a))" (0 3))
     (1 control "(defun lv-let-alias (a) (let ((x (car a)) (y (cdr a))) (list x y)))" ((1 . 2)))
@@ -124,7 +124,7 @@ cons constant loadable.")
     (2 control "(defun lv-float-lit-cmp (a) (if (< a 2.5) 1 2))" (2 3)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")

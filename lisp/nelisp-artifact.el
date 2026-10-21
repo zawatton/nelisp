@@ -3861,6 +3861,13 @@ native object, or SYMBOL is not one of its native functions."
         (error "%s has no embedded native object" artifact-path))
       (unless (member symbol symbols)
         (error "native symbol %s not in artifact (have %S)" symbol symbols))
+      (if (plist-get native :extern-symbols)
+          ;; Doc 229: an object that calls the runtime -- the generic
+          ;; function behind a fixnum fast path, the allocator that boxes a
+          ;; result -- cannot link against the two-line integer driver.  The
+          ;; general harness provides those entry points, as the native
+          ;; call ladder already routes such a defun.
+          (nelisp-artifact-native-exec-general artifact-path symbol args)
       (let* ((dir (nelisp-artifact--make-temp-directory "neln-exec"))
              (obj (expand-file-name "mod.o" dir))
              (obj2 (expand-file-name "mod-c.o" dir))
@@ -3893,7 +3900,7 @@ native object, or SYMBOL is not one of its native functions."
                 (apply #'call-process exe nil t nil
                        (mapcar #'number-to-string args))
                 (string-to-number (string-trim (buffer-string)))))
-          (delete-directory dir t))))))
+          (delete-directory dir t)))))))
 
 (defun nelisp-artifact--native-exec-cache-root ()
   "Return the native exec cache root directory."

@@ -934,7 +934,7 @@ executable page and run.  target(9) = 9*9 = 81 -> exit 81."
 code into an mmap'd RWX page and run it IN-PROCESS via `call-ptr', with no
 static link and no host harness.  Generalizes `e2e-native-exec-mmap-call-ptr'
 from in-binary `addr-of' code to bytes sourced from a compiled artifact file:
-compile (defun sq (x) (* x x)) to a .neln, extract its reloc-free `.text',
+compile (defun sq (x) (if (integerp x) 81 0)) to a .neln, extract its reloc-free `.text',
 copy it byte-for-byte into a fresh executable page, and `call-ptr' the entry.
 sq(9) = 81 -> exit 81."
   (unless (nelisp-aot-compiler-test--linux-p)
@@ -945,7 +945,11 @@ sq(9) = 81 -> exit 81."
          (out (expand-file-name "sq.neln" dir)))
     (unwind-protect
         (progn
-          (with-temp-file src (insert "(defun sq (x) (* x x))\n(provide 'sq)\n"))
+          ;; Doc 229: `(* x x)' on an untyped argument is no longer a leaf
+          ;; -- a float or a marker takes the runtime's `*', as GNU's
+          ;; Ftimes call does -- so the reloc-free function here is a type
+          ;; test, which reads the argument's tag and calls nothing.
+          (with-temp-file src (insert "(defun sq (x) (if (integerp x) 81 0))\n(provide 'sq)\n"))
           (load src nil t)
           (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
           (let* ((native (plist-get (nelisp-artifact--read-payload out) :native))

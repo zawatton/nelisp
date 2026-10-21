@@ -481,10 +481,17 @@ artifact-class native + the AOT runtime-abi + native metadata."
             (should (> (plist-get nat :object-size) 0))
             (should (> (plist-get nat :text-size) 0))
             (should (stringp (plist-get payload-nat :text-base64)))
-            (should (equal (plist-get nat :extern-symbols) nil))
+            ;; Doc 229: `(* x x)' on an untyped argument takes a fixnum
+            ;; fast path with the runtime's own `*' behind it (GNU calls
+            ;; Ftimes), so the object calls the runtime -- only through
+            ;; entry points the loader bridges, which keeps it loadable.
+            (require 'nelisp-native-load)
+            (should (plist-get nat :extern-symbols))
+            (should (cl-every (lambda (sym)
+                                (member sym nelisp-native-load-bridgeable-symbols))
+                              (plist-get nat :extern-symbols)))
             (should (cl-every (lambda (entry) (plist-get entry :native))
                               (plist-get nat :compile-report)))
-            (should-not (plist-get nat :relocs))
             (should (equal (mapcar (lambda (d) (plist-get d :name))
                                    (plist-get nat :defuns))
                            '("nat-neln-sq" "nat-neln-add3")))
