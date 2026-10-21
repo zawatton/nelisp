@@ -1024,7 +1024,7 @@ arithmetic and comparisons, however, operate on raw machine integers.
 Keep that conversion at the consumer boundary so a local `setq' can
 faithfully retain either representation in its frame slot."
   (cond
-   ((eq (nelisp-aot-compiler--ir-repr node) 'sexp-ptr)
+   ((memq (nelisp-aot-compiler--ir-repr node) '(sexp-ptr word))
     (nelisp-aot-compiler--make-ir 'sexp-int-unwrap
           :ptr node :repr 'raw-i64))
    ;; Doc 229: an `if' whose arms disagree converts arm by arm.
@@ -1069,7 +1069,7 @@ faithfully retain either representation in its frame slot."
   "Return NODE's Doc 229 representation: raw-i64, raw-bool, mixed or sexp-ptr."
   (let ((repr (nelisp-aot-compiler--ir-repr node)))
     (cond
-     ((memq repr '(raw-i64 raw-bool mixed)) repr)
+     ((memq repr '(raw-i64 raw-bool mixed word)) repr)
      ((memq (nelisp-aot-compiler--ir-kind node) '(sexp-tag shift)) 'raw-i64)
      (t 'sexp-ptr))))
 
@@ -1183,14 +1183,69 @@ store of the tag word."
     ('mixed (nelisp-aot-compiler--lisp-map-tail
              node (lambda (n)
                     (nelisp-aot-compiler--lisp-as-sexp n env fenv defuns))))
+    ('word (nelisp-aot-compiler--lisp-box-word node env fenv defuns))
     (_ node)))
 
 (defun nelisp-aot-compiler--lisp-settle (node env fenv defuns)
-  "Return NODE with one representation on every path (box a mixed value)."
+  "Return NODE with one representation on every path (box a mixed value or a word)."
   (if (and (nelisp-aot-compiler--lisp-values-p)
-           (eq (nelisp-aot-compiler--lisp-repr node) 'mixed))
+           (memq (nelisp-aot-compiler--lisp-repr node) '(mixed word)))
       (nelisp-aot-compiler--lisp-as-sexp node env fenv defuns)
     node))
+
+(defun nelisp-aot-compiler--lisp-boxed-repr ()
+  "The representation a converted variable records: a word in Lisp mode."
+  (if (nelisp-aot-compiler--lisp-values-p) 'word 'sexp-ptr))
+
+(defun nelisp-aot-compiler--lisp-as-word (node env fenv defuns)
+  "Return NODE as a value word, GNU's Lisp_Object: an immediate or a slot.
+A fixnum is the immediate 4N+1 when it fits (GNU FIXNUM_OVERFLOW_P; a
+wider one is boxed), nil and t are the immediates 3 and 7, anything else
+is its slot.  The runtime's tag and payload reads decode immediates, so a
+variable holding a word costs no allocation; a boundary that takes a slot
+boxes an immediate there."
+  (pcase (nelisp-aot-compiler--lisp-repr node)
+    ('raw-i64
+     (let ((x (nelisp-aot-compiler--gensym "lisp-word"))
+           (slot (nelisp-aot-compiler--gensym "lisp-box")))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--parse-value
+         `(let ((,x (nelisp-aot--parsed-ir ,node)))
+            (if (= (sar (shl ,x 2) 2) ,x)
+                (logior (shl ,x 2) 1)
+              (let ((,slot (alloc-bytes 32 8)))
+                (seq (sexp-int-make ,slot ,x) ,slot))))
+         env fenv defuns)
+        :repr 'word)))
+    ('raw-bool
+     (nelisp-aot-compiler--ir-with
+      (nelisp-aot-compiler--parse-value
+       `(logior (shl (nelisp-aot--parsed-ir ,node) 2) 3)
+       env fenv defuns)
+      :repr 'word))
+    ('mixed
+     (nelisp-aot-compiler--ir-with
+      (nelisp-aot-compiler--lisp-map-tail
+       node (lambda (n) (nelisp-aot-compiler--lisp-as-word n env fenv defuns)))
+      :repr 'word))
+    (_ (nelisp-aot-compiler--ir-with node :repr 'word))))
+
+(defun nelisp-aot-compiler--lisp-box-word (node env fenv defuns)
+  "Return the word NODE as a slot: box an immediate, pass a slot through."
+  (let ((w (nelisp-aot-compiler--gensym "lisp-w"))
+        (slot (nelisp-aot-compiler--gensym "lisp-box")))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value
+      `(let ((,w (nelisp-aot--word-bits (nelisp-aot--parsed-ir ,node))))
+         (if (= (logand ,w 1) 0)
+             ,w
+           (let ((,slot (alloc-bytes 32 8)))
+             (seq (if (= (logand ,w 3) 1)
+                      (sexp-int-make ,slot (sar ,w 2))
+                    (ptr-write-u64 ,slot 0 (sar (- ,w 3) 2)))
+                  ,slot))))
+      env fenv defuns)
+     :repr 'sexp-ptr)))
 
 (defun nelisp-aot-compiler--lisp-check-numbers (sexp &rest operands)
   "Refuse SEXP when an operand is a boolean: GNU signals wrong-type-argument.
@@ -1370,8 +1425,10 @@ A variable holds a fixnum raw or any other value as a Sexp, like a GNU
 Lisp_Object slot: a boolean or a value whose arms disagree is boxed, so
 the representation joins only ever meet raw-i64 and sexp-ptr."
   (if (and (nelisp-aot-compiler--lisp-values-p)
-           (memq (nelisp-aot-compiler--lisp-repr node) '(raw-bool mixed)))
-      (nelisp-aot-compiler--lisp-as-sexp node env fenv defuns)
+           (not (eq (nelisp-aot-compiler--lisp-repr node) 'raw-i64)))
+      ;; Doc 229: a variable holds a fixnum raw or a value word, GNU's
+      ;; Lisp_Object -- no allocation for a fixnum, nil or t.
+      (nelisp-aot-compiler--lisp-as-word node env fenv defuns)
     node))
 
 (defun nelisp-aot-compiler--lisp-stabilize (node env fenv defuns)
@@ -1379,9 +1436,16 @@ the representation joins only ever meet raw-i64 and sexp-ptr."
 The next delegated call overwrites OUT, and a GNU variable keeps its
 value, so a user `let' binding of a call result gets a slot of its own,
 as `setq' already gives it."
-  (if (and (nelisp-aot-compiler--lisp-values-p)
-           (eq (nelisp-aot-compiler--lisp-repr node) 'sexp-ptr)
-           (nelisp-aot-compiler--lisp-aliases-out-p node))
+  (cond
+   ((not (and (nelisp-aot-compiler--lisp-values-p)
+              (nelisp-aot-compiler--lisp-aliases-out-p node)))
+    node)
+   ;; Copy only the arms that are OUT; a fixnum arm is no slot to copy.
+   ((memq (nelisp-aot-compiler--ir-kind node)
+          '(if cond let-rt let-rt-n let value-seq))
+    (nelisp-aot-compiler--lisp-map-tail
+     node (lambda (n) (nelisp-aot-compiler--lisp-stabilize n env fenv defuns))))
+   (t
       (let ((stable (nelisp-aot-compiler--gensym "lisp-stable")))
         (nelisp-aot-compiler--ir-with
          (nelisp-aot-compiler--parse-value
@@ -1390,8 +1454,7 @@ as `setq' already gives it."
                                (nelisp-aot--parsed-ir ,node) ,stable)
                   ,stable))
           env fenv defuns)
-         :repr 'sexp-ptr))
-    node))
+         :repr 'sexp-ptr)))))
 
 (defun nelisp-aot-compiler--lisp-binding-init (init)
   "Return the preprocessed INIT of a user `let' binding (Doc 229).
@@ -1740,8 +1803,8 @@ Keys are the cells themselves, so shadowed bindings stay distinct."
           (let ((rb (and (/= entry 0) (aref b-snap (1+ entry)))))
             (when (and nelisp-aot-compiler--repr-audit (not (eq ra rb)))
               (message "[repr-join] %s a=%s b=%s" (car cell) ra rb))
-            (when (and (/= entry 0) (memq ra '(raw-i64 sexp-ptr))
-                       (memq rb '(raw-i64 sexp-ptr))
+            (when (and (/= entry 0) (memq ra '(raw-i64 sexp-ptr word))
+                       (memq rb '(raw-i64 sexp-ptr word))
                        (not (eq (nelisp-aot-compiler--boxed-p ra)
                                 (nelisp-aot-compiler--boxed-p rb))))
               (push (cons cell (if (nelisp-aot-compiler--boxed-p ra) 'b 'a)) fixes))))
@@ -1749,8 +1812,9 @@ Keys are the cells themselves, so shadowed bindings stay distinct."
     fixes))
 
 (defun nelisp-aot-compiler--boxed-p (repr)
-  "Return non-nil when REPR means the word is a Sexp pointer."
-  (eq repr 'sexp-ptr))
+  "Return non-nil when REPR means the word is a Sexp pointer.
+A Doc 229 value word -- a slot or an immediate -- counts as boxed."
+  (memq repr '(sexp-ptr word)))
 
 (defun nelisp-aot-compiler--repr-join-fixes (a-snap b-snap)
   "Return the cells where snapshots A-SNAP and B-SNAP disagree on boxedness.
@@ -1801,8 +1865,8 @@ becomes a wrong address."
         (when (and nelisp-aot-compiler--repr-audit (not (eq ra rb)))
           (message "[repr-join] %s a=%s b=%s" (car cell) ra rb))
         (when (and other
-                   (memq ra '(raw-i64 sexp-ptr))
-                   (memq rb '(raw-i64 sexp-ptr))
+                   (memq ra '(raw-i64 sexp-ptr word))
+                   (memq rb '(raw-i64 sexp-ptr word))
                    (not (eq (nelisp-aot-compiler--boxed-p ra)
                             (nelisp-aot-compiler--boxed-p rb))))
           (push (cons cell (if (nelisp-aot-compiler--boxed-p ra) 'b 'a))
@@ -1817,7 +1881,11 @@ converts a reference to it into a fresh Sexp.  Marking the cell a GC root
 is not optional bookkeeping: the boxed value is reachable only from this
 slot, and roots are collected from `ref' nodes carrying `:root-p'."
   (let* ((var (car cell))
-         (boxed (nelisp-aot-compiler--aot-dispatcher-arg-form var fenv)))
+         (boxed (if (and (nelisp-aot-compiler--lisp-values-p)
+                         (eq (plist-get (cdr cell) :repr) 'raw-i64))
+                    ;; Doc 229: a fixnum variable joins as a word, no box.
+                    `(nelisp-aot--as-word ,var)
+                  (nelisp-aot-compiler--aot-dispatcher-arg-form var fenv))))
     (when (and boxed (not (eq boxed var)))
       (setcdr cell (plist-put (cdr cell) :root-p t))
       (let ((ir (nelisp-aot-compiler--parse-value `(setq ,var ,boxed)
@@ -1829,9 +1897,10 @@ slot, and roots are collected from `ref' nodes carrying `:root-p'."
         ;; address.  Measured: the conversion stopped the reader dying and
         ;; turned those cases into wrong numbers instead, 35 wrong and 15
         ;; deaths becoming 47 and 12.
-        (setcdr cell (plist-put (cdr cell) :repr 'sexp-ptr))
+        (setcdr cell (plist-put (cdr cell) :repr
+                                (nelisp-aot-compiler--lisp-boxed-repr)))
         (nelisp-aot-compiler--make-ir 'value-seq
-              :repr 'sexp-ptr
+              :repr (nelisp-aot-compiler--lisp-boxed-repr)
               :forms (list ir))))))
 
 (defun nelisp-aot-compiler--repr-fix-arm (arm-ir fixes side assigned
@@ -1871,9 +1940,9 @@ bare."
         (setq snap (nelisp-aot-compiler--repr-vector-list snap)))
       (dolist (entry snap)
         (cond
-         ((not (memq (cdr entry) '(raw-i64 sexp-ptr)))
+         ((not (memq (cdr entry) '(raw-i64 sexp-ptr word)))
           (push (car entry) poisoned))
-         ((eq (cdr entry) 'sexp-ptr)
+         ((memq (cdr entry) '(sexp-ptr word))
           (push (car entry) boxed)))))
     (seq-remove (lambda (cell) (memq cell poisoned))
                 (delete-dups boxed))))
@@ -6247,7 +6316,7 @@ avoids treating arbitrary native pointers as tagged integers."
         ;; Doc 229: every boundary takes a Sexp; box by representation.
         (if (or (memq form '(nil t))
                 (and (symbolp form)
-                     (memq (plist-get info :repr) '(raw-i64 raw-bool mixed)))
+                     (memq (plist-get info :repr) '(raw-i64 raw-bool mixed word)))
                 (and (consp form) (not (eq (car form) 'quote))))
             `(nelisp-aot--as-sexp ,form)
           form)
@@ -10152,6 +10221,15 @@ functions `((NAME . ARITY) ...)'."
     (nelisp-aot-compiler--ir-with
      (nelisp-aot-compiler--parse-aot-builtinn-call (cdr sexp) env fenv defuns)
      :repr 'sexp-ptr))
+   ;; Doc 229: a word's bits as a raw integer, and a value as a word.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--word-bits))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
+     :repr 'raw-i64))
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--as-word))
+    (nelisp-aot-compiler--lisp-as-word
+     (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
+     env fenv defuns))
    ;; Doc 229: a user `let' binding's value, in a slot of its own.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--user-init))
     (nelisp-aot-compiler--lisp-stabilize
@@ -10265,8 +10343,10 @@ functions `((NAME . ARITY) ...)'."
                (pcell (assq var fenv))
                (slot (plist-get (cdr pcell) :slot))
                (value-ir (nelisp-aot-compiler--lisp-store
-                          (nelisp-aot-compiler--parse-value
-                           (cadr pairs) env fenv defuns)
+                          (nelisp-aot-compiler--lisp-stabilize
+                           (nelisp-aot-compiler--parse-value
+                            (cadr pairs) env fenv defuns)
+                           env fenv defuns)
                           env fenv defuns)))
           ;; A dispatcher result normally aliases the shared boundary OUT
           ;; slot.  Storing that pointer in a local makes a later delegated
@@ -10766,7 +10846,8 @@ functions `((NAME . ARITY) ...)'."
                                node fall-raw env fenv defuns)
                             node)))
               (dolist (cell boxed)
-                (setcdr cell (plist-put (cdr cell) :repr 'sexp-ptr)))
+                (setcdr cell (plist-put (cdr cell) :repr
+                                        (nelisp-aot-compiler--lisp-boxed-repr))))
               result))))))
    ;; (and EXPR ...) / (or EXPR ...) short-circuit.
    ;; Doc 229: Lisp `and'/`or' yield the value of the arm that stopped
