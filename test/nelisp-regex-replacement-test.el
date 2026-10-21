@@ -48,9 +48,11 @@
   "Generated categories and mappings retain their recorded semantic hash."
   (let ((payload
          (prin1-to-string
+          ;; The generator's payload order (tools/nelisp-generate-unicode.el).
           (list nelisp--unicode-category-ranges
                 nelisp--unicode-simple-upcase-ranges
                 nelisp--unicode-simple-downcase-ranges
+                nelisp--unicode-titlecase-property-ranges
                 nelisp--unicode-full-upcase
                 nelisp--unicode-full-downcase
                 nelisp--unicode-full-titlecase
