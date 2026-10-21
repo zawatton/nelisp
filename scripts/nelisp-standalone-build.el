@@ -4651,7 +4651,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               ;; Doc 226 D9: an uninterned symbol's view stores its object.
               (if (if (= (heap-read-u8 w 0) 16) (> (heap-read-u64 w 8) 65535) 0)
                   (+ (heap-read-u64 w 8) 6)
-                w)))
+                ;; Stage 3.2: so does an interned symbol's, once it has one.
+                (if (= (heap-read-u8 w 0) 4) (nl_symview_canon w) w))))
         w))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
@@ -5016,6 +5017,37 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                    (if (= (heap-read-u8 w 0) 4) (nl_symobj_for_view w) 0))
                0))
            w))
+    ;; Doc 226 D9 stage 3.2.  The object WORD an interned symbol's view is
+    ;; stored as, or 0 when the symbol stays a view.  It only looks: the
+    ;; object is made where the reader and `intern' answer the symbol
+    ;; (`nl_symobj_note'), and one without its name string (a lazily made
+    ;; one) is not handed out, since a consumer reads the name from it.
+    ;; The unbound marker stays a view: a cell holding it is void, and every
+    ;; test for it is a name compare.  A view derived from an object (tag 4,
+    ;; the object's address as its identity, the name string's bytes) is its
+    ;; object.  Flag 268436352 = 1 turns the whole thing off (a debug switch
+    ;; for A/B runs of one binary).
+    (defun nl_symview_object (view)
+      (if (/= (heap-read-u64 268436352 0) 0) 0
+        (let* ((mp (nl_symcells_mirror)))
+          (if (= mp 0) 0
+            (let* ((base (heap-read-u64 268436288 0)) (buf (heap-read-u64 view 16)))
+              (if (if (= base 0) 0
+                    (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0))
+                  (let* ((e (nl_symcell_entry mp view)) (u (heap-read-u64 268436336 0)))
+                    (if (<= e 1) 0
+                      (if (= (heap-read-u64 (- e 6) 8) 3) 0
+                        (if (= u 0) e (if (= buf (heap-read-u64 u 16)) 0 e)))))
+                (let* ((p (heap-read-u64 view 8)))
+                  (if (> p 65535)
+                      (if (= (logand p 7) 0)
+                          (if (= (nl_typed_find p) 2) (+ p 6) 0)
+                        0)
+                    0))))))))
+    ;; VIEW's object WORD, else VIEW itself.
+    (defun nl_symview_canon (view)
+      (let* ((o (nl_symview_object view)))
+        (if (= o 0) view o)))
     ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
     ;; a pointer WORD passes through, an immediate gets a fresh view.
     (defun nl_ent_ptr (w k)
@@ -10695,13 +10727,19 @@ by name pending that follow-up; this paragraph is the record of why."
 (defun nelisp-standalone--sid-read-form (w)
   "Inline form: the static id of the interned symbol WORD/view W, else 0."
   `(let* ((nl_sw ,w))
-     (if (or (= (logand nl_sw 1) 1) (= (logand nl_sw 7) 6)) 0
+     (if (= (logand nl_sw 1) 1) 0
+       (if (= (logand nl_sw 7) 6)
+           ;; Doc 226 D9 stage 3.2: an interned symbol's object keeps the
+           ;; static id of its name at +40 (an uninterned one has none).
+           (if (= (logand (heap-read-u64 (- nl_sw 6) 0) 63) 4)
+               (heap-read-u64 (- nl_sw 6) 40)
+             0)
        (if (/= (heap-read-u8 nl_sw 0) 4) 0
          (let* ((nl_sb (heap-read-u64 nl_sw 16)))
            (if (and (> nl_sb (+ (heap-read-u64 268436288 0) 16777224))
                     (< nl_sb (heap-read-u64 268436296 0)))
                (sar (heap-read-u64 (- nl_sb 8) 0) 32)
-             0))))))
+             0)))))))
 
 (defun nelisp-standalone--key-tree (var pairs default)
   "A balanced `if' tree over VAR for PAIRS ((KEY . FORM)...) sorted by KEY."
@@ -10855,7 +10893,7 @@ leave symbols unresolved at link time."
         `(let* ((nl_ds ,(nelisp-standalone--sid-read-form 'name_ptr))
                 (nl_dk (if (/= nl_ds 0) nl_ds
                          (let* ((nl_name_len
-                                 (if (= (sexp-tag name_ptr) 4) (heap-read-u64 name_ptr 24)
+                                 (if (= (sexp-tag name_ptr) 4) (nl_word_length name_ptr)
                                    (if (= (sexp-tag name_ptr) 5) (heap-read-u64 name_ptr 24)
                                      (if (= (sexp-tag name_ptr) 14) (heap-read-u64 name_ptr 24)
                                        -1)))))
@@ -11707,6 +11745,14 @@ leave symbols unresolved at link time."
     ;; mirror: 0 no object (nil, t, no mirror yet, a name outside the intern
     ;; arena), 1 an interned object with its name string, 2 an object whose
     ;; name cell is still nil, 3 an entry that is not an interned symbol object.
+    ;; What a WORD is, for tests: -1 an immediate, 2 a direct cons, 100 plus
+    ;; the header kind for a class-110 object, else the legacy view's tag.
+    (defun nl_word_class (w)
+      (if (= (logand w 1) 1) -1
+        (if (= (logand w 7) 2) 2
+          (if (= (logand w 7) 6) (+ 100 (logand (heap-read-u64 (- w 6) 0) 63))
+            (if (< w 4096) -1 (heap-read-u8 w 0))))))
+    (defun nl_word_int_word (n) (+ (* n 4) 1))
     (defun nl_symobj_state (sym)
       (let* ((mp (nl_symcells_mirror)))
         (if (= mp 0) 0
@@ -11725,6 +11771,8 @@ leave symbols unresolved at link time."
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
           (if (= op 45) (+ (* (nl_symobj_state (wf_arg_word args 1)) 4) 1)
+          (if (= op 46) (nl_word_int_word (nl_word_class (wf_arg_word args 1)))
+          (if (= op 47) (seq (ptr-write-u64 268436352 0 (if (= (wf_argval args 1) 0) 0 1)) 3)
           (if (= op 44) (nl_symobj_word env (wf_arg_word args 1))
           (if (= op 43)
               (let ((pair (wf_arg_word args 1)))
@@ -11738,9 +11786,9 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))))
+             0))))))))))
     (defun bf_debug_switch_w (args env)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 45) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 47) 0)
           (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)

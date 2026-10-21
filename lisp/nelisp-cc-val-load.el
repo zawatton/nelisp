@@ -190,7 +190,16 @@
               (if (if (= tag 16) (> (heap-read-u64 src_slot 8) 65535) 0)
                   (let ((word (+ (heap-read-u64 src_slot 8) 6)))
                     (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
-                (nl_val_clone_legacy src_slot dst_word_ptr)))))))))
+                ;; Doc 226 D9 stage 3.2: an interned symbol that has its
+                ;; object is stored as the object's WORD, as GNU's Lisp_Object
+                ;; is the pointer to the struct Lisp_Symbol.  A view without
+                ;; an object (no mirror yet, a plain overflow name) stays a box.
+                (if (= tag 4)
+                    (let ((word (extern-call nl_symview_object src_slot)))
+                      (if (= word 0)
+                          (nl_val_clone_legacy src_slot dst_word_ptr)
+                        (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word)))
+                  (nl_val_clone_legacy src_slot dst_word_ptr))))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:
