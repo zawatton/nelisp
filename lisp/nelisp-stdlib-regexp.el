@@ -143,9 +143,16 @@ Capture that callable directly instead of autoloading the nadvice substrate."
                      (and (fboundp 'current-case-table)
                           (setq nlre--case-table-reader 'current-case-table))))
          (case-table (and reader (funcall reader))))
+    ;; GNU search.c uses the buffer's canonical map.  Its buffer fields are
+    ;; represented here by extras, so apply casefiddle.c's preparation rule.
+    (when (and case-table
+               (null (if (fboundp 'nelisp-casetab--get-extra-slot)
+                         (nelisp-casetab--get-extra-slot case-table 1)
+                       (char-table-extra-slot case-table 1))))
+      (set-case-table case-table))
     (and case-table
-         (cond ((fboundp 'case-table--get-extra-slot)
-                (case-table--get-extra-slot case-table slot))
+         (cond ((fboundp 'nelisp-casetab--get-extra-slot)
+                (nelisp-casetab--get-extra-slot case-table slot))
                ((fboundp 'char-table-extra-slot)
                 (char-table-extra-slot case-table slot))))))
 
@@ -1235,8 +1242,11 @@ one, which would demote them to the interpreter)."
             ((vectorp table)
                  (and (< c (length table)) (aref table c)))
                 ((and (fboundp 'recordp) (recordp table)
-                      (fboundp 'case-table--char-table-range))
-                 (case-table--char-table-range table c))
+                      (fboundp 'nelisp-casetab--char-table-range))
+                 (nelisp-casetab--char-table-range table c))
+                ((and (fboundp 'nelisp-casetab--char-table-p)
+                      (nelisp-casetab--char-table-p table))
+                 (nelisp-casetab--ref table c))
                 ((and (fboundp 'char-table-p) (char-table-p table))
                  (aref table c)))
       c))
@@ -2356,6 +2366,43 @@ buffer."
             nlre--last-buffer old-buffer)
       nil)))
 
+(defun nlre--buffer-search-regexp (regexp)
+  "Adapt GNU's trivial-regexp buffer entry to the buffer's byte kind.
+GNU search.c:1109-1137,1315-1343,1533 routes this case through the
+non-regexp searcher, which converts the pattern before case translation."
+  (if (or (not (stringp regexp))
+          (and (boundp 'search-spaces-regexp) search-spaces-regexp))
+      regexp
+    (let ((position 0) (size (length regexp)) (trivial t) literal)
+      (while (and trivial (< position size))
+        (let ((character (aref regexp position)))
+          (cond ((memq character '(?. ?* ?+ ?? ?\[ ?^ ?$))
+                 (setq trivial nil))
+                ((= character ?\\)
+                 (setq position (1+ position))
+                 (when (or (>= position size)
+                           (memq (aref regexp position)
+                                 '(?| ?\( ?\) ?` ?' ?b ?B ?< ?> ?w ?W ?s ?S
+                                   ?= ?{ ?} ?_ ?c ?C ?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9)))
+                   (setq trivial nil))
+                 (when trivial (setq character (aref regexp position)))))
+          (when trivial (push character literal)))
+        (setq position (1+ position)))
+      (let ((multibyte (if (fboundp 'nelisp--buffer-multibyte-p)
+                           (nelisp--buffer-multibyte-p (current-buffer))
+                         enable-multibyte-characters)))
+        (if (or (not trivial) (eq (multibyte-string-p regexp) multibyte)) regexp
+          ;; GNU's non-regexp path unquotes before byte conversion.  Quote
+          ;; its result because this adapter then enters the regexp engine.
+          (let* ((text (apply #'string (nreverse literal)))
+                 (converted (if multibyte (string-to-multibyte text)
+                              (apply #'unibyte-string
+                                     (mapcar (lambda (character) (logand character 255))
+                                             (append text nil)))))
+                 (quoted (regexp-quote converted)))
+            (if multibyte (string-to-multibyte quoted)
+              (apply #'unibyte-string (append quoted nil)))))))))
+
 (defun nlre--re-search-forward (regexp &optional bound noerror count)
   ;; Two pre-existing (not perf-related) parity gaps found while adding
   ;; the timing/parity matrix for the fix above; both probed against
@@ -2387,13 +2434,14 @@ buffer."
     (when (and bound (< bound (point)))
       (signal 'error (list "Invalid search bound (wrong side of point)")))
     (let ((left (or count 1)) (limit (or bound (point-max))) result
+          (prepared-regexp (nlre--buffer-search-regexp regexp))
           (old-caps nlre--last-caps) (old-buffer nlre--last-buffer))
       (while (> left 0)
         (let* ((base (point))
                (narrowed (nlre--buffer-narrowed-p))
                (hit (if narrowed
-                        (nlre-string-match regexp (buffer-substring base limit) 0)
-                      (nlre-string-match regexp (buffer-string) (1- base) (1- limit)))))
+                        (nlre-string-match prepared-regexp (buffer-substring base limit) 0)
+                      (nlre-string-match prepared-regexp (buffer-string) (1- base) (1- limit)))))
           (if (null hit) (setq left 0 result nil)
             (nlre--caps-offset (if narrowed base 1))
             (setq nlre--last-buffer (current-buffer))
@@ -2520,7 +2568,8 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
         ;; OFF converts a 0-based index of whichever string was chosen
         ;; back to an absolute 1-based buffer position, generalizing the
         ;; original's hardcoded BASE.
-        (let* ((narrowed (nlre--buffer-narrowed-p))
+        (let* ((prepared-regexp (nlre--buffer-search-regexp regexp))
+               (narrowed (nlre--buffer-narrowed-p))
                (old-caps nlre--last-caps)
                (old-buffer nlre--last-buffer)
                (text (if narrowed (buffer-substring base end) (buffer-string)))
@@ -2532,7 +2581,7 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
                (failed nil))
           (while (and (> remaining 0) (not failed))
             (setq last-match
-                  (nlre--regex-last-match-before regexp text lower cursor))
+                  (nlre--regex-last-match-before prepared-regexp text lower cursor))
             (if last-match
                 (progn
                   (setq cursor (car last-match)

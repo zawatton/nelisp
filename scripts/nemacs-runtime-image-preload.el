@@ -2554,14 +2554,14 @@ image startup."
 
 (defun nemacs-runtime-image-preload--case-table-set-standard (table)
   "Set the standard lightweight case table to TABLE."
-  (setq case-table--standard table
-        case-table--current table)
+  (setq nelisp-casetab--standard table
+        nelisp-casetab--current table)
   (nemacs-runtime-image-preload--case-table-ensure-extra-slots table)
   table)
 
 (defun nemacs-runtime-image-preload--case-table-set-current (table)
   "Set the current lightweight case table to TABLE."
-  (setq case-table--current table)
+  (setq nelisp-casetab--current table)
   (nemacs-runtime-image-preload--case-table-ensure-extra-slots table)
   table)
 
@@ -2642,19 +2642,19 @@ image startup."
       (fset 'map-char-table #'nemacs-runtime-image-preload--case-table-map))
     (unless (fboundp 'set-char-table-parent)
       (fset 'set-char-table-parent (lambda (&rest _args) nil)))
-    (unless (boundp 'case-table--standard)
-      (defvar case-table--standard (make-char-table 'case-table)))
-    (unless (boundp 'case-table--current)
-      (defvar case-table--current case-table--standard))
+    (unless (boundp 'nelisp-casetab--standard)
+      (defvar nelisp-casetab--standard (make-char-table 'case-table)))
+    (unless (boundp 'nelisp-casetab--current)
+      (defvar nelisp-casetab--current nelisp-casetab--standard))
     (unless (boundp 'case-table--standard-syntax-table)
       (defvar case-table--standard-syntax-table
         (make-char-table 'syntax-table)))
     (nemacs-runtime-image-preload--case-table-ensure-extra-slots
-     case-table--standard)
+     nelisp-casetab--standard)
     (unless (fboundp 'standard-case-table)
-      (fset 'standard-case-table (lambda () case-table--standard)))
+      (fset 'standard-case-table (lambda () nelisp-casetab--standard)))
     (unless (fboundp 'current-case-table)
-      (fset 'current-case-table (lambda () case-table--current)))
+      (fset 'current-case-table (lambda () nelisp-casetab--current)))
     (unless (fboundp 'set-standard-case-table)
       (fset 'set-standard-case-table
             #'nemacs-runtime-image-preload--case-table-set-standard))
