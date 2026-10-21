@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fail-closed meter for call-path safety, measured Ir and final evidence.
 
-The A1 brief intentionally defers C2/C3 and the full final verification; missing
-measurements or the deferred final receipt remain red under the original caps.
+The GNU structural-port brief keeps the original S4.2 caps. Missing or stale
+measurements and final receipts remain red; a plan is not an implementation.
 All performance values are independently recomputed from authenticated profiles.
 """
 import argparse
@@ -22,7 +22,16 @@ MODES = ("interpreter", "vm", "bytecode")
 LINKAGES = ("dynamic", "static")
 REFERENCE = ROOT.parent / "wh-s4f-20261021/target/wh-s4f/session3a"
 SESSION_SHA = "cd63566e38c603c96ae27766108f15b6c84b10440d25a296f3c5a375ed315622"
-CAPS = {"interpreter": 15823.0, "vm": 13568.0, "bytecode": 2538.0}
+CAPS = {"interpreter": 10230.0, "vm": 5115.0, "bytecode": 1035.0}
+GNU_FACTORS = {"interpreter": 10, "vm": 5, "bytecode": 5}
+# Original full Doc 219 study / session3a floor fixtures. bytecode.el is
+# GNU 31.1's normalized forms, without a source-path-dependent .elc header.
+INTENDED_FIXTURES = {
+    "study": ("0bb2af9272cb4c3e4a297d3b36c5aff5b90e2bbd27a6de53e3309ee814826370",
+              "135e8597a877451058dc4e6f858c33ad665c6a2ce3edbb57bd42868dac11c225"),
+    "floors": ("590f1429b281105f6127f8dfd8107105a6dd8e9cc1447e873347bfe06513fe4d",
+               "1f90701eadbcf9e59d17953e5f6b96503155d56b58b50540a36355ae39eb5a7d"),
+}
 MAX_ADDRESS_SPACE = 8 * 1024 ** 3
 
 
@@ -78,12 +87,74 @@ def profile(pin, expected, isolated=False):
         need(triggered and not termination, "profile is not the isolated measured GC interval")
 
 
-def perf(suite, tag):
+def fixture_identity(suite, report):
+    sources = [pin for pin in report["inputs"] if Path(pin["path"]).name == "functions.el"]
+    need(len(sources) == 1, "measurement must pin exactly one functions.el fixture")
+    source, compiled = sources[0], report["compiled_program"]
+    need(Path(compiled["path"]).name == "bytecode.el" and compiled in report["inputs"],
+         "compiled fixture must be the pinned bytecode.el input")
+    auth(source)
+    auth(compiled)
+    identity = source["sha256"], compiled["sha256"]
+    need(identity == INTENDED_FIXTURES[suite], "measurement differs from the intended full " + suite + " corpus")
+    return report["gnu"]["sha256"], *identity
+
+
+def same_fixtures(suite, *reports):
+    identities = [fixture_identity(suite, report) for report in reports]
+    need(len(identities) >= 2 and all(identity == identities[0] for identity in identities[1:]),
+         "compared campaigns use different GNU compilers or source/compiled fixtures")
+
+
+def check_portplan(path=None):
+    path = Path(path) if path is not None else ROOT / "docs/design/221-gnu-call-path-port.org"
+    text = path.read_text()
+    expected = {f"M{number:02d}" for number in range(1, 36)}
+    rows = [tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+            for line in text.splitlines() if re.match(r"^\|\s*M\d+\s*\|", line)]
+    need(len(rows) == 35 and all(len(row) == 4 for row in rows) and
+         {row[0] for row in rows} == expected, "port plan must classify M01-M35 exactly once")
+    methods = {"ported": 0, "adapted": 0, "impossible": 0}
+    for identity, method, anchor, transfer in rows:
+        need(method in methods, identity + ": unknown transfer method")
+        methods[method] += 1
+        need(re.search(r"\b(?:eval|data|bytecode|alloc)\.c:[1-9]\d*|\blisp\.h:[1-9]\d*", anchor),
+             identity + ": missing GNU file:line")
+        need(len(transfer) >= 32, identity + ": missing concrete transfer or architectural reason")
+        if method == "adapted":
+            need(re.search(r"=\w+|WORD|mirror|reserve|arena|specpdl|backtrace|worker|allocation-debt|"
+                           r"native-entry metadata|allocator|Executor", transfer),
+                 identity + ": adapted transfer must name the NeLisp structure")
+        if method == "impossible":
+            need(re.search(r"needs|lacks|depends|has no|requires|cannot", transfer, re.I),
+                 identity + ": impossible transfer must explain the blocking layer")
+    order = text.split("* Implementation order\n", 1)
+    need(len(order) == 2, "port plan lacks GNU implementation order")
+    steps = re.findall(r"^([1-6])\. (.*?)(?=^[1-6]\. |\nAfter EACH|\n\* |\Z)",
+                       order[1], re.M | re.S)
+    need([number for number, _ in steps] == list("123456"), "port plan must contain six ordered steps")
+    required = (("=Ffuncall=", "=funcall_general="), ("=funcall_subr=", "=apply_lambda="),
+                ("=funcall_lambda=",), ("=specbind=", "=unbind_to="),
+                ("=exec_byte_code=",), ("Conservative roots", "register", "stack"))
+    for (number, body), mechanisms in zip(steps, required):
+        need(all(mechanism in body for mechanism in mechanisms), "incorrect GNU mechanism in step " + number)
+    need("classifies the transfer method, not completion" in text and
+         "remains OPEN" in text, "port plan must distinguish planned transfers from completed ports")
+    print("portplan PASS mechanisms=35 steps=6 " + " ".join(f"{key}={value}" for key, value in methods.items()))
+
+
+def perf(suite, tag, *, current_source=False):
     directory = OUT / (suite + "-queued") / tag
     campaign = read(directory / "campaign.json")
     report = read(directory / "perf.json")
+    required = {"control", "while", "funcall"} if suite == "study" else {"control", "while", "builtin", "let"}
     need(campaign["protocol"] == "queued-3-gc-v1", "unqualified measurement protocol")
+    need(campaign["suite"] == suite and set(campaign["modes"]) == set(MODES) and
+         len(campaign["modes"]) == len(MODES) and set(campaign["layouts"]) == LAYOUTS and
+         len(campaign["layouts"]) == len(LAYOUTS) and set(campaign["operations"]) == required and
+         len(campaign["operations"]) == len(required), "campaign recipe coverage differs")
     auth(campaign["script"])
+    auth(campaign["binary"])
     check_memory_policy(campaign["memory_policy"])
     need(campaign["profile_includes_following_GC"] is True and report["isolated"] is True,
          "measured interval must include GC in an isolated process")
@@ -92,12 +163,14 @@ def perf(suite, tag):
     auth(selected)
     need(selected["sha256"] == campaign["binary"]["sha256"] == report["binary"]["sha256"], "binary identity mismatch")
     auth(report["binary"])
+    auth(report["gnu"])
+    auth(report["compiled_program"])
     for pin in report.get("binary_companions", []) + report["inputs"]:
         auth(pin)
+    fixture_identity(suite, report)
     need(len(report["runs"]) == 12 and {(r["mode"], r["layout"]) for r in report["runs"]} ==
          {(m, l) for m in MODES for l in LAYOUTS}, "incomplete/duplicate mode/layout campaign")
     means = {}
-    required = {"control", "while", "funcall"} if suite == "study" else {"control", "while", "builtin", "let"}
     for run in report["runs"]:
         rows = {r["op"]: r for r in run["intervals"]}
         need(set(rows) == required and len(run["intervals"]) == len(required), "operation coverage differs")
@@ -115,7 +188,7 @@ def perf(suite, tag):
             need(math.isfinite(value) and (value > 0 or suite == "study" and op == "while") and abs(value - row["ir_per_op"]) < 1e-9, "Ir delta mismatch")
             means.setdefault(run["mode"], {}).setdefault(op, []).append(value)
     means = {mode: {op: statistics.mean(values) for op, values in ops.items()} for mode, ops in means.items()}
-    if tag.startswith("result-"):
+    if current_source or tag.startswith("result-"):
         need(campaign["source"] == source_identity(), "candidate build source is stale")
     return means, report
 
@@ -234,15 +307,44 @@ def check_arity():
     print("arity PASS " + " ".join(f"{tag}={n}" for tag, n in counts))
 
 
-def check_funcall(mode, cap):
+def check_funcall(mode, cap, *, result_tag="result-dynamic", baseline_tag="base02-dynamic"):
     mode = {"interp": "interpreter", "byte": "bytecode"}.get(mode, mode)
     need(mode in CAPS and cap == CAPS[mode], "threshold must equal the ledger cap")
-    means, result = perf("study", "result-dynamic")
-    baseline, base = perf("study", "base02-dynamic")
+    means, result = perf("study", result_tag, current_source=True)
+    baseline, base = perf("study", baseline_tag)
+    same_fixtures("study", result, base)
     need(result["qualified_binary"]["sha256"] != base["qualified_binary"]["sha256"], "baseline and result are the same binary")
     value = means[mode]["funcall"]
-    print(f"{mode} funcall {value:.3f} Ir cap={cap:g} base={baseline[mode]['funcall']:.3f}")
-    need(value <= cap, "original funcall milestone not reached")
+    print(f"{result_tag}/{mode} funcall {value:.3f} Ir cap={cap:g} base={baseline[mode]['funcall']:.3f}")
+    need(value <= cap, "original S4.2 funcall cap not reached")
+
+
+def check_builtin(*, result_prefix="result", baseline_prefix="base02", gnu_tag="gnu-capped",
+                  linkages=LINKAGES):
+    gnu, reference = perf("floors", gnu_tag)
+    need(reference["qualified_binary"]["sha256"] == reference["gnu"]["sha256"],
+         "builtin reference is not the GNU executable")
+    failures, checked = [], 0
+    for linkage in linkages:
+        tag = result_prefix + "-" + linkage
+        means, result = perf("floors", tag, current_source=True)
+        baseline, base = perf("floors", baseline_prefix + "-" + linkage)
+        same_fixtures("floors", reference, base, result)
+        need(result["qualified_binary"]["sha256"] != base["qualified_binary"]["sha256"],
+             "baseline and result are the same binary")
+        for mode in MODES:
+            value, denominator = means[mode]["builtin"], gnu[mode]["builtin"]
+            cap = GNU_FACTORS[mode] * denominator
+            need(denominator > 0 and math.isfinite(cap), "missing GNU builtin denominator")
+            checked += 1
+            print(f"{tag}/{mode} builtin {value:.3f} Ir cap={cap:.3f} "
+                  f"GNU={denominator:.3f} factor={GNU_FACTORS[mode]} "
+                  f"base={baseline[mode]['builtin']:.3f}")
+            if value > cap:
+                failures.append(f"{tag}/{mode} {value:.3f}>{cap:.3f}")
+    need(checked == len(linkages) * len(MODES) > 0, "empty builtin linkage coverage")
+    print(f"builtin checked={checked} failures={len(failures)} linkages={','.join(linkages)}")
+    need(not failures, "original S4.2 builtin caps not reached: " + "; ".join(failures))
 
 
 def ir(tag):
@@ -272,11 +374,12 @@ def check_noregress():
     reference = read(session)
     bars = {(g["linkage"], g["mode"], g["operation"]): g["candidate"]["ir_per_op"]
             for g in reference["gates"] if g["operation"] in ("builtin", "let", "while")}
-    gnu, _ = perf("floors", "gnu-capped")
+    gnu, gnu_report = perf("floors", "gnu-capped")
     failures, checked = [], 0
     for linkage in LINKAGES:
         values, report = perf("floors", "result-" + linkage)
         _, base = perf("floors", "base02-" + linkage)
+        same_fixtures("floors", gnu_report, base, report)
         need(base["qualified_binary"]["sha256"] != report["qualified_binary"]["sha256"], "same floor baseline/result binary")
         for mode in MODES:
             for op in ("builtin", "let", "while"):
@@ -305,8 +408,8 @@ def check_noregress():
     need(not failures, "; ".join(failures))
 
 
-def check_focused():
-    report = read(OUT / "semantics/result/report.json")
+def check_focused(tag="result"):
+    report = read(OUT / "semantics" / tag / "report.json")
     need(report["pass"] and report["source"] == source_identity(), "focused semantics failed/stale")
     check_memory_policy(report["memory_policy"])
     auth(report["gnu"])
@@ -379,17 +482,33 @@ def check_final():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="check", required=True)
-    for name in ("arity", "noregress", "focused", "final"):
+    for name in ("portplan", "arity", "noregress", "final"):
         sub.add_parser(name)
+    p = sub.add_parser("focused")
+    p.add_argument("--tag", default="result", help="focused receipt tag; current-source checks remain mandatory")
     p = sub.add_parser("funcall")
     p.add_argument("mode", choices=("interp", "vm", "byte"))
     p.add_argument("cap", type=float)
+    p.add_argument("--result-tag", default="result-dynamic", help="current-source intermediate or final receipt tag")
+    p.add_argument("--baseline-tag", default="base02-dynamic")
+    p = sub.add_parser("builtin")
+    p.add_argument("--result-prefix", default="result", help="current-source receipt prefix, before -dynamic/-static")
+    p.add_argument("--baseline-prefix", default="base02")
+    p.add_argument("--gnu-tag", default="gnu-capped")
+    p.add_argument("--linkage", choices=LINKAGES, action="append", help="intermediate coverage; default checks both linkages")
     args = parser.parse_args()
     try:
         if args.check == "funcall":
-            check_funcall(args.mode, args.cap)
+            check_funcall(args.mode, args.cap, result_tag=args.result_tag, baseline_tag=args.baseline_tag)
+        elif args.check == "builtin":
+            need(args.linkage is None or len(args.linkage) == len(set(args.linkage)), "duplicate builtin linkages")
+            check_builtin(result_prefix=args.result_prefix, baseline_prefix=args.baseline_prefix,
+                          gnu_tag=args.gnu_tag, linkages=args.linkage or LINKAGES)
+        elif args.check == "focused":
+            check_focused(args.tag)
         else:
-            {"arity": check_arity, "noregress": check_noregress, "focused": check_focused, "final": check_final}[args.check]()
+            {"portplan": check_portplan, "arity": check_arity,
+             "noregress": check_noregress, "final": check_final}[args.check]()
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("FAIL " + str(error))
         return 1

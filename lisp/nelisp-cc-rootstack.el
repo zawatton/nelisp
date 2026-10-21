@@ -31,7 +31,7 @@
 ;; Doc 199 Tier 3b extends the same API to Tier-3a workers.  A registered
 ;; worker uses env+120 as its private top and [env+4096, top) as its private
 ;; reserve.  `nl_thread_registry' is a fixed driver-owned BSS table:
-;;   +0 count, +8 reserved, +16.. 64 entries of {env, published-top} (16B).
+;;   +0 managed count, +8 legacy chain, +16.. 64 managed entries (16B).
 ;; Reserve/release publish the new top with a SeqCst CAS store.  The marker
 ;; takes a SeqCst snapshot and reuses `nl_gc_mark_rootstack_walk'; collection
 ;; remains stop-the-world at the Tier-3b barrier, not concurrent.
@@ -120,6 +120,70 @@
     (defun nl_thread_registry_find (env)
       (nl_thread_registry_find_from
        env 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))
+    ;; GNU thread.h:103-143 gives each thread its activation/catch state;
+    ;; thread.c:711 marks those owners separately. Legacy form workers have
+    ;; the same root-bank layout, but not managed-worker mutation/FFI policy.
+    ;; +168 is an aligned previous-owner address with bit0 = still running.
+    ;; The parent publishes initialized roots before clone, and only END
+    ;; removes owners after terminal acknowledgment and the managed joins.
+    (defun nl_thread_legacy_head ()
+      (atomic-fetch-add (+ (data-addr nl_thread_registry) 8) 0))
+    (defun nl_thread_legacy_find (env)
+      (let* ((node (nl_thread_legacy_head)) (found 0))
+        (seq
+         (while (and (/= node 0) (= found 0))
+           (if (= node env) (setq found node)
+             (setq node (logand (atomic-fetch-add (+ node 168) 0) -2))))
+         found)))
+    (defun nl_thread_legacy_p (env)
+      (if (= env 0) 0 (if (= (nl_thread_legacy_find env) 0) 0 1)))
+    ;; 0 = main roots, 1 = legacy private roots, otherwise managed entry.
+    ;; Membership is established before dereferencing an arbitrary ENV.
+    (defun nl_root_owner (env)
+      (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                        0 (nl_thread_registry_find env))))
+        (if (/= entry 0) entry
+          (if (= (nl_thread_legacy_p env) 1) 1 0))))
+    (defun nl_thread_legacy_publish (env)
+      (let* ((previous (nl_thread_legacy_head)) (published 0))
+        (seq
+         (while (= published 0)
+           (seq
+            (ptr-write-u64 env 168 (+ previous 1))
+            (if (= (atomic-compare-exchange
+                    (+ (data-addr nl_thread_registry) 8) previous env) 1)
+                (setq published 1)
+              (setq previous (nl_thread_legacy_head))))) env)))
+    (defun nl_thread_legacy_complete (env)
+      ;; This is the child's final access to its context/root mapping.
+      (seq (atomic-fetch-add (+ env 168) -1) 0))
+    (defun nl_thread_legacy_finish_all ()
+      (let* ((head (nl_thread_legacy_head)) (node 0) (detached 0))
+        (seq
+         (while (= detached 0)
+           (seq
+            (setq node head)
+            (while (/= node 0)
+              (seq
+               (while (= (logand (atomic-fetch-add (+ node 168) 0) 1) 1) 0)
+               (setq node (logand (atomic-fetch-add (+ node 168) 0) -2))))
+            (if (= (atomic-compare-exchange
+                    (+ (data-addr nl_thread_registry) 8) head 0) 1)
+                (setq detached 1)
+              (setq head (nl_thread_legacy_head)))))
+         ;; No legacy task can use a root view after its terminal store; END
+         ;; also requires the existing managed joins before reaching here.
+         (while (/= head 0)
+           (let* ((previous (logand (atomic-fetch-add (+ head 168) 0) -2)))
+             (seq (nl_os_free_chunk head 1052672) (setq head previous)))) 0)))
+    (defun nl_root_legacy_store_top (env top)
+      (if (= (atomic-compare-exchange
+              (+ env 120) (atomic-fetch-add (+ env 120) 0) top) 1)
+          top (nl_root_legacy_store_top env top)))
+    (defun nl_root_private_slot_valid (env slot)
+      (if (and (>= slot (+ env 4096))
+               (<= slot (- (+ env 1052672) 32))
+               (= (logand (- slot (+ env 4096)) 31) 0)) 1 0))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
@@ -240,7 +304,7 @@
           (heap-read-u64 (data-addr nl_rootstack_top) 0)
         (heap-read-u64 env 120)))
     (defun nl_root_mark (env)
-      (nl_root_mark_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (nl_root_mark_at env (nl_root_owner env)))
     (defun nl_root_depth ()
       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
         (sar (- (heap-read-u64 (data-addr nl_rootstack_top) 0)
@@ -279,6 +343,19 @@
                    (= (logand (- slot base) 31) 0))
               1
             (nl_rootstack_slot_active_worker slot (+ i 1) count)))))
+    (defun nl_rootstack_slot_active_legacy (slot)
+      (let* ((node (nl_thread_legacy_head)) (active 0) (top 0))
+        (seq
+         (while (and (/= node 0) (= active 0))
+           (seq
+            (setq top (atomic-fetch-add (+ node 120) 0))
+            (if (and (>= top (+ node 4096)) (<= top (+ node 1052672))
+                     (= (logand (- top (+ node 4096)) 31) 0)
+                     (= (nl_root_private_slot_valid node slot) 1)
+                     (<= slot (- top 32)))
+                (setq active 1)
+              (setq node (logand (atomic-fetch-add (+ node 168) 0) -2)))))
+         active)))
     (defun nl_rootstack_slot_active (slot)
       (let* ((base (data-addr nl_rootstack_region))
              (end (nl_rootstack_end))
@@ -289,8 +366,9 @@
                  (>= slot base) (<= slot (- top 32))
                  (= (logand (- slot base) 31) 0))
             1
-          (nl_rootstack_slot_active_worker
-           slot 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))))
+          (if (= (nl_rootstack_slot_active_worker
+                  slot 0 (heap-read-u64 (data-addr nl_thread_registry) 0)) 1) 1
+            (nl_rootstack_slot_active_legacy slot)))))
     (defun nl_root_reserve_slot (slot)
       (if (= slot 0) 0
         (if (> (+ slot 32) (nl_rootstack_end)) 0
@@ -301,14 +379,15 @@
                (ptr-write-u64 (data-addr nl_rootstack_top) 0 (+ slot 32))
                slot))))
     (defun nl_root_reserve_private (env entry slot)
-      (if (= slot 0) 0
+      (if (= (nl_root_private_slot_valid env slot) 0) 0
         (seq
          (ptr-write-u64 slot 0 0)
          (ptr-write-u64 (+ slot 8) 0 0)
          (ptr-write-u64 (+ slot 16) 0 0)
          (ptr-write-u64 (+ slot 24) 0 0)
-         (ptr-write-u64 env 120 (+ slot 32))
-         (nl_thread_registry_store_top entry (+ slot 32))
+         (if (= entry 1) (nl_root_legacy_store_top env (+ slot 32))
+           (seq (ptr-write-u64 env 120 (+ slot 32))
+                (nl_thread_registry_store_top entry (+ slot 32))))
          slot)))
     ;; A full region answers an ordinary scratch slot instead of 0: every
     ;; caller writes through the returned pointer immediately, so 0 would be a
@@ -328,13 +407,13 @@
         (nl_root_reserve_or_scratch
          (nl_root_reserve_private env entry (heap-read-u64 env 120)))))
     (defun nl_root_reserve (env)
-      (nl_root_reserve_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (nl_root_reserve_at env (nl_root_owner env)))
     ;; The native loader cannot use `nl_root_reserve': its capacity fallback
     ;; is deliberately unrooted scratch for legacy callers.  Object arguments
     ;; must remain visible to a moving collection, so this variant reserves
     ;; only from a validated registered region and answers 0 on exhaustion.
     (defun nl_root_reserve_checked (env)
-      (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env))))
+      (let* ((entry (nl_root_owner env)))
         (if (= entry 0)
             (seq
              (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
@@ -357,12 +436,15 @@
     (defun nl_root_release_at (env entry marker)
       (if (= entry 0)
           (ptr-write-u64 (data-addr nl_rootstack_top) 0 marker)
-        (seq
-         (ptr-write-u64 env 120 marker)
-         (nl_thread_registry_store_top entry marker)
-         0)))
+        (if (= entry 1)
+            (if (and (>= marker (+ env 4096))
+                     (<= marker (atomic-fetch-add (+ env 120) 0))
+                     (= (logand (- marker (+ env 4096)) 31) 0))
+                (seq (nl_root_legacy_store_top env marker) 0) 0)
+          (seq (ptr-write-u64 env 120 marker)
+               (nl_thread_registry_store_top entry marker) 0))))
     (defun nl_root_release (env marker)
-      (nl_root_release_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
+      (nl_root_release_at env (nl_root_owner env) marker))
     ;; Native loader roots live in a separate driver-owned BSS region.  The
     ;; evaluator restores its ordinary root top after every interpreted call,
     ;; so a loader frame must never borrow that stack.  Pinning is single-owner:

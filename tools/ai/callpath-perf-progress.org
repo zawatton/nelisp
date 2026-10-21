@@ -1,4 +1,4 @@
-#+TITLE: Call-path performance (word-heap S4.2): builtin arity safety and Doc 219 candidates C1-C3
+#+TITLE: Call-path performance (word-heap S4.2): structural GNU call-path port
 
 # User direction 2026-10-21: prioritize the call path (S4.2); proceed in
 # parallel while studying GNU's implementation.
@@ -19,10 +19,9 @@
 #   C3 coherent direct cells     2,500 / 1,200 / 400
 #
 # Thresholds:
-# - The S2 caps are milestones: each mode's measured Ir minus 75% of the
-#   summed predicted savings. The original S4.2 caps (5x VM/bytecode, 10x
-#   interpreter) remain the word-heap ledger's criteria and stay red there
-#   until met.
+# - Run B restores the original S4.2 caps: 10x GNU for the interpreter
+#   and 5x GNU for VM/bytecode. The previous C1-C3 forecasts above are
+#   historical attribution, not acceptance thresholds.
 # - The session-3a values are the no-regression bars:
 #     builtin interp 137,059 dynamic / 15,324 static; VM 4,791; byte 1,801
 #     let/while VM 2.95x / 1.08x; byte 4.08x / 4.43x
@@ -36,6 +35,7 @@
 #+NOTE: 2026-10-21 change of direction. The user said: "ちまちました改善はやめて。GNUの処理を確認して模倣して。" (Stop small improvements; read GNU's implementation and imitate it.) The Doc 219 milestone criteria (C1-C3 predicted savings) are replaced by the original S4.2 caps: 10x GNU for the interpreter, 5x for the VM and bytecode. S0.1 and the builtin-floor caps S2.5 are added, so the denominator moves from 6 to 8.
 ** S0.1 Port plan: every one of Doc 219's 35 inventory mechanisms is marked ported, adapted (with the NeLisp structure named) or impossible (with the architectural reason), in docs/design/221-gnu-call-path-port.org, and the implementation order follows GNU's Ffuncall -> funcall_subr/funcall_lambda -> specbind/unbind_to -> exec_byte_code structure
 cmd: python3 tools/ai/callpath-perf-check.py portplan
+#+NOTE: 2026-10-21 S0.1 plan committed as 75832257c before code. Doc 221 classifies all 35 mechanisms and follows GNU eval.c:3149,3185 (entry/resolution), :3254,3322 (subr/argv), :3350 (lambda), :3656,3940 (specpdl/unbind), bytecode.c:365,766,894 (one executor). Planned adaptations include traced per-worker argv/specpdl reserves with reentry-safe offsets. Direct symbol function cells (M02/M23) require object/binding/loader ownership changes outside this lane; the explicit mirror adapter still hashes. The plan claims no completed implementation or performance result.
 
 * S1 Safety
 ** S1.1 Builtin arity: every reader builtin called with fewer arguments than its minimum, or more than its maximum, signals wrong-number-of-arguments instead of crashing, on dynamic and static
@@ -48,18 +48,16 @@ cmd: python3 tools/ai/callpath-perf-check.py arity
 * S2 Call cost: the original S4.2 caps, reached by porting GNU's call path
 #+NOTE: 2026-10-21 C1 adopts GNU eval.c:3365 borrowing of closure formals, adapted to NeLisp physical views: nil formals borrow a nonzero aligned nil argument view. A raw physical tag read avoids the prototype's redundant WORD decoder guards; all other cases retain the accessor. Locked savings prediction interp/VM/byte = 800/450/0 Ir per call; measured evidence follows. No native API added.
 ** S2.1 Interpreter funcall four-layout mean Ir <= 10x GNU (GNU 1,023 -> cap 10,230)
-19,648 - 0.75 x 5,100.
 cmd: python3 tools/ai/callpath-perf-check.py funcall interp 10230
 ** S2.2 VM funcall four-layout mean Ir <= 5x GNU (GNU 1,023 -> cap 5,115)
-15,556 - 0.75 x 2,650.
 cmd: python3 tools/ai/callpath-perf-check.py funcall vm 5115
 ** S2.3 Bytecode funcall four-layout mean Ir <= 5x GNU (GNU 207 -> cap 1,035)
-2,838 - 0.75 x 400.
 cmd: python3 tools/ai/callpath-perf-check.py funcall byte 1035
 ** S2.4 No regression against the session-3a bars on every mode: builtin floors, let and while, and dynamic boot/files/regex
 cmd: python3 tools/ai/callpath-perf-check.py noregress
 ** S2.5 Builtin call floors within the same caps: interpreter <= 10x GNU, VM and bytecode <= 5x GNU, four-layout mean Ir
 cmd: python3 tools/ai/callpath-perf-check.py builtin
+#+NOTE: 2026-10-21 run B reference: capped Valgrind preflight passes after moving TMPDIR into target/tmp. Serialized queued GNU 31.1 campaigns completed 36 study and 48 floor intervals, all three modes/four layouts, with authenticated original fixture/source/bytecode pins. Fresh GNU funcall means interp/VM/byte = 1022.567/1023.300/207.410 Ir; fixed S2.1-S2.3 caps remain 10230/5115/1035. GNU builtin means = 363.050/363.100/47.457 Ir, giving S2.5 caps = 3630.500/1815.500/237.283. Evidence: target/callpath-perf/{study-queued,floors-queued}/gnu-capped/{campaign,perf}.json; checker authenticates the pinned profiles rather than these rounded summaries. No NeLisp result is claimed yet.
 
 #+NOTE: 2026-10-21 focused host checks: GNU-mode check-parens passes all five changed Elisp files. Official nl-parens reports two existing shadow-corpus diagnostics on both base and candidate. Existing fixed-arity ERT runs three tests with two passes and one unchanged base/candidate failure (void-function nelisp--clear-string-bytes under GNU 31.1); the new complete GNU contract sweep covers the explicit metadata instead.
 
