@@ -2020,6 +2020,10 @@ twice appears twice; readers keep the last occurrence of each unit."
                    (if (eq (car x) 'extern-call)
                        (head (car-safe (cdr x)))
                      (head (car x)))
+                   ;; The car of a list that is not a call is a form too: the
+                   ;; first binding of a let or let* binding list, a cond
+                   ;; clause's test.  Skipping it hid every site there.
+                   (when (consp (car x)) (walk (car x)))
                    ;; Walk proper and dotted lists alike.
                    (let ((tail (cdr x)))
                      (while (consp tail)
