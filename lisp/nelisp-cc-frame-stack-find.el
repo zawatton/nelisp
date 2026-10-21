@@ -604,15 +604,17 @@
             (nl_capture_walk_frames_w backing (- i 1) with-names filtered filter roots)))))
 
     (defun nl_capture_walk_frames_rooted_w (backing i filtered filter env)
-      (let* ((mark (nl_root_mark env)) (roots (nl_root_reserve env)))
-        (if (= roots 0) (nl_abi_fail 1 0)
-          (seq
-           (vector-make 4 roots)
-           (nl_capture_root_set_word roots 2 filter)
-           (nl_capture_root_set_word roots 3 backing)
-           (let* ((word (nl_capture_walk_frames_w backing i 3 filtered filter roots)))
-             (nl_root_release env mark)
-             word)))))
+      ;; Doc 216 S6.2: ROOTS is a native 4-slot vector whose WORD sits in one
+      ;; WORD root.
+      (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
+             (roots (+ (nl_alloc_vector 4) 6)))
+        (seq
+         (ptr-write-u64 root 0 roots)
+         (nl_capture_root_set_word roots 2 filter)
+         (nl_capture_root_set_word roots 3 backing)
+         (let* ((word (nl_capture_walk_frames_w backing i 3 filtered filter roots)))
+           (nl_root_release env mark)
+           word))))
     (defun nl_capture_descend_native_w (in-vec)
       (let* ((depth (nl_word_payload (nl_vector_slot_word in-vec 1))))
         (if (= depth 0) 3
