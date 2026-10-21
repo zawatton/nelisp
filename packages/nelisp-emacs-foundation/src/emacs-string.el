@@ -136,8 +136,20 @@ is non-nil, each returned line keeps its trailing newline when present."
 (unless (and (fboundp 'char-equal)
              (not (get 'char-equal 'emacs-stub-bulk)))
   (defun char-equal (a b)
-    "Return non-nil when characters A and B are equal."
-    (= a b))
+    "Return non-nil when A and B match under the current case-fold setting."
+    (unless (characterp a)
+      (signal 'wrong-type-argument (list 'characterp a)))
+    (unless (characterp b)
+      (signal 'wrong-type-argument (list 'characterp b)))
+    (or (= a b)
+        (and case-fold-search
+             (let* ((unibyte (not enable-multibyte-characters))
+                    (table (current-case-table))
+                    (ca (if (and unibyte (>= a 128) (< a 256)) (+ a #x3fff00) a))
+                    (cb (if (and unibyte (>= b 128) (< b 256)) (+ b #x3fff00) b))
+                    (da (aref table ca)) (db (aref table cb)))
+               (= (if (and (integerp da) (>= da 0)) da ca)
+                  (if (and (integerp db) (>= db 0)) db cb))))))
   (put 'char-equal 'emacs-stub-bulk nil))
 
 (unless (and (fboundp 'string-width)

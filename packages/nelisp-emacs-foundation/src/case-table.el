@@ -1,189 +1,14 @@
-;;; case-table.el --- lightweight case-table support for NeLisp  -*- lexical-binding: t; -*-
+;;; case-table.el --- GNU case-table Lisp layer for NeLisp -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 zawatton + Claude
+;; GNU Emacs 31.1 lisp/case-table.el:36-181 supplies the public Lisp layer.
+;; Standard Unicode data remains generated from the same reference version.
+;; Native char-tables are used directly; the optional foundation adapter is
+;; handled by the C-equivalent layer's primitive-access wrappers.
 
-;; This file is part of nelisp-emacs.
-
-;;; Commentary:
-
-;; Pure-Elisp, buffer-local case tables on the reusable sparse char-table
-;; substrate.  Unicode auxiliary mappings and mutation invalidation belong
-;; here; the runtime case-conversion adapter consumes the installed table.
-;; An ASCII vector fallback remains for older standalone readers.
-
-;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- case/syntax tables use the library char-table representation.
 ;;; Code:
 
-(defconst case-table--size 256
-  "Number of character slots in the lightweight char-table.")
-
-(defconst case-table--extra-slots 3
-  "Number of extra slots carried by a lightweight char-table.")
-
-(defun case-table--standalone-p ()
-  "Return non-nil under standalone NeLisp.
-The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
-`(not (boundp 'emacs-version))' test misfires there.  Detect the
-standalone path by a NeLisp-only primitive, matching
-the standalone predicate in `emacs-char-table.el'."
-  (or (fboundp 'nl-write-file)
-      (not (boundp 'emacs-version))))
-
-(defun case-table--sparse-api-p ()
-  "Return non-nil when the reusable sparse char-table substrate is loaded."
-  (and (fboundp 'emacs-char-table-make)
-       (fboundp 'emacs-char-table-p)
-       (fboundp 'emacs-char-table-ref)
-       (fboundp 'emacs-char-table-set)))
-
-(defun case-table--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed by this facade."
-  (if (and (case-table--standalone-p)
-           (not (case-table--sparse-api-p)))
-      t
-    (not (fboundp symbol))))
-
-(defun case-table--extra-index (slot)
-  "Return vector index for extra SLOT."
-  (+ case-table--size slot))
-
-(defun case-table--identity-table ()
-  "Return a fresh lightweight char-table with identity entries."
-  (let ((table (if (case-table--sparse-api-p)
-                   (emacs-char-table-make 'case-table)
-                 (make-vector (+ case-table--size case-table--extra-slots) nil)))
-        (i 0))
-    (while (< i case-table--size)
-      (if (case-table--sparse-api-p)
-          (emacs-char-table-set table i i)
-        (aset table i i))
-      (setq i (1+ i)))
-    table))
-
-(defun case-table--copy-vector (vector)
-  "Return a shallow copy of VECTOR."
-  (let* ((len (length vector))
-         (copy (make-vector len nil))
-         (i 0))
-    (while (< i len)
-      (aset copy i (aref vector i))
-      (setq i (1+ i)))
-    copy))
-
-(defun case-table--make-char-table (&optional _subtype init)
-  "Make a lightweight char-table filled with INIT or identity mappings."
-  (if (case-table--sparse-api-p)
-      (if init
-          (emacs-char-table-make _subtype init)
-        (case-table--identity-table))
-    (if init
-        (make-vector (+ case-table--size case-table--extra-slots) init)
-      (case-table--identity-table))))
-
-(defun case-table--char-table-p (object)
-  "Return non-nil when OBJECT is a lightweight char-table."
-  (or (and (case-table--sparse-api-p) (emacs-char-table-p object))
-      (and (vectorp object)
-           (= (length object) (+ case-table--size case-table--extra-slots)))))
-
-(defun case-table--char-table-range (table range)
-  "Return TABLE entry at RANGE."
-  (cond
-   ((integerp range)
-    (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-        (emacs-char-table-ref table range)
-      (aref table range)))
-   ((eq range t) nil)
-   ((consp range) (case-table--char-table-range table (car range)))
-   (t nil)))
-
-(defun case-table--set-char-table-range (table range value)
-  "Set TABLE RANGE to VALUE."
-  (cond
-   ((integerp range)
-    (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-        (emacs-char-table-set table range value)
-      (aset table range value)))
-   ((consp range)
-    (let ((i (car range))
-          (end (cdr range)))
-      (while (<= i end)
-        (case-table--set-char-table-range table i value)
-        (setq i (1+ i)))))
-   ((eq range t)
-    nil))
-  value)
-
-(defun case-table--char-table-extra-slot (table slot)
-  "Return extra SLOT from TABLE."
-  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-      (emacs-char-table-extra-slot table slot)
-    (aref table (case-table--extra-index slot))))
-
-(defun case-table--set-char-table-extra-slot (table slot value)
-  "Set extra SLOT in TABLE to VALUE."
-  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-      (emacs-char-table-set-extra-slot table slot value)
-    (aset table (case-table--extra-index slot) value)))
-
-(defun case-table--get-extra-slot (table slot)
-  "Return extra SLOT from TABLE, lightweight or host."
-  (cond
-   ((and (case-table--sparse-api-p) (emacs-char-table-p table))
-    (emacs-char-table-extra-slot table slot))
-   ((case-table--char-table-p table)
-    (case-table--char-table-extra-slot table slot))
-   (t (char-table-extra-slot table slot))))
-
-(defun case-table--put-extra-slot (table slot value)
-  "Set extra SLOT in TABLE, lightweight or host, to VALUE."
-  (cond
-   ((and (case-table--sparse-api-p) (emacs-char-table-p table))
-    (emacs-char-table-set-extra-slot table slot value))
-   ((case-table--char-table-p table)
-    (case-table--set-char-table-extra-slot table slot value))
-   (t (set-char-table-extra-slot table slot value))))
-
-(defun case-table--map-char-table (function table)
-  "Call FUNCTION for every non-nil character entry in TABLE."
-  (let ((i 0))
-    (while (< i case-table--size)
-      (let ((value (case-table--char-table-range table i)))
-        (when value
-          (funcall function i value)))
-      (setq i (1+ i)))))
-
-(when (and (case-table--standalone-p)
-           (not (case-table--sparse-api-p)))
-  (fset 'make-char-table #'case-table--make-char-table)
-  (fset 'char-table-p #'case-table--char-table-p)
-  (fset 'char-table-range #'case-table--char-table-range)
-  (fset 'set-char-table-range #'case-table--set-char-table-range)
-  (fset 'char-table-extra-slot #'case-table--char-table-extra-slot)
-  (fset 'set-char-table-extra-slot #'case-table--set-char-table-extra-slot)
-  (fset 'map-char-table #'case-table--map-char-table)
-  (fset 'set-char-table-parent (lambda (&rest _) nil)))
-
-(when (case-table--install-function-p 'make-char-table)
-  (defalias 'make-char-table #'case-table--make-char-table))
-
-(when (case-table--install-function-p 'char-table-p)
-  (defalias 'char-table-p #'case-table--char-table-p))
-
-(when (case-table--install-function-p 'char-table-range)
-  (defalias 'char-table-range #'case-table--char-table-range))
-
-(when (case-table--install-function-p 'set-char-table-range)
-  (defalias 'set-char-table-range #'case-table--set-char-table-range))
-
-(when (case-table--install-function-p 'char-table-extra-slot)
-  (defalias 'char-table-extra-slot #'case-table--char-table-extra-slot))
-
-(when (case-table--install-function-p 'set-char-table-extra-slot)
-  (defalias 'set-char-table-extra-slot #'case-table--set-char-table-extra-slot))
-
-(when (case-table--install-function-p 'map-char-table)
-  (defalias 'map-char-table #'case-table--map-char-table))
+(unless (fboundp 'case-table--ensure-extra-slots)
+  (require 'emacs-cc-casetab-1))
 
 (defconst case-table--standard-ranges
   '(
@@ -819,198 +644,46 @@ are nil, including characters with no standard case mapping.")
     (2097853 2097853 0) (2097887 2097887 0) )
   "GNU Emacs 31.1 standard upcase mappings as (FROM TO OFFSET) runs.")
 
+(defconst case-table--size 256
+  "Number of slots initialized by the legacy private constructor.")
+
+(defun case-table--identity-table ()
+  "Return a fresh case table with the legacy private ASCII identity entries."
+  (let ((table (case-table--empty-table)) (character 0))
+    (while (< character case-table--size)
+      (case-table--set-char-table-range table character character)
+      (setq character (1+ character)))
+    table))
+
+(defun case-table--make-char-table (&optional subtype init)
+  "Legacy private constructor; a nil INIT requests ASCII identity entries."
+  (if init (make-char-table subtype init) (case-table--identity-table)))
+
 (defun case-table--fill-runs (table runs)
-  "Fill sparse TABLE from offset RUNS in one representation update."
-  (let ((ascii (make-vector 256 nil)) (ranges nil))
+  "Install generated (FROM TO OFFSET) RUNS without case conversion."
+  (if (case-table--sparse-table-p table)
+      (let ((ascii (make-vector 256 nil)) (ranges nil))
+        (dolist (run runs)
+          (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
+            (while (<= character end)
+              (if (< character 256)
+                  (aset ascii character (+ character offset))
+                (push (cons (cons character character) (+ character offset)) ranges))
+              (setq character (1+ character)))))
+        (emacs-char-table--raw-set table emacs-char-table--i-default nil)
+        (emacs-char-table--raw-set table emacs-char-table--i-ascii ascii)
+        (emacs-char-table--raw-set table emacs-char-table--i-ranges ranges))
     (dolist (run runs)
-      (let ((char (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
-        (while (<= char end)
-          (if (< char 256)
-              (aset ascii char (+ char offset))
-            (setq ranges (cons (cons (cons char char) (+ char offset)) ranges)))
-          (setq char (1+ char)))))
-    (emacs-char-table--raw-set table emacs-char-table--i-default nil)
-    (emacs-char-table--raw-set table emacs-char-table--i-ascii ascii)
-    (emacs-char-table--raw-set table emacs-char-table--i-ranges ranges))
+      (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
+        (while (<= character end)
+          (case-table--set-char-table-range table character (+ character offset))
+          (setq character (1+ character))))))
   table)
 
-(defun case-table--initialize-standard (table)
-  "Install GNU's standard downcase mappings into sparse TABLE."
-  (case-table--fill-runs table case-table--standard-ranges))
-
-(defvar case-table--standard (case-table--identity-table)
-  "Standard lightweight case table.")
-
-(defvar case-table--current case-table--standard
-  "Case table local to the current buffer.")
-
-(make-variable-buffer-local 'case-table--current)
-
-(defvar nelisp--case-table nil
-  "Installed buffer-local case conversion adapter; nil uses bare defaults.")
-(make-variable-buffer-local 'nelisp--case-table)
-
-(defvar case-table--standard-initialized
-  (not (and (case-table--standalone-p) (case-table--sparse-api-p)))
-  "Non-nil after the standard case table has received its initial mappings.")
-
-(defun case-table--ensure-standard-initialized ()
-  "Initialize the standard case table on its first actual use."
-  (unless case-table--standard-initialized
-    ;; Update the existing object so references taken before first use remain
-    ;; valid.  This loop runs once, only when a caller asks for the table.
-    (case-table--initialize-standard case-table--standard)
-    (setq case-table--standard-initialized t))
-  (case-table--ensure-standard-up))
-
-(defvar case-table--standard-up-initialized nil
-  "Non-nil after the original standard table receives GNU upcase mappings.")
-
-(defun case-table--ensure-standard-up ()
-  "Install the reference upcase table once, without recursive conversion."
-  (unless case-table--standard-up-initialized
-    (when (case-table--sparse-api-p)
-      (let ((up (case-table--empty-table)))
-        (case-table--fill-runs up case-table--standard-up-ranges)
-        (case-table--put-extra-slot case-table--standard 0 up)))
-    (setq case-table--standard-up-initialized t)))
-
-(defvar case-table--standard-syntax-table (case-table--identity-table)
-  "Placeholder syntax table for case-table mutation helpers.")
-
-;; Keep these definitions in the generated standalone bundle as well as in a
-;; hosted load.  The bootstrap generator evaluates top-level conditionals on
-;; the host, where the sparse API is already present; placing the definitions
-;; under this true branch ensures they are emitted while still avoiding any
-;; host primitive override.
-(when (case-table--sparse-api-p)
-  (defun standard-case-table ()
-    "Return the standard sparse case table."
-    (case-table--ensure-standard-initialized)
-    case-table--standard)
-  (defun current-case-table ()
-    "Return the current sparse case table."
-    (when (eq case-table--current case-table--standard)
-      (case-table--ensure-standard-initialized))
-    case-table--current)
-  (defun set-standard-case-table (table)
-    "Set the standard sparse case table to TABLE."
-    (case-table--set-standard table))
-  (defun set-case-table (table)
-    "Set the current sparse case table to TABLE."
-    (case-table--set-current table))
-  (unless (fboundp 'standard-syntax-table)
-    (defun standard-syntax-table ()
-      "Return the sparse standard syntax table placeholder."
-      case-table--standard-syntax-table))
-  (unless (fboundp 'modify-syntax-entry)
-    (defun modify-syntax-entry (_char _newentry &optional _table)
-      "Accept syntax mutations for compatibility."
-      nil)))
-
-(when (and (case-table--standalone-p)
-           (not (case-table--sparse-api-p)))
-  (fset 'standard-case-table
-        (lambda ()
-          (case-table--ensure-standard-initialized)
-          case-table--standard))
-  (fset 'current-case-table
-        (lambda ()
-          (when (eq case-table--current case-table--standard)
-            (case-table--ensure-standard-initialized))
-          case-table--current))
-  (fset 'set-standard-case-table
-        (lambda (table)
-          (case-table--set-standard table)))
-  (fset 'set-case-table
-        (lambda (table)
-          (case-table--set-current table)))
-  (fset 'standard-syntax-table
-        (lambda () case-table--standard-syntax-table))
-  (fset 'modify-syntax-entry
-        (lambda (_char _newentry &optional _table) nil)))
-
-(when (case-table--install-function-p 'standard-case-table)
-  (defun standard-case-table ()
-    "Return the standard lightweight case table."
-    (case-table--ensure-standard-initialized)
-    case-table--standard))
-
-(when (case-table--install-function-p 'current-case-table)
-  (defun current-case-table ()
-    "Return the current lightweight case table."
-    (when (eq case-table--current case-table--standard)
-      (case-table--ensure-standard-initialized))
-    case-table--current))
-
-(when (case-table--install-function-p 'set-standard-case-table)
-  (defun set-standard-case-table (table)
-    "Set the standard lightweight case table to TABLE."
-    (case-table--set-standard table)))
-
-(when (case-table--install-function-p 'set-case-table)
-  (defun set-case-table (table)
-    "Set the current lightweight case table to TABLE."
-    (case-table--set-current table)))
-
-(when (case-table--install-function-p 'standard-syntax-table)
-  (defun standard-syntax-table ()
-    "Return the lightweight standard syntax table placeholder."
-    case-table--standard-syntax-table))
-
-(when (case-table--install-function-p 'modify-syntax-entry)
-  (defun modify-syntax-entry (_char _newentry &optional _table)
-    "Accept syntax mutations for compatibility."
-    nil))
-
-(defun case-table--check-table (table)
-  "Signal GNU's type error unless TABLE is a valid case table.
-The canonical and equivalence slots must either both be nil, or
-contain a canonical char-table and an optional equivalence char-table."
-  (unless (and (if (fboundp 'case-table-p)
-                   (case-table-p table)
-                 (case-table--char-table-p table))
-               (let ((up (case-table--get-extra-slot table 0))
-                     (canon (case-table--get-extra-slot table 1))
-                     (eqv (case-table--get-extra-slot table 2)))
-                 (and (or (null up) (char-table-p up))
-                      (if (null canon)
-                          (null eqv)
-                        (and (char-table-p canon)
-                             (or (null eqv) (char-table-p eqv)))))))
-    (signal 'wrong-type-argument (list 'case-table-p table))))
-
-(defun case-table--set-current (table)
-  "Validate and install TABLE in the current buffer only."
-  (case-table--check-table table)
-  (case-table--ensure-extra-slots table)
-  (make-local-variable 'case-table--current)
-  (setq case-table--current table)
-  (make-local-variable 'nelisp--case-table)
-  (setq nelisp--case-table table))
-
-(defun case-table--set-standard (table)
-  "Validate and install TABLE as the case table for new buffers."
-  (case-table--ensure-standard-initialized)
-  (case-table--check-table table)
-  (case-table--ensure-extra-slots table)
-  ;; Changing the default must not replace the current buffer's table.
-  (let ((current case-table--current))
-    (make-local-variable 'case-table--current)
-    (setq case-table--standard table)
-    (set-default 'case-table--current table)
-    (setq case-table--current current))
-  (let ((current nelisp--case-table))
-    (make-local-variable 'nelisp--case-table)
-    (set-default 'nelisp--case-table table)
-    (setq nelisp--case-table current))
-  table)
-
-(defun case-table--empty-table ()
-  "Return an empty auxiliary case table, including Unicode entries."
-  (if (case-table--sparse-api-p)
-      (emacs-char-table-make 'case-table nil)
-    (make-vector (+ case-table--size case-table--extra-slots) nil)))
+(defun case-table--initialize-standard (down up)
+  "Install GNU's generated standard downcase and upcase mappings."
+  (case-table--fill-runs down case-table--standard-ranges)
+  (case-table--fill-runs up case-table--standard-up-ranges))
 
 (fset 'case-table--hash-put-leaf
       (symbol-function (if (fboundp 'nelisp--hash-put-leaf)
@@ -1145,236 +818,199 @@ local values but still allow the table's default or parent fallback."
 (defun case-table--store-mapping (table char value)
   "Store a freshly derived entry without invalidating its unused slots."
   (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-      (funcall case-table--raw-set table char value)
+      (emacs-char-table-set table char value)
     (case-table--set-char-table-range table char value)))
 
 (defun case-table--inverse-table (pairs)
-  "Build GNU's inverse cycles from ordered downcase PAIRS."
-  (let ((inverse (make-hash-table :test 'eql :size (* 2 (length pairs))))
-        (entries nil) pair char down tail next previous)
-    (while pairs
-      (setq pair (car pairs) char (car pair) down (cdr pair))
-      (when (and (integerp down) (<= 0 down) (<= down 4194303))
-        (if (= char down)
-            (progn
-              (setq tail down next (gethash down inverse))
-              (while (and next (/= next down))
-                (setq tail next next (gethash next inverse)))
-              (unless next (case-table--hash-put-leaf tail down inverse)))
-          (setq previous (gethash down inverse))
-          (case-table--hash-put-leaf char previous inverse)
-          (case-table--hash-put-leaf down char inverse)))
-      (setq pairs (cdr pairs)))
-    (maphash (lambda (char value)
-               (when value (setq entries (cons (cons char value) entries)))) inverse)
-    (case-table--table-from-pairs entries)))
-
-(defvar case-table--versions (make-hash-table :test 'eq :weakness 'key)
-  "Mutation versions for case tables used by parent-aware derivations.")
-(defvar case-table--derived-parents (make-hash-table :test 'eq :weakness 'key)
-  "Parent versions captured when a table's auxiliary slots were derived.")
-
-(defun case-table--parent-state (table)
-  "Return TABLE's parent chain with each ancestor's mutation version."
-  (let ((parent (emacs-char-table-parent table)) (state nil))
-    (while parent
-      (let ((version (gethash parent case-table--versions)))
-        ;; Non-case char tables can also supply inherited case mappings.
-        (unless version
-          (setq version 0)
-          (puthash parent version case-table--versions))
-        (push (cons parent version) state))
-      (setq parent (emacs-char-table-parent parent)))
-    (nreverse state)))
-
-(defun case-table--same-parent-state-p (a b)
-  "Compare parent snapshots by table identity and mutation version."
-  (while (and a b (eq (car (car a)) (car (car b)))
-              (= (cdr (car a)) (cdr (car b))))
-    (setq a (cdr a) b (cdr b)))
-  (and (null a) (null b)))
-
-(defun case-table--refresh-parents (table)
-  "Discard derived slots if an inherited mapping has changed."
-  (when (and (case-table--sparse-api-p) (emacs-char-table-p table)
-             (emacs-char-table-parent table))
-    (let ((state (case-table--parent-state table)))
-      (unless (case-table--same-parent-state-p
-               state (gethash table case-table--derived-parents))
-        (dotimes (slot 3) (emacs-char-table-set-extra-slot table slot nil)))
-      (puthash table state case-table--derived-parents))))
-
-(defun case-table--ensure-extra-slots (case-table)
-  "Build missing up/canon/eqv slots over all effective Unicode mappings."
-  (case-table--refresh-parents case-table)
-  (let (pairs inverse generated-canon)
-    (unless (case-table--get-extra-slot case-table 0)
-      (setq pairs (case-table--mappings case-table)
-            inverse (case-table--inverse-table pairs))
-      (case-table--put-extra-slot case-table 0 inverse))
-    (unless (case-table--get-extra-slot case-table 1)
-      (unless pairs (setq pairs (case-table--mappings case-table)))
-      (case-table--put-extra-slot
-       case-table 1
-       (case-table--table-from-pairs
-        (let (valid)
-          (dolist (pair pairs)
-            (when (and (integerp (cdr pair)) (<= 0 (cdr pair)) (<= (cdr pair) 4194303))
-              (setq valid (cons pair valid))))
-          valid)))
-      (setq generated-canon t))
-    (unless (case-table--get-extra-slot case-table 2)
-      ;; For a newly derived canonical table these are the same cycles.
-      (case-table--put-extra-slot
-       case-table 2
-       (if (and inverse generated-canon)
-           (if (and (case-table--sparse-api-p) (emacs-char-table-p inverse))
-               (emacs-char-table-copy inverse)
-             (case-table--copy-vector inverse))
-         (case-table--inverse-table
-          (if generated-canon pairs
-            (case-table--mappings (case-table--get-extra-slot case-table 1))))))))
-  case-table)
-
-(defun case-table--invalidate (table)
-  "Invalidate derived slots after a reusable case-table mutation."
-  (when (emacs-char-table-p table)
-    (let ((casep (eq (emacs-char-table-subtype table) 'case-table))
-          (version (gethash table case-table--versions)))
-      (when casep
-        (emacs-char-table-set-extra-slot table 0 nil)
-        (emacs-char-table-set-extra-slot table 1 nil)
-        (emacs-char-table-set-extra-slot table 2 nil))
-      (when (or casep version)
-        (puthash table (1+ (or version 0)) case-table--versions)))))
-
-;; These prefixed mutation entry points cover aset, set-char-table-range,
-;; and parent changes.  Keep the captured leaves stable across reloads.
-(when (case-table--sparse-api-p)
-  (defvar case-table--raw-set (symbol-function 'emacs-char-table-set))
-  (defvar case-table--raw-set-range (symbol-function 'emacs-char-table-set-range))
-  (defvar case-table--raw-set-parent (symbol-function 'emacs-char-table-set-parent))
-  (fset 'emacs-char-table-set
-        (lambda (table char value)
-          (prog1 (funcall case-table--raw-set table char value)
-            (case-table--invalidate table))))
-  (fset 'emacs-char-table-set-range
-        (lambda (table range value)
-          (prog1 (funcall case-table--raw-set-range table range value)
-            (case-table--invalidate table))))
-  (fset 'emacs-char-table-set-parent
-        (lambda (table parent)
-          (prog1 (funcall case-table--raw-set-parent table parent)
-            (case-table--invalidate table)))))
+  "Build GNU's identity/shuffle cycles from ordered character PAIRS."
+  (let ((table (if (case-table--sparse-api-p)
+                   (emacs-char-table-make 'case-table nil)
+                 (case-table--empty-table))))
+    (dolist (pair pairs)
+      (case-table--set-identity table (car pair) (cdr pair)))
+    (dolist (pair pairs)
+      (case-table--shuffle table (car pair) (cdr pair)))
+    table))
 
 (defun describe-buffer-case-table ()
   "Describe the case table of the current buffer."
   (interactive)
-  (message "case-table: sparse Unicode mappings"))
+  (let ((description (make-char-table 'case-table)))
+    (map-char-table
+     (lambda (key value)
+       (if (not (natnump value))
+           (if (consp key)
+               (set-char-table-range description key "case-invariant")
+             (aset description key "case-invariant"))
+         (let (from to)
+           (if (consp key)
+               (setq from (car key) to (cdr key))
+             (setq from (setq to key)))
+           (while (<= from to)
+             (aset
+              description from
+              (cond ((/= from (downcase from))
+                     (concat "uppercase, matches "
+                             (char-to-string (downcase from))))
+                    ((/= from (upcase from))
+                     (concat "lowercase, matches "
+                             (char-to-string (upcase from))))
+                    (t "case-invariant")))
+             (setq from (1+ from))))))
+     (current-case-table))
+    (save-excursion
+     (with-output-to-temp-buffer "*Help*"
+       (set-buffer standard-output)
+       (describe-vector description)
+       (help-mode)))))
 
 (defun case-table-get-table (case-table table)
-  "Return TABLE from CASE-TABLE.
-TABLE can be `down', `up', `eqv', or `canon'."
-  (let ((slot (cdr (assq table '((up . 0) (canon . 1) (eqv . 2))))))
-    (cond
-     ((eq table 'down) case-table)
-     ((or (case-table--standalone-p)
-          (case-table--char-table-p case-table))
-      (case-table--ensure-extra-slots case-table)
-      (case-table--get-extra-slot case-table slot))
-     (t
-      (or (case-table--get-extra-slot case-table slot)
-          (let ((old (standard-case-table)))
-            (unwind-protect
-                (progn
-                  (set-standard-case-table case-table)
-                  (case-table--get-extra-slot case-table slot))
-              (unless (eq case-table old)
-                (set-standard-case-table old)))))))))
+  "Return the TABLE of CASE-TABLE.
+TABLE can be `down', `up', `eqv' or `canon'."
+  (let ((slot-nb (cdr (assq table '((up . 0) (canon . 1) (eqv . 2))))))
+    (or (if (eq table 'down) case-table)
+        (case-table--get-extra-slot case-table slot-nb)
+        ;; Setup all extra slots of CASE-TABLE by temporarily selecting
+        ;; it as the standard case table.
+        (let ((old (standard-case-table)))
+          (unwind-protect
+              (progn
+                (set-standard-case-table case-table)
+                (case-table--get-extra-slot case-table slot-nb))
+            (or (eq case-table old)
+                (set-standard-case-table old)))))))
 
 (defun get-upcase-table (case-table)
   "Return the upcase table of CASE-TABLE."
   (case-table-get-table case-table 'up))
+(when (fboundp 'make-obsolete)
+  (make-obsolete 'get-upcase-table 'case-table-get-table "24.4"))
 
 (defun copy-case-table (case-table)
-  "Return a shallow copy of CASE-TABLE with derived slots invalidated."
-  (let ((copy (cond
-               ((and (case-table--sparse-api-p)
-                     (emacs-char-table-p case-table))
-                (emacs-char-table-copy case-table))
-               ((case-table--standalone-p)
-                (case-table--copy-vector case-table))
-               (t (copy-sequence case-table))))
-        (up (case-table--get-extra-slot case-table 0)))
-    (when up
-      (case-table--put-extra-slot
-       copy 0
-       (if (and (case-table--sparse-api-p) (emacs-char-table-p up))
-           (emacs-char-table-copy up)
-         (if (case-table--standalone-p)
-           (case-table--copy-vector up)
-           (copy-sequence up)))))
+  (let ((copy (if (case-table--char-table-p case-table)
+                   (case-table--copy-char-table case-table)
+                 (copy-sequence case-table)))
+	(up (case-table--get-extra-slot case-table 0)))
+    ;; Clear out the extra slots (except for upcase table) so that
+    ;; they will be recomputed from the main (downcase) table.
+    (if up
+	(case-table--put-extra-slot
+         copy 0 (if (case-table--char-table-p up)
+                    (case-table--copy-char-table up)
+                  (copy-sequence up))))
     (case-table--put-extra-slot copy 1 nil)
     (case-table--put-extra-slot copy 2 nil)
     copy))
 
+(defun case-table--modify-syntax-entry (character syntax table)
+  "Validate GNU's syntax class before delegating the case helper mutation.
+The bootstrap syntax parser otherwise silently accepts unknown classes.
+GNU Emacs 31.1 src/syntax.c:1063-1080,1150-1168 supplies the class set."
+  (unless (stringp syntax)
+    (signal 'wrong-type-argument (list 'stringp syntax)))
+  (let ((class (if (> (length syntax) 0) (aref syntax 0) 0)))
+    (unless (memq class '(32 33 34 36 39 40 41 45 46 47 60 62 64 87 92 95 119 124))
+      (error "Invalid syntax description letter: %c" class)))
+  (modify-syntax-entry character syntax table))
+
 (defun set-case-syntax-delims (l r table)
-  "Make L and R non-case-converting delimiters in TABLE."
-  (case-table--set-char-table-range table l l)
-  (case-table--set-char-table-range table r r)
+  "Make characters L and R a matching pair of non-case-converting delimiters.
+This sets the entries for L and R in TABLE, which is a string
+that will be used as the downcase part of a case table.
+It also modifies `standard-syntax-table' to
+indicate left and right delimiters."
+  (case-table--aset table l l)
+  (case-table--aset table r r)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--set-char-table-range up l l)
-    (case-table--set-char-table-range up r r))
+    (case-table--aset up l l)
+    (case-table--aset up r r))
+  ;; Clear out the extra slots so that they will be
+  ;; recomputed from the main (downcase) table and upcase table.
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
-  (modify-syntax-entry l (concat "(" (char-to-string r) "  ")
-                       (standard-syntax-table))
-  (modify-syntax-entry r (concat ")" (char-to-string l) "  ")
-                       (standard-syntax-table)))
+  (case-table--modify-syntax-entry l (concat "(" (char-to-string r) "  ")
+		       (standard-syntax-table))
+  (case-table--modify-syntax-entry r (concat ")" (char-to-string l) "  ")
+		       (standard-syntax-table)))
 
 (defun set-case-syntax-pair (uc lc table)
-  "Make UC and LC an inter-case-converting pair in TABLE."
-  (case-table--set-char-table-range table uc lc)
-  (case-table--set-char-table-range table lc lc)
+  "Make characters UC and LC a pair of inter-case-converting letters.
+This sets the entries for characters UC and LC in TABLE, which is a string
+that will be used as the downcase part of a case table.
+It also modifies `standard-syntax-table' to give them the syntax of
+word constituents."
+  (case-table--aset table uc lc)
+  (case-table--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--set-char-table-range up uc uc)
-    (case-table--set-char-table-range up lc uc))
+    (case-table--aset up uc uc)
+    (case-table--aset up lc uc))
+  ;; Clear out the extra slots so that they will be
+  ;; recomputed from the main (downcase) table and upcase table.
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
-  (modify-syntax-entry lc "w   " (standard-syntax-table))
-  (modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-upcase-syntax (uc lc table)
-  "Make UC an upcase character for LC in TABLE."
-  (case-table--set-char-table-range table lc lc)
+  "Make character UC an upcase of character LC.
+It also modifies `standard-syntax-table' to give them the syntax of
+word constituents."
+  (case-table--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--set-char-table-range up uc uc)
-    (case-table--set-char-table-range up lc uc))
+    (case-table--aset up uc uc)
+    (case-table--aset up lc uc))
+  ;; Clear out the extra slots so that they will be
+  ;; recomputed from the main (downcase) table and upcase table.
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
-  (modify-syntax-entry lc "w   " (standard-syntax-table))
-  (modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-downcase-syntax (uc lc table)
-  "Make LC a downcase character for UC in TABLE."
-  (case-table--set-char-table-range table uc lc)
-  (case-table--set-char-table-range table lc lc)
+  "Make character LC a downcase of character UC.
+It also modifies `standard-syntax-table' to give them the syntax of
+word constituents."
+  (case-table--aset table uc lc)
+  (case-table--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--set-char-table-range up uc uc))
+    (case-table--aset up uc uc))
+  ;; Clear out the extra slots so that they will be
+  ;; recomputed from the main (downcase) table and upcase table.
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
-  (modify-syntax-entry lc "w   " (standard-syntax-table))
-  (modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-case-syntax (c syntax table)
-  "Make C case-invariant with SYNTAX in TABLE."
-  (case-table--set-char-table-range table c c)
+  "Make character C case-invariant with syntax SYNTAX.
+This sets the entry for character C in TABLE, which is a string
+that will be used as the downcase part of a case table.
+It also modifies `standard-syntax-table'.
+SYNTAX should be \" \", \"w\", \".\" or \"_\"."
+  (case-table--aset table c c)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--set-char-table-range up c c))
+    (case-table--aset up c c))
+  ;; Clear out the extra slots so that they will be
+  ;; recomputed from the main (downcase) table and upcase table.
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
-  (modify-syntax-entry c syntax (standard-syntax-table)))
+  (case-table--modify-syntax-entry c syntax (standard-syntax-table)))
+
+;; GNU Emacs 31.1 lisp/subr.el:5782-5795.  Restore the original buffer's
+;; table even when BODY changes the selected buffer or exits nonlocally.
+(defmacro with-case-table (table &rest body)
+  "Execute BODY with TABLE as the current case table."
+  (declare (indent 1) (debug t))
+  (let ((old-case-table (make-symbol "table"))
+        (old-buffer (make-symbol "buffer")))
+    `(let ((,old-case-table (current-case-table))
+           (,old-buffer (current-buffer)))
+       (unwind-protect
+           (progn (set-case-table ,table) ,@body)
+         (with-current-buffer ,old-buffer
+           (set-case-table ,old-case-table))))))
+
+(case-table--register-standard-data)
 
 (provide 'case-table)
-
 ;;; case-table.el ends here

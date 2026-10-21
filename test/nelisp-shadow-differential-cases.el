@@ -2393,6 +2393,17 @@
   (list (let ((print-circle t)) (prin1-to-string f))
         (let ((print-circle nil)) (format "%S" f))))
 
+;; A custom non-ASCII case class uses the same down/up/canon/eqv tables
+;; for conversion and matching in the current buffer.
+(let ((table (make-char-table 'case-table nil)))
+  (aset table ?A ?λ)
+  (aset table ?λ ?λ)
+  (with-case-table table
+    (let ((case-fold-search t))
+      (list (downcase ?A) (upcase ?λ) (char-equal ?A ?λ)
+            (string-match "A" "λ")
+            (aref (char-table-extra-slot table 1) ?A)))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

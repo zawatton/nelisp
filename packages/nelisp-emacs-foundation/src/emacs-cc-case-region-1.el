@@ -86,24 +86,36 @@
             (when (and (not inhibit-read-only)
                        (text-property-not-all low high 'read-only nil))
               (signal 'text-read-only nil)))
-          (let ((position low) (in-word nil) (previous-cased nil))
+          (let ((position low) (in-word nil))
             (while (< position high)
               (let* ((character (char-after position))
-                     (word (eq (char-syntax character) ?w))
-                     (mapping (gethash character emacs-cc-case--mapping))
+                     (word (if (fboundp 'nelisp--case-word-character-p)
+                               (nelisp--case-word-character-p character)
+                             (or (eq (char-syntax character) ?w)
+                                 (and (boundp 'case-symbols-as-words)
+                                      case-symbols-as-words
+                                      (eq (char-syntax character) ?_)))))
                      (old (char-to-string character))
+                     ;; casefiddle.c selects the action from the preceding
+                     ;; inword state, then consults the current simple map.
                      (replacement
                       (cond
-                       ((and word (not in-word) mapping) (car mapping))
-                       ((and word (not initials) mapping)
-                        (if (and (= character #x3a3)
-                                 (emacs-cc-case--final-sigma-p position high previous-cased))
-                            "ς" (cadr mapping)))
-                       (t old)))
+                       ((not in-word) (upcase-initials old))
+                       (initials old)
+                       (t (downcase old))))
+                     (replacement
+                      (if (and in-word (= character #x3a3)
+                               (not (equal old replacement))
+                               (or (= (1+ position) high)
+                                   (not (if (fboundp 'nelisp--case-word-character-p)
+                                            (nelisp--case-word-character-p
+                                             (char-after (1+ position)))
+                                          (eq (char-syntax (char-after (1+ position))) ?w)))))
+                          "ς" replacement))
                      (delta (if (equal old replacement) 0
                               (emacs-cc-case--replace-character position replacement))))
                 (setq high (+ high delta) position (+ position 1 delta)
-                      in-word word previous-cased (and word mapping)))))))))
+                      in-word word))))))))
   nil)
 
 (unless (fboundp 'capitalize-region)
