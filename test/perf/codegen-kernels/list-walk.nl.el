@@ -11,7 +11,7 @@
       (setq n (+ n 1)))
     n))
 
-(defun ck_main (n)
+(defun ck_main (n r)
   (let ((m 100000)
         (boxes (ck_mmap 3200064))
         (cells (ck_mmap 3200064))
@@ -24,4 +24,8 @@
       (ptr-write-u64 cells (* k 32) (+ (* k 4) 1))
       (ptr-write-u64 cells (+ (* k 32) 8) next)
       (setq k (+ k 1)))
-    (ck_kernel (if (= n 0) 3 (+ boxes (* (- m n) 32))))))
+    (let ((res 0) (j 0) (head (if (= n 0) 3 (+ boxes (* (- m n) 32)))))
+      (while (< j r)
+        (setq res (ck_kernel head))
+        (setq j (+ j 1)))
+      res)))

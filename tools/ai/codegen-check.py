@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Checks for tools/ai/codegen-progress.org (native codegen GCC -O2 parity).
 
-kernel NAME   build the NeLisp, gcc -O2 GNU-layout and gcc -O2 NeLisp-layout
-              versions of one kernel, measure Ir per iteration with callgrind
-              over the four ABI_LAYOUT_PAD layouts (N-iteration run minus the
-              zero-iteration run), and pass iff NeLisp <= gcc -O2 GNU-layout.
-measure       measure every kernel and print one JSON object (no verdict).
+wall NAME     the gate (COMMON.md "Measurement", 2026-10-21 16:30): wall-clock
+              ns per iteration of the NeLisp, gcc -O2 GNU-layout and gcc -O2
+              NeLisp-layout builds (and, informational, NeLisp built by the
+              9d5f4a515 compiler when target/codegen/base-src exists): the
+              median of 7 alternating runs pinned to one idle CPU, after a
+              warm-up, with the repeat count set so a gcc run takes at least
+              0.5 s, the zero-iteration run subtracted.  Pass iff NeLisp <=
+              gcc -O2 GNU-layout.
+kernel NAME   the Ir diagnostic: Ir per iteration with callgrind over the four
+              ABI_LAYOUT_PAD layouts (N-iteration run minus the zero-iteration
+              run), with the same verdict rule.
+measure       Ir for every kernel as one JSON object (no verdict).
 plan          Doc 224 exists and covers every kernel, category and mechanism.
-endtoend      target/codegen/endtoend.json records boot/files/regex6000 and the
-              regex per-character pattern improving against the base binary,
-              bound to the current candidate binary by sha256.
+endtoend      target/codegen/endtoend.json (codegen-e2e.py wall) records
+              boot, files, regex6000 and the regex per-character pattern
+              running faster in wall-clock than the base binary (median
+              ratio below 1.0), bound to the candidate binary by sha256.
 final         target/codegen/final.json records the final verification.
 
 Kernel sources live in test/perf/codegen-kernels/.  Build products and
@@ -37,24 +45,32 @@ def run(args, **kw):
     return subprocess.run(args, check=True, capture_output=True, text=True, **kw)
 
 
-def build(kernel):
+BASE_TREE = ROOT / "target/codegen/base-src"
+
+
+def build_nl(kernel, exe, lisp_root):
+    emacs = os.environ.get("CODEGEN_EMACS", "emacs")
+    if exe.exists():
+        exe.unlink()
+    run([emacs, "--batch", "-Q", "-L", str(lisp_root / "lisp"), "-L", str(lisp_root / "src"),
+         "-l", str(SRC / "compile-kernel.el"), "--eval",
+         f'(codegen-kernel-compile "{SRC / (kernel + ".nl.el")}" "{exe}")'])
+    if not exe.exists():
+        raise RuntimeError(f"{kernel}: NeLisp kernel did not build ({lisp_root})")
+    return exe
+
+
+def build(kernel, with_base=False):
     OUT.mkdir(parents=True, exist_ok=True)
     cc = os.environ.get("CODEGEN_CC", "gcc-14")
-    emacs = os.environ.get("CODEGEN_EMACS", "emacs")
     bins = {}
     for variant, define in (("gcc-gnu", "-DREPR_GNU"), ("gcc-nl", "-DREPR_NL")):
         exe = OUT / f"{kernel}.{variant}"
         run([cc, "-O2", define, "-o", str(exe), str(SRC / f"{kernel}.c")])
         bins[variant] = exe
-    exe = OUT / f"{kernel}.nl"
-    if exe.exists():
-        exe.unlink()
-    run([emacs, "--batch", "-Q", "-L", str(ROOT / "lisp"), "-L", str(ROOT / "src"),
-         "-l", str(SRC / "compile-kernel.el"), "--eval",
-         f'(codegen-kernel-compile "{SRC / (kernel + ".nl.el")}" "{exe}")'])
-    if not exe.exists():
-        raise RuntimeError(f"{kernel}: NeLisp kernel did not build")
-    bins["nl"] = exe
+    bins["nl"] = build_nl(kernel, OUT / f"{kernel}.nl", ROOT)
+    if with_base and (BASE_TREE / "lisp/nelisp-aot-compiler.el").exists():
+        bins["nl-base"] = build_nl(kernel, OUT / f"{kernel}.nl-base", BASE_TREE)
     return bins
 
 
@@ -63,7 +79,9 @@ def callgrind(exe, n, layout):
     env = dict(os.environ, ABI_LAYOUT_PAD="x" * layout)
     proc = subprocess.run(
         ["valgrind", "--tool=callgrind", f"--callgrind-out-file={stem}.cg", str(exe)],
-        input=f"{n}\n", capture_output=True, text=True, env=env)
+        # Same digit count for N and 0, so the harness's stdin parse costs
+        # the same in both runs and only the kernel's iterations remain.
+        input=f"{n:0{len(str(N))}d} 1\n", capture_output=True, text=True, env=env)
     totals = None
     for line in open(f"{stem}.cg"):
         if line.startswith("totals:"):
@@ -92,6 +110,87 @@ def measure(kernel):
     result["results_agree"] = all(len(v) == 1 for v in codes.values())
     result["exit_codes"] = sorted({c for v in codes.values() for c in v})
     return result
+
+
+def idle_cpu():
+    """An idle CPU in 24-31 (COMMON.md): CODEGEN_CPU, else the least busy."""
+    if os.environ.get("CODEGEN_CPU"):
+        return os.environ["CODEGEN_CPU"]
+    load = {c: 0.0 for c in range(24, 32)}
+    out = subprocess.run(["ps", "-eo", "psr,pcpu"], capture_output=True, text=True).stdout
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) in load:
+            load[int(parts[0])] += float(parts[1])
+    return str(min(load, key=lambda c: (load[c], -c)))
+
+
+def timed(exe, n, r, cpu):
+    """Wall-clock seconds of one pinned run and its exit status."""
+    import time
+    t0 = time.perf_counter()
+    proc = subprocess.run(["taskset", "-c", cpu, str(exe)], input=f"{n:0{len(str(N))}d} {r}\n",
+                          capture_output=True, text=True)
+    return time.perf_counter() - t0, proc.returncode
+
+
+def median(xs):
+    xs = sorted(xs)
+    return xs[len(xs) // 2]
+
+
+def wall(kernel, rounds=7):
+    bins = build(kernel, with_base=True)
+    cpu = idle_cpu()
+    # Repeat count: a gcc -O2 GNU-layout run of at least 0.5 s.
+    r = 100
+    while True:
+        t, _ = timed(bins["gcc-gnu"], N, r, cpu)
+        if t >= 0.5:
+            break
+        r = int(r * max(2.0, 0.6 / max(t, 1e-3)))
+    variants = list(bins)
+    for v in variants:  # warm-up
+        timed(bins[v], N, r, cpu)
+        timed(bins[v], 0, r, cpu)
+    samples = {v: {"n": [], "zero": []} for v in variants}
+    codes = {}
+    for _ in range(rounds):
+        for v in variants:
+            t, rc = timed(bins[v], N, r, cpu)
+            samples[v]["n"].append(t)
+            codes.setdefault("n", set()).add(rc)
+            t, rc = timed(bins[v], 0, r, cpu)
+            samples[v]["zero"].append(t)
+            codes.setdefault("zero", set()).add(rc)
+    result = {"kernel": kernel, "n": N, "repeats": r, "rounds": rounds, "cpu": cpu,
+              "results_agree": all(len(c) == 1 for c in codes.values()), "variants": {}}
+    for v in variants:
+        mn, mz = median(samples[v]["n"]), median(samples[v]["zero"])
+        result["variants"][v] = {
+            "ns_per_iter": (mn - mz) / (N * r) * 1e9,
+            "median_s": mn, "median_zero_s": mz,
+            "samples_s": samples[v]["n"], "samples_zero_s": samples[v]["zero"],
+            "sha256": hashlib.sha256(bins[v].read_bytes()).hexdigest()}
+    return result
+
+
+def cmd_wall(kernel):
+    if kernel not in KERNELS:
+        raise SystemExit(f"unknown kernel {kernel}")
+    r = wall(kernel)
+    (ROOT / "target/codegen/wall").mkdir(parents=True, exist_ok=True)
+    (ROOT / f"target/codegen/wall/{kernel}.json").write_text(json.dumps(r, indent=1))
+    v = r["variants"]
+    base = (f"; NeLisp at 9d5f4a515 {v['nl-base']['ns_per_iter']:.4f}"
+            if "nl-base" in v else "")
+    print(f"{kernel}: nelisp {v['nl']['ns_per_iter']:.4f} ns/iter; gcc -O2 GNU layout "
+          f"{v['gcc-gnu']['ns_per_iter']:.4f}; gcc -O2 NeLisp layout "
+          f"{v['gcc-nl']['ns_per_iter']:.4f}{base}  (median of {r['rounds']}, "
+          f"{r['repeats']} x {N} iterations, cpu {r['cpu']}); results agree: {r['results_agree']}")
+    ok = r["results_agree"] and v["nl"]["ns_per_iter"] <= v["gcc-gnu"]["ns_per_iter"]
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
 
 
 def cmd_kernel(kernel):
@@ -140,6 +239,11 @@ def sha256(path):
 
 
 def cmd_endtoend():
+    """S2.1: target/codegen/endtoend.json (tools/ai/codegen-e2e.py wall).
+
+    Each workload's median wall-clock ratio candidate/base must be below 1.0
+    on the candidate binary the record names (by sha256); the record also
+    carries each ratio to GNU 31.1 for the NOTE."""
     path = ROOT / "target/codegen/endtoend.json"
     if not path.exists():
         print("FAIL: target/codegen/endtoend.json missing")
@@ -149,14 +253,13 @@ def cmd_endtoend():
     if not cand.exists() or sha256(cand) != rec["candidate_sha256"]:
         print("FAIL: candidate binary missing or changed since the measurement")
         return 1
-    bad = [w for w, m in rec["workloads"].items()
-           if not m["candidate_ir"] < m["base_ir"]]
-    if not rec.get("corpus_identical") or bad:
-        print(f"FAIL: regressions {bad} corpus_identical={rec.get('corpus_identical')}")
-        return 1
+    bad = [w for w, m in rec["workloads"].items() if not m["ratio_base"] < 1.0]
     for w, m in rec["workloads"].items():
-        print(f"{w}: {m['base_ir']:.0f} -> {m['candidate_ir']:.0f} Ir "
-              f"({100.0 * (m['candidate_ir'] / m['base_ir'] - 1):+.3f}%)")
+        print(f"{w}: base {m['base']:.4g} -> candidate {m['candidate']:.4g} "
+              f"(x{m['ratio_base']:.3f} base, x{m['ratio_gnu']:.3f} GNU)")
+    if not rec.get("corpus_identical") or bad:
+        print(f"FAIL: not faster {bad} corpus_identical={rec.get('corpus_identical')}")
+        return 1
     print("PASS")
     return 0
 
@@ -183,6 +286,8 @@ def cmd_final():
 def main(argv):
     if len(argv) == 3 and argv[1] == "kernel":
         return cmd_kernel(argv[2])
+    if len(argv) == 3 and argv[1] == "wall":
+        return cmd_wall(argv[2])
     if len(argv) == 2 and argv[1] in ("measure", "plan", "endtoend", "final"):
         return {"measure": cmd_measure, "plan": cmd_plan,
                 "endtoend": cmd_endtoend, "final": cmd_final}[argv[1]]()

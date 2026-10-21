@@ -23,14 +23,17 @@ ck_kernel (uintptr_t v)
 }
 
 static long
-ck_main (long n)
+ck_main (long n, long r)
 {
   long m = 100000;
   struct Lisp_Vector *xv = ck_mmap (8 * m + 64);
   for (long k = 0; k < m; k++)
     xv->contents[k] = ((uintptr_t) (k & 1023) << 2) + 2;
   xv->size = n;
-  return ck_kernel ((uintptr_t) xv + 5);
+  long res = 0;
+  for (long j = 0; j < r; j++)
+    res = ck_kernel ((uintptr_t) xv + 5);
+  return res;
 }
 #else
 #define FIXNUMP(x) (((x) & 3) == 1)
@@ -53,7 +56,7 @@ ck_kernel (uintptr_t v)
 }
 
 static long
-ck_main (long n)
+ck_main (long n, long r)
 {
   long m = 100000;
   unsigned char *v = ck_mmap (64);
@@ -66,6 +69,9 @@ ck_main (long n)
   nv[0] = (uintptr_t) data;
   nv[1] = m;
   nv[2] = n;
-  return ck_kernel ((uintptr_t) v);
+  long res = 0;
+  for (long j = 0; j < r; j++)
+    res = ck_kernel ((uintptr_t) v);
+  return res;
 }
 #endif

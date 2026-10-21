@@ -10,7 +10,7 @@
       (setq i (+ i 1)))
     i))
 
-(defun ck_main (n)
+(defun ck_main (n r)
   (let ((m 100000)
         (s (ck_mmap 64))
         (data (ck_mmap 100064))
@@ -22,4 +22,8 @@
     (ptr-write-u64 s 8 (+ m 64))
     (ptr-write-u64 s 16 data)
     (ptr-write-u64 s 24 n)
-    (ck_kernel s 122)))
+    (let ((res 0) (j 0))
+      (while (< j r)
+        (setq res (ck_kernel s 122))
+        (setq j (+ j 1)))
+      res)))

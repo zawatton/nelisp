@@ -23,7 +23,10 @@ ck_kernel (uintptr_t nw)
 }
 
 static long
-ck_main (long n)
+ck_main (long n, long r)
 {
-  return XFIXNUM (ck_kernel (make_fixnum (n)));
+  uintptr_t res = 0;
+  for (long j = 0; j < r; j++)
+    res = ck_kernel (make_fixnum (n));
+  return XFIXNUM (res);
 }

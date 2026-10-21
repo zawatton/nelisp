@@ -13,5 +13,9 @@
       (setq i (+ i 1)))
     (+ (shl s 2) 1)))
 
-(defun ck_main (n)
-  (sar (ck_kernel (+ (shl n 2) 1)) 2))
+(defun ck_main (n r)
+  (let ((res 0) (j 0))
+    (while (< j r)
+      (setq res (ck_kernel (+ (shl n 2) 1)))
+      (setq j (+ j 1)))
+    (sar res 2)))

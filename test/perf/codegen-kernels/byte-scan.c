@@ -17,7 +17,7 @@ ck_kernel (uintptr_t s, long c)
 }
 
 static long
-ck_main (long n)
+ck_main (long n, long r)
 {
   long m = 100000;
   struct Lisp_String *xs = ck_mmap (64);
@@ -27,7 +27,10 @@ ck_main (long n)
   xs->size = n;
   xs->size_byte = -1;
   xs->data = data;
-  return ck_kernel ((uintptr_t) xs + 4, 122);
+  long res = 0;
+  for (long j = 0; j < r; j++)
+    res = ck_kernel ((uintptr_t) xs + 4, 122);
+  return res;
 }
 #else
 CK_KERNEL long
@@ -42,7 +45,7 @@ ck_kernel (uintptr_t s, long c)
 }
 
 static long
-ck_main (long n)
+ck_main (long n, long r)
 {
   long m = 100000;
   unsigned char *s = ck_mmap (64);
@@ -53,6 +56,9 @@ ck_main (long n)
   *(long *) (s + 8) = m + 64;
   *(unsigned char **) (s + 16) = data;
   *(long *) (s + 24) = n;
-  return ck_kernel ((uintptr_t) s, 122);
+  long res = 0;
+  for (long j = 0; j < r; j++)
+    res = ck_kernel ((uintptr_t) s, 122);
+  return res;
 }
 #endif
