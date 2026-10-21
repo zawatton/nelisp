@@ -39,7 +39,11 @@ fixture() {
 }
 case ${1:-} in
   buffer|printer|syntax|source-dispatch|macroexpand) fixture "$1" C.UTF-8 ;;
-  load) fixture load C.UTF-8; fixture source-dispatch C.UTF-8; fixture macroexpand C.UTF-8 ;;
+  load)
+    for item in load source-dispatch macroexpand dolist setf locals prog1; do
+      fixture "$item" C.UTF-8
+    done
+    ;;
   error) fixture error C; fixture error C.UTF-8 ;;
   shadow)
     fixture shadow C.UTF-8
@@ -55,7 +59,7 @@ case ${1:-} in
     [[ -x $dyn && -x $static ]] || fail "both final builds are required"
     grep -qx 'GATE-COUNT: 11 cases, 0 failures' "$out/final-checks.log"
     grep -qx 'STANDALONE-CHECKS PASS' "$out/standalone-checks.log"
-    python3 - "$out/mcp/result.json" "$out/perf/results-final4-dyn" <<'PY'
+    python3 - "$out/mcp/result.json" "$out/perf/results-final5-dyn" <<'PY'
 import json, sys
 from pathlib import Path
 mcp = json.load(open(sys.argv[1]))

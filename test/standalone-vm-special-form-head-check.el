@@ -52,9 +52,11 @@
 (dotimes (i 6) (vsh-check (list 'ordinary-after i) #'vsh-ordinary-caller 73))
 
 (defvar vsh-short-effects 0)
-(defun vsh-short-prog2 () (prog2 (setq vsh-short-effects (1+ vsh-short-effects))))
+;; GNU's prog2 macro requires two arguments; expansion must fail before effects.
+(defun vsh-short-prog2 ()
+  (macroexpand '(prog2 (setq vsh-short-effects (1+ vsh-short-effects)))))
 (dotimes (i 6)
-  (vsh-check (list 'short-prog2 i) #'vsh-short-prog2 nil)
+  (vsh-check (list 'short-prog2 i) #'vsh-short-prog2 '(error wrong-number-of-arguments))
   (vsh-check (list 'short-prog2-effects i) (lambda () vsh-short-effects) 0))
 
 (princ (format "VM-SPECIAL-HEAD %s %d/%d cases\n"

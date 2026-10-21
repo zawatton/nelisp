@@ -43680,7 +43680,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
       (let* ((item (nl_cons_car_word names)) (tag (nl_val_tag item)))
         (seq
          (if (= tag 8) (nl_n4_local_shallow_word item holder shadow env emit)
-           (if (and (= emit 1) (= tag 7)) (nl_n4_local_pair_word item holder) 0))
+           (if (and (/= emit 0) (= tag 7)) (nl_n4_local_pair_word item holder) 0))
          (nl_n4_local_history_word (nl_cons_cdr_word names) holder shadow env emit))) 0))
 
 (defun nl_n4_locals_w (env index _pad)
@@ -43690,9 +43690,19 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (end (if (< (+ index 1) (ptr-read-u64 state 0))
                   (ptr-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
          (backing (nl_record_slot_word (+ frame 64) 0))
+         (lexical-start (- end 1))
          (mark (nl_root_mark env)) (result (nl_root_reserve env))
          (shadow (nl_root_reserve env)) (i (- depth 1)))
     (seq
+     ;; GNU eval.c:4305-4316 exposes the whole lexical environment when a
+     ;; binding of internal_interpreter_environment falls in this activation.
+     ;; Its older lexical frames stop at the current function scope boundary.
+     (while (and (>= lexical-start 0)
+                 (= (nelisp_frame_scope_boundary_p
+                      (nl_vector_slot_word backing lexical-start)) 0))
+       (setq lexical-start (- lexical-start 1)))
+     (setq lexical-start (if (< lexical-start 0) 0
+                           (if (< lexical-start start) lexical-start start)))
      (wf_word_store_out result (nelisp_cons_construct_w 3 3 0))
      (wf_word_store_out shadow (nelisp_cons_construct_w 3 3 0))
      ;; Observe younger shallow bindings without including them in the result.
@@ -43700,7 +43710,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
        (seq (nl_n4_local_history_word
              (nl_record_slot_word (nl_vector_slot_word backing i) 1) result shadow env 0)
             (setq i (- i 1))))
-     (while (>= i start)
+     (while (>= i lexical-start)
        (let* ((local (nl_vector_slot_word backing i))
               (table (nl_record_slot_word local 0)))
          (seq
@@ -43714,7 +43724,10 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   (seq (nl_n4_local_bucket_word (nl_vector_slot_word buckets j) result)
                        (setq j (+ j 1)))))
             (nl_n4_local_bucket_word table result))
-          (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env 1)))
+          ;; Older lexical pairs belong to the environment; older shallow
+          ;; dynamic bindings remain outside the selected activation.
+          (nl_n4_local_history_word (nl_record_slot_word local 1) result shadow env
+                                    (if (>= i start) 1 2))))
        (setq i (- i 1)))
      (let* ((word (nl_cons_car_word result)))
        (seq (nl_root_release env mark) word)))))

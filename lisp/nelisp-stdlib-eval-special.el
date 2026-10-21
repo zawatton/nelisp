@@ -288,36 +288,24 @@ slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
 
 ;;;; --- iteration --------------------------------------------------------
 
+;; GNU subr.el:390-407; hand-built before the backquote provider.
 (defmacro dolist (spec &rest body)
-  "(dolist (VAR LIST [RESULT]) BODY...) — iterate VAR over LIST.
-Bindings:  --nl-dolist-list = LIST cursor."
-  (let* ((var (car spec))
-         (list-form (car (cdr spec)))
-         (result-form (car (cdr (cdr spec)))))
-    ;; (let* ((--nl-dolist-list LIST-FORM) (VAR nil))
-    ;;   (while --nl-dolist-list
-    ;;     (setq VAR (car --nl-dolist-list))
-    ;;     BODY...
-    ;;     (setq --nl-dolist-list (cdr --nl-dolist-list)))
-    ;;   RESULT-FORM)
-    (cons 'let*
-          (cons (cons (cons '--nl-dolist-list (cons list-form nil))
-                      (cons (cons var (cons nil nil)) nil))
-                (cons (cons 'while
-                            (cons '--nl-dolist-list
-                                  (cons (cons 'setq
-                                              (cons var
-                                                    (cons (cons 'car
-                                                                (cons '--nl-dolist-list nil))
-                                                          nil)))
-                                        (append body
-                                                (cons (cons 'setq
-                                                            (cons '--nl-dolist-list
-                                                                  (cons (cons 'cdr
-                                                                              (cons '--nl-dolist-list nil))
-                                                                        nil)))
-                                                      nil)))))
-                      (cons result-form nil))))))
+  "Evaluate BODY with a fresh VAR binding for each element of LIST.
+Evaluate RESULT outside VAR's iteration binding, as GNU Emacs 31.1 does."
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (unless (<= 2 (length spec) 3)
+    (signal 'wrong-number-of-arguments (list '(2 . 3) (length spec))))
+  (let ((tail (make-symbol "tail")))
+    (cons 'let
+          (cons (list (list tail (nth 1 spec)))
+                (cons
+                 (list 'while tail
+                       (cons 'let
+                             (cons (list (list (car spec) (list 'car tail)))
+                                   (append body
+                                           (list (list 'setq tail (list 'cdr tail)))))))
+                 (cdr (cdr spec)))))))
 
 (defmacro dotimes (spec &rest body)
   "(dotimes (VAR COUNT [RESULT]) BODY...) — iterate VAR from 0 to COUNT-1."

@@ -821,38 +821,24 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
     (list 'prog1 (list 'car place)
 	  (list 'setf place (list 'cdr place)))))
 
+;; GNU subr.el:390-407; hand-built before the backquote provider.
 (defmacro dolist (spec &rest body)
-  "(dolist (VAR LIST [RESULT]) BODY...) — iterate VAR over LIST.\nBindings:  --nl-dolist-list = LIST cursor."
-  (let*
-      ((var (car spec)) (list-form (car (cdr spec)))
-       (result-form (car (cdr (cdr spec)))))
-    (cons 'let*
-	  (cons
-	   (cons (cons '--nl-dolist-list (cons list-form nil))
-		 (cons (cons var (cons nil nil)) nil))
-	   (cons
-	    (cons 'while
-		  (cons '--nl-dolist-list
-			(cons
-			 (cons 'setq
-			       (cons var
-				     (cons
-				      (cons 'car
-					    (cons '--nl-dolist-list
-						  nil))
-				      nil)))
-			 (append body
-				 (cons
-				  (cons 'setq
-					(cons '--nl-dolist-list
-					      (cons
-					       (cons 'cdr
-						     (cons
-						      '--nl-dolist-list
-						      nil))
-					       nil)))
-				  nil)))))
-	    (cons result-form nil))))))
+  "Evaluate BODY with a fresh VAR binding for each element of LIST.
+Evaluate RESULT outside VAR's iteration binding, as GNU Emacs 31.1 does."
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (unless (<= 2 (length spec) 3)
+    (signal 'wrong-number-of-arguments (list '(2 . 3) (length spec))))
+  (let ((tail (make-symbol "tail")))
+    (cons 'let
+          (cons (list (list tail (nth 1 spec)))
+                (cons
+                 (list 'while tail
+                       (cons 'let
+                             (cons (list (list (car spec) (list 'car tail)))
+                                   (append body
+                                           (list (list 'setq tail (list 'cdr tail)))))))
+                 (cdr (cdr spec)))))))
 
 (defmacro dotimes (spec &rest body)
   "(dotimes (VAR COUNT [RESULT]) BODY...) - iterate VAR from 0 below COUNT.
@@ -11048,7 +11034,13 @@ other gv-using libraries load/run on the bare reader."
    ;; GNU gv.el (loaded on demand, e.g. by nadvice's `add-function') owns
    ;; every place this table does not know: `gv-get' hands its setter a
    ;; copyable expression for PLACE, exactly as GNU's own `setf' does.
-   ((and (consp place) (fboundp 'gv-get))
+   ((consp place)
+    ;; GNU setf autoloads gv even when an accessor is not defined yet.
+    ;; Keep the existing struct-place adapter, as nadvice's substrate does.
+    (unless (featurep 'gv)
+      (let ((nelisp-gv-original-setf (symbol-function 'setf)))
+        (unwind-protect (require 'gv)
+          (fset 'setf nelisp-gv-original-setf))))
     (gv-get place (lambda (_getter setter) (funcall setter val))))
    (t
     (signal 'error
@@ -27755,7 +27747,13 @@ template. When, unless and prog2 are lowered directly by the VM compiler.")
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
-  (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
+  (let ((macroexpand-all-environment
+         ;; `cl-labels' expands the compiler's local helpers before COMP
+         ;; reaches its explicit macroexpand-all call.  Protect the same
+         ;; reader heads there so a user macro cannot rewrite EMIT itself.
+         (append nelisp--fx-native-macro-environment
+                 macroexpand-all-environment))
+        (out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
         (depth 0) (maxdepth 0) (lexlets nil)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
@@ -27822,6 +27820,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (jump 8 end) (place skip)
                    (if (eq op 'unless) (body (cddr x)) (emit 1 nil))
                    (place end)))
+                ;; GNU eval.c:458-468 keeps FIRST and discards later values.
+                ((eq op 'prog1)
+                 (if (null (cdr x)) (unsupported x)
+                   (comp (cadr x))
+                   (dolist (a (cddr x)) (comp a) (emit 11))))
                 ((eq op 'prog2)
                  (if (null (cddr x)) (emit 1 nil)
                    (comp (cadr x)) (emit 11) (comp (nth 2 x))

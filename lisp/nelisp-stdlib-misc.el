@@ -2546,6 +2546,13 @@ plain variable (it goes through `setq')."
         (nelisp--setf-1 (list (if (eq first ?a) 'car 'cdr)
                               (list inner-accessor arg))
                         val)))
+     ;; GNU gv.el:108-120 supports an accessor whose setter is defined later.
+     ((consp place)
+      (unless (featurep 'gv)
+        (let ((nelisp-gv-original-setf (symbol-function 'setf)))
+          (unwind-protect (require 'gv)
+            (fset 'setf nelisp-gv-original-setf))))
+      (gv-get place (lambda (_getter setter) (funcall setter val))))
      (t
       (signal 'error
               (list "setf: unsupported place"
