@@ -873,6 +873,10 @@ the heap and all mark decisions remain native production code."
                   nl_gc_symname_mark_one nl_gc_block_elem_cap nl_gc_mark_vec_slots
                   nl_gc_typed_probe nl_gc_typed_grow nl_gc_typed_add nl_gc_typed_slot
                   nl_gc_mark_char_table_word
+                  ;; Doc 216 S4 WORD marking: tagged vectorlike edges.
+                  nl_val_tag nl_gc_mark_word nl_gc_mark_legacy_slot
+                  nl_gc_mark_vectorlike nl_gc_typed_vectorlike
+                  nl_gc_mark_inline_words nl_gc_mark_char_table_children
                   nl_gc_mark_cons nl_gc_mark_slot nl_gc_conserv_state_clear
                   nl_gc_mark_char_table_slots nl_gc_mark_char_table_box
                   nl_gc_mark_bool_vector_box
