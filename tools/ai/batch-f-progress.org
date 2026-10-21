@@ -1,0 +1,124 @@
+#+TITLE: Batch F: batch E plus GNU semantics, the casefold domain proof, the native compiler and the buffer bridge
+
+# Objective (coordinator, 2026-10-22): batch F = batch E (1aa530d09, landed)
+# + eval/gnu-semantics-20261022 (a00f45cdf) + 2c43a09cb (D''' case-fold
+# domain proof, cherry-picked with -x) + eval/codegen-20261021 (5bca59688)
+# + the buffer-bridge lane (eval/f-buffer-bridge-20261022) + the restored
+# (provide 'nelisp-elc-reader) as the last source commit.  Worktree
+# target/agent-worktrees/integ-20261022f, branch eval/integ-20261022f;
+# nothing is pushed.  Checks: tools/ai/batch-f-check.sh, on
+# target/integ/nelisp-{dyn,static} (BATCH_F_DYN / BATCH_F_STATIC override),
+# built from a git-archive snapshot of HEAD (target/integ/build.sh).
+# GNU 31.1 (/usr/local/bin/emacs) pins every fixture.  Paired timing runs
+# against batch E's own build (tree of 1aa530d09) on CPU 11.
+#
+# 2026-10-22: 38 defined criteria; S5 is the library owner's census and is
+# pending by design.  The bridge lane's hash is pinned in batch-f-check.sh
+# (BRIDGE_REV) when the coordinator hands it over; until then S1.4 and
+# S2.10 fail.
+
+* S1 Merge
+** S1.1 eval/gnu-semantics-20261022 (a00f45cdf) is merged
+cmd: bash tools/ai/batch-f-check.sh merged gnu-semantics
+** S1.2 2c43a09cb (casefold domain proof) is cherry-picked with -x, and E's single canon shortcut stays the only one
+cmd: bash tools/ai/batch-f-check.sh merged casefold
+** S1.3 eval/codegen-20261021 (5bca59688) is merged and E's asm fixups (784f9c3dd) are kept
+cmd: bash tools/ai/batch-f-check.sh merged codegen
+** S1.4 The buffer-bridge lane (eval/f-buffer-bridge-20261022) is merged
+cmd: bash tools/ai/batch-f-check.sh merged bridge
+** S1.5 (provide 'nelisp-elc-reader) is restored, in the last source commit
+cmd: bash tools/ai/batch-f-check.sh merged provide
+** S1.6 621386274's Unicode integrity test passes on the merged generator payload
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh integrity
+** S1.7 End to end: the merged tree has no conflict markers, every changed Elisp file balances, and both linkages built from it boot
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh hygiene && bash tools/ai/batch-f-check.sh boot
+
+* S2 Fixtures against GNU 31.1
+** S2.1 save-current-buffer restores live buffers on normal and non-local exit (gnu-semantics buffer)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh gnu buffer
+** S2.2 error formats through format-message under C and C.UTF-8 (gnu-semantics error)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh gnu error
+** S2.3 The bound internal--text-quoting-flag adds no compatibility shadow (gnu-semantics shadow)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh gnu shadow
+** S2.4 Special-variable declarations and bindings match GNU (gnu-semantics variables)
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh gnu variables
+** S2.5 Source load expands eagerly and aborts with GNU's error on a failure (gnu-semantics load: seven fixtures)
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh gnu load
+** S2.6 Bool-vector and floating-point printing match GNU (gnu-semantics printer: 887 cases)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh gnu printer
+** S2.7 skip-syntax-forward, skip-syntax-backward and backward-prefix-chars match GNU (gnu-semantics syntax)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh gnu syntax
+** S2.8 Fast regexp plans survive any case table that folds the search's domain as built in: GNU oracle of 522 rows, both linkages
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh casefold
+** S2.9 Batch E's GNU fixtures and cold-load check still pass on the merged build
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh e-fixtures
+** S2.10 Batch E's interpreted-closure fixture and syntax-rt fixtures (47 semantics rows, char-table pin) still pass
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh closures && bash tools/ai/batch-f-check.sh syntax-rt
+** S2.11 Simulated library: bytecode and interpreted save-current-buffer, with-current-buffer and set-buffer go through the library's function cells (normal exit, throw, signal)
+#+NOTE: The bridge lane's simulated-library test, extended by this batch to the interpreter's save-current-buffer (which came from gnu-semantics): with set-buffer fset to a recording closure, the interpreter's restore must call it exactly as the bytecode path does, from one shared helper.  Red until the lane delivers.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh bridge-test
+** S2.12 End to end: every fixture above passes on both linkages in one run
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh all-fixtures
+
+* S3 Native compiler (codegen)
+** S3.1 Codegen's ERT suites (compiler, S5 lowering, alignment, artifact, static linker) pass on the merged tree
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh codegen-ert
+** S3.2 Linked alignment: every function entry and every hot backward loop target of the merged dynamic build is 16-byte aligned (S5.1)
+#+TIMEOUT: 120
+cmd: bash tools/ai/batch-f-check.sh codegen-align
+** S3.3 No native runtime function compiles a free symbol as a dynamic lookup, both linkages
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh census
+** S3.4 Codegen's validate.sh on the dynamic build: standalone checks, fx corpus, fx spike and the AOT differential, 0 failing groups
+cmd: bash tools/ai/batch-f-check.sh log validate
+** S3.5 End to end: the AOT differential (at least 160 programs, the Doc 229 stages included) answers as the interpreter on both linkages
+cmd: bash tools/ai/batch-f-check.sh log aot
+
+* S4 Pipeline
+** S4.1 Both linkages build from HEAD's tree (git-archive snapshot)
+cmd: bash tools/ai/batch-f-check.sh built
+** S4.2 COMMON: 11 groups, 0 failures (maphash-sparse is the known red)
+cmd: bash tools/ai/batch-f-check.sh log common
+** S4.3 test/perf/standalone-checks.sh passes on the dynamic build, the casefold-domain check included
+cmd: bash tools/ai/batch-f-check.sh log standalone
+** S4.4 MCP smoke: 40 tools
+cmd: bash tools/ai/batch-f-check.sh log mcp
+** S4.5 Crash sweep: no SIGSEGV over environment padding 0..191 and 0..2048 step 32, both linkages
+cmd: bash tools/ai/batch-f-check.sh log sweep
+** S4.6 casetab GNU fixtures: API 43 and behaviour 47 rows on both linkages
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh casetab
+** S4.7 fileio-2 passes on both linkages with notes-65's char-table-flip library bundle
+cmd: bash tools/ai/batch-f-check.sh log fileio
+** S4.8 ns-inventory: no unpinned collision beyond the parents' 1290
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh ns
+** S4.9 Windows smoke (gc-port's win-smoke.sh, from a snapshot of HEAD) passes
+cmd: bash tools/ai/batch-f-check.sh log win
+** S4.10 Paired timing against 1aa530d09 on CPU 11 (median of 7 alternating rounds) is recorded, and every row above 1.03 has a cause
+cmd: bash tools/ai/batch-f-check.sh log timing
+** S4.11 End to end: every pipeline result is newer than the binaries and passes
+cmd: bash tools/ai/batch-f-check.sh pipeline
+
+* S5 Library census (the library owner's, on the binary this batch hands over)
+** S5.1 notes-65's ccore census on a library image built on batch F
+pending
+** S5.2 The library's set-buffer and current-buffer function cells own the VM's buffer opcodes in the census image
+pending
+** S5.3 End to end: the batch F library image passes notes-65's census gates
+pending
