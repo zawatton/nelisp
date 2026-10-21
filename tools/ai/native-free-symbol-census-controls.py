@@ -17,6 +17,13 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = b""";;; Census controls. -*- lexical-binding: t; -*-
 (require 'nelisp-aot-compiler)
 (dolist (mode '(free bound))
+  ;; The compiler now rejects names unbound on the build host, as GNU
+  ;; bytecomp.el's free-variable check does.  A name the host binds but the
+  ;; native runtime never binds still takes the hidden-slot lookup, which is
+  ;; the defect this post-link census must catch.  Give it a host global value
+  ;; (not special) for the free fixture only; the bound fixture is unchanged.
+  (if (eq mode 'free) (set 'wh_census_true_unbound 0)
+    (makunbound 'wh_census_true_unbound))
   (nelisp-aot-compile-to-object
    `(seq (defun wh_census_fixture ()
            ,(if (eq mode 'free) 'wh_census_true_unbound
