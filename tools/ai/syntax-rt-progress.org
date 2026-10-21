@@ -50,3 +50,17 @@ cmd: python3 tools/ai/syntax-rt-check.py speed string-match
 ** S2.1 Real workloads gain in wall-clock against the base, with no regression
 The workloads are the anvil MCP smoke (40 tools; initialize plus memory-search latency) and the regex6000 and files workloads. Verification: COMMON.md 11 groups with 0 failures, standalone-checks, dynamic and static.
 cmd: python3 tools/ai/syntax-rt-check.py final
+
+* S3 Char-table ownership
+# Added 2026-10-21 by the coordinator (user decision): the runtime owns
+# GNU chartab.c with its sub-char-table structure -- make-char-table,
+# char-table-p, aref/aset on char-tables, char-table-range,
+# set-char-table-range, map-char-table, extra slots, parent, subtype and
+# optimize-char-table -- and the library (notes-65) defers the whole
+# family to it.  notes-65's census: the library image owns char-tables
+# today, prints a runtime char-table as #<unprintable> and its
+# char-table-p rejects one (casetab's batch D fails ccore 372/374).
+** S3.1 The runtime char-table family matches a GNU 31.1 oracle fixture on dynamic and static
+cmd: python3 tools/ai/syntax-rt-check.py chartab
+** S3.2 On a library image whose char-table family defers to the runtime, notes-65's ccore stays 374/374 and the char-table probes match GNU
+pending
