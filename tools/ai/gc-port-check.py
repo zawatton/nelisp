@@ -162,6 +162,9 @@ def cmd_conses():
         if not binary.exists():
             problems.append(f'missing binary {binary}')
             continue
+        cold = Path(str(binary.resolve()) + '.cold')
+        if not cold.exists() or cold.stat().st_nlink != 1:
+            problems.append(f'{binary.name}: no single-link cold image companion')
         problems += cons_probe_problems(binary)
         for test in ('test/standalone-gc-pressure-check.el',
                      'test/standalone-gc-conservative-cost-check.el'):
@@ -199,6 +202,8 @@ def speed_means(kind, binary):
                 return None, f'{path.relative_to(ROOT)} profiles another binary'
             if not meta.get('output_ok') or meta.get('returncode') != 0:
                 return None, f'{path.relative_to(ROOT)} failed'
+            if engine == 'nelisp' and not meta.get('image_loaded'):
+                return None, f'{path.relative_to(ROOT)} booted the prelude, not the cold image'
             values.append(meta['gc_alloc_ir'])
         means[engine] = sum(values) / len(values)
     return means, None
@@ -224,6 +229,86 @@ def cmd_speed(kind):
     return 0
 
 
+# S1.2: each type's GNU block structure, as source evidence.  Floats,
+# symbols and string compaction are blocked by word-heap layers (Doc 223);
+# vectors are the next increment.
+TYPE_EVIDENCE = {
+    'cons blocks (cons_block, sweep_conses)': ('nl_cons_alloc', 'nl_sweep_conses'),
+    'float blocks (float_block, sweep_floats)': ('nl_float_alloc', 'nl_sweep_floats'),
+    'symbol blocks (symbol_block, sweep_symbols)': ('nl_symbol_alloc', 'nl_sweep_symbols'),
+    'string headers and sdata (sweep_strings, compact_small_strings)':
+        ('nl_string_alloc', 'nl_compact_small_strings'),
+    'vector blocks and large vectors (sweep_vectors)': ('nl_vector_alloc', 'nl_sweep_vectors'),
+    'persistent block metadata (mem_find, live_*_p)': ('nl_typed_find', 'nl_live_cons_holding'),
+}
+
+
+def all_types_missing(src):
+    return [name for name, defs in TYPE_EVIDENCE.items()
+            if not all(f'(defun {d} ' in src for d in defs)]
+
+
+def cmd_all_types():
+    src = (ROOT / 'scripts/nelisp-standalone-build.el').read_text()
+    if not all_types_missing(''):
+        return fail('all-types: negative control passed')
+    missing = all_types_missing(src)
+    if missing:
+        return fail('all-types: not ported: ' + '; '.join(missing))
+    print('PASS all-types: every GNU block type has its allocator and sweep')
+    return 0
+
+
+def cmd_company():
+    import json
+    path = ROOT / 'target/gc-port/company/summary.json'
+    if not path.exists():
+        return fail('company: the company profile on this branch has not been measured '
+                    '(needs the nelisp-emacs-lib library image, tools/c-core-image.sh)')
+    meta = json.loads(path.read_text())
+    share = meta['gc_alloc_ir'] / meta['total_ir']
+    line = f'company: GC+alloc {share*100:.2f}% of {meta["total_ir"]} Ir (bar 15%, Doc 220 42.79%)'
+    if share > 0.15:
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
+def final_problems(out, dyn, st):
+    import hashlib
+    import json
+    problems = []
+    shas = (out / 'binaries.sha256').read_text() if (out / 'binaries.sha256').exists() else ''
+    for b in (dyn, st):
+        if not b.exists() or hashlib.sha256(b.read_bytes()).hexdigest() not in shas:
+            problems.append(f'{b.name} is not the verified binary')
+    log = (out / 'checks.log').read_text() if (out / 'checks.log').exists() else ''
+    if 'GATE-COUNT: 11 cases, 0 failures' not in log:
+        problems.append('checks.sh did not report 11 cases with 0 failures')
+    if 'STANDALONE-CHECKS PASS' not in log and 'STANDALONE-CHECK FAIL' in log:
+        problems.append('standalone-checks failed')
+    mcp = out / 'mcp/mcp-result.json'
+    if not mcp.exists() or json.loads(mcp.read_text()).get('tool_count') != 40:
+        problems.append('MCP smoke did not list 40 tools')
+    wh = (out / 'word-heap.log').read_text() if (out / 'word-heap.log').exists() else ''
+    if 'WORD-HEAP-BINARY-CHECKS PASS' not in wh:
+        problems.append('word-heap binary criteria did not pass')
+    return problems
+
+
+def cmd_final():
+    out = ROOT / 'target/gc-port' / ('final-' + os.environ.get('GC_PORT_FINAL_TAG', 'final'))
+    dyn, st = binaries()
+    if not final_problems(ROOT / 'target/gc-port/no-such-final', dyn, st):
+        return fail('final: negative control passed')
+    problems = final_problems(out, dyn, st)
+    if problems:
+        return fail('final: ' + '; '.join(problems))
+    print('PASS final: checks.sh 11 groups 0 failures, standalone-checks, MCP 40 tools '
+          'and the word-heap binary criteria on the verified binaries')
+    return 0
+
+
 def not_ready(name):
     return fail(f'{name}: implementation or acceptance evidence outstanding')
 
@@ -237,8 +322,12 @@ def main(argv):
         return cmd_portplan()
     if cmd == 'conses':
         return cmd_conses()
-    if cmd in ('all-types', 'company', 'final'):
-        return not_ready(cmd)
+    if cmd == 'all-types':
+        return cmd_all_types()
+    if cmd == 'company':
+        return cmd_company()
+    if cmd == 'final':
+        return cmd_final()
     if cmd == 'speed' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
         return cmd_speed(argv[1])
     print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|company|final')

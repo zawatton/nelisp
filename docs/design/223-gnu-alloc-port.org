@@ -140,6 +140,30 @@ and =sweep_vectors=' coalescing; larger backings stay headered general blocks
 - Image conversion: variable sizes need a per-block granule-to-image-offset
   table so that =nl_mc_logoff= stays O(1) for interior field addresses.
 
+Integration points found while porting conses, all of which assume that
+every heap object is a headered block inside the arena chunks:
+
+- =nl_gc_block_elem_cap= reads =BLOCK_TOTAL= at owner-8 to bound
+  =nl_gc_mark_inline_words=; a vector-block backing has no such header and
+  needs its size from the kind/length word.
+- =nl_gc_in_arena= validates pointers in marking, the conservative resolver
+  and runtime helpers; a block outside the chunks fails it.
+- The census, =nl_fa_slot= and =nl_fa_vectorlike_fields= dedup tag-110
+  backings through =nl_gc_mark_block=.
+
+** Next increment: image objects as pdumper objects
+
+After the cons port, cons churn at layout 0 spends 1567M Ir in GC and
+allocation; =nl_gc_sweep_merge_chunk= (359M), =nl_gc_index_prepare= (300M)
+and =nl_gc_coalesce_chunks= (92M) walk every header of the cold image
+(about 300 MB of arena, 45 MB of it live) on each collection. GNU never sweeps its dump and keeps dump marks in
+a separate bitmap (pdumper.c:5247-5272) cleared at the end of a collection.
+The port needs a boot mark bitmap, a persistent boot start bitmap built at
+load, and sweep/index walks that visit only non-boot ranges. The boot range
+is not one skippable span: the image's free blocks (most of its bytes) are
+reused by later allocations, so those hole ranges, from the hole map, must
+still be swept and indexed block by block.
+
 * Expected effect and the remaining gap (S2)
 
 Doc 220's churn profiles (base 9d5f4a515, four-layout means, millions of

@@ -166,7 +166,11 @@ def summarize(outdir):
     for (owner, source, line), ir in costs.items():
         phase[classify(meta['engine'], owner, source, line)] += ir
         owners[owner] += ir
-    meta.update(total_ir=total, phase_ir=dict(phase),
+    # The cold image restore path runs nl_boot_hole_map_build exactly once;
+    # a NeLisp profile without it booted the prelude instead (for example a
+    # companion .cold with a second hard link, which the loader refuses).
+    image = meta['engine'] != 'nelisp' or owners.get('nl_boot_hole_map_build', 0) > 0
+    meta.update(total_ir=total, phase_ir=dict(phase), image_loaded=image,
                 gc_alloc_ir=sum(v for k, v in phase.items() if k != 'other'),
                 top_owners=[[o, v] for o, v in owners.most_common(12)],
                 calls={n: calls[n] for n in ('nl_gc_object_start_p', 'nl_alloc_bytes',
