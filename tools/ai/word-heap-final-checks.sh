@@ -2,6 +2,8 @@
 # word-heap-final-checks.sh DYN STATIC TAG : COMMON's eleven final groups.
 # The census is a preflight; the existing runtime groups stay unchanged.
 cd "$(dirname "$0")/../.." || exit 2
+export TMPDIR="$PWD/target/tmp"
+mkdir -p "$TMPDIR" || exit 2
 [ "$#" = 3 ] || { echo "usage: $0 DYN STATIC TAG" >&2; exit 2; }
 dyn=$(realpath "$1") || exit 2
 st=$(realpath "$2") || exit 2
