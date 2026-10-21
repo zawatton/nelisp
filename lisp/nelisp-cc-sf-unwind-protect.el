@@ -216,14 +216,14 @@
       (if (= w 0)
           (nl_sf_uw_after_body 1 args env vslot)
         (nl_sf_uw_after_body
-         (nl_abi_word_to_rc (nelisp_cons_construct_w w 3 0) vslot)
+         (seq (ptr-write-u64 vslot 0 w) 0)   ; Doc 216 S6.2: a WORD root
          args env vslot)))
 
     (defun nl_sf_uw_got_car_w (car args env vslot)
       (nl_sf_uw_stored (extern-call nelisp_eval_call_w car env 0) args env vslot))
 
     (defun nl_sf_uw_value_w (_pad vslot)
-      (nl_cons_car_word vslot))
+      (heap-read-u64 vslot 0))
 
     (defun nl_sf_uw_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
@@ -239,7 +239,7 @@
        env mark vslot))
 
     (defun nl_sf_uw_marked_w (args env _pad mark)
-      (nl_sf_uw_slot_w args env mark (nl_root_reserve env)))
+      (nl_sf_uw_slot_w args env mark (nl_root_word env)))
 
     ;; `(unwind-protect)' with no body form fails the form.
     (defun nl_sf_unwind_protect_w (args env _pad _pad1)

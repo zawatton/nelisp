@@ -4460,6 +4460,14 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
 
     ;; A container slot WORD as the value record-slot-ref / vector-ref
     ;; produced: immediates as they are, a heap value cloned into a fresh box.
+    ;; Doc 216 S6.2: one precise WORD root (nil) for the caller's dynamic
+    ;; extent, released with the caller's `nl_root_release' mark -- the
+    ;; WORD frame of `nl_root_frame', as GNU keeps a Lisp_Object on the
+    ;; stack.  On a full root stack, unrooted scratch like
+    ;; `nl_root_reserve''s legacy fallback.
+    (defun nl_root_word (env)
+      (let* ((s (nl_root_frame env 1)))
+        (if (= s 0) (alloc-bytes 8 8) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
     ;; cons view without metadata becomes its direct WORD (payload | 2);
     ;; anything else is returned unchanged.  Inlinable (no let).
@@ -4471,6 +4479,16 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
               w))
         w))
+    ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
+    ;; for nil, t, a fixnum and a cons (a list).  Any other view comes
+    ;; back as V; callers use this only where V holds a list or nil.
+    (defun nl_word_canon_view (v)
+      (if (/= (logand v 7) 0) v
+        (if (< v 4096) v
+          (if (= (heap-read-u8 v 0) 0) 3
+            (if (= (heap-read-u8 v 0) 1) 7
+              (if (= (heap-read-u8 v 0) 2) (+ (* (heap-read-u64 v 8) 4) 1)
+                (nl_word_canon v)))))))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
@@ -31787,18 +31805,19 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
   '((defun nl_sf_prog_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
 
+    ;; Doc 216 S6.2: HOLDER is a WORD root slot holding prog1's value.
     (defun nl_sf_prog_body_w (body env holder _pad)
-  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (nl_cons_car_word holder)))
+  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (heap-read-u64 holder 0)))
     (defun nl_sf_prog1_slot_w (args env mark vslot)
   (let* ((word (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
     (nl_sf_prog_release_w
      (if (= word 0) 0
-       (let* ((holder (nelisp_cons_construct_w word 3 0)))
-         (seq (wf_word_store_out vslot holder)
-              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0))))
+       (seq (ptr-write-u64 vslot 0 word)
+            (nl_sf_prog_body_w (nl_cons_cdr_word args) env vslot 0)))
      env mark 0)))
+    ;; Like GNU's Fprog1, which keeps VAL on the C stack: one WORD frame.
     (defun nl_sf_prog1_marked_w (args env mark _pad)
-      (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
+      (nl_sf_prog1_slot_w args env mark (nl_root_word env))))
   "prog1's rooted value slot (Doc 215 R2).")
 
 (defun nelisp-standalone--sf-word-adapter (name)
@@ -45700,7 +45719,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (nl_sf_lambda_captured_w
                   (nl_env_capture_lexical_filtered_w env args 0 0) args roots)
                (let* ((sym (alloc-bytes 32 8)) (buf (alloc-bytes 8 1)))
-                 (seq (nl_capture_root_set_word roots 2 sym)
+                 ;; ROOTS is nl_sf_lambda_w's WORD frame (Doc 216 S6.2).
+                 (seq (ptr-write-u64 roots 16 sym)
                       (ptr-write-u64 buf 0 107083775959404)
                       (nl_alloc_symbol buf 6 sym)
                       (nelisp_cons_construct_w sym args 0))))
