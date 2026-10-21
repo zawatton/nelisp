@@ -11848,7 +11848,10 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     (defun bf_garbage_collect_w (func args env _pad)
       (let ((argc (m5_list_len args 0)))
         (if (= argc 0)
-            (if (= (nl_sb_worker_p env) 1)
+            ;; A migrated main context needs private bindings but still owns
+            ;; the ordinary public GC snapshot. Only real registry workers
+            ;; use the bounded raw diagnostics result.
+            (if (/= (nl_thread_registry_find env) 0)
                 (seq (nl_gc_collect_from_recorded_roots 0) (bf_arena_stats_w 0))
               (bf_garbage_collect_snapshot_w env 0))
           (nl_abi_fail (bf_wrong_number_of_args func argc) 0))))
@@ -16306,8 +16309,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((carw (nl_cons_car_word event)))
         (if (= carw 0) 0
           (if (= (logand carw 1) 1) 0
-            (if (= (heap-read-u64 carw 0) 4) 1 0)))))
+            (if (or (= (heap-read-u64 carw 0) 4)
+                    (= (heap-read-u64 carw 0) 11)) 1 0)))))
     (defun wf_bytecode_w_lean_unbind (env event scratch)
+      ;; A migrated event's private Cell ceases to be visible when the caller
+      ;; removes this event from UNWINDS. It must never restore the mirror.
+      (if (= (nl_val_tag (nl_cons_car_word event)) 11) 0
       (let* ((name (nl_cons_car_word event))
              (saved (nl_cons_cdr_word event))
              (entry (nelisp_mirror_lookup_entry (+ env 0) name)))
@@ -16315,7 +16322,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= entry 0)
                  (nl_sb_set env name (wf_bytecode_w_view saved scratch))
                (ptr-write-u64 (+ (nl_word_payload entry) 16) 0 saved))
-             0)))
+             0))))
     (defun wf_bytecode_w_bind_formals (env formals args argc unwinds nil-unwinds tmp wtmp)
       ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
       ;; at ARGS (arity already checked) as events of this activation.
@@ -25002,8 +25009,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Private legacy evaluator context, built before publication to clone.
     (defun nl_make_thread_env (penv)
       ;; This path evaluates arbitrary Lisp after clone. Its inherited cells
-      ;; may be shared, but its frame stack and native state must be private.
-      (let* ((e (nl_os_alloc_chunk 184)) (i 0))
+      ;; may be shared, but its frames, roots and native state must be private.
+      ;; Match the registered evaluator worker's root reserve; an unregistered
+      ;; context would silently reserve from the parent's global root stack.
+      (let* ((e (nl_os_alloc_chunk 1052672)) (i 0))
         (if (< e 4096) (seq (bf_signal_memory_full) 0)
           (seq
            (while (< i 23) (seq (ptr-write-u64 e (* i 8) 0) (setq i (+ i 1))))
@@ -25011,7 +25020,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (ptr-write-u64 e 104 (heap-read-u64 penv 104))
            (ptr-write-u64 e 112 (heap-read-u64 penv 112))
            (nl_frame_stack_inherit penv e 0 0)
-           e))))
+           (ptr-write-u64 e 120 (+ e 4096))
+           (if (< (nl_thread_registry_add e) 0)
+               (seq (bf_signal_memory_full) 0)
+             e)))))
+    ;; A legacy Lisp worker may publish its user counter before native eval
+    ;; retirement. END must retain the registry until that final access ends.
+    ;; Registered workers leave env+168 zero; legacy workers point to a private
+    ;; launch record whose +16 completion word is published after retirement.
+    (defun nl_thread_legacy_wait_complete ()
+      (let* ((i 0) (launch 0))
+        (while (< i (heap-read-u64 (data-addr nl_thread_registry) 0))
+          (seq
+           (setq launch (heap-read-u64 (heap-read-u64 (nl_thread_registry_entry i) 0) 168))
+           (if (< launch 4096) 0
+             (while (= (atomic-fetch-add (+ launch 16) 0) 0) 0))
+           (setq i (+ i 1))))))
     ;; Child entry (clean frame on the clone stack): read FORM + the ALREADY-
     ;; BUILT fresh env from the heap box (box[8] is built by the PARENT before
     ;; the clone, so the child never copies the parent's live ctx — which the
@@ -25023,6 +25047,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (let ((out_slot (alloc-bytes 32 8)))
              (seq (extern-call nelisp_eval_call (heap-read-u64 box 0) (heap-read-u64 box 8) out_slot)
                   (nl_frame_stack_retire_env (heap-read-u64 box 8) 0)
+                  (atomic-fetch-add (+ box 16) 1)
                   (syscall-direct 60 0 0 0 0 0 0)))))
     ;; spin (COMPILED, iterative) until *ADDR == 0 — the spawn handshake wait.
     (defun nl_spin_zero (addr)
@@ -25030,13 +25055,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: Int 1 in the parent (the child never returns).  No box is
     ;; held across the spin, so nothing needs a root (R2).
     (defun bf_thread_spawn_w (args env _pad)
-      (let ((box (alloc-bytes 16 8)))
+      (let ((box (alloc-bytes 24 8)))
         (seq (ptr-write-u64 box 0 (wf_arg_ptr args 0))
              ;; build the per-thread env NOW (parent, ctx consistent) -- not in
              ;; the child concurrently with the parent's own ctx mutation.
              (ptr-write-u64 box 8 (nl_make_thread_env env))
              (if (< (heap-read-u64 box 8) 4096) 0
-               (seq (ptr-write-u64 268435688 0 box)
+               (seq (ptr-write-u64 box 16 0)
+                    (ptr-write-u64 (heap-read-u64 box 8) 168 box)
+                    (ptr-write-u64 268435688 0 box)
              (let ((stack (syscall-direct 9 0 67108864 3 34 -1 0)))
                (if (= (syscall-direct 56 768 (+ stack 67108864) 0 0 0 0) 0)
                    (nl_thread_run (heap-read-u64 268435688 0))
@@ -39241,10 +39268,12 @@ gets no native definitions and is gated by
           (if (= requested 0)
               (if (= (heap-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
                   (let* ((same
-                          (if (= (heap-read-u64
-                                  (data-addr nl_thread_parallel_ctx) 8)
-                                 (heap-read-u64 268436168 0))
-                              1 0)))
+                          (seq
+                           (nl_thread_legacy_wait_complete)
+                           (if (= (heap-read-u64
+                                   (data-addr nl_thread_parallel_ctx) 8)
+                                  (heap-read-u64 268436168 0))
+                               1 0))))
                     (seq
                      (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
                      (ptr-write-u64
@@ -45622,16 +45651,152 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (record-slot-set out 0 backing)
          (record-slot-set out 1 (+ (* depth 4) 1))
          (nl_root_release env mark) 0)))
-    (defun nl_frame_stack_inherit (penv env _pad _pad2)
-      ;; Legacy thread-spawn evaluates an ordinary form with inherited lexical
-      ;; cells. Publish heap frames before clone, but never share its mutable
-      ;; backing vector, depth, descriptor, or off-heap frame addresses.
-      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv)))
+    ;; Convert the parent's active shallow bindings before publishing a child.
+    ;; GNU temporarily unbinds them while switching threads (thread.c:95-98,
+    ;; eval.c:4177-4191). Concurrent workers instead keep bindings in private
+    ;; cells and leave the shared mirror holding the actual default value.
+    (defun nl_thread_converted_name_p (names sym)
+      (if (= (nl_val_tag names) 7)
+          (let* ((item (nl_cons_car_word names)) (tag (nl_val_tag item)))
+            (if (or (and (or (= tag 4) (= tag 16))
+                         (= (nelisp_symbol_key_equal item sym) 1))
+                    (and (= tag 7)
+                         (= (nelisp_symbol_key_equal (nl_cons_car_ptr item) sym) 1)))
+                1 (nl_thread_converted_name_p (nl_cons_cdr_word names) sym))) 0))
+    (defun nl_thread_older_shallow_p (names sym)
+      (if (= (nl_val_tag names) 7)
+          (let* ((item (nl_cons_car_word names)))
+            (if (and (= (nl_val_tag item) 8)
+                     (= (nelisp_symbol_key_equal (nl_vector_slot_word item 0) sym) 1))
+                1 (nl_thread_older_shallow_p (nl_cons_cdr_word names) sym))) 0))
+    (defun nl_thread_unshallow_one (penv frame entry)
+      (let* ((sym (vector-ref-ptr entry 0)) (scratch (alloc-bytes 160 8)))
         (seq
-         (nl_frame_stack_snapshot penv saved)
-         (record-make (nl_record_type_word saved) 3 (+ env 32))
-         (record-slot-set (+ env 32) 0 (nl_record_slot_word saved 0))
-         (record-slot-set (+ env 32) 1 (nl_record_slot_word saved 1))
+         (if (= (nl_thread_converted_name_p (nl_record_slot_word frame 1) sym) 1) 0
+           (seq
+            (if (= (nelisp_env_lkv_mirror penv sym scratch 0) 0) 0
+              (nl_sexp_clone_into (+ penv 64) scratch))
+            (cell-make scratch (+ scratch 32))
+            (nelisp_frame_bind_in_frame frame sym (+ scratch 32)
+             (+ scratch 64) (+ scratch 96) (+ scratch 128))))
+         (nl_sb_set penv sym (nl_vector_slot_word entry 1)) 0)))
+    (defun nl_thread_unshallow_names (penv frame names)
+      (if (= (nl_val_tag names) 7)
+          (let* ((entry (nl_cons_car_word names)))
+            (seq
+             (if (= (nl_val_tag entry) 8)
+                 (seq
+                  (nl_thread_unshallow_one penv frame entry)
+                  (if (= (nl_thread_older_shallow_p (nl_cons_cdr_word names)
+                                                  (vector-ref-ptr entry 0)) 1)
+                      ;; Preserve repeat-binding watcher unwind values through
+                      ;; the existing (SYMBOL . OLD-CELL) deep history format.
+                      (let* ((scratch (alloc-bytes 64 8)))
+                        (seq
+                         (cell-make (nl_vector_slot_word entry 1) scratch)
+                         (nelisp_cons_construct (vector-ref-ptr entry 0) scratch (+ scratch 32))
+                         (cons-set-car names (+ scratch 32))))
+                    ;; The oldest binding unwinds to its outer frame/default.
+                    (cons-set-car names (vector-ref-ptr entry 0)))) 0)
+             (nl_thread_unshallow_names penv frame (nl_cons_cdr_word names))))
+        0))
+    (defun nl_thread_lean_depth (link)
+      (let* ((depth (heap-read-u64 link 24)) (events (heap-read-u64 link 16)))
+        (seq
+         (while (= (nl_val_tag events) 7)
+           (let* ((event (nl_cons_car_word events)))
+             (if (and (= (nl_val_tag (nl_cons_car_word event)) 2)
+                      (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                 (setq depth (+ depth 1)) 0))
+           (setq events (nl_cons_cdr_word events))) depth)))
+    (defun nl_thread_unshallow_lean_one (penv event depth)
+      (let* ((sym (nl_cons_car_word event)) (saved (nl_cons_cdr_word event))
+             (scratch (alloc-bytes 96 8)))
+        (seq
+         (if (= (nelisp_env_lkv_mirror penv sym scratch 0) 0) 0
+           (nl_sexp_clone_into (+ penv 64) scratch))
+         (cell-make scratch (+ scratch 32))
+         (vector-make 2 (+ scratch 64))
+         (vector-slot-set (+ scratch 64) 0 sym)
+         (vector-slot-set (+ scratch 64) 1 (+ (* depth 4) 1))
+         (nl_sb_set penv sym saved)
+         (cons-set-car event (+ scratch 32))
+         (cons-set-cdr event (+ scratch 64)) 0)))
+    (defun nl_thread_unshallow_lean_at (penv wanted)
+      (let* ((state (heap-read-u64 penv 176))
+             (link (if (= state 0) 0 (heap-read-u64 state 16))))
+        (while (/= link 0)
+          (let* ((depth (nl_thread_lean_depth link)) (events (heap-read-u64 link 16)))
+            (seq
+             (while (= (nl_val_tag events) 7)
+               (let* ((event (nl_cons_car_word events)) (tag (nl_val_tag (nl_cons_car_word event))))
+                 (seq
+                  (if (and (= tag 2) (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                      (setq depth (- depth 1)) 0)
+                  (if (and (= tag 4) (= depth wanted))
+                      (nl_thread_unshallow_lean_one penv event depth) 0)))
+               (setq events (nl_cons_cdr_word events)))
+             (setq link (heap-read-u64 link 8)))))))
+    (defun nl_thread_dynamic_frame_depth (frames sym)
+      (let* ((depth (sar (nl_record_slot_word frames 1) 2)) (found 0))
+        (seq
+         (while (and (> depth 0) (= found 0))
+           (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0) (- depth 1))))
+             (if (and (= (nelisp_frame_binding_dynamic_p frame sym) 1)
+                      (/= (nelisp_frame_stack_find_in_frame frame sym) 0))
+                 (setq found depth) (setq depth (- depth 1))))) found)))
+    (defun nl_thread_dynamic_cell (env sym regular)
+      (let* ((state (heap-read-u64 env 176))
+             (link (if (= state 0) 0 (heap-read-u64 state 16)))
+             (depth (if (= regular 0) 0 (nl_thread_dynamic_frame_depth (+ env 32) sym)))
+             (found 0))
+        (seq
+         (while (and (/= link 0) (= found 0))
+           (let* ((events (heap-read-u64 link 16)))
+             (seq
+              (while (and (= (nl_val_tag events) 7) (= found 0))
+                (let* ((event (nl_cons_car_word events)) (cell (nl_cons_car_word event)))
+                  (if (= (nl_val_tag cell) 11)
+                      (let* ((meta (nl_cons_cdr_word event)))
+                        (if (and (>= (sar (nl_vector_slot_word meta 1) 2) depth)
+                                 (= (nelisp_symbol_key_equal (nl_vector_slot_word meta 0) sym) 1))
+                            (setq found cell) 0)) 0))
+                (setq events (nl_cons_cdr_word events)))
+              (setq link (heap-read-u64 link 8)))))
+         (if (= found 0) regular found))))
+    (defun nl_thread_parent_unshallow (penv)
+      (if (/= (heap-read-u64 penv 168) 0) 0
+        (let* ((depth (sar (nl_record_slot_word (+ penv 32) 1) 2)))
+          (seq
+           (nl_frame_stack_promote_env penv 0)
+           (while (>= depth 0)
+             (seq
+              (nl_thread_unshallow_lean_at penv depth)
+              (if (> depth 0)
+                  (let* ((frame (nl_vector_slot_word
+                                 (nl_record_slot_word (+ penv 32) 0) (- depth 1))))
+                    (nl_thread_unshallow_names penv frame (nl_record_slot_word frame 1))) 0)
+              (setq depth (- depth 1))))
+           ;; Keep this context deep after END as well: an older converted
+           ;; binding can still be live when the parallel section finishes.
+           ;; env+168 is outside lexical-mode save/restore. Main contexts use
+           ;; sentinel 1; registered legacy contexts contain their launch ptr.
+           (if (= (nl_thread_registry_find penv) 0)
+               (ptr-write-u64 penv 168 1) 0) 0))))
+    (defun nl_frame_stack_inherit (penv env _pad _pad2)
+      ;; A GNU thread starts with an empty specpdl (thread.c:914-917). Inherit
+      ;; the lexical closure cells, including local declarations, through the
+      ;; same capture/install path as an ordinary closure, never dynamic cells.
+      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv))
+             (backing (nl_root_reserve penv)))
+        (seq
+         (nl_thread_parent_unshallow penv)
+         (nl_env_capture_lexical penv saved)
+         (vector-make 8 backing)
+         (record-make (nl_record_type_word (+ penv 32)) 3 (+ env 32))
+         (record-slot-set (+ env 32) 0 backing)
+         (record-slot-set (+ env 32) 1 1)
+         (nl_env_push_captured env saved)
          (nl_root_release penv mark) 0)))
     (defun nl_frame_stack_stats_w (env _pad)
       (let* ((control (nl_frame_stack_control)) (state (heap-read-u64 control 0))
@@ -45704,6 +45869,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (let* ((value 3))
               (seq
                (if (or (= (heap-read-u64 state 56) 1)
+                       (/= (heap-read-u64 env 168) 0)
                        ;; A registered worker can retain a pre-publication entry.
                        ;; Resolve the shared mirror afresh without cross-thread writes.
                        (and (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
@@ -46068,8 +46234,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= (bf_declared_special_p (+ env 0) name) 1) 1
           (nelisp_frame_local_special_p frames name))))
     (defun nl_sb_worker_p (env)
-      (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
-        (if (= (nl_thread_registry_find (+ env 0)) 0) 0 1)))
+      (if (/= (heap-read-u64 env 168) 0) 1
+        (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+          (if (= (nl_thread_registry_find (+ env 0)) 0) 0 1))))
     (defun nl_sb_plain_entry_p (entry)
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
