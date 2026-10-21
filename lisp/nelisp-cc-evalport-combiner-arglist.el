@@ -35,7 +35,7 @@
                         (wf_copy32 tail-slot head-slot)
                         (setq head 1))
                  (seq (setq node (nelisp_cons_construct_w argument 3 0))
-                      (ptr-write-u64 (nl_word_payload tail-slot) 8 node)
+                      (ptr-write-u64 (nl_word_payload tail-slot) 8 (nl_word_canon node))
                       (wf_copy32 tail-slot node)))
                (setq cursor (nl_cons_cdr_word state-slot))))))
          ;; A non-cons tail retains the historical truncation behavior.
