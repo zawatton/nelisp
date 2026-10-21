@@ -26,7 +26,12 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     # blocks and the typed-block registry (nl_cons_alloc, nl_cons_alloc_block,
     # nl_ablock_new_group, nl_typed_find, nl_typed_registry_grow,
     # nl_typed_registry_lookup); nelisp_nlconsbox_clone left the closure.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=304, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
+    # Measured 305 on Win64 (303 on Linux) at Doc 226 step 5.1: the Windows
+    # typed-block helpers (nl_os_alloc_aligned_group, nl_os_reserve_chunk)
+    # and the symbol entry API's out-of-line paths (nl_ent_w_slow,
+    # nl_ent_set_slow, nl_sym_signal_wta_integerp); step 5.2 adds
+    # nl_symbol_alloc and gc-port's symbol blocks nl_gc_mark_symbol.
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=320, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",

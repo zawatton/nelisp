@@ -21,11 +21,12 @@ policies remain unchanged. All boundary bytes and relocations are verified."
             ;; extend F1's closed runtime helpers. The separate authenticated
             ;; C-core activation/watcher owners extend this to the measured
             ;; 300 helpers with symbol cells, cons blocks and the typed-block
-            ;; registry, within policy 304; all edges/owners proved.
+            ;; registry, then GNU's symbol objects and Windows typed blocks
+            ;; (305 on Win64), within policy 320; all edges/owners proved.
             ((equal node '(<= 1 (length (alist-get 'records closure)) 192))
-             '(<= 1 (length (alist-get 'records closure)) 304))
+             '(<= 1 (length (alist-get 'records closure)) 320))
             ((equal node '(<= 15 (length functions) 192))
-             '(<= 15 (length functions) 304))
+             '(<= 15 (length functions) 320))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")
