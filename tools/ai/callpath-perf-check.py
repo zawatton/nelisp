@@ -504,7 +504,9 @@ def wall(tag, kind="floors"):
     need(report["engines"]["base"]["sha256"] == sha(BASE_BINARIES[linkage]), "wall baseline is not base02 " + linkage)
     need(report["engines"]["candidate"]["sha256"] != report["engines"]["base"]["sha256"], "candidate is the base binary")
     if kind == "floors":
-        need(Path(report["engines"]["gnu"]["path"]).name == "emacs", "GNU reference is not emacs")
+        # /usr/local/bin/emacs resolves to its versioned executable.
+        need(Path(report["engines"]["gnu"]["path"]).name in ("emacs", "emacs-31.1"),
+             "GNU reference is not emacs 31.1")
         for pins in report["fixtures"].values():
             for pin in pins:
                 auth(pin)
