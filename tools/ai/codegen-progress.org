@@ -1,0 +1,118 @@
+#+TITLE: Native compiler code quality: GCC -O2 parity for the inner loops that NeLisp's runtime is written in
+
+# Why. NeLisp's runtime (regex engine, evaluator, allocator, string and
+# buffer primitives) is written in its own low-level dialect and compiled
+# by NeLisp's native compiler. GNU's equivalents are C compiled by GCC.
+# Both GNU-comparison studies trace a large share of the remaining gap to
+# the generated code:
+# - Doc 218 (regex): the per-character skip loop costs 159.26 Ir against
+#   GNU's 6.99; one backtrack failure costs 1,464 against 178; tagged
+#   access and conversion add about 12,000 Ir on heavy items.
+# - Doc 219 (call path): even with candidates C1-C4, funcall stays at
+#   9-11x GNU, and the plan's C4 is a general-compiler budget.
+#
+# The user's direction (2026-10-21) is to imitate GNU rather than tune.
+# For compiled runtime code, the GNU reference is what GCC -O2 produces for
+# the same loop structure.
+#
+# Base: eval/core-20261017 at 9d5f4a515. Implementer: Claude Opus 5.5.
+#
+# Bar: for each kernel below, NeLisp's native code takes no more
+# wall-clock time per iteration than the same loop written in C and
+# compiled with gcc 14.2 -O2 (the median of 7 alternating runs, pinned to
+# the lane's CPU 9, warmed up, each run at least about 0.5 s; the loop is
+# isolated by subtracting a zero-iteration run).  Callgrind Ir per
+# iteration (four layouts) stays the diagnostic for where time goes.
+#
+# 2026-10-21 16:30, user: acceptance switched from Ir to wall-clock
+# ("実時間での GNU 比較に切り替えて", COMMON.md "Measurement").  S1.1-S1.5
+# and S2.1 were rewritten one for one from their Ir forms
+# (`codegen-check.py kernel NAME' and an Ir end-to-end comparison).
+
+* S0 Study and plan
+** S0.1 docs/design/224-native-codegen-gcc-parity.org: the overheads behind each kernel's gap, as counts and shares, and the planned compiler mechanisms
+The overheads are counted per category: tag checks, boxing and unboxing, redundant loads and stores, call overhead, bounds checks and branch structure. They are counted with instruction-level Ir, never by printing disassembly. Each planned mechanism (for example type inference for raw words and fixnums, register allocation for loop variables, check hoisting, accessor inlining) is matched to GCC behaviour it reproduces.
+cmd: python3 tools/ai/codegen-check.py plan
+#+NOTE: 2026-10-21 Doc 224 (b0cd5866d) attributes each kernel's excess per category and plans CG1-CG5 against GCC behaviour; CG7 (accessor inlining across units, lisp.h INLINE accessors) and CG8 (if-conversion, GCC ifcvt) were added when the runtime profile and the wall-clock gate asked for them.
+
+* S1 Kernels: wall-clock time per iteration <= gcc -O2
+** S1.1 Byte scan: find a byte in a unibyte string, memchr-style loop
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall byte-scan
+#+NOTE: 2026-10-21 final compiler (CG1-CG8), CPU 9, paired ratios: NeLisp/gcc -O2 x0.983 (0.247 against 0.255 ns/iter); the 9d5f4a515 compiler's build of the kernel x5.7 slower.  Ir per iteration 31.00 -> 6.00 against gcc's 6.00.
+** S1.2 List walk: length of a proper list
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall list-walk
+#+NOTE: 2026-10-21 blocked by the object representation, not the compiler: NeLisp/gcc -O2 on GNU's layout x2.027, on NeLisp's own layout x1.002.  A cons is a box whose payload points to a separate cell, so each element costs two dependent loads where GNU's XCDR costs one (lisp.h:408, 1468).  Ir 18.00 -> 7.00 against 5.00 (GNU layout) and 7.00 (NeLisp layout).  The cmd stays failing.
+** S1.3 Fixnum arithmetic: sum and compare in a counted loop
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall fixnum-loop
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.002 (0.688 against 0.689 ns/iter, per-round range 0.994-1.007): the same branch-free instruction stream as gcc -O2 (7 Ir, add/lea/cmp/cmov, loop-carried chain of three) after CG8; with the branch it was 6.05 Ir and x1.10.  Ir 22.20 -> 7.00.
+** S1.4 Table-driven character class test: a byte through a 256-entry table, as the regex fastmap and syntax lookups do
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall class-table
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.022 (0.245 against 0.242 ns/iter, per-round range 0.989-1.109; a 15-round rerun gave x1.013): the same 6 instructions and branch structure as gcc -O2, at the two-branches-per-iteration limit; the ratio sits in this machine's run-to-run spread.  Ir 33.00 -> 6.00.
+** S1.5 Vector element sum over a simple vector
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall vector-sum
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.004 (0.471 against 0.468 ns/iter, per-round range 0.994-1.143): the same 10 instructions per element as gcc -O2.  Ir 43.00 -> 10.00.
+
+* S2 Real code and no regression
+** S2.1 End to end: the runtime's own code gains measurably, with no semantic change
+The Doc 218 per-character regex experiment, or eval/core's regex engine on the same pattern, plus the boot, files and regex6000 workloads, all run faster in wall-clock than on 9d5f4a515: the median of 7 alternating pinned runs, ratio below 1.0 for each.  The NOTE reports each workload's ratio to GNU 31.1 running the same Lisp.  The standalone corpus and the bytecode and native suites stay identical.
+cmd: python3 tools/ai/codegen-check.py endtoend
+#+NOTE: 2026-10-21 final dynamic build (CG1-CG8) against 9d5f4a515, CPU 9, paired ratios: boot x0.838 (GNU x2.39), files x0.861 (GNU x5.45), regex6000 x0.885 (GNU x11.2), regex per character x0.869 (GNU x2107, the byte-code VM running the Lisp matcher).  Ir: boot -50.7%, files -35.8%, regex6000 -34.8%, per character -34.9%.
+** S2.2 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools, on fresh dynamic and static builds
+cmd: python3 tools/ai/codegen-check.py final
+#+NOTE: 2026-10-21 fresh dynamic and static builds of 4ce5b14bf: target/final-verify/checks.sh 11 groups, 0 failures (maphash-sparse known-red), test/perf/standalone-checks.sh rc 0 on the dynamic build, anvil MCP smoke 40 tools.
+#+NOTE: 2026-10-21 rerun after Doc 229 on fresh dynamic and static builds of 2b3d0674f: 11 groups, 0 failures; standalone checks rc 0; MCP smoke 40 tools (target/codegen/final.json now names these builds).
+
+* S3 Lisp values in native artifacts: GNU's Lisp_Object rules (Doc 229)
+# Coordinator, 2026-10-21 after val-final2: nil and t reaching predicates as
+# raw 0/1, truth tests on the pointer word, and the loader refusing a
+# cons-valued artifact are correctness defects of the native compiler and
+# loader, in this lane.  Fix them as GNU semantics require, design first,
+# with controls that fail on 9d5f4a515 and pass after the fix; gate the
+# change on the Lisp-to-AOT path so the runtime's dialect keeps raw words.
+** S3.1 docs/design/229-native-lisp-values-gnu-object-words.org: the native value convention mapped to GNU's (Lisp_Object words, NILP, Qt/Qnil, the FIXNUMP fast path, d_reloc constants), the controls and the gate
+cmd: python3 tools/ai/codegen-check.py plan229
+#+NOTE: 2026-10-21 Doc 229 maps the artifact value convention to GNU's.  Ported: NILP as the truth test (lisp.h:399, comp.c:1763), Qt/Qnil from comparisons (bytecode.c:1278), the FIXNUMP fast path with the runtime's function behind it (bytecode.c:1331), Fsymbolp (data.c:373), Lisp_Object words in variables.  Adapted: a value crossing a boundary is a slot, because the loader and the AOT dispatcher read only slots; a quoted constant is built per evaluation (no d_reloc vector in the loader's frame).
+** S3.2 Values and truth: nil and t are the nil and t objects, every truth test is NILP on the value, comparisons and predicates yield t or nil, variables keep their values, results are decoded by recorded representation (every stage-1 control fails on 9d5f4a515 and every stage-1 case passes)
+cmd: python3 tools/ai/codegen-check.py lispvalue 1
+#+NOTE: 2026-10-21 41 programs: 32 controls fail with 9d5f4a515's compiler, loader and binary (29 wrong answers, 3 crashes, among them the aref-nil if, null and length on nil, (null 0) and (symbolp (< 1 2))); 9 guards pass there.  All 41 pass on d31ce29e8 and on the tip.
+** S3.3 A native artifact holding a quoted list constant loads and answers as the interpreter does (the controls are refused on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue loader
+#+NOTE: 2026-10-21 3 controls refused on 9d5f4a515 ((:unbridgeable "nl_val_clone_into" "nl_alloc_consbox")); they load and answer as the interpreter since 965352353 (nelisp_cons_construct).
+** S3.4 Numbers: arithmetic and comparison take the fixnum path only for fixnums and the runtime's own function otherwise; float literals, floor and mod answer as in GNU (every stage-2 control fails on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue 2
+#+NOTE: 2026-10-21 16 programs: 15 controls fail on 9d5f4a515 (14 wrong, 1 crash: float arguments and literals, floor, floored mod), 1 guard; all pass since 16caa337d.  Not covered: the AOT dispatcher's mod of a float (-1 for (mod -7.5 3), GNU 1.5) and fixnum overflow to bignums.
+** S3.5 End to end: a fresh build of the tip passes validate.sh with every Doc 229 stage in the AOT differential, and the dialect is untouched (the five kernels compile byte-identically to 1042eedbc's compiler)
+cmd: python3 tools/ai/codegen-check.py lispvalue-e2e
+#+NOTE: 2026-10-21 fresh dynamic build of 2b3d0674f: validate.sh 0 failing groups (standalone checks 75 cases 0 failures, fx corpus and spike, AOT differential 160 programs -- 97 earlier, nil/t/cons back in the CG5 tag programs, 60 Doc 229 -- all answering as the interpreter); the five kernels compile byte-identically to 1042eedbc's compiler.  Timing on CPU 9, 7 paired rounds, new/old compiler on one binary: predicate loop x0.48, when-loop x1.04, compare-loop x1.02, accumulator loop x1.06 (x5.92 before variables held value words).
+
+* S4 Artifact runtime gaps after Doc 229 (coordinator, 2026-10-21 22:40)
+# Next items in the AOT artifact path, in the coordinator's order; each lands
+# in its own commit with a differential control that fails before it and a
+# CPU 9 timing.  The dispatcher's float mod (gc-port S5) and keeping values
+# in registers across calls (gc-port) are routed elsewhere.
+** S4.0 Same-unit calls: a defun calling another defun of its artifact hands it the dispatcher boundary, so a helper that calls the runtime or reads a constant answers as the interpreter (the controls crash on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue unit
+#+NOTE: 2026-10-22 coordinator's priority (a), closed in two commits.  14 controls (4 crash and 1 is refused on 9d5f4a515 in the first; the &rest callees -- refused, nelisp_aot_listn unbridged --, the arguments left in OUT, evaluation order and a 7-parameter callee in the second) pass: every internally called defun of at most six parameters (a &rest list counts as one) has an internal entry that fills its hidden boundary slots from the caller's (r10), symbol by symbol; each computed argument is bound in a slot of its own first; a callee without an entry (more than six parameters, Win64, AArch64) is called by name through the funcall provider.  CPU 9, 7 paired rounds: recursive fib 22 new over 634ff925c x1.09-1.13 (one more OUT clone per call, see the handoff); a &rest helper loop native over the interpreter x1.99 (the previous compiler's artifact was refused).
+** S4.0a Same-unit calls on every target: on x86-64 SysV every same-unit call of a native artifact enters an internal entry, and on Win64 and AArch64 none calls a unit defun's entry directly (the funcall provider does) -- an emitted-code census, failing on 634ff925c and 9d5f4a515
+cmd: python3 tools/ai/codegen-check.py unit-targets
+** S4.0b The native replay guard: no runtime source names nemacs's two native replay primitives while S4.3-S4.5 (word, overflow, signal) still fail (coordinator, 2026-10-22; Doc 229 "the replay guard")
+cmd: python3 tools/ai/codegen-check.py replay-guard
+** S4.1 funcall and apply: an artifact holding them loads and answers as the interpreter (the controls are refused on 9d5f4a515: nelisp_aot_funcall*/apply* unbridged)
+cmd: python3 tools/ai/codegen-check.py lispvalue apply
+#+NOTE: 2026-10-21 9 controls (funcall of a quoted symbol, of #'car, of a variable, with 2, 3 and 5 arguments; apply over a list, a spread (list ...), and leading arguments) are refused on 9d5f4a515 and answer as the interpreter now: reader providers for the six entries (GNU Ffuncall/Fapply, eval.c), the names appended to both bridge lists, arguments evaluated into variables before the call, and GNU's byte-optimize-funcall/-apply ported.  CPU 9, native/evaluator per call: constant designator x0.083 and x0.054, variable designator x2.43 (the provider's list building).
+** S4.2 Quoted constants are created once, when the artifact loads, so eq between two evaluations of the same quoted list is t, as with GNU's constant vector (the controls answer nil on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue const
+#+NOTE: 2026-10-22 6 controls (two evaluations of one quoted string, vector or list stored and compared with eq, a quoted list rebound in a loop, two (list 1 2) staying distinct, a lone string body) fail on 9d5f4a515 and pass now: quoted constants are created once at load and handed to every call in the scratch vector (GNU's constant vector / d_reloc, comp.c:479).  CPU 9, new over previous compiler: quoted-list loop x0.077, string loop x0.228.
+** S4.3 Values cross the loader/dispatcher boundary as value words: a fixnum, nil or t argument or result is passed as its immediate word, with no slot allocated for it (the controls allocate on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue word
+** S4.4 Fixnum overflow: an arithmetic result outside the fixnum range takes the runtime's function and becomes what the interpreter answers (the controls wrap on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue overflow
+** S4.5 Signals: an error signalled inside a native artifact reaches the caller with GNU's error symbol and data, and condition-case inside an artifact catches it (the controls differ on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue signal
+** S4.6 End to end: a fresh build of the tip passes validate.sh with every S3 and S4 stage in the AOT differential, and the five kernels compile byte-identically to 1042eedbc's compiler
+cmd: python3 tools/ai/codegen-check.py lispvalue-e2e 1 loader 2 apply const unit word overflow signal
