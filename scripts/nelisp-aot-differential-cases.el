@@ -178,10 +178,16 @@ cons constant loadable.")
     (unit control "(defun lv-unit-mix (x) (lv-unit-m2 (lv-unit-mq x) (lv-unit-mq (+ x 1)))) (defun lv-unit-m2 (a b) (list a b)) (defun lv-unit-mq (x) (list x))" (1))
     (unit control "(defun lv-unit-ord (x) (lv-unit-o2 x (setq x 5))) (defun lv-unit-o2 (a b) (list a b))" (1))
     ;; A callee with no internal entry is called through the dispatcher.
-    (unit control "(defun lv-unit-seven (a) (lv-unit-s7 a 1 2 3 4 5 6)) (defun lv-unit-s7 (a b c d e f g) (list a g))" (1)))
+    (unit control "(defun lv-unit-seven (a) (lv-unit-s7 a 1 2 3 4 5 6)) (defun lv-unit-s7 (a b c d e f g) (list a g))" (1))
+    ;; The word ABI preserves immediates and uses the active mirror environment.
+    (word control "(defun lv-word-equal (a) (equal a (list 1 2)))" ((1 2) (1 3)))
+    (word control "(defun lv-word-eql (a) (eql a 7))" (7 8))
+    (word control "(defun lv-word-float-mod (a) (mod a 2.0))" (3.5))
+    (word guard "(defun lv-word-id (a) a)" (nil t 0 -7 2305843009213693951 -2305843009213693952))
+    (word guard "(defun lv-word-return (a) (+ a 1))" (0 7)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit overflow)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit word overflow)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")

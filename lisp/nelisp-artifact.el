@@ -3842,6 +3842,16 @@ engine."
       (setq i (1+ i)))
     out))
 
+(defun nelisp-artifact--native-wide-word-args-p (path symbol args)
+  "Return non-nil when a word entry needs boxed wide integer arguments."
+  (and (seq-some (lambda (arg)
+                   (and (integerp arg)
+                        (or (< arg -2305843009213693952)
+                            (> arg 2305843009213693951)))) args)
+       (eq (plist-get (nelisp-artifact--native-defun-metadata
+                      (plist-get (nelisp-artifact-read-manifest path) :native)
+                      symbol) :param-repr) 'word)))
+
 (defun nelisp-artifact-native-exec (artifact-path symbol args)
   "Doc 142 §6.4 native EXEC: run the native SYMBOL embedded in a `.neln'.
 Extracts the ET_REL object from ARTIFACT-PATH's `:native' section, links
@@ -3854,7 +3864,10 @@ general boundary-ABI case is the remaining §6.4 work.
 
 Signals an error when the toolchain is missing, the artifact has no
 native object, or SYMBOL is not one of its native functions."
-  (let ((cc (or (executable-find "cc") (executable-find "gcc")))
+  (if (nelisp-artifact--native-wide-word-args-p artifact-path symbol args)
+      (nelisp-artifact-native-exec-general artifact-path symbol args)
+    (progn
+(let ((cc (or (executable-find "cc") (executable-find "gcc")))
         (objcopy (executable-find "objcopy")))
     (unless (and cc objcopy)
       (error "native-exec needs cc + objcopy on PATH"))
@@ -3899,14 +3912,19 @@ native object, or SYMBOL is not one of its native functions."
               ;; into the shared generator; this third copy was missed, which
               ;; is the argument for there being one.
               (with-temp-file csrc
-                (insert (nelisp-artifact--native-fast-driver-c csym argc)))
+                (insert (nelisp-artifact--native-fast-driver-c
+                       csym argc
+                       (plist-get (nelisp-artifact--native-defun-metadata
+                                   (plist-get (nelisp-artifact-read-manifest artifact-path)
+                                              :native) symbol)
+                                  :return-repr))))
               (unless (eq 0 (call-process cc nil nil nil "-O2" "-o" exe csrc obj2))
                 (error "native link failed for %s" symbol))
               (with-temp-buffer
                 (apply #'call-process exe nil t nil
                        (mapcar #'number-to-string args))
-                (string-to-number (string-trim (buffer-string)))))
-          (delete-directory dir t)))))))
+                (nelisp-artifact--native-exec-parse-stdout (buffer-string))))
+          (delete-directory dir t)))))))))
 
 (defun nelisp-artifact--native-exec-cache-root ()
   "Return the native exec cache root directory."
@@ -3972,8 +3990,11 @@ The symbol name is a fixed placeholder: it varies per call and is already
 part of the key, so letting it in would only defeat sharing."
   (nelisp-artifact--small-string-hash
    (if (equal variant "general")
-       (nelisp-artifact--native-driver-c "nelisp_fp" (list :arity argc))
-     (nelisp-artifact--native-fast-driver-c "nelisp_fp" argc))))
+       (concat (nelisp-artifact--native-driver-c "nelisp_fp" (list :arity argc))
+               (nelisp-artifact--native-driver-c
+                "nelisp_fp" (list :arity argc :param-repr 'word :return-repr 'word)))
+     (concat (nelisp-artifact--native-fast-driver-c "nelisp_fp" argc)
+             (nelisp-artifact--native-fast-driver-c "nelisp_fp" argc 'word)))))
 
 (defun nelisp-artifact--native-exec-cache-key
     (artifact-path symbol argc &optional variant arg-signature)
@@ -4018,7 +4039,7 @@ part of the key, so letting it in would only defeat sharing."
      artifact-path symbol argc variant arg-signature)
     (nelisp-artifact--native-exec-cache-root))))
 
-(defun nelisp-artifact--native-fast-driver-c (csym argc)
+(defun nelisp-artifact--native-fast-driver-c (csym argc &optional result-repr)
   "Return the integer ABI fast driver C source for CSYM with ARGC.
 Arguments go over as canonical value words, not as bare `long's.  A
 parameter of a runtime-entered defun is a value word -- low bit 1 is the
@@ -4035,7 +4056,9 @@ why this path stays a two-line driver."
            (if (= argc 0) "void"
              (mapconcat (lambda (_) "long") (make-list argc nil) ",")))
    "int main(int c,char**v){(void)c;"
-   (format "printf(\"%%ld\\n\",%s(%s));return 0;}\n"
+   (format (if (eq result-repr 'word)
+               "long r=%s(%s);if(r==3)puts(\"NELN-BOOLEAN nil\");else if(r==7)puts(\"NELN-BOOLEAN t\");else printf(\"%%ld\\n\",r>>2);return 0;}\n"
+             "printf(\"%%ld\\n\",%s(%s));return 0;}\n")
            csym
            (let ((i 0))
              (mapconcat
@@ -4079,7 +4102,12 @@ why this path stays a two-line driver."
                                         obj obj2)))
               (error "objcopy symbol rename failed for %s" symbol))
             (with-temp-file csrc
-              (insert (nelisp-artifact--native-fast-driver-c csym argc)))
+              (insert (nelisp-artifact--native-fast-driver-c
+                       csym argc
+                       (plist-get (nelisp-artifact--native-defun-metadata
+                                   (plist-get (nelisp-artifact-read-manifest artifact-path)
+                                              :native) symbol)
+                                  :return-repr))))
             (unless (eq 0
                         (if sh
                             (call-process
@@ -4122,7 +4150,10 @@ minimum work needed by `native-exec-elisp-artifact': extract the embedded
 object, rename SYMBOL for C linkage, link a small driver, and run it.
 The validated `nelisp-artifact-native-exec' path remains the fallback
 for diagnostics, symbol checks, and non-simple artifacts."
-  (let ((cc (or (executable-find "cc") (executable-find "gcc")))
+  (if (nelisp-artifact--native-wide-word-args-p artifact-path symbol args)
+      (nelisp-artifact-native-exec-general artifact-path symbol args)
+    (progn
+(let ((cc (or (executable-find "cc") (executable-find "gcc")))
         (objcopy (executable-find "objcopy"))
         (sh (executable-find "sh")))
     (unless (and cc objcopy)
@@ -4155,7 +4186,12 @@ for diagnostics, symbol checks, and non-simple artifacts."
             ;; the C source, so the argument convention had two places to
             ;; be right in and only the cached one was updated.
             (with-temp-file csrc
-              (insert (nelisp-artifact--native-fast-driver-c csym argc)))
+              (insert (nelisp-artifact--native-fast-driver-c
+                       csym argc
+                       (plist-get (nelisp-artifact--native-defun-metadata
+                                   (plist-get (nelisp-artifact-read-manifest artifact-path)
+                                              :native) symbol)
+                                  :return-repr))))
             (unless (eq 0
                         (if sh
                             (call-process
@@ -4168,8 +4204,8 @@ for diagnostics, symbol checks, and non-simple artifacts."
             (with-temp-buffer
               (apply #'call-process exe nil t nil
                      (mapcar #'number-to-string args))
-              (string-to-number (string-trim (buffer-string)))))
-        (delete-directory dir t)))))
+              (nelisp-artifact--native-exec-parse-stdout (buffer-string))))
+        (delete-directory dir t)))))))
 
 (defun nelisp-artifact--shell-quote (text)
   "Return POSIX single-quoted TEXT."
@@ -4234,10 +4270,13 @@ compatibly enough for `$1' / `$@' scripts."
 
 (defun nelisp-artifact-native-exec-fast-simple (artifact-path symbol args)
   "Run native SYMBOL from ARTIFACT-PATH through the cached integer fast path."
-  (let* ((argc (length args))
+  (if (nelisp-artifact--native-wide-word-args-p artifact-path symbol args)
+      (nelisp-artifact-native-exec-general artifact-path symbol args)
+    (progn
+(let* ((argc (length args))
          (exe (nelisp-artifact--native-exec-fast-exe
                artifact-path symbol argc)))
-    (nelisp-artifact--native-exec-run-captured exe symbol args)))
+    (nelisp-artifact--native-exec-run-captured exe symbol args)))))
 
 (defun nelisp-artifact-native-exec-fast-simple-stdout (artifact-path symbol args)
   "Run native SYMBOL from ARTIFACT-PATH and return raw stdout."
@@ -4383,6 +4422,8 @@ implementation."
                         ;; a slot of its own first.  Any unit that assigns
                         ;; a delegated call to a variable carries this.
                         "nl_sexp_clone_into"
+                        "nelisp_aot_funcall1"
+                        "nelisp_aot_funcalln"
                         "nelisp_aot_builtin_call1"
                         "nelisp_aot_builtin_calln"))))
        externs))))
@@ -4700,6 +4741,10 @@ harness builds the string ones in the scratch elements the code reads."
      "}\n"
      "\n"
      "static const NelnSexp *neln_raw_to_sexp(int64_t raw, NelnSexp *scratch_slot) {\n"
+     (when (eq (plist-get meta :param-repr) 'word)
+       (concat
+        "  if ((raw & 3) == 1) { neln_write_int(scratch_slot, raw >> 2); return scratch_slot; }\n"
+        "  if (raw == 3 || raw == 7) { memset(scratch_slot, 0, sizeof(*scratch_slot)); scratch_slot->tag = raw == 3 ? NELN_TAG_NIL : NELN_TAG_T; neln_register_slot_soft(scratch_slot); return scratch_slot; }\n"))
      "  const NelnSexp *ptr = (const NelnSexp *)(uintptr_t)raw;\n"
      "  if (neln_is_registered_slot(ptr)) {\n"
      "    return ptr;\n"
@@ -4709,6 +4754,8 @@ harness builds the string ones in the scratch elements the code reads."
      "}\n"
      "\n"
      "static int64_t neln_raw_to_int(int64_t raw) {\n"
+     (when (eq (plist-get meta :param-repr) 'word)
+       "  if ((raw & 3) == 1) return raw >> 2; if (raw == 3 || raw == 7) neln_fail(\"expected integer\");\n")
      "  const NelnSexp *ptr = (const NelnSexp *)(uintptr_t)raw;\n"
      "  if (neln_is_registered_slot(ptr)) {\n"
      "    return neln_sexp_to_int(ptr);\n"
@@ -4937,9 +4984,18 @@ harness builds the string ones in the scratch elements the code reads."
      "  return out;\n"
      "}\n"
      "\n"
+     ;; The host proof implements a fixed builtin subset; its generic
+     ;; function-cell bridge shares the production provider's argument ABI.
+     "NelnSexp *nelisp_aot_funcall1(void *mirror, void *frames, NelnSexp *name, int64_t arg, NelnSexp *out, NelnSexp *scratch) { return nelisp_aot_builtin_call1(mirror, frames, name, arg, out, scratch); }\n"
+     "NelnSexp *nelisp_aot_funcalln(void *mirror, void *frames, NelnSexp *name, int64_t argc, NelnSexp *out, NelnSexp *scratch, int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, int64_t a6, int64_t a7) { return nelisp_aot_builtin_calln(mirror, frames, name, argc, out, scratch, a0, a1, a2, a3, a4, a5, a6, a7); }\n"
      (format "extern NelnSexp *call_target(%s);\n" extern-args)
      "\n"
      "static int neln_print_result(NelnSexp *ret) {\n"
+     (when (eq (plist-get meta :return-repr) 'word)
+       (concat
+        "  if (((uintptr_t)ret & 3u) == 1u) { printf(\"%ld\\n\", (long)((intptr_t)ret >> 2)); return 0; }\n"
+        "  if ((uintptr_t)ret == 3u) { printf(\"NELN-BOOLEAN nil\\n\"); return 0; }\n"
+        "  if ((uintptr_t)ret == 7u) { printf(\"NELN-BOOLEAN t\\n\"); return 0; }\n"))
      "  if (!ret) {\n"
      "    printf(\"0\\n\");\n"
      "    return 0;\n"
@@ -4947,9 +5003,11 @@ harness builds the string ones in the scratch elements the code reads."
      "  if (neln_is_registered_slot(ret)) {\n"
      "    switch (ret->tag) {\n"
      "    case NELN_TAG_NIL:\n"
+     (when (eq (plist-get meta :return-repr) 'word) "      printf(\"NELN-BOOLEAN \");\n")
      "      printf(\"nil\\n\");\n"
      "      return 0;\n"
      "    case NELN_TAG_T:\n"
+     (when (eq (plist-get meta :return-repr) 'word) "      printf(\"NELN-BOOLEAN \");\n")
      "      printf(\"t\\n\");\n"
      "      return 0;\n"
      "    case NELN_TAG_INT:\n"
@@ -4957,6 +5015,7 @@ harness builds the string ones in the scratch elements the code reads."
      "      return 0;\n"
      "    case NELN_TAG_STR:\n"
      "    case NELN_TAG_UNIBYTE_STR:\n"
+     "      printf(\"NELN-STRING \");\n"
      "      if (ret->b && ret->a > 0) {\n"
      "        fwrite((const void *)(uintptr_t)ret->b, 1u, (size_t)ret->a, stdout);\n"
      "      }\n"
@@ -5040,9 +5099,13 @@ harness builds the string ones in the scratch elements the code reads."
                        (= (aref stdout (1- (length stdout))) ?\n))
                   (substring stdout 0 -1)
                 stdout)))
-    (if (nelisp-artifact--canonical-integer-token-p text)
-        (string-to-number text)
-      text)))
+    (cond
+     ((string-prefix-p "NELN-BOOLEAN " text)
+      (pcase (substring text 13)
+        ("t" t) ("nil" nil) (_ (error "Invalid native boolean result"))))
+     ((string-prefix-p "NELN-STRING " text) (substring text 12))
+     ((nelisp-artifact--canonical-integer-token-p text) (string-to-number text))
+     (t text))))
 
 (defun nelisp-artifact--native-exec-general-cache-exe
     (artifact-path symbol args)

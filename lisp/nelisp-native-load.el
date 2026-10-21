@@ -750,8 +750,8 @@ every problem at once rather than the first one hit."
         (let ((required (plist-get meta :rest-required-count)))
           (unless (and (integerp required) (>= required 0)
                        (= (plist-get meta :arity) (1+ required))
-                       (eq (plist-get meta :param-repr) 'sexp-ptr)
-                       (eq (plist-get meta :return-repr) 'sexp-ptr))
+                       (memq (plist-get meta :param-repr) '(sexp-ptr word))
+                       (memq (plist-get meta :return-repr) '(sexp-ptr word)))
             (setq problems (cons (list :invalid-rest-call-abi required)
                                  problems)))))
       (unless (integerp (plist-get meta :body-offset))
@@ -5921,6 +5921,15 @@ what a cache wants and what the demo did."
       (nelisp-native-load-unbox raw))
      (t raw))))
 
+(defun nelisp-native-load--immediate-word (value)
+  "Return VALUE's immediate native word, or nil when it needs a root."
+  (cond ((null value) 3)
+        ((eq value t) 7)
+        ((and (integerp value)
+              (>= value -2305843009213693952)
+              (<= value 2305843009213693951))
+         (logior (ash value 2) 1))))
+
 (defun nelisp-native-load-call (handle args)
   "Call the function in HANDLE with ARGS and return its value.
 
@@ -5940,7 +5949,7 @@ including nested native calls and cleanup after an error."
          ;; the artifact records; the inference stays for artifacts written
          ;; before it did.
          (param-boxed (let ((repr (plist-get handle :param-repr)))
-                        (cond ((eq repr 'sexp-ptr) t)
+                        (cond ((memq repr '(sexp-ptr word)) t)
                               ((eq repr 'raw-i64) nil)
                               (t boxed)))))
     (unless (= (length args) arity)
@@ -6014,14 +6023,16 @@ including nested native calls and cleanup after an error."
                   (setq k (1+ k))))
               (while rest
                 (let ((slot
-                       (if (fboundp 'nelisp--native-pin-copy)
+                       (or (and (eq (plist-get handle :return-repr) 'word)
+                                (nelisp-native-load--immediate-word (car rest)))
+                           (if (fboundp 'nelisp--native-pin-copy)
                            (nelisp--native-pin-copy env pin-frame (car rest))
                          (let ((legacy-slot
                                 (nelisp-native-load--pin-reserve env pin-frame)))
                            (nelisp-native-load-box
                             legacy-slot (car rest) env pin-frame)
-                           legacy-slot))))
-                  (unless (and (integerp slot) (> slot 0))
+                           legacy-slot)))))
+                  (unless (and (integerp slot) (/= slot 0))
                     (error "nelisp-native-load: cannot pin argument value"))
                   (setq passed (cons slot passed)))
                 (setq rest (cdr rest)))
@@ -6056,13 +6067,22 @@ including nested native calls and cleanup after an error."
                          (< raw nelisp-native-load-page-bytes))
                 (setq boxed nil))
               (cond
+               ((and (eq (plist-get handle :return-repr) 'word)
+                     (= (logand raw 3) 1))
+                (ash raw -2))
+               ((and (eq (plist-get handle :return-repr) 'word) (= raw 3)) nil)
+               ((and (eq (plist-get handle :return-repr) 'word) (= raw 7)) t)
                ((eq (plist-get handle :return-repr) 'raw-bool)
                 (let ((value (nelisp-native-load--decode-raw-bool raw)))
                   (nelisp-native-load-box out value env pin-frame)
                   value))
-               ((or (eq (plist-get handle :return-repr) 'sexp-ptr)
+               ((or (memq (plist-get handle :return-repr) '(sexp-ptr word))
                     (and boxed (eq (plist-get handle :return-repr) 'unknown)))
                 (progn
+                  (when (and (eq (plist-get handle :return-repr) 'word)
+                             (or (< raw nelisp-native-load-page-bytes)
+                                 (/= (logand raw 7) 0)))
+                    (error "nelisp-native-load: invalid native result word"))
                   ;; The native body may return a temporary slot.  Copy it
                   ;; into the pinned output root before Lisp decoding can
                   ;; allocate and move the referenced object.

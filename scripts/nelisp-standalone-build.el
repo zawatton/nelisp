@@ -8846,6 +8846,44 @@ leave symbols unresolved at link time."
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
     (defun wf_argval (args n) (nl_word_payload (wf_arg_word args n)))
+    ;; ptr-call is a raw signed-i64 boundary; tag13 +8 is a sign, not a value.
+    (defun wf_ptr_call_i64_fits (w)
+      (if (= (nl_word_tag64 w) 13)
+          (nl_bignum_mag_le_bound
+           (ptr-read-u64 w 16) (ptr-read-u64 w 24)
+           (if (= (ptr-read-u64 w 8) 0) 2147483647 2147483648)
+           (if (= (ptr-read-u64 w 8) 0) 4294967295 0))
+        1))
+    (defun wf_ptr_call_i64_value (w)
+      (if (= (nl_word_tag64 w) 13)
+          (let* ((limbs (ptr-read-u64 w 16)) (n (ptr-read-u64 w 24))
+                 (lo (if (> n 0) (ptr-read-u32 limbs 0) 0))
+                 (hi (if (> n 1) (ptr-read-u32 limbs 4) 0))
+                 (m (+ lo (shl hi 32))))
+            (if (= (ptr-read-u64 w 8) 0) m (- 0 m)))
+        (nl_word_payload w)))
+    (defun wf_ptr_call_w (args)
+      (let* ((w0 (wf_arg_word args 0)) (w1 (wf_arg_word args 1))
+             (w2 (wf_arg_word args 2)) (w3 (wf_arg_word args 3))
+             (w4 (wf_arg_word args 4)) (w5 (wf_arg_word args 5))
+             (w6 (wf_arg_word args 6))
+             (bad (cond ((= (wf_ptr_call_i64_fits w0) 0) w0)
+                        ((= (wf_ptr_call_i64_fits w1) 0) w1)
+                        ((= (wf_ptr_call_i64_fits w2) 0) w2)
+                        ((= (wf_ptr_call_i64_fits w3) 0) w3)
+                        ((= (wf_ptr_call_i64_fits w4) 0) w4)
+                        ((= (wf_ptr_call_i64_fits w5) 0) w5)
+                        ((= (wf_ptr_call_i64_fits w6) 0) w6)
+                        (t 3))))
+        (if (= bad 3)
+            (wf_write_int_w
+             0 (call-ptr (wf_ptr_call_i64_value w0) (wf_ptr_call_i64_value w1)
+                         (wf_ptr_call_i64_value w2) (wf_ptr_call_i64_value w3)
+                         (wf_ptr_call_i64_value w4) (wf_ptr_call_i64_value w5)
+                         (wf_ptr_call_i64_value w6)))
+          (nl_abi_fail
+           (bf_args_out_of_range3 bad (wf_write_int_w 0 -9223372036854775808)
+                                 (wf_write_int_w 0 9223372036854775807)) 0))))
     ;; Doc 190 Phase A: tag 13 (Bignum) has NO stable pointer at offset 8
     ;; (that word is the sign, 0/1 -- almost always 0) -- the generic
     ;; offset-8 compare below would make most positive bignums mutually
@@ -24813,7 +24851,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; wrong-number-of-arguments check before this arm reads any operand slot.
     ;; Same `call-ptr' grammar op the compiler emits, so no new Rust.  Callers
     ;; pad unused trailing native arguments with 0.
-    ((:lit "ptr-call") :word . (wf_write_int_w 0 (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
+    ((:lit "ptr-call") :word . (wf_ptr_call_w args))
     ((:lit "thread-spawn") :word . (bf_thread_spawn_w args env 0))
     ((:lit "nelisp-spin-until") :word . (bf_thread_join_w args env 0))
     ((:lit "fork-spawn") :word . (bf_fork_spawn_w args env 0))

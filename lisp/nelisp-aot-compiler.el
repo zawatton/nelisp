@@ -646,7 +646,7 @@ Self-recursion counts: a tail call is a same-unit call like any other."
 
 (defvar nelisp-aot-compiler--dynamic-user-calls nil
   "Non-nil lowers otherwise-unresolvable user calls through the
-`nelisp_aot_builtin_calln' dispatcher instead of emitting a plt32
+`nelisp_aot_funcalln' evaluator dispatcher instead of emitting a plt32
 relocation on the Elisp function name.
 
 The default lowering is right for the static-link flow: many `.el'
@@ -655,12 +655,10 @@ direct call is cheaper than a dispatch.  It is unresolvable for a single
 `.neln' loaded in-process, where there is no link step and no C function
 of that name exists, so the loader has nothing to point a stub at.
 
-The dispatcher behind `nelisp_aot_builtin_calln' is not a builtin table:
-`nelisp-cc-runtime--aot-default-builtin-dispatchn' looks the symbol up in
-`nelisp--functions', falls back to `fboundp', and applies.  Routing
-through it therefore resolves ordinary Elisp functions and leaves the
-unit's extern set closed over the C runtime symbols, which is what a
-dynamic loader can bridge.")
+The generic evaluator dispatcher resolves symbols through their function
+cells, as GNU funcall_general does (eval.c:3149-3156).  It therefore reaches both native
+builtins and genuine Lisp definitions, and observes redefinitions.  The
+legacy builtin-only bridge cannot resolve Lisp definitions such as `eql'.")
 
 (defvar nelisp-aot-compiler--native-vector-primitives nil
   "Non-nil lowers proven vector-only `aref' and `aset' calls natively.
@@ -1177,7 +1175,7 @@ nodes while their constructors are migrated."
   (or (nelisp-aot-compiler--ir-get node :repr)
       (let ((kind (nelisp-aot-compiler--ir-kind node)))
         (cond
-         ((memq kind '(imm arith cmp sexp-int-unwrap
+         ((memq kind '(imm arith cmp sexp-int-unwrap str-len str-byte-at
                            ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
                            ptr-write-u8 ptr-write-u16 ptr-write-u32 ptr-write-u64))
           'raw-i64)
@@ -1229,10 +1227,7 @@ faithfully retain either representation in its frame slot."
 ;; The runtime's dialect units keep nil = 0 and the != 0 test.
 
 (defconst nelisp-aot-compiler-lisp-open-defects
-  '((word . "the native dispatcher's `equal' crashes, its `eql' answers nil \
-for equal fixnums and a float `mod' answers -1 (S4.3)")
-    (overflow . "fixnum arithmetic wraps instead of overflowing to a bignum (S4.4)")
-    (signal . "an error signalled inside a native artifact does not reach \
+  '((signal . "an error signalled inside a native artifact does not reach \
 its caller as GNU's signal does (S4.5)"))
   "Doc 229: wrong answers native artifacts still give, by corpus stage.
 Each entry leaves with the commit that makes its stage's controls pass.
@@ -6637,7 +6632,9 @@ caller-owned boundary params in the current defun:
        `(let (((,arg-slot :type sexp) ,arg))
           (seq
            (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
-           (extern-call nelisp_aot_builtin_call1
+           (extern-call ,(if (or (nelisp-aot-compiler--lisp-values-p)
+                                 nelisp-aot-compiler--dynamic-user-calls)
+                             'nelisp_aot_funcall1 'nelisp_aot_builtin_call1)
                         ,mirror ,frames ,name-slot ,arg-slot ,out ,scratch)
            ,out))
        env fenv defuns))))
@@ -6675,14 +6672,10 @@ Only a known raw frame reference is converted here.  Unknown values keep
 the legacy path until their producer has been migrated to `:repr'; this
 avoids treating arbitrary native pointers as tagged integers."
   (let ((info (and (symbolp form) (cdr (assq form fenv)))))
-    (if (and (nelisp-aot-compiler--lisp-values-p) (not (integerp form)))
-        ;; Doc 229: every boundary takes a Sexp; box by representation.
-        (if (or (memq form '(nil t))
-                (and (symbolp form)
-                     (memq (plist-get info :repr) '(raw-i64 raw-bool mixed word)))
-                (and (consp form) (not (eq (car form) 'quote))))
-            `(nelisp-aot--as-sexp ,form)
-          form)
+    (if (nelisp-aot-compiler--lisp-values-p)
+        ;; GNU calls pass Lisp_Object words.  Boxing here loses the
+        ;; immediate convention and allocates once per scalar argument.
+        `(nelisp-aot--as-word ,form)
     (if (or (eq (plist-get info :repr) 'raw-i64)
             ;; The source-level arithmetic and comparison forms always
             ;; yield raw i64 values.  They are not frame references, so
@@ -7179,42 +7172,39 @@ conversion of Doc 229 answers exactly, by representation."
            (call-args
             (mapcar
              (lambda (form)
-               (setq form (nelisp-aot-compiler--aot-dispatcher-arg-form
-                           form fenv))
+               ;; Prefix writes happen after argument bindings.  Keep their
+               ;; original slot references visible until those writes run.
                (if (memq form prewritten)
                    form
                  (let ((slot (nelisp-aot-compiler--gensym "aot-calln-arg")))
-                   ;; A nested delegated call returns the shared boundary
-                   ;; OUT pointer.  A later argument evaluation can overwrite
-                   ;; it before this call consumes it, so snapshot call forms
-                   ;; into an arena slot.  Bare references may still be raw
-                   ;; i64 locals (loop counters, for example), and must not
-                   ;; be handed to `nl_sexp_clone_into' as an address.
                    (push
-                    (list (list slot :type 'sexp)
-                          (cond
-                           ;; Doc 229 S4.2: a constant is a scratch element,
-                           ;; never OUT, so it needs no snapshot -- and a
-                           ;; snapshot would copy a string.
-                           ((and (consp form)
-                                 (not (and (nelisp-aot-compiler--lisp-values-p)
-                                           (nelisp-aot-compiler--lisp-constant-object
-                                            form))))
-                              (let ((raw (nelisp-aot-compiler--gensym
-                                          "aot-calln-raw")))
-                                `(let ((,raw ,form)
-                                       (,slot (alloc-bytes 32 8)))
-                                   (seq (extern-call nl_sexp_clone_into
-                                                     ,raw ,slot)
-                                        ,slot))))
-                           (t form)))
+                    (if (nelisp-aot-compiler--lisp-values-p)
+                        ;; Snapshot OUT aliases, then keep a rooted
+                        ;; Lisp_Object local.  An immediate needs no box.
+                        (list (list slot :type 'sexp) `(nelisp-aot--as-word
+                                     (nelisp-aot--user-init ,form)))
+                      (let ((converted
+                             (nelisp-aot-compiler--aot-dispatcher-arg-form
+                              form fenv)))
+                        (list (list slot :type 'sexp)
+                              (if (consp converted)
+                                  (let ((raw (nelisp-aot-compiler--gensym
+                                              "aot-calln-raw")))
+                                    `(let ((,raw ,converted)
+                                           (,slot (alloc-bytes 32 8)))
+                                       (seq (extern-call nl_sexp_clone_into
+                                                         ,raw ,slot)
+                                            ,slot)))
+                                converted))))
                     bindings)
                    slot)))
              lowered-args))
            (body `(seq
                    (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
                    ,@arg-prefix
-                   (extern-call nelisp_aot_builtin_calln
+                   (extern-call ,(if (or (nelisp-aot-compiler--lisp-values-p)
+                                 nelisp-aot-compiler--dynamic-user-calls)
+                                     'nelisp_aot_funcalln 'nelisp_aot_builtin_calln)
                                 ,mirror ,frames ,name-slot ,argc ,out ,scratch
                                 ,@call-args)
                    ,out)))
@@ -13629,7 +13619,7 @@ Returns one of:
              ;; one.  Scoping by it declared `nl_os_stat_path' boxed and the
              ;; reader dumped core.
              (param-repr (and nelisp-aot-compiler--runtime-entry-params
-                              'sexp-ptr))
+                              'word))
              (_ (when param-repr
                   (dolist (cell new-fenv)
                     (setcdr cell (plist-put (cdr cell) :repr param-repr)))))
@@ -13643,6 +13633,7 @@ Returns one of:
              ;; pointers must hand a Sexp pointer back, or its caller has
              ;; a raw word to dereference.
              (return-body (if (and param-repr
+                                   (not (nelisp-aot-compiler--lisp-values-p))
                                    (memq name
                                          (if (nelisp-aot-compiler--lisp-values-p)
                                              ;; Doc 229: a defun another
@@ -13658,16 +13649,21 @@ Returns one of:
                              rt-slot-cell))
                         ;; Doc 229: one representation on every return
                         ;; path, recorded below for the loader.
-                        (nelisp-aot-compiler--lisp-settle
-                         (nelisp-aot-compiler--parse-value
-                          return-body env parse-fenv defuns)
-                         env parse-fenv defuns)))
+                        (let ((settled (nelisp-aot-compiler--lisp-settle
+                                        (nelisp-aot-compiler--parse-value
+                                         return-body env parse-fenv defuns)
+                                        env parse-fenv defuns)))
+                          (if (nelisp-aot-compiler--lisp-values-p)
+                              (nelisp-aot-compiler--lisp-as-word
+                               settled env parse-fenv defuns)
+                            settled))))
              ;; The parser maps both Lisp booleans and integer 0/1 to
              ;; immediate words.  Retain a source-proven boolean result
              ;; only when the parsed result tree is still the corresponding
              ;; 0/1 tree, and never for an internal pointer-returning callee.
              (raw-bool-return-p
               (and param-repr
+                   (not (nelisp-aot-compiler--lisp-values-p))
                    (member (symbol-name name)
                            nelisp-aot-compiler--raw-bool-returning-names)
                    (not (memq name nelisp-aot-compiler--internally-called-names))
@@ -13699,6 +13695,7 @@ Returns one of:
               :return-repr
               (cond
                ((and param-repr
+                     (not (nelisp-aot-compiler--lisp-values-p))
                      (member (symbol-name name)
                              nelisp-aot-compiler--jit-checked-car-returning-names))
                 'sexp-ptr)
@@ -13709,6 +13706,7 @@ Returns one of:
                 (pcase (nelisp-aot-compiler--lisp-repr body-ir)
                   ('raw-i64 'raw-i64)
                   ('raw-bool 'raw-bool)
+                  ('word 'word)
                   (_ 'sexp-ptr))))
               ;; Doc 229: same-unit callers enter through `NAME$internal'.
               :internal-entry

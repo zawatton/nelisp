@@ -63,8 +63,8 @@ x86_64 Linux."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
-(ert-deftest nelisp-artifact/raw-bool-return-metadata-is-source-proven ()
-  "Only boolean tail literals receive raw-bool return metadata."
+(ert-deftest nelisp-artifact/lisp-boundary-return-metadata-is-word ()
+  "Every Lisp entry returns a canonical word, including booleans and integers."
   (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
                     (executable-find "cc")
                     (executable-find "objcopy")))
@@ -92,23 +92,23 @@ x86_64 Linux."
                          (plist-get
                           (nelisp-artifact--native-defun-metadata native name)
                           :return-repr))))
-            (should (eq (funcall repr "p5rb-consp") 'raw-bool))
-            (should (eq (funcall repr "p5rb-symbolp") 'raw-bool))
+            (should (eq (funcall repr "p5rb-consp") 'word))
+            (should (eq (funcall repr "p5rb-symbolp") 'word))
             ;; Doc 229: a defun another defun calls returns its value as a
             ;; Sexp, which is what the caller reads -- the gap where the
             ;; helper handed its caller a raw boolean word is closed.  GNU
             ;; basis: every function returns a Lisp_Object (lisp.h), and the
             ;; caller tests it with NILP (lisp.h:399), never as a raw 0/1.
-            (should (eq (funcall repr "p5rb-helper") 'sexp-ptr))
-            (should (eq (funcall repr "p5rb-helper-caller") 'sexp-ptr))
+            (should (eq (funcall repr "p5rb-helper") 'word))
+            (should (eq (funcall repr "p5rb-helper-caller") 'word))
             ;; Doc 229: a type predicate is the raw tag test in value
             ;; position too; the loader boxes the boolean result as the t
             ;; or nil object.  GNU basis: Fsymbolp returns Qt or Qnil
             ;; (data.c:373), which this raw-bool record decodes to.
-            (should (eq (funcall repr "p5rb-symbolp-direct") 'raw-bool))
-            (should-not (eq (funcall repr "p5rb-int-branch") 'raw-bool))
-            (should (eq (funcall repr "p5rb-int-zero") 'raw-i64))
-            (should (eq (funcall repr "p5rb-int-one") 'raw-i64))))
+            (should (eq (funcall repr "p5rb-symbolp-direct") 'word))
+            (should (eq (funcall repr "p5rb-int-branch") 'word))
+            (should (eq (funcall repr "p5rb-int-zero") 'word))
+            (should (eq (funcall repr "p5rb-int-one") 'word))))
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
@@ -400,6 +400,30 @@ false and the whole report into `0' -- while still exiting 0."
                            (cadr probe)))))
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/native-word-result-types ()
+  "Canonical words preserve booleans, wide integers and numeric-looking text."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc") (executable-find "objcopy")))
+  (let* ((dir (make-temp-file "nelisp-word-types-" t))
+         (source (expand-file-name "word.el" dir))
+         (artifact (concat source ".neln")))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "(defun nat-word-bool (x) (if (= x 0) nil t))\n"
+                    "(defun nat-word-text (x) (if (= x 0) \"42\" \"NELN-BOOLEAN t\"))\n"
+                    "(defun nat-word-id (x) x)\n"))
+          (nelisp-artifact-compile-file source artifact nil nil nil nil nil 'neln)
+          (should-not (nelisp-artifact-native-exec artifact "nat-word-bool" '(0)))
+          (should (eq t (nelisp-artifact-native-exec artifact "nat-word-bool" '(1))))
+          (should (equal "42" (nelisp-artifact-native-exec-general artifact "nat-word-text" '(0))))
+          (should (equal "NELN-BOOLEAN t" (nelisp-artifact-native-exec-general artifact "nat-word-text" '(1))))
+          (dolist (value '(2305843009213693951 -2305843009213693952
+                          2305843009213693952 -2305843009213693953))
+            (should (= value (nelisp-artifact-native-exec
+                              artifact "nat-word-id" (list value))))))
+      (delete-directory dir t))))
 
 (provide 'nelisp-artifact-native-exec-test)
 

@@ -128,7 +128,7 @@ pointers dereferences them."
         ,(nelisp-cc-evalport-aot-builtin-calln--dispatch)
         (nelisp_cons_construct name nil_slot inner)
         (nelisp_cons_construct builtin_sym inner func)
-        (nelisp_apply_function_w func args_list frames 0))))
+        (nelisp_apply_function_w func args_list mirror 0))))
     ;; The AOT-emitted caller's ABI: fills OUT and returns OUT.
     (defun nelisp_aot_builtin_calln
        (mirror frames name argc out scratch
