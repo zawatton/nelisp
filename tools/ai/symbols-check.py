@@ -233,11 +233,23 @@ def cmd_final(_args):
     need(s.get("mcp_tools") == 40, "MCP smoke did not list 40 tools")
     need(s.get("standalone_checks_failures") == 0, "standalone-checks failed")
     print("COMMON 11 groups, 0 failures; standalone-checks 0 failures; MCP 40 tools")
-    # The criterion also names a wine smoke: the coordinator's Windows half
-    # (a cross build dumped and run under wine) records it here.
+    # The criterion also names a wine smoke: tools/ai/win-smoke.sh builds a
+    # Win64 PE from a git-archive snapshot of a commit and runs it under wine;
+    # its smoke.log ends in "WIN-SMOKE PASS" (the retired run-win.sh printed
+    # "WINE-SMOKE PASS").  wine.log is that log and wine.commit the commit
+    # (target/win/<name>/commit): the commit's build inputs must be the
+    # current ones.
     wine = OUT / "final" / "wine.log"
-    need(wine.is_file() and "WINE-SMOKE PASS" in wine.read_text(),
-         "wine smoke pending (coordinator's Windows half: target/symbols/final/wine.log)")
+    lines = [l.strip() for l in wine.read_text().splitlines() if l.strip()] if wine.is_file() else []
+    need(lines and lines[-1] == "WIN-SMOKE PASS",
+         "wine smoke pending (tools/ai/win-smoke.sh smoke OUT; copy OUT/smoke.log to "
+         "target/symbols/final/wine.log and OUT/commit to wine.commit)")
+    commit_file = OUT / "final" / "wine.commit"
+    need(commit_file.is_file(), "wine smoke has no recorded commit (target/symbols/final/wine.commit)")
+    commit = commit_file.read_text().strip()
+    need(tree_hash_of_rev(commit) == tree_hash(),
+         f"wine smoke is not from the current sources (built from {commit[:9]})")
+    print("WIN-SMOKE PASS from " + commit[:9])
     print("FINAL PASS")
 
 
@@ -253,6 +265,18 @@ def tree_hash():
     lines = []
     for f in sorted(x for x in files if x):
         lines.append(f"{sha(ROOT / f.decode())}  {f.decode()}\n")
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def tree_hash_of_rev(rev):
+    """tree_hash() of the build inputs as committed at REV."""
+    names = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "-r", "-z", "--name-only", rev,
+                            "lisp", "scripts", "src"], capture_output=True, check=True).stdout.split(b"\0")
+    lines = []
+    for f in sorted(x for x in names if x):
+        data = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{f.decode()}"],
+                              capture_output=True, check=True).stdout
+        lines.append(f"{hashlib.sha256(data).hexdigest()}  {f.decode()}\n")
     return hashlib.sha256("".join(lines).encode()).hexdigest()
 
 
