@@ -20605,7 +20605,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; boxed, no variable is looked up by name and no argument list is
     ;; consed on the fast paths.  Opcodes (vector elements; operands follow):
     ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   8 JMP pc   9 JMPNIL pc
-    ;;  11 POP   12 DUP   0 HALT
+    ;;  11 POP   12 DUP   0 HALT   19 VARREF sym (a global variable's value)
     ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
     ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
     ;;  16 CALL sym argc
@@ -21207,6 +21207,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= op 1)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            ;; 19 VARREF sym: GNU's Bvarref (bytecode.c:636-648) pushes the
+            ;; variable's value read directly, Fsymbol_value only off the
+            ;; plain path; the bytecode VM's varref entry does both, and
+            ;; signals void-variable.  No call of `symbol-value' the
+            ;; function, so no call-out, lookup of it, or kind decode.
+            (if (= op 19)
+                (seq (setq r (wf_bytecode_w_varref env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) resw 0))
+                     (if (/= r 0) (setq status r)
+                       (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
+                            (setq sp (+ sp 1)) (setq pc (+ pc 2)))))
             (if (= op 9)
                 (seq (setq sp (- sp 1))
                      (if (= (nl_val_tag (heap-read-u64 (+ stk (* sp 8)) 0)) 0)
@@ -21271,7 +21281,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (if (/= r 0) (setq status r)
                                   (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
-                (setq status -2))))))))))))))))
+                (setq status -2)))))))))))))))))
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed. Checked root failure
