@@ -2653,73 +2653,184 @@ directory tracks the tree rather than accumulating every key ever built."
                        (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
       ;; GNU's dead_object marker for free cells.
       (defun nl_cons_dead_word () ,dead)
-      ;; Image dumps (pdumper's object copy; GNU keeps dumped objects out of
-      ;; its blocks and marks them through pdumper.c:5259).  While an image
-      ;; is dumped every cons-block cell owns a legacy headered payload
-      ;; (8-byte header, then the 24-byte cell) in a region appended to the
-      ;; coalesced span, block by block in list order, so the loaded image
-      ;; holds ordinary immortal image conses and the loader is unchanged.
-      ;; +120 region start (logical offset), +128 ordinal table, +136 blocks,
-      ;; +144 1 while active, +152 1 when the ordinal table could not be
-      ;; mapped (the dump must fail).  The ordinal lives at block+NEXT+8.
-      ;; Returns the region's byte length.
-      (defun nl_dump_cons_begin (span)
-        (let* ((st (data-addr nl_typed_alloc))
-               (nb (heap-read-u64 st 40))
-               (arr (if (= nb 0) 0 (nl_os_alloc_chunk (* nb 8))))
-               (b (heap-read-u64 st 8)) (o 0))
+      ;; ---- Live-only image dump (pdumper.c dump_object, reached from the
+      ;; roots) ----
+      ;; A dump copies only the objects the image walk reaches, packed in
+      ;; address order, so the restored image has no free blocks.  Pass 1
+      ;; (mode 1) walks the roots marking traversed objects and including
+      ;; every block a visited field points into; pass 2 assigns each
+      ;; included block (sorted by address) and each reached cons-block cell
+      ;; its image offset; pass 3 (mode 2) swizzles and records the
+      ;; relocation table through that mapping.  These helpers are in
+      ;; arena.o because `nl_mc_logoff' and `nl_mc_phys' are core helpers
+      ;; that the baked eval build links without reader-gc.o.
+      ;; BSS `nl_typed_alloc': +128 cons block ordinal table, +136 blocks,
+      ;; +296 mode (0 off, 1 include pass, 2 relocate pass), +304 block
+      ;; array of [header, image offset] pairs, +312 entries, +320 bytes,
+      ;; +328 image bytes of the blocks (start of the cell region), +336
+      ;; included cells, +344 rank table (u16 per cell, 65535 = excluded),
+      ;; +352 inverse table (u16 per rank), +360 per-block first rank,
+      ;; +368 bytes of each of rank and inverse, +376 boot included bitmap,
+      ;; +384 heap targets without an image offset (the dump fails).
+      (defun nl_dump_hole_p (addr)
+        (let* ((map (heap-read-u64 (data-addr nl_boot_hole_map) 0))
+               (hlo (heap-read-u64 (data-addr nl_boot_hole_map) 8))
+               (g (sar (- addr hlo) 3)))
+          (if (= map 0) 0
+            (if (< addr hlo) 0
+              (if (< addr (heap-read-u64 (data-addr nl_boot_hole_map) 16))
+                  (logand (sar (heap-read-u64 (+ map (* (sar g 6) 8)) 0) (logand g 63)) 1)
+                0)))))
+      ;; 1 when ADDR lies inside the data of some arena chunk.
+      (defun nl_dump_in_heap (addr)
+        (let ((chunk (heap-read-u64 268436160 0)) (found 0))
           (seq
-           (ptr-write-u64 st 152 0)
-           (if (= nb 0) 0
-             (if (= arr 0) (seq (ptr-write-u64 st 152 1) 0)
-               (seq
-                (while (if (> b 0) (< o nb) 0)
-                  (seq (ptr-write-u64 arr (* o 8) b)
-                       (ptr-write-u64 b ,(+ next 8) o)
-                       (setq o (+ o 1))
-                       (setq b (heap-read-u64 b ,next))))
-                (ptr-write-u64 st 120 span)
-                (ptr-write-u64 st 128 arr)
-                (ptr-write-u64 st 136 o)
-                (ptr-write-u64 st 144 1)
-                (* o ,(* n 32))))))))
-      (defun nl_dump_cons_end ()
-        (let ((st (data-addr nl_typed_alloc)))
+           (while (if (> chunk 0) (= found 0) 0)
+             (seq (if (if (>= addr (heap-read-u64 chunk 24))
+                          (< addr (+ (heap-read-u64 chunk 0)
+                                     (if (= chunk (heap-read-u64 268436160 0))
+                                         (heap-read-u64 268435456 0)
+                                       (heap-read-u64 (+ chunk 16) 0))))
+                        0)
+                      (setq found 1) 0)
+                  (setq chunk (heap-read-u64 (+ chunk 48) 0))))
+           found)))
+      ;; Boot object holding ADDR (start bitmap, at most 4 KiB back), or 0.
+      (defun nl_dump_boot_owner (addr)
+        (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200))
+               (starts (heap-read-u64 st 224))
+               (g (sar (- addr lo) 3)) (wi (sar g 6))
+               (stop (if (< wi 8) 0 (- wi 8)))
+               (word (logand (heap-read-u64 starts (* wi 8))
+                             (if (= (logand g 63) 63) -1
+                               (- (shl 1 (+ (logand g 63) 1)) 1))))
+               (b 63) (start 0))
           (seq
-           (if (> (heap-read-u64 st 128) 0)
-               (nl_os_free_chunk (heap-read-u64 st 128) (* (heap-read-u64 st 40) 8)) 0)
-           (ptr-write-u64 st 120 0) (ptr-write-u64 st 128 0)
-           (ptr-write-u64 st 136 0) (ptr-write-u64 st 144 0)
-           0)))
-      ;; Logical image offset of ADDR inside a cons-block cell, or -1.
-      (defun nl_dump_cons_logoff (addr)
+           (while (if (= word 0) (> wi stop) 0)
+             (seq (setq wi (- wi 1)) (setq word (heap-read-u64 starts (* wi 8)))))
+           (if (= word 0) 0
+             (seq
+              (while (= (logand (sar word b) 1) 0) (setq b (- b 1)))
+              (setq start (+ lo (* (+ (* wi 64) b) 8)))
+              (if (< addr (+ (- start 8) (logand (heap-read-u64 (- start 8) 0) 4294967288)))
+                  start 0))))))
+      ;; Legacy block holding ADDR through the collector's start index, or 0.
+      (defun nl_dump_index_owner (addr)
+        (let* ((ctx (data-addr nl_gc_start_index))
+               (n (heap-read-u64 ctx 24)) (e (heap-read-u64 ctx 0))
+               (i 0) (owner 0) (go 1))
+          (seq
+           (while (if (= go 1) (< i n) 0)
+             (if (if (>= addr (+ (heap-read-u64 e 0) 8)) (< addr (heap-read-u64 e 8)) 0)
+                 (let* ((start (heap-read-u64 e 0))
+                        (bits (heap-read-u64 e 16))
+                        (slot (/ (- addr start) 8))
+                        (byte (/ slot 8))
+                        (first-byte (* (/ byte 64) 64))
+                        (v (logand (heap-read-u8 bits byte)
+                                   (- (shl 1 (+ (logand slot 7) 1)) 1)))
+                        (bit 7))
+                   (seq
+                    (setq go 0)
+                    (while (if (= v 0) (> byte first-byte) 0)
+                      (seq (setq byte (- byte 1)) (setq v (heap-read-u8 bits byte))))
+                    (if (= v 0)
+                        (setq owner (heap-read-u64
+                                     (+ bits (nl_align_up (/ (+ (- (heap-read-u64 e 8) start) 63) 64) 8))
+                                     (* (/ byte 64) 8)))
+                      (seq (while (= (logand v (shl 1 bit)) 0) (setq bit (- bit 1)))
+                           (setq owner (+ start (* (+ (* byte 8) bit) 8)))))
+                    (if (> owner 0)
+                        (if (< addr (+ (- owner 8) (logand (heap-read-u64 (- owner 8) 0) 4294967288)))
+                            0 (setq owner 0))
+                      0)))
+               (seq (setq e (+ e 24)) (setq i (+ i 1)))))
+           owner)))
+      ;; Pass 1: include the block ADDR points into.  A legacy block gets
+      ;; mark 4 (alive, not yet traversed: `nl_gc_mark_block' still upgrades
+      ;; it and recurses); an image object gets a bit in the separate boot
+      ;; included bitmap; a cons-block cell is included only by traversal.
+      (defun nl_dump_include (addr)
+        (let* ((st (data-addr nl_typed_alloc)) (blo (heap-read-u64 st 200)))
+          (if (= (logand addr 7) 0)
+              (if (= (nl_typed_find addr) 1) 0
+                (if (if (>= addr blo) (if (< addr (heap-read-u64 st 208))
+                                          (= (nl_dump_hole_p addr) 0) 0) 0)
+                    (let* ((o (nl_dump_boot_owner addr)) (g (sar (- o blo) 3))
+                           (wa (+ (heap-read-u64 st 376) (* (sar g 6) 8))))
+                      (if (= o 0) 0
+                        (ptr-write-u64 wa 0 (logior (heap-read-u64 wa 0) (shl 1 (logand g 63))))))
+                  (if (= (nl_dump_in_heap addr) 0) 0
+                    (let* ((o (nl_dump_index_owner addr)) (h (- o 8)))
+                      (if (= o 0) 0
+                        (if (= (logand (heap-read-u64 h 0) 7) 0)
+                            (ptr-write-u64 h 0 (+ (logand (heap-read-u64 h 0) 4294967288) 4))
+                          0))))))
+            0)))
+      ;; Index of the last entry of the [header, offset] array whose word
+      ;; at FIELD (0 = header, 8 = offset) is <= KEY, or -1.
+      (defun nl_dump_bsearch (key field)
+        (let* ((st (data-addr nl_typed_alloc)) (arr (heap-read-u64 st 304))
+               (lo 0) (hi (- (heap-read-u64 st 312) 1)) (ans -1) (mid 0))
+          (seq
+           (while (<= lo hi)
+             (seq (setq mid (/ (+ lo hi) 2))
+                  (if (<= (heap-read-u64 arr (+ (* mid 16) field)) key)
+                      (seq (setq ans mid) (setq lo (+ mid 1)))
+                    (setq hi (- mid 1)))))
+           ans)))
+      (defun nl_dump_excluded (addr)
         (let ((st (data-addr nl_typed_alloc)))
-          (if (= (heap-read-u64 st 144) 0) -1
-            (if (= (nl_typed_find addr) 1)
-                (let* ((blk (logand addr -32768))
-                       (off (- addr blk)))
-                  (if (>= off ,marks) -1
-                    (let* ((idx (/ off ,cell))
-                           (within (- off (* idx ,cell))))
-                      (+ (heap-read-u64 st 120)
-                         (+ (* (heap-read-u64 blk ,(+ next 8)) ,(* n 32))
-                            (+ (* idx 32) (+ 8 within)))))))
-              -1))))
-      ;; Cell address of LOGOFF inside the converted region, or 0 (inactive,
-      ;; outside it, or a header word).
-      (defun nl_dump_cons_phys (logoff)
+          (seq (if (if (= (nl_typed_find addr) 1) 1 (nl_dump_in_heap addr))
+                   (ptr-write-u64 st 384 (+ (heap-read-u64 st 384) 1)) 0)
+               -1)))
+      ;; Pass 3: image offset of ADDR, or -1 (counting heap addresses that
+      ;; have none).
+      (defun nl_dump_compact_logoff (addr)
         (let ((st (data-addr nl_typed_alloc)))
-          (if (= (heap-read-u64 st 144) 0) 0
-            (if (< logoff (heap-read-u64 st 120)) 0
-              (let* ((rel (- logoff (heap-read-u64 st 120)))
-                     (o (/ rel ,(* n 32)))
-                     (r (- rel (* o ,(* n 32))))
-                     (i (/ r 32))
-                     (within (- (- r (* i 32)) 8)))
-                (if (>= o (heap-read-u64 st 136)) 0
-                  (if (< within 0) 0
-                    (+ (heap-read-u64 (heap-read-u64 st 128) (* o 8))
-                       (+ (* i ,cell) within))))))))))))
+          (if (= (nl_typed_find addr) 1)
+              (let* ((blk (logand addr -32768)) (off (- addr blk))
+                     (idx (/ off ,cell)) (within (- off (* idx ,cell)))
+                     (o (heap-read-u64 blk ,(+ next 8)))
+                     (r (if (>= off ,marks) 65535
+                          (heap-read-u16 (heap-read-u64 st 344) (* (+ (* o ,n) idx) 2)))))
+                (if (= r 65535) (nl_dump_excluded addr)
+                  (+ (heap-read-u64 st 328)
+                     (+ (* (+ (heap-read-u64 (heap-read-u64 st 360) (* o 8)) r) 32)
+                        (+ 8 within)))))
+            (let ((i (nl_dump_bsearch addr 0)))
+              (if (< i 0) (nl_dump_excluded addr)
+                (let* ((arr (heap-read-u64 st 304))
+                       (hdr (heap-read-u64 arr (* i 16))))
+                  (if (< addr (+ hdr (logand (heap-read-u64 hdr 0) 4294967288)))
+                      (+ (heap-read-u64 arr (+ (* i 16) 8)) (- addr hdr))
+                    (nl_dump_excluded addr))))))))
+      ;; Restore: the live address of image offset LOGOFF, or 0.
+      (defun nl_dump_compact_phys (logoff)
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (>= logoff (heap-read-u64 st 328))
+              (let* ((rel (- logoff (heap-read-u64 st 328)))
+                     (g (/ rel 32)) (within (- (- rel (* g 32)) 8))
+                     (pre (heap-read-u64 st 360))
+                     (lo 0) (hi (- (heap-read-u64 st 136) 1)) (o -1) (mid 0))
+                (if (< within 0) 0
+                  (seq
+                   (while (<= lo hi)
+                     (seq (setq mid (/ (+ lo hi) 2))
+                          (if (<= (heap-read-u64 pre (* mid 8)) g)
+                              (seq (setq o mid) (setq lo (+ mid 1)))
+                            (setq hi (- mid 1)))))
+                   (if (< o 0) 0
+                     (+ (heap-read-u64 (heap-read-u64 st 128) (* o 8))
+                        (+ (* (heap-read-u16 (heap-read-u64 st 352)
+                                             (* (+ (* o ,n) (- g (heap-read-u64 pre (* o 8)))) 2))
+                              ,cell)
+                           within))))))
+            (let ((i (nl_dump_bsearch logoff 8)))
+              (if (< i 0) 0
+                (let ((arr (heap-read-u64 st 304)))
+                  (+ (heap-read-u64 arr (* i 16))
+                     (- logoff (heap-read-u64 arr (+ (* i 16) 8)))))))))))))
 
 (defun nelisp-standalone--typed-gc-forms ()
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
@@ -2823,44 +2934,228 @@ directory tracks the tree rather than accumulating every key ever built."
               (if (if (= blk (heap-read-u64 st 8)) (>= idx (heap-read-u64 st 16)) 0) 0
                 (let ((c (+ blk (* idx ,cell))))
                   (if (= (heap-read-u64 c 0) ,dead) 0 c)))))))
-      ;; Image dump: write the converted cons region (see
-      ;; `nl_dump_cons_begin'), block by block in ordinal order.  A cell the
-      ;; image walk reached becomes a live 32-byte legacy payload block
-      ;; (header, then car/cdr as swizzled in place, then the refcount); any
-      ;; other cell becomes a free block, a hole of the loaded image.
-      ;; Returns the bytes written.
-      (defun nl_dump_cons_write (fd)
-        (let* ((st (data-addr nl_typed_alloc))
-               (nb (heap-read-u64 st 136))
-               (buf (if (= nb 0) 0 (nl_os_alloc_chunk ,(* n 32))))
-               (o 0) (written 0))
-          (if (= nb 0) 0
-            (if (= buf 0) (seq (ptr-write-u64 st 152 1) -1)
+      ;; ---- Live-only image dump, reader side (see `nl_dump_include') ----
+      ;; Start pass 1: mode 1, a zeroed boot included bitmap when the boot
+      ;; structures exist, and a zero excluded-target count.  1 on success.
+      (defun nl_dump_compact_begin ()
+        (let* ((st (data-addr nl_typed_alloc)) (bytes (heap-read-u64 st 232))
+               (incl (if (> (heap-read-u64 st 208) 0) (nl_os_alloc_chunk bytes) 0)))
+          (seq
+           (ptr-write-u64 st 376 incl) (ptr-write-u64 st 384 0)
+           (ptr-write-u64 st 304 0) (ptr-write-u64 st 312 0)
+           (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
+           (if (> incl 0) (nl_os_commit_range incl 0 bytes) 0)
+           (if (if (> (heap-read-u64 st 208) 0) (= incl 0) 0) 0
+             (seq (ptr-write-u64 st 296 1) 1)))))
+      ;; Ranks of the reached cells of every cons block (in list order, the
+      ;; ordinal stored at block+NEXT+8): rank and inverse tables, per-block
+      ;; first rank.  1 on success.
+      (defun nl_dump_compact_rank_cells (st)
+        (let* ((nb (heap-read-u64 st 40))
+               (obytes (nl_align_up (+ (* nb 8) 8) 65536))
+               (tbytes (nl_align_up (+ (* nb ,(* n 2)) 16) 65536))
+               (ord (if (= nb 0) 0 (nl_os_alloc_chunk obytes)))
+               (pre (if (= ord 0) 0 (nl_os_alloc_chunk obytes)))
+               (rank (if (= pre 0) 0 (nl_os_alloc_chunk tbytes)))
+               (inv (if (= rank 0) 0 (nl_os_alloc_chunk tbytes)))
+               (b (heap-read-u64 st 8)) (o 0) (total 0) (idx 0) (r 0))
+          (if (= nb 0) 1
+            (if (= inv 0)
+                (seq (if (> ord 0) (nl_os_free_chunk ord obytes) 0)
+                     (if (> pre 0) (nl_os_free_chunk pre obytes) 0)
+                     (if (> rank 0) (nl_os_free_chunk rank tbytes) 0)
+                     0)
               (seq
-               (while (< o nb)
-                 (let* ((blk (heap-read-u64 (heap-read-u64 st 128) (* o 8)))
-                        (i 0))
-                   (seq
-                    (while (< i ,n)
-                      (let* ((c (+ blk (* i ,cell)))
-                             (d (+ buf (* i 32))))
-                        (if (= (logand (sar (heap-read-u64 blk (+ ,marks (* (sar i 6) 8)))
-                                            (logand i 63))
-                                       1)
-                               1)
-                            (seq (ptr-write-u64 d 0 32)
-                                 (ptr-write-u64 d 8 (heap-read-u64 c 0))
-                                 (ptr-write-u64 d 16 (heap-read-u64 c 8))
-                                 (ptr-write-u64 d 24 (heap-read-u64 c 16)))
-                          (seq (ptr-write-u64 d 0 34)
-                               (ptr-write-u64 d 8 0)
-                               (ptr-write-u64 d 16 0)
-                               (ptr-write-u64 d 24 0))))
-                      (setq i (+ i 1)))
-                    (setq written (+ written (nl_fa_write_all fd buf ,(* n 32) 0)))
-                    (setq o (+ o 1)))))
-               (nl_os_free_chunk buf ,(* n 32))
-               written)))))
+               (nl_os_commit_range ord 0 obytes) (nl_os_commit_range pre 0 obytes)
+               (nl_os_commit_range rank 0 tbytes) (nl_os_commit_range inv 0 tbytes)
+               (while (if (> b 0) (< o nb) 0)
+                 (seq
+                  (ptr-write-u64 ord (* o 8) b)
+                  (ptr-write-u64 b ,(+ next 8) o)
+                  (ptr-write-u64 pre (* o 8) total)
+                  (setq idx 0) (setq r 0)
+                  (while (< idx ,n)
+                    (seq
+                     (if (= (logand (sar (heap-read-u64 b (+ ,marks (* (sar idx 6) 8)))
+                                         (logand idx 63))
+                                    1)
+                            1)
+                         (seq (ptr-write-u16 rank (* (+ (* o ,n) idx) 2) r)
+                              (ptr-write-u16 inv (* (+ (* o ,n) r) 2) idx)
+                              (setq r (+ r 1)))
+                       (ptr-write-u16 rank (* (+ (* o ,n) idx) 2) 65535))
+                     (setq idx (+ idx 1))))
+                  (setq total (+ total r))
+                  (setq o (+ o 1))
+                  (setq b (heap-read-u64 b ,next))))
+               (ptr-write-u64 st 128 ord) (ptr-write-u64 st 136 o)
+               (ptr-write-u64 st 360 pre) (ptr-write-u64 st 344 rank)
+               (ptr-write-u64 st 352 inv) (ptr-write-u64 st 368 tbytes)
+               (ptr-write-u64 st 336 total)
+               1)))))
+      ;; Pass 2: sort the chunks by address, give every included block its
+      ;; image offset in address order (a legacy block marked 1 or 4, an
+      ;; image object marked or included in the boot bitmaps), check that
+      ;; both columns increase, then rank the reached cells.  1 on success.
+      (defun nl_dump_compact_assign ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (blo (heap-read-u64 st 200)) (bhi (heap-read-u64 st 208))
+               (bmarks (heap-read-u64 st 216)) (incl (heap-read-u64 st 376))
+               (order (nl_os_alloc_chunk 65536))
+               (nch 0) (chunk (heap-read-u64 268436160 0)) (i 0) (j 0) (k 0) (tmp 0)
+               (count 0) (arr 0) (abytes 0) (hdr 0) (end 0) (bt 0) (w 0) (g 0)
+               (inc 0) (off 0) (ok 1) (pass 0) (prev -1))
+          (if (= order 0) 0
+            (seq
+             (nl_os_commit_range order 0 65536)
+             (while (if (> chunk 0) (< nch 8192) 0)
+               (seq (ptr-write-u64 order (* nch 8) chunk) (setq nch (+ nch 1))
+                    (setq chunk (heap-read-u64 (+ chunk 48) 0))))
+             (setq i 0)
+             (while (< i nch)
+               (seq (setq k i) (setq j (+ i 1))
+                    (while (< j nch)
+                      (seq (if (< (heap-read-u64 (heap-read-u64 order (* j 8)) 0)
+                                  (heap-read-u64 (heap-read-u64 order (* k 8)) 0))
+                               (setq k j) 0)
+                           (setq j (+ j 1))))
+                    (setq tmp (heap-read-u64 order (* i 8)))
+                    (ptr-write-u64 order (* i 8) (heap-read-u64 order (* k 8)))
+                    (ptr-write-u64 order (* k 8) tmp)
+                    (setq i (+ i 1))))
+             (while (if (= ok 1) (< pass 2) 0)
+               (seq
+                (setq i 0) (setq count 0) (setq off 0)
+                (while (if (= ok 1) (< i nch) 0)
+                  (seq
+                   (setq chunk (heap-read-u64 order (* i 8)))
+                   (setq hdr (heap-read-u64 (+ chunk 24) 0))
+                   (setq end (nl_gc_chunk_end chunk))
+                   (while (if (= ok 1) (< hdr end) 0)
+                     (seq
+                      (setq w (heap-read-u64 hdr 0))
+                      (setq bt (logand w 4294967288))
+                      (if (if (< bt 16) 1 (if (< end (+ hdr bt)) 1 0)) (setq ok 0)
+                        (seq
+                         (setq inc (if (= (logand w 7) 1) 1 (if (= (logand w 7) 4) 1 0)))
+                         (if (if (>= hdr blo) (< hdr bhi) 0)
+                             (if (= (nl_boot_start_p (+ hdr 8)) 1)
+                                 (seq (setq g (sar (- (+ hdr 8) blo) 3))
+                                      (setq inc (logand (sar (logior (heap-read-u64 bmarks (* (sar g 6) 8))
+                                                                     (heap-read-u64 incl (* (sar g 6) 8)))
+                                                             (logand g 63))
+                                                        1)))
+                               0)
+                           0)
+                         (if (= inc 1)
+                             (seq (if (= pass 1)
+                                      (seq (ptr-write-u64 arr (* count 16) hdr)
+                                           (ptr-write-u64 arr (+ (* count 16) 8) off))
+                                    0)
+                                  (setq count (+ count 1))
+                                  (setq off (+ off bt)))
+                           0)
+                         (setq hdr (+ hdr bt))))))
+                   (setq i (+ i 1))))
+                (if (= pass 0)
+                    (seq (setq abytes (nl_align_up (+ (* count 16) 16) 65536))
+                         (setq arr (nl_os_alloc_chunk abytes))
+                         (if (= arr 0) (setq ok 0)
+                           (seq (nl_os_commit_range arr 0 abytes)
+                                (ptr-write-u64 st 304 arr) (ptr-write-u64 st 320 abytes))))
+                  (seq (ptr-write-u64 st 312 count) (ptr-write-u64 st 328 off)))
+                (setq pass (+ pass 1))))
+             (nl_os_free_chunk order 65536)
+             (setq i 0)
+             (while (if (= ok 1) (< i (heap-read-u64 st 312)) 0)
+               (seq (if (> (heap-read-u64 arr (* i 16)) prev) 0 (setq ok 0))
+                    (setq prev (heap-read-u64 arr (* i 16)))
+                    (if (> i 0)
+                        (if (> (heap-read-u64 arr (+ (* i 16) 8))
+                               (heap-read-u64 arr (+ (* (- i 1) 16) 8)))
+                            0 (setq ok 0))
+                      0)
+                    (setq i (+ i 1))))
+             (if (= ok 0) 0 (nl_dump_compact_rank_cells st))))))
+      ;; Write the image span: every included block in address order with its
+      ;; mark bits cleared, then every reached cell as a 32-byte legacy
+      ;; payload block (header, car/cdr as swizzled, refcount), through a
+      ;; 1 MiB buffer.  Returns the bytes written.
+      (defun nl_dump_compact_write (fd)
+        (let* ((st (data-addr nl_typed_alloc))
+               (buf (nl_os_alloc_chunk 1048576))
+               (arr (heap-read-u64 st 304)) (count (heap-read-u64 st 312))
+               (nb (heap-read-u64 st 136)) (pre (heap-read-u64 st 360))
+               (i 0) (fill 0) (written 0) (hdr 0) (bt 0) (k 0)
+               (o 0) (r 0) (cnt 0) (blk 0) (c 0))
+          (if (= buf 0) -1
+            (seq
+             (nl_os_commit_range buf 0 1048576)
+             (while (< i count)
+               (seq
+                (setq hdr (heap-read-u64 arr (* i 16)))
+                (setq bt (logand (heap-read-u64 hdr 0) 4294967288))
+                (if (> (+ fill bt) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (if (> bt 1048576)
+                    (seq (ptr-write-u64 buf 0 bt)
+                         (setq written (+ written (nl_fa_write_all fd buf 8 0)))
+                         (setq written (+ written (nl_fa_write_all fd (+ hdr 8) (- bt 8) 0))))
+                  (seq
+                   (ptr-write-u64 buf fill bt)
+                   (setq k 8)
+                   (while (< k bt)
+                     (seq (ptr-write-u64 (+ buf fill) k (heap-read-u64 hdr k))
+                          (setq k (+ k 8))))
+                   (setq fill (+ fill bt))))
+                (setq i (+ i 1))))
+             (while (< o nb)
+               (seq
+                (setq blk (heap-read-u64 (heap-read-u64 st 128) (* o 8)))
+                (setq cnt (- (if (< (+ o 1) nb) (heap-read-u64 pre (* (+ o 1) 8))
+                               (heap-read-u64 st 336))
+                             (heap-read-u64 pre (* o 8))))
+                (setq r 0)
+                (while (< r cnt)
+                  (seq
+                   (if (> (+ fill 32) 1048576)
+                       (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                            (setq fill 0))
+                     0)
+                   (setq c (+ blk (* (heap-read-u16 (heap-read-u64 st 352)
+                                                    (* (+ (* o ,n) r) 2))
+                                     ,cell)))
+                   (ptr-write-u64 buf fill 32)
+                   (ptr-write-u64 buf (+ fill 8) (heap-read-u64 c 0))
+                   (ptr-write-u64 buf (+ fill 16) (heap-read-u64 c 8))
+                   (ptr-write-u64 buf (+ fill 24) (heap-read-u64 c 16))
+                   (setq fill (+ fill 32))
+                   (setq r (+ r 1))))
+                (setq o (+ o 1))))
+             (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
+             (nl_os_free_chunk buf 1048576)
+             written))))
+      ;; End a live-only dump: mode 0 and every temporary table released.
+      (defun nl_dump_compact_end ()
+        (let* ((st (data-addr nl_typed_alloc)) (nb (heap-read-u64 st 136))
+               (obytes (nl_align_up (+ (* nb 8) 8) 65536)))
+          (seq
+           (ptr-write-u64 st 296 0)
+           (if (> (heap-read-u64 st 376) 0)
+               (nl_os_free_chunk (heap-read-u64 st 376) (heap-read-u64 st 232)) 0)
+           (if (> (heap-read-u64 st 304) 0)
+               (nl_os_free_chunk (heap-read-u64 st 304) (heap-read-u64 st 320)) 0)
+           (if (> (heap-read-u64 st 128) 0)
+               (seq (nl_os_free_chunk (heap-read-u64 st 128) obytes)
+                    (nl_os_free_chunk (heap-read-u64 st 360) obytes)
+                    (nl_os_free_chunk (heap-read-u64 st 344) (heap-read-u64 st 368))
+                    (nl_os_free_chunk (heap-read-u64 st 352) (heap-read-u64 st 368)))
+             0)
+           (ptr-write-u64 st 376 0) (ptr-write-u64 st 304 0) (ptr-write-u64 st 312 0)
+           (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
+           0)))
       ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
       ;; Objects of a restored cold image are immortal.  GNU never sweeps
       ;; its dump, keeps the dump's mark bits in a separate bitmap
@@ -10420,9 +10715,14 @@ leave symbols unresolved at link time."
           (if (if (< addr cds) 0 (if (< addr (+ cds cused)) 1 0))
               (+ acc (- addr cds))
             (nl_mc_logoff_walk (heap-read-u64 (+ chunk 48) 0) addr (+ acc cused))))))
+    ;; Doc 223 live-only dump: mode 1 includes the block ADDR points into
+    ;; (and answers 0 so the walk continues), mode 2 maps through the
+    ;; packed image layout; mode 0 is the coalesced-chunk mapping.
     (defun nl_mc_logoff (addr)
-      (let ((r (nl_mc_logoff_walk (heap-read-u64 268436160 0) addr 0)))
-        (if (< r 0) (nl_dump_cons_logoff addr) r)))
+      (let ((mode (heap-read-u64 (+ (data-addr nl_typed_alloc) 296) 0)))
+        (if (= mode 1) (nl_seq2 (nl_dump_include addr) 0)
+          (if (= mode 2) (nl_dump_compact_logoff addr)
+            (nl_mc_logoff_walk (heap-read-u64 268436160 0) addr 0)))))
     (defun nl_mc_phys_walk (chunk logoff acc)
       (if (= chunk 0) 0
         (let* ((cbase (heap-read-u64 chunk 0))
@@ -10431,8 +10731,9 @@ leave symbols unresolved at link time."
               (+ (+ cbase 1024) (- logoff acc))
             (nl_mc_phys_walk (heap-read-u64 (+ chunk 48) 0) logoff (+ acc cused))))))
     (defun nl_mc_phys (logoff)
-      (let ((c (nl_dump_cons_phys logoff)))
-        (if (= c 0) (nl_mc_phys_walk (heap-read-u64 268436160 0) logoff 0) c)))
+      (if (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 296) 0) 2)
+          (nl_dump_compact_phys logoff)
+        (nl_mc_phys_walk (heap-read-u64 268436160 0) logoff 0)))
     (defun nl_mc_total_walk (chunk acc)
       (if (= chunk 0) acc
         (nl_mc_total_walk (heap-read-u64 (+ chunk 48) 0)
@@ -11713,7 +12014,9 @@ leave symbols unresolved at link time."
              (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
              ;; coalesced size = sum of ALL chunks' used bytes, plus the
              ;; Doc 223 region holding every cons-block cell as an image payload
-             (total (let ((span (nl_mc_total))) (+ span (nl_dump_cons_begin span))))
+             ;; upper bound for the relocation table: every chunk byte plus
+             ;; every cons-block cell (Doc 223 packs the image to ctotal)
+             (total (+ (nl_mc_total) (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 40) 0) 43392)))
              ;; Reloc-table scratch -- Increment 1 fix (multi-chunk cold-load).
              ;; The previous placement piggybacked on chunk-0's own leftover mmap
              ;; tail (single-chunk) or the interned-region's leftover mmap tail
@@ -11741,19 +12044,16 @@ leave symbols unresolved at link time."
              (gbox (if (= env 0) 0 (heap-read-u64 (+ env 8) 0)))
              (fbox (if (= env 0) 0 (heap-read-u64 (+ env 40) 0)))
              (ubox (if (= env 0) 0 (heap-read-u64 (+ env 72) 0)))
-             (goff (nl_mc_imgoff gbox total ib ie))
-             (foff (nl_mc_imgoff fbox total ib ie))
-             (uoff (nl_mc_imgoff ubox total ib ie))
+             (goff 0) (foff 0) (uoff 0)
+             (ctotal 0) (cok 0) (cw 0)
              (tlen 0) (fd 0)
              ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                  '((written 0))))
         (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0)
-                (= (heap-read-u64 (data-addr nl_typed_alloc) 152) 1)
                 ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                     '((= (nl_os_commit_range tblbase 0 tblcap) 0))))
             ;; an unstamped build cannot vouch for its image: refuse.
             (seq (if (= tblbase 0) 0 (nl_os_free_chunk tblbase tblcap))
-                 (nl_dump_cons_end)
                  (wf_write_int_w 0 -1))
           (seq
            (nl_build_digest_trailer trl)
@@ -11764,8 +12064,7 @@ leave symbols unresolved at link time."
            (ptr-write-u64 hdr 56 ib)
            (setq fd (nl_os_open_write_truncate cpath))
            (if (< fd 0)
-               (nl_seq2 (nl_os_free_chunk tblbase tblcap)
-                        (nl_seq2 (nl_dump_cons_end) (wf_write_int_w 0 -1)))
+               (nl_seq2 (nl_os_free_chunk tblbase tblcap) (wf_write_int_w 0 -1))
              (seq
               ;; route nl_fa_emit's table to the dedicated scratch mmap
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
@@ -11784,46 +12083,72 @@ leave symbols unresolved at link time."
               ;; index stays exact throughout.
               (nl_gc_index_prepare)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
-              ;; span=total: cross-chunk pointers swizzle to coalesced logical offsets;
-              ;; dest=ds=sstart: loc=dest+(waddr-ds)=waddr => in-place over ANY chunk.
-              (nl_fa_roots sstart total sstart cin cout 3)
+              ;; Doc 223 live-only dump (pdumper.c dump_object): pass 1 marks
+              ;; what the walk reaches and includes every block a visited
+              ;; field points into (`nl_mc_logoff' in mode 1), writing nothing.
+              (setq cok (nl_dump_compact_begin))
+              (if (= cok 1)
+                  (seq (nl_dump_include gbox) (nl_dump_include fbox) (nl_dump_include ubox)
+                       (nl_fa_roots sstart total sstart cin cout 1)
+                       ;; pass 2: image offsets for the included blocks and cells
+                       (setq cok (nl_dump_compact_assign)))
+                0)
+              (bf_arena_mr_chunks (heap-read-u64 268436160 0) cin cin)
+              (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+              (if (= cok 1)
+                  (seq
+                   (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
+                   (setq ctotal (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
+                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0) 32)))
+                   (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
+                   (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
+                   (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
+                   ;; pass 3: swizzle in place through the packed layout
+                   ;; (dest=ds=sstart: loc=waddr) and record the table.
+                   (nl_fa_roots sstart ctotal sstart cin cout 3))
+                0)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
               (nl_gc_index_end)
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
               (setq tlen (heap-read-u64 cin 0))
-              (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
-              ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-                    ;; AOT arithmetic evaluates the right operand first.
-                    ;; Keep stream writes in separate statements: combining
-                    ;; header+table calls in one sum writes the table at byte 0.
-                    '((setq written (nl_fa_write_all fd hdr 64 0))
-                      (setq written (+ written (nl_fa_write_all fd tbl (* tlen 8) 0)))
-                      (setq written (+ written (nl_mc_write_chunks fd head)))
-                      (setq written (+ written (nl_dump_cons_write fd)))
-                      (setq written (+ written (nl_fa_write_all fd ib isz 0)))
-                      (setq written (+ written (nl_fa_write_all fd trl 48 0))))
-                  '((nl_fa_write_all fd hdr 64 0)
-                    (nl_fa_write_all fd tbl (* tlen 8) 0)
-                    (nl_mc_write_chunks fd head)
-                    (nl_dump_cons_write fd)
-                    (nl_fa_write_all fd ib isz 0)
-                    (nl_fa_write_all fd trl 48 0)))
+              ;; a heap target the packed layout lacks would load as a stale
+              ;; pointer: the dump fails instead
+              (if (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 384) 0) 0) (setq cok 0) 0)
+              (ptr-write-u64 hdr 8 ctotal) (ptr-write-u64 hdr 24 tlen)
+              (if (= cok 1)
+                  (seq
+                   ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                         ;; AOT arithmetic evaluates the right operand first.
+                         ;; Keep stream writes in separate statements.
+                         '((setq written (nl_fa_write_all fd hdr 64 0))
+                           (setq written (+ written (nl_fa_write_all fd tbl (* tlen 8) 0)))
+                           (setq cw (nl_dump_compact_write fd))
+                           (setq written (+ written cw))
+                           (setq written (+ written (nl_fa_write_all fd ib isz 0)))
+                           (setq written (+ written (nl_fa_write_all fd trl 48 0))))
+                       '((nl_fa_write_all fd hdr 64 0)
+                         (nl_fa_write_all fd tbl (* tlen 8) 0)
+                         (setq cw (nl_dump_compact_write fd))
+                         (nl_fa_write_all fd ib isz 0)
+                         (nl_fa_write_all fd trl 48 0))))
+                0)
               (nl_os_close_handle fd)
-              (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
+              ;; restore the live arena on every path that swizzled (mode 2)
+              (if (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 296) 0) 2)
+                  (bf_arena_inplace_restore_mc tbl tlen ib ctotal) 0)
               ;; clear the walk's dedup marks (as `bf_arena_dump_image_to_file'
               ;; does): a block left at mark 1 reads as "already recursed" to
               ;; the next collection, so a post-dump child reachable only
               ;; through it would be swept while still live.
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cout cout)
-              (nl_dump_cons_end)
+              (nl_dump_compact_end)
               (nl_os_free_chunk tblbase tblcap)
               (wf_write_int_w 0 ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-                                 '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
-                                      written -1)
-                               ;; Doc 223: a converted cons region that could
-                               ;; not be written fails the dump.
-                               '(if (= (heap-read-u64 (data-addr nl_typed_alloc) 152) 1) -1
-                                  (+ 64 (+ (* tlen 8) (+ total (+ isz 48))))))))))))
+                                 '(if (= cok 0) -1
+                                    (if (= written (+ 64 (+ (* tlen 8) (+ ctotal (+ isz 48)))))
+                                        written -1))
+                               '(if (= cok 0) -1
+                                  (if (= cw ctotal) (+ 64 (+ (* tlen 8) (+ ctotal (+ isz 48)))) -1)))))))))
 )))
     (defun bf_arena_dump_image_stream (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_stream_w args 0) out))

@@ -177,12 +177,36 @@ NeLisp's cold image is that dump (adapted):
   it in the boot bitmap.
 - Without a restored image (the build-time dump run) nothing changes.
 
-The restored image is 289 MB of arena with 34.7 MB live in 582K blocks and
-254 MB free in 81K hole runs, because the dump copies whole chunks with the
+The restored image was 289 MB of arena with 34.7 MB live in 582K blocks and
+254 MB free in 81K hole runs, because the dump copied whole chunks with the
 dumping run's garbage. GNU's dump holds live objects only, so it has no hole
-runs to sweep. Making the image compact like pdumper's object copy would
-remove the remaining per-collection hole walk; it needs a forwarding dump and
-is the next image step.
+runs to sweep.
+
+** Live-only image dump (step 3)
+
+pdumper copies only the objects =dump_object= reaches from the roots. The
+stream dump (=nelisp--arena-dump-image-stream=) now does the same in three
+passes over the existing image walk:
+
+1. Mode 1: the walk marks what it traverses; =nl_mc_logoff= includes the
+   block that every visited field and its target point into (a legacy block
+   gets mark 4, which later traversal still upgrades and recurses; an image
+   object gets a bit in a separate included bitmap; a cons-block cell is
+   included by traversal only). Nothing is written.
+2. =nl_dump_compact_assign= sorts the chunks by address and gives every
+   included block an image offset in address order, checks that both
+   columns increase, and ranks the reached cells of every cons block.
+3. Mode 2: the walk swizzles in place and records the relocation table
+   through that packed layout. =nl_dump_compact_write= writes only the
+   included blocks (mark bits cleared) and the reached cells. A heap target
+   without an image offset fails the dump. The restore runs on every path
+   that swizzled.
+
+The loader is unchanged. The build-time image is now 44 MB on disk instead
+of 310 MB: a 22.1 MB span of 503K blocks with no free block, 16.9 MB of
+interned names and 628K relocations. A restored image therefore has no hole
+runs. Collections, the index and the sweep touch only what was allocated
+after the restore.
 
 * Expected effect and the remaining gap (S2)
 
