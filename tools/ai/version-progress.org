@@ -1,0 +1,31 @@
+#+TITLE: Version identity: nelisp --version and a genuine :nelisp-version in runtime manifests
+
+# User request 2026-10-21: "nelisp.exe --versionでバージョンが表示されるようにして".
+# Today the IME on Windows runs v1.5.0-59-g0afd1a77d (2026-10-10). Its
+# operators had to work the version out from the runtime directory name:
+# `nelisp.exe --version` prints usage, and the bundled manifest records
+# :nelisp-version "unknown" (lisp/nelisp-artifact.el reads
+# `nelisp--cli-version', which the standalone binary never binds).
+# Base: eval/core-20261017 at 9d5f4a515 (v1.5.0-1546-g9d5f4a515). This
+# lands on eval/core after candidate 3.
+# Env (set by whoever runs the meter): VER_DYN, VER_STATIC are the
+# dynamic/static builds of HEAD; VER_OLD is the deployed 9d5f4a515 binary.
+
+* S1 Version identity
+** S1.1 `--version` on dynamic and static
+Each prints exactly one line, `NeLisp <describe> (<target>, <linkage>)`, where <describe> equals `git describe --tags --long --always --dirty` of the build source. It exits 0 with empty stderr and loads no user files. A control shows VER_OLD fails this check.
+cmd: python3 tools/ai/version-check.py cli
+** S1.2 Runtime identity: at runtime `nelisp-version` and `nelisp--cli-version` are bound to the same <describe> string, and an artifact manifest written by the binary records :nelisp-version equal to it rather than "unknown"
+cmd: python3 tools/ai/version-check.py runtime
+** S1.3 Provenance controls
+- A build with NELISP_VERSION=<override> reports the override.
+- A build from a tree with an uncommitted change reports a -dirty suffix.
+- A build outside git, from an exported tree, reports the override or "unknown-<sha>". If none is derivable it reports "unknown", never a stale value.
+cmd: python3 tools/ai/version-check.py controls
+
+* S2 No regression and end to end
+** S2.1 Final verification on the new builds: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
+cmd: python3 tools/ai/version-check.py final
+** S2.2 End to end: a Windows nelisp.exe built from HEAD prints the same <describe> under wine with `--version`, and a runtime manifest written there records it
+The coordinator runs wine.
+pending
