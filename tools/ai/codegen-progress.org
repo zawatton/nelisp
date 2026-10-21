@@ -65,6 +65,7 @@ cmd: python3 tools/ai/codegen-check.py endtoend
 ** S2.2 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools, on fresh dynamic and static builds
 cmd: python3 tools/ai/codegen-check.py final
 #+NOTE: 2026-10-21 fresh dynamic and static builds of 4ce5b14bf: target/final-verify/checks.sh 11 groups, 0 failures (maphash-sparse known-red), test/perf/standalone-checks.sh rc 0 on the dynamic build, anvil MCP smoke 40 tools.
+#+NOTE: 2026-10-21 rerun after Doc 229 on fresh dynamic and static builds of 2b3d0674f: 11 groups, 0 failures; standalone checks rc 0; MCP smoke 40 tools (target/codegen/final.json now names these builds).
 
 * S3 Lisp values in native artifacts: GNU's Lisp_Object rules (Doc 229)
 # Coordinator, 2026-10-21 after val-final2: nil and t reaching predicates as
@@ -75,11 +76,16 @@ cmd: python3 tools/ai/codegen-check.py final
 # change on the Lisp-to-AOT path so the runtime's dialect keeps raw words.
 ** S3.1 docs/design/229-native-lisp-values-gnu-object-words.org: the native value convention mapped to GNU's (Lisp_Object words, NILP, Qt/Qnil, the FIXNUMP fast path, d_reloc constants), the controls and the gate
 cmd: python3 tools/ai/codegen-check.py plan229
+#+NOTE: 2026-10-21 Doc 229 maps the artifact value convention to GNU's.  Ported: NILP as the truth test (lisp.h:399, comp.c:1763), Qt/Qnil from comparisons (bytecode.c:1278), the FIXNUMP fast path with the runtime's function behind it (bytecode.c:1331), Fsymbolp (data.c:373), Lisp_Object words in variables.  Adapted: a value crossing a boundary is a slot, because the loader and the AOT dispatcher read only slots; a quoted constant is built per evaluation (no d_reloc vector in the loader's frame).
 ** S3.2 Values and truth: nil and t are the nil and t objects, every truth test is NILP on the value, comparisons and predicates yield t or nil, variables keep their values, results are decoded by recorded representation (every stage-1 control fails on 9d5f4a515 and every stage-1 case passes)
 cmd: python3 tools/ai/codegen-check.py lispvalue 1
+#+NOTE: 2026-10-21 41 programs: 32 controls fail with 9d5f4a515's compiler, loader and binary (29 wrong answers, 3 crashes, among them the aref-nil if, null and length on nil, (null 0) and (symbolp (< 1 2))); 9 guards pass there.  All 41 pass on d31ce29e8 and on the tip.
 ** S3.3 A native artifact holding a quoted list constant loads and answers as the interpreter does (the controls are refused on 9d5f4a515)
 cmd: python3 tools/ai/codegen-check.py lispvalue loader
+#+NOTE: 2026-10-21 3 controls refused on 9d5f4a515 ((:unbridgeable "nl_val_clone_into" "nl_alloc_consbox")); they load and answer as the interpreter since 965352353 (nelisp_cons_construct).
 ** S3.4 Numbers: arithmetic and comparison take the fixnum path only for fixnums and the runtime's own function otherwise; float literals, floor and mod answer as in GNU (every stage-2 control fails on 9d5f4a515)
 cmd: python3 tools/ai/codegen-check.py lispvalue 2
+#+NOTE: 2026-10-21 16 programs: 15 controls fail on 9d5f4a515 (14 wrong, 1 crash: float arguments and literals, floor, floored mod), 1 guard; all pass since 16caa337d.  Not covered: the AOT dispatcher's mod of a float (-1 for (mod -7.5 3), GNU 1.5) and fixnum overflow to bignums.
 ** S3.5 End to end: a fresh build of the tip passes validate.sh with every Doc 229 stage in the AOT differential, and the dialect is untouched (the five kernels compile byte-identically to 1042eedbc's compiler)
 cmd: python3 tools/ai/codegen-check.py lispvalue-e2e
+#+NOTE: 2026-10-21 fresh dynamic build of 2b3d0674f: validate.sh 0 failing groups (standalone checks 75 cases 0 failures, fx corpus and spike, AOT differential 160 programs -- 97 earlier, nil/t/cons back in the CG5 tag programs, 60 Doc 229 -- all answering as the interpreter); the five kernels compile byte-identically to 1042eedbc's compiler.  Timing on CPU 9, 7 paired rounds, new/old compiler on one binary: predicate loop x0.48, when-loop x1.04, compare-loop x1.02, accumulator loop x1.06 (x5.92 before variables held value words).

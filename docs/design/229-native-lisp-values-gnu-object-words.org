@@ -1,5 +1,5 @@
 #+TITLE: Doc 229 -- Lisp values in native artifacts follow GNU's Lisp_Object rules
-#+STATUS: PLANNED
+#+STATUS: IMPLEMENTED
 #+DATE: 2026-10-21
 #+LANE: codegen (eval/codegen-20261021), implementer Claude Opus 5.5
 
@@ -89,6 +89,7 @@ Doc 224 kernels compile byte-identically before and after.
 |----------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | a =Lisp_Object= word                                     | =sexp-ptr=: the address of a 32-byte Sexp slot.  The only form that crosses a boundary: dispatcher arguments and results, extern arguments, returns, elements, variables.                                   |
 | a word known to be a fixnum (comp.el's type propagation) | =raw-i64=: the unboxed integer                                                                                                                                                                         |
+| a =Lisp_Object= in a variable                            | =word=: an immediate (a fixnum 4N+1, nil 3, t 7) or a slot address -- what a variable holds; the runtime's tag and payload reads decode both                                                             |
 | a word known to be Qt or Qnil                            | =raw-bool= (new): 0 for nil, 1 for t -- the same numbers as the Sexp tags Nil and T                                                                                                                     |
 | =NILP (x)=                                               | =raw-bool=: =x == 0=; =raw-i64=: false (a fixnum is never nil; the form still runs for its effects); =sexp-ptr=: =(sexp-tag x) == Nil=, which Doc 224 CG5 fuses into the immediate test and one tag-byte compare |
 | =make_fixnum=                                            | box a =raw-i64=: =sexp-int-make= into a fresh slot                                                                                                                                                     |
@@ -121,13 +122,17 @@ disagree is =mixed= until a consumer converts it.
 5. *=while=* yields nil.  The loop head is reached from the entry and from
    the end of the body, so a variable boxed on either path is boxed on both:
    before the loop and, when the body leaves it raw, at the end of the body.
-6. *Variables* hold a fixnum raw or anything else as a Sexp, like a GNU
-   =Lisp_Object= slot: a boolean or a value whose arms disagree is boxed
-   when stored, so the existing representation joins only meet =raw-i64= and
-   =sexp-ptr=.  A user =let= binding of a value that is the =out= slot is
-   copied to a slot of its own (=nl_sexp_clone_into=), as =setq= already did;
-   compiler-made bindings, which consume their value at once, are not
-   copied.  (The preprocessor marks the user bindings.)
+6. *Variables* hold a fixnum raw or anything else as a value word, as a
+   GNU variable holds a =Lisp_Object=: a fixnum that fits is the immediate
+   4N+1 (GNU =FIXNUM_OVERFLOW_P=; a wider one is boxed), nil and t are the
+   immediates 3 and 7, anything else is its slot.  No allocation for a
+   fixnum, nil or t; a boundary that takes a slot -- a dispatcher argument,
+   a return, a clone source -- boxes an immediate there.  A variable raw on
+   one path and a word on another joins as a word.  A user =let= or a
+   =setq= copies out of the dispatcher's =out= slot only the arms that are
+   =out=, since the next delegated call overwrites it; compiler-made
+   bindings, which consume their value at once, are not copied (the
+   preprocessor marks the user bindings).
 7. *Predicates* follow the argument's representation: on a =raw-i64= the
    answer is known (=integerp=, =numberp=, =atom= true; the rest false); on
    a =raw-bool=, =null=/=not=/=listp= are =x == 0= and =symbolp=, =atom= are
@@ -197,12 +202,12 @@ The coordinator's named controls are all in it: the aref-nil =if=
   =eq= between two evaluations of the same quoted list is t there and nil
   here.  Blocking layer: the loader's call frame carries no per-artifact
   constant vector.
-- *Boxing allocates.*  A boxed fixnum, boolean or float, and the copy of a
-  =let=-bound call result, take a 32-byte =nl_alloc_bytes= slot; GNU's
-  fixnums, nil and t are immediate words.  The runtime has immediate words,
-  but the loader's =nelisp-native-load-unbox= and the AOT dispatcher read
-  every value as a slot address.  Blocking layer: the artifact value ABI of
-  the loader and =nelisp_aot_builtin_calln=.
+- *Boxing at a boundary allocates.*  An immediate crossing a boundary that
+  takes a slot (a dispatcher argument, a return, an element), a float
+  literal, and the copy of a =let=-bound call result take a 32-byte
+  =nl_alloc_bytes= slot; GNU passes the word itself.  Blocking layer: the
+  loader's =nelisp-native-load-unbox= and the AOT dispatcher
+  (=nelisp_aot_builtin_calln=) read every value as a slot address.
 - *=mod= of a float through the dispatcher* answers the truncating integer
   remainder (=(mod -7.5 3)= gives -1; the interpreter and GNU give 1.5).  The
   compiler hands the operation to the runtime's function as GNU does; the
@@ -219,4 +224,42 @@ The coordinator's named controls are all in it: the aref-nil =if=
 
 * Results
 
-Pending the final runs.
+** Corpus (tools/ai/codegen-lispvalue.py)
+
+| stage  | programs | controls failing on 9d5f4a515            | guards | passing on the tip |
+|--------+----------+------------------------------------------+--------+--------------------|
+| 1      |       41 | 32 (29 wrong answers, 3 crashes)         |      9 | 41                 |
+| loader |        3 | 3 (refused: unbridged externs)           |      0 | 3                  |
+| 2      |       16 | 15 (14 wrong answers, 1 crash)           |      1 | 16                 |
+
+** Timing
+
+Artifact micro-benchmarks (target/codegen/lvbench): four defuns, each a
+100,000-iteration loop, compiled by 1042eedbc's compiler and by the tip and
+called through =nelisp-native-load-call= on the same binary; 7 paired
+rounds on CPU 9 (3.78-4.50 GHz), the new/old ratio taken inside each round.
+
+| defun     | loop body                                   | new/old median | per-round range |
+|-----------+---------------------------------------------+----------------+-----------------|
+| lvb-when  | =(when (aref v 0) ...)=, a dispatcher call   |         x1.035 | 0.762-1.345     |
+| lvb-pred  | =(and (consp x) (symbolp (car x)))=          |         x0.482 | 0.325-0.666     |
+| lvb-cmp   | =(< i a)= on a Sexp argument                 |         x1.022 | 0.791-1.290     |
+| lvb-arith | =(setq s (+ s a))= on a Sexp argument        |         x1.062 | 0.585-1.094     |
+
+Before variables held value words, lvb-arith was x5.92 (a heap box per
+iteration).  The predicates are faster because they are tag tests now, not
+dispatcher calls.  The old code was faster nowhere it answered correctly
+for every argument: it read any argument as a fixnum.
+
+** Suites
+
+- Focused ERT (compiler, codegen, artifact, native-load; 805 tests): the
+  same 17 failures as with 1042eedbc's compiler in this harness.
+- COMMON final verification on fresh dynamic and static builds of the tip:
+  11 groups, 0 failures; standalone checks rc 0; anvil MCP smoke 40 tools.
+- =validate.sh= on a fresh dynamic build of the tip: standalone checks (75
+  cases, 0 failures), fx corpus and spike, and the AOT differential with
+  every stage -- 160 programs, the CG5 tag programs with nil, t and the
+  cons back -- 0 failing groups.
+- The five Doc 224 kernels compile byte-identically with 1042eedbc's
+  compiler and with the tip: the dialect is untouched.
