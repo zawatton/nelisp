@@ -81,11 +81,13 @@ cmd: grep -q 'GATE-COUNT: 11 cases, 0 failures' target/word-heap-s1/final-checks
 
 ** S2.1 arena bytes/cons <= 32 (payload <=24) by the objsize probe
 #+NOTE: 2026-10-20 S0 revision S2: old <=24/16 arena B with/without rc -> <=32/24 arena B; payload limits remain24/16 B. Reason: every allocation adds8 B BLOCK_TOTAL. Exercise make-list and individually retained populations to expose alias overhead; remove every linked rc reader/writer before shrinking.
-cmd: printf '%s\n' 'S2.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
+#+NOTE: 2026-10-21 the GC-port lane owns this criterion (coordinator). Checker: tools/ai/word-heap-stage-check.py s2.1 (gc-port ledger S1.3). WH_REPR_DYN/WH_REPR_STATIC name the two linkages (each with its .cold), WH_REPR_BASE a binary that still allocates header boxes (negative control), WH_REPR_CENSUS a NELISP_BOX_CENSUS file.
+cmd: python3 tools/ai/word-heap-stage-check.py s2.1 --dyn "${WH_REPR_DYN:-target/gc-port/cur/nelisp-dyn}" --static "${WH_REPR_STATIC:-target/gc-port/cur/nelisp-static}" --control "${WH_REPR_BASE:-target/gc-port/base/nelisp-dyn}"
 
 ** S2.2 cons refcount removed: arena bytes/cons <=24 (payload <=16)
 #+NOTE: 2026-10-20 unit correction: old <=16 arena B -> <=24 arena B; payload limit stays 16 B. Live clone lock-xadd at payload+16 must be removed before shrinking; old drop source/layout consumers must be retired or guarded. A 16 B charged cons needs a separate pooled-allocator design.
-cmd: printf '%s\n' 'S2.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
+#+NOTE: 2026-10-21 the GC-port lane owns this criterion (coordinator). Checker: tools/ai/word-heap-stage-check.py s2.2 (gc-port ledger S1.4). WH_REPR_DYN/WH_REPR_STATIC name the two linkages (each with its .cold), WH_REPR_BASE a binary that still allocates header boxes (negative control), WH_REPR_CENSUS a NELISP_BOX_CENSUS file.
+cmd: python3 tools/ai/word-heap-stage-check.py s2.2 --dyn "${WH_REPR_DYN:-target/gc-port/cur/nelisp-dyn}" --static "${WH_REPR_STATIC:-target/gc-port/cur/nelisp-static}" --control "${WH_REPR_BASE:-target/gc-port/base/nelisp-dyn}"
 
 ** S2.3 End to end: full suite, exit-stash/GC-root checks, image dump/restore round-trip, wine Windows smoke
 cmd: printf '%s\n' 'S2.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
@@ -170,7 +172,8 @@ cmd: printf '%s\n' 'S4.3: implementation or complete acceptance evidence remains
 
 ** S5.1 No object type allocates a 32 B header box (census of allocation sites by type)
 #+NOTE: 2026-10-20 S0 revision S5: old zero-header target -> same0 plus float<=24, measured one-limb bignum<=32, detached two-field marker<=40 arena B, with GNU numeric/error parity. Reason: payload plus allocator prefix and measured40/64/272 B constructor slopes need separate limits.
-cmd: printf '%s\n' 'S5.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
+#+NOTE: 2026-10-21 the GC-port lane owns this criterion (coordinator). Checker: tools/ai/word-heap-stage-check.py s5.1 (gc-port ledger S1.5). WH_REPR_DYN/WH_REPR_STATIC name the two linkages (each with its .cold), WH_REPR_BASE a binary that still allocates header boxes (negative control), WH_REPR_CENSUS a NELISP_BOX_CENSUS file.
+cmd: python3 tools/ai/word-heap-stage-check.py s5.1 --dyn "${WH_REPR_DYN:-target/gc-port/cur/nelisp-dyn}" --static "${WH_REPR_STATIC:-target/gc-port/cur/nelisp-static}" --control "${WH_REPR_BASE:-target/gc-port/base/nelisp-dyn}"
 
 ** S5.2 End to end: full suite, GC-root checks, image round-trip, numeric parity cases, wine smoke
 cmd: printf '%s\n' 'S5.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
@@ -182,7 +185,9 @@ cmd: printf '%s\n' 'S5.2: implementation or complete acceptance evidence remains
 cmd: printf '%s\n' 'S6.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
 ** S6.2 Precise roots are WORD slots: nl_root_reserve 32 B slots = 0
-cmd: printf '%s\n' 'S6.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
+#+NOTE: 2026-10-21 the GC-port lane owns this criterion (coordinator). Checker: tools/ai/word-heap-stage-check.py s6.2 (gc-port ledger S1.6). WH_REPR_DYN/WH_REPR_STATIC name the two linkages (each with its .cold), WH_REPR_BASE a binary that still allocates header boxes (negative control), WH_REPR_CENSUS a NELISP_BOX_CENSUS file.
+#+NOTE: 2026-10-21 the call path (CALL_PATH in the checker: apply/funcall, call-form eval and its argument list, nl_sb_ specbind/unbind_to, nelisp_env_lookup_function, nl_n4_(apply|direct_apply|named_apply|push|finish), native frames and the whole byte-code VM wf_bytecode_*) belongs to S6.3; callpath-perf confirmed the boundary.
+cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census "${WH_REPR_CENSUS:-target/gc-port/cur/census.tsv}"
 
 ** S6.3 Call-path roots are WORD slots on a root stack; the prim-callfloor funcall/builtin gates pass (VM and bytecode <=5x GNU, interpreter <=10x)
 cmd: printf '%s\n' 'S6.3: implementation or complete acceptance evidence remains outstanding' >&2; exit 1

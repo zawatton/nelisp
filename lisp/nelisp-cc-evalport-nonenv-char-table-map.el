@@ -125,7 +125,7 @@
               (cons-set-car range-slot start-slot)
               (cons-set-cdr range-slot end-slot)
               (wf_copy32 key-slot range-slot)))
-           (if (= (heap-read-u64 value-slot 0) 0)
+           (if (= (sexp-tag value-slot) 0)
                (setq cursor (+ end 1))
              (let* ((call-rc
                      (if (= (wf_mapcar_resolve_fn fn-slot env nil-slot) 1)

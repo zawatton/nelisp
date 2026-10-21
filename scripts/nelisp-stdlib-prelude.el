@@ -25835,7 +25835,7 @@ With ENSURE, print only when the stream is not at the start of a line."
   "Typed logical-object census from the most recent explicit collection.")
 (defun nelisp--gc-statistics (snapshot)
   (setq nelisp--gc-last-snapshot snapshot)
-  (list (list 'conses 24 (aref snapshot 0) 0)
+  (list (list 'conses 16 (aref snapshot 0) 0)
         (list 'symbols 32 (aref snapshot 1) 0)
         (list 'strings 32 (aref snapshot 2) 0)
         (list 'string-bytes 1 (aref snapshot 3))
