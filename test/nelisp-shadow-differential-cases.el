@@ -67,6 +67,9 @@
          (symbol-name name) (eq name nil)
          (aref [nil t -7] 2)))
  ;; Reader WORDs preserve immediates and read-label identity across recursion.
+ ;; GNU string streams skip lazy docstrings through U+001F, not by byte count.
+ (car (read-from-string (concat "#@3 ignored text" (string 31) " 42")))
+ (condition-case err (read-from-string "#[nil]") (error err))
  (let* ((values (car (read-from-string "(nil t -7 [nil t 9] . tail)"))))
    (list (car values) (cadr values) (nth 2 values) (aref (nth 3 values) 2)
          (cdr (cdr (cdr (cdr values))))))

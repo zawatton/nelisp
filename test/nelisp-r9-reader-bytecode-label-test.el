@@ -34,6 +34,17 @@
 
 (nelisp-r9-reader-bytecode-label-test--install-source)
 
+(ert-deftest nelisp-r9-reader-bytecode-invalid-object-data ()
+  "Malformed compiled-function metadata has GNU's exact reader condition."
+  (dolist (source '("#[nil]" "#[t \"x\" [] 1]" "#[nil \"x\" []]"
+                    "#[nil \"x\" [] -1]" "#[nil \"x\" 1 1]"
+                    "#[nil \"x\" [] 1 nil nil nil]"))
+    (should
+     (equal (condition-case err (read-from-string source) (error err))
+            (condition-case err
+                (nelisp--rd-read-one source 0 (length source))
+              (error err))))))
+
 (defun nelisp-r9-reader-bytecode-label-test--read (source)
   (car (nelisp--rd-read-one source 0 (length source))))
 
@@ -155,6 +166,49 @@
             (should (equal (aref inner 1) (aref function 1)))
             (should (equal (aref (aref inner 2) 0) "y"))))
       (delete-directory directory t))))
+
+(ert-deftest nelisp-reader-elc-docskip-continues-after-docstrings ()
+  (dolist (source
+           (list (concat "#@4 ab" (string 31) "42 trailing")
+                 (concat "#@99 日本語) (\"" (string 31) "42 trailing")
+                 (concat "#@0" (string 31) "42 trailing")
+                 (concat "#@ " (string 31) "42 trailing")
+                 (concat "#@1 " (string 31) "#@4 ab" (string 31)
+                         "42 trailing")))
+    (should (equal (nelisp--rd-read-one source 0 (length source))
+                   (read-from-string source)))))
+
+(ert-deftest nelisp-reader-elc-docskip-preserves-nested-bytecode ()
+  (let* ((source (concat "#@30 ignored ) [ \\\"" (string 31)
+                         "#[nil \"\\300\\207\" [42] 1]"))
+         (result (nelisp--rd-read-one source 0 (length source))))
+    (should (byte-code-function-p (car result)))
+    (should (= (funcall (car result)) 42))
+    (should (= (cdr result) (length source)))))
+
+(ert-deftest nelisp-reader-elc-docskip-zero-zero-is-immediate-eof ()
+  (dolist (source '("#@00 ignored" "#@001 ignored" "#@0001 ignored"))
+    (should (equal (nelisp--rd-read-one source 0 (length source))
+                   (read-from-string source)))
+    (should nelisp--rd-skip-nil)))
+
+(ert-deftest nelisp-reader-elc-docskip-consumes-first-separator-like-gnu ()
+  ;; A positive count consumes its first non-digit before searching for US.
+  ;; A US in that separator position does not terminate the skipped string.
+  (let ((source (concat "#@1" (string 31) "ignored" (string 31) "42")))
+    (should (equal (nelisp--rd-read-one source 0 (length source))
+                   (read-from-string source)))))
+
+(ert-deftest nelisp-reader-elc-docskip-rejects-count-overflow ()
+  (let ((source (concat "#@9223372036854775808 " (string 31) "42")))
+    (should-error (read-from-string source) :type 'invalid-read-syntax)
+    (should-error (nelisp--rd-read-one source 0 (length source))
+                  :type 'invalid-read-syntax)))
+
+(ert-deftest nelisp-reader-elc-docskip-lookalikes-stay-data ()
+  (dolist (source '("\"#@4 ab\"" "\\#@symbol" "; #@4 comment\n42"))
+    (should (equal (nelisp--rd-read-one source 0 (length source))
+                   (read-from-string source)))))
 
 (provide 'nelisp-r9-reader-bytecode-label-test)
 

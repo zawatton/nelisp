@@ -18830,6 +18830,28 @@ GNU leaves nil and reader-generated quote/function/backquote heads bare."
 (defvar nelisp--rd-error-index nil
   "String index of the closing bracket behind the last `invalid-read-syntax'.")
 
+(defun nelisp--rd-skip-docstring (s i n)
+  "Skip GNU's lazy string marker in S, with I immediately after `#@'.
+Like lread.c's skip_lazy_string/skip_dyn_bytes for string streams, scan
+through the next unit separator.  Only file streams use the byte count."
+  (let ((count 0) (digits 0))
+    (while (and (< i n) (>= (aref s i) 48) (<= (aref s i) 57))
+      (setq count (+ (* count 10) (- (aref s i) 48))
+            digits (1+ digits)
+            i (1+ i))
+      ;; GNU accumulates the marker in ptrdiff_t, rather than a fixnum.
+      (when (> count 9223372036854775807)
+        (signal 'invalid-read-syntax '("#@")))
+      ;; This takes effect at the second zero, before any remaining digits.
+      (when (and (= digits 2) (= count 0))
+        (setq nelisp--rd-skip-nil t i n)))
+    (unless nelisp--rd-skip-nil
+      ;; A positive count has already consumed its first non-digit in GNU.
+      (when (and (> count 0) (< i n)) (setq i (1+ i)))
+      (while (and (< i n) (/= (aref s i) 31)) (setq i (1+ i)))
+      (when (< i n) (setq i (1+ i))))
+    i))
+
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
     (while go
@@ -18841,18 +18863,10 @@ GNU leaves nil and reader-generated quote/function/backquote heads bare."
       (when (and (< i n) (= (aref s i) 59)) ; ;
         (while (and (< i n) (not (= (aref s i) 10))) (setq i (1+ i)))
         (setq go t))
-      ;; GNU 31.1's `#@NUMBER' on a string or buffer stream (measured):
-      ;; everything up to the end of the input is skipped, never just NUMBER
-      ;; bytes, so what follows is end-of-file -- except that `#@' followed
-      ;; by two or more zeros (`#@00', GNU's "skip to end of file") makes the
-      ;; read answer nil, which `nelisp--rd-skip-nil' reports to the caller.
+      ;; Lazy docstrings are quoted data, including unmatched Lisp syntax.
       (when (and (< (1+ i) n) (= (aref s i) 35) (= (aref s (1+ i)) 64))
-        (let ((j (+ i 2)) (zeros t))
-          (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
-            (unless (= (aref s j) 48) (setq zeros nil))
-            (setq j (1+ j)))
-          (setq nelisp--rd-skip-nil (and zeros (>= (- j i 2) 2)))
-          (setq i n))))
+        (setq i (nelisp--rd-skip-docstring s (+ i 2) n)
+              go t)))
     i))
 
 (defun nelisp--rd-atom-end (s i n)
@@ -19378,7 +19392,7 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                               (and (integerp arglist)
                                    (<= -2305843009213693952 arglist)
                                    (<= arglist 2305843009213693951))))
-               (signal 'invalid-read-syntax (list "#[")))
+               (signal 'invalid-read-syntax (list "Invalid byte-code object")))
              (setq code (nelisp--rd-resolve-completed-label-shallow code)
                    constants
                    (nelisp--rd-resolve-completed-label-shallow constants))
@@ -19395,7 +19409,7 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                ;; acceptance distinct from malformed byte-code syntax until
                ;; the runtime has an interpreted-function object type.
                (signal 'unsupported-feature '(interpreted-function-byte-code)))
-              (t (signal 'invalid-read-syntax (list "#["))))))
+              (t (signal 'invalid-read-syntax (list "Invalid byte-code object"))))))
           ;; `#:' reads a new uninterned symbol on every occurrence.  Keep
           ;; its decoded name independent from the global intern table.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 58))

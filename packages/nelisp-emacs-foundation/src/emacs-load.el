@@ -1028,6 +1028,23 @@ cannot contain load-time rewrites, even when its literal data mentions
                   (not (eq head 'defalias))
                   (not (memq head nelisp--load-rewrite-wrapper-heads)))))))
 
+  (defun emacs-load--replace-source-literal (from to source)
+    "Replace non-overlapping literal FROM spans in SOURCE with TO.
+Use character positions and join unchanged spans once, avoiding `string-replace'
+implementation's growing-prefix allocation on large source containers."
+    (when (= (length from) 0)
+      (signal 'wrong-length-argument '(0)))
+    (let ((position 0) (pieces nil) found)
+      (while (setq found
+                   (string-search from source position))
+        (push (substring source position found) pieces)
+        (push to pieces)
+        (setq position (+ found (length from))))
+      (if (null pieces)
+          source
+        (push (substring source position) pieces)
+        (apply #'concat (nreverse pieces)))))
+
   (defun nelisp--load-eval-source-tail (source pos len)
     "Evaluate the remainder of SOURCE from POS to LEN as one native unit.
 Escape hatch for `nelisp--load-eval-source-incremental': used only when
@@ -1056,7 +1073,7 @@ plain substring check is applied here."
           ;; establish their own boundaries rather than inherit this one.
           (emacs-load--source-single-form-p nil))
       (when (emacs-load--artifact-string-search "cc-provide" tail 0)
-        (setq tail (string-replace "cc-provide" "provide" tail)))
+        (setq tail (emacs-load--replace-source-literal "cc-provide" "provide" tail)))
       (nelisp--eval-source-string
        (concat "(progn\n"
                (if (and (emacs-load--artifact-string-search "defalias" tail 0)
@@ -1067,27 +1084,31 @@ plain substring check is applied here."
                "\n)"))))
 
   (defun nelisp--load-eval-source-declined-form (source pos form-end)
-    "Evaluate one form whose native read was declined.
-Return a cons of the evaluated value and the byte position immediately after
-the form.  The caller has already bounded the form with the structural
-scanner, so a reader limitation on one form does not send all remaining
-SOURCE through the slow fallback or lose the following forms.  Reuse the tail
-evaluator for the isolated range so its existing `cc-provide' and `defalias'
-normalization remains identical to the large-form path."
-    (let ((emacs-load--source-single-form-p t))
-      (cons (condition-case err
-                (nelisp--load-eval-source-tail source pos form-end)
-              (invalid-read-syntax
-               ;; The runtime reader rejects some valid GNU syntax, e.g. a
-               ;; string mixing "\x9f" with "\x061c" (marginalia.el).  When
-               ;; the native reader cannot read this form at all, nothing
-               ;; was evaluated yet: read it with the Lisp reader instead.
-               ;; An error raised while evaluating a readable form is
-               ;; re-signalled, so no form is ever evaluated twice.
-               (if (emacs-load--native-read-one source pos form-end)
-                   (signal (car err) (cdr err))
-                 (nelisp--load-eval-lisp-read-slice source pos form-end))))
-            form-end)))
+    "Evaluate one form whose initial native read was declined.
+Once FORM-END bounds a large container, try its complete native read once.
+This avoids the fallback's Lisp read/print cycle for source files wrapped
+in a single large WHEN, while preserving quoted strings and symbols.
+If the native reader still declines, retain the source fallback."
+    (let* ((span (- form-end pos))
+           (probe
+            (and (fboundp 'nelisp--read-all-from-string-native)
+                 (> span (car (last emacs-load--native-read-probe-window-sizes)))
+                 (let ((emacs-load--native-read-probe-window-sizes (list span)))
+                   (emacs-load--native-read-one source pos form-end)))))
+      (cons
+       (if (and probe (= (cdr probe) form-end))
+           (nelisp--load-eval-one-form
+            (nelisp--load-rewrite-defalias-form (car probe)))
+         (let ((emacs-load--source-single-form-p t))
+           (condition-case err
+               (nelisp--load-eval-source-tail source pos form-end)
+             (invalid-read-syntax
+              ;; Valid GNU syntax which the native reader cannot represent
+              ;; must still use the Lisp reader, without evaluating twice.
+              (if (emacs-load--native-read-one source pos form-end)
+                  (signal (car err) (cdr err))
+                (nelisp--load-eval-lisp-read-slice source pos form-end))))))
+       form-end)))
 
   (defun nelisp--load-eval-lisp-read-slice (source pos form-end)
     "Read SOURCE between POS and FORM-END with `read-from-string' and eval it.
@@ -3877,6 +3898,9 @@ subtrees are left untouched."
           (cond
            ((memq nelisp--load-rw-head '(quote function))
             nelisp--load-rw-form)
+           ((eq nelisp--load-rw-head 'cc-provide)
+            (setcar nelisp--load-rw-form 'provide)
+            nelisp--load-rw-form)
            ((eq nelisp--load-rw-head 'defalias)
             (let ((name (cadr nelisp--load-rw-form)))
               (when (and (consp name) (memq (car name) '(quote function))
@@ -3930,6 +3954,75 @@ optimization candidate; keep the normal load path on the fast reader."
                 options)
                (not (equal (match-string 1 options) "nil")))))))
 
+  (defvar load-prefer-newer nil
+    "Non-nil means loading prefers the newest suffix in a search directory.")
+
+  (defvar bytecomp-version-regexp
+    "^;;;.\\(in Emacs version\\|bytecomp version FSF\\)"
+    "Pattern identifying a compiled-file header safe for the reader.")
+
+  (defun emacs-load--elc-version (source)
+    "Return GNU's compiled header version, zero for an unsafe header.
+As in lread.c:safe_to_load_version, inspect at most 512 bytes after
+skipping the first line.  Empty files have version one.  The compiler
+comment is the safety check; GNU does not impose a numeric version cap."
+    (if (= (length source) 0)
+        1
+      (let* ((header (substring source 0 (min 512 (length source))))
+             (newline (string-search "\n" header))
+             (case-fold-search t))
+        (if (and newline
+                 (string-match-p bytecomp-version-regexp
+                                 (substring header newline)))
+            (if (> newline 4) (aref header 4) 1)
+          0))))
+
+  (defun emacs-load--eval-elc (source resolved)
+    "Read GNU compiled SOURCE incrementally and execute its top-level forms.
+Keep the original byte offsets and byte-code objects, without the source
+loader's defalias rewrites or native artifact compilation.  Top-level
+`byte-code' uses the same executor as compiled function calls."
+    (when (= (emacs-load--elc-version source) 0)
+      ;; Foundation bootstrap formatters may omit GNU message quoting.
+      ;; Quote the template before interpolation, preserving filename bytes.
+      (let* ((style (or (and (fboundp 'text-quoting-style)
+                              (text-quoting-style))
+                         (and (boundp 'text-quoting-style) text-quoting-style)))
+             (template
+              (cond ((eq style 'grave) "File `%s' was not compiled in Emacs")
+                    ((eq style 'straight) "File '%s' was not compiled in Emacs")
+                    (t (concat "File " (char-to-string 8216) "%s"
+                               (char-to-string 8217)
+                               " was not compiled in Emacs")))))
+        (signal 'error (list (format template resolved)))))
+    (let ((load-file-name resolved)
+          (lexical-binding nil)
+          (position 0)
+          (limit (length source))
+          (count 0))
+      (while (< (setq position
+                      (nelisp--load-skip-space-and-comments source position))
+                limit)
+        (let ((parsed
+               (condition-case err
+                   (read-from-string source position limit)
+                 (end-of-file
+                  ;; GNU's #@00 explicitly discards the remaining input.
+                  (if (and (<= (+ position 4) limit)
+                           (string= (substring source position (+ position 4))
+                                    "#@00"))
+                      (cons nil limit)
+                    ;; GNU's file reader includes load-true-file-name.
+                    (signal 'end-of-file (list resolved)))))))
+          (unless (and (consp parsed) (integerp (cdr parsed))
+                       (> (cdr parsed) position))
+            (signal 'end-of-file (list "compiled load reader made no progress")))
+          (eval (car parsed) nil)
+          (setq position (cdr parsed)
+                count (1+ count))
+          (emacs-load--periodic-gc count)))
+      t))
+
   (defun nelisp--load-resolved-file (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures."
     (cond
@@ -3939,31 +4032,35 @@ optimization candidate; keep the normal load path on the fast reader."
      (t
       (let* ((base (file-name-nondirectory resolved))
              (source (emacs-load--read-file-string resolved))
+             (compiled (and (stringp source)
+                            (or (string-suffix-p ".elc" resolved)
+                                (string-suffix-p ".elc.gz" resolved)
+                                (> (emacs-load--elc-version source) 1))))
              (lexical-binding (and (stringp source)
                                    (emacs-load--source-lexical-binding-p source)))
-             (source (if (stringp source)
+             (source (if (and (stringp source) (not compiled))
                          (emacs-load--rewrite-named-unicode-escapes source)
                        source))
-             (source (if (and (stringp source)
+             (source (if (and (stringp source) (not compiled)
                                (not emacs-load--propertized-string-reader-native-p))
                          (emacs-load--rewrite-propertized-string-literals
                           source)
                        source))
-             (source (if (and (stringp source)
+             (source (if (and (stringp source) (not compiled)
                                (not emacs-load--labeled-object-reader-native-p))
                          (emacs-load--rewrite-labeled-object-references
                           source)
                        source))
-             (source (if (and (stringp source)
+             (source (if (and (stringp source) (not compiled)
                                (not emacs-load--escaped-modifier-char-literal-reader-native-p))
                          (emacs-load--rewrite-escaped-modifier-char-literals
                           source)
                        source))
-             (source (if (and (stringp source)
+             (source (if (and (stringp source) (not compiled)
                               (not emacs-load--escaped-unicode-source-reader-native-p))
                          (emacs-load--rewrite-escaped-unicode-character-literals source)
                        source))
-             (artifact (and emacs-load-auto-native-compile
+             (artifact (and (not compiled) emacs-load-auto-native-compile
                             (not (string-prefix-p "cc-" base))
                             (stringp source)
                             (emacs-load--artifact-load-or-compile
@@ -3974,6 +4071,7 @@ optimization candidate; keep the normal load path on the fast reader."
            ((null source)
             (if noerror nil
               (signal 'file-error (list "read error" resolved))))
+           (compiled (emacs-load--eval-elc source resolved))
            (t
             ;; `cc-provide' is a compile-time wrapper around `provide', but
             ;; NeLisp's fast source evaluator bare-aborts on that form head.
@@ -3985,7 +4083,7 @@ optimization candidate; keep the normal load path on the fast reader."
                 (setq source
                       (concat
                        (substring source 0 tail-start)
-                       (string-replace "(cc-provide 'cc-defs)"
+                       (emacs-load--replace-source-literal "(cc-provide 'cc-defs)"
                                        "(provide 'cc-defs)"
                                        (substring source tail-start))))))
             ;; Per-file replay marker for the CC Mode language-constant
@@ -4032,13 +4130,101 @@ optimization candidate; keep the normal load path on the fast reader."
                     t)
                 (setq load-file-name prior-lfn))))))))))
 
+  (defun emacs-load--candidate-suffixes (file nosuffix must-suffix)
+    "Return GNU load suffixes for FILE, NOSUFFIX and MUST-SUFFIX."
+    (if nosuffix
+        '("")
+      (let ((suffixes nil)
+            (qualified (file-name-directory file))
+            (representations (if (boundp 'load-file-rep-suffixes)
+                                 load-file-rep-suffixes '(""))))
+        (dolist (suffix (if (boundp 'load-suffixes)
+                           load-suffixes '(".elc" ".el")))
+          ;; GNU recognizes an explicitly supplied .el/.elc even if the
+          ;; configured load-suffixes do not contain that extension.
+          (dolist (representation representations)
+            (push (concat suffix representation) suffixes)))
+        (setq qualified (or qualified (string-suffix-p ".el" file)
+                            (string-suffix-p ".elc" file)))
+        (setq suffixes (nreverse suffixes))
+        (if (and must-suffix (not qualified))
+            suffixes
+          (append suffixes representations)))))
+
+  (defun emacs-load--newer-file-p (candidate previous)
+    "Return non-nil when CANDIDATE's mtime is later than PREVIOUS's.
+GNU openp compares the complete timespec, preserving suffix order on ties.
+Use the standalone stat fields directly; a source-only foundation does not
+necessarily provide `file-newer-than-file-p'."
+    (if (fboundp 'nelisp--syscall-stat-field)
+        (let ((candidate-seconds (nelisp--syscall-stat-field candidate 88))
+              (previous-seconds (nelisp--syscall-stat-field previous 88)))
+          (or (> candidate-seconds previous-seconds)
+              (and (= candidate-seconds previous-seconds)
+                   (> (nelisp--syscall-stat-field candidate 96)
+                      (nelisp--syscall-stat-field previous 96)))))
+      (let ((candidate-attributes (file-attributes candidate 'integer))
+            (previous-attributes (file-attributes previous 'integer)))
+        (and candidate-attributes
+             (or (not previous-attributes)
+                 (time-less-p (nth 5 previous-attributes)
+                              (nth 5 candidate-attributes)))))))
+
+  (defun emacs-load--find-file (file suffixes path newer)
+    "Find FILE using ordered SUFFIXES in PATH.
+NEWER chooses the newest suffix within the first matching directory;
+equal timestamps preserve suffix order, as GNU openp does."
+    (unless (stringp file)
+      (signal 'wrong-type-argument (list 'stringp file)))
+    (let ((directories (if (file-name-absolute-p file) '(nil)
+                         (or path '(nil))))
+          (plain-name (and (fboundp 'emacs-fns--plain-relative-name-p)
+                           (emacs-fns--plain-relative-name-p file)))
+          found)
+      (while (and directories (not found))
+        (let ((remaining (or suffixes '("")))
+              (prefix (and plain-name
+                           (emacs-fns--canonical-directory (car directories)))))
+          (while (and remaining (or newer (not found)))
+            (let ((candidate
+                   (if prefix
+                       (concat prefix file (car remaining))
+                     (expand-file-name (concat file (car remaining))
+                                       (car directories)))))
+              (when (if (and prefix (fboundp 'nelisp--syscall-stat))
+                        (eq (nelisp--syscall-stat candidate) 'file)
+                      (emacs-load--regular-file-p candidate))
+                (when (or (not found)
+                          (and newer (emacs-load--newer-file-p candidate found)))
+                  (setq found candidate))))
+            (setq remaining (cdr remaining))))
+        (setq directories (cdr directories)))
+      found))
+
   (defun emacs-load--resolve-file (file nosuffix must-suffix)
-    "Resolve FILE once using `load' suffix and search-path semantics."
-    (locate-file file
-                 (and (boundp 'load-path) load-path)
-                 (emacs-fns--load-candidate-suffixes
-                  file nosuffix must-suffix)
-                 #'emacs-fns--regular-file-p))
+    "Resolve FILE using GNU load suffix and search-path semantics."
+    (unless (string= file "")
+      (emacs-load--find-file
+       file (emacs-load--candidate-suffixes file nosuffix must-suffix)
+       (and (boundp 'load-path) load-path) load-prefer-newer)))
+
+  (defun emacs-load--locate-library
+      (library &optional nosuffix path interactive-call)
+    "Locate LIBRARY with GNU `locate-library' suffix and PATH semantics.
+Like GNU subr.el, this preserves suffix order even if `load-prefer-newer'
+is non-nil; that option controls `load' and `require'."
+    (let ((file (emacs-load--find-file
+                 library (if nosuffix
+                             (if (boundp 'load-file-rep-suffixes)
+                                 load-file-rep-suffixes '(""))
+                           (emacs-load--candidate-suffixes library nil nil))
+                 (or path (and (boundp 'load-path) load-path)) nil)))
+      (when interactive-call
+        (if file (message "Library is file %s" file)
+          (message "No library %s in search path" library)))
+      file))
+
+  (defalias 'locate-library #'emacs-load--locate-library)
 
   (defun load (file &optional noerror _nomessage nosuffix must-suffix)
     "Resolve FILE through `load-path' and execute it."
@@ -4065,6 +4251,11 @@ optimization candidate; keep the normal load path on the fast reader."
 Unlike `load', this never searches `load-path' or adds a suffix."
   (let ((resolved (expand-file-name file)))
     (nelisp--load-resolved-file resolved nil)))
+
+  ;; emacs-fns selected source-only defaults before this loader existed.
+  (when (equal load-suffixes '(".el"))
+    (setq load-suffixes '(".elc" ".el")))
+  (provide 'nelisp-elc-load)
 
 )
 
