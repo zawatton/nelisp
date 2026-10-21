@@ -32,6 +32,11 @@ export TMPDIR=$ROOT/target/tmp XDG_CACHE_HOME=$ROOT/target/xdg-cache
 mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
 
 say() { echo "BATCH-E $*"; }
+# The binaries may predate HEAD only by commits to this ledger's own files.
+built_from_head_tree() {  # built_from_head_tree REV
+  git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/batch-e-check.sh' \
+    ':(exclude)tools/ai/batch-e-progress.org'
+}
 fail() { say "FAIL: $*"; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
 
@@ -89,7 +94,7 @@ log_check() {
     common) f=target/final-verify/integE-summary.log
             grep -q 'GATE-COUNT: 11 cases, 0 failures' "$f" 2>/dev/null || fail "COMMON not 11/0 in $f" ;;
     mcp)    f=target/final-verify/integE-mcp.log
-            sed -n 2p "$f" 2>/dev/null | grep -q '^tools=40$' || fail "MCP not 40 tools in $f" ;;
+            sed -n 2p "$f" 2>/dev/null | grep -qx '2 tools=40' || fail "MCP not 40 tools in $f" ;;
     sweep)  f=target/integ/sweep-E.txt
             [ "$(grep -c 'SIGSEGV=0/' "$f" 2>/dev/null)" = 4 ] && ! grep -q 'other=[^ ]' "$f" ||
               fail "sweep not clean in $f" ;;
@@ -99,7 +104,8 @@ log_check() {
             [ "$(grep -c '^AOT-DIFF .* cases=97 wrong-chunks=0 crashes=0 PASS' "$f" 2>/dev/null)" = 2 ] ||
               fail "AOT differential not 97/97 on both in $f" ;;
     win)    f=target/win/E/smoke.log
-            [ "$(cat target/win/E/commit 2>/dev/null)" = "$(git rev-parse HEAD)" ] || fail "Windows build is not HEAD"
+            c=$(cat target/win/E/commit 2>/dev/null)
+            [ -n "$c" ] && built_from_head_tree "$c" || fail "Windows build ${c:0:9} is not HEAD's tree"
             tail -1 "$f" 2>/dev/null | grep -q '^WIN-SMOKE PASS' || fail "Windows smoke not PASS in $f" ;;
     timing) f=target/integ/timing-E/report.txt
             grep -q 'ratio median' "$f" 2>/dev/null || fail "no timing report $f" ;;
@@ -169,13 +175,13 @@ EOF
     done
     say "PASS coldload" ;;
   built)
-    head=$(git rev-parse --short=9 HEAD)
     for tag in dyn static; do
       bin=$DYN; [ $tag = static ] && bin=$ST
       v=$(capped "$bin" --version 2>/dev/null | head -1)
-      case $v in *"-g$head ("*) ;; *) fail "$tag: '$v' does not name $head" ;; esac
+      rev=$(printf '%s\n' "$v" | sed -n 's/.*-g\([0-9a-f]\{9\}\) (.*/\1/p')
+      [ -n "$rev" ] && built_from_head_tree "$rev" || fail "$tag: '$v' is not built from HEAD's tree"
     done
-    say "PASS built ($head)" ;;
+    say "PASS built ($rev, HEAD's tree)" ;;
   casetab)
     for m in api behaviour; do
       CASETAB_DYNAMIC_BIN=$DYN CASETAB_STATIC_BIN=$ST CASETAB_EVIDENCE_DIR=$OUT/casetab CASETAB_TIMEOUT=300 \
