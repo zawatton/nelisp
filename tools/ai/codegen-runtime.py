@@ -11,7 +11,7 @@ selfcheck: one deliberately wrong result must be rejected.
 
 Sources are pinned in test/perf/codegen-runtime, never read from a live
 callpath tree. CODEGEN_EMACS, CODEGEN_CC, CODEGEN_CPU, CODEGEN_RUNTIME_OUT,
-CODEGEN_RUNTIME_BASE, CODEGEN_RUNTIME_CANDIDATE and CODEGEN_RUNTIME_GNU
+CODEGEN_RUNTIME_BASE, CODEGEN_RUNTIME_BIN and CODEGEN_RUNTIME_GNU
 override checkout-relative defaults. Build/test children have an 8 GiB cap.
 """
 import argparse
@@ -68,6 +68,18 @@ def cc():
     return os.environ.get("CODEGEN_CC", "gcc-14" if shutil.which("gcc-14") else "gcc")
 
 
+def emacs_reference():
+    command = os.environ.get("CODEGEN_EMACS", os.environ.get("CODEGEN_RUNTIME_GNU", "emacs"))
+    binary = shutil.which(command)
+    if binary is None:
+        raise ValueError("GNU Emacs reference is unavailable: " + command)
+    version = run([binary, "--version"]).stdout.splitlines()[0]
+    if not re.match(r"^GNU Emacs 31\.1(?:\s|$)", version):
+        raise ValueError("GNU Emacs 31.1 reference required, got: " + version)
+    save("gnu-reference.json", {"binary": str(Path(binary).resolve()), "sha256": sha(binary), "version": version})
+    return binary
+
+
 def forms(path):
     """Read the deliberately restricted, fully evaluated pinned AOT dialect."""
     tokens = re.findall(r';[^\n]*|"(?:[^"\\]|\\.)*"|[()]|[^\s()]+', path.read_text())
@@ -96,6 +108,24 @@ def cname(s):
     return "cr_" + re.sub(r"[^a-zA-Z0-9_]", lambda m: "_%02x" % ord(m[0]), s)
 
 
+def vname(s):
+    # Lisp's value and function namespaces are separate. C's are not.
+    return "cr_var_" + cname(s)[3:]
+
+
+def unique_forms(source):
+    result, seen = [], {}
+    for form in source:
+        name = form[1]
+        if name in seen:
+            if seen[name] != form:
+                raise ValueError("conflicting pinned providers for " + name)
+            continue
+        seen[name] = form
+        result.append(form)
+    return result
+
+
 class Lower:
     """Mechanical C expression lowering; unknown calls retain an extern ABI.
 
@@ -104,6 +134,7 @@ class Lower:
     nor signed overflow may change the pinned dialect's behavior.
     """
     def __init__(self, source, target=None):
+        source = unique_forms(source)
         self.source = source
         for f in source:
             if f[2] == "nil":
@@ -116,7 +147,7 @@ class Lower:
 
     def fresh(self):
         self.serial += 1
-        return "cr_tmp_%d" % self.serial
+        return "cg_tmp_%d" % self.serial
 
     def sequence(self, xs):
         return "({ " + " ".join(self.expr(x) + ";" for x in xs[:-1]) + " " + self.expr(xs[-1] if xs else 0) + "; })"
@@ -133,7 +164,7 @@ class Lower:
                 symbol = "literal_" + x[1:]
                 self.externs.setdefault(symbol, 0)
                 return cname(symbol) + "()"
-            return "0" if x == "nil" else "1" if x == "t" else cname(x)
+            return "0" if x == "nil" else "1" if x == "t" else vname(x)
         if not x:
             return "0"
         op, a = x[0], x[1:]
@@ -149,16 +180,16 @@ class Lower:
             return "(%s ? %s : %s)" % (self.expr(a[0]), self.expr(a[1]), self.sequence(a[2:]))
         if op in ("let", "let*"):
             if op == "let*":
-                decl = " ".join("I %s = %s;" % (cname(b[0]), self.expr(b[1])) for b in a[0])
+                decl = " ".join("I %s = %s;" % (vname(b[0]), self.expr(b[1])) for b in a[0])
             else:
                 ts = [self.fresh() for _ in a[0]]
                 decl = " ".join("I %s = %s;" % (t, self.expr(b[1])) for t, b in zip(ts, a[0]))
-                decl += " " + " ".join("I %s = %s;" % (cname(b[0]), t) for t, b in zip(ts, a[0]))
+                decl += " " + " ".join("I %s = %s;" % (vname(b[0]), t) for t, b in zip(ts, a[0]))
             return "({ %s %s; })" % (decl, self.sequence(a[1:]))
         if op == "setq":
             if len(a) % 2:
                 raise ValueError("odd setq")
-            return "(" + ", ".join("(%s = %s)" % (cname(a[i]), self.expr(a[i + 1])) for i in range(0, len(a), 2)) + ")"
+            return "(" + ", ".join("(%s = %s)" % (vname(a[i]), self.expr(a[i + 1])) for i in range(0, len(a), 2)) + ")"
         if op == "while":
             return "({ while (%s) { %s; } (I)0; })" % (self.expr(a[0]), self.sequence(a[1:]))
         if op in ("and", "or"):
@@ -187,8 +218,9 @@ class Lower:
             bits = op.rsplit("u", 1)[1]
             return self.operands(a, lambda ts: "(*(uint%s_t *)(uintptr_t)((U)%s + (U)%s) = %s, (I)1)" % (bits, *ts))
         if op in ("record-slot-count", "vector-len"):
-            offset = 48 if op == "record-slot-count" else 16
-            return self.operands(a, lambda ts: "*(I *)(uintptr_t)(*(I *)(uintptr_t)(%s + 8) + %d)" % (ts[0], offset))
+            return self.operands(a, lambda ts: "(*(I *)(uintptr_t)cg_compact_payload(%s) >> 8)" % ts[0])
+        if op in ("heap-sexp-tag-word", "heap-sexp-payload"):
+            op = "nl_word_tag64" if op == "heap-sexp-tag-word" else "nl_word_payload"
         if op == "sexp-int-unwrap":
             return self.operands(a, lambda ts: "(%s & 1) ? (%s >> 2) : *(I *)(uintptr_t)(%s + 8)" % (ts[0], ts[0], ts[0]))
         if op == "sexp-int-make":
@@ -198,9 +230,11 @@ class Lower:
         if op == "alloc-bytes":
             op = "nl_alloc_bytes"
         if op == "sexp-tag":
-            return "cr_tag(%s)" % self.expr(a[0])
+            return "cg_tag(%s)" % self.expr(a[0])
         if op == "str-eq":
-            return self.operands(a, lambda ts: "cr_streq(%s)" % ", ".join(ts))
+            return self.operands(a, lambda ts: "cg_streq(%s)" % ", ".join(ts))
+        if op == "syscall-direct":
+            return self.operands(a, lambda ts: "(I)syscall(%s)" % ", ".join(ts))
         if op == "extern-call":
             op, a = a[0], a[1:]
         if op in ("quote", "lambda", "function"):
@@ -215,7 +249,7 @@ class Lower:
         bodies = []
         for f in self.source:
             attr = "__attribute__((noipa)) " if (f[1] == self.target or self.target is None) else "static "
-            bodies.append("%sI %s(%s) { return %s; }" % (attr, cname(f[1]), ", ".join("I " + cname(p) for p in f[2]) or "void", self.sequence(f[3:])))
+            bodies.append("%sI %s(%s) { return %s; }" % (attr, cname(f[1]), ", ".join("I " + vname(p) for p in f[2]) or "void", self.sequence(f[3:])))
         decls = []
         for f in self.source:
             attr = "" if (f[1] == self.target or self.target is None) else "static "
@@ -226,10 +260,25 @@ class Lower:
         return (SRC / "intrinsics.h").read_text() + "\n" + "\n".join(decls + bodies) + "\n"
 
 
+def generated(target=None):
+    return OUT / "generated" / (target or "study")
+
+
 def generate(target=None):
     OUT.mkdir(parents=True, exist_ok=True)
     source = forms(SRC / "runtime.nl.el")
     specs = json.loads((SRC / "fixtures.json").read_text())
+    if target:
+        wanted = specs.get(target, {}).get("functions", [])
+        if (SRC / "dependencies.nl.el").exists():
+            source += forms(SRC / "dependencies.nl.el")
+        if (SRC / "heap-fields.nl.el").exists():
+            source += forms(SRC / "heap-fields.nl.el")
+        source = [f for f in source if f[1] in wanted]
+    if specs.get(target, {}).get("lower_driver"):
+        source += forms(SRC / (target + ".nl.el"))
+    if specs.get(target, {}).get("auto_cold"):
+        source += forms(OUT / (target + ".cold.nl.el"))
     addresses = specs.get(target, {}).get("data_addresses", {})
     def fix(x):
         if not isinstance(x, list):
@@ -239,11 +288,17 @@ def generate(target=None):
         return [fix(y) for y in x]
     source = [fix(f) for f in source]
     lower = Lower(source, target)
-    cpath = OUT / "runtime.c"
+    gen = generated(target)
+    gen.mkdir(parents=True, exist_ok=True)
+    cpath = gen / "runtime.c"
     cpath.write_text(lower.translate())
-    save("lowering.json", {"source_sha256": sha(SRC / "runtime.nl.el"), "generated_c_sha256": sha(cpath),
+    save(str(cpath.parent.relative_to(OUT) / "lowering.json"), {"source_sha256": sha(SRC / "runtime.nl.el"), "generated_c_sha256": sha(cpath),
                           "externs": lower.externs, "data": sorted(lower.data), "revision": PINS["revision"],
-                          "fidelity": "Exact pinned control/data flow; raw ptr stores return sentinel1; x86 shifts mask count63. Only representative fixture paths are independently validated. Heap-view helper calls and standard-output literal boundary in execute_frame remain opaque externs; its semantic parity is unestablished."})
+                          "target": target or "study",
+                          "dependencies_sha256": sha(SRC / "dependencies.nl.el") if (SRC / "dependencies.nl.el").exists() else None,
+                          "heap_fields_sha256": sha(SRC / "heap-fields.nl.el") if (SRC / "heap-fields.nl.el").exists() else None,
+                          "vector_convention": specs.get(target, {}).get("vector_convention", "compact-word" if target is None else "legacy-view"),
+                          "fidelity": "Mechanical lowering preserves pinned branches and data flow; raw stores return sentinel1 and x86 shifts mask count63. Genuine pinned heap-word providers supply semantic field access. Seven GNU full-width goldens validate only documented representative paths. Unexercised external boundaries, including standard-output symbol allocation, trap; broader runtime parity is unestablished."})
     return lower
 
 
@@ -295,8 +350,8 @@ def census(binary, names, raw_symbols=None):
 
 def static_study():
     lower = generate()
-    run([cc(), "-O2", "-fwrapv", "-fno-strict-aliasing", "-c", OUT / "runtime.c", "-o", OUT / "runtime.gcc.o"])
-    emacs = os.environ.get("CODEGEN_EMACS", "emacs")
+    run([cc(), "-O2", "-fwrapv", "-fno-strict-aliasing", "-c", generated() / "runtime.c", "-o", generated() / "runtime.gcc.o"])
+    emacs = emacs_reference()
     proc = run([emacs, "-Q", "--batch", "-L", ROOT / "lisp", "-L", ROOT / "src", "-L", ROOT / "scripts",
                 "-l", SRC / "compile.el", "--eval", "(codegen-runtime-unit)"] , cwd=ROOT,
                env=dict(os.environ, CODEGEN_RUNTIME_OUT=str(OUT)))
@@ -304,8 +359,10 @@ def static_study():
     gcc = {}
     source = forms(SRC / "runtime.nl.el")
     for name in NAMES:
-        cfile = OUT / (name + ".c")
-        obj = OUT / (name + ".gcc.o")
+        static = OUT / "census"
+        static.mkdir(parents=True, exist_ok=True)
+        cfile = static / (name + ".c")
+        obj = static / (name + ".gcc.o")
         cfile.write_text(Lower(source, name).translate())
         run([cc(), "-O2", "-fwrapv", "-fno-strict-aliasing", "-c", cfile, "-o", obj])
         gcc.update(census(obj, {name: cname(name)}))
@@ -318,19 +375,47 @@ def static_study():
     return result
 
 
+def prepare_cold(name):
+    specs = json.loads((SRC / "fixtures.json").read_text())
+    spec = specs[name]
+    if not spec.get("auto_cold"):
+        return
+    wanted = spec["functions"]
+    source = forms(SRC / "runtime.nl.el") + forms(SRC / "dependencies.nl.el")
+    if (SRC / "heap-fields.nl.el").exists():
+        source += forms(SRC / "heap-fields.nl.el")
+    source = [f for f in source if f[1] in wanted] + forms(SRC / (name + ".nl.el"))
+    lower = Lower(source, name)
+    lower.translate()
+    rows, mapping = [], {}
+    externs = dict(lower.externs)
+    externs.update(spec.get("native_cold", {}))
+    for index, (symbol, arity) in enumerate(sorted(externs.items())):
+        code = 100 + index
+        if code > 250:
+            raise ValueError("too many unresolved cold boundaries")
+        mapping[code] = symbol
+        params = " ".join("p%d" % i for i in range(arity))
+        rows.append("(defun %s (%s) (syscall-direct 60 %d 0 0 0 0 0))" % (symbol, params, code))
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / (name + ".cold.nl.el")).write_text("\n".join(rows) + "\n")
+    save(name + ".cold-map.json", mapping)
+
+
 def fixture(name):
     if not (SRC / (name + ".nl.el")).exists():
         reason = MISSING.get(name, "no representative runnable fixture yet")
         save(name + ".missing.json", {"name": name, "pass": False, "reason": reason})
         raise ValueError(name + ": " + reason + "; criterion remains FAIL")
+    prepare_cold(name)
     generate(name)
-    emacs = os.environ.get("CODEGEN_EMACS", "emacs")
+    emacs = emacs_reference()
     proc = run([emacs, "-Q", "--batch", "-L", ROOT / "lisp", "-L", ROOT / "src", "-L", ROOT / "scripts",
                 "-l", SRC / "compile.el", "--eval", '(codegen-runtime-executable "%s")' % name], cwd=ROOT,
                env=dict(os.environ, CODEGEN_RUNTIME_OUT=str(OUT)))
     (OUT / (name + ".compile.log")).write_text(proc.stdout + proc.stderr)
     run([cc(), "-O2", "-fwrapv", "-fno-strict-aliasing", "-ffunction-sections", "-fdata-sections",
-         "-Wl,--gc-sections", "-I", SRC, "-I", OUT, SRC / (name + ".c"), "-o", OUT / (name + ".gcc")])
+         "-Wl,--gc-sections", "-I", SRC, "-I", generated(name), SRC / (name + ".c"), "-o", OUT / (name + ".gcc")])
     bins = {"nl": OUT / (name + ".nl"), "gcc": OUT / (name + ".gcc")}
     # Representative cases must match independent complete 64-bit goldens,
     # not merely low exit bits; validate.el runs the same inputs in GNU.
@@ -413,7 +498,7 @@ def ir(name):
     count = int(os.environ.get("CODEGEN_RUNTIME_IR_N", "1000" if name == "wf_bytecode_w_fast_run" else str(N)))
     result = {"name": name, "diagnostic_only": True, "n": count, "variants": {}, "source_sha256": sha(SRC / "runtime.nl.el")}
     for variant, exe in bins.items():
-        counts, outputs = [], []
+        counts, outputs, owners = [], [], []
         for n in (count, 0):
             dest = OUT / (name + "." + variant + ".%d.cg" % n)
             proc = run([heavy_run(), "taskset", "-c", "0-7", "valgrind", "--tool=callgrind", "--callgrind-out-file=" + str(dest), exe], input=f"{n:08d} 1\n")
@@ -422,7 +507,17 @@ def ir(name):
             if not m:
                 raise ValueError("missing callgrind totals")
             counts.append(int(m[1]))
-        result["variants"][variant] = {"ir_per_call": (counts[0] - counts[1]) / count, "outputs": outputs, "sha256": sha(exe)}
+            owners.append(profile(dest, exe, capture=True))
+        symbol = name if variant == "nl" else cname(name)
+        self_delta = owners[0]["all_self_ir"].get(symbol, 0) - owners[1]["all_self_ir"].get(symbol, 0)
+        call_delta = owners[0]["all_calls"].get(symbol, 0) - owners[1]["all_calls"].get(symbol, 0)
+        result["variants"][variant] = {"ir_per_call": (counts[0] - counts[1]) / count,
+                                      "cost_scope": "semantic invocation including deterministic reset/checksum loop, N minus zero",
+                                      "target_self_ir_per_invocation": self_delta / count,
+                                      "observed_target_calls": call_delta,
+                                      "target_self_ir_per_observed_call": self_delta / call_delta if call_delta > 0 else None,
+                                      "ownership": "out-of-line" if call_delta > 0 else "inlined or unobserved out-of-line",
+                                      "outputs": outputs, "sha256": sha(exe)}
     result["results_agree"] = result["variants"]["nl"]["outputs"] == result["variants"]["gcc"]["outputs"]
     if not all(v["ir_per_call"] > 0 for v in result["variants"].values()):
         raise ValueError("non-positive dynamic Ir delta")
@@ -450,6 +545,12 @@ def study():
         if measured:
             p = measured["functions"][n]
             row["runtime_profile"] = p
+            if p["calls"] == 0:
+                row["ownership_note"] = "No out-of-line calls observed; work may be inlined in measured callers or absent from this workload."
+            elif p["self_ir"] == 0:
+                row["ownership_note"] = "Measured zero incremental self cost after independent control subtraction."
+            else:
+                row["ownership_note"] = "Measured out-of-line owner; raw and incremental cost/calls are recorded separately."
             # This heuristic ranks investigation only; static counts are not
             # dynamic call costs and never establish a speed criterion.
             row["estimated_global_fraction"] = p["share"] * max(0, 1 - gcc["instructions"] / nl["instructions"]) if nl["instructions"] else 0
@@ -463,7 +564,11 @@ def study():
     valid_dynamic = [n for n, row in dynamic.items() if row.get("results_agree") and
                      row.get("source_sha256") == c["source_sha256"] and
                      all(v["ir_per_call"] > 0 for v in row["variants"].values())]
-    all_profiled = measured and all(measured["functions"][n]["calls"] > 0 for n in NAMES)
+    all_profiled = (measured is not None
+                    and re.fullmatch(r"[0-9a-f]{64}", measured.get("binary_sha256", ""))
+                    and re.fullmatch(r"[0-9a-f]{64}", measured.get("callgrind_sha256", ""))
+                    and measured.get("total_self_ir", 0) > 0
+                    and all(n in measured.get("functions", {}) for n in NAMES))
     ok = not zero and len(valid_dynamic) == len(NAMES) and all_profiled
     result = {"pass": bool(ok), "source_revision": PINS["revision"], "ranking": ranking,
               "dynamic_fixture_results": dynamic, "missing_valid_dynamic": sorted(set(NAMES) - set(valid_dynamic)),
@@ -485,7 +590,7 @@ def selfcheck():
     mutant = OUT / "result-mutant.py"
     mutant.write_text("#!/usr/bin/env python3\nimport pathlib, subprocess, sys\np = subprocess.run([str(pathlib.Path(__file__).with_name('nl_bytes_byte_at.gcc'))], input=sys.stdin.read(), capture_output=True, text=True, check=True)\nprint('%016x' % (int(p.stdout.strip(),16) ^ 1))\n")
     mutant.chmod(0o755)
-    proc = subprocess.run([os.environ.get("CODEGEN_EMACS", "emacs"), "-Q", "--batch", "-l", str(SRC / "validate.el"),
+    proc = subprocess.run([emacs_reference(), "-Q", "--batch", "-l", str(SRC / "validate.el"),
                            "--eval", '(codegen-runtime-validate "nl_bytes_byte_at" "%s" "%s")' % (bins["nl"], mutant)],
                           capture_output=True, text=True, preexec_fn=bounded)
     ok = proc.returncode != 0 and "expected 0000000000000000" in proc.stderr and "0000000000000001" in proc.stderr

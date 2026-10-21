@@ -247,6 +247,16 @@ Emit helpers consult this dynvar for arg-register selection, shadow
 space allocation, and prologue/epilogue layout.  The aarch64 path
 ignores this var (= AAPCS64 only).")
 
+(defvar nelisp-aot-compiler--vector-value-convention 'legacy-view
+  "Target vector ABI, selected by the caller before compilation.
+`legacy-view' keeps the NlVector capacity/data/length backing layout.
+`compact-word' uses a kind/length header followed by eight-byte WORDs;
+x86 `vector-len' accepts either a direct backing-address|6 WORD or a
+32-byte compatibility view whose payload is the backing address.
+The runtime's vector providers must match this convention.  An aligned
+view cannot identify the backing ABI: legacy capacity 264 and compact
+length 1 both start with 264.  Never infer the ABI from header contents.")
+
 (defvar nelisp-aot-compiler--rsp-temp-depth 0
   "Number of 8-byte temporary words currently pushed below rsp.
 
@@ -15606,7 +15616,8 @@ only when A is an immediate or B assigns no local
         ;; a - b = (- b) + a
         (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #xF7 #xD8))
         (nelisp-aot-compiler--x86-alu buf '+ 'rax ao))
-      t))))
+      t)
+     ((nelisp-aot-compiler--emit-memory-tree-binop-x86 op a b buf)))))
 
 (defconst nelisp-aot-compiler--cmp-swap
   '((< . >) (> . <) (<= . >=) (>= . <=) (= . =) (/= . /=))
@@ -15989,6 +16000,110 @@ or index forms (no code that could clobber rax is emitted)."
                       nelisp-aot-compiler--x86-ptr-widths))
        dst mem)
       t)))
+
+(defun nelisp-aot-compiler--x86-memory-tree-info (node)
+  "Return (REGISTERS . HAS-READ) for a supported pure GP tree, else nil.
+Registers count a left-to-right evaluation, with direct right leaves.
+Only stable folded addresses are allowed; they clobber rdi/rsi, never
+a result register.  No call, store, checked arithmetic or variable shift
+can enter this tree.  This preflight emits no bytes."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (when (and (memq (nelisp-aot-compiler--ir-get node :cls) '(nil gp))
+               (memq (nelisp-aot-compiler--ir-get node :class) '(nil gp)))
+      (cond
+       ((or (nelisp-aot-compiler--imm-int-p node)
+            (nelisp-aot-compiler--x86-leaf-operand node))
+        (cons 1 nil))
+       ((memq kind '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
+        (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+               (offset (nelisp-aot-compiler--ir-get node :offset))
+               (po (nelisp-aot-compiler--x86-leaf-operand ptr))
+               (disp (nelisp-aot-compiler--imm-disp32 offset))
+               (ix (and (not disp) (nelisp-aot-compiler--x86-index-form offset))))
+          (when (or (and po (or disp
+                               (and ix (nelisp-aot-compiler--x86-imm32-p
+                                        (nth 2 ix)))))
+                    (and disp (eq (nelisp-aot-compiler--ir-kind ptr) 'data-addr)
+                         (eq nelisp-aot-compiler--abi 'sysv)
+                         (eq nelisp-aot-compiler--os 'linux)))
+            (cons 1 t))))
+       ((and (eq kind 'shift)
+             (memq (nelisp-aot-compiler--ir-get node :op) '(shl sar shr))
+             (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get node :b)))
+        (nelisp-aot-compiler--x86-memory-tree-info
+         (nelisp-aot-compiler--ir-get node :a)))
+       ((and (eq kind 'arith)
+             (memq (nelisp-aot-compiler--ir-get node :op)
+                   '(+ - * logand logior logxor)))
+        (let* ((a (nelisp-aot-compiler--ir-get node :a))
+               (b (nelisp-aot-compiler--ir-get node :b))
+               (ai (nelisp-aot-compiler--x86-memory-tree-info a))
+               (bi (nelisp-aot-compiler--x86-memory-tree-info b)))
+          (and ai bi
+               (cons (if (nelisp-aot-compiler--x86-leaf-operand b)
+                         (car ai)
+                       (max (car ai) (1+ (car bi))))
+                     (or (cdr ai) (cdr bi))))))))))
+
+(defun nelisp-aot-compiler--emit-memory-tree-x86 (node buf registers)
+  "Emit preflighted NODE into the first of REGISTERS without stack temps.
+Only rax/r10/r11 hold expression results; folded addresses may clobber
+rdi/rsi.  No general emit-value helper or call is used."
+  (let* ((dst (car registers))
+         (kind (nelisp-aot-compiler--ir-kind node))
+         (leaf (nelisp-aot-compiler--x86-leaf-operand node)))
+    (cond
+     (leaf (nelisp-aot-compiler--x86-load buf dst leaf))
+     ((nelisp-aot-compiler--imm-int-p node)
+      (nelisp-aot-compiler--emit-imm-to-reg
+       (nelisp-aot-compiler--ir-get node :value) dst buf))
+     ((memq kind '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
+      (nelisp-aot-compiler--x86-load-mem
+       buf (cdr (assq kind nelisp-aot-compiler--x86-ptr-widths)) dst
+       (nelisp-aot-compiler--x86-address
+        (nelisp-aot-compiler--ir-get node :ptr)
+        (nelisp-aot-compiler--ir-get node :offset) buf t)))
+     ((eq kind 'shift)
+      (nelisp-aot-compiler--emit-memory-tree-x86
+       (nelisp-aot-compiler--ir-get node :a) buf registers)
+      (nelisp-aot-compiler--x86-op
+       buf t (unibyte-string #xC1)
+       (cdr (assq (nelisp-aot-compiler--ir-get node :op)
+                  '((shl . 4) (shr . 5) (sar . 7))))
+       (list :reg dst)
+       (unibyte-string
+        (logand (nelisp-aot-compiler--ir-get
+                 (nelisp-aot-compiler--ir-get node :b) :value) #xFF))))
+     (t
+      (let* ((op (nelisp-aot-compiler--ir-get node :op))
+             (b (nelisp-aot-compiler--ir-get node :b))
+             (bo (nelisp-aot-compiler--x86-leaf-operand b)))
+        (nelisp-aot-compiler--emit-memory-tree-x86
+         (nelisp-aot-compiler--ir-get node :a) buf registers)
+        (unless bo
+          (nelisp-aot-compiler--emit-memory-tree-x86 b buf (cdr registers))
+          (setq bo (list :reg (cadr registers))))
+        (if (eq op '*) (nelisp-aot-compiler--x86-imul buf dst bo)
+          (nelisp-aot-compiler--x86-alu buf op dst bo)))))))
+
+(defun nelisp-aot-compiler--emit-memory-tree-binop-x86 (op a b buf)
+  "Emit pure memory-expression A OP B with register temporaries, or nil.
+Adapt GCC expand_operands' separate result locations to three reserved
+scratch registers.  Both trees are preflighted before any emission.
+Ref-only trees and the existing direct-leaf paths keep their old code."
+  (unless (or nelisp-aot-compiler--checked-arith
+              (seq-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
+                        nelisp-aot-compiler--promoted-slots))
+    (let ((ai (nelisp-aot-compiler--x86-memory-tree-info a))
+          (bi (nelisp-aot-compiler--x86-memory-tree-info b)))
+      (when (and ai bi (or (cdr ai) (cdr bi))
+                 (<= (max (car ai) (1+ (car bi))) 3))
+        (nelisp-aot-compiler--emit-memory-tree-x86 a buf '(rax r10 r11))
+        (nelisp-aot-compiler--emit-memory-tree-x86 b buf '(r10 r11))
+        (if (eq op '*)
+            (nelisp-aot-compiler--x86-imul buf 'rax '(:reg r10))
+          (nelisp-aot-compiler--x86-alu buf op 'rax '(:reg r10)))
+        t))))
 
 (defun nelisp-aot-compiler--x86-no-assign-p (node)
   "Non-nil when NODE assigns no local variable of this frame.
@@ -16477,6 +16592,41 @@ x86_64 moves B into RCX because SHL/SAR require the count in CL."
         (signal 'nelisp-aot-compiler-error
                 (list :unknown-shift-op op))))))))
 
+(defun nelisp-aot-compiler--x86-direct-call-args-p (node)
+  "Non-nil when NODE's arguments can go straight to SysV GP registers.
+GNU comp.c:2045 hands argument values to GCC without push/pop temporaries.
+An imm64 or any GP frame slot can likewise be loaded directly here.
+Only named, non-variadic calls with at most six GP leaves qualify.  A
+promoted source in an argument register is excluded: sequential moves
+could overwrite a later source, so it needs the existing spill path."
+  (let ((args (nelisp-aot-compiler--ir-get node :args)))
+    (and (eq nelisp-aot-compiler--arch 'x86_64)
+         (eq nelisp-aot-compiler--abi 'sysv)
+         (nelisp-aot-compiler--ir-get node :name)
+         (symbolp (nelisp-aot-compiler--ir-get node :name))
+         (not (nelisp-aot-compiler--ir-get node :fn-value))
+         (not (nelisp-aot-compiler--ir-get node :varargs-p))
+         (not (eq (nelisp-aot-compiler--ir-get node :ret-class) 'f64))
+         (<= (length args) 6)
+         (seq-every-p
+          (lambda (arg)
+            (and (memq (nelisp-aot-compiler--ir-get arg :cls) '(nil gp))
+                 (memq (nelisp-aot-compiler--ir-get arg :class) '(nil gp))
+                 (pcase (nelisp-aot-compiler--ir-kind arg)
+                   ('imm
+                    (let ((value (nelisp-aot-compiler--ir-get arg :value)))
+                      (and (integerp value)
+                           (<= (- (ash 1 63)) value)
+                           (< value (ash 1 63)))))
+                   ('ref
+                    (let* ((slot (nelisp-aot-compiler--ir-get arg :slot))
+                           (source (cdr (assq slot
+                                             nelisp-aot-compiler--promoted-slots))))
+                      (and (integerp slot) (<= 0 slot) (< slot (ash 1 28))
+                           (not (memq source '(rdi rsi rdx rcx r8 r9))))))
+                   (_ nil))))
+          args))))
+
 (defun nelisp-aot-compiler--call-arg-trivial-p (node)
   "Return non-nil if NODE is a AOT IR value that emits to a GP reg
 without clobbering any other register.
@@ -16516,15 +16666,16 @@ across both passes for the same NODE."
 
 (defun nelisp-aot-compiler--emit-trivial-into-reg (node target buf)
   "Emit NODE's value directly into TARGET register (no spill).
-NODE must satisfy `nelisp-aot-compiler--call-arg-trivial-p'."
+NODE must satisfy `nelisp-aot-compiler--call-arg-trivial-p', or be a leaf
+of a call accepted by `nelisp-aot-compiler--x86-direct-call-args-p'."
   (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
       ;; Value-dependent: small → 7-byte mov TARGET, imm32;
       ;; large (> imm32 range) → 10-byte movabs TARGET, imm64.
-      ;; `--call-arg-trivial-p' already gates large values out, so the
-      ;; large arm is a safety net only — byte-length invariant holds
-      ;; because both passes see the same :value for the same node.
+      ;; The all-leaf SysV call path also accepts imm64 values.  The
+      ;; byte-length invariant holds because both passes see the same
+      ;; :value for the same node.
       (let ((v (nelisp-aot-compiler--ir-get node :value)))
         ;; sign-extending `mov target, imm32' is only correct for [-2^31,2^31);
         ;; a bit-31-set positive value uses the exact 10-byte movabs imm64.
@@ -16731,7 +16882,9 @@ count."
          ;; complex).  Walking the reverse of args lets us count
          ;; without consing the full reverse list twice.
          (trivial-suffix-len
-          (let ((count 0)
+          (if (nelisp-aot-compiler--x86-direct-call-args-p node)
+              n
+            (let ((count 0)
                 (rest (reverse args))
                 (done nil))
             (while (and rest (not done))
@@ -16739,7 +16892,7 @@ count."
                   (progn (setq count (1+ count))
                          (setq rest (cdr rest)))
                 (setq done t)))
-            count))
+            count)))
          (complex-count (- n trivial-suffix-len))
          (complex-args (cl-subseq args 0 complex-count))
          (trivial-args (cl-subseq args complex-count))
@@ -16991,7 +17144,9 @@ same branch and emit the same byte count."
          ;; the reverse of register-bound args to count trailing
          ;; trivial gp args.  Stack-bound args are handled below.
          (trivial-suffix-len
-          (let ((count 0)
+          (if (nelisp-aot-compiler--x86-direct-call-args-p node)
+              (length register-args)
+            (let ((count 0)
                 (rest (reverse register-args))
                 (done nil))
             (while (and rest (not done))
@@ -17001,7 +17156,7 @@ same branch and emit the same byte count."
                     (progn (setq count (1+ count))
                            (setq rest (cdr rest)))
                   (setq done t))))
-            count))
+            count)))
          (complex-count (- (length register-args) trivial-suffix-len))
          (complex-args (cl-subseq register-args 0 complex-count))
          (trivial-args (cl-subseq register-args complex-count))
@@ -18055,13 +18210,36 @@ elsewhere in AOT."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
 
 (defun nelisp-aot-compiler--emit-vector-len (node buf)
-  "Read `vector.value.len' into rax."
+  "Read NODE's vector length using the selected target vector ABI.
+The compact path adapts Doc 216's `emit-vectorlike-payload' decoder:
+untag a direct WORD, or load a compatibility view's payload, then read
+the packed header as GNU's XVECTOR/ASIZE read the vector header."
   (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'rsi 'rdi nelisp-sexp--offset-payload)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'rax 'rsi nelisp-nlvector--offset-value-length))
+  (pcase nelisp-aot-compiler--vector-value-convention
+    ('legacy-view
+     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+     (nelisp-asm-x86_64-mov-reg-mem-disp8
+      buf 'rsi 'rdi nelisp-sexp--offset-payload)
+     (nelisp-asm-x86_64-mov-reg-mem-disp8
+      buf 'rax 'rsi nelisp-nlvector--offset-value-length))
+    ('compact-word
+     (let ((direct (nelisp-aot-compiler--gensym "vector-len-direct"))
+           (decoded (nelisp-aot-compiler--gensym "vector-len-decoded")))
+       (nelisp-asm-x86_64-mov-imm32 buf 'r11 7)
+       (nelisp-asm-x86_64-and-reg-reg buf 'r11 'rax)
+       (nelisp-asm-x86_64-cmp-imm32 buf 'r11 6)
+       (nelisp-asm-x86_64-jz-rel32 buf direct)
+       (nelisp-asm-x86_64-mov-reg-mem-disp8
+        buf 'rax 'rax nelisp-sexp--offset-payload)
+       (nelisp-asm-x86_64-jmp-rel32 buf decoded)
+       (nelisp-asm-x86_64-define-label buf direct)
+       (nelisp-asm-x86_64-sub-imm32 buf 'rax 6)
+       (nelisp-asm-x86_64-define-label buf decoded)
+       (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rax 'rax 0)
+       (nelisp-asm-x86_64-sar-reg-imm8 buf 'rax 8)))
+    (_ (signal 'nelisp-aot-compiler-error
+               (list :unsupported-vector-value-convention
+                     nelisp-aot-compiler--vector-value-convention)))))
 
 (defun nelisp-aot-compiler--emit-vector-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's vector element in rax."
@@ -19893,6 +20071,10 @@ no manual align is needed.  Returns the view pointer in x0."
 
 (defun nelisp-aot-compiler--emit-vector-len-arm64 (node buf)
   "Emit `vector-len' for aarch64 — read NlVector.value.length."
+  (unless (eq nelisp-aot-compiler--vector-value-convention 'legacy-view)
+    (signal 'nelisp-aot-compiler-error
+            (list :unsupported-arm64-vector-value-convention
+                  nelisp-aot-compiler--vector-value-convention)))
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
@@ -20703,10 +20885,78 @@ compare A against B and materialize the boolean result."
   '((< . jl) (> . jg) (<= . jle) (>= . jge) (= . je) (/= . jne))
   "Map a comparison op to the x86-64 jump taken when it is TRUE.")
 
+(defun nelisp-aot-compiler--branch-structured-result-p (node)
+  "Non-nil when NODE exposes a result worth lowering as branches.
+Two ordinary raw-value arms share one zero test more cheaply in value
+position.  Recurse only through result positions; preceding effects and
+the predicates of an `if' do not make its result Boolean."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (or (nelisp-aot-compiler--imm-int-p node)
+        (and (eq kind 'cmp)
+             (assq (nelisp-aot-compiler--ir-get node :op)
+                   nelisp-aot-compiler--cmp-true-jcc))
+        (and (eq kind 'logic)
+             (memq (nelisp-aot-compiler--ir-get node :op) '(and or)))
+        (and (eq kind 'if)
+             (or (nelisp-aot-compiler--branch-structured-result-p
+                  (nelisp-aot-compiler--ir-get node :then))
+                 (nelisp-aot-compiler--branch-structured-result-p
+                  (nelisp-aot-compiler--ir-get node :else))))
+        (and (eq kind 'value-seq)
+             (let ((forms (nelisp-aot-compiler--ir-get node :forms)))
+               (and forms
+                    (nelisp-aot-compiler--branch-structured-result-p
+                     (car (last forms)))))))))
+
+(defun nelisp-aot-compiler--emit-if-cond-jump-x86 (node buf label jump-if-true)
+  "Branch on an `if' NODE without materializing its result.
+As GCC's branch-position conditional lowering does, connect each selected
+arm to LABEL directly.  Only integer immediates have known raw truth;
+all other arms retain their evaluation and zero test."
+  (let* ((test (nelisp-aot-compiler--ir-get node :test))
+         (yes (nelisp-aot-compiler--ir-get node :then))
+         (no (nelisp-aot-compiler--ir-get node :else))
+         (yes-constant (nelisp-aot-compiler--imm-int-p yes))
+         (no-constant (nelisp-aot-compiler--imm-int-p no))
+         (yes-true (and yes-constant
+                        (/= (nelisp-aot-compiler--ir-get yes :value) 0)))
+         (no-true (and no-constant
+                       (/= (nelisp-aot-compiler--ir-get no :value) 0))))
+    (cond
+     ((and yes-constant no-constant)
+      (if (eq yes-true no-true)
+          (progn
+            (nelisp-aot-compiler--emit-effect test buf)
+            (when (eq yes-true jump-if-true)
+              (nelisp-asm-x86_64-jmp-rel32 buf label)))
+        (nelisp-aot-compiler--emit-cond-jump
+         test buf label (eq yes-true jump-if-true))))
+     ((or yes-constant no-constant)
+      (let* ((constant-true (if yes-constant yes-true no-true))
+             (constant-jumps (eq constant-true jump-if-true))
+             (skip (unless constant-jumps
+                     (nelisp-aot-compiler--gensym "cj-if-skip"))))
+        (nelisp-aot-compiler--emit-cond-jump
+         test buf (if constant-jumps label skip) yes-constant)
+        (nelisp-aot-compiler--emit-cond-jump
+         (if yes-constant no yes) buf label jump-if-true)
+        (when skip (nelisp-asm-x86_64-define-label buf skip))))
+     (t
+      (let ((otherwise (nelisp-aot-compiler--gensym "cj-if-else"))
+            (done (nelisp-aot-compiler--gensym "cj-if-end")))
+        (nelisp-aot-compiler--emit-cond-jump test buf otherwise nil)
+        (nelisp-aot-compiler--emit-cond-jump yes buf label jump-if-true)
+        (nelisp-asm-x86_64-jmp-rel32 buf done)
+        (nelisp-asm-x86_64-define-label buf otherwise)
+        (nelisp-aot-compiler--emit-cond-jump no buf label jump-if-true)
+        (nelisp-asm-x86_64-define-label buf done))))))
+
 (defun nelisp-aot-compiler--emit-cond-jump (test buf label jump-if-true)
   "x86-64: jump to LABEL when TEST's truth is JUMP-IF-TRUE, else fall through.
 CG1 (Doc 224): GCC lowers `&&' and `||' conditions to chains of
-conditional jumps and never materializes a boolean.  A comparison
+conditional jumps and never materializes a boolean.  Nested `if' arms
+connect to the same target without constructing an intermediate value.
+A comparison
 branches on the flags of its own `cmp'; `and' and `or' chain their
 operands' jumps, through a local skip label where an operand cannot
 decide the jump on its own; an integer constant becomes an
@@ -20733,6 +20983,13 @@ do, so only the materialized 0/1 disappears."
                                  nelisp-aot-compiler--cmp-true-jcc
                                nelisp-aot-compiler--cmp-false-jcc)))
            label))))
+     ((and (eq kind 'if)
+           (or (nelisp-aot-compiler--branch-structured-result-p
+                (nelisp-aot-compiler--ir-get test :then))
+               (nelisp-aot-compiler--branch-structured-result-p
+                (nelisp-aot-compiler--ir-get test :else))))
+      (nelisp-aot-compiler--emit-if-cond-jump-x86
+       test buf label jump-if-true))
      ((and (eq kind 'logic)
            (memq (nelisp-aot-compiler--ir-get test :op) '(and or)))
       (let* ((op (nelisp-aot-compiler--ir-get test :op))

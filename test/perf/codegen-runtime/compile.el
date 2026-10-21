@@ -1,6 +1,7 @@
 ;;; compile.el --- compile pinned runtime fixtures -*- lexical-binding: t; -*-
 (require 'json)
 (require 'nelisp-standalone-build)
+(defvar nelisp-aot-compiler--vector-value-convention)
 (defconst codegen-runtime--directory
   (file-name-directory (or load-file-name buffer-file-name)))
 (defconst codegen-runtime--out
@@ -19,7 +20,12 @@
 
 (defun codegen-runtime-unit ()
   "Compile all pinned functions through the standalone unit pipeline."
-  (let* ((nelisp-standalone--target 'linux-x86_64)
+  (when (and (not (getenv "CODEGEN_RUNTIME_VECTOR_CONVENTION"))
+             (not (boundp 'nelisp-aot-compiler--vector-value-convention)))
+    (error "Compiler compact-word vector convention is not available"))
+  (let* ((nelisp-aot-compiler--vector-value-convention
+          (intern (or (getenv "CODEGEN_RUNTIME_VECTOR_CONVENTION") "compact-word")))
+         (nelisp-standalone--target 'linux-x86_64)
          (source (cons 'seq (codegen-runtime--forms "runtime.nl.el")))
          (unit (nelisp-standalone--compile-to-unit "runtime-study" source))
          (text (cdr (assq 'text (plist-get unit :sections))))
@@ -46,9 +52,17 @@
          (entry (assq (intern name) spec))
          (wanted (append (cdr (assq 'functions (cdr entry))) nil))
          (source (cl-remove-if-not (lambda (f) (memq (cadr f) (mapcar #'intern wanted)))
-                                   (codegen-runtime--forms "runtime.nl.el")))
-         (extra (codegen-runtime--forms (concat name ".nl.el")))
+                                   (append (codegen-runtime--forms "runtime.nl.el")
+                                           (when (file-exists-p (expand-file-name "dependencies.nl.el" codegen-runtime--directory))
+                                             (codegen-runtime--forms "dependencies.nl.el"))
+                                           (when (file-exists-p (expand-file-name "heap-fields.nl.el" codegen-runtime--directory))
+                                             (codegen-runtime--forms "heap-fields.nl.el")))))
+         (extra (append (codegen-runtime--forms (concat name ".nl.el"))
+                        (when (cdr (assq 'auto_cold (cdr entry)))
+                          (codegen-runtime--forms
+                           (expand-file-name (concat name ".cold.nl.el") codegen-runtime--out)))))
          (harness (codegen-runtime--forms "harness.nl.el")))
+    (setq source (cl-delete-duplicates source :key #'cadr :test #'eq :from-end t))
     ;; Identical within-unit small-defun inlining to the runtime build.
     ;; AOT's executable frontend supplies _start and OS entry handling.
     (let ((addresses (cdr (assq 'data_addresses (cdr entry)))))
@@ -58,6 +72,22 @@
                            (cdr (assq (cadr x) addresses)))
                           (t (mapcar #'rewrite x)))))
         (setq source (rewrite (cons 'seq (append source harness extra '((exit (cr_start)))))))))
-    (setq source (nelisp-standalone--inline-small-defuns source))
-    (nelisp-aot-compile-sexp
-     source (expand-file-name (concat name ".nl") codegen-runtime--out))))
+    (let* ((mode (intern (or (getenv "CODEGEN_RUNTIME_VECTOR_CONVENTION")
+                             (cdr (assq 'vector_convention (cdr entry))) "legacy-view")))
+           (available (boundp 'nelisp-aot-compiler--vector-value-convention)))
+      (when (and (eq mode 'compact-word) (not available))
+        (error "Compiler compact-word vector convention is not available"))
+      (let ((nelisp-aot-compiler--vector-value-convention mode))
+    (if (cdr (assq 'unit_frontend (cdr entry)))
+        (let* ((nelisp-standalone--target 'linux-x86_64)
+               (body (cons 'seq (append (butlast (cdr source))
+                                        '((defun _start ()
+                                            (seq
+                                             (ptr-write-u64 (data-addr nl_arena_base) 0 (shl 1 28))
+                                             (syscall-direct 60 (cr_start) 0 0 0 0 0)))))))
+               (unit (nelisp-standalone--compile-to-unit "runtime-fixture" body)))
+          (nelisp-link-units (expand-file-name (concat name ".nl") codegen-runtime--out)
+                             (list unit (nelisp-standalone--arena-base-slot-unit)) "_start"))
+      (setq source (nelisp-standalone--inline-small-defuns source))
+      (nelisp-aot-compile-sexp
+       source (expand-file-name (concat name ".nl") codegen-runtime--out)))))))
