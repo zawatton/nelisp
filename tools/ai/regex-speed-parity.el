@@ -147,8 +147,8 @@
     (unwind-protect
         (let* ((table (copy-case-table saved))
                (_installed (set-case-table table))
-               (canonical (if (fboundp 'case-table--get-extra-slot)
-                              (case-table--get-extra-slot table 1)
+               (canonical (if (fboundp 'nelisp-casetab--get-extra-slot)
+                              (nelisp-casetab--get-extra-slot table 1)
                             (char-table-extra-slot table 1)))
                (multi-a (string-to-multibyte "A")))
           (if (and (fboundp 'emacs-char-table-p) (emacs-char-table-p canonical))

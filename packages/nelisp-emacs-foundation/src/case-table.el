@@ -7,10 +7,10 @@
 
 ;;; Code:
 
-(unless (fboundp 'case-table--ensure-extra-slots)
+(unless (fboundp 'nelisp-casetab--ensure-extra-slots)
   (require 'emacs-cc-casetab-1))
 
-(defconst case-table--standard-ranges
+(defconst nelisp-casetab--standard-ranges
   '(
     (0 64 0) (65 90 32) (91 127 0) (160 161 0) (166 167 0) (169 169 0)
     (171 174 0) (176 177 0) (181 181 0) (183 183 0) (187 191 0) (192 214 32)
@@ -302,7 +302,7 @@ expanding constant-valued ranges, then joining consecutive characters
 with the same difference between value and character.  Unlisted entries
 are nil, including characters with no standard case mapping.")
 
-(defconst case-table--standard-up-ranges
+(defconst nelisp-casetab--standard-up-ranges
   '(
     (0 96 0) (97 122 -32) (123 127 0) (160 161 0)
     (166 167 0) (169 169 0) (171 174 0) (176 177 0)
@@ -644,24 +644,24 @@ are nil, including characters with no standard case mapping.")
     (2097853 2097853 0) (2097887 2097887 0) )
   "GNU Emacs 31.1 standard upcase mappings as (FROM TO OFFSET) runs.")
 
-(defconst case-table--size 256
+(defconst nelisp-casetab--size 256
   "Number of slots initialized by the legacy private constructor.")
 
-(defun case-table--identity-table ()
+(defun nelisp-casetab--identity-table ()
   "Return a fresh case table with the legacy private ASCII identity entries."
-  (let ((table (case-table--empty-table)) (character 0))
-    (while (< character case-table--size)
-      (case-table--set-char-table-range table character character)
+  (let ((table (nelisp-casetab--empty-table)) (character 0))
+    (while (< character nelisp-casetab--size)
+      (nelisp-casetab--set-char-table-range table character character)
       (setq character (1+ character)))
     table))
 
-(defun case-table--make-char-table (&optional subtype init)
+(defun nelisp-casetab--make-char-table (&optional subtype init)
   "Legacy private constructor; a nil INIT requests ASCII identity entries."
-  (if init (make-char-table subtype init) (case-table--identity-table)))
+  (if init (make-char-table subtype init) (nelisp-casetab--identity-table)))
 
-(defun case-table--fill-runs (table runs)
+(defun nelisp-casetab--fill-runs (table runs)
   "Install generated (FROM TO OFFSET) RUNS without case conversion."
-  (if (case-table--sparse-table-p table)
+  (if (nelisp-casetab--sparse-table-p table)
       (let ((ascii (make-vector 256 nil)) (ranges nil))
         (dolist (run runs)
           (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
@@ -676,22 +676,22 @@ are nil, including characters with no standard case mapping.")
     (dolist (run runs)
       (let ((character (nth 0 run)) (end (nth 1 run)) (offset (nth 2 run)))
         (while (<= character end)
-          (case-table--set-char-table-range table character (+ character offset))
+          (nelisp-casetab--set-char-table-range table character (+ character offset))
           (setq character (1+ character))))))
   table)
 
-(defun case-table--initialize-standard (down up)
+(defun nelisp-casetab--initialize-standard (down up)
   "Install GNU's generated standard downcase and upcase mappings."
-  (case-table--fill-runs down case-table--standard-ranges)
-  (case-table--fill-runs up case-table--standard-up-ranges))
+  (nelisp-casetab--fill-runs down nelisp-casetab--standard-ranges)
+  (nelisp-casetab--fill-runs up nelisp-casetab--standard-up-ranges))
 
-(fset 'case-table--hash-put-leaf
+(fset 'nelisp-casetab--hash-put-leaf
       (symbol-function (if (fboundp 'nelisp--hash-put-leaf)
                            'nelisp--hash-put-leaf 'puthash)))
 
-(defun case-table--table-from-pairs (pairs)
+(defun nelisp-casetab--table-from-pairs (pairs)
   "Create a sparse auxiliary table from non-overlapping character PAIRS."
-  (let ((table (case-table--empty-table))
+  (let ((table (nelisp-casetab--empty-table))
         (ascii (make-vector 256 nil)) (ranges nil))
     (dolist (pair pairs)
       (when (cdr pair)
@@ -699,15 +699,15 @@ are nil, including characters with no standard case mapping.")
             (aset ascii (car pair) (cdr pair))
           (setq ranges
                 (cons (cons (cons (car pair) (car pair)) (cdr pair)) ranges)))))
-    (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+    (if (and (nelisp-casetab--sparse-api-p) (emacs-char-table-p table))
         (progn
           (emacs-char-table--raw-set table emacs-char-table--i-ascii ascii)
           (emacs-char-table--raw-set table emacs-char-table--i-ranges ranges))
       (dolist (pair pairs)
-        (case-table--set-char-table-range table (car pair) (cdr pair))))
+        (nelisp-casetab--set-char-table-range table (car pair) (cdr pair))))
     table))
 
-(defun case-table--ordered-mappings (pairs)
+(defun nelisp-casetab--ordered-mappings (pairs)
   "Destructively order the owned list of character PAIRS by integer keys.
 Three stable byte passes avoid generic sorting's comparator and decoration
 frames on the interpreted runtime.  Preserve the generic ordering for
@@ -742,13 +742,13 @@ out-of-range keys admitted by direct substrate mutation."
           (setq pairs head shift (+ shift 8)))
         pairs))))
 
-(defun case-table--sparse-mappings (table)
+(defun nelisp-casetab--sparse-mappings (table)
   "Collect effective Unicode mappings without repeated sparse range scans.
 The sparse substrate stores newest ranges first.  Nil ranges mask older
 local values but still allow the table's default or parent fallback."
   (let* ((default (emacs-char-table-range table nil))
          (parent (emacs-char-table-parent table))
-         (inherited (and parent (not default) (case-table--sparse-mappings parent)))
+         (inherited (and parent (not default) (nelisp-casetab--sparse-mappings parent)))
          (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
          (capacity
           (+ 256 (length inherited)
@@ -768,7 +768,7 @@ local values but still allow the table's default or parent fallback."
          cursor entry from to value)
     (when inherited
       (dolist (entry inherited)
-        (case-table--hash-put-leaf (car entry) (cdr entry) values)))
+        (nelisp-casetab--hash-put-leaf (car entry) (cdr entry) values)))
     ;; This representation access is confined to the table owner adapter.
     ;; emacs-char-table-map uses repeated range lookup and is quadratic for
     ;; the thousands of singleton Unicode entries in the standard table.
@@ -789,47 +789,47 @@ local values but still allow the table's default or parent fallback."
                                  (setq found t))
                                (setq ranges (cdr ranges)))
                              found)))
-            (case-table--hash-put-leaf from t seen)
-            (case-table--hash-put-leaf from value values))
+            (nelisp-casetab--hash-put-leaf from t seen)
+            (nelisp-casetab--hash-put-leaf from value values))
           (setq from (1+ from))))
       (setq cursor (cdr cursor)))
     (when default
       (let ((char 256))
         (while (<= char 4194303)
-          (unless (gethash char seen) (case-table--hash-put-leaf char default values))
+          (unless (gethash char seen) (nelisp-casetab--hash-put-leaf char default values))
           (setq char (1+ char)))))
     (let ((char 0))
       (while (< char 256)
         (let ((value (emacs-char-table-ref table char)))
-          (when value (case-table--hash-put-leaf char value values)))
+          (when value (nelisp-casetab--hash-put-leaf char value values)))
         (setq char (1+ char))))
     (maphash (lambda (char value) (setq chars (cons (cons char value) chars))) values)
-    (case-table--ordered-mappings chars)))
+    (nelisp-casetab--ordered-mappings chars)))
 
-(defun case-table--mappings (table)
+(defun nelisp-casetab--mappings (table)
   "Return ordered effective mappings throughout TABLE's character space."
-  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
-      (case-table--sparse-mappings table)
+  (if (and (nelisp-casetab--sparse-api-p) (emacs-char-table-p table))
+      (nelisp-casetab--sparse-mappings table)
     (let (pairs)
-      (case-table--map-char-table
+      (nelisp-casetab--map-char-table
        (lambda (char value) (push (cons char value) pairs)) table)
       (nreverse pairs))))
 
-(defun case-table--store-mapping (table char value)
+(defun nelisp-casetab--store-mapping (table char value)
   "Store a freshly derived entry without invalidating its unused slots."
-  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+  (if (and (nelisp-casetab--sparse-api-p) (emacs-char-table-p table))
       (emacs-char-table-set table char value)
-    (case-table--set-char-table-range table char value)))
+    (nelisp-casetab--set-char-table-range table char value)))
 
-(defun case-table--inverse-table (pairs)
+(defun nelisp-casetab--inverse-table (pairs)
   "Build GNU's identity/shuffle cycles from ordered character PAIRS."
-  (let ((table (if (case-table--sparse-api-p)
+  (let ((table (if (nelisp-casetab--sparse-api-p)
                    (emacs-char-table-make 'case-table nil)
-                 (case-table--empty-table))))
+                 (nelisp-casetab--empty-table))))
     (dolist (pair pairs)
-      (case-table--set-identity table (car pair) (cdr pair)))
+      (nelisp-casetab--set-identity table (car pair) (cdr pair)))
     (dolist (pair pairs)
-      (case-table--shuffle table (car pair) (cdr pair)))
+      (nelisp-casetab--shuffle table (car pair) (cdr pair)))
     table))
 
 (defun describe-buffer-case-table ()
@@ -869,14 +869,14 @@ local values but still allow the table's default or parent fallback."
 TABLE can be `down', `up', `eqv' or `canon'."
   (let ((slot-nb (cdr (assq table '((up . 0) (canon . 1) (eqv . 2))))))
     (or (if (eq table 'down) case-table)
-        (case-table--get-extra-slot case-table slot-nb)
+        (nelisp-casetab--get-extra-slot case-table slot-nb)
         ;; Setup all extra slots of CASE-TABLE by temporarily selecting
         ;; it as the standard case table.
         (let ((old (standard-case-table)))
           (unwind-protect
               (progn
                 (set-standard-case-table case-table)
-                (case-table--get-extra-slot case-table slot-nb))
+                (nelisp-casetab--get-extra-slot case-table slot-nb))
             (or (eq case-table old)
                 (set-standard-case-table old)))))))
 
@@ -887,22 +887,22 @@ TABLE can be `down', `up', `eqv' or `canon'."
   (make-obsolete 'get-upcase-table 'case-table-get-table "24.4"))
 
 (defun copy-case-table (case-table)
-  (let ((copy (if (case-table--char-table-p case-table)
-                   (case-table--copy-char-table case-table)
+  (let ((copy (if (nelisp-casetab--char-table-p case-table)
+                   (nelisp-casetab--copy-char-table case-table)
                  (copy-sequence case-table)))
-	(up (case-table--get-extra-slot case-table 0)))
+	(up (nelisp-casetab--get-extra-slot case-table 0)))
     ;; Clear out the extra slots (except for upcase table) so that
     ;; they will be recomputed from the main (downcase) table.
     (if up
-	(case-table--put-extra-slot
-         copy 0 (if (case-table--char-table-p up)
-                    (case-table--copy-char-table up)
+	(nelisp-casetab--put-extra-slot
+         copy 0 (if (nelisp-casetab--char-table-p up)
+                    (nelisp-casetab--copy-char-table up)
                   (copy-sequence up))))
-    (case-table--put-extra-slot copy 1 nil)
-    (case-table--put-extra-slot copy 2 nil)
+    (nelisp-casetab--put-extra-slot copy 1 nil)
+    (nelisp-casetab--put-extra-slot copy 2 nil)
     copy))
 
-(defun case-table--modify-syntax-entry (character syntax table)
+(defun nelisp-casetab--modify-syntax-entry (character syntax table)
   "Validate GNU's syntax class before delegating the case helper mutation.
 The bootstrap syntax parser otherwise silently accepts unknown classes.
 GNU Emacs 31.1 src/syntax.c:1063-1080,1150-1168 supplies the class set."
@@ -919,18 +919,18 @@ This sets the entries for L and R in TABLE, which is a string
 that will be used as the downcase part of a case table.
 It also modifies `standard-syntax-table' to
 indicate left and right delimiters."
-  (case-table--aset table l l)
-  (case-table--aset table r r)
+  (nelisp-casetab--aset table l l)
+  (nelisp-casetab--aset table r r)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--aset up l l)
-    (case-table--aset up r r))
+    (nelisp-casetab--aset up l l)
+    (nelisp-casetab--aset up r r))
   ;; Clear out the extra slots so that they will be
   ;; recomputed from the main (downcase) table and upcase table.
-  (case-table--put-extra-slot table 1 nil)
-  (case-table--put-extra-slot table 2 nil)
-  (case-table--modify-syntax-entry l (concat "(" (char-to-string r) "  ")
+  (nelisp-casetab--put-extra-slot table 1 nil)
+  (nelisp-casetab--put-extra-slot table 2 nil)
+  (nelisp-casetab--modify-syntax-entry l (concat "(" (char-to-string r) "  ")
 		       (standard-syntax-table))
-  (case-table--modify-syntax-entry r (concat ")" (char-to-string l) "  ")
+  (nelisp-casetab--modify-syntax-entry r (concat ")" (char-to-string l) "  ")
 		       (standard-syntax-table)))
 
 (defun set-case-syntax-pair (uc lc table)
@@ -939,47 +939,47 @@ This sets the entries for characters UC and LC in TABLE, which is a string
 that will be used as the downcase part of a case table.
 It also modifies `standard-syntax-table' to give them the syntax of
 word constituents."
-  (case-table--aset table uc lc)
-  (case-table--aset table lc lc)
+  (nelisp-casetab--aset table uc lc)
+  (nelisp-casetab--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--aset up uc uc)
-    (case-table--aset up lc uc))
+    (nelisp-casetab--aset up uc uc)
+    (nelisp-casetab--aset up lc uc))
   ;; Clear out the extra slots so that they will be
   ;; recomputed from the main (downcase) table and upcase table.
-  (case-table--put-extra-slot table 1 nil)
-  (case-table--put-extra-slot table 2 nil)
-  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
-  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (nelisp-casetab--put-extra-slot table 1 nil)
+  (nelisp-casetab--put-extra-slot table 2 nil)
+  (nelisp-casetab--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (nelisp-casetab--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-upcase-syntax (uc lc table)
   "Make character UC an upcase of character LC.
 It also modifies `standard-syntax-table' to give them the syntax of
 word constituents."
-  (case-table--aset table lc lc)
+  (nelisp-casetab--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--aset up uc uc)
-    (case-table--aset up lc uc))
+    (nelisp-casetab--aset up uc uc)
+    (nelisp-casetab--aset up lc uc))
   ;; Clear out the extra slots so that they will be
   ;; recomputed from the main (downcase) table and upcase table.
-  (case-table--put-extra-slot table 1 nil)
-  (case-table--put-extra-slot table 2 nil)
-  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
-  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (nelisp-casetab--put-extra-slot table 1 nil)
+  (nelisp-casetab--put-extra-slot table 2 nil)
+  (nelisp-casetab--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (nelisp-casetab--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-downcase-syntax (uc lc table)
   "Make character LC a downcase of character UC.
 It also modifies `standard-syntax-table' to give them the syntax of
 word constituents."
-  (case-table--aset table uc lc)
-  (case-table--aset table lc lc)
+  (nelisp-casetab--aset table uc lc)
+  (nelisp-casetab--aset table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--aset up uc uc))
+    (nelisp-casetab--aset up uc uc))
   ;; Clear out the extra slots so that they will be
   ;; recomputed from the main (downcase) table and upcase table.
-  (case-table--put-extra-slot table 1 nil)
-  (case-table--put-extra-slot table 2 nil)
-  (case-table--modify-syntax-entry lc "w   " (standard-syntax-table))
-  (case-table--modify-syntax-entry uc "w   " (standard-syntax-table)))
+  (nelisp-casetab--put-extra-slot table 1 nil)
+  (nelisp-casetab--put-extra-slot table 2 nil)
+  (nelisp-casetab--modify-syntax-entry lc "w   " (standard-syntax-table))
+  (nelisp-casetab--modify-syntax-entry uc "w   " (standard-syntax-table)))
 
 (defun set-case-syntax (c syntax table)
   "Make character C case-invariant with syntax SYNTAX.
@@ -987,14 +987,14 @@ This sets the entry for character C in TABLE, which is a string
 that will be used as the downcase part of a case table.
 It also modifies `standard-syntax-table'.
 SYNTAX should be \" \", \"w\", \".\" or \"_\"."
-  (case-table--aset table c c)
+  (nelisp-casetab--aset table c c)
   (let ((up (case-table-get-table table 'up)))
-    (case-table--aset up c c))
+    (nelisp-casetab--aset up c c))
   ;; Clear out the extra slots so that they will be
   ;; recomputed from the main (downcase) table and upcase table.
-  (case-table--put-extra-slot table 1 nil)
-  (case-table--put-extra-slot table 2 nil)
-  (case-table--modify-syntax-entry c syntax (standard-syntax-table)))
+  (nelisp-casetab--put-extra-slot table 1 nil)
+  (nelisp-casetab--put-extra-slot table 2 nil)
+  (nelisp-casetab--modify-syntax-entry c syntax (standard-syntax-table)))
 
 ;; GNU Emacs 31.1 lisp/subr.el:5782-5795.  Restore the original buffer's
 ;; table even when BODY changes the selected buffer or exits nonlocally.
@@ -1010,7 +1010,7 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
          (with-current-buffer ,old-buffer
            (set-case-table ,old-case-table))))))
 
-(case-table--register-standard-data)
+(nelisp-casetab--register-standard-data)
 
 (provide 'case-table)
 ;;; case-table.el ends here

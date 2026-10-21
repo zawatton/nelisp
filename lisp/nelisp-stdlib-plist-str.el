@@ -745,18 +745,18 @@ when CH is not an ASCII letter."
   "Return the current simple case table, deriving invalidated extras."
   (when (fboundp 'current-case-table)
     (let ((table (current-case-table)))
-      (when (and table (null (case-table--get-extra-slot table 1)))
+      (when (and table (null (nelisp-casetab--get-extra-slot table 1)))
         (set-case-table table))
       table)))
 
 (defun nelisp--case-simple-character (character action table)
   "Case CHARACTER with prepared TABLE and simple ACTION."
   (let* ((upper (not (eq action 'lower)))
-         (mapping (and table (if upper (case-table--get-extra-slot table 0) table)))
+         (mapping (and table (if upper (nelisp-casetab--get-extra-slot table 0) table)))
          (value (or (and (eq action 'title)
                          (fboundp 'nelisp-unicode-titlecase-property)
                          (nelisp-unicode-titlecase-property character))
-                    (and mapping (case-table--ref mapping character)))))
+                    (and mapping (nelisp-casetab--ref mapping character)))))
     (cond ((and (integerp value) (>= value 0)) value)
           (table character)
           ((and upper (fboundp 'nelisp-unicode-simple-upcase))
