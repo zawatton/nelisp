@@ -10290,12 +10290,11 @@ replacing the elements in the beginning of the constant-vector."
 ;; `(closure ENV ARGS . BODY)' representation: DOCSTRING and IFORM go back
 ;; in front of BODY exactly where `function' found them, so `aref'/`length'
 ;; (which recover GNU's slot view natively) read them back as slots 4/5.
-;; ENV keeps only its (SYMBOL . VALUE) bindings: GNU's `t' marker (lexical
-;; binding) and bare locally-special symbols have no counterpart in this
-;; runtime, whose closures are all lexical.  ENV is GNU's innermost-first
-;; slot-2 order; this runtime stores the captured frames outermost first
-;; (the native slot-2 view walks them back), so the bindings are reversed --
-;; except for a typed closure, see below.
+;; A non-nil ENV is evaluated by the existing lexical function constructor,
+;; which captures the runtime's mutable binding cells.  Copying raw alist
+;; values into a closure would reset assignments on every call.  That path
+;; also adapts GNU's innermost-first bindings to runtime capture order.
+;; Nil ENV keeps the dynamic closure representation and does not capture.
 ;; A DOCSTRING that is not a string (an OClosure type symbol, a DOC-file
 ;; offset) rides in front of BODY as the form (:documentation 'VALUE) -- the
 ;; very form GNU `function' evaluates for the same purpose -- which the
@@ -10307,12 +10306,12 @@ replacing the elements in the beginning of the constant-vector."
   (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
   (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
   (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
-  (cons 'closure
-        (cons env
-              (cons args
-                    (append (cond ((stringp docstring) (list docstring))
-                                  (docstring (list (list :documentation (list 'quote docstring)))))
-                            (and iform (list iform)) body))))))
+  (let ((forms (append (cond ((stringp docstring) (list docstring))
+                             (docstring (list (list :documentation (list 'quote docstring)))))
+                       (and iform (list iform)) body)))
+    (if env
+        (eval (list 'function (cons 'lambda (cons args forms))) env)
+      (cons 'closure (cons nil (cons args forms)))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
@@ -19945,6 +19944,11 @@ through the next unit separator.  Only file streams use the byte count."
       (when (< i n) (setq i (1+ i))))
     i))
 
+;; This runtime's reader handles what GNU .elc files need: lazy `#@N'
+;; docstrings, `#s(...)' records and hash tables.  The library tests this
+;; feature before it prefers ".elc" in `load-suffixes'.
+;; Withheld until the interpreted-closure GNU/ddskk acceptance passes.
+
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
     (while go
@@ -20498,10 +20502,18 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                        (apply #'unibyte-string (string-to-list code)))
                (cons (apply #'make-byte-code fields) (cdr r)))
               ((and (consp code) (or (null constants) (consp constants)))
-               ;; Host accepts this as an interpreted/lazy closure. Keep that
-               ;; acceptance distinct from malformed byte-code syntax until
-               ;; the runtime has an interpreted-function object type.
-               (signal 'unsupported-feature '(interpreted-function-byte-code)))
+               ;; GNU lread.c:3272-3306 keeps interpreted closure slots
+               ;; ARGS/BODY/ENV at 0/1/2, DOC at 4 and interactive SPEC at 5.
+               ;; Adapt SPEC back to make-interpreted-closure's full IFORM.
+               (let* ((spec (nth 5 fields))
+                      (iform (and (= count 6)
+                                  (if (vectorp spec)
+                                      (cons 'interactive
+                                            (cons (aref spec 0) (aref spec 1)))
+                                    (list 'interactive spec)))))
+                 (cons (make-interpreted-closure
+                        arglist code constants (nth 4 fields) iform)
+                       (cdr r))))
               (t (signal 'invalid-read-syntax (list "Invalid byte-code object"))))))
           ;; `#:' reads a new uninterned symbol on every occurrence.  Keep
           ;; its decoded name independent from the global intern table.

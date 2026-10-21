@@ -113,21 +113,14 @@
     (should (symbolp sym))
     (should (equal (symbol-name sym) ""))))
 
-(ert-deftest nelisp-eln-metadata-bytecode/declines-interpreted-closure ()
-  ;; GNU can print an *interpreted* closure with the same `#[...]' bracket
-  ;; syntax, ARGLIST a plain arg-list and CODE a cons of body forms
-  ;; instead of a byte-code string (see cl-macs.eln's `fixnump'/`natnump'
-  ;; helper).  This runtime has no interpreted-function object type, so
-  ;; it declines explicitly rather than mis-representing it.
-  (let ((condition
-         (condition-case data
-             (progn
-               (nelisp-eln-metadata-bytecode-test--read
-                "#[(x) ((ignore x) (natnump x)) nil]")
-               nil)
-           (unsupported-feature data))))
-    (should condition)
-    (should (equal (cdr condition) '(interpreted-function-byte-code)))))
+(ert-deftest nelisp-eln-metadata-bytecode/interpreted-closure ()
+  (let ((fn (nelisp-eln-metadata-bytecode-test--read
+             "#[(x) ((+ x y)) ((y . 7)) nil \"doc\" \"p\"]")))
+    (should (interpreted-function-p fn))
+    (should (= (funcall fn 3) 10))
+    (should (equal (func-arity fn) '(1 . 1)))
+    (should (equal (documentation fn t) "doc"))
+    (should (equal (interactive-form fn) '(interactive "p")))))
 
 (ert-deftest nelisp-eln-metadata-bytecode/rejects-garbled-byte-code-literal ()
   ;; Negative controls: a missing close bracket, and a well-typed-looking

@@ -223,4 +223,26 @@
     (should (= (gethash t table) 7))
     (should (= (gethash nil table) 11))))
 
+
+(ert-deftest nelisp-reader-elc-interpreted-closures ()
+  "GNU cons-code constants retain arity, environment, docs and commands."
+  (dolist (source '("#[(x &optional z) ((+ x (or z 0))) nil]"
+                    "#[(x &optional z) ((+ x (or z 0) y)) ((y . 7)) nil \"doc\" \"p\"]"
+                    "#[(x &optional z) ((+ x (or z 0) y)) ((y . 7)) nil \"doc\" [\"p\" (text-mode)]]"))
+    (let ((actual (nelisp-r9-reader-bytecode-label-test--read source))
+          (golden (car (read-from-string source))))
+      (should (functionp actual))
+      (should (interpreted-function-p actual))
+      (should (equal (func-arity actual) (func-arity golden)))
+      (should (equal (funcall actual 3 4) (funcall golden 3 4)))
+      (should (equal (apply actual '(3 4)) (apply golden '(3 4))))
+      (should (equal (documentation actual t) (documentation golden t)))
+      (should (equal (interactive-form actual) (interactive-form golden)))))
+  (dolist (env '("nil" "(t)"))
+    (let* ((source (concat "#[(x) ((function (lambda () x))) " env "]"))
+           (actual (nelisp-r9-reader-bytecode-label-test--read source))
+           (golden (car (read-from-string source))))
+      (should (equal (condition-case e (funcall (funcall actual 9)) (error (car e)))
+                     (condition-case e (funcall (funcall golden 9)) (error (car e))))))))
+
 ;;; nelisp-r9-reader-bytecode-label-test.el ends here
