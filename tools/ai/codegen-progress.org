@@ -1,0 +1,67 @@
+#+TITLE: Native compiler code quality: GCC -O2 parity for the inner loops that NeLisp's runtime is written in
+
+# Why. NeLisp's runtime (regex engine, evaluator, allocator, string and
+# buffer primitives) is written in its own low-level dialect and compiled
+# by NeLisp's native compiler. GNU's equivalents are C compiled by GCC.
+# Both GNU-comparison studies trace a large share of the remaining gap to
+# the generated code:
+# - Doc 218 (regex): the per-character skip loop costs 159.26 Ir against
+#   GNU's 6.99; one backtrack failure costs 1,464 against 178; tagged
+#   access and conversion add about 12,000 Ir on heavy items.
+# - Doc 219 (call path): even with candidates C1-C4, funcall stays at
+#   9-11x GNU, and the plan's C4 is a general-compiler budget.
+#
+# The user's direction (2026-10-21) is to imitate GNU rather than tune.
+# For compiled runtime code, the GNU reference is what GCC -O2 produces for
+# the same loop structure.
+#
+# Base: eval/core-20261017 at 9d5f4a515. Implementer: Claude Opus 5.5.
+#
+# Bar: for each kernel below, NeLisp's native code takes no more
+# wall-clock time per iteration than the same loop written in C and
+# compiled with gcc 14.2 -O2 (the median of 7 alternating runs, pinned to
+# the lane's CPU 9, warmed up, each run at least about 0.5 s; the loop is
+# isolated by subtracting a zero-iteration run).  Callgrind Ir per
+# iteration (four layouts) stays the diagnostic for where time goes.
+#
+# 2026-10-21 16:30, user: acceptance switched from Ir to wall-clock
+# ("実時間での GNU 比較に切り替えて", COMMON.md "Measurement").  S1.1-S1.5
+# and S2.1 were rewritten one for one from their Ir forms
+# (`codegen-check.py kernel NAME' and an Ir end-to-end comparison).
+
+* S0 Study and plan
+** S0.1 docs/design/224-native-codegen-gcc-parity.org: the overheads behind each kernel's gap, as counts and shares, and the planned compiler mechanisms
+The overheads are counted per category: tag checks, boxing and unboxing, redundant loads and stores, call overhead, bounds checks and branch structure. They are counted with instruction-level Ir, never by printing disassembly. Each planned mechanism (for example type inference for raw words and fixnums, register allocation for loop variables, check hoisting, accessor inlining) is matched to GCC behaviour it reproduces.
+cmd: python3 tools/ai/codegen-check.py plan
+#+NOTE: 2026-10-21 Doc 224 (b0cd5866d) attributes each kernel's excess per category and plans CG1-CG5 against GCC behaviour; CG7 (accessor inlining across units, lisp.h INLINE accessors) and CG8 (if-conversion, GCC ifcvt) were added when the runtime profile and the wall-clock gate asked for them.
+
+* S1 Kernels: wall-clock time per iteration <= gcc -O2
+** S1.1 Byte scan: find a byte in a unibyte string, memchr-style loop
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall byte-scan
+#+NOTE: 2026-10-21 final compiler (CG1-CG8), CPU 9, paired ratios: NeLisp/gcc -O2 x0.983 (0.247 against 0.255 ns/iter); the 9d5f4a515 compiler's build of the kernel x5.7 slower.  Ir per iteration 31.00 -> 6.00 against gcc's 6.00.
+** S1.2 List walk: length of a proper list
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall list-walk
+#+NOTE: 2026-10-21 blocked by the object representation, not the compiler: NeLisp/gcc -O2 on GNU's layout x2.027, on NeLisp's own layout x1.002.  A cons is a box whose payload points to a separate cell, so each element costs two dependent loads where GNU's XCDR costs one (lisp.h:408, 1468).  Ir 18.00 -> 7.00 against 5.00 (GNU layout) and 7.00 (NeLisp layout).  The cmd stays failing.
+** S1.3 Fixnum arithmetic: sum and compare in a counted loop
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall fixnum-loop
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.002 (0.688 against 0.689 ns/iter, per-round range 0.994-1.007): the same branch-free instruction stream as gcc -O2 (7 Ir, add/lea/cmp/cmov, loop-carried chain of three) after CG8; with the branch it was 6.05 Ir and x1.10.  Ir 22.20 -> 7.00.
+** S1.4 Table-driven character class test: a byte through a 256-entry table, as the regex fastmap and syntax lookups do
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall class-table
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.022 (0.245 against 0.242 ns/iter, per-round range 0.989-1.109; a 15-round rerun gave x1.013): the same 6 instructions and branch structure as gcc -O2, at the two-branches-per-iteration limit; the ratio sits in this machine's run-to-run spread.  Ir 33.00 -> 6.00.
+** S1.5 Vector element sum over a simple vector
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-check.py wall vector-sum
+#+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.004 (0.471 against 0.468 ns/iter, per-round range 0.994-1.143): the same 10 instructions per element as gcc -O2.  Ir 43.00 -> 10.00.
+
+* S2 Real code and no regression
+** S2.1 End to end: the runtime's own code gains measurably, with no semantic change
+The Doc 218 per-character regex experiment, or eval/core's regex engine on the same pattern, plus the boot, files and regex6000 workloads, all run faster in wall-clock than on 9d5f4a515: the median of 7 alternating pinned runs, ratio below 1.0 for each.  The NOTE reports each workload's ratio to GNU 31.1 running the same Lisp.  The standalone corpus and the bytecode and native suites stay identical.
+cmd: python3 tools/ai/codegen-check.py endtoend
+#+NOTE: 2026-10-21 final dynamic build (CG1-CG8) against 9d5f4a515, CPU 9, paired ratios: boot x0.838 (GNU x2.39), files x0.861 (GNU x5.45), regex6000 x0.885 (GNU x11.2), regex per character x0.869 (GNU x2107, the byte-code VM running the Lisp matcher).  Ir: boot -50.7%, files -35.8%, regex6000 -34.8%, per character -34.9%.
+** S2.2 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools, on fresh dynamic and static builds
+cmd: python3 tools/ai/codegen-check.py final
+#+NOTE: 2026-10-21 fresh dynamic and static builds of 4ce5b14bf: target/final-verify/checks.sh 11 groups, 0 failures (maphash-sparse known-red), test/perf/standalone-checks.sh rc 0 on the dynamic build, anvil MCP smoke 40 tools.

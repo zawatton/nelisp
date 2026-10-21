@@ -4588,14 +4588,14 @@ a predicate raw in a value position."
   (should-not nelisp-aot-compiler--aot-test-position))
 
 (ert-deftest nelisp-aot-compiler/arith-literal-operand-after-int-unwrap-e2e ()
-  "`(- (sexp-int-unwrap p) 1)\' pushes the literal and pops it back: EXIT=42.
+  "`(- (sexp-int-unwrap p) 1)\' subtracts the literal directly: EXIT=42.
 
-Regression pin for the operand-stack accounting of `--emit-arith\' when B is
-an immediate and A is an immediate-aware unwrap (the `nelisp_frame_stack_find_in_frame\'
-shape).  Statically the object must contain `mov rax,1; push rax\' (48 C7 C0
-01 00 00 00 50) -- the literal IS pushed -- and at runtime the probe must
-return payload-1 for a host-provided Sexp::Int(43), which is only possible
-when the matching `pop r10\' recovers that same literal."
+Regression pin for `--emit-arith\' when B is an immediate and A is an
+immediate-aware unwrap (the `nelisp_frame_stack_find_in_frame\' shape).
+Statically the object must contain `sub rax,1\' (48 83 E8 01): CG2 (Doc 224)
+encodes the literal in the instruction, as GCC does, instead of loading it
+into a scratch register.  At runtime the probe must return payload-1 for a
+host-provided Sexp::Int(43)."
   (skip-unless (and (executable-find "ld")
                     (eq system-type 'gnu/linux)))
   (let* ((probe-path (make-temp-file "nelisp-arith-lit-probe-" nil ".o"))
@@ -4622,7 +4622,7 @@ when the matching `pop r10\' recovers that same literal."
                          (insert-file-contents-literally probe-path)
                          (buffer-string))))
             (should (string-search
-                     (unibyte-string #x48 #xC7 #xC0 #x01 0 0 0 #x50) bytes)))
+                     (unibyte-string #x48 #x83 #xE8 #x01) bytes)))
           (nelisp-elf-write-binary
            host-path
            (list :e-type 'rel

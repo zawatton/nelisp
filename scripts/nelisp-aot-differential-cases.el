@@ -40,6 +40,21 @@ apart by looking at the answer.")
   '(("b0" "0") ("b1" "1") ("b3" "3") ("bn" "n"))
   "Loop bounds.  `b0' is the zero-iteration path a `while' body always has.")
 
+(defconst nelisp-aot-differential-tag-values
+  '(("fix" "(length v)") ("elt" "(aref v 0)") ("str" "\"ab\"") ("sym" "'foo")
+    ("vec" "v") ("deep" "(aref w 1)") ("flt" "1.5"))
+  "(TAG . FORM) for values of the types the tag predicates tell apart.
+Doc 224 CG5 fuses a predicate's (= (sexp-tag X) K) in a test into a
+pointer test and a tag-byte compare; each of these values goes through
+every fused predicate and the interpreter answers for comparison.
+
+Left out, because they fail identically at 9d5f4a515 (Doc 224
+\"Blocked\"): nil and t reach the predicates as the raw words 0 and 1
+of this dialect rather than the nil/t objects, so (null x) with x bound
+to nil reads address 0 and (symbolp x) with x bound to t sees an Int;
+and a cons value, (list 1 2) or '(1 2), compiles to an artifact the
+native loader refuses.")
+
 (defun nelisp-aot-differential--wrap (name body)
   "Return the source of defun NAME whose frame holds BODY."
   (format (concat "(defun %s (n)\n"
@@ -87,6 +102,20 @@ the arm that did NOT run is only wrong on one of the two calls."
                       (nelisp-aot-differential--wrap name (cdr shape))
                       '(0 3))
                 cases))))
+    ;; Type predicates in tests (Doc 224 CG5), one program per value:
+    ;; bit k of acc says whether predicate k held, so a wrong tag test on
+    ;; any of them shows up as a different answer.
+    (dolist (x nelisp-aot-differential-tag-values)
+      (let ((name (format "d-tag-%s" (car x)))
+            (body "(setq acc 0)")
+            (bit 1))
+        (dolist (pred '(null consp listp atom symbolp stringp vectorp))
+          (setq body (format "%s (if (%s %s) (setq acc (+ acc %d)) nil)"
+                             body pred (cadr x) bit)
+                bit (* bit 2)))
+        (push (list name (nelisp-aot-differential--wrap name (concat "(progn " body ")"))
+                    '(0 3))
+              cases)))
     ;; Loops, including the bound that makes the body run zero times.
     (dolist (a nelisp-aot-differential-producers)
       (dolist (bound nelisp-aot-differential-bounds)
