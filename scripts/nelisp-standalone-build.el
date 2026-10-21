@@ -45268,11 +45268,15 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           ;; has compiled runs on the word VM.
           ;; The VM record for such a closure, or 0 (shared by the legacy
           ;; dispatcher below and its word form `nl_apply_lambda_fx_w').
+          ;; The two flag reads come before the captured environment's walk
+          ;; (`m5_fx_env_ok'): with the VM switched off no closure is
+          ;; covered, and the walk was a third of an interpreted funcall.
           (push '(defun nl_apply_lambda_fx_rec (captured body-list env _pad)
                    (if (= (sexp-tag captured) 7)
-                       (if (= (m5_fx_env_ok captured 0) 1)
-                           (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-                               (m5_fx_inner_lookup body-list env) 0) 0) 0))
+                       (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
+                           (if (= (nl_fx_disabled) 1) 0
+                             (if (= (m5_fx_env_ok captured 0) 1)
+                                 (m5_fx_inner_lookup body-list env) 0)) 0) 0))
                 out)
           (push '(defun nl_apply_lambda_inner (captured formals body-list args-list env out)
                    (let* ((rec (nl_apply_lambda_fx_rec captured body-list env 0))
