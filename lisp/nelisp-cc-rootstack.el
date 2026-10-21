@@ -120,6 +120,25 @@
     (defun nl_thread_registry_find (env)
       (nl_thread_registry_find_from
        env 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))
+    ;; GNU hands a nonlocal exit's values to its handler as Lisp_Object
+    ;; values: signal_or_quit unwinds with Fcons (error_symbol, data)
+    ;; (eval.c:1943, 1952, 2064), Fthrow with the value (eval.c:1464,
+    ;; 1476-1478), unwind_to_catch stores it in the catch's val
+    ;; (eval.c:1423, 1432), and internal_catch and
+    ;; internal_lisp_condition_case read handlerlist->val (eval.c:1399,
+    ;; 1659).  NeLisp leaves by return code, so a pending exit waits for its
+    ;; handler in one place: its kind (@268435472: 1 signal, 2 throw, 0
+    ;; none) and two values, the condition symbol and its data or the
+    ;; throw's tag and value.  A raise site records a signal here with
+    ;; WORDs or 32-byte views, and the mutation epoch (@268435544) moves
+    ;; because the values escape.  Transitional storage: the two 32-byte
+    ;; stash slots, until every reader takes WORDs.
+    (defun nl_exit_signal_w (sym data)
+      (seq (extern-call wf_copy32 268435480 sym)
+           (extern-call wf_copy32 268435512 data)
+           (ptr-write-u64 268435472 0 1)
+           (atomic-fetch-add 268435544 1)
+           0))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.

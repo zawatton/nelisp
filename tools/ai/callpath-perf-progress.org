@@ -128,6 +128,7 @@ cmd: python3 tools/ai/callpath-perf-check.py s63alloc
 ** S4.4 Signal stash: no runtime function uses the fixed-address Sexp stash slots (tag @268435480, value @268435512); the condition and data travel as WORDs, as GNU's signal_or_quit hands them to the handler
 #+NOTE: 2026-10-21 added on the coordinator's request (criteria 12 -> 13), baseline 75 functions in the runtime sources (comments left out).
 #+NOTE: 2026-10-21 census fixed: code only (comments, strings and character literals blanked) and defuns whose arglist starts on the next line attributed correctly; baseline restated as 74 functions (the 75th was a string example), denominator unchanged.
+#+NOTE: 2026-10-22 step 1: 36 raise sites (bf_wrong_type_*, bf_args_out_of_range*, bf_signal_w, the reader's two, ...) build the condition and data in their own boxes and record the exit through nl_exit_signal_w (GNU signal_or_quit, eval.c:1943-2064); 39 functions remain. F1-closure members wait for the storage flip. GNU-golden corpus test/standalone-signal-data-check.el 44/44 on f16.
 cmd: python3 tools/ai/callpath-perf-check.py stash
 ** S4.5 End to end: on the same build, the final verification (S3.1) and the wall-clock regression guard (S2.4) pass
 cmd: python3 tools/ai/callpath-perf-check.py s63e2e

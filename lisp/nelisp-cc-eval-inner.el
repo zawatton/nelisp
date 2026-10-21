@@ -84,7 +84,9 @@
     ;; epoch bump.  `env' is unused (matches `nl_cons_stash_void_function',
     ;; which also takes an unused `env' for signature symmetry).
     (defun nl_stash_void_variable (env name_ptr)
-      (let* ((tag_buf (alloc-bytes 16 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (tag_buf (alloc-bytes 16 1))
              (tag_slot (alloc-bytes 32 8))
              (clone_slot (alloc-bytes 32 8))
              (nil_slot (alloc-bytes 32 8))
@@ -98,10 +100,9 @@
          (nl_cons_write_nil nil_slot)
          (seq (nelisp_cons_construct clone_slot nil_slot pair_slot)
               (nelisp_cons_construct tag_slot pair_slot signal_slot))
-         (seq (bf_sig_copy32 268435480 tag_slot)
-              (bf_sig_copy32 268435512 pair_slot)
-              (ptr-write-u64 268435472 0 1)
-              (atomic-fetch-add 268435544 1)
+         (seq (bf_sig_copy32 sig-tag tag_slot)
+              (bf_sig_copy32 sig-val pair_slot)
+              (nl_exit_signal_w sig-tag sig-val)
               1))))
 
     ;; After the extern-call lookup (arg0, per the ABI alignment rule):
