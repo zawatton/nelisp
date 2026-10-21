@@ -291,9 +291,13 @@ kinds 4 and 16):
 - Mark (ported, adapted bit).  The collector owns header bits 24 and up.
   Bit 24 is the gcmarkbit; bits 0-23 are the symbols lane's (kind,
   redirect, trapped_write, interned, declared_special, pinned, FORWARDED
-  type).  At every class-110 WORD edge, =nl_gc_mark_vword= recognizes
-  kinds 4 and 16 before anything reads a length, because their header
-  bits are flags.  =nl_gc_mark_symbol= marks a block cell through its
+  type).  At the three class-110 WORD edges (=nl_gc_mark_word=, the cdr
+  path of =nl_gc_mark_cons=, the WORD slot path), an inline header test
+  recognizes kinds 4 and 16 before anything reads a length, because their
+  header bits are flags.  A separate inlinable helper for that test, and
+  a non-inlined =nl_symbol_mark_cell=, each cost the F1 prelink closure a
+  record.  callpath-perf's merge left the closure at its 304-record
+  bound, so both are written inline.  =nl_gc_mark_symbol= marks a block cell through its
   gcmarkbit, and an image or general-heap symbol through its block mark,
   as symbol_marked_p does.  Then it traces name, val, function and plist
   (+8..+32).  Every =val= member is a WORD or an immediate (D9), so all

@@ -3034,10 +3034,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
       ;; marked.
       (defun nl_symbol_mark_cell (box)
-        (let ((h (heap-read-u64 box 0)))
-          (if (= (logand h ,smark) 0)
-              (seq (ptr-write-u64 box 0 (logior h ,smark)) 1)
-            0)))
+        ;; No `let': inlined into `nl_gc_mark_symbol', so the F1 prelink
+        ;; closure (which holds the GC mark path) gains no record for it.
+        (if (= (logand (heap-read-u64 box 0) ,smark) 0)
+            (seq (ptr-write-u64 box 0 (logior (heap-read-u64 box 0) ,smark)) 1)
+          0))
       ;; The dedup mark of the class-110 object at BOX: a symbol_block cell
       ;; takes its gcmarkbit; anything else -- a legacy vectorlike, an image
       ;; object, a general-heap symbol cell -- its block mark (as
@@ -3057,15 +3058,6 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (seq (while (< i 40)
                    (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
                  0))))
-      ;; A class-110 WORD's backing BOX (a precise edge, so its header is
-      ;; readable): a symbol (kinds 4 and 16, GNU's fixed 48-byte layout
-      ;; whose header bits above 7 are flags, not a length) or any other
-      ;; vectorlike.
-      (defun nl_gc_mark_vword (box)
-        (if (or (= (logand (heap-read-u64 box 0) 63) 4)
-                (= (logand (heap-read-u64 box 0) 63) 16))
-            (nl_gc_mark_symbol box)
-          (nl_gc_mark_vectorlike box)))
       ;; Clear every symbol_block cell's gcmarkbit (a mark phase without a
       ;; sweep).  An image dump's rank bits stay.
       (defun nl_symbol_unmark_all ()
@@ -4489,15 +4481,14 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               w))
         w))
     ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
-    ;; for nil, t, a fixnum and a cons (a list).  Any other view comes
-    ;; back as V; callers use this only where V holds a list or nil.
+    ;; for nil, t and a cons (a list).  Any other view comes back as V;
+    ;; callers use this only where V holds a list or nil.
     (defun nl_word_canon_view (v)
       (if (/= (logand v 7) 0) v
         (if (< v 4096) v
           (if (= (heap-read-u8 v 0) 0) 3
             (if (= (heap-read-u8 v 0) 1) 7
-              (if (= (heap-read-u8 v 0) 2) (+ (* (heap-read-u64 v 8) 4) 1)
-                (nl_word_canon v)))))))
+              (nl_word_canon v))))))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
@@ -6104,7 +6095,7 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 6)
-            (nl_gc_mark_vword (- word 6))
+            (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
             (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))
@@ -6188,7 +6179,7 @@ REPL-facing module it feeds."
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (nl_gc_mark_vword (- dw 6))
+                      (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
                         (if (= (logand dw 7) 2)
                             (seq (setq sp dw) (setq go 1))
                           (if (= (nl_gc_mark_block dw) 0) 0
@@ -6452,7 +6443,7 @@ REPL-facing module it feeds."
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
     (defun nl_gc_mark_slot (sp)
-      (if (= (logand sp 7) 6) (nl_gc_mark_vword (- sp 6))
+      (if (= (logand sp 7) 6) (if (or (= (logand (heap-read-u64 (- sp 6) 0) 63) 4) (= (logand (heap-read-u64 (- sp 6) 0) 63) 16)) (nl_gc_mark_symbol (- sp 6)) (nl_gc_mark_vectorlike (- sp 6)))
         (if (= (logand sp 7) 2) (nl_gc_mark_cons sp)
           (nl_gc_mark_legacy_slot sp))))
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
