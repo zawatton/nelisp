@@ -42360,17 +42360,27 @@ correctly."
              (let* ((lfn_scratch (alloc-bytes 96 8))
                     (lfn_path (+ lfn_scratch 0))
                     (lfn_sym (+ lfn_scratch 32))
-                    (lfn_old (+ lfn_scratch 64)))
+                    (lfn_old (+ lfn_scratch 64))
+                    ;; GNU's readevalloop keeps its state reachable through
+                    ;; specbind and the stack.  A collection between the
+                    ;; file's top-level forms must not free this scratch or
+                    ;; the saved value: root both in one WORD frame.
+                    (lfn_mark (nl_root_mark ctx))
+                    (lfn_roots (nl_root_frame ctx 2)))
                (seq
                 (nl_cli_expand_load_path file_ptr dd_value lfn_path)
                 (bf_load_file_name_symbol lfn_sym)
                 (if (= (nelisp_env_lookup_value (+ ctx 0) (+ ctx 32) lfn_sym lfn_old) 0)
                     0
                   (wf_write_nil lfn_old))
+                (if (= lfn_roots 0) 0
+                  (seq (ptr-write-u64 lfn_roots 0 lfn_scratch)
+                       (nl_val_clone_into lfn_old (+ lfn_roots 8))))
                 (nl_env_set_value ctx lfn_sym lfn_path)
                 (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
                                      file_ptr (nl_cstr_len file_ptr))
-                (nl_env_set_value ctx lfn_sym lfn_old)))
+                (nl_env_set_value ctx lfn_sym lfn_old)
+                (nl_root_release ctx lfn_mark)))
              (if (= (heap-read-u64 268435464 0) 0)
                  (nl_cli_action_loop sp0 argc (+ i 2) dd_value fbuf src cursor
                                       result pool out ctx builtin_sym clal_sym)
@@ -43117,17 +43127,26 @@ correctly."
                       (let* ((lfn_scratch (alloc-bytes 96 8))
                              (lfn_path (+ lfn_scratch 0))
                              (lfn_sym (+ lfn_scratch 32))
-                             (lfn_old (+ lfn_scratch 64)))
+                             (lfn_old (+ lfn_scratch 64))
+                             ;; Rooted for the whole eval, as at the other
+                             ;; --load site (GNU readevalloop keeps its state
+                             ;; reachable through specbind and the stack).
+                             (lfn_mark (nl_root_mark ctx))
+                             (lfn_roots (nl_root_frame ctx 2)))
                         (seq
                          (nl_cli_expand_load_path arg2 dd_value lfn_path)
                          (bf_load_file_name_symbol lfn_sym)
                          (if (= (nelisp_env_lookup_value (+ ctx 0) (+ ctx 32) lfn_sym lfn_old) 0)
                              0
                            (wf_write_nil lfn_old))
+                         (if (= lfn_roots 0) 0
+                           (seq (ptr-write-u64 lfn_roots 0 lfn_scratch)
+                                (nl_val_clone_into lfn_old (+ lfn_roots 8))))
                          (nl_env_set_value ctx lfn_sym lfn_path)
                          (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
                                               arg2 (nl_cstr_len arg2))
-                         (nl_env_set_value ctx lfn_sym lfn_old)))
+                         (nl_env_set_value ctx lfn_sym lfn_old)
+                         (nl_root_release ctx lfn_mark)))
                       (if (= (heap-read-u64 268435464 0) 0)
                           (nl_cli_write_value fbuf out)
                         (- (heap-read-u64 268435464 0) 1)))))))
