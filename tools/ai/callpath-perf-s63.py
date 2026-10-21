@@ -14,7 +14,8 @@
       in each mode.  NeLisp counts every allocation with the allocator's
       diagnostic counters (`nelisp--debug-switch' 24 enables and resets
       them, 25 disables them; elements 10, 11 and 12 of its result are the
-      bucket, linear and bump allocations).  GNU 31.1 counts objects with
+      bucket, linear and bump allocations) plus the cons cells carved from
+      cons blocks (element 21, GNU's cons_cells_consed).  GNU 31.1 counts objects with
       `memory-use-counts' on the same fixture; its "vm" row repeats the
       interpreter, as in the wall-clock criteria.  A loop that allocates a
       vector per iteration is the control that the counters see
@@ -111,7 +112,8 @@ CONTROLS = r'''
 def nelisp_form(n):
     ops = " ".join(("pcf-while",) + OPS + CONTROL)
     return ("(progn " + CONTROLS +
-            "(defun s63-count () (let ((s (nelisp--debug-switch 0))) (+ (nth 10 s) (nth 11 s) (nth 12 s)))) "
+            "(defun s63-count () (let ((s (nelisp--debug-switch 0)))"
+            " (+ (nth 10 s) (nth 11 s) (nth 12 s) (or (nth 21 s) 0)))) "
             "(let ((n %d) (ops '(%s)) (res nil)) "
             "(dolist (op ops) (funcall op 2000)) "
             "(nelisp--debug-switch 24) "

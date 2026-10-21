@@ -10681,7 +10681,7 @@ leave symbols unresolved at link time."
                                             ;; 19+ live in the extension
                                             ;; dispatcher below.
                                             (bf_debug_switch_ext args)))))))))))))))))))
-        (let* ((nils (alloc-bytes 32 8))
+        (let* ((nils (alloc-bytes 32 8)) (s21 (alloc-bytes 32 8))
                (s20 (alloc-bytes 32 8)) (s19 (alloc-bytes 32 8))
                (s18 (alloc-bytes 32 8)) (s17 (alloc-bytes 32 8))
                (s16 (alloc-bytes 32 8))
@@ -10692,13 +10692,18 @@ leave symbols unresolved at link time."
                (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
           (seq
             (wf_write_nil nils)
+            ;; Last element (index 21): cons cells allocated from cons blocks
+            ;; (nl_typed_alloc +88), which the allocation counters above do
+            ;; not see -- GNU's cons_cells_consed (alloc.c), for per-call
+            ;; allocation probes (tools/ai/callpath-perf-s63.py).
+            (wf_cons_int (heap-read-u64 (data-addr nl_typed_alloc) 88) nils s21)
             ;; Tier-3b park tail diagnostics.  LAST-PARKED is retained after
             ;; resume (CURRENT-PARKED returns to zero), so standalone code can
             ;; prove how many workers participated in the most recent
             ;; successful request.  SUCCESS increments only after mark/sweep.
             (wf_cons_int
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 56) 0)
-             nils s20)
+             s21 s20)
             (wf_cons_int
              (atomic-fetch-add (+ (data-addr nl_thread_parallel_ctx) 40) 0)
              s20 s19)
