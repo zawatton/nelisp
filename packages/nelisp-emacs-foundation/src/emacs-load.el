@@ -35,6 +35,12 @@ top-level form reachable until the end of the load.")
 Nil or a non-positive value disables the size-based routing and preserves
 the historical hybrid path for all source loads that can use it.")
 
+  ;; GNU lread.c preloads this special variable before Fload binds it.
+  (defvar load-true-file-name nil
+    "The actual file currently being loaded, or nil outside a load.")
+  (defvar load-in-progress nil
+    "Non-nil while the loader is reading and evaluating a file.")
+
   (defvar emacs-load--alias-candidates nil
     "Symbolic aliases encountered by the standalone source loader.
 Only currently active macro aliases affect source routing.  Ordinary
@@ -3997,6 +4003,8 @@ loader's defalias rewrites or native artifact compilation.  Top-level
         (signal 'error (list (format template resolved)))))
     ;; GNU lread.c:1491-1494 exposes the active load to compiled callees.
     (let ((load-file-name resolved)
+          (load-true-file-name resolved)
+          (inhibit-file-name-operation nil)
           (load-in-progress t)
           (lexical-binding nil)
           (position 0)
