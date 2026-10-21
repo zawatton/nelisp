@@ -300,6 +300,19 @@ target.
 
 * Blocked
 
+- Pre-existing, found by the CG5 tag cases added to the AOT differential
+  corpus, failing identically with the 9d5f4a515 compiler and binary (so
+  not CG5's): in the Lisp-to-AOT path nil and t reach a predicate as the
+  dialect's raw words 0 and 1 rather than the nil/t objects, so
+  =(let ((x nil)) (if (null x) ...))= segfaults reading address 0 and
+  =(let ((x t)) (symbolp x))= answers nil (it sees an Int); and a cons
+  value, =(list 1 2)= or ='(1 2)=, compiles to an artifact
+  =nelisp-native-load= refuses.  The corpus keeps the seven value types
+  that pass (fixnum, vector element, string, symbol, vector, nested
+  vector, float) and documents the three it leaves out.  Owner: the
+  Lisp-to-AOT representation tracking ("Representation joins" in
+  nelisp-aot-compiler.el) and the loader.
+
 - list-walk: 2 Ir per element of representation (above).  Owner: the
   object representation, not the compiler.
 - Loops with calls (the VM dispatch loop, list walks through
