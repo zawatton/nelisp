@@ -4976,15 +4976,21 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       (let* ((mp (nl_symcells_mirror)))
         (if (= mp 0) 0
           (let* ((buf (heap-read-u64 view 16)) (n (heap-read-u64 view 24))
-                 (e (nl_symcell_entry mp view)))
+                 (e (nl_symcell_entry mp view))
+                 (base (heap-read-u64 268436288 0)))
             (if (> e 1)
-                (seq (if (= (heap-read-u64 (- e 6) 8) 3)
-                         (let* ((name (alloc-bytes 32 8)))
-                           (if (= (nl_symname_make buf n name) 0) 0
-                             (nl_val_clone_into name (+ (- e 6) 8))))
-                       0)
-                     (if (= (heap-read-u64 (- e 6) 40) 0)
-                         (ptr-write-u64 (- e 6) 40 (sar (heap-read-u64 (- buf 8) 0) 32))
+                ;; A view derived from the object has no canonical buffer: the
+                ;; object is complete already.  A canonical one fills what a
+                ;; lazily made object lacks.
+                (seq (if (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0)
+                         (seq (if (= (heap-read-u64 (- e 6) 8) 3)
+                                  (let* ((name (alloc-bytes 32 8)))
+                                    (if (= (nl_symname_make buf n name) 0) 0
+                                      (nl_val_clone_into name (+ (- e 6) 8))))
+                                0)
+                              (if (= (heap-read-u64 (- e 6) 40) 0)
+                                  (ptr-write-u64 (- e 6) 40 (sar (heap-read-u64 (- buf 8) 0) 32))
+                                0))
                        0)
                      e)
               (if (= e 1) 0
@@ -5031,19 +5037,12 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       (if (/= (heap-read-u64 268436352 0) 0) 0
         (let* ((mp (nl_symcells_mirror)))
           (if (= mp 0) 0
-            (let* ((base (heap-read-u64 268436288 0)) (buf (heap-read-u64 view 16)))
-              (if (if (= base 0) 0
-                    (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0))
-                  (let* ((e (nl_symcell_entry mp view)) (u (heap-read-u64 268436336 0)))
-                    (if (<= e 1) 0
-                      (if (= (heap-read-u64 (- e 6) 8) 3) 0
-                        (if (= u 0) e (if (= buf (heap-read-u64 u 16)) 0 e)))))
-                (let* ((p (heap-read-u64 view 8)))
-                  (if (> p 65535)
-                      (if (= (logand p 7) 0)
-                          (if (= (nl_typed_find p) 2) (+ p 6) 0)
-                        0)
-                    0))))))))
+            (let* ((e (nl_symcell_entry mp view)))
+              (if (<= e 1) 0
+                (if (= (heap-read-u64 (- e 6) 8) 3) 0
+                  (let* ((u (heap-read-u64 268436336 0)))
+                    (if (= u 0) e
+                      (if (= (heap-read-u64 view 16) (heap-read-u64 u 16)) 0 e))))))))))
     ;; VIEW's object WORD, else VIEW itself.
     (defun nl_symview_canon (view)
       (let* ((o (nl_symview_object view)))

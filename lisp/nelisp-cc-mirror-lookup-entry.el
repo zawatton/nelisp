@@ -212,7 +212,18 @@ written wrong, so the check must fire.  Anything else: no check."
                       (if (>= idx (sar (heap-read-u64 cells 0) 8)) 0
                         (let* ((entry (heap-read-u64 (+ cells (* idx 8)) 8)))
                           (if (= (logand entry 1) 1) 0 entry))))))))
-          1)))
+          ;; Doc 226 D9 stage 3.2: a view derived from an interned symbol's
+          ;; object (`nl_sym_view_into') carries the object's address as its
+          ;; identity at +8 and the name string's bytes at +16, not a
+          ;; canonical buffer; the object is that address plus 6.  Object
+          ;; addresses are far above any name length, which a plain overflow
+          ;; view holds there.
+          (let* ((p (heap-read-u64 name 8)))
+            (if (> p 4294967296)
+                (if (= (logand p 7) 0)
+                    (if (= (logand (heap-read-u64 p 0) 63) 4) (+ p 6) 1)
+                  1)
+              1)))))
 
     ;; The hashed bucket walk, kept for keys without a cell and as the
     ;; authority `nl_symcell_refresh' copies into a cell.  KEY is a valid

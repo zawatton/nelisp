@@ -76,9 +76,11 @@
 (let (view obj)
   (scsc-off)
   (setq view (list (intern "scsc-both")))
+  ;; The class is read while the switch is still off: passing the element to
+  ;; `scsc-class' binds a parameter, which is a store.
+  (scsc-check (eql (scsc-class (car view)) 4) "with the switch off a symbol is stored as a view")
   (scsc-on)
   (setq obj (list (intern "scsc-both")))
-  (scsc-check (eql (scsc-class (car view)) 4) "with the switch off a symbol is stored as a view")
   (scsc-check (eql (scsc-class (car obj)) 104) "with it on, as its object")
   (scsc-check (eq (car view) (car obj)) "eq: view and object")
   (scsc-check (eq (car obj) (car view)) "eq: object and view")
