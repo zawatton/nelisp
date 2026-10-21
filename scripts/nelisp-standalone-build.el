@@ -43683,6 +43683,25 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
            (if (and (/= emit 0) (= tag 7)) (nl_n4_local_pair_word item holder) 0))
          (nl_n4_local_history_word (nl_cons_cdr_word names) holder shadow env emit))) 0))
 
+(defun nl_n4_local_pairs_p (names)
+  (if (= (nl_val_tag names) 7)
+      (if (= (nl_val_tag (nl_cons_car_word names)) 7) 1
+        (nl_n4_local_pairs_p (nl_cons_cdr_word names))) 0))
+
+(defun nl_n4_local_lexical_p (local)
+  (let* ((table (nl_record_slot_word local 0))
+         (found (nl_n4_local_pairs_p (nl_record_slot_word local 1))))
+    (if (= found 1) 1
+      (if (= (nl_val_tag table) 12)
+          (let* ((buckets (nl_record_slot_word table 1))
+                 (count (nl_word_payload (nl_record_slot_word table 0))) (j 0))
+            (seq
+             (while (and (= found 0) (< j count))
+               (setq found (nl_n4_local_pairs_p (nl_vector_slot_word buckets j)))
+               (setq j (+ j 1)))
+             found))
+        (nl_n4_local_pairs_p table)))))
+
 (defun nl_n4_locals_w (env index _pad)
   (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
          (start (ptr-read-u64 frame 96))
@@ -43690,19 +43709,27 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (end (if (< (+ index 1) (ptr-read-u64 state 0))
                   (ptr-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
          (backing (nl_record_slot_word (+ frame 64) 0))
-         (lexical-start (- end 1))
+         (lexical-start start) (lexical-i start) (lexical-active 0)
          (mark (nl_root_mark env)) (result (nl_root_reserve env))
          (shadow (nl_root_reserve env)) (i (- depth 1)))
     (seq
-     ;; GNU eval.c:4305-4316 exposes the whole lexical environment when a
-     ;; binding of internal_interpreter_environment falls in this activation.
-     ;; Its older lexical frames stop at the current function scope boundary.
-     (while (and (>= lexical-start 0)
-                 (= (nelisp_frame_scope_boundary_p
-                      (nl_vector_slot_word backing lexical-start)) 0))
-       (setq lexical-start (- lexical-start 1)))
-     (setq lexical-start (if (< lexical-start 0) 0
-                           (if (< lexical-start start) lexical-start start)))
+     ;; GNU eval.c:4305-4316 walks the whole lexical environment only
+     ;; when this activation introduced an interpreter-environment binding.
+     ;; Dynamic-only frames do not expose their caller's lexical bindings.
+     (while (and (< lexical-i end) (= lexical-active 0))
+       (seq
+        (setq lexical-active
+              (nl_n4_local_lexical_p (nl_vector_slot_word backing lexical-i)))
+        (setq lexical-i (+ lexical-i 1))))
+     (if (= lexical-active 1)
+         (seq
+          (setq lexical-start (- end 1))
+          (while (and (>= lexical-start 0)
+                      (= (nelisp_frame_scope_boundary_p
+                           (nl_vector_slot_word backing lexical-start)) 0))
+            (setq lexical-start (- lexical-start 1)))
+          (setq lexical-start (if (< lexical-start 0) 0
+                                (if (< lexical-start start) lexical-start start)))) 0)
      (wf_word_store_out result (nelisp_cons_construct_w 3 3 0))
      (wf_word_store_out shadow (nelisp_cons_construct_w 3 3 0))
      ;; Observe younger shallow bindings without including them in the result.
