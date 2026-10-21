@@ -782,7 +782,7 @@ folding).  Falls through cheaply (= no recursion into call args)
 because §97.b only folds the same shapes v1 did."
   (cond
    ((integerp sexp) t)
-   ((eq sexp t) t)
+   ((eq sexp t) (not (nelisp-aot-compiler--lisp-values-p)))
    ((symbolp sexp)
     (and (not (assq sexp fenv))
          (assq sexp env)))
@@ -1023,9 +1023,326 @@ Dispatcher calls return a pointer to a boxed Sexp result slot.  Native
 arithmetic and comparisons, however, operate on raw machine integers.
 Keep that conversion at the consumer boundary so a local `setq' can
 faithfully retain either representation in its frame slot."
-  (if (eq (nelisp-aot-compiler--ir-repr node) 'sexp-ptr)
-      (nelisp-aot-compiler--make-ir 'sexp-int-unwrap
-            :ptr node :repr 'raw-i64)
+  (cond
+   ((eq (nelisp-aot-compiler--ir-repr node) 'sexp-ptr)
+    (nelisp-aot-compiler--make-ir 'sexp-int-unwrap
+          :ptr node :repr 'raw-i64))
+   ;; Doc 229: an `if' whose arms disagree converts arm by arm.
+   ((eq (nelisp-aot-compiler--ir-repr node) 'mixed)
+    (nelisp-aot-compiler--lisp-map-tail
+     node #'nelisp-aot-compiler--ir-as-raw-i64))
+   (t node)))
+
+;;; Doc 229 -- Lisp values in native artifacts follow GNU's Lisp_Object rules.
+;;
+;; In native artifacts of Lisp source (`--runtime-entry-params') a Lisp
+;; value is a `sexp-ptr' -- the address of a 32-byte Sexp slot, GNU's
+;; Lisp_Object -- unless the compiler knows more: `raw-i64' is a value
+;; known to be a fixnum and `raw-bool' one known to be nil (0) or t (1),
+;; the same numbers as the Sexp tags Nil and T.  A form whose arms
+;; disagree is `mixed' until a consumer converts it, arm by arm.  Truth is
+;; GNU's NILP (lisp.h:399, comp.c:1763 `emit_NILP'): a raw-bool is tested
+;; against 0, a fixnum is never nil, and a Sexp is nil when its tag is.
+;; The runtime's dialect units keep nil = 0 and the != 0 test.
+
+(defsubst nelisp-aot-compiler--lisp-values-p ()
+  "Non-nil when Lisp values follow GNU's rules: native artifacts (Doc 229)."
+  nelisp-aot-compiler--runtime-entry-params)
+
+(defun nelisp-aot-compiler--ir-with (node field value)
+  "Return a copy of IR NODE with FIELD set to VALUE, appended when absent."
+  (let ((len (length node))
+        (i 1)
+        (pos nil))
+    (while (< i len)
+      (when (eq (aref node i) field)
+        (setq pos (1+ i)
+              i len))
+      (setq i (+ i 2)))
+    (if pos
+        (let ((copy (copy-sequence node)))
+          (aset copy pos value)
+          copy)
+      (vconcat node (vector field value)))))
+
+(defun nelisp-aot-compiler--lisp-repr (node)
+  "Return NODE's Doc 229 representation: raw-i64, raw-bool, mixed or sexp-ptr."
+  (let ((repr (nelisp-aot-compiler--ir-repr node)))
+    (cond
+     ((memq repr '(raw-i64 raw-bool mixed)) repr)
+     ((memq (nelisp-aot-compiler--ir-kind node) '(sexp-tag shift)) 'raw-i64)
+     (t 'sexp-ptr))))
+
+(defun nelisp-aot-compiler--lisp-join (reprs)
+  "Return the representation of a value that is one of REPRS."
+  (let ((first (car reprs)))
+    (if (and first
+             (not (eq first 'mixed))
+             (seq-every-p (lambda (r) (eq r first)) reprs))
+        first
+      'mixed)))
+
+(defun nelisp-aot-compiler--lisp-map-tail (node fn)
+  "Apply FN to every IR that can be NODE's value and rebuild NODE.
+The conversions go to the arms of `if' and `cond' and to the last form
+of a `let' or `progn', so a form whose value is dropped pays nothing."
+  (pcase (nelisp-aot-compiler--ir-kind node)
+    ('if
+     (let ((then (funcall fn (nelisp-aot-compiler--ir-get node :then)))
+           (else (funcall fn (nelisp-aot-compiler--ir-get node :else))))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--ir-with
+         (nelisp-aot-compiler--ir-with node :then then)
+         :else else)
+        :repr (nelisp-aot-compiler--lisp-join
+               (list (nelisp-aot-compiler--lisp-repr then)
+                     (nelisp-aot-compiler--lisp-repr else))))))
+    ('cond
+     (let ((clauses (mapcar (lambda (cl) (cons (car cl) (funcall fn (cdr cl))))
+                            (nelisp-aot-compiler--ir-get node :clauses))))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--ir-with node :clauses clauses)
+        :repr (nelisp-aot-compiler--lisp-join
+               (mapcar (lambda (cl) (nelisp-aot-compiler--lisp-repr (cdr cl)))
+                       clauses)))))
+    ((or 'let-rt 'let-rt-n 'let)
+     (let ((body (funcall fn (nelisp-aot-compiler--ir-get node :body))))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--ir-with node :body body)
+        :repr (nelisp-aot-compiler--lisp-repr body))))
+    ('value-seq
+     (let* ((forms (nelisp-aot-compiler--ir-get node :forms))
+            (last (funcall fn (car (last forms)))))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--ir-with node :forms
+                                      (append (butlast forms) (list last)))
+        :repr (nelisp-aot-compiler--lisp-repr last))))
+    (_ (funcall fn node))))
+
+(defun nelisp-aot-compiler--lisp-imm-bool (value)
+  "Return the raw-bool constant VALUE (0 for nil, 1 for t)."
+  (nelisp-aot-compiler--make-ir 'imm :value value :repr 'raw-bool))
+
+(defun nelisp-aot-compiler--lisp-with-effects (node value)
+  "Run NODE for its effects and yield the raw-bool constant VALUE."
+  (if (memq (nelisp-aot-compiler--ir-kind node) '(imm ref))
+      (nelisp-aot-compiler--lisp-imm-bool value)
+    (nelisp-aot-compiler--make-ir 'value-seq
+          :repr 'raw-bool
+          :forms (list node (nelisp-aot-compiler--lisp-imm-bool value)))))
+
+(defun nelisp-aot-compiler--lisp-nilp (node)
+  "Return a raw-bool that is 1 when the Sexp NODE is nil (GNU NILP)."
+  (nelisp-aot-compiler--make-ir 'cmp
+        :op '=
+        :repr 'raw-bool
+        :a (nelisp-aot-compiler--make-ir 'sexp-tag :ptr node)
+        :b (nelisp-aot-compiler--make-ir 'imm :value nelisp-sexp--tag-nil)))
+
+(defun nelisp-aot-compiler--lisp-truth (node)
+  "Return NODE as a raw-bool truth value: 1 unless its value is nil."
+  (pcase (nelisp-aot-compiler--lisp-repr node)
+    ('raw-bool node)
+    ;; A fixnum is never nil.
+    ('raw-i64 (nelisp-aot-compiler--lisp-with-effects node 1))
+    ('mixed (nelisp-aot-compiler--lisp-map-tail
+             node #'nelisp-aot-compiler--lisp-truth))
+    (_ (nelisp-aot-compiler--make-ir 'cmp
+             :op '/=
+             :repr 'raw-bool
+             :a (nelisp-aot-compiler--make-ir 'sexp-tag :ptr node)
+             :b (nelisp-aot-compiler--make-ir 'imm :value nelisp-sexp--tag-nil)))))
+
+(defun nelisp-aot-compiler--lisp-not (node)
+  "Return a raw-bool that is 1 when NODE's value is nil (GNU `not')."
+  (pcase (nelisp-aot-compiler--lisp-repr node)
+    ('raw-bool (nelisp-aot-compiler--make-ir 'cmp
+                    :op '= :repr 'raw-bool
+                    :a node :b (nelisp-aot-compiler--make-ir 'imm :value 0)))
+    ('raw-i64 (nelisp-aot-compiler--lisp-with-effects node 0))
+    ('mixed (nelisp-aot-compiler--lisp-map-tail
+             node #'nelisp-aot-compiler--lisp-not))
+    (_ (nelisp-aot-compiler--lisp-nilp node))))
+
+(defun nelisp-aot-compiler--lisp-as-sexp (node env fenv defuns)
+  "Return NODE as a Sexp slot: box a fixnum or a boolean (GNU make_fixnum, Qt/Qnil).
+A boolean's raw value is the Sexp tag of nil or t, so boxing it is one
+store of the tag word."
+  (pcase (nelisp-aot-compiler--lisp-repr node)
+    ((or 'raw-i64 'raw-bool)
+     (let* ((slot (nelisp-aot-compiler--gensym "lisp-box"))
+            (write (if (eq (nelisp-aot-compiler--lisp-repr node) 'raw-i64)
+                       `(sexp-int-make ,slot (nelisp-aot--parsed-ir ,node))
+                     `(ptr-write-u64 ,slot 0 (nelisp-aot--parsed-ir ,node)))))
+       (nelisp-aot-compiler--ir-with
+        (nelisp-aot-compiler--parse-value
+         `(let ((,slot (alloc-bytes 32 8)))
+            (seq ,write ,slot))
+         env fenv defuns)
+        :repr 'sexp-ptr)))
+    ('mixed (nelisp-aot-compiler--lisp-map-tail
+             node (lambda (n)
+                    (nelisp-aot-compiler--lisp-as-sexp n env fenv defuns))))
+    (_ node)))
+
+(defun nelisp-aot-compiler--lisp-settle (node env fenv defuns)
+  "Return NODE with one representation on every path (box a mixed value)."
+  (if (and (nelisp-aot-compiler--lisp-values-p)
+           (eq (nelisp-aot-compiler--lisp-repr node) 'mixed))
+      (nelisp-aot-compiler--lisp-as-sexp node env fenv defuns)
+    node))
+
+(defun nelisp-aot-compiler--lisp-check-numbers (sexp &rest operands)
+  "Refuse SEXP when an operand is a boolean: GNU signals wrong-type-argument.
+The defun then runs in the evaluator, which signals it."
+  (dolist (o operands)
+    (when (eq (nelisp-aot-compiler--lisp-repr o) 'raw-bool)
+      (signal 'nelisp-aot-compiler-error (list :lisp-boolean-operand sexp)))))
+
+(defconst nelisp-aot-compiler--lisp-predicate-tags
+  `((null ,nelisp-sexp--tag-nil)
+    (not ,nelisp-sexp--tag-nil)
+    (consp ,nelisp-sexp--tag-cons)
+    (atom :not ,nelisp-sexp--tag-cons)
+    (listp ,nelisp-sexp--tag-nil ,nelisp-sexp--tag-cons)
+    ;; nil and t are symbols (data.c:373 Fsymbolp).
+    (symbolp ,nelisp-sexp--tag-nil ,nelisp-sexp--tag-t ,nelisp-sexp--tag-symbol)
+    (integerp ,nelisp-sexp--tag-int ,nelisp-sexp--tag-bignum)
+    (numberp ,nelisp-sexp--tag-int ,nelisp-sexp--tag-float
+             ,nelisp-sexp--tag-bignum)
+    (floatp ,nelisp-sexp--tag-float)
+    (stringp ,nelisp-sexp--tag-str ,nelisp-sexp--tag-mut-str
+             ,nelisp-sexp--tag-unibyte-str ,nelisp-sexp--tag-unibyte-mut-str)
+    (vectorp ,nelisp-sexp--tag-vector))
+  "Doc 229: the Sexp tags each type predicate accepts (GNU data.c).
+`(atom :not TAG)' accepts every tag but TAG.")
+
+(defun nelisp-aot-compiler--lisp-predicate (op arg env fenv defuns)
+  "Return the raw-bool for type predicate OP applied to the parsed ARG."
+  (let* ((spec (cdr (assq op nelisp-aot-compiler--lisp-predicate-tags)))
+         (negate (eq (car spec) :not))
+         (tags (if negate (cdr spec) spec)))
+    (pcase (nelisp-aot-compiler--lisp-repr arg)
+      ;; A fixnum: an integer, a number and an atom, nothing else.
+      ('raw-i64 (nelisp-aot-compiler--lisp-with-effects
+                 arg (if (memq op '(integerp numberp atom)) 1 0)))
+      ;; nil or t: symbols and atoms; nil is also null and a list.
+      ('raw-bool
+       (cond
+        ((memq op '(null not listp)) (nelisp-aot-compiler--lisp-not arg))
+        ((memq op '(symbolp atom)) (nelisp-aot-compiler--lisp-with-effects arg 1))
+        (t (nelisp-aot-compiler--lisp-with-effects arg 0))))
+      ('mixed (if (memq op '(null not))
+                  (nelisp-aot-compiler--lisp-not arg)
+                (nelisp-aot-compiler--lisp-predicate
+                 op (nelisp-aot-compiler--lisp-as-sexp arg env fenv defuns)
+                 env fenv defuns)))
+      (_
+       (if (null (cdr tags))
+           (nelisp-aot-compiler--make-ir 'cmp
+                 :op (if negate '/= '=)
+                 :repr 'raw-bool
+                 :a (nelisp-aot-compiler--make-ir 'sexp-tag :ptr arg)
+                 :b (nelisp-aot-compiler--make-ir 'imm :value (car tags)))
+         ;; Several tags: one tag read and a bit test of the tag set, the
+         ;; way GCC lowers a dense switch to a bit test.
+         (let ((mask 0))
+           (dolist (tag tags) (setq mask (logior mask (ash 1 tag))))
+           (nelisp-aot-compiler--parse-value
+            `(,(if negate '= '/=)
+              (logand (sar ,mask (sexp-tag (nelisp-aot--parsed-ir ,arg))) 1)
+              0)
+            env fenv defuns)))))))
+
+(defun nelisp-aot-compiler--lisp-logic-desugar (sexp)
+  "Return Lisp `and'/`or' SEXP as `if' forms: the value of the arm that stops it."
+  (let ((op (car sexp))
+        (args (cdr sexp)))
+    (cond
+     ((null args) (if (eq op 'and) t nil))
+     ((null (cdr args)) (car args))
+     ((eq op 'and)
+      `(if ,(car args) ,(cons 'and (cdr args)) nil))
+     (t
+      (let ((tmp (nelisp-aot-compiler--gensym "lisp-or")))
+        `(let ((,tmp ,(car args)))
+           (if ,tmp ,tmp ,(cons 'or (cdr args)))))))))
+
+(defun nelisp-aot-compiler--lisp-test (node)
+  "Return NODE as a branch condition: its truth in Lisp mode, else NODE."
+  (if (nelisp-aot-compiler--lisp-values-p)
+      (nelisp-aot-compiler--lisp-truth node)
+    node))
+
+(defun nelisp-aot-compiler--lisp-parse-test (form env fenv defuns)
+  "Parse FORM as a branch condition, a test position (Doc 229)."
+  (nelisp-aot-compiler--lisp-test
+   (let ((nelisp-aot-compiler--aot-test-position
+          (nelisp-aot-compiler--aot-test-form-p form)))
+     (nelisp-aot-compiler--parse-value form env fenv defuns))))
+
+(defun nelisp-aot-compiler--lisp-aliases-out-p (node)
+  "Return non-nil when NODE's value can be the shared dispatcher OUT slot."
+  (pcase (nelisp-aot-compiler--ir-kind node)
+    ('ref (eq (nelisp-aot-compiler--ir-get node :var) 'out))
+    ('value-seq (nelisp-aot-compiler--lisp-aliases-out-p
+                 (car (last (nelisp-aot-compiler--ir-get node :forms)))))
+    ((or 'let-rt 'let-rt-n 'let)
+     (nelisp-aot-compiler--lisp-aliases-out-p
+      (nelisp-aot-compiler--ir-get node :body)))
+    ('if (or (nelisp-aot-compiler--lisp-aliases-out-p
+              (nelisp-aot-compiler--ir-get node :then))
+             (nelisp-aot-compiler--lisp-aliases-out-p
+              (nelisp-aot-compiler--ir-get node :else))))
+    ('cond (seq-some (lambda (cl) (nelisp-aot-compiler--lisp-aliases-out-p (cdr cl)))
+                     (nelisp-aot-compiler--ir-get node :clauses)))
+    (_ nil)))
+
+(defun nelisp-aot-compiler--lisp-store (node env fenv defuns)
+  "Return NODE as a variable stores it in Lisp mode.
+A variable holds a fixnum raw or any other value as a Sexp, like a GNU
+Lisp_Object slot: a boolean or a value whose arms disagree is boxed, so
+the representation joins only ever meet raw-i64 and sexp-ptr."
+  (if (and (nelisp-aot-compiler--lisp-values-p)
+           (memq (nelisp-aot-compiler--lisp-repr node) '(raw-bool mixed)))
+      (nelisp-aot-compiler--lisp-as-sexp node env fenv defuns)
+    node))
+
+(defun nelisp-aot-compiler--lisp-stabilize (node env fenv defuns)
+  "Return NODE copied out of the dispatcher's shared OUT slot when it is there.
+The next delegated call overwrites OUT, and a GNU variable keeps its
+value, so a user `let' binding of a call result gets a slot of its own,
+as `setq' already gives it."
+  (if (and (nelisp-aot-compiler--lisp-values-p)
+           (eq (nelisp-aot-compiler--lisp-repr node) 'sexp-ptr)
+           (nelisp-aot-compiler--lisp-aliases-out-p node))
+      (let ((stable (nelisp-aot-compiler--gensym "lisp-stable")))
+        (nelisp-aot-compiler--ir-with
+         (nelisp-aot-compiler--parse-value
+          `(let ((,stable (alloc-bytes 32 8)))
+             (seq (extern-call nl_sexp_clone_into
+                               (nelisp-aot--parsed-ir ,node) ,stable)
+                  ,stable))
+          env fenv defuns)
+         :repr 'sexp-ptr))
+    node))
+
+(defun nelisp-aot-compiler--lisp-binding-init (init)
+  "Return the preprocessed INIT of a user `let' binding (Doc 229).
+In Lisp mode an unbound variable starts as nil and a computed value is
+marked so the parser copies a dispatcher result to its own slot.
+Compiler-made bindings are not marked: they consume their value at once."
+  (cond
+   ((not (nelisp-aot-compiler--lisp-values-p)) init)
+   ((and (consp init) (not (memq (car init) '(quote function))))
+    (list 'nelisp-aot--user-init init))
+   (t init)))
+
+(defun nelisp-aot-compiler--lisp-with-repr (node reprs)
+  "Return NODE carrying the join of REPRS in Lisp mode, else NODE."
+  (if (nelisp-aot-compiler--lisp-values-p)
+      (nelisp-aot-compiler--ir-with node :repr
+                                    (nelisp-aot-compiler--lisp-join reprs))
     node))
 
 (defconst nelisp-aot-compiler--ir-kind-tags
@@ -1930,8 +2247,10 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
                 (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
                        (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                                   (1+ slot)))
-                       (val-ir (nelisp-aot-compiler--parse-value
-                                val-sexp env fenv defuns)))
+                       (val-ir (nelisp-aot-compiler--lisp-store
+                                (nelisp-aot-compiler--parse-value
+                                 val-sexp env fenv defuns)
+                                env fenv defuns)))
                   (push (list var slot val-ir root-p) rt-bindings)
                   (push (cons var (list :slot slot :class 'gp :root-p root-p
                                         :repr (nelisp-aot-compiler--ir-repr val-ir)))
@@ -4086,12 +4405,14 @@ and the defun compiles exactly as before."
 	        (signal 'nelisp-aot-compiler-error
 	                (list :let-binding-shape binding)))
 	      `(let (,(if (symbolp binding)
-	                  (list binding 0)
+	                  (list binding (if (nelisp-aot-compiler--lisp-values-p) nil 0))
 	                (if (null (cdr binding))
-	                    (list (car binding) 0)
+	                    (list (car binding)
+	                          (if (nelisp-aot-compiler--lisp-values-p) nil 0))
 	                  (list (car binding)
-	                        (nelisp-aot-compiler--preprocess-source
-	                         (cadr binding))))))
+	                        (nelisp-aot-compiler--lisp-binding-init
+	                         (nelisp-aot-compiler--preprocess-source
+	                          (cadr binding)))))))
 	         ,(nelisp-aot-compiler--preprocess-let*-bindings
 	           (cdr bindings) body)))))
 
@@ -4962,8 +5283,9 @@ the whole program."
   (cond
    ;; Host `nil' is the false/zero value in the current raw-i64 Phase
    ;; 47 grammar.  Do not rewrite `t' globally; `cond' keeps its
-   ;; existing `(t BODY)' sentinel handling.
-   ((null sexp) 0)
+   ;; existing `(t BODY)' sentinel handling.  In native artifacts of Lisp
+   ;; source nil stays the nil object (Doc 229).
+   ((null sexp) (if (nelisp-aot-compiler--lisp-values-p) nil 0))
    ((atom sexp) sexp)
    ((eq (car sexp) 'cfg)
     (require 'nelisp-native-cfg-grammar)
@@ -5120,12 +5442,14 @@ the whole program."
 	                (signal 'nelisp-aot-compiler-error
 	                        (list :let-binding-shape binding)))
 	              (if (symbolp binding)
-	                  (list binding 0)
+	                  (list binding (if (nelisp-aot-compiler--lisp-values-p) nil 0))
 	                (if (null (cdr binding))
-	                    (list (car binding) 0)
+	                    (list (car binding)
+	                          (if (nelisp-aot-compiler--lisp-values-p) nil 0))
 	                  (list (car binding)
-	                        (nelisp-aot-compiler--preprocess-source
-	                         (cadr binding))))))
+	                        (nelisp-aot-compiler--lisp-binding-init
+	                         (nelisp-aot-compiler--preprocess-source
+	                          (cadr binding)))))))
             (nth 1 sexp))
        ,(nelisp-aot-compiler--body->form (nthcdr 2 sexp))))
    ((eq (car sexp) 'let*)
@@ -5853,6 +6177,14 @@ Only a known raw frame reference is converted here.  Unknown values keep
 the legacy path until their producer has been migrated to `:repr'; this
 avoids treating arbitrary native pointers as tagged integers."
   (let ((info (and (symbolp form) (cdr (assq form fenv)))))
+    (if (and (nelisp-aot-compiler--lisp-values-p) (not (integerp form)))
+        ;; Doc 229: every boundary takes a Sexp; box by representation.
+        (if (or (memq form '(nil t))
+                (and (symbolp form)
+                     (memq (plist-get info :repr) '(raw-i64 raw-bool mixed)))
+                (and (consp form) (not (eq (car form) 'quote))))
+            `(nelisp-aot--as-sexp ,form)
+          form)
     (if (or (eq (plist-get info :repr) 'raw-i64)
             ;; The source-level arithmetic and comparison forms always
             ;; yield raw i64 values.  They are not frame references, so
@@ -5866,7 +6198,7 @@ avoids treating arbitrary native pointers as tagged integers."
         (let ((slot (nelisp-aot-compiler--gensym "aot-dispatch-box")))
           `(let ((,slot (alloc-bytes 32 8)))
              (seq (sexp-int-make ,slot ,form) ,slot)))
-      form)))
+      form))))
 
 (defconst nelisp-aot-compiler--raw-i64-producing-heads
   '(;; Arithmetic and comparison.
@@ -6115,8 +6447,11 @@ Anything that is not one of the forms recursed into here is treated as a
 leaf, and a leaf is converted only when it is known to produce a raw
 word.  An unclassified leaf keeps the legacy path: `unknown' is a third
 representation in this compiler, not a synonym for raw, and boxing one
-that is really a pointer loses the object."
+that is really a pointer loses the object.  In native artifacts the IR
+conversion of Doc 229 answers exactly, by representation."
   (cond
+   ((nelisp-aot-compiler--lisp-values-p)
+    `(nelisp-aot--as-sexp ,form))
    ((not (consp form))
     (nelisp-aot-compiler--as-sexp-ptr-leaf form fenv))
    ((eq (car form) 'progn)
@@ -9730,6 +10065,23 @@ functions `((NAME . ARITY) ...)'."
   (cond
    ((and (consp sexp) (eq (car sexp) 'defalias))
     (signal 'nelisp-aot-compiler-error (list :nested-native-defalias sexp)))
+   ;; Doc 229: an already parsed IR node spliced into a source form.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--parsed-ir))
+    (cadr sexp))
+   ;; Doc 229: a user `let' binding's value, in a slot of its own.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--user-init))
+    (nelisp-aot-compiler--lisp-stabilize
+     (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
+     env fenv defuns))
+   ;; Doc 229: a Lisp value in the Sexp form every boundary takes.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--as-sexp))
+    (nelisp-aot-compiler--lisp-as-sexp
+     (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
+     env fenv defuns))
+   ;; Doc 229: nil and t are the nil and t objects, held as raw booleans
+   ;; until a boundary boxes them.
+   ((and (nelisp-aot-compiler--lisp-values-p) (memq sexp '(nil t)))
+    (nelisp-aot-compiler--lisp-imm-bool (if sexp 1 0)))
 	   ;; Compile-time foldable -> immediate.
 	   ((nelisp-aot-compiler--int-foldable-p sexp env fenv)
 	    (nelisp-aot-compiler--make-ir 'imm
@@ -9815,8 +10167,10 @@ functions `((NAME . ARITY) ...)'."
         (let* ((var (car pairs))
                (pcell (assq var fenv))
                (slot (plist-get (cdr pcell) :slot))
-               (value-ir (nelisp-aot-compiler--parse-value
-                          (cadr pairs) env fenv defuns)))
+               (value-ir (nelisp-aot-compiler--lisp-store
+                          (nelisp-aot-compiler--parse-value
+                           (cadr pairs) env fenv defuns)
+                          env fenv defuns)))
           ;; A dispatcher result normally aliases the shared boundary OUT
           ;; slot.  Storing that pointer in a local makes a later delegated
           ;; call silently change the earlier `setq' value.  Give local Sexp
@@ -9831,7 +10185,12 @@ functions `((NAME . ARITY) ...)'."
                       (nelisp-aot-compiler--parse-value
                        `(let ((,stable (alloc-bytes 32 8)))
                           (seq (extern-call nl_sexp_clone_into
-                                            ,(cadr pairs) ,stable)
+                                            ;; Doc 229: the value already
+                                            ;; parsed (and boxed) above.
+                                            ,(if (nelisp-aot-compiler--lisp-values-p)
+                                                 `(nelisp-aot--parsed-ir ,value-ir)
+                                               (cadr pairs))
+                                            ,stable)
                                ,stable))
                        env fenv defuns))))))
           ;; FENV is parsed in evaluation order.  Keep the representation
@@ -9967,6 +10326,8 @@ functions `((NAME . ARITY) ...)'."
               (nth 1 sexp) env fenv defuns))
           (b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
+      (when (nelisp-aot-compiler--lisp-values-p)
+        (nelisp-aot-compiler--lisp-check-numbers sexp a b))
       (nelisp-aot-compiler--make-ir 'arith
             :op (car sexp)
             :repr 'raw-i64
@@ -10046,9 +10407,12 @@ functions `((NAME . ARITY) ...)'."
               (nth 1 sexp) env fenv defuns))
           (b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
+      (when (nelisp-aot-compiler--lisp-values-p)
+        (nelisp-aot-compiler--lisp-check-numbers sexp a b))
       (nelisp-aot-compiler--make-ir 'cmp
             :op (car sexp)
-            :repr 'raw-i64
+            ;; Doc 229: a comparison yields t or nil (bytecode.c:1278).
+            :repr (if (nelisp-aot-compiler--lisp-values-p) 'raw-bool 'raw-i64)
             :a (nelisp-aot-compiler--ir-as-raw-i64 a)
             :b (nelisp-aot-compiler--ir-as-raw-i64 b))))
    ;; (if TEST THEN ELSE) — control-flow value form.
@@ -10063,10 +10427,11 @@ functions `((NAME . ARITY) ...)'."
             ;; (vectorp x)) ...)', where it is an argument to `foo' and
             ;; `foo' wants the boxed Sexp.  With the JIT on by default
             ;; that reaches ordinary runtime code, not just artifacts.
-            (let ((nelisp-aot-compiler--aot-test-position
-                   (nelisp-aot-compiler--aot-test-form-p (nth 1 sexp))))
-              (nelisp-aot-compiler--parse-value
-               (nth 1 sexp) env fenv defuns)))
+            (nelisp-aot-compiler--lisp-test
+             (let ((nelisp-aot-compiler--aot-test-position
+                    (nelisp-aot-compiler--aot-test-form-p (nth 1 sexp))))
+               (nelisp-aot-compiler--parse-value
+                (nth 1 sexp) env fenv defuns))))
            ;; The arms produce the `if''s value, so they are not tests.
            (nelisp-aot-compiler--aot-test-position nil)
            ;; At run time the `else' arm never observes the `then' arm's
@@ -10102,11 +10467,14 @@ functions `((NAME . ARITY) ...)'."
                        else-ir fixes 'b else-assigned env fenv defuns)))
       (setq nelisp-aot-compiler--assigned-cells
             (append then-assigned else-assigned outer-assigned))
-      (nelisp-aot-compiler--make-ir 'if
-            :id (nelisp-aot-compiler--gensym "if")
-            :test test-ir
-            :then then-ir
-            :else else-ir)))
+      (nelisp-aot-compiler--lisp-with-repr
+       (nelisp-aot-compiler--make-ir 'if
+             :id (nelisp-aot-compiler--gensym "if")
+             :test test-ir
+             :then then-ir
+             :else else-ir)
+       (list (nelisp-aot-compiler--lisp-repr then-ir)
+             (nelisp-aot-compiler--lisp-repr else-ir)))))
    ;; (while TEST BODY...) — returns 0 after loop exit.
    ((and (consp sexp) (eq (car sexp) 'while))
     (unless (>= (length sexp) 2)
@@ -10118,8 +10486,11 @@ functions `((NAME . ARITY) ...)'."
     ;; goes before the loop -- and once, not per iteration.
     (let* ((parse
             (lambda ()
-              (let ((test (nelisp-aot-compiler--parse-value
-                           (nth 1 sexp) env fenv defuns)))
+              (let ((test (if (nelisp-aot-compiler--lisp-values-p)
+                              (nelisp-aot-compiler--lisp-parse-test
+                               (nth 1 sexp) env fenv defuns)
+                            (nelisp-aot-compiler--parse-value
+                             (nth 1 sexp) env fenv defuns))))
                 ;; Multiple body forms wrap as an implicit seq of value
                 ;; forms; each result is discarded except the last (=
                 ;; rax) which `while' itself overwrites with 0 on exit.
@@ -10132,13 +10503,37 @@ functions `((NAME . ARITY) ...)'."
            (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (parsed (funcall parse))
            (after-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
-           (boxed (nelisp-aot-compiler--repr-boxed-cells (list after-reprs)))
-           (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed)))
+           ;; Doc 229: the loop head is reached from the entry and from the
+           ;; end of the body, so a slot boxed on either path is boxed on
+           ;; both -- before the loop and, for one the body leaves raw, at
+           ;; the end of the body.  (Only the entry-raw half was converted,
+           ;; so a Sexp variable the body set to a fixnum read as a fixnum
+           ;; after zero iterations.)
+           (boxed (nelisp-aot-compiler--repr-boxed-cells
+                   (if (nelisp-aot-compiler--lisp-values-p)
+                       (list entry-reprs after-reprs)
+                     (list after-reprs))))
+           (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed))
+           (tail-box
+            (lambda (body)
+              (if (not (nelisp-aot-compiler--lisp-values-p))
+                  body
+                (append body
+                        (delq nil
+                              (mapcar (lambda (cell)
+                                        (nelisp-aot-compiler--repr-coercion-ir
+                                         cell env fenv defuns))
+                                      (nelisp-aot-compiler--repr-raw-cells
+                                       (nelisp-aot-compiler--repr-snapshot repr-fenv)
+                                       boxed))))))))
       (if (null raw)
-          (nelisp-aot-compiler--make-ir 'while
-                :id (nelisp-aot-compiler--gensym "while")
-                :test (car parsed)
-                :body (cdr parsed))
+          (nelisp-aot-compiler--lisp-with-repr
+           (nelisp-aot-compiler--make-ir 'while
+                 :id (nelisp-aot-compiler--gensym "while")
+                 :test (car parsed)
+                 :body (funcall tail-box (cdr parsed)))
+           ;; A loop's value is nil.
+           '(raw-bool))
         ;; The test is parsed once but executes after every iteration, so
         ;; it has to see the same representation the body leaves behind.
         ;; Parse both again with the slot already boxed.
@@ -10149,10 +10544,12 @@ functions `((NAME . ARITY) ...)'."
                                      cell env fenv defuns))
                                   raw)))
                (again (funcall parse))
-               (node (nelisp-aot-compiler--make-ir 'while
-                           :id (nelisp-aot-compiler--gensym "while")
-                           :test (car again)
-                           :body (cdr again))))
+               (node (nelisp-aot-compiler--lisp-with-repr
+                      (nelisp-aot-compiler--make-ir 'while
+                            :id (nelisp-aot-compiler--gensym "while")
+                            :test (car again)
+                            :body (funcall tail-box (cdr again)))
+                      '(raw-bool))))
           (if (null coercions)
               node
             (nelisp-aot-compiler--make-ir 'value-seq
@@ -10163,11 +10560,17 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp) (eq (car sexp) 'ignore)
          (not (assq 'ignore defuns)))
     (nelisp-aot-compiler--parse-value
-     (cons 'seq (append (cdr sexp) (list 0)))
+     (cons 'seq (append (cdr sexp)
+                        (list (if (nelisp-aot-compiler--lisp-values-p) nil 0))))
      env fenv defuns))
    ;; (cond (PRED1 BODY1) ... (t BODY-N)).
    ((and (consp sexp) (eq (car sexp) 'cond))
     (let ((raw-clauses (cdr sexp)))
+      ;; Doc 229: when no clause matches, `cond' yields nil.
+      (when (and (nelisp-aot-compiler--lisp-values-p)
+                 raw-clauses
+                 (not (seq-find (lambda (cl) (eq (car-safe cl) t)) raw-clauses)))
+        (setq raw-clauses (append raw-clauses (list (list t nil)))))
       (when (null raw-clauses)
         (signal 'nelisp-aot-compiler-error
                 (list :cond-empty sexp)))
@@ -10191,10 +10594,13 @@ functions `((NAME . ARITY) ...)'."
           ;; Predicates run in sequence -- predicate N only runs because
           ;; the earlier ones were false -- so they chain.  A body starts
           ;; from the state its own predicate left.
-          (let* ((pred-ir (if (eq (car cl) t)
-                              'always
-                            (nelisp-aot-compiler--parse-value
-                             (car cl) env fenv defuns)))
+          (let* ((pred-ir (cond
+                           ((eq (car cl) t) 'always)
+                           ((nelisp-aot-compiler--lisp-values-p)
+                            (nelisp-aot-compiler--lisp-parse-test
+                             (car cl) env fenv defuns))
+                           (t (nelisp-aot-compiler--parse-value
+                               (car cl) env fenv defuns))))
                  (before (nelisp-aot-compiler--repr-snapshot repr-fenv))
                  (_ (setq nelisp-aot-compiler--assigned-cells nil))
                  (body-ir (nelisp-aot-compiler--parse-value
@@ -10228,9 +10634,13 @@ functions `((NAME . ARITY) ...)'."
           (let* ((fall-raw (and (not has-default)
                                 (nelisp-aot-compiler--repr-raw-cells
                                  pred-reprs boxed)))
-                 (node (nelisp-aot-compiler--make-ir 'cond
-                             :id (nelisp-aot-compiler--gensym "cond")
-                             :clauses clauses)))
+                 (node (nelisp-aot-compiler--lisp-with-repr
+                        (nelisp-aot-compiler--make-ir 'cond
+                              :id (nelisp-aot-compiler--gensym "cond")
+                              :clauses clauses)
+                        (mapcar (lambda (cl)
+                                  (nelisp-aot-compiler--lisp-repr (cdr cl)))
+                                clauses))))
             (setq nelisp-aot-compiler--assigned-cells
                   (append (apply #'append (mapcar (lambda (p) (nth 3 p)) parsed))
                           outer-assigned))
@@ -10245,6 +10655,13 @@ functions `((NAME . ARITY) ...)'."
                 (setcdr cell (plist-put (cdr cell) :repr 'sexp-ptr)))
               result))))))
    ;; (and EXPR ...) / (or EXPR ...) short-circuit.
+   ;; Doc 229: Lisp `and'/`or' yield the value of the arm that stopped
+   ;; them; outside a test position they are `if' forms.
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp) (memq (car sexp) '(and or))
+         (not nelisp-aot-compiler--aot-test-position))
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--lisp-logic-desugar sexp) env fenv defuns))
    ((and (consp sexp) (memq (car sexp) '(and or)))
     (let ((op (car sexp))
           (args (cdr sexp)))
@@ -10288,8 +10705,10 @@ functions `((NAME . ARITY) ...)'."
                             ;; not run what the compiler emitted.
                             (let ((arm (nelisp-aot-compiler--parse-value
                                         e env fenv defuns)))
+                              ;; Doc 229: in a test position an arm is
+                              ;; read for its truth (NILP), not as a number.
                               (if nelisp-aot-compiler--runtime-entry-params
-                                  (nelisp-aot-compiler--ir-as-raw-i64 arm)
+                                  (nelisp-aot-compiler--lisp-truth arm)
                                 arm))))
                         args)))
              (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
@@ -10302,7 +10721,7 @@ functions `((NAME . ARITY) ...)'."
             (nelisp-aot-compiler--make-ir 'logic
                   :op op
                   :id (nelisp-aot-compiler--gensym (symbol-name op))
-                  :repr (and nelisp-aot-compiler--runtime-entry-params 'raw-i64)
+                  :repr (and nelisp-aot-compiler--runtime-entry-params 'raw-bool)
                   :forms forms)
           ;; The arms were parsed against the entry state, so once the
           ;; slot is boxed before the form their reads of it are stale.
@@ -10319,7 +10738,7 @@ functions `((NAME . ARITY) ...)'."
                              :op op
                              :id (nelisp-aot-compiler--gensym (symbol-name op))
                              :repr (and nelisp-aot-compiler--runtime-entry-params
-                                        'raw-i64)
+                                        'raw-bool)
                              :forms (funcall parse))))
             (if (null coercions)
                 node
@@ -10400,6 +10819,23 @@ functions `((NAME . ARITY) ...)'."
    ;; included: with the boundary available they delegate to builtin1 and
    ;; return a boxed Sexp, so `(not (consp x))' must keep its existing
    ;; builtin1 routing.
+   ;; Doc 229: type predicates read the argument's representation, and on
+   ;; a Sexp its tag (GNU data.c; comp.c:2580 `emit_consp').
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp)
+         (= (length sexp) 2)
+         (assq (car sexp) nelisp-aot-compiler--lisp-predicate-tags)
+         (not (assq (car sexp) defuns)))
+    (if (memq (car sexp) '(not null))
+        (nelisp-aot-compiler--lisp-not
+         (let ((nelisp-aot-compiler--aot-test-position
+                (nelisp-aot-compiler--aot-test-form-p (cadr sexp))))
+           (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)))
+      (nelisp-aot-compiler--lisp-predicate
+       (car sexp)
+       (let ((nelisp-aot-compiler--aot-test-position nil))
+         (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns))
+       env fenv defuns)))
    ((and (consp sexp)
          (eq (car sexp) 'not)
          (= (length sexp) 2)
@@ -12155,8 +12591,10 @@ functions `((NAME . ARITY) ...)'."
             (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
                    (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                               (1+ slot)))
-                   (val-ir (nelisp-aot-compiler--parse-value
-                            val-sexp env fenv defuns))
+                   (val-ir (nelisp-aot-compiler--lisp-store
+                            (nelisp-aot-compiler--parse-value
+                             val-sexp env fenv defuns)
+                            env fenv defuns))
                    ;; Extend FENV: var → slot (gp class, no reg = not
                    ;; a param but loads via the same `ref' mechanism).
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
@@ -12329,8 +12767,10 @@ Returns one of:
             (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
                    (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                               (1+ slot)))
-                   (val-ir (nelisp-aot-compiler--parse-value
-                            val-sexp env fenv defuns))
+                   (val-ir (nelisp-aot-compiler--lisp-store
+                            (nelisp-aot-compiler--parse-value
+                             val-sexp env fenv defuns)
+                            env fenv defuns))
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
                                                    :root-p root-p))
                                    fenv))
@@ -12518,14 +12958,24 @@ Returns one of:
              ;; a raw word to dereference.
              (return-body (if (and param-repr
                                    (memq name
-                                         nelisp-aot-compiler--sexp-ptr-returning-names))
+                                         (if (nelisp-aot-compiler--lisp-values-p)
+                                             ;; Doc 229: a defun another
+                                             ;; defun calls returns a Lisp
+                                             ;; value, as GNU's functions
+                                             ;; return a Lisp_Object.
+                                             nelisp-aot-compiler--internally-called-names
+                                           nelisp-aot-compiler--sexp-ptr-returning-names)))
                               (nelisp-aot-compiler--as-sexp-ptr-form
                                body parse-fenv)
                             body))
              (body-ir (let ((nelisp-aot-compiler--next-rt-let-slot
                              rt-slot-cell))
-                        (nelisp-aot-compiler--parse-value
-                         return-body env parse-fenv defuns)))
+                        ;; Doc 229: one representation on every return
+                        ;; path, recorded below for the loader.
+                        (nelisp-aot-compiler--lisp-settle
+                         (nelisp-aot-compiler--parse-value
+                          return-body env parse-fenv defuns)
+                         env parse-fenv defuns)))
              ;; The parser maps both Lisp booleans and integer 0/1 to
              ;; immediate words.  Retain a source-proven boolean result
              ;; only when the parsed result tree is still the corresponding
@@ -12566,7 +13016,14 @@ Returns one of:
                      (member (symbol-name name)
                              nelisp-aot-compiler--jit-checked-car-returning-names))
                 'sexp-ptr)
-               (raw-bool-return-p 'raw-bool))
+               (raw-bool-return-p 'raw-bool)
+               ;; Doc 229: the loader decodes by this record, never by
+               ;; the word's magnitude.
+               ((nelisp-aot-compiler--lisp-values-p)
+                (pcase (nelisp-aot-compiler--lisp-repr body-ir)
+                  ('raw-i64 'raw-i64)
+                  ('raw-bool 'raw-bool)
+                  (_ 'sexp-ptr))))
               :body root-managed-body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))

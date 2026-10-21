@@ -94,11 +94,14 @@ x86_64 Linux."
                           :return-repr))))
             (should (eq (funcall repr "p5rb-consp") 'raw-bool))
             (should (eq (funcall repr "p5rb-symbolp") 'raw-bool))
-            ;; Known gap: a boolean helper called by another defun is not
-            ;; raw-bool-tagged yet, so the caller can expose its raw word.
-            (should (eq (funcall repr "p5rb-helper") 'unknown))
-            (should (eq (funcall repr "p5rb-helper-caller") 'unknown))
-            (should (eq (funcall repr "p5rb-symbolp-direct") 'sexp-ptr))
+            ;; Doc 229: a defun another defun calls returns its value as a
+            ;; Sexp, which is what the caller reads -- the gap where the
+            ;; helper handed its caller a raw boolean word is closed.
+            (should (eq (funcall repr "p5rb-helper") 'sexp-ptr))
+            (should (eq (funcall repr "p5rb-helper-caller") 'sexp-ptr))
+            ;; Doc 229: a type predicate is the raw tag test in value
+            ;; position too; the loader boxes the boolean result.
+            (should (eq (funcall repr "p5rb-symbolp-direct") 'raw-bool))
             (should-not (eq (funcall repr "p5rb-int-branch") 'raw-bool))
             (should (eq (funcall repr "p5rb-int-zero") 'raw-i64))
             (should (eq (funcall repr "p5rb-int-one") 'raw-i64))))
