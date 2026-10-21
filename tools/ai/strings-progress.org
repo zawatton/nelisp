@@ -1,0 +1,51 @@
+#+TITLE: Strings: GNU 31.1 struct Lisp_String with sdata blocks and compaction
+
+# User decision 2026-10-21: fix the representation first, imitating GNU.
+#
+# NeLisp strings still sit behind 32-byte views, aliased string views and
+# per-producer copies. Word-heap S3 (strings header-less) is open, and gc-port
+# marks string compaction blocked on it. The unibyte residual lane found the
+# string-producer workload 46.85x slower than GNU in wall-clock.
+#
+# GNU 31.1 alloc.c:
+# - struct Lisp_String headers in string_block;
+# - character data in sblock/sdata, allocated by allocate_string_data;
+# - large strings in their own sblocks;
+# - sweep_strings frees headers, and compact_small_strings slides live sdata
+#   and fixes back pointers;
+# - multibyte and unibyte follow GNU's size_byte rules.
+#
+# This lane owns the string half of word-heap S3. gc-port owns the GC driver
+# and calls this lane's string sweep and compaction; agree the hook points
+# with it through the coordinator.
+#
+# Base: eval/integ-20261021w (eval/core 7d2d49fa3 plus the word-heap line,
+# in final checks).
+#
+# Bar: wall-clock own cost against GNU 31.1, as paired per-round ratios on
+# CPU 14 (COMMON.md Measurement).
+
+* S0 Plan
+** S0.1 docs/design/227-gnu-string-port.org maps the GNU string mechanisms (alloc.c string_block, sdata, compaction; character.h and fns.c producers) to NeLisp, with a census of string view, copy and alias sites
+cmd: python3 tools/ai/strings-check.py plan
+
+* S1 Port and semantics
+** S1.1 Strings are header-less word-heap objects; bytes per 8-character string are at or below the word-heap S0 threshold; the census of string views and copies is 0
+cmd: python3 tools/ai/strings-check.py layout
+** S1.2 String data lives in GNU-style sdata blocks, and compact_small_strings reclaims fragmentation; a fragmentation test bounds string bytes after churn
+cmd: python3 tools/ai/strings-check.py compaction
+** S1.3 A GNU 31.1 oracle fixture matches on dynamic and static
+The fixture covers multibyte and unibyte, aset on both, substring, concat, string text properties, make-string, string-to-multibyte, string-to-unibyte, string-as-unibyte, format and number-to-string.
+cmd: python3 tools/ai/strings-check.py semantics
+
+* S2 Speed (wall-clock against GNU, paired ratios, CPU 14)
+** S2.1 Own cost of concat, substring and format on short strings <= GNU's own cost
+cmd: python3 tools/ai/strings-check.py speed producers
+** S2.2 The unibyte R=80 pressure workload gains against the base (median paired ratio < 1.0), with the GNU ratio reported
+cmd: python3 tools/ai/strings-check.py speed pressure
+
+* S3 End to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
+cmd: python3 tools/ai/strings-check.py final
+** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
+pending
