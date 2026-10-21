@@ -756,8 +756,7 @@ Returns `(cons FORM REMAINING-TOKENS)' or signals on error."
 
 (defun nelisp--read-parse-byte-code (tokens open-tok)
   "Parse a supported `#[...]' byte-code literal.
-GNU also accepts cons-code interpreted closures here, but this runtime has
-no corresponding object type yet and rejects that form explicitly."
+GNU cons-code interpreted closures use the existing closure constructor."
   (let* ((parsed (nelisp--read-parse-vector tokens open-tok))
          (fields (append (car parsed) nil))
          (count (length fields))
@@ -771,7 +770,13 @@ no corresponding object type yet and rejects that form explicitly."
       (nelisp--read-parse-error "invalid byte-code object" open-tok))
     (cond
      ((and (consp code) (or (null constants) (consp constants)))
-      (signal 'unsupported-feature '(interpreted-function-byte-code)))
+      (let* ((spec (nth 5 fields))
+             (iform (and (= count 6)
+                         (if (vectorp spec)
+                             (cons 'interactive (cons (aref spec 0) (aref spec 1)))
+                           (list 'interactive spec)))))
+        (cons (make-interpreted-closure arglist code constants (nth 4 fields) iform)
+              (cdr parsed))))
      ((and (<= 4 count 6)
            (stringp code) (vectorp constants)
            (nelisp--read-byte-code-fixnum-p depth) (>= depth 0))

@@ -419,7 +419,12 @@ containing a delimiter (GNU prints e.g. the symbol `c-per-(-match' as
       (setcar (cdr fields) (apply #'unibyte-string (string-to-list code)))
       (apply #'make-byte-code fields))
      ((and (consp code) (or (null constants) (consp constants)))
-      (signal 'unsupported-feature '(interpreted-function-byte-code)))
+      (let* ((spec (nth 5 fields))
+             (iform (and (= count 6)
+                         (if (vectorp spec)
+                             (cons 'interactive (cons (aref spec 0) (aref spec 1)))
+                           (list 'interactive spec)))))
+        (make-interpreted-closure arglist code constants (nth 4 fields) iform)))
      (t (nelisp-eln-metadata-bytecode--fail 'invalid-byte-code-object fields)))))
 
 ;; ---------------------------------------------------------------------------

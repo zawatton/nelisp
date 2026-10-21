@@ -10312,7 +10312,7 @@ replacing the elements in the beginning of the constant-vector."
   (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
   (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
   (cons 'closure
-        (cons env
+        (cons (if (consp env) (reverse env) env)
               (cons args
                     (append (cond ((stringp docstring) (list docstring))
                                   (docstring (list (list :documentation (list 'quote docstring)))))
@@ -18855,7 +18855,7 @@ through the next unit separator.  Only file streams use the byte count."
 ;; This runtime's reader handles what GNU .elc files need: lazy `#@N'
 ;; docstrings, `#s(...)' records and hash tables.  The library tests this
 ;; feature before it prefers ".elc" in `load-suffixes'.
-(provide 'nelisp-elc-reader)
+;; Withheld until the interpreted-closure GNU/ddskk acceptance passes.
 
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
@@ -19410,10 +19410,18 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                        (apply #'unibyte-string (string-to-list code)))
                (cons (apply #'make-byte-code fields) (cdr r)))
               ((and (consp code) (or (null constants) (consp constants)))
-               ;; Host accepts this as an interpreted/lazy closure. Keep that
-               ;; acceptance distinct from malformed byte-code syntax until
-               ;; the runtime has an interpreted-function object type.
-               (signal 'unsupported-feature '(interpreted-function-byte-code)))
+               ;; GNU lread.c:3272-3306 keeps interpreted closure slots
+               ;; ARGS/BODY/ENV at 0/1/2, DOC at 4 and interactive SPEC at 5.
+               ;; Adapt SPEC back to make-interpreted-closure's full IFORM.
+               (let* ((spec (nth 5 fields))
+                      (iform (and (= count 6)
+                                  (if (vectorp spec)
+                                      (cons 'interactive
+                                            (cons (aref spec 0) (aref spec 1)))
+                                    (list 'interactive spec)))))
+                 (cons (make-interpreted-closure
+                        arglist code constants (nth 4 fields) iform)
+                       (cdr r))))
               (t (signal 'invalid-read-syntax (list "Invalid byte-code object"))))))
           ;; `#:' reads a new uninterned symbol on every occurrence.  Keep
           ;; its decoded name independent from the global intern table.

@@ -99,3 +99,13 @@ cmd: python3 tools/ai/elc-load-check.py final
 ** S3.2 End to end: notes-65 reruns cc-fonts load and the S1.3 init with load-suffixes (".elc" ".el") and its gate enabled
 Bar: cc-fonts loads at least 2x faster than from .el, and ccore stays 374/374.
 pending
+
+* S4 GNU interpreted closure constants
+** S4.1 GNU closure-literal construction matches constructor semantics
+#+NOTE: Existing constructor capture-order defect also reproduced: GNU duplicate ENV ((y . 7) (y . 99)) resolves y=7, while the current runtime constructor resolves y=99. GNU eval.c:525-558 stores the innermost-first ENV unchanged; this runtime capture frames are outermost-first (its existing constructor comment already specifies reversal). Adapt ENV with reverse in the Lisp constructor, preserving nil/t lexical-mode markers and binding cells. No evaluator or binding-layer code changes.
+#+NOTE: Reopened 2026-10-22: GNU src/lread.c:3272-3306 accepts a nonempty list CODE with list/nil ENV and preserves closure vector slots; src/eval.c:525-558 make-interpreted-closure maps args/body/env/docstring/interactive-form to slots 0/1/2/4/5. Adapt those fields to the existing runtime constructor, preserving dynamic ENV=nil and lexical ENV non-nil; no new native, evaluator ABI or binding-layer change. Actual existing-constructor GNU/NeLisp probe already agrees on funcall/apply/functionp/interpreted-function-p/func-arity, doc slot, interactive form and nested capture. Withhold nelisp-elc-reader until dynamic/static and all 80 ddskk files pass. Keep the current complete S1-S3 evidence as historical results; this reopened stage records the new work.
+cmd: python3 tools/ai/elc-interpreted-check.py host
+** S4.2 GNU-compiled interpreted closure constants load and execute on dynamic and static
+cmd: python3 tools/ai/elc-interpreted-check.py fixture
+** S4.3 All 80 GNU ddskk elc files load and selected function results match GNU on both binaries
+cmd: python3 tools/ai/elc-interpreted-check.py ddskk
