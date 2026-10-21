@@ -17,9 +17,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import statistics
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs/design/225-syntax-and-match-entry-gnu-parity.org"
@@ -283,34 +285,202 @@ def check_speed(kind, binary=None):
     return fail(f"speed {kind}: NeLisp own cost above GNU's (median paired ratio of 7 rounds)")
 
 
+# ---------------------------------------------------------------- workloads
+
+REGEX6000 = r"""(let ((names (mapcar (lambda (k) (format "some-library-%d.el" k)) (number-sequence 1 300))) (i 0))
+  (while (< i 20)
+    (dolist (s names) (string-match "\\`\\(.*\\)\\(\\.el\\)\\'" s))
+    (setq i (1+ i))))
+(princ "ABI-REGEX 6000\n")
+"""
+ANVIL = Path("/home/madblack-21/.emacs.d/external-packages/anvil.el")
+MEMORY_DB = Path("/home/madblack-21/Cowork/Notes/.anvil-memory/anvil-memory-index.db")
+MCP_QUERY = "nelisp syntax table"
+
+
+def timed_process(command, env=None, marker=None, timeout=900):
+    started = time.monotonic()
+    result = run_limited(command, env, timeout)
+    elapsed = time.monotonic() - started
+    ok = result.returncode == 0 and (marker is None or marker in result.stdout)
+    return ok, elapsed, result
+
+
+def workload_command(name, runtime, binary):
+    directory = EVIDENCE / "workloads"
+    if name == "regex6000":
+        script = directory / "regex6000.el"
+        marker = "ABI-REGEX 6000"
+    else:
+        script = ROOT / "tools/ai/abi-file-exec.el"
+        marker = "ABI-FILES (1000 527500"
+    if runtime == "nelisp":
+        command = ["taskset", "-c", CPUS, str(binary), "--load", str(script)]
+    else:
+        command = ["taskset", "-c", CPUS, GNU_BIN, "-Q", "--batch", "-l", str(script)]
+    return command, marker
+
+
+def mcp_session(binary, tag):
+    """Time initialize and one memory-search over the anvil standalone MCP."""
+    work = EVIDENCE / "workloads" / f"mcp-{tag}"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    cache = EVIDENCE / "workloads" / "mcp-cache" / sha256(binary)[:16]
+    cache.mkdir(parents=True, exist_ok=True)
+    db = work / "memory.db"
+    shutil.copyfile(EVIDENCE / "workloads" / "memory-snapshot.db", db)
+    env = dict(os.environ, ANVIL_NOTES_DIR="/home/madblack-21/Cowork/Notes",
+               ANVIL_EL_DIR=str(ANVIL), NELISP_BIN=str(binary),
+               NELISP_EMACS_LIB_DIR="/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/src",
+               ANVIL_MEMORY_DB=str(db), ANVIL_WORKLOG_DB=str(work / "worklog.db"),
+               TMPDIR=str(ROOT / "target/tmp"), XDG_CACHE_HOME=str(cache))
+    (ROOT / "target/tmp").mkdir(parents=True, exist_ok=True)
+    shell = "ulimit -v %d; exec taskset -c %s \"$@\"" % (MEMORY_LIMIT_KB, CPUS)
+    started = time.monotonic()
+    process = subprocess.Popen(["bash", "-c", shell, "run", str(ANVIL / "tools/anvil-standalone-mcp.sh")],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=(work / "stderr").open("w"), text=True, env=env, cwd=ROOT)
+    record = {"tools": 0}
+
+    def ask(request, deadline):
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.flush()
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(request["method"])
+            line = process.stdout.readline()
+            if not line:
+                raise EOFError(request["method"])
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("id") == request["id"]:
+                return row
+    try:
+        deadline = started + 300
+        row = ask({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "syntax-rt", "version": "1"}}}, deadline)
+        record["initialize_s"] = time.monotonic() - started
+        record["initialized"] = "result" in row
+        t0 = time.monotonic()
+        row = ask({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "memory-search", "arguments": {"query": MCP_QUERY, "limit": "20"}}},
+                  time.monotonic() + 300)
+        record["search_s"] = time.monotonic() - t0
+        record["search_ok"] = "result" in row and not row["result"].get("isError")
+        row = ask({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+                  time.monotonic() + 120)
+        tools = row.get("result", {}).get("tools", [])
+        record["tools"] = len({t.get("name") for t in tools if isinstance(t, dict)})
+    except (TimeoutError, EOFError, OSError) as error:
+        record["error"] = repr(error)
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        db.unlink(missing_ok=True)
+    record["ok"] = (record.get("initialized") and record.get("search_ok")
+                    and record["tools"] == 40 and "error" not in record)
+    return record
+
+
+def run_workloads(binary=None):
+    binary = Path(binary or DYN_BIN)
+    directory = EVIDENCE / "workloads"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "regex6000.el").write_text(REGEX6000)
+    snapshot = directory / "memory-snapshot.db"
+    if not snapshot.exists():
+        shutil.copyfile(MEMORY_DB, snapshot)
+    env = dict(os.environ, ABI_SOURCE_ROOT=str(ROOT))
+    names = ("candidate", "base")
+    # Warm the MCP image caches and the file cache before timing.
+    for name, exe in zip(names, (binary, BASE_BIN)):
+        mcp_session(exe, f"warm-{name}")
+    rounds = []
+    for index in range(7):
+        entry = {}
+        for workload in ("regex6000", "files"):
+            for name, runtime, exe in (("candidate", "nelisp", binary), ("gnu", "gnu", None),
+                                       ("base", "nelisp", BASE_BIN)):
+                command, marker = workload_command(workload, runtime, exe)
+                freq = cpu_freq()
+                ok, elapsed, _ = timed_process(command, env, marker)
+                entry[f"{workload}/{name}"] = {"ok": ok, "s": elapsed, "freq_khz": freq}
+        for name, exe in zip(names, (binary, BASE_BIN)):
+            freq = cpu_freq()
+            entry[f"mcp/{name}"] = dict(mcp_session(exe, f"{name}-{index}"), freq_khz=freq)
+        rounds.append(entry)
+        print(f"  round {index}: " + " ".join(
+            f"{k}={v.get('s', v.get('initialize_s', 0)):.2f}" for k, v in entry.items()), flush=True)
+    summary = {}
+    for workload in ("regex6000", "files"):
+        to_base = [r[f"{workload}/candidate"]["s"] / r[f"{workload}/base"]["s"] for r in rounds]
+        to_gnu = [r[f"{workload}/candidate"]["s"] / r[f"{workload}/gnu"]["s"] for r in rounds]
+        summary[workload] = {"ratio_to_base": statistics.median(to_base),
+                             "ratio_to_gnu": statistics.median(to_gnu),
+                             "ok": all(r[f"{workload}/{n}"]["ok"] for r in rounds
+                                       for n in ("candidate", "gnu", "base"))}
+    for field in ("initialize_s", "search_s"):
+        values = [r["mcp/candidate"].get(field, float("inf")) /
+                  r["mcp/base"].get(field, float("inf")) for r in rounds]
+        summary[f"mcp/{field}"] = {"ratio_to_base": statistics.median(values),
+                                   "ok": all(r[f"mcp/{n}"]["ok"] for r in rounds for n in names)}
+    record = {"binary": str(binary), "binary_sha256": sha256(binary), "base": str(BASE_BIN),
+              "base_sha256": sha256(BASE_BIN), "cpu": CPUS, "rounds": rounds,
+              "summary": summary}
+    (directory / "workloads.json").write_text(json.dumps(record, indent=1) + "\n")
+    for key, value in summary.items():
+        extra = f", to GNU {value['ratio_to_gnu']:.3f}" if "ratio_to_gnu" in value else ""
+        print(f"  {key}: median paired ratio to base {value['ratio_to_base']:.3f}{extra} "
+              f"{'ok' if value['ok'] else 'RUN FAILED'}")
+    return 0
+
+
 # ---------------------------------------------------------------- semantics
 
 FIXTURE = ROOT / "test/fixtures/syntax-rt-semantics.el"
 EXPECTED = ROOT / "test/fixtures/syntax-rt-semantics.gnu-31.1.expected"
 
 
-def run_fixture(runtime, binary=None):
-    command = (["taskset", "-c", CPUS, str(binary), "--load", str(FIXTURE)]
+CHARTAB_FIXTURE = ROOT / "test/fixtures/syntax-rt-chartab.el"
+CHARTAB_EXPECTED = ROOT / "test/fixtures/syntax-rt-chartab.gnu-31.1.expected"
+
+
+def run_fixture(runtime, binary=None, fixture=FIXTURE):
+    command = (["taskset", "-c", CPUS, str(binary), "--load", str(fixture)]
                if runtime == "nelisp"
-               else [GNU_BIN, "-Q", "--batch", "-l", str(FIXTURE)])
+               else [GNU_BIN, "-Q", "--batch", "-l", str(fixture)])
     result = subprocess.run(["bash", "-c", "ulimit -v %d; exec \"$@\"" % MEMORY_LIMIT_KB,
                              "run", *command], capture_output=True, timeout=600, cwd=ROOT)
     return result.returncode, result.stdout, result.stderr
 
 
-def check_semantics():
-    for required in (FIXTURE, EXPECTED, DYN_BIN, STATIC_BIN, BASE_BIN):
+def check_fixture(label, fixture, expected_path, extra_probe=None):
+    """GNU still produces the pin, dynamic and static match it byte for byte,
+    and the base binary (negative control) does not."""
+    for required in (fixture, expected_path, DYN_BIN, STATIC_BIN, BASE_BIN):
         if not Path(required).is_file():
             return fail(f"missing {required}")
-    expected = EXPECTED.read_bytes()
-    rows = expected.count(b"\n")
-    problems, record = [], {"fixture_sha256": sha256(FIXTURE),
-                            "expected_sha256": sha256(EXPECTED), "rows": rows}
-    code, out, err = run_fixture("gnu")
+    expected = expected_path.read_bytes()
+    rows = sum(1 for line in expected.split(b"\n") if b" => " in line)
+    problems, record = [], {"fixture_sha256": sha256(fixture),
+                            "expected_sha256": sha256(expected_path), "rows": rows}
+    code, out, err = run_fixture("gnu", fixture=fixture)
     if code != 0 or out != expected:
         problems.append("GNU 31.1 no longer produces the pinned output")
     for name, binary in (("dynamic", DYN_BIN), ("static", STATIC_BIN)):
-        code, out, err = run_fixture("nelisp", binary)
+        code, out, err = run_fixture("nelisp", binary, fixture)
         record[name] = {"binary_sha256": sha256(binary), "exit": code,
                         "stderr_bytes": len(err), "identical": out == expected}
         if code != 0 or err or out != expected:
@@ -318,26 +488,54 @@ def check_semantics():
             bad = [line.split(b" => ")[0].decode(errors="replace")
                    for line, want in zip(got, expected.split(b"\n")) if line != want]
             problems.append(f"{name}: exit {code}, stderr {len(err)} bytes, "
-                            f"differing rows {bad[:5]}")
-    # Negative control: the base binary must not pass.
-    code, out, err = run_fixture("nelisp", BASE_BIN)
+                            f"{len(bad)} differing rows, first {bad[:4]}")
+        if extra_probe:
+            problem = extra_probe(binary)
+            if problem:
+                problems.append(f"{name}: {problem}")
+    code, out, err = run_fixture("nelisp", BASE_BIN, fixture)
     record["base_control"] = {"binary_sha256": sha256(BASE_BIN), "exit": code,
                               "identical": out == expected}
     if code == 0 and out == expected:
         problems.append("negative control: the base binary reproduces GNU's output")
-    (EVIDENCE / "semantics.json").write_text(json.dumps(record, indent=1) + "\n")
+    (EVIDENCE / f"{label}.json").write_text(json.dumps(record, indent=1) + "\n")
     if problems:
         for problem in problems:
             print(f"  {problem}")
-        return fail(f"semantics: {len(problems)} problem(s)")
-    print(f"SYNTAX-RT semantics PASS: {rows} GNU 31.1 rows identical on dynamic and static; "
+        return fail(f"{label}: {len(problems)} problem(s)")
+    print(f"SYNTAX-RT {label} PASS: {rows} GNU 31.1 rows identical on dynamic and static; "
           f"the base binary differs (exit {record['base_control']['exit']})")
     return 0
 
 
+def check_semantics():
+    return check_fixture("semantics", FIXTURE, EXPECTED)
+
+
+def native_char_table_feature(binary):
+    """The library's single switch: the runtime owns the char-table family."""
+    probe = EVIDENCE / "chartab-feature.el"
+    probe.write_text('(princ (if (featurep (quote nelisp-native-char-tables)) "FEATURE-ON" "FEATURE-OFF"))\n'
+                     "(kill-emacs 0)\n")
+    result = subprocess.run(["bash", "-c", "ulimit -v %d; exec \"$@\"" % MEMORY_LIMIT_KB,
+                             "run", str(binary), "--load", str(probe)],
+                            capture_output=True, text=True, timeout=120, cwd=ROOT)
+    if "FEATURE-ON" not in result.stdout:
+        return "(featurep 'nelisp-native-char-tables) is not t"
+    return None
+
+
+def check_chartab():
+    return check_fixture("chartab", CHARTAB_FIXTURE, CHARTAB_EXPECTED,
+                         native_char_table_feature)
+
 def main(argv):
+    if argv[1:2] == ["workloads"] and len(argv) in (2, 3):
+        return run_workloads(argv[2] if len(argv) == 3 else None)
     if argv[1:2] == ["semantics"]:
         return check_semantics()
+    if argv[1:2] == ["chartab"]:
+        return check_chartab()
     if argv[1:2] == ["plan"]:
         return check_plan()
     if argv[1:2] == ["speed"] and len(argv) in (3, 4):
