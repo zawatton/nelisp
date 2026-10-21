@@ -63,7 +63,7 @@ cmd: python3 tools/ai/word-heap-stage-check.py s2.2 --dyn target/gc-port/cur/nel
 cmd: python3 tools/ai/word-heap-stage-check.py s5.1 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
 
 ** S1.6 Word-heap S6.2: precise roots are WORD slots, no 32-byte nl_root_reserve slot outside the call path (call-path roots are word-heap S6.3, callpath-perf)
-#+NOTE: 2026-10-21 c6 static census: 154 nl_root_reserve sites in 66 functions outside the call path, 93 inside it.
+#+NOTE: 2026-10-21 c6 static census: 93 nl_root_reserve sites in 47 functions outside the call path (special forms, nl_n3_notify, nl_n4_*, bf_load_* and others), 154 inside it. The coordinator put the byte-code VM (wf_bytecode_*, about 60 sites) in the call path, which callpath-perf owns; the boundary is provisional until callpath-perf confirms CALL_PATH.
 cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census target/gc-port/cur/census.tsv
 
 * S2 Speed
