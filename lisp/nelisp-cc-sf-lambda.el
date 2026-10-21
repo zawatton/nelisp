@@ -31,26 +31,27 @@
 
     (defun nl_sf_lambda_with_tail_w (tail roots)
       (let* ((sym (alloc-bytes 32 8)))
-        (nl_capture_root_set_word roots 1 tail)
-        (nl_capture_root_set_word roots 2 sym)
+        (ptr-write-u64 roots 8 tail)
+        (ptr-write-u64 roots 16 sym)
         (nl_sf_lambda_with_sym_w (nl_sf_lambda_alloc_sym sym 0) tail sym roots)))
 
     (defun nl_sf_lambda_captured_w (captured args roots)
       (if (= captured 0) 0
         (seq
-         (nl_capture_root_set_word roots 1 captured)
+         (ptr-write-u64 roots 8 captured)
          ;; A nonempty lexical marker distinguishes (closure (t) ...).
          (let* ((capture (if (= captured 3) (nelisp_cons_construct_w 7 3 0) captured)))
-           (nl_capture_root_set_word roots 1 capture)
+           (ptr-write-u64 roots 8 capture)
            (nl_sf_lambda_with_tail_w (nelisp_cons_construct_w capture args 0) roots)))))
 
     (defun nl_sf_lambda_w (args env _pad s1)
       (if (= (nl_val_tag args) 7)
-          (let* ((mark (nl_root_mark env)) (roots (nl_root_reserve env)))
+          ;; Doc 216 S6.2: three precise WORD roots (args, capture/tail,
+          ;; the closure symbol) in one root-stack frame.
+          (let* ((mark (nl_root_mark env)) (roots (nl_root_frame env 3)))
             (if (= roots 0) (nl_abi_fail 1 0)
               (seq
-               (vector-make 3 roots)
-               (nl_capture_root_set_word roots 0 args)
+               (ptr-write-u64 roots 0 args)
                (let* ((word (nl_sf_lambda_captured_w
                              (nl_env_capture_lexical_filtered_w env args 0 0) args roots)))
                  (nl_root_release env mark)

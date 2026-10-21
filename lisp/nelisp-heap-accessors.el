@@ -67,6 +67,42 @@ Keep direct/native/explicit-extern calls distinct: their old ABI is retained.")
                     (cl-every #'nelisp-heap-accessors--string-raw-base-p (cdr form)))
                (equal form '(heap-read-u64 (data-addr nl_arena_base) 0))))))
 
+(defun nelisp-heap-accessors--computed-address-p (form)
+  "Whether FORM is a byte-offset sum with a variable term.
+`(+ DATA INDEX)' addresses a position inside a buffer, never a Lisp WORD;
+`(+ SLOT 24)' names a field of a value and keeps the String-aware read."
+  (and (consp form) (memq (car form) '(+ -))
+       (or (cl-some (lambda (term) (not (integerp term))) (cddr form))
+           (nelisp-heap-accessors--computed-address-p (cadr form)))))
+
+(defconst nelisp-heap-accessors-record-bases
+  '(env state st fr frame frames-data chunk acc hbuf env_ptr hdr active-record active
+    entry scratch resw link abase roots nlstr control head cin base resume node next
+    cnblk cwf vptr mark_chunk addr address fw nl_sb nl_sw out-slot walk pending dst wtmp
+    rootslot cout faddr reach total cmis cb cby cf cl cok out cursor-addr oldbase
+    head_slot flag-value bytes pool free-node gbox crel old-root count_slot magptr_slot
+    sum_sign_slot sign_slot r1 r2 qslot rbuf dbuf buf top binding-state record statusp
+    box boxa boxb)
+  "Variables that hold runtime records, stack cells or buffers, never a Lisp value.
+A generic slot read through one of them addresses runtime memory, so it keeps
+its physical load instead of the String-aware read. The list comes from the
+Doc 227 audit of every String-aware read site in the reader units.")
+
+(defconst nelisp-heap-accessors-record-accessors
+  '(nl_eln_callback_record_at nl_thread_registry_entry nl_tty_slot_fd
+    nl_tty_slot_saved_flag nl_chunk_cursor_addr nl_n4_state nl_ct_head_slot)
+  "Calls that answer a runtime record pointer.")
+
+(defun nelisp-heap-accessors--record-base-p (form)
+  "Whether FORM names a runtime record: a record variable, a constant offset
+from one, or a call to a record accessor."
+  (cond ((symbolp form) (and (memq form nelisp-heap-accessors-record-bases) t))
+        ((and (consp form) (memq (car form) '(+ -)))
+         (and (nelisp-heap-accessors--record-base-p (cadr form))
+              (cl-every #'integerp (cddr form))))
+        ((consp form) (and (memq (car form) nelisp-heap-accessors-record-accessors) t))
+        (t nil)))
+
 (defvar nelisp-heap-accessors--string-physical nil
   "Non-nil inside a storage API whose caller has already decoded WORDs.")
 
@@ -168,10 +204,13 @@ Every operand is retained exactly once; dotted data is preserved."
           (let ((nelisp-heap-accessors--string-physical t))
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
+         ;; Allocator, collector, image and symbol-cell internals (including the
+         ;; GNU block families of Doc 223/226) address raw memory, never a
+         ;; Lisp value that could be a String WORD: they keep physical reads.
          ((and (eq (car source) 'defun)
                (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nl_sexp_clone_into nl_cons_car_word nl_cons_cdr_word nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
                    (string-match-p
-                "\\`\\(?:nl_gc_\\|nelisp_env_\\|nelisp_mirror_\\|nelisp_frame_stack_\\|nl_bignum_\\|nl_native_\\|nl_intern_\\|nl_cell_\\|nl_lookup_fn_autoload\\|nl_symname_\\|nl_symbol_name_\\|nl_record_\\|nl_vector_\\|nl_frame_stack_\\|nl_root_\\|nl_hdr_\\|nl_chunk_\\|nl_alloc_\\|nl_freelist_\\|nl_word_\\|nl_vci_\\|nl_vl_\\|nl_sci_\\|nl_val_\\)"
+                "\\`\\(?:nl_gc_\\|nelisp_env_\\|nelisp_mirror_\\|nelisp_frame_stack_\\|nl_bignum_\\|nl_native_\\|nl_intern_\\|nl_cell_\\|nl_lookup_fn_autoload\\|nl_symname_\\|nl_symbol_name_\\|nl_record_\\|nl_vector_\\|nl_frame_stack_\\|nl_root_\\|nl_hdr_\\|nl_chunk_\\|nl_alloc_\\|nl_freelist_\\|nl_word_\\|nl_vci_\\|nl_vl_\\|nl_sci_\\|nl_val_\\|nl_ablock_\\|nl_boot_\\|nl_sweep_\\|nl_cons_alloc\\|nl_cons_mark\\|nl_cons_unmark\\|nl_cons_dead\\|nl_symbol_\\|nl_symcell_\\|nl_sym_\\|nl_typed_\\|nl_live_\\|nl_dump_\\|nl_fa_\\|nl_os_\\|nl_conserv_\\|nl_aref_cache_\\|nl_fvcache_\\|nl_mxcache_\\|nl_compact_\\|nl_tty_\\|nl_neln_\\|m5_fx_\\|nl_name_is_\\|bf_load_abs_p\\)"
                 (symbol-name (cadr source)))))
           (let ((nelisp-heap-accessors--string-physical t))
             (append (list 'defun (cadr source) (caddr source))
@@ -203,7 +242,9 @@ Every operand is retained exactly once; dotted data is preserved."
                (memq (car source) '(heap-read-u64 heap-read-u8))
                (if (eq (car source) 'heap-read-u8) (eql (nth 2 source) 0)
                  (memq (nth 2 source) '(0 8 16 24)))
-               (not (nelisp-heap-accessors--string-raw-base-p (cadr source))))
+               (not (nelisp-heap-accessors--string-raw-base-p (cadr source)))
+               (not (nelisp-heap-accessors--computed-address-p (cadr source)))
+               (not (nelisp-heap-accessors--record-base-p (cadr source))))
           (if (eq (car source) 'heap-read-u64)
               (cons 'nl_string_read64
                     (nelisp-heap-accessors--lower-tail (cdr source)))

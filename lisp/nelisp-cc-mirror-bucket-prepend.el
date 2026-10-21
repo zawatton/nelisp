@@ -235,7 +235,11 @@
                            1))
          (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
                           2
-                          count-slot))))
+                          count-slot)
+         ;; Doc 221 M02: the key's symbol cell now names this new first
+         ;; entry of its chain (`nl_symcell_refresh').  Its 0 answer for
+         ;; keys without a cell is not a failure.
+         (seq (extern-call nl_symcell_refresh mirror-ptr sym-ptr) 1))))
     (defun nelisp_mirror_bucket_prepend
         (mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)
       (if (= (extern-call nl_thread_mirror_mutation_guard

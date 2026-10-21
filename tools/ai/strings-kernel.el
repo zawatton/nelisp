@@ -19,7 +19,7 @@
                                      :key #'cadr))
                       (mapcar (lambda (name)
                                 (cl-find name (cdr nelisp-standalone--arena-source) :key #'cadr))
-                              '(nl_word_data nl_word_data_legacy))
+                              '(nl_word_data))
                       (list (cl-find 'nl_g4arm_copy_w nelisp-standalone--applyfn-core-helpers :key #'cadr))
                       (list (cl-find 'nl_sexp_clone_into (cdr nelisp-cc-sexp-clone-into--source) :key #'cadr))
                       '((defun strings_equal_probe (a b) (str-eq a b))

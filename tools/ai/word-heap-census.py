@@ -16,6 +16,19 @@ from pathlib import Path
 import struct
 import sys
 
+# GNU 31.1 special forms (special-form-p).  GNU represents each as a subr
+# object with max_args = UNEVALLED (lisp.h struct Lisp_Subr, PVEC_SUBR;
+# eval.c eval_sub).  NeLisp's interim encoding is the definition
+# (builtin NAME) held in a tag-7 view whose data word is SPECIAL_MARKER
+# (nl_apply_do_fset); the census counts those views as special-form subr
+# objects, not as cons header aliases (Doc 223).
+SPECIAL_FORMS = frozenset((
+    "and", "catch", "cond", "condition-case", "defconst", "defvar", "function",
+    "if", "inline", "interactive", "let", "let*", "or", "prog1", "progn", "quote",
+    "save-current-buffer", "save-excursion", "save-restriction", "setq",
+    "unwind-protect", "while"))
+SPECIAL_MARKER = 13108
+
 TAGS = {3: "float", 4: "symbol", 5: "string", 6: "string", 7: "cons",
         8: "vector", 9: "char-table", 10: "bool-vector", 11: "cell",
         12: "record", 13: "bignum", 14: "string", 15: "string",
@@ -29,6 +42,7 @@ def census(path):
     intern_range = None
     old_intern_range = None
     image_roots = []
+    intern_bytes = None
     if path.suffix == ".json":
         meta = json.loads(path.read_text())
         control = (path.parent / "control.bin").read_bytes()
@@ -54,6 +68,7 @@ def census(path):
         old_intern_range = (roots[3], roots[3] + intern)
         image_roots = roots[:3]
         segments.append((0, memoryview(raw)[64 + count * 8:64 + count * 8 + size]))
+        intern_bytes = memoryview(raw)[64 + count * 8 + size:64 + count * 8 + size + intern]
     blocks, words, free_bytes, free_count, all_bytes = {}, {}, 0, 0, 0
     for start, data in segments:
         pos = 0
@@ -91,6 +106,35 @@ def census(path):
         if addr in blocks:
             owners[addr].add(kind)
 
+    def symbol_name(view):
+        w = read_words(view, 4)
+        if len(w) < 4 or w[0] not in (4, 16) or w[3] > 256:
+            return None
+        ptr, n = w[2], w[3]
+        if intern_bytes is not None and intern_range[0] <= ptr and ptr + n <= intern_range[1]:
+            return bytes(intern_bytes[ptr - intern_range[0]:ptr - intern_range[0] + n]).decode("utf-8", "replace")
+        for base, data in segments:
+            if base <= ptr and ptr + n <= base + len(data):
+                return bytes(data[ptr - base:ptr - base + n]).decode("utf-8", "replace")
+        return None
+
+    def cons_cell(word):
+        """The cell a cons WORD denotes: direct (payload | 2) or a 000 view."""
+        if word & 7 == 2:
+            return word - 2
+        if word & 7 == 0 and word in blocks and blocks[word][0] == 40 and words[word][0] == 7:
+            return words[word][1]
+        return None
+
+    def special_definition(payload):
+        """PAYLOAD is the cell of (builtin NAME ...) with NAME a GNU special form."""
+        first = read_words(payload, 2)
+        if len(first) < 2 or symbol_name(first[0]) != "builtin":
+            return False
+        rest = cons_cell(first[1])
+        second = read_words(rest, 2) if rest is not None else ()
+        return len(second) == 2 and symbol_name(second[0]) in SPECIAL_FORMS
+
     # Stale headers can retain absolute pointers. Adjacency is diagnostic only:
     # repeated payload/header runs give equally plausible translations shifted
     # by72 bytes, and a stale target may have been reused. Never assign a payload
@@ -110,6 +154,13 @@ def census(path):
             recovered.append(dict(delta=delta, adjacent_pairs=adjacency,
                                   valid_pairs=len(targets), samples=targets[:8]))
 
+    # Function cells: slot 1 (+24) of a kind-12 record (a mirror entry).
+    function_cells = set()
+    if relfields is not None:
+        for field in relfields:
+            owner = containing(field)
+            if owner is not None and field - owner == 24 and words[owner][0] & 63 == 12:
+                function_cells.add(read_words(field, 1)[0])
     candidates = []
     embedded_owners = set()
     slots = set(a for a, (bt, _) in blocks.items() if bt == 40)
@@ -143,7 +194,7 @@ def census(path):
             off = 16 if tag in (4, 5, 14, 16, 13) else 8
             if tag != 3 and addr + off not in relfields:
                 continue
-        if tag == 7 and (payload not in blocks or blocks[payload][0] != 32):
+        if tag == 7 and (payload not in blocks or blocks[payload][0] not in (24, 32)):
             continue
         if tag in (6, 8, 9, 10, 11, 12, 15, 17, 18, 19) and payload not in blocks:
             continue
@@ -157,6 +208,9 @@ def census(path):
                     continue
             elif not (intern_range[0] <= w[2] and w[2] + w[3] <= intern_range[1]):
                 continue
+        if (tag == 7 and w[2] == SPECIAL_MARKER and addr in function_cells
+                and special_definition(payload)):
+            kind = "special-form-subr"
         candidates.append((addr, tag, kind, payload, w))
     # Identify backing before counting headers: a backing array that happens
     # to begin with a small integer is not another Sexp value header.
@@ -212,9 +266,12 @@ def census(path):
     inbound, outbound = {containing(a) for a in image_roots}, set()
     if relfields is not None:
         for field in relfields:
-            value = read_words(field, 1)[0]
+            # A field entry carries its pointer class (0, 2 or 6) in its low
+            # bits; the field itself is the aligned word.  Reading at the
+            # tagged offset ran past the span for a last-word field.
+            value = read_words(field & ~7, 1)[0]
             inbound.add(containing(value))
-            outbound.add(containing(field))
+            outbound.add(containing(field & ~7))
     for a, (bt, mark) in blocks.items():
         if owners.get(a):
             continue

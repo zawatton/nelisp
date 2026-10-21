@@ -43,10 +43,14 @@
             (ptr-write-u64 (+ result-slot 16) 0 0)
             (ptr-write-u64 (+ result-slot 24) 0 0)
             result-slot)))
-    ;; Doc 215 builtin word ABI: the cons WORD (a fresh slot); the direct slot writer stays for hot callers.
+    ;; Doc 215 builtin word ABI: the cons WORD; the direct slot writer stays
+    ;; for hot callers.  Doc 216 S2.1: the WORD is the payload | 2, like
+    ;; GNU's Fcons result, with no 32-byte header view.
     (defun nelisp_cons_construct_w (arg0 arg1 _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (nelisp_cons_construct arg0 arg1 s) s))))
+      (let ((box (extern-call nl_alloc_consbox)))
+        (seq (extern-call nl_consbox_set_car box arg0)
+             (extern-call nl_consbox_set_cdr box arg1)
+             (+ box 2)))))
   "AOT source for the Doc 101 §101.D cons constructor swap.")
 
 (provide 'nelisp-cc-cons-construct)

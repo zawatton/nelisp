@@ -50,7 +50,7 @@
 	(if (or (= map 0) (< w lo) (>= w hi)) 0
 	  (let*
 	      ((row
-		(extern-call nl_string_page_probe (+ map 24) (heap-read-u64 map 8)
+		(nl_string_page_probe (+ map 24) (heap-read-u64 map 8)
 				      (logand w -4096))))
 	    (if (/= (heap-read-u64 row 0) 1) 0
 	      (let*
@@ -97,7 +97,7 @@
 			 (if (= (heap-read-u64 old 0) 1)
 			     (let*
 				 ((row
-				   (extern-call nl_string_page_probe (+ fresh 24)
+				   (nl_string_page_probe (+ fresh 24)
 							 nextcap
 							 (heap-read-u64
 							  old 8))))
@@ -118,7 +118,7 @@
       (if (= ok 0) 0
 	(seq
 	 (while (< page end)
-	   (let* ((row (extern-call nl_string_page_probe (+ map 24) cap page)))
+	   (let* ((row (nl_string_page_probe (+ map 24) cap page)))
 	     (if (= (heap-read-u64 row 0) 0)
 		 (ptr-write-u64 map 16 (+ (heap-read-u64 map 16) 1))
 	       0)
@@ -138,7 +138,7 @@
         (if (= map 0) 0
           (seq
            (while (< page end)
-             (let* ((row (extern-call nl_string_page_probe (+ map 24) cap page)))
+             (let* ((row (nl_string_page_probe (+ map 24) cap page)))
                (if (and (= (heap-read-u64 row 0) 1)
                         (= (logand (heap-read-u64 row 16) -8) base))
                    (ptr-write-u64 row 0 2) 0))
@@ -385,13 +385,6 @@
           (seq (ptr-write-u64 s 0 (logior (heap-read-u64 s 0) -9223372036854775808))
                (if (/= (heap-read-u64 s 16) 0)
                    (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1))))
-    (defun nl_string_mark_view (sp)
-      (let* ((s (nl_string_view_header sp)) (st (data-addr nl_strings_state)))
-        (if (= s 0) 0
-          (let* ((fix (alloc-bytes 16 8)))
-            (seq (nl_gc_mark_word (+ s 4))
-                 (ptr-write-u64 fix 0 sp) (ptr-write-u64 fix 8 (heap-read-u64 st 64))
-                 (ptr-write-u64 st 64 fix) 1)))))
     (defun nl_string_unmark ()
       (let* ((st (data-addr nl_strings_state)) (b (heap-read-u64 st 0)))
         (while (/= b 0)

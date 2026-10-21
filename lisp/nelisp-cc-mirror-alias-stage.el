@@ -206,6 +206,8 @@
              ;; count store runs.
              (vector-slot-set buckets-root idx head-root)
              (record-slot-set table-root 2 count-root)
+             ;; Doc 221 M02: the key's symbol cell follows its new entry.
+             (extern-call nl_symcell_refresh mirror-ptr key-root)
              0)))))
     (defun nelisp_mirror_alias_stage_insert
         (mirror-ptr key-ptr entry-ptr env-tag-ptr table-tag-ptr entry-tag-ptr)
@@ -331,9 +333,16 @@
                    (seq
                     (vector-slot-set copy-buckets idx-a (+ base-a 256))
                     (vector-slot-set copy-buckets idx-b (+ base-b 256))))))
-                 (record-make table-tag-root 3 copy-table)
+                 ;; A table with symbol cells (Doc 221 M02, slot 3) keeps
+                 ;; them; commit refreshes the two staged keys' cells.
+                 (record-make table-tag-root
+                              (if (< (nl_record_length (+ base-a 96)) 4) 3 4)
+                              copy-table)
                  (record-slot-set copy-table 0 (nl_record_slot_word (+ base-a 96) 0))
                  (record-slot-set copy-table 1 copy-buckets)
+                 (if (< (nl_record_length (+ base-a 96)) 4) 0
+                   (record-slot-set copy-table 3
+                                    (nl_record_slot_word (+ base-a 96) 3)))
                  (sexp-int-make new-count
                                 (+ (nl_word_payload
                                     (nl_record_slot_word (+ base-a 96) 2)) 2))
@@ -404,6 +413,10 @@
                (seq
                 (wf_dirty)
                 (record-slot-set mirror-root 0 copy-table)
+                ;; Doc 221 M02: only the committed table's chains are
+                ;; authoritative, so the two cells follow them here.
+                (extern-call nl_symcell_refresh mirror-ptr key-a-root)
+                (extern-call nl_symcell_refresh mirror-ptr key-b-root)
                 0)))))))
     (defun nelisp_mirror_alias_stage_insert_pair
         (mirror-ptr key-a entry-a key-b entry-b env-tag-ptr table-tag-ptr entry-tag-ptr)

@@ -112,9 +112,59 @@
 (defun bwc-sort (l) (sort (copy-sequence l) #'<))
 (defun bwc-hash (n) (let ((h (make-hash-table :test 'equal))) (dotimes (i n) (puthash (format "k%d" i) i h)) (list (gethash "k3" h) (hash-table-count h))))
 (defun bwc-format (a b) (format "%s=%S;%d" a b (length (list a b))))
+;; Bget runs Fget on the symbol's plist (bytecode.c Bget, fns.c Fget).
+(defun bwc-get-put (v)
+  (put 'bwc-prop-sym 'bwc-key v)
+  (list (get 'bwc-prop-sym 'bwc-key) (get 'bwc-prop-sym 'bwc-missing) (get nil 'bwc-key)))
+(defun bwc-get-wta (x) (condition-case e (get x 'bwc-key) (wrong-type-argument (car e))))
 
 ;; Each case: (FUNCTION ARGUMENTS...).  Answers are compared as `%S' text;
 ;; a signal compares as (error ERROR-SYMBOL).
+;; Exits carry their values to the handler (GNU internal_catch reads
+;; handlerlist->val, eval.c:1399; signal_or_quit's Fcons (error_symbol,
+;; data), eval.c:1952): thrown values of several types, nested catches,
+;; cleanups on the way out, no-catch, and an error raised in a cleanup.
+(defvar bwc-cleanup nil)
+(defun bwc-exits ()
+  (setq bwc-cleanup nil)
+  (list (catch 'bwc-k (throw 'bwc-k 42))
+        (catch 'bwc-k (throw 'bwc-k "str"))
+        (catch 'bwc-k (throw 'bwc-k (list 1 2 3)))
+        (catch 'bwc-k (throw 'bwc-k nil))
+        (catch 'bwc-k (catch 'bwc-j (throw 'bwc-k 'outer)))
+        (catch 'bwc-k (unwind-protect (throw 'bwc-k 'through) (setq bwc-cleanup 'ran)))
+        bwc-cleanup
+        (condition-case e (throw 'bwc-nobody 9) (no-catch (list 'no-catch e)))
+        (condition-case e (unwind-protect (car 1) (setq bwc-cleanup 'ran2)) (error e))
+        bwc-cleanup
+        (condition-case e (condition-case nil (car 1) (arith-error 'wrong))
+          (wrong-type-argument (list 'outer e)))
+        (condition-case e (signal 'wrong-type-argument (list 1 (list 2)))
+          (wrong-type-argument (cdr e)))
+        (catch 'bwc-k (condition-case nil (throw 'bwc-k 'not-an-error) (error 'caught)))
+        (condition-case e (catch 'bwc-k (unwind-protect (throw 'bwc-k 1) (car 'x)))
+          (wrong-type-argument (list 'cleanup-error e)))))
+
+;; The same exits with a collection while the exit is pending: a cleanup
+;; collects with a thrown value pending, after a signal raised and caught
+;; inside it replaced the pending exit.
+(defun bwc-exit-churn (n)
+  (catch 'bwc-k
+    (unwind-protect (throw 'bwc-k (list n (make-string 3 ?q) (cons n n)))
+      (condition-case nil (car 1) (error nil))
+      (garbage-collect)
+      (let ((junk nil) (i 0))
+        (while (< i 2000) (setq junk (cons (make-string 7 ?z) junk) i (1+ i))))
+      (garbage-collect))))
+(defun bwc-handler-churn (n)
+  (condition-case e (signal 'wrong-type-argument (list (list n (make-string 2 ?w))))
+    (wrong-type-argument
+     (garbage-collect)
+     (let ((junk nil) (i 0))
+       (while (< i 2000) (setq junk (cons (make-string 7 ?z) junk) i (1+ i))))
+     (garbage-collect)
+     (cadr e))))
+
 (defconst bwc-cases
   '((bwc-loop 0) (bwc-loop 1000) (bwc-fixloop0) (bwc-sum 100) (bwc-add3 1 2 3) (bwc-add3 1.5 2 3)
     (bwc-sub 10 3) (bwc-sub 1 2.5) (bwc-mul 6 7) (bwc-mul 3037000500 3037000500)
@@ -151,6 +201,8 @@
     (bwc-temp-buffer "hello") (bwc-char "abc" 0) (bwc-eq-ints 5) (bwc-eq-ints 6) (bwc-stack-heavy 1 x)
     (bwc-ignore-errors 5) (bwc-ignore-errors (q)) (bwc-nested-cc inner) (bwc-nested-cc outer)
     (bwc-symbol-value bwc-dyn) (bwc-set bwc-dyn2 changed) (bwc-intern "bwc-sym") (bwc-number-seq 5)
-    (bwc-sort (3 1 2)) (bwc-hash 10) (bwc-format x "y")))
+    (bwc-sort (3 1 2)) (bwc-hash 10) (bwc-format x "y")
+    (bwc-get-put 42) (bwc-get-put (a b)) (bwc-get-wta 5) (bwc-get-wta "s")
+    (bwc-exits) (bwc-exit-churn 4) (bwc-handler-churn 5)))
 
 ;;; bytecode-word-corpus-src.el ends here

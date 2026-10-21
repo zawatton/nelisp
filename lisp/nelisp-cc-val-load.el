@@ -96,8 +96,10 @@
     ;; 32B slot view).  Immediate words (low bit 1) are materialised as a
     ;; 32-byte storage Sexp at SCRATCH32 via nl_sci_store_imm, and the
     ;; SCRATCH32 view is returned.
+    ;; Doc 216: only a legacy 000 WORD is itself a view; immediates, direct
+    ;; conses (010) and vectorlikes (110) materialise into SCRATCH32.
     (defun nl_val_load (word scratch32)
-      (if (and (= (logand word 1) 0) (/= (logand word 7) 6)) word
+      (if (= (logand word 7) 0) word
         (extern-call nl_sexp_clone_into word scratch32)))
 
     ;; Boxed/string construction path: clone the 32B-slot child SRC into a
@@ -169,16 +171,27 @@
               (seq (ptr-write-u64 dst_word_ptr 0 word) word))
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
-        (if (= (logand src_slot 7) 6)
+        (if (/= (logand src_slot 7) 0)
+            ;; Direct cons (010) or vectorlike (110): already canonical.
             (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
           (let ((tag (heap-read-u8 src_slot 0)))
+            (if (if (= tag 7)
+                    ;; A special-form definition keeps a marker (13108) in
+                    ;; its view's data word (nl_apply_do_fset); such a view
+                    ;; stays a legacy box so the marker survives.  Any
+                    ;; other word there is stale slot content.
+                    (/= (heap-read-u64 src_slot 16) 13108) 0)
+                ;; Doc 216 S2.1: a cons is stored as its payload | 2 (GNU's
+                ;; Lisp_Cons tag), never as another 32-byte header alias.
+                (let ((word (+ (heap-read-u64 src_slot 8) 2)))
+                  (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
             (if (or (= tag 8) (= tag 9) (= tag 12) (= tag 17) (= tag 18))
                 (let* ((box (heap-read-u64 src_slot 8)) (word (+ box 6)))
                   (nl_vl_prog2
                    (and (ptr-write-u64 box 0
                          (+ (logand (heap-read-u64 box 0) -64) tag))
                         (ptr-write-u64 dst_word_ptr 0 word)) word))
-              (nl_val_clone_legacy src_slot dst_word_ptr)))))))))
+              (nl_val_clone_legacy src_slot dst_word_ptr))))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

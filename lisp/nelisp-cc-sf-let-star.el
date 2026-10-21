@@ -90,16 +90,16 @@
     (defun nl_sf_let_star_one_done (rc env mark _pad)
       (seq (nl_root_release env mark) rc))
 
+    ;; Doc 216 S6.2: ONE is a WORD root slot holding the singleton list.
     (defun nl_sf_let_star_one_rooted (binding env mark one)
-      (let* ((nil-slot (alloc-bytes 32 8)))
+      (let* ((list (nelisp_cons_construct_w binding 3 0)))
         (seq
-         (nl_cons_write_nil nil-slot)
-         (cons-make-with-clone binding nil-slot one)
+         (ptr-write-u64 one 0 list)
          (nl_sf_let_star_one_done
-          (nl_let_setup one env 1) env mark 0))))
+          (nl_let_setup list env 1) env mark 0))))
 
     (defun nl_sf_let_star_one_marked (binding env mark _pad)
-      (nl_sf_let_star_one_rooted binding env mark (nl_root_reserve env)))
+      (nl_sf_let_star_one_rooted binding env mark (nl_root_word env)))
 
     (defun nl_sf_let_star_one (binding env)
       (nl_sf_let_star_one_marked binding env (nl_root_mark env) 0))

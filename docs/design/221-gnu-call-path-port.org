@@ -1,0 +1,212 @@
+#+TITLE: GNU call-path port
+#+STATUS: PLANNED
+
+* Contract
+
+GNU Emacs 31.1 is the oracle. This replaces Doc 219's incremental C1-C3
+programme. Keep the original S4.2 limits: interpreter funcall/builtin
+10x GNU; FX VM and bytecode 5x GNU. Include GC and average layouts
+0, 700, 1400 and 2100. No performance result is claimed by this plan.
+
+The inventory below classifies the transfer method, not completion.
+=ported= means use GNU's algorithm; =adapted= names the NeLisp storage or
+protocol needed; =impossible= states a current architectural/scope limit.
+Every implementation step remains OPEN until semantic and measurement
+receipts exist. An impossible component must remain explicit rather than
+being replaced by an entry cache and called a GNU port.
+
+All REPLs/tests inherit =ulimit -v 8388608=. Heavy builds and tests acquire
+=/tmp/notes-heavy.lock=, one job at a time; close every REPL. Never raise
+the cap. Changes are limited to call/evaluator entry, specpdl and bytecode
+entry. Binding, regex, version and loader code retain their authorities.
+
+* Implementation order
+
+1. =Ffuncall= / =funcall_general= (=eval.c:3149,3185=): one
+   =nl_gnu_funcall_w= entry preserves the original function, checks
+   quit/depth, records the activation, checks GC, resolves aliases and
+   retries autoload from the original function, dispatches, then finishes
+   the activation once. The function and value cells are read through
+   the direct symbol cells of the section below (step 1a), before the
+   entry itself is restructured (step 1b); the hot per-call state GNU
+   keeps in C globals must not cost a hashed lookup per call (the
+   unverified first entry doubled the interpreter loop for that reason).
+   No new function-cache experiment. Alias cycles
+   need GNU's =fset= rejection (=data.c:912=) and a safe resolver when an
+   internal writer has bypassed that invariant.
+2. =funcall_subr= / =apply_lambda= (=eval.c:3254,3302,3322=): pass
+   =(argc, WORD argv)= through the common entry. Use an EvalCtx-owned
+   reusable argument reserve with a saved top, not a per-call cons spine
+   or 32-byte argument views. Store offsets across calls/reserve growth
+   and reacquire addresses after reentry; publish and mark/rewrite each
+   worker's active prefix from introduction, including partial argument
+   evaluation. Restore top only after exit debugging and cleanup finish.
+   The compiler has no C =alloca= operation;
+   =alloc-bytes= is a heap operation. Preserve left-to-right evaluation,
+   optional nil fill, selected FFI arity, and GNU error identities. Fold
+   A1's generated arity checks into this entry. Remove C1 if no formals
+   compatibility view remains. Build a Lisp list only for =&rest= or a
+   reflection adapter that actually requires it.
+3. =funcall_lambda= (=eval.c:3350-3455=): read formals/captured environment
+   once, bind by argv index, and enter the body directly. Use
+   =nl_gnu_lambda_w= with the existing lexical-capture/promotion contract;
+   dynamically special parameters go through the existing binding
+   authority. Do not turn lexical parameters into unconditional dynamic
+   bindings or silently change closure escape behavior.
+4. =specbind= / =unbind_to= (=eval.c:3656,3940=): an EvalCtx-owned
+   =nl_gnu_specpdl= reserve contains tagged binding, unwind and backtrace
+   entries plus saved indices/argv offsets, never borrowed addresses that
+   become stale on growth or reentry. Publish and mark/rewrite each
+   worker's active prefix, including old binding values and functions.
+   Store plain/local/default binding kinds;
+   retain cand3's binding operations. =nl_gnu_unbind_to= copies and pops
+   an entry BEFORE cleanup, preserves quit/result/error state, and covers
+   normal return, throw, signal, debugger and frame-API adapters. Capture
+   and reflection materialize durable objects only when requested.
+5. =exec_byte_code= (=bytecode.c:365,496,766-816,894-927=): a single
+   =wf_bytecode_execute_frame= loop switches between packed-arity lexical
+   bytecode callees using an EvalCtx-owned reusable bytecode arena and
+   =bc_frame=-style saved offsets. Save function, PC, top, frame pointer
+   and handler/specpdl markers; return restores the caller in the same
+   loop. Dynamic-list-formal bytecode keeps the general fallback. A
+   stashed exit unwinds the innermost frame, restores its caller, then
+   consults caller handlers. Add active-arena mark/rewrite traversal with
+   the arena (=bytecode.c:396=); native-stack scanning alone is insufficient.
+6. Conservative roots (=lisp.h:4444; alloc.c:5226=): use the existing
+   native scan only where register spills, parked-worker stack extents,
+   lookup-key authorization and precise-only mode are proven safe.
+   Current worker publication contains env/root top, not native register
+   snapshots/stack ranges. Retain explicit roots wherever M26's missing
+   protocol prevents safe removal. Do not disable GC or omit its cost.
+
+After EACH step: fresh binary, focused callfloor/capture/env-capture and
+arity checks, then funcall AND builtin Ir in all three modes/four layouts
+under the lock. Commit that step with GNU anchors and measured results.
+If an unported representation/compiler/worker layer prevents the required
+structure or caps, record its measured residual and stop; do not replace
+the port with another tuning candidate. Run COMMON final verification
+once only after the implemented path and original caps are satisfied.
+
+* Mechanism map (Doc 219, all 35)
+
+| ID | Method | GNU anchor | Concrete transfer / current constraint |
+|----+--------+------------+----------------------------------------|
+| M01 | adapted | eval.c:3185 | =nl_gnu_funcall_w=, one activation/depth/quit/GC entry and finish. |
+| M02 | adapted | eval.c:3153; lisp.h:819 | Interned name =buf-8= header holds the symbol's cell index; mirror table slot 3 vector maps it to the entry record. Keys without a cell keep the hashed mirror walk. See section below. |
+| M03 | ported | eval.c:3149 | Common tag dispatch after resolution; preserve original function through errors/autoload retry. |
+| M04 | adapted | eval.c:3322 | =nl_gnu_argv= traced per-worker reserve with saved top/offsets; reacquire addresses after growth/reentry. Compiler lacks C stack allocation. |
+| M05 | ported | eval.c:2626 | Evaluate left to right into WORD argv; no ordinary argument cons spine. |
+| M06 | ported | eval.c:3426 | =nl_gnu_lambda_w= validates required/excess arguments with one argv cursor. |
+| M07 | ported | eval.c:3412 | Optional parameters read argv or nil without allocating argument views. |
+| M08 | ported | eval.c:3423 | Only the remaining =&rest= vector tail becomes a fresh Lisp list. |
+| M09 | adapted | eval.c:3436 | Captured alist and existing promotion/lexical-scope contract feed =nl_gnu_lambda_w=. |
+| M10 | adapted | eval.c:3392 | Saved specpdl index plus capture/reflection adapters replaces unconditional generic call frames. |
+| M11 | adapted | eval.c:3656 | =nl_gnu_specpdl= stores binding kind/name/old value; existing binding authority performs writes. |
+| M12 | ported | eval.c:3940 | =nl_gnu_unbind_to= copies and pops before cleanup; restore quit/result and handle reentrancy. |
+| M13 | adapted | lisp.h:3760 | Traced backtrace entry holds function/argc/argv offsets; the argv prefix survives through exit debugging/cleanup. |
+| M14 | ported | eval.c:3211 | One finish path decrements depth, honors exit debugging and removes the backtrace entry. |
+| M15 | adapted | lisp.h:3897 | Existing worker safepoint plus cheap quit predicate at the common entry. |
+| M16 | adapted | lisp.h:5905 | Existing allocation-debt boundary check; collection remains in every measurement. |
+| M17 | adapted | eval.c:3254 | Existing native-entry metadata supplies fixed arity and WORD operands to shared subr dispatch. |
+| M18 | ported | eval.c:3302 | Variable-arity entries receive argc and borrowed contiguous WORD argv. |
+| M19 | adapted | bytecode.c:816 | Explicit bytecode arena/frame offsets; callee setup continues one executor loop without host recursion. |
+| M20 | ported | bytecode.c:894 | Breturn restores caller function/PC/top/frame; only the external sentinel returns to the host. |
+| M21 | ported | bytecode.c:535 | Packed min/max/rest decoding; GNU arity error data is =((MIN . MAX) NARGS)=. |
+| M22 | ported | bytecode.c:542 | Copy WORD arguments, nil-fill optionals, construct only a rest list. |
+| M23 | adapted | bytecode.c:803 | Bcall/Bvarref read the M02 cell through =nelisp_mirror_lookup_entry_owned=; no name hash for interned symbols. |
+| M24 | ported | eval.c:3455 | Enter progn/body from lambda dispatch; preserve existing evaluator semantics. |
+| M25 | adapted | lisp.h:597 | WORD transport throughout the call ABI; materialize existing physical views only at explicit compatibility APIs. |
+| M26 | impossible | bytecode.c:396; lisp.h:4444; alloc.c:5226 | Blanket per-call root removal lacks worker stack/register publication and precise-only compatibility. Shared bytecode arena requires active-prefix tracing. |
+| M27 | ported | eval.c:3427 | Constant-time argv indexing replaces =nl_bf_args_nth_ptr= list walks. |
+| M28 | adapted | bytecode.c:1702 | Existing WORD stack-reference operations address the active bytecode arena frame. |
+| M29 | adapted | bytecode.c:366 | Reusable bytecode arena with saved frame footer; no fresh operand vector/thirteen-root activation on ordinary calls. |
+| M30 | ported | data.c:2550; eval.c:3175 | Iterative symbol aliases and autoload retry from the original callable, with mutation/cycle invariants preserved. |
+| M31 | adapted | alloc.c:2599 | Retain NeLisp allocator/collector; ordinary argv/frame allocation is removed, rest/capture allocation remains real and counted. |
+| M32 | adapted | lisp.h:1495 | Existing =nl_cons_car_word= / =nl_cons_cdr_word= preserve NeLisp object layout; no allocator/layout port is claimed. |
+| M33 | adapted | bytecode.c:758 | Executor entry, call transition and return are one state machine; this remains mixed protocol work. |
+| M34 | ported | bytecode.c:494 | Normal constant/return execution replaces per-call literal-program eligibility scanning; preserve mutable bytecode and JIT observability. |
+| M35 | impossible | eval.c:2585 | GNU has no FX VM opcode engine. Adapt its calls to the common WORD ABI; the unchanged 5x gate still applies. |
+
+* Direct symbol cells (M02/M23, revised 2026-10-21)
+
+GNU keeps a symbol's value and function in the symbol object itself
+(=lisp.h:786-822=) and reads them without a name hash (=eval.c:3153=,
+=bytecode.c:640,803=, =data.c:1630=). A NeLisp symbol box is a
+per-occurrence 32-byte view whose +16 field points at the canonical
+interned name buffer; the intern region is a permanent raw mmap that the
+image dumper copies as =[base, bump)=. One globals record is shared by
+every thread (=nl_make_thread_env= copies the env+0 view).
+
+The adaptation therefore makes the canonical name buffer stand for the
+symbol:
+- =nl_intern_bump= places an 8-aligned header before every name; it holds
+  the symbol's dense cell index, assigned by =nl_symcell_assign= from a
+  counter in the arena's first word. Indices are integers, so dumping and
+  relocation need no change.
+- The mirror's fast-hash-table record gains slot 3, a vector of entry
+  WORDs indexed by cell. The collector traces and rewrites it like any
+  vector, so moving compaction needs no change.
+- Every entry writer (=nelisp_mirror_bucket_prepend_unchecked=,
+  =nelisp_mirror_alias_stage_publish=, =nelisp_mirror_alias_stage_commit_pair=
+  after its table install) calls =nl_symcell_refresh=, which copies the
+  key's first chain entry into its cell. Chains only grow by prepending.
+- Readers (=nelisp_mirror_lookup_entry= and =_owned=) answer a non-empty
+  cell directly. A key without a cell (uninterned, plain overflow name,
+  string key, a table without slot 3) uses the hashed walk, as GNU's
+  non-=SYMBOL_PLAINVAL= redirects fall back to =Fsymbol_value=.
+- A build with =NELISP_SYMCELL_VERIFY=1= compares every cell answer with
+  the hashed walk and exits 97 on a difference; =fault= also writes wrong
+  cells, so the check must fire.
+
+Residual: =nelisp_mirror_lookup_entry= still authenticates arbitrary key
+addresses (=nelisp_mirror_lookup_entry_valid_key=) before the cell read.
+
+* Direct-cell prerequisite and scope boundary (original analysis)
+
+=nl_alloc_symbol_write=, =nl_intern_write_sexp= and =nl_make_symbol_write=
+in =lisp/nelisp-cc-nlstr-direct-ops.el:248,539,460= use the symbol payload
+for name capacity or identity; intern shares name bytes, not canonical
+symbol objects/function cells. =nelisp_env_lookup_function_w= in
+=lisp/nelisp-cc-env-lookup-function.el:52= reads mirror record slot 1.
+=nl_pa_local_entry= in =lisp/nelisp-cc-variable-alias-public.el:138= copies
+and publishes a replacement entry, explicitly invalidating the existing
+N4 cache. A borrowed pointer into the old entry is therefore not authority.
+
+The exact GNU transfer needs one stable cell handle shared by every
+symbol view, maintained by constructors/interning/clone, all function-cell
+writers and shadow publication, plus GC mark/rewrite and image relocation.
+That crosses the current binding/object/loader limits. Within this scope,
+the common entry can preserve the mirror read as an explicit adaptation;
+it cannot claim GNU's no-hash symbol field. Measure the remaining lookup
+cost and report this boundary if it prevents the required port/caps.
+
+* Outcome of run B (2026-10-21, wall-clock acceptance)
+
+Ported or adapted and committed, each with GNU anchors and measurements
+in tools/ai/callpath-perf-progress.org:
+- 1a/1c direct symbol cells (M02/M23): no name hash on interned symbols;
+- 1b funcall_general parity (M30): original_fun in errors, iterative
+  indirect_function, Ffset cycle refusal, Fapply spread order, eval_sub
+  resolving the whole chain before arguments, and macros reached through
+  alias chains;
+- 2 subr dispatch keyed on static symbol ids (M03/M17), funcall_subr's
+  arity check before the unsupported default, and FX Ffuncall of covered
+  closures on the evaluated words (no argument list);
+- 5a-5c exec_byte_code: Bcar/Bcdr and Bcall inside the dispatch loop,
+  quit polling every 256 backward branches (bytecode.c:856-867).
+
+Not started: steps 3 (funcall_lambda environments), 4 (specpdl and
+unbind_to) and 6 (roots), and M19's single-loop bytecode frames.  The
+measurements show why they cannot reach the interpreter caps alone: with
+no call involved, the interpreter's `let' runs at about 20x and `while' at
+about 65x GNU in wall-clock, so the per-form evaluator cost (frame
+push/bind/lookup, generated functions such as nelisp_apply_function_w at
+175k instructions, a two-load accessor at 54 instructions, the cell read at
+290) sits under every interpreter metric.  Steps 3 and 4 would need the
+frame contract that M09 kept to be revised.  The VM and bytecode engines
+run non-call work near GNU speed (VM while 1.2x, let 0.7x; bytecode while
+3.5x, let 1x); their remaining call gaps are M19 (bytecode callees still
+recurse on the host; the literal-program check is its symptom) and the
+per-call FX frame vector (M04/M29).  Word-heap S6.3 (WORD root slots,
+stack argv, no clone/copy materialisers on the call path) is the next
+item.

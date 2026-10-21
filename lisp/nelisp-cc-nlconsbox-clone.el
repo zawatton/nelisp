@@ -95,10 +95,10 @@
     ;; Public entry — bump refcount + return input pointer.
     ;; Doc 147 Phase 3: refcount offset 64 -> 16 (car WORD @0 + cdr WORD
     ;; @8 + refcount @16; was two 32B inline Sexps + refcount @64).
+    ;; Doc 216 S2.2: a cons cell is GNU's 16-byte (car, cdr) and the
+    ;; tracing collector frees it, so cloning a reference touches nothing.
     (defun nelisp_nlconsbox_clone (box-ptr)
-      (nelisp_nlconsbox_clone_prog2
-       (atomic-fetch-add (+ box-ptr 16) 1)
-       box-ptr)))
+      (nelisp_nlconsbox_clone_prog2 0 box-ptr)))
   "AOT source for the Doc 124 §124.A NlConsBox Clone kernel.
 
 Two-entry `(seq DEFUN ...)' manifest:
