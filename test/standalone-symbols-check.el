@@ -41,6 +41,14 @@
           (condition-case e symfix-a (error e))
           (progn (setq symfix-a 5) symfix-a))))
 (symfix-case plain-fresh-setq (progn (set 'symfix-fresh 9) (list (boundp 'symfix-fresh) (symbol-value 'symfix-fresh))))
+;; A store leaves the bare value in the cell: the fixnum 0 is the WORD 1,
+;; which nl_sym_find_value_w once took for "no answer yet" and looped on.
+(symfix-case plain-immediate
+  (let (r)
+    (dolist (v '(0 1 -1 nil t 0.0))
+      (set 'symfix-imm v)
+      (push (list (symbol-value 'symfix-imm) (boundp 'symfix-imm) (default-value 'symfix-imm)) r))
+    (nreverse r)))
 (symfix-case defvar-keeps (progn (defvar symfix-a 100) symfix-a))
 (symfix-case defvar-value (progn (defvar symfix-d (+ 1 2) "doc") (list symfix-d (special-variable-p 'symfix-d))))
 (symfix-case defconst (progn (defconst symfix-c 10 "doc")

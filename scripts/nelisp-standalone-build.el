@@ -8879,13 +8879,18 @@ REPL-facing module it feeds."
     ;; object's backing address at +8 (a legacy identity number is small).
     ;; A view can outlive its object off the precise paths (a dead scratch
     ;; slot the conservative scan finds), so the address is validated
-    ;; first, and a swept symbol_block cell -- GNU's dead marker #xdead0 in
-    ;; `function', as live_symbol_holding (alloc.c:4675) tests -- is skipped.
+    ;; first.  Inside a symbol_block it goes through live_symbol_holding
+    ;; (alloc.c:4675), as mark_maybe_pointer does (alloc.c:4932): the cell
+    ;; index, the offset in the cell, a cell never allocated and a swept
+    ;; cell (GNU's dead marker #xdead0 in `function') are all refused, and
+    ;; the cell it answers is the one marked.  Otherwise the mark bit
+    ;; (header bit 24) would land inside a cell.
     (defun nl_gc_mark_symview (sp)
       (let* ((base (heap-read-u64 sp 8)))
         (if (> base 65535)
             (if (= (nl_typed_find base) 2)
-                (if (= (heap-read-u64 base 24) 912080) 0 (nl_gc_mark_symbol base))
+                (let ((c (nl_live_symbol_holding base)))
+                  (if (= c 0) 0 (nl_gc_mark_symbol c)))
               (if (= (nl_gc_in_arena base) 1) (nl_gc_mark_word (+ base 6)) 0))
           0)))
     ;; Mode-split mid-form collector.  mode 0 = conservative scan allowed,
@@ -25704,10 +25709,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun nl_sym_find_value_w (env sym _pad)
       (if (= (nl_sym_direct_env_p env) 0)
           (bf_dynamic_lookup_w env sym 0)
+        ;; RESULT is -1 until the walk has an answer: a value WORD can be
+        ;; 1 (the fixnum 0 that a store leaves in the cell), but never -1.
         (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
-               (hops 0) (result 1))
+               (hops 0) (result -1))
           (seq
-           (while (= result 1)
+           (while (= result -1)
              (if (= obj 0) (setq result 2)
                (let ((r (nl_sym_redirect obj)))
                  (if (or (= r 0) (= r 3))

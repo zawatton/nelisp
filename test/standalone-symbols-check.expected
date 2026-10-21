@@ -6,6 +6,7 @@ SYM plain-void-default (error void-variable symfix-never-bound)
 SYM plain-set-default (4 4 4)
 SYM plain-makunbound (symfix-a nil (void-variable symfix-a) 5)
 SYM plain-fresh-setq (t 9)
+SYM plain-immediate ((0 t 0) (1 t 1) (-1 t -1) (nil t nil) (t t t) (0.0 t 0.0))
 SYM defvar-keeps 5
 SYM defvar-value (3 t)
 SYM defconst (10 t 11 12)
