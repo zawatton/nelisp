@@ -187,24 +187,30 @@ GNU_SYMBOL_BYTES = 48            # sizeof (struct Lisp_Symbol), lisp.h:786-829
 
 
 def objsize(command, n):
+    """Retained live bytes after N make-symbol calls (word-heap-objsize.el)."""
     env = dict(os.environ, WH_TYPE="symbol", WH_N=str(n))
     proc = subprocess.run(command, env=env, capture_output=True, preexec_fn=cap_memory,
                           timeout=600)
     m = re.search(rb"WH-OBJECT symbol (\d+) (-?\d+)", proc.stdout)
     need(proc.returncode == 0 and m, "objsize probe failed: " + " ".join(map(str, command)))
-    return int(m.group(2)) / int(m.group(1))
+    return int(m.group(2))
 
 
 def cmd_layout(_args):
     """Bytes per uninterned symbol (make-symbol slope, shared name) vs GNU."""
-    gnu = objsize([GNU, "-Q", "--batch", "-l", str(OBJSIZE)], 20000)
+    # The per-symbol cost is the slope between two populations, which
+    # removes the probe's constant overhead (word-heap S0 method).
+    def slope(command):
+        a, b = objsize(command, 4000), objsize(command, 16000)
+        return (b - a) / 12000
+    gnu = slope([GNU, "-Q", "--batch", "-l", str(OBJSIZE)])
     print(f"GNU 31.1: {gnu:.1f} B per make-symbol (sizeof struct Lisp_Symbol {GNU_SYMBOL_BYTES})")
     failures = []
     for kind, binary in head_builds().items():
-        slopes = [objsize([str(binary), "--load", str(OBJSIZE)], n) for n in (4000, 16000)]
-        print(f"{kind}: {slopes[0]:.1f} / {slopes[1]:.1f} B per make-symbol (N=4000/16000)")
-        if max(slopes) > GNU_SYMBOL_BYTES:
-            failures.append(f"{kind} {max(slopes):.1f} B > {GNU_SYMBOL_BYTES} B")
+        s = slope([str(binary), "--load", str(OBJSIZE)])
+        print(f"{kind}: {s:.1f} B per make-symbol (slope N=4000..16000)")
+        if s > GNU_SYMBOL_BYTES:
+            failures.append(f"{kind} {s:.1f} B > {GNU_SYMBOL_BYTES} B")
     need(not failures, "; ".join(failures))
     print("LAYOUT PASS")
 
@@ -226,7 +232,13 @@ def cmd_final(_args):
     need("GATE-COUNT: 11 cases, 0 failures" in text, "COMMON checks: not 11 cases with 0 failures")
     need(s.get("mcp_tools") == 40, "MCP smoke did not list 40 tools")
     need(s.get("standalone_checks_failures") == 0, "standalone-checks failed")
-    print("FINAL PASS 11 groups, 0 failures; standalone-checks 0 failures; MCP 40 tools")
+    print("COMMON 11 groups, 0 failures; standalone-checks 0 failures; MCP 40 tools")
+    # The criterion also names a wine smoke: the coordinator's Windows half
+    # (a cross build dumped and run under wine) records it here.
+    wine = OUT / "final" / "wine.log"
+    need(wine.is_file() and "WINE-SMOKE PASS" in wine.read_text(),
+         "wine smoke pending (coordinator's Windows half: target/symbols/final/wine.log)")
+    print("FINAL PASS")
 
 
 # ---------------------------------------------------------------- S1.3 semantics
