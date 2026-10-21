@@ -18271,6 +18271,202 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= (sexp-tag entry) 12) entry 0))))))
 
 
+    ;; ----------------------------------------------------------------------
+    ;; In-loop bytecode calls.  GNU's exec_byte_code runs a call from byte-code
+    ;; to a lexical byte-code function in the same loop: Bcall (bytecode.c:
+    ;; 735-750, docall) finds that TOP is a closure with a fixnum arglist
+    ;; template and jumps to setup_frame (495-560), which pushes a bc_frame on
+    ;; the data stack; Breturn (892-923) pops it again.  The frame is the WORD
+    ;; frame of `wf_bytecode_execute_frame' (see its layout comment).  A call
+    ;; counts one level of `lisp_eval_depth' and records one backtrace entry,
+    ;; as docall does for every call.
+    (defun wf_bytecode_w_cons2 (carw cdrw)
+      ;; A fresh cell sharing CARW and CDRW, as its direct WORD (cell | 2).
+      ;; Nothing allocates between the cell and its two fields.
+      (let* ((cell (nl_alloc_consbox)))
+        (seq (ptr-write-u64 cell 0 (nl_word_canon carw))
+             (ptr-write-u64 cell 8 (nl_word_canon cdrw))
+             (+ cell 2))))
+    ;; (error MESSAGE): the signal of GNU's C `error' with a literal text of
+    ;; LEN bytes at BUF.  Not a wf_bytecode_* name: the word-cleanliness audit
+    ;; of the VM counts the 32-byte scratch boxes of those.
+    (defun nl_signal_error_literal (buf len)
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (ebuf (alloc-bytes 8 1))
+             (msg (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 ebuf 0 491496043109)
+         (nl_alloc_symbol ebuf 5 sig-tag)
+         (nl_alloc_str buf len msg)
+         (wf_write_nil nil-slot)
+         (nelisp_cons_construct msg nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
+         1)))
+    ;; bytecode.c docall: error ("Lisp nesting exceeds `max-lisp-eval-depth'")
+    (defun wf_bytecode_signal_nesting ()
+      (let* ((buf (alloc-bytes 48 1)))
+        (seq
+         (ptr-write-u64 buf 0 8315173372614109516)
+         (ptr-write-u64 buf 8 7167589996808792436)
+         (ptr-write-u64 buf 16 7020373086631650661)
+         (ptr-write-u64 buf 24 7290607012774948216)
+         (ptr-write-u64 buf 32 8390317586724446582)
+         (ptr-write-u64 buf 40 10088)
+         (nl_signal_error_literal buf 42))))
+    ;; bytecode.c setup_frame: error ("Bytecode stack overflow")
+    (defun wf_bytecode_signal_overflow ()
+      (let* ((buf (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 buf 0 7306086968196364610)
+         (ptr-write-u64 buf 8 8007518212045697824)
+         (ptr-write-u64 buf 16 33618033594492278)
+         (nl_signal_error_literal buf 23))))
+    (defun wf_bytecode_inloop_func (env fw)
+      ;; The callee of a Bcall that takes the in-loop path (bytecode.c:735-750):
+      ;; a closure whose arglist is a fixnum template, named directly or through
+      ;; a symbol's function cell.  Answers the closure, or 0 for any other
+      ;; callee or a malformed one (the ordinary call signals for those), and
+      ;; while a JIT hook can observe the call.
+      (if (/= (logand (heap-read-u64 env 112) 4) 0) 0
+        (if (or (< fw 4096) (= (logand fw 1) 1) (= (logand fw 7) 2)) 0
+          (let* ((low (logand fw 7))
+                 (tag (if (= low 0) (heap-read-u8 fw 0)
+                        (if (= low 6) (logand (heap-read-u8 (- fw 6) 0) 63) 0)))
+                 (func (if (= tag 17) fw
+                         (if (= tag 4)
+                             (if (= low 0)
+                                 (let ((cell (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fw 0)))
+                                   (if (= cell 2) 0 cell))
+                               0)
+                           0))))
+            (if (< func 4096) 0
+              (if (/= (nl_val_tag func) 17) 0
+                (let* ((p (nl_word_payload func)))
+                  (if (< (sar (heap-read-u64 p 0) 8) 4) 0
+                    (let* ((tw (heap-read-u64 p 16)) (sw (heap-read-u64 p 40)))
+                      (if (or (/= (logand tw 3) 1) (/= (logand sw 3) 1)) 0
+                        (let* ((template (sar tw 2)) (stk (sar sw 2))
+                               (maxargs (/ template 256))
+                               (slots (+ maxargs (if (= (logand template 128) 0) 0 1))))
+                          (if (or (< template 0) (> maxargs 127) (< stk 0)
+                                  (> stk 131063) (> slots stk))
+                              0
+                            func))))))))))))
+    (defun wf_bytecode_frame_push (env cell mem fi argc func fw pcret)
+      ;; docall 721-748 and setup_frame 495-560.  The callee's frame takes the
+      ;; ARGC argument words at FI+1 of the frame at MEM, as setup_frame pushes
+      ;; *args; the caller's words stay where they are (GNU's backtrace entry
+      ;; reads them).  The new frame's address is left in CELL+8 and the
+      ;; callee's initial stack pointer answered; -1 after a signal, with the
+      ;; depth and the backtrace record restored.
+      (let* ((rec (heap-read-u64 (+ env 96) 0))
+             (rmax (nl_eval_depth_limit env rec)))
+        (if (>= rec rmax)
+            (seq (wf_bytecode_signal_nesting) -1)
+          (let* ((state (nl_n4_state env))
+                 (n4 (nl_n4_push_words env fw (+ mem (* (+ fi 1) 8)) argc))
+                 (template (sar (nl_record_slot_word func 0) 2))
+                 (mandatory (logand template 127))
+                 (rest (if (= (logand template 128) 0) 0 1))
+                 (maxargs (/ template 256))
+                 (stk (sar (nl_record_slot_word func 3) 2))
+                 (fp2 (seq (ptr-write-u64 (+ env 96) 0 (+ rec 1))
+                           (nl_root_frame env (+ stk 7)))))
+            (if (= fp2 0)
+                (seq (wf_bytecode_signal_overflow)
+                     (ptr-write-u64 (+ env 96) 0 rec)
+                     (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
+                     -1)
+              (if (or (< argc mandatory) (and (= rest 0) (> argc maxargs)))
+                  (seq (bf_wrong_number_of_args func argc)
+                       (nl_root_release env (- fp2 32))
+                       (ptr-write-u64 (+ env 96) 0 rec)
+                       (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
+                       -1)
+                (let* ((pushed (if (< maxargs argc) maxargs argc))
+                       (src (+ mem (* (+ fi 1) 8)))
+                       (foot (+ fp2 (* (+ stk 1) 8)))
+                       (i 0))
+                  (seq
+                   (while (< i pushed)
+                     (seq (ptr-write-u64 (+ fp2 (* i 8)) 0 (heap-read-u64 (+ src (* i 8)) 0))
+                          (setq i (+ i 1))))
+                   ;; More arguments than named slots: the &rest list, built
+                   ;; in its slot so every partial list stays rooted.
+                   (if (> argc maxargs)
+                       (let* ((k (- argc 1)) (dst (+ fp2 (* maxargs 8))))
+                         (while (>= k maxargs)
+                           (seq (ptr-write-u64
+                                 dst 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ src (* k 8)) 0)
+                                                            (heap-read-u64 dst 0)))
+                                (setq k (- k 1)))))
+                     0)
+                   (ptr-write-u64 foot 0 (+ (shl mem 2) 1))
+                   (ptr-write-u64 foot 8 (+ (shl (+ (* fi 2) (if (= n4 0) 0 1)) 2) 1))
+                   (ptr-write-u64 foot 16 (+ (shl pcret 2) 1))
+                   (ptr-write-u64 foot 24 (nl_record_slot_word func 1))
+                   (ptr-write-u64 foot 32 (nl_record_slot_word func 2))
+                   (ptr-write-u64 cell 8 fp2)
+                   (+ maxargs rest)))))))))
+    (defun wf_bytecode_frame_pop (env cell mem foot sp)
+      ;; Breturn in a frame the loop pushed (bytecode.c:892-923): TOP replaces
+      ;; the function and its arguments in the caller, which resumes at its
+      ;; saved pc; the depth and the backtrace record go back.  The caller's
+      ;; frame is left in CELL+8 and its pc and sp answered packed as the fast
+      ;; loop packs them; -1 when a debugger waits on this frame's exit (the
+      ;; full loop takes that).
+      (let* ((packed (sar (heap-read-u64 foot 8) 2))
+             (n4 (logand packed 1))
+             (state (heap-read-u64 env 176))
+             (n4depth (heap-read-u64 state 0)))
+        (if (if (= n4 1)
+                (/= (heap-read-u64 (nl_n4_record state (- n4depth 1)) 120) 0)
+              0)
+            -1
+          (let* ((fi (sar packed 1))
+                 (caller (sar (heap-read-u64 foot 0) 2))
+                 (pcr (sar (heap-read-u64 foot 16) 2))
+                 (val (heap-read-u64 (+ mem (* (- sp 1) 8)) 0)))
+            (seq
+             (nl_root_release env (- mem 32))
+             (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
+             (if (= n4 1) (ptr-write-u64 state 0 (- n4depth 1)) 0)
+             (ptr-write-u64 (+ caller (* fi 8)) 0 val)
+             (ptr-write-u64 cell 8 caller)
+             (+ (shl pcr 17) (+ fi 1)))))))
+    (defun wf_bytecode_frame_aux (env foot state)
+      ;; The frame's aux block: the Sexp-slot state that the handler, unwind
+      ;; and binding helpers take as views, allocated when the frame first
+      ;; needs it (a frame that only calls and returns has none).  Nine
+      ;; contiguous roots: +0 handlers, +32 unwinds, +64 binding-link, +96
+      ;; unwind-bindings, +128 resume-dest, +160 resume-sp, +192
+      ;; resume-bindings, +224 catch-pool, +256 the binding count while the
+      ;; frame is not the one running.  Answers its address, or 0 when the
+      ;; root stack cannot hold it.
+      (let* ((a (heap-read-u64 foot 40)))
+        (if (/= a 3) (sar a 2)
+          (let* ((aux (wf_bytecode_w_roots env 9)))
+            (if (= aux 0) 0
+              (seq
+               (wf_write_nil aux)
+               (wf_write_nil (+ aux 32))
+               (wf_write_int (+ aux 224) 0)
+               ;; Metadata is an integer root; the separate unwind root owns data.
+               (sexp-int-make (+ aux 64) (heap-read-u64 state 16))
+               (ptr-write-u64 (+ aux 64) 16 (+ aux 32))
+               (ptr-write-u64 (+ aux 64) 24
+                              (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+               (ptr-write-u64 state 16 (+ aux 64))
+               (wf_write_int (+ aux 96) 0)
+               (wf_write_nil (+ aux 128))
+               (wf_write_nil (+ aux 160))
+               (wf_write_nil (+ aux 192))
+               (wf_write_int (+ aux 256) 0)
+               (ptr-write-u64 foot 40 (+ (shl aux 2) 1))
+               aux))))))
+
     ;; GNU bytecode.c:856-867: the dispatch loop polls quit (and GC) once
     ;; every 256 backward branches (quitcounter), not per instruction.  The
     ;; run likewise returns to the full dispatcher's pending-exit and
@@ -18286,9 +18482,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
     (defun wf_bytecode_w_fast_run
-        (data length mem depth constants nconst pc sp env bx)
+        (data length mem depth constants nconst pc sp env bx cell)
       (let*
-          ((last-owner 0) (last-table 0) (last-table-data 0)
+          ((foot (+ mem (* (+ depth 1) 8)))
+           (last-owner 0) (last-table 0) (last-table-data 0)
            (last-buckets 0) (last-count 0) (last-entry-data 0)
            (last-slots 0) (last-index -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
@@ -18298,7 +18495,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (< pc prev)
                (seq (setq back (- back 1)) (if (= back 0) (setq go 0) 0)) 0)
            (setq prev pc))
-          (if (or (= go 0) (< pc 0) (>= pc (- length 1))) (setq go 0)
+          (if (or (= go 0) (< pc 0) (>= pc length)) (setq go 0)
             (seq (setq raw (heap-read-u8 data pc))
                  (if (= raw 84)
                      (if (<= sp 0) (setq go 0)
@@ -18981,22 +19178,75 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
                                  (setq go 0)))))
                                          (if (and (>= raw 32) (< raw 38))
-                                             ;; GNU bytecode.c:758-829 CASE (Bcall): the call is made
-                                             ;; from the dispatch loop itself.  The callee still runs
-                                             ;; on host recursion (Doc 221 M19 open); a collection in
-                                             ;; it may move the varref cache's entry, so the cache is
-                                             ;; dropped.  A signal ends the run with -1.
+                                             ;; GNU bytecode.c:735-750 CASE (Bcall) docall: a closure with
+                                             ;; a fixnum arglist template is entered in this loop
+                                             ;; (setup_frame); any other callee goes through the ordinary
+                                             ;; call, which may move the varref cache's entry, so the cache
+                                             ;; is dropped.  A signal ends the run with -1.
                                              (let* ((argc (- raw 32)))
                                                (if (< sp (+ argc 1)) (setq go 0)
-                                                 (let* ((rc (wf_bytecode_call env mem sp argc bx)))
-                                                   (seq
-                                                    (setq last-index -1)
-                                                    (if (= rc 0)
-                                                        (seq (setq sp (- sp argc))
-                                                             (setq pc (+ pc 1)))
-                                                      (seq (setq failed 1) (setq go 0)))))))
-                                           (seq (setq go 0)))))))))))))))))
-        (if (= failed 1) -1 (+ (shl pc 17) sp))))
+                                                 (let* ((fi (- sp (+ argc 1)))
+                                                        (fw (heap-read-u64 (+ mem (* fi 8)) 0))
+                                                        (func (wf_bytecode_inloop_func env fw)))
+                                                   (if (/= func 0)
+                                                       (let* ((isp (wf_bytecode_frame_push env cell mem fi argc func fw (+ pc 1))))
+                                                         (if (< isp 0)
+                                                             (seq (setq failed 1) (setq go 0))
+                                                           (seq
+                                                            (seq (setq mem (heap-read-u64 cell 8)) (ptr-write-u64 cell 16 1))
+                                                            (seq
+                       (let* ((d2 (- (heap-read-u64 (- mem 24) 0) 7))
+                              (f2 (+ mem (* (+ d2 1) 8)))
+                              (cw (heap-read-u64 f2 24))
+                              (kw (heap-read-u64 f2 32)))
+                         (seq (setq depth d2)
+                              (setq foot f2)
+                              (setq data (nl_bi_strptr cw))
+                              (setq length (m5_strlen cw))
+                              (setq constants (+ (nl_word_payload kw) 8))
+                              (setq nconst (vector-len kw))))
+                       (setq last-index -1))
+                                                            (setq pc 0)
+                                                            (setq prev 0)
+                                                            (setq sp isp))))
+                                                     (let* ((rc (wf_bytecode_call env mem sp argc bx)))
+                                                       (seq
+                                                        (setq last-index -1)
+                                                        (if (= rc 0)
+                                                            (seq (setq sp (- sp argc))
+                                                                 (setq pc (+ pc 1)))
+                                                          (seq (setq failed 1) (setq go 0)))))))))
+                                           (if (= raw 135)
+                                               ;; GNU bytecode.c:892-923 CASE (Breturn) in a frame this
+                                               ;; loop pushed.  The entry frame, a frame with handlers,
+                                               ;; unwinds or bindings, and a frame a debugger waits on
+                                               ;; return through the full loop.
+                                               (if (or (= (heap-read-u64 foot 16) 3)
+                                                       (/= (heap-read-u64 foot 40) 3)
+                                                       (<= sp 0))
+                                                   (setq go 0)
+                                                 (let* ((r (wf_bytecode_frame_pop env cell mem foot sp)))
+                                                   (if (< r 0) (setq go 0)
+                                                     (seq
+                                                      (seq (setq mem (heap-read-u64 cell 8)) (ptr-write-u64 cell 16 1))
+                                                      (seq
+                       (let* ((d2 (- (heap-read-u64 (- mem 24) 0) 7))
+                              (f2 (+ mem (* (+ d2 1) 8)))
+                              (cw (heap-read-u64 f2 24))
+                              (kw (heap-read-u64 f2 32)))
+                         (seq (setq depth d2)
+                              (setq foot f2)
+                              (setq data (nl_bi_strptr cw))
+                              (setq length (m5_strlen cw))
+                              (setq constants (+ (nl_word_payload kw) 8))
+                              (setq nconst (vector-len kw))))
+                       (setq last-index -1))
+                                                      (setq pc (sar r 17))
+                                                      (setq prev pc)
+                                                      (setq sp (logand r 131071))))))
+                                             (seq (setq go 0))))))))))))))))))
+        (seq (ptr-write-u64 cell 8 mem)
+             (if (= failed 1) -1 (+ (shl pc 17) sp)))))
 
 
     (defun wf_bytecode_execute_frame (code constants depth env out initial-args
@@ -19016,32 +19266,42 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; a frame called from C), +3 the code string, +4 the constants vector,
       ;; +5 the aux block.  No raw pointers go in the frame: the collector
       ;; marks every slot as a WORD.
-      ;; Roots, contiguous (still Sexp slots for the helpers that take views):
-      ;; +32 handlers, +64 unwinds, +96 binding-link, +128 unwind-bindings,
-      ;; +160 resume-dest, +192 resume-sp, +224 resume-bindings, +256
-      ;; catch-pool, +288.. +384 four boundary scratch slots (BX), then BT.
+      ;; A call from this loop to a lexical byte-code function pushes another
+      ;; such frame in the same activation instead of recursing (see
+      ;; `wf_bytecode_frame_push'); the activation's locals (MEM, DEPTH, FOOT,
+      ;; the code and constants it reads) are those of the current frame, and a
+      ;; frame switch reloads them from the frame.
+      ;; The handler, unwind and binding helpers still take Sexp slots as
+      ;; views; a frame gets them as an aux block (`wf_bytecode_frame_aux') the
+      ;; first time it pushes a handler, binds or unwinds, and a frame that
+      ;; never does has none.
+      ;; Roots, contiguous: four boundary scratch views (BX; BT is the last)
+      ;; and the cell in which the fast loop leaves the frame it stopped in.
       (let* ((code-len (m5_strlen code))
              (code-data (nl_bi_strptr code))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 13)))
+             (roots (if (or (< depth 0) (> depth 131063)) 0 (wf_bytecode_w_roots env 5)))
              (fp (if (= roots 0) 0 (nl_root_frame env (+ depth 7))))
              (mem fp)
              (foot (+ mem (* (+ depth 1) 8)))
-             (handlers (+ roots 32))
-             (unwinds (+ roots 64))
+             (aux 0) (asynced 0)
+             (handlers 0)
+             (unwinds 0)
              ;; Immutable nil needs no transport box or GC root (Doc 215).
              (nil-unwinds 3)
-             (unwind-bindings (+ roots 128))
-             (resume-dest (+ roots 160))
-             (resume-sp (+ roots 192))
-             (resume-bindings (+ roots 224))
-             (catch-pool (+ roots 256))
-             (bx (+ roots 288))
-             (bt (+ roots 384))
-             (binding-link (+ roots 96))
+             (unwind-bindings 0)
+             (resume-dest 0)
+             (resume-sp 0)
+             (resume-bindings 0)
+             (catch-pool 0)
+             (binding-link 0)
+             (bx roots)
+             (bt (+ roots 96))
+             (curfp (+ roots 128))
              (binding-state (if (= roots 0) 0 (nl_n4_state env)))
+             (nested 0) (reload 0) (again 1)
              (resw (+ mem (* depth 8)))
              (initial-slots (+ initial-maxargs initial-rest))
              (arg-cursor initial-args) (arg-index 0)
@@ -19057,19 +19317,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 foot 32 constants)
          (if (and (= done 0) (> initial-slots depth))
              (seq (setq done 2) (setq bad-op 255)))
-         (wf_write_nil handlers)
-         (wf_write_int catch-pool 0)
-         (wf_write_nil unwinds)
-         ;; Metadata is an integer root; the separate unwind root owns data.
-         (sexp-int-make binding-link (heap-read-u64 binding-state 16))
-         (ptr-write-u64 binding-link 16 unwinds)
-         (ptr-write-u64 binding-link 24
-                        (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
-         (ptr-write-u64 binding-state 16 binding-link)
-         (wf_write_int unwind-bindings 0)
-         (wf_write_nil resume-dest)
-         (wf_write_nil resume-sp)
-         (wf_write_nil resume-bindings)
+         (wf_write_int curfp 0)
          ;; GNU Emacs pushes all fixed parameter slots before entering the
          ;; interpreter, filling omitted optionals with nil.  For &rest, the
          ;; final slot receives the arguments after the fixed slots.
@@ -19109,42 +19357,105 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; A dynamic-binding function binds its formals as events of
          ;; this activation, so every exit below unbinds them.
          (if (if (= done 0) (> formals 0) 0)
-             (let* ((r (wf_bytecode_w_bind_formals env formals initial-words initial-argc
-                                                   unwinds nil-unwinds bt resw)))
-               (seq (setq bindings (sar r 1))
-                    (ptr-write-u64 resw 0 3)
-                    (if (= (logand r 1) 1) (setq done 4) 0)))
+             (let* ((a (wf_bytecode_frame_aux env foot binding-state)))
+               (if (= a 0)
+                   (setq done 5)
+                 (let* ((r (wf_bytecode_w_bind_formals env formals initial-words initial-argc
+                                                       (+ a 32) nil-unwinds bt resw)))
+                   (seq (setq aux a)
+                        (setq bindings (sar r 1))
+                        (ptr-write-u64 resw 0 3)
+                        (if (= (logand r 1) 1) (setq done 4) 0)))))
            0)
          ;; An error can stop the instruction loop while cleanup forms are
          ;; still pending.  If one of those forms throws, it replaces that
          ;; pending exit and must get the same bytecode-handler search as a
          ;; throw raised by an instruction.  Drain cleanup before searching;
          ;; a matching handler restores the VM state and resumes this loop.
+         ;; The loop runs the current frame until it returns or exits; the
+         ;; outer loop then pops a frame this activation pushed and goes on
+         ;; in its caller, with the same exit pending.
+         (while (= again 1)
+          (seq
+         (setq again 0)
          (while (seq
+                  ;; Switch to another frame, one a call or a return of this
+                  ;; loop or the fast loop made current: GNU takes fp, top and
+                  ;; pc from the frame (bytecode.c:892-923).  The aux block of
+                  ;; the frame left keeps its binding count.
+                  (if (/= reload 0)
+                      (seq
+                       (if (/= aux 0) (wf_write_int (+ aux 256) bindings) 0)
+                       (setq mem reload)
+                       (setq reload 0)
+                       ;; Fresh names throughout: the activation's first frame
+                       ;; was set up from DEPTH, CODE and CONSTANTS in the
+                       ;; bindings above, and an optimizer pass that reuses an
+                       ;; expression over those names would hand back the first
+                       ;; frame's values.
+                       (let* ((d2 (- (heap-read-u64 (- mem 24) 0) 7))
+                              (f2 (+ mem (* (+ d2 1) 8)))
+                              (cw (heap-read-u64 f2 24))
+                              (kw (heap-read-u64 f2 32))
+                              (a2 (heap-read-u64 f2 40)))
+                         (seq (setq depth d2)
+                              (setq foot f2)
+                              (setq resw (+ mem (* d2 8)))
+                              (setq code-len (m5_strlen cw))
+                              (setq code-data (nl_bi_strptr cw))
+                              (setq cdata (+ (nl_word_payload kw) 8))
+                              (setq nconst (vector-len kw))
+                              (setq nested (if (= (heap-read-u64 f2 16) 3) 0 1))
+                              (if (= a2 3)
+                                  (seq (setq aux 0) (setq bindings 0))
+                                (seq (setq aux (sar a2 2))
+                                     (setq bindings (sexp-int-unwrap (+ aux 256)))))))
+                       (setq unwind-rc 0))
+                    0)
+                  (if (/= asynced aux)
+                      (seq
+                       (if (/= aux 0)
+                           (seq (setq handlers aux)
+                                (setq unwinds (+ aux 32))
+                                (setq binding-link (+ aux 64))
+                                (setq unwind-bindings (+ aux 96))
+                                (setq resume-dest (+ aux 128))
+                                (setq resume-sp (+ aux 160))
+                                (setq resume-bindings (+ aux 192))
+                                (setq catch-pool (+ aux 224)))
+                         0)
+                       (setq asynced aux))
+                    0)
                   (if (and (= done 0) (>= pc code-len)) (setq done 2) 0)
                   (if (and (/= done 0) (/= done 4))
-                      (seq
-                       (setq unwind-rc
-                             (wf_bytecode_unwind_to
-                              env unwinds nil-unwinds bindings unwind-bindings
-                              handlers catch-pool))
-                       (setq bindings (sexp-int-unwrap unwind-bindings))
-                       (if (/= unwind-rc 0) (setq done 4) 0)) 0)
+                      (if (/= aux 0)
+                          (seq
+                           (setq unwind-rc
+                                 (wf_bytecode_unwind_to
+                                  env unwinds nil-unwinds bindings unwind-bindings
+                                  handlers catch-pool))
+                           (setq bindings (sexp-int-unwrap unwind-bindings))
+                           (if (/= unwind-rc 0) (setq done 4) 0))
+                        0)
+                    0)
                   (if (= done 4)
                     (seq
-                     (wf_bytecode_pending_exit
-                      env mem handlers unwinds nil-unwinds bindings
-                      resume-dest resume-sp resume-bindings catch-pool)
-                     (setq bindings (sexp-int-unwrap resume-bindings))
-                     (if (>= (sexp-int-unwrap resume-dest) 0)
+                     (if (/= aux 0)
                          (seq
-                          (setq pc (sexp-int-unwrap resume-dest))
-                          (setq sp (+ (sexp-int-unwrap resume-sp) 1))
-                          (setq unwind-rc 0)
-                          (ptr-write-u64 268435472 0 0)
-                          (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                          (atomic-fetch-add 268435544 1)
-                          (setq done 0)) 0)
+                          (wf_bytecode_pending_exit
+                           env mem handlers unwinds nil-unwinds bindings
+                           resume-dest resume-sp resume-bindings catch-pool)
+                          (setq bindings (sexp-int-unwrap resume-bindings))
+                          (if (>= (sexp-int-unwrap resume-dest) 0)
+                              (seq
+                               (setq pc (sexp-int-unwrap resume-dest))
+                               (setq sp (+ (sexp-int-unwrap resume-sp) 1))
+                               (setq unwind-rc 0)
+                               (ptr-write-u64 268435472 0 0)
+                               (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+                               (atomic-fetch-add 268435544 1)
+                               (setq done 0)) 0))
+                       0)
                      (and (= done 0) (< pc code-len)))
                   ;; The first test already makes a code-end PC an error.
                   ;; Only handler resumption can reset DONE; that branch
@@ -19163,11 +19474,46 @@ baked build's own `<'/`>'/`=' arms need it too.")
 			     (if (< first-op 192)
 				 (if (/= (logand 892 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
-                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env bx)))
-                        ;; -1: a call made from the fast loop signalled; the
-                        ;; pending exit then unwinds as after the full Bcall arm.
-                        (if (< state 0) (setq done 4)
-                          (seq (setq pc (sar state 17)) (setq sp (logand state 131071))))) 0)) 0)
+                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env bx curfp)))
+                        (seq
+                         ;; The fast loop pushes and pops frames; the frame it
+                         ;; stopped in is current from the next turn.
+                         ;; (By flag, not by address: a frame popped and another
+                         ;; pushed at the same address is a different frame.)
+                         (if (/= (heap-read-u64 curfp 16) 0)
+                             (seq (setq reload (heap-read-u64 curfp 8))
+                                  (ptr-write-u64 curfp 16 0))
+                           0)
+                         ;; -1: a call made from the fast loop signalled; the
+                         ;; pending exit then unwinds as after the full Bcall arm.
+                         (if (< state 0) (setq done 4)
+                           (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))))) 0)) 0)
+           ;; The opcodes that push a handler, bind, unwind or save state need
+           ;; the frame's aux block; the instruction below is the one at PC
+           ;; now, after the fast loop.
+           (if (and (= done 0) (= reload 0) (= aux 0) (< pc code-len))
+               (let* ((rawp (heap-read-u8 code-data pc)))
+                 (if (or (and (>= rawp 24) (<= rawp 31))
+                         (and (>= rawp 40) (<= rawp 50))
+                         (= rawp 97) (= rawp 114)
+                         (and (>= rawp 138) (<= rawp 145)))
+                     (let* ((a (wf_bytecode_frame_aux env foot binding-state)))
+                       (if (= a 0)
+                           (setq done 5)
+                         (seq (setq aux a)
+                              (setq bindings 0)
+                              (setq asynced a)
+                              (setq handlers a)
+                              (setq unwinds (+ a 32))
+                              (setq binding-link (+ a 64))
+                              (setq unwind-bindings (+ a 96))
+                              (setq resume-dest (+ a 128))
+                              (setq resume-sp (+ a 160))
+                              (setq resume-bindings (+ a 192))
+                              (setq catch-pool (+ a 224)))))
+                   0))
+             0)
+           (if (and (= done 0) (= reload 0))
            (let* ((offset pc) (raw (heap-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0)
                   (top (+ mem (* (- sp 1) 8)))
@@ -19319,12 +19665,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (setq pc operand)
                         (setq sp (- sp 1))))
                      ((= base 32)
-                      (let* ((rc (wf_bytecode_call env mem sp operand bx)))
-                        (if (= rc 0)
-                            (setq sp (- sp operand))
-                          (if (= rc 2)
-                              (seq (setq bad-op raw) (setq done 2))
-                            (setq done 4)))))
+                      ;; The same entry as the fast loop's (bytecode.c:735-750).
+                      (let* ((fi (- sp (+ operand 1)))
+                             (fw (if (< fi 0) 0 (heap-read-u64 (+ mem (* fi 8)) 0)))
+                             (func (if (< fi 0) 0 (wf_bytecode_inloop_func env fw))))
+                        (if (/= func 0)
+                            (let* ((isp (wf_bytecode_frame_push env curfp mem fi operand func fw pc)))
+                              (if (< isp 0)
+                                  (setq done 4)
+                                (seq (setq reload (heap-read-u64 curfp 8))
+                                     (setq pc 0)
+                                     (setq sp isp))))
+                          (let* ((rc (wf_bytecode_call env mem sp operand bx)))
+                            (if (= rc 0)
+                                (setq sp (- sp operand))
+                              (if (= rc 2)
+                                  (seq (setq bad-op raw) (setq done 2))
+                                (setq done 4)))))))
                      ((and (or (= base 83) (= base 84) (= base 92) (= base 95)
                                (and (>= base 85) (<= base 90)))
                            (= (wf_bytecode_small_arithmetic mem sp base) 0))
@@ -19646,10 +20003,59 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                   (wf_bytecode_w_view (heap-read-u64 top 0) (+ bx 32))) 1)
                                               7 3))
                            (setq sp (- sp 1))))
-                     (t (seq (setq bad-op raw) (setq done 2))))))))))))))
+                     (t (seq (setq bad-op raw) (setq done 2))))))))))))) 0))
            )
-         (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
-         (ptr-write-u64 binding-state 16 (heap-sexp-payload binding-link))
+         ;; The frame ends: its handlers and its link in the binding chain go
+         ;; (a frame without an aux block pushed none).
+         (if (/= aux 0)
+             (seq (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
+                  (ptr-write-u64 binding-state 16 (heap-sexp-payload binding-link)))
+           0)
+         ;; A frame this activation pushed ends here: Breturn pops it
+         ;; (bytecode.c:892-923) and an exit unwinds it on the way to the frame
+         ;; that owns the handler; either way the activation goes on in the
+         ;; frame that called it.
+         (if (= nested 1)
+             (let* ((packed (sar (heap-read-u64 foot 8) 2))
+                    (n4 (logand packed 1))
+                    (fi (sar packed 1))
+                    (caller (sar (heap-read-u64 foot 0) 2))
+                    (pcr (sar (heap-read-u64 foot 16) 2))
+                    (state (heap-read-u64 env 176))
+                    (val (heap-read-u64 resw 0)))
+               (seq
+                (if (= done 3) (setq done 1) 0)
+                ;; backtrace_debug_on_exit
+                (if (if (= done 1)
+                        (if (= n4 1)
+                            (/= (heap-read-u64 (nl_n4_record state (- (heap-read-u64 state 0) 1)) 120) 0)
+                          0)
+                      0)
+                    (seq (setq val (nl_n4_exit_debug_w val env))
+                         (if (= val 0) (setq done 4) 0))
+                  0)
+                (if (= done 2)
+                    (seq (wf_bytecode_error env bad-op bad-offset out)
+                         (bf_error_w out 0)
+                         (setq done 4))
+                  0)
+                (if (= done 5)
+                    (seq (wf_bytecode_signal_overflow) (setq done 4))
+                  0)
+                (nl_root_release env (- mem 32))
+                (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
+                (if (= n4 1) (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) 0)
+                (setq reload caller)
+                (setq aux 0)
+                (setq unwind-rc 0)
+                (if (= done 1)
+                    (seq (ptr-write-u64 (+ caller (* fi 8)) 0 val)
+                         (setq pc pcr)
+                         (setq sp (+ fi 1))
+                         (setq done 0))
+                  (setq done 4))
+                (setq again 1)))
+           0)))
          (if (= done 5)
              (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
            (if (= done 1)
