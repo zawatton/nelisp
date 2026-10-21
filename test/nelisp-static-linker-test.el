@@ -1224,9 +1224,10 @@ the lea)."
             (set-buffer-multibyte nil)
             (insert-file-contents-literally path)
             (let* ((bytes (buffer-string))
-                   ;; text-off = 0x78, text-size = 14, rodata-off =
-                   ;; 0x78 + 14 = 0x86.
-                   (ro-pos (+ #x78 14)))
+                   ;; x86 text starts at the next 16-byte boundary;
+                   ;; rodata follows the 14-byte text without padding.
+                   (ro-pos (+ #x80 14)))
+              (should (= (nelisp-elf--read-le64 bytes 24) #x400080))
               (should (equal (substring bytes ro-pos
                                         (+ ro-pos 6))
                              (unibyte-string ?h ?e ?l ?l ?o ?\n))))))

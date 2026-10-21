@@ -402,8 +402,8 @@ Caller is responsible for `delete-file' on cleanup."
                  (car (nelisp-aot-compiler--ir-get
                        (nelisp-aot-compiler--ir-get body :else) :forms)))
                 'cons-car))
-    (should (eq (plist-get metadata :param-repr) 'sexp-ptr))
-    (should (eq (plist-get metadata :return-repr) 'sexp-ptr))
+    (should (eq (plist-get metadata :param-repr) 'word))
+    (should (eq (plist-get metadata :return-repr) 'word))
     (should
      (string-match-p
       "JIT caller must reject fixnums before native entry"
@@ -414,7 +414,7 @@ Caller is responsible for `delete-file' on cleanup."
                     '(defun ordinary-car-probe ((value :type sexp))
                        (car value))))
          (printed (prin1-to-string ordinary)))
-    (should (string-match-p "nelisp_aot_builtin_call1" printed))
+    (should (string-match-p "nelisp_aot_funcall1" printed))
     (should-not (string-match-p "cons-car" printed))))
 
 (ert-deftest nelisp-aot-compiler/parse-nested-let-arith ()
@@ -930,11 +930,11 @@ executable page and run.  target(9) = 9*9 = 81 -> exit 81."
       (should (= (plist-get r :exit) 81)))))
 
 (ert-deftest nelisp-aot-compiler/e2e-native-exec-neln-artifact-in-process ()
-  "Doc 142 §6.4 gate 6 — load a REAL reloc-free `.neln' artifact's native
+  "Doc 142 §6.4 gate 6 — load a REAL canonical-Word `.neln' artifact's native
 code into an mmap'd RWX page and run it IN-PROCESS via `call-ptr', with no
 static link and no host harness.  Generalizes `e2e-native-exec-mmap-call-ptr'
 from in-binary `addr-of' code to bytes sourced from a compiled artifact file:
-compile (defun sq (x) (if (integerp x) 81 0)) to a .neln, extract its reloc-free `.text',
+compile (defun sq (x) (if (integerp x) 81 0)) to a .neln, extract its `.text',
 copy it byte-for-byte into a fresh executable page, and `call-ptr' the entry.
 sq(9) = 81 -> exit 81."
   (unless (nelisp-aot-compiler-test--linux-p)
@@ -947,8 +947,8 @@ sq(9) = 81 -> exit 81."
         (progn
           ;; Doc 229: `(* x x)' on an untyped argument is no longer a leaf
           ;; -- a float or a marker takes the runtime's `*', as GNU's
-          ;; Ftimes call does -- so the reloc-free function here is a type
-          ;; test, which reads the argument's tag and calls nothing.
+          ;; Ftimes call does -- so the function here is a type
+          ;; test, whose entry may allocate a scratch boundary slot.
           (with-temp-file src (insert "(defun sq (x) (if (integerp x) 81 0))\n(provide 'sq)\n"))
           (load src nil t)
           (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
@@ -957,23 +957,40 @@ sq(9) = 81 -> exit 81."
                  (offset (plist-get defun0 :offset))
                  (bytes (string-to-list
                          (base64-decode-string (plist-get native :text-base64)))))
-            ;; reloc-free, extern-free precondition: pure in-process exec needs
-            ;; no symbol resolution and no boundary trampoline.
-            (should (null (plist-get native :relocs)))
-            (should (null (plist-get native :extern-symbols)))
+            (should (eq (plist-get defun0 :param-repr) 'word))
+            (should (eq (plist-get defun0 :return-repr) 'word))
+            ;; The real entry allocates its boundary scratch; resolve only
+            ;; that import through a nearby absolute-jump stub.
+            (should (equal (plist-get native :extern-symbols) '("nl_alloc_bytes")))
+            (should (= (length (plist-get native :relocs)) 1))
+            (should (eq (plist-get (car (plist-get native :relocs)) :type) 'plt32))
             (nelisp-aot-compiler-test--with-tmp-binary path "neln-inproc"
-              (let* ((i -1)
+              (let* ((stub-offset (logand (+ (length bytes) 15) -16))
+                     (reloc (car (plist-get native :relocs)))
+                     (i -1)
                      (writes (mapcar (lambda (b)
                                        (setq i (1+ i))
                                        `(ptr-write-u8 page ,i ,b))
                                      bytes))
                      (sexp `(seq
+                             ;; Test-local allocator subset: page-aligned mmap
+                             ;; satisfies the entry's small scratch allocation.
+                             (defun nl_alloc_bytes (size align)
+                               (if (and (> size 0) (<= size 4096) (<= align 4096))
+                                   (syscall-direct 9 0 4096 3 34 -1 0) 0))
                              (defun native-exec (x)
                                ;; mmap(NULL,4096,PROT_RWX,MAP_PRIVATE|ANON,-1,0)
                                (let ((page (syscall-direct 9 0 4096 7 34 -1 0)))
                                  (if (< page 4096)
                                      99
                                    (seq ,@writes
+                                        ,@(nelisp-aot-compiler-test--ptr-write-u8-forms
+                                           `(+ page ,stub-offset)
+                                           '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
+                                        (ptr-write-u64 (+ page ,stub-offset) 2 (addr-of nl_alloc_bytes))
+                                        (ptr-write-u32 page ,(plist-get reloc :offset)
+                                         (- (+ page ,stub-offset ,(plist-get reloc :addend))
+                                            (+ page ,(plist-get reloc :offset))))
                                         ;; A parameter of a runtime-entered
                                         ;; defun is a value word: an immediate
                                         ;; integer N is 4N+1 (2441f5ebc).  This
@@ -983,9 +1000,11 @@ sq(9) = 81 -> exit 81."
                                         ;; same thing with (atol(v[i])*4+1).
                                         ;; Passing 9 raw made the body read
                                         ;; (9-1)/4 = 2 and answer 4.
-                                        (call-ptr (+ page ,offset)
-                                                  (+ (* x 4) 1))))))
+                                        (sar (- (call-ptr (+ page ,offset)
+                                                          (+ (* x 4) 1)) 1) 2)))))
                              (exit (native-exec 9)))))
+                (should (= (sq 9) 81))
+                (should (<= (+ stub-offset 12) 4096))
                 (nelisp-aot-compile-sexp sexp path)
                 (should (file-executable-p path))
                 (let ((r (nelisp-aot-compiler-test--run-binary path)))
@@ -1072,17 +1091,17 @@ sq(9) = 81 -> exit 81."
 `.neln' artifact and execute it in-process.  The standalone program copies
 the artifact `.text' into an mmap'd RX page, builds absolute-jump stubs
 (a `plt32' rel32 from an mmap(NULL) page is out of signed-32-bit range of
-the helpers) and patches the artifact's two `plt32' relocs to those stubs,
+the helpers) and patches the artifact's `plt32' imports to those stubs,
 writes a raw machine-code trampoline mirroring the host-proof spill-frame
 ABI (args + the out/mirror/frames/scratch/name_slot + 12 callback boundary
 slots), then `call-ptr's the entry so `inc1(41)' -> 42.
 
-NOTE: the extern helpers `nl_alloc_symbol' / `nelisp_aot_builtin_call1' here
-are TEST-LOCAL subset shims, because `nelisp-aot-compile-sexp' builds a
+NOTE: the extern helpers `nl_alloc_symbol', `nelisp_aot_funcall1', and
+`nl_arena_base' here are TEST-LOCAL subset shims, because `nelisp-aot-compile-sexp' builds a
 MINIMAL binary with no runtime env.  This proves the in-process loader
 MECHANISM end-to-end (trampoline bytes, reloc patching via abs-stubs,
-boundary slots, call-ptr, boxed-result decode).  Wiring the loader to the
-REAL reader-linked `nelisp_aot_builtin_call1' (which `nelisp-standalone--reader-units'
+boundary slots, call-ptr, Word-result decode).  Wiring the loader to the
+REAL reader-linked `nelisp_aot_funcall1' (which `nelisp-standalone--reader-units'
 already links) inside the full standalone reader is the remaining gate-6
 integration step."
   (unless (nelisp-aot-compiler-test--linux-p)
@@ -1112,11 +1131,14 @@ integration step."
                  (stub-specs
                   (cl-loop for name in externs
                            for idx from 0
-                           collect (list :name name :offset (+ 256 (* idx 16)))))
+                           collect (list :name name :offset
+                                         (+ (logand (+ (length text-bytes) 15) -16) (* idx 16)))))
                  (body-entry (+ (plist-get defun0 :offset)
                                 (plist-get defun0 :body-offset))))
             (should (equal (plist-get defun0 :name) "inc1"))
             (should (= (plist-get defun0 :arity) 1))
+            (should (eq (plist-get defun0 :param-repr) 'word))
+            (should (eq (plist-get defun0 :return-repr) 'word))
             ;; `call1' evaluates its argument into a dedicated frame slot
             ;; before writing the shared dispatcher name slot.  Keep the
             ;; trampoline assertion tied to the artifact metadata: nested
@@ -1124,10 +1146,10 @@ integration step."
             (should (>= (plist-get defun0 :rt-slot-count) 17))
             (should (= (plist-get defun0 :body-offset) 19))
             (should (equal (sort (copy-sequence externs) #'string<)
-                           '("nelisp_aot_builtin_call1" "nl_alloc_symbol")))
-            (should (= (length relocs) 2))
+                           '("nelisp_aot_funcall1" "nl_alloc_symbol" "nl_arena_base")))
+            (should (= (length relocs) 3))
             (should (equal (mapcar (lambda (reloc) (plist-get reloc :type)) relocs)
-                           '(plt32 plt32)))
+                           '(plt32 plt32 plt32)))
             (should (= (length imm64-offsets) 18))
             (let* ((text-writes
                     (nelisp-aot-compiler-test--ptr-write-u8-forms
@@ -1181,11 +1203,6 @@ integration step."
                        `(ptr-write-u64 trampage ,offset ,value))
                      imm64-offsets
                      slot-values))
-                   (read-int-slot-def
-                    '(defun read-int-slot (slot)
-                       (if (= (ptr-read-u64 slot 0) 2)
-                           (ptr-read-u64 slot 8)
-                         98)))
                    (zero-slot-def
                     '(defun zero-slot (slot)
                        (seq
@@ -1210,12 +1227,21 @@ integration step."
                         (ptr-write-u64 (+ result-slot 16) 0 len)
                         (ptr-write-u64 (+ result-slot 24) 0 0)
                         result-slot)))
-                   (builtin-call1-def
-                    '(defun nelisp_aot_builtin_call1 (_mirror _frames name arg out _scratch)
+                   (funcall1-def
+                    `(defun nelisp_aot_funcall1 (_mirror _frames name arg out _scratch)
                        (if (= (ptr-read-u64 (+ name 16) 0) 2)
                            (if (= (ptr-read-u8 (+ name 8) 0) 49)
                                (if (= (ptr-read-u8 (+ name 8) 1) 43)
-                                   (seq (write-int-slot out (+ arg 1)) out)
+                                   (seq
+                                    (ptr-write-u64 out 544 (+ (ptr-read-u64 out 544) 1))
+                                    (if (= (logand arg 3) 1)
+                                        (write-int-slot out (+ (sar (- arg 1) 2) 1))
+                                      (if (= (ptr-read-u8 arg 0) 3)
+                                          (seq (ptr-write-u64 out 0 3)
+                                               (ptr-write-u64 out 8
+                                                (f64-bits (f64-add (bits-to-f64 (ptr-read-u64 arg 8))
+                                                                  (bits-to-f64 ,(nelisp-aot-compiler--f64-imm-bits 1.0))))) out)
+                                        (write-int-slot out 251))) out)
                                  (seq (write-int-slot out 254) out))
                              (seq (write-int-slot out 253) out))
                          (seq (write-int-slot out 252) out))))
@@ -1227,8 +1253,20 @@ integration step."
                       ,@reloc-forms
                       ,@trampoline-writes
                       ,@imm64-patches
-                      (call-ptr trampage x)
-                      (read-int-slot slots)))
+                      ;; Both Word arguments reach the provider: fixnum
+                      ;; immediate first, boxed float second.  The counter is
+                      ;; beyond the result, boundary and input slots.
+                      (let ((integer-result (call-ptr trampage (+ (* x 4) 1))))
+                        (if (or (/= integer-result slots) (/= (ptr-read-u64 slots 0) 2)
+                                (/= (ptr-read-u64 slots 8) ,(1+ 41))
+                                (/= (ptr-read-u64 slots 544) 1)) 97
+                          (seq
+                           (ptr-write-u64 slots 512 3)
+                           (ptr-write-u64 slots 520 ,(nelisp-aot-compiler--f64-imm-bits 41.0))
+                           (let ((float-result (call-ptr trampage (+ slots 512))))
+                             (if (and (= float-result slots) (= (ptr-read-u64 slots 0) 3)
+                                      (= (ptr-read-u64 slots 8) ,(nelisp-aot-compiler--f64-imm-bits (1+ 41.0)))
+                                      (= (ptr-read-u64 slots 544) 2)) 42 96)))))))
                    (native-exec-def
                     `(defun native-exec (x)
                        (let ((codepage (syscall-direct 9 0 4096 7 34 -1 0)))
@@ -1243,15 +1281,23 @@ integration step."
                                    ,native-exec-seq))))))))
                    (sexp
                     `(seq
+                      ;; The getter returns a cell pointing at a zeroed arena
+                      ;; header; kind zero is the genuine no-pending-exit state.
+                      (defun nl_arena_base ()
+                        (let ((arena (syscall-direct 9 0 4096 3 34 -1 0)))
+                          (ptr-write-u64 arena 0 (+ arena 8))
+                          arena))
                       ,zero-slot-def
                       ,write-int-slot-def
                       ,nl-alloc-symbol-def
-                      ,builtin-call1-def
-                      ,read-int-slot-def
+                      ,funcall1-def
                       ,native-exec-def
                       (exit (native-exec 41)))))
               (nelisp-aot-compiler-test--with-tmp-binary path
                   "neln-inproc-call1"
+                (should (= (inc1 41) 42))
+                (should (= (inc1 41.0) 42.0))
+                (should (<= (+ (plist-get (car (last stub-specs)) :offset) 12) 4096))
                 (nelisp-aot-compile-sexp sexp path)
                 (should (file-executable-p path))
                 (let ((r (nelisp-aot-compiler-test--run-binary path)))
