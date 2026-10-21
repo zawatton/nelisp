@@ -4705,6 +4705,140 @@ grammar rather than comments alone."
             (should (> (file-attribute-size (file-attributes object)) 0)))
         (ignore-errors (delete-file object))))))
 
+;;; Doc 229 S4.0: same-unit calls in native artifacts, per target.
+
+(defconst nelisp-aot-compiler-test--unit-call-source
+  '(seq (defun lv-u-call (a) (lv-u-car a))
+        (defun lv-u-car (a) (car (list a 2)))
+        (defun lv-u-rest (a) (lv-u-r a 2 3))
+        (defun lv-u-r (a &rest xs) (cons a xs))
+        (defun lv-u-seven (a) (lv-u-s7 a 1 2 3 4 5 6))
+        (defun lv-u-s7 (a b c d e f g) (list a g)))
+  "Same-unit calls: fixed arity, &rest, more than six parameters.")
+
+(defun nelisp-aot-compiler-test--unit-call-census (arch format)
+  "Census the same-unit calls of the Doc 229 source compiled for ARCH/FORMAT.
+Return (:direct N :internal N :externs LIST).  DIRECT counts calls to a
+unit defun's normal entry, which skip the loader trampoline that fills
+the callee's hidden boundary slots.  INTERNAL counts x86-64 calls that
+load r10 (`lea r10, [rbp+disp]') and then call into a unit defun past
+its normal entry: its internal entry."
+  (let* ((nelisp-aot-compiler--runtime-entry-params t)
+         (nelisp-aot-compiler--dynamic-user-calls t)
+         (unit (nelisp-aot-compile-to-link-unit
+                nelisp-aot-compiler-test--unit-call-source
+                :arch arch :format format))
+         (text (plist-get unit :text))
+         (len (length text))
+         (defuns (plist-get unit :defuns))
+         (starts (mapcar (lambda (d) (plist-get d :offset)) defuns))
+         (inside (lambda (target)
+                   (seq-some (lambda (d)
+                               (let ((o (plist-get d :offset)))
+                                 (and (> target o)
+                                      (< target (+ o (plist-get d :size))))))
+                             defuns)))
+         (u32 (lambda (i) (logior (aref text i) (ash (aref text (+ i 1)) 8)
+                                  (ash (aref text (+ i 2)) 16)
+                                  (ash (aref text (+ i 3)) 24))))
+         (direct 0) (internal 0))
+    (if (eq arch 'aarch64)
+        ;; BL imm26.
+        (let ((i 0))
+          (while (<= (+ i 4) len)
+            (let ((w (funcall u32 i)))
+              (when (= (logand w #xfc000000) #x94000000)
+                (let* ((imm (logand w #x3ffffff))
+                       (imm (if (>= imm #x2000000) (- imm #x4000000) imm)))
+                  (when (memq (+ i (* 4 imm)) starts)
+                    (setq direct (1+ direct))))))
+            (setq i (+ i 4))))
+      ;; CALL rel32.
+      (let ((i 0))
+        (while (<= (+ i 5) len)
+          (when (= (aref text i) #xe8)
+            (let* ((rel (funcall u32 (1+ i)))
+                   (rel (if (>= rel #x80000000) (- rel #x100000000) rel))
+                   (target (+ i 5 rel)))
+              (cond
+               ((memq target starts) (setq direct (1+ direct)))
+               ((and (funcall inside target)
+                     (or (and (>= i 7)
+                              (equal (substring text (- i 7) (- i 4))
+                                     (unibyte-string #x4c #x8d #x95)))
+                         (and (>= i 4)
+                              (equal (substring text (- i 4) (- i 2))
+                                     (unibyte-string #x4c #x8d)))))
+                (setq internal (1+ internal))))))
+          (setq i (1+ i)))))
+    (list :direct direct :internal internal
+          :externs (plist-get unit :extern-symbols))))
+
+(ert-deftest nelisp-aot-compiler/lisp-same-unit-call-entry-per-target ()
+  "Doc 229 S4.0: no same-unit call of a native artifact skips the trampoline.
+A Lisp-mode defun reads the dispatcher boundary from hidden frame slots
+that only the loader's trampoline -- or, for a same-unit call, the
+callee's internal entry -- fills.  On x86-64 SysV every same-unit call
+enters an internal entry (two here: the fixed-arity and the &rest
+callee), the 7-parameter callee aside, which has none and is called by
+name through the native funcall provider.  Win64 and AArch64 have no
+internal entry yet: every same-unit call goes through that provider,
+which enters the callee through the trampoline (GNU's same-unit calls
+share the unit's environment, comp.c emit_call; a call by name is
+eval.c Ffuncall)."
+  (let ((sysv (nelisp-aot-compiler-test--unit-call-census 'x86_64 'elf))
+        (win64 (nelisp-aot-compiler-test--unit-call-census 'x86_64 'coff))
+        (a64 (nelisp-aot-compiler-test--unit-call-census 'aarch64 'elf)))
+    (should (equal (list (plist-get sysv :direct) (plist-get sysv :internal))
+                   '(0 2)))
+    ;; The &rest list is built with `list', not the host-only
+    ;; `nelisp_aot_listn' the reader has no bridge for.
+    (dolist (census (list sysv win64 a64))
+      (should-not (member "nelisp_aot_listn"
+                          (mapcar (lambda (s) (format "%s" s))
+                                  (plist-get census :externs)))))
+    (dolist (census (list win64 a64))
+      (should (equal (list (plist-get census :direct) (plist-get census :internal))
+                     '(0 0))))
+    (dolist (census (list sysv win64 a64))
+      (should (member "nelisp_aot_funcalln"
+                      (mapcar (lambda (s) (format "%s" s))
+                              (plist-get census :externs)))))))
+
+;;; Doc 229: the native replay guard.
+
+(defconst nelisp-aot-compiler-test--replay-primitives
+  ;; Spelled in pieces so this file is not a hit of its own scan.
+  (list (concat "nelisp--native-" "call-boundary")
+        (concat "nelisp--runtime-" "symbol-address"))
+  "nemacs's native replay primitives (emacs-load.el
+`emacs-load--artifact-native-prefix-eligible-p').")
+
+(defun nelisp-aot-compiler-test--replay-primitive-hits ()
+  "Return (PRIMITIVE . FILE) for each replay primitive the runtime sources name."
+  (let* ((root (file-name-directory
+                (directory-file-name
+                 (file-name-directory (locate-library "nelisp-aot-compiler")))))
+         (hits nil))
+    (dolist (dir '("scripts" "lisp" "src"))
+      (dolist (file (directory-files (expand-file-name dir root) t "\\.el\\'"))
+        (with-temp-buffer
+          (insert-file-contents-literally file)
+          (dolist (prim nelisp-aot-compiler-test--replay-primitives)
+            (goto-char (point-min))
+            (when (search-forward prim nil t)
+              (push (cons prim (file-name-nondirectory file)) hits))))))
+    hits))
+
+(ert-deftest nelisp-aot-compiler/no-native-replay-before-lisp-fixes ()
+  "Doc 229: no runtime defines nemacs's native replay primitives early.
+nemacs replays a `.neln' native section in process as soon as both
+primitives exist, and its extern whitelist admits the native dispatcher.
+While `nelisp-aot-compiler-lisp-open-defects' lists a wrong answer native
+artifacts still give, the runtime sources must not name either one."
+  (should-not (and nelisp-aot-compiler-lisp-open-defects
+                   (nelisp-aot-compiler-test--replay-primitive-hits))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

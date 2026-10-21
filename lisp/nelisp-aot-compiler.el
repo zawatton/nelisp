@@ -351,25 +351,23 @@ the explicit `extern-call' surface.")
   "Return the encoded byte width of `push REG' in the current backend subset."
   (if (memq reg '(r8 r9)) 2 1))
 
-(defun nelisp-aot-compiler--lisp-internal-entry-p (arity &optional rest-p)
-  "Non-nil when a same-unit call to a defun of ARITY goes through its internal entry.
+(defun nelisp-aot-compiler--lisp-internal-entry-target-p ()
+  "Non-nil when this target has the internal entry of a native artifact's defuns.
 Doc 229: a Lisp-mode defun reads the dispatcher boundary (OUT, the scratch
 vector, the name slot, ...) from hidden frame slots that only the loader's
 trampoline fills; the internal entry fills them from the caller's own, the
 way GNU's same-unit calls simply share the unit's environment.  x86-64
-SysV with register parameters, as the trampoline's body entry is."
-  (and (nelisp-aot-compiler--lisp-values-p)
-       (eq nelisp-aot-compiler--arch 'x86_64)
-       (eq nelisp-aot-compiler--abi 'sysv)
-       (<= arity 6)
-       (not rest-p)))
+SysV, as the loader's trampoline is."
+  (and (eq nelisp-aot-compiler--arch 'x86_64)
+       (eq nelisp-aot-compiler--abi 'sysv)))
 
 (defun nelisp-aot-compiler--emit-internal-entry-x86 (defun-ir buf)
   "Emit DEFUN-IR's internal entry: the loader trampoline with the caller's boundary.
-R10 holds the address of the caller's OUT hidden slot; the 17 hidden slots
-follow it downwards in every Lisp-mode frame.  The entry builds the
-callee frame exactly as the trampoline does, copies the 17 words, and
-jumps to the body entry."
+R10 holds the address of the caller's OUT slot; the caller's seventeen
+boundary slots follow it downwards in canonical order.  The entry builds
+the callee frame exactly as the trampoline does, fills each of its hidden
+slots from the caller's slot for the same boundary symbol (`:internal-hidden'),
+and jumps to the body entry."
   (let* ((name (nelisp-aot-compiler--ir-get defun-ir :name))
          (param-regs (nelisp-aot-compiler--ir-get defun-ir :param-regs))
          (arity (length param-regs))
@@ -386,10 +384,13 @@ jumps to the body entry."
         (nelisp-aot-compiler--x86-op buf t (unibyte-string #x89) preg
                                      (list :mem 'rbp nil 1 (- (* 8 (1+ i)))))
         (setq i (1+ i))))
-    (dotimes (i (length nelisp-aot-compiler--object-hidden-boundary-symbols))
-      (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8b) 'rax (list :mem 'r10 nil 1 (- (* 8 i))))
-      (nelisp-aot-compiler--x86-op buf t (unibyte-string #x89) 'rax
-                                   (list :mem 'rbp nil 1 (- (* 8 (+ arity 1 i))))))
+    (let ((j 0))
+      (dolist (i (nelisp-aot-compiler--ir-get defun-ir :internal-hidden))
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8b) 'rax
+                                     (list :mem 'r10 nil 1 (- (* 8 i))))
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x89) 'rax
+                                     (list :mem 'rbp nil 1 (- (* 8 (+ arity 1 j)))))
+        (setq j (1+ j))))
     (nelisp-asm-x86_64-jmp-rel32 buf (intern (format "%s$body" name)))))
 
 (defun nelisp-aot-compiler--object-defun-body-offset (defun-ir)
@@ -466,30 +467,131 @@ The caller knows and the compiler does not, so the caller says.")
 
 (defvar nelisp-aot-compiler--lisp-internal-entry-names nil
   "Doc 229: defuns of the unit that get an internal entry (`NAME$internal').
-Internally called, at most six parameters, no &rest, and no parameter
-named like a hidden boundary slot -- so every one of them, and every
-caller, has the seventeen hidden slots in the same order.")
+Internally called, with at most six parameters (a &rest list is one).
+The entry fills each of the callee's hidden boundary slots from the
+caller's slot for the same boundary symbol.")
 
 (defun nelisp-aot-compiler--lisp-internal-entry-names (source called)
   "Return the defuns of SOURCE among CALLED that get an internal entry."
   (let ((out nil))
     (when (and (nelisp-aot-compiler--lisp-values-p)
-               (eq nelisp-aot-compiler--arch 'x86_64)
-               (eq nelisp-aot-compiler--abi 'sysv))
+               (nelisp-aot-compiler--lisp-internal-entry-target-p))
       (nelisp-aot-compiler--walk-source
        source
        (lambda (form)
          (when (and (consp form) (eq (car form) 'defun) (symbolp (nth 1 form))
                     (memq (nth 1 form) called)
                     (listp (nth 2 form)))
-           (let ((params (seq-remove (lambda (p) (eq p '&optional)) (nth 2 form))))
-             (when (and (<= (length params) 6)
-                        (not (memq '&rest params))
-                        (not (seq-some (lambda (p)
-                                         (memq p nelisp-aot-compiler--object-hidden-boundary-symbols))
-                                       params)))
+           (let ((params (seq-remove (lambda (p) (memq p '(&optional &rest)))
+                                     (nth 2 form))))
+             (when (<= (length params) 6)
                (push (nth 1 form) out)))))))
     out))
+
+(defun nelisp-aot-compiler--lisp-arg-binding (var arg)
+  "Return the `let' binding of VAR to the call argument ARG (Doc 229).
+A computed argument gets a slot of its own (`nelisp-aot--user-init'); a
+variable is read as it is -- its value is the object the caller holds,
+and copying it would hand the callee a different one (GNU passes the
+Lisp_Object itself)."
+  (if (and (symbolp arg) arg (not (eq arg t)) (not (keywordp arg)))
+      (list var arg)
+    (list var (list 'nelisp-aot--user-init arg))))
+
+(defconst nelisp-aot-compiler--lisp-pure-scalar-ops
+  '(+ - * 1+ 1- logand logior logxor ash lsh = < > <= >= /= eq null not zerop)
+  "Operators whose call neither writes OUT nor has a side effect (Doc 229).")
+
+(defun nelisp-aot-compiler--lisp-pure-arg-p (form)
+  "Non-nil when evaluating FORM can neither clobber OUT nor change state.
+A constant, a variable, or a pure scalar operator over such forms."
+  (cond
+   ((atom form) t)
+   ((memq (car form) '(quote function)) t)
+   ((memq (car form) nelisp-aot-compiler--lisp-pure-scalar-ops)
+    (seq-every-p #'nelisp-aot-compiler--lisp-pure-arg-p (cdr form)))
+   (t nil)))
+
+(defun nelisp-aot-compiler--lisp-unit-call (sexp env fenv defuns)
+  "Lower SEXP, a call to a defun of this native artifact (Doc 229).
+GNU evaluates every argument into a stack slot of its own, left to right,
+and then calls (bytecode.c Bcall, comp.c emit_call).  Each argument is
+bound with `nelisp-aot--user-init' first, so a value that one argument
+left in OUT is overwritten neither by the next argument nor by the
+callee, which shares OUT.  A &rest callee gets its list built with
+`list' and bound the same way (eval.c funcall_lambda: the rest list is a
+fresh list of the remaining arguments); an omitted optional is nil.
+
+The call enters the callee's internal entry.  A callee without one -- a
+target other than x86-64 SysV, more than six parameters -- is called by
+name, as GNU's Ffuncall calls a symbol (eval.c), through the native
+funcall provider: the runtime enters it through the loader's trampoline,
+slower and never a jump past the boundary fill."
+  (let* ((name (car sexp))
+         (args (cdr sexp))
+         (signature (cdr (assq name defuns)))
+         (arity (nelisp-aot-compiler--defun-signature-arity signature))
+         (rest-p (nelisp-aot-compiler--defun-signature-rest-p signature))
+         (fixed-count (if (integerp signature)
+                          signature
+                        (plist-get signature :fixed-count)))
+         (min-count (nelisp-aot-compiler--defun-signature-min-count signature)))
+    (when (or (< (length args) min-count)
+              (and (not rest-p) (> (length args) arity)))
+      (signal 'nelisp-aot-compiler-error
+              (list :call-arity-mismatch name
+                    :expected arity :got (length args))))
+    (cond
+     ((not (nelisp-aot-compiler--lisp-internal-call-disp name fenv))
+      (unless (nelisp-aot-compiler--aot-funcall-boundary-available-p fenv)
+        (signal 'nelisp-aot-compiler-error
+                (list :lisp-unit-call-without-boundary sexp)))
+      (let ((vars (mapcar (lambda (_) (nelisp-aot-compiler--gensym "lisp-arg"))
+                          args)))
+        (nelisp-aot-compiler--parse-value
+         `(let ,(cl-mapcar #'nelisp-aot-compiler--lisp-arg-binding vars args)
+            (nelisp-aot--funcall-by-name
+             ,name ,@(mapcar (lambda (v) `(nelisp-aot--as-sexp ,v)) vars)))
+         env fenv defuns)))
+     ((and (not rest-p)
+           (seq-every-p #'nelisp-aot-compiler--lisp-pure-arg-p args))
+      ;; Nothing to settle: no argument leaves a value in OUT or changes
+      ;; another one's value, so each is evaluated in place, in order.
+      (nelisp-aot-compiler--parse-value
+       `(nelisp-aot--unit-call
+         ,name ,@args ,@(make-list (- fixed-count (length args)) nil))
+       env fenv defuns))
+     (t
+      (let* ((fixed (cl-subseq args 0 (min fixed-count (length args))))
+             (rest (nthcdr fixed-count args))
+             (vars (mapcar (lambda (_) (nelisp-aot-compiler--gensym "lisp-arg"))
+                           fixed))
+             (rest-var (and rest-p (nelisp-aot-compiler--gensym "lisp-rest"))))
+        (nelisp-aot-compiler--parse-value
+         `(let (,@(cl-mapcar #'nelisp-aot-compiler--lisp-arg-binding vars fixed)
+                ,@(and rest-p
+                       `((,rest-var (nelisp-aot--user-init
+                                     ,(and rest `(list ,@rest)))))))
+            (nelisp-aot--unit-call
+             ,name
+             ,@(mapcar (lambda (v) `(nelisp-aot--as-sexp ,v)) vars)
+             ,@(make-list (- fixed-count (length fixed)) nil)
+             ,@(and rest-p `((nelisp-aot--as-sexp ,rest-var)))))
+         env fenv defuns))))))
+
+(defun nelisp-aot-compiler--lisp-internal-call-disp (name fenv)
+  "Return the rbp displacement of this frame's OUT slot for a call to NAME.
+Doc 229: non-nil when a same-unit call to NAME enters NAME's internal
+entry, which copies the seventeen hidden boundary slots from there: NAME
+has one, and in this frame (FENV) the slots follow OUT in order."
+  (let ((out-slot (plist-get (cdr (assq 'out fenv)) :slot)))
+    (and out-slot
+         (memq name nelisp-aot-compiler--lisp-internal-entry-names)
+         (cl-loop for sym in nelisp-aot-compiler--object-hidden-boundary-symbols
+                  for i from 0
+                  always (eql (plist-get (cdr (assq sym fenv)) :slot)
+                              (+ out-slot i)))
+         (- (* 8 (1+ out-slot))))))
 
 (defvar nelisp-aot-compiler--internally-called-names nil
   "Names this unit's own defun bodies call.
@@ -1113,6 +1215,20 @@ faithfully retain either representation in its frame slot."
 ;; against 0, a fixnum is never nil, and a Sexp is nil when its tag is.
 ;; The runtime's dialect units keep nil = 0 and the != 0 test.
 
+(defconst nelisp-aot-compiler-lisp-open-defects
+  '((word . "the native dispatcher's `equal' crashes, its `eql' answers nil \
+for equal fixnums and a float `mod' answers -1 (S4.3)")
+    (overflow . "fixnum arithmetic wraps instead of overflowing to a bignum (S4.4)")
+    (signal . "an error signalled inside a native artifact does not reach \
+its caller as GNU's signal does (S4.5)"))
+  "Doc 229: wrong answers native artifacts still give, by corpus stage.
+Each entry leaves with the commit that makes its stage's controls pass.
+While any is here no runtime may define nemacs's two native replay
+primitives (Doc 229, \"After Doc 229: the S4 items\", the replay guard):
+nemacs replays a native section as soon as both exist, and its extern
+whitelist admits the dispatcher.  The test
+`nelisp-aot-compiler/no-native-replay-before-lisp-fixes' holds the rule.")
+
 (defsubst nelisp-aot-compiler--lisp-values-p ()
   "Non-nil when Lisp values follow GNU's rules: native artifacts (Doc 229)."
   nelisp-aot-compiler--runtime-entry-params)
@@ -1512,6 +1628,9 @@ The function is a variable or a constant designator and every argument is
   "Return non-nil when NODE's value can be the shared dispatcher OUT slot."
   (pcase (nelisp-aot-compiler--ir-kind node)
     ('ref (eq (nelisp-aot-compiler--ir-get node :var) 'out))
+    ;; A same-unit callee shares OUT through its internal entry and can
+    ;; answer it.
+    ('call (and (nelisp-aot-compiler--ir-get node :internal-boundary-disp) t))
     ('value-seq (nelisp-aot-compiler--lisp-aliases-out-p
                  (car (last (nelisp-aot-compiler--ir-get node :forms)))))
     ((or 'let-rt 'let-rt-n 'let)
@@ -10355,6 +10474,50 @@ functions `((NAME . ARITY) ...)'."
     (nelisp-aot-compiler--lisp-stabilize
      (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
      env fenv defuns))
+   ;; Doc 229: a same-unit call with its arguments settled by
+   ;; `nelisp-aot-compiler--lisp-unit-call': enter the callee through its
+   ;; internal entry, with this frame's boundary.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--unit-call))
+    (let ((name (cadr sexp)))
+      (nelisp-aot-compiler--make-ir 'call
+            :name name
+            :repr (and (memq name nelisp-aot-compiler--sexp-ptr-returning-names)
+                       'sexp-ptr)
+            :internal-boundary-disp
+            (or (nelisp-aot-compiler--lisp-internal-call-disp name fenv)
+                (signal 'nelisp-aot-compiler-error
+                        (list :lisp-unit-call-without-internal-entry sexp)))
+            :args (mapcar (lambda (a)
+                            (nelisp-aot-compiler--parse-value
+                             (nelisp-aot-compiler--as-sexp-ptr-form a fenv)
+                             env fenv defuns))
+                          (cddr sexp)))))
+   ;; Doc 229: (funcall 'NAME ARG...) with its arguments settled, kept
+   ;; away from GNU's `byte-optimize-funcall' rewrite, which would turn it
+   ;; back into the same-unit call it stands for.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--funcall-by-name))
+    (let* ((call `(funcall (quote ,(cadr sexp)) ,@(cddr sexp)))
+           (boundary (nelisp-aot-compiler--aot-funcall1-boundary-symbols
+                      fenv call))
+           (out (plist-get boundary :out))
+           (fn-lowering (nelisp-aot-compiler--aot-function-designator-lowering
+                         (nth 1 call) fenv call))
+           (args (cddr sexp)))
+      (when (> (length args) nelisp-aot-compiler--dynamic-calln-max-args)
+        (signal 'nelisp-aot-compiler-error
+                (list :lisp-funcall-too-many-args sexp)))
+      (nelisp-aot-compiler--ir-with
+       (nelisp-aot-compiler--parse-value
+        `(seq
+          ,@(plist-get fn-lowering :prefix)
+          (extern-call nelisp_aot_funcalln
+                       ,(plist-get boundary :mirror) ,(plist-get boundary :frames)
+                       ,(or (plist-get fn-lowering :fn-expr) (nth 1 call))
+                       ,(length args) ,out ,(plist-get boundary :scratch)
+                       ,@args)
+          ,out)
+        env fenv defuns)
+       :repr 'sexp-ptr)))
    ;; Doc 229: a Lisp value in the Sexp form every boundary takes.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--as-sexp))
     (nelisp-aot-compiler--lisp-as-sexp
@@ -12754,6 +12917,11 @@ functions `((NAME . ARITY) ...)'."
                 (nth 8 sexp) env fenv defuns)
           :offset (nelisp-aot-compiler--parse-value
                    (nth 9 sexp) env fenv defuns)))
+   ;; Doc 229: a call to a defun of this native artifact.
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp) (symbolp (car sexp))
+         (assq (car sexp) defuns))
+    (nelisp-aot-compiler--lisp-unit-call sexp env fenv defuns))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -12843,27 +13011,14 @@ functions `((NAME . ARITY) ...)'."
               :repr (and nelisp-aot-compiler--runtime-entry-params
                         (memq name nelisp-aot-compiler--sexp-ptr-returning-names)
                         'sexp-ptr)
-              ;; Doc 229: enter a same-unit callee through its internal
-              ;; entry, with this frame's boundary (the OUT hidden slot).
-              :internal-boundary-disp
-              (let ((out-slot (plist-get (cdr (assq 'out fenv)) :slot)))
-                (and out-slot
-                     (memq name nelisp-aot-compiler--lisp-internal-entry-names)
-                     (cl-loop for sym in nelisp-aot-compiler--object-hidden-boundary-symbols
-                              for i from 0
-                              always (eql (plist-get (cdr (assq sym fenv)) :slot)
-                                          (+ out-slot i)))
-                     (- (* 8 (1+ out-slot)))))
               :args (mapcar (lambda (a)
                               (nelisp-aot-compiler--parse-value
                                (nelisp-aot-compiler--as-sexp-ptr-form
                                 a fenv)
                                env fenv defuns))
                             (append args
-                                    ;; An omitted optional is nil.
                                     (make-list (- arity (length args))
-                                               (if (nelisp-aot-compiler--lisp-values-p)
-                                                   nil 0))))))))
+                                               0)))))))
    ;; Doc 129.7AS: object-mode user modules may call functions defined
    ;; in other `.el' objects.  Same-unit calls still take the `call' IR
    ;; path above; this fallback emits a PLT relocation so the final
@@ -13416,9 +13571,17 @@ Returns one of:
                   (_ 'sexp-ptr))))
               ;; Doc 229: same-unit callers enter through `NAME$internal'.
               :internal-entry
-              (and (memq name nelisp-aot-compiler--lisp-internal-entry-names)
-                   (= hidden-boundary-count
-                      (length nelisp-aot-compiler--object-hidden-boundary-symbols)))
+              (and (memq name nelisp-aot-compiler--lisp-internal-entry-names) t)
+              ;; The boundary symbol of each hidden slot, in slot order, as
+              ;; its index in the caller's run of seventeen; a parameter
+              ;; named like one takes its place and has no hidden slot.
+              :internal-hidden
+              (and (> hidden-boundary-count 0)
+                   (let ((syms nelisp-aot-compiler--object-hidden-boundary-symbols))
+                     (delq nil
+                           (cl-loop for sym in syms
+                                    for i from 0
+                                    collect (and (not (assq sym new-fenv)) i)))))
               :body root-managed-body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))

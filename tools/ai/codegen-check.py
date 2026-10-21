@@ -27,6 +27,17 @@ lispvalue S   Doc 229 stage S (1, loader or 2): every control of the stage
               stage passes on this tree (target/codegen/lispvalue/cand.json),
               both runs made on the current corpus and the candidate run on
               the current compiler (tools/ai/codegen-lispvalue.py run).
+unit-targets  Doc 229 S4.0: the ERT test
+              nelisp-aot-compiler/lisp-same-unit-call-entry-per-target passes
+              (under the 8 GiB cap): on x86-64 SysV every same-unit call of a
+              native artifact enters an internal entry, on Win64 and AArch64
+              none calls a unit defun directly (the dispatcher does).
+replay-guard  Doc 229: the native replay guard.  nemacs replays a native
+              section in process as soon as the runtime defines its two
+              replay primitives; while no runtime source (scripts, lisp, src)
+              names either one this passes, and once one does it passes only
+              if the S4.3-S4.5 stages (word, overflow, signal) pass and
+              nelisp-aot-compiler/no-native-replay-before-lisp-fixes passes.
 lispvalue-e2e [STAGE...]
               target/codegen/lispvalue-e2e.json: a build of this tree passes
               validate.sh with the Doc 229 stages (default 1 loader 2, or
@@ -429,6 +440,48 @@ def cmd_lispvalue_e2e(required=None):
     return 0 if ok else 1
 
 
+REPLAY_PRIMITIVES = ("nelisp--native-" + "call-boundary",
+                     "nelisp--runtime-" + "symbol-address")
+
+
+def cmd_replay_guard():
+    hits = []
+    for d in ("scripts", "lisp", "src"):
+        for f in sorted((ROOT / d).glob("*.el")):
+            text = f.read_text(errors="replace")
+            hits += [(p, f.name) for p in REPLAY_PRIMITIVES if p in text]
+    if not hits:
+        print("no runtime source names a native replay primitive")
+        print("PASS")
+        return 0
+    print("replay primitives named: %s" % ", ".join("%s in %s" % h for h in hits[:4]))
+    ok = all(cmd_lispvalue(stage) == 0 for stage in ("word", "overflow", "signal"))
+    test = "nelisp-aot-compiler/no-native-replay-before-lisp-fixes"
+    cmd = ("ulimit -v 8388608; exec emacs --batch -Q -L lisp -L src "
+           "--eval '(setq load-prefer-newer t)' -l ert "
+           "-l test/nelisp-aot-compiler-test.el "
+           "--eval '(ert-run-tests-batch-and-exit \"%s\")'" % test)
+    r = subprocess.run(["bash", "-c", cmd], cwd=ROOT, capture_output=True,
+                       text=True, timeout=600)
+    ok = ok and r.returncode == 0
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def cmd_unit_targets():
+    test = "nelisp-aot-compiler/lisp-same-unit-call-entry-per-target"
+    cmd = ("ulimit -v 8388608; exec emacs --batch -Q -L lisp -L src "
+           "--eval '(setq load-prefer-newer t)' -l ert "
+           "-l test/nelisp-aot-compiler-test.el "
+           "--eval '(ert-run-tests-batch-and-exit \"%s\")'" % test)
+    r = subprocess.run(["bash", "-c", cmd], cwd=ROOT, capture_output=True,
+                       text=True, timeout=600)
+    ran = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith("Ran ")]
+    print(ran[-1] if ran else "no ERT summary")
+    print("PASS" if r.returncode == 0 and ran else "FAIL")
+    return 0 if r.returncode == 0 and ran else 1
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "kernel":
         return cmd_kernel(argv[2])
@@ -439,10 +492,13 @@ def main(argv):
     if len(argv) > 2 and argv[1] == "lispvalue-e2e":
         return cmd_lispvalue_e2e(argv[2:])
     if len(argv) == 2 and argv[1] in ("measure", "plan", "endtoend", "final",
-                                      "plan229", "lispvalue-e2e"):
+                                      "plan229", "lispvalue-e2e", "unit-targets",
+                                      "replay-guard"):
         return {"measure": cmd_measure, "plan": cmd_plan,
                 "endtoend": cmd_endtoend, "final": cmd_final,
-                "plan229": cmd_plan229, "lispvalue-e2e": cmd_lispvalue_e2e}[argv[1]]()
+                "plan229": cmd_plan229, "lispvalue-e2e": cmd_lispvalue_e2e,
+                "unit-targets": cmd_unit_targets,
+                "replay-guard": cmd_replay_guard}[argv[1]]()
     raise SystemExit(__doc__)
 
 

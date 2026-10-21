@@ -377,3 +377,63 @@ returning a constant, a three-deep chain, a recursive list length, an
 omitted optional) crash or are refused on 9d5f4a515 and pass now.  Timing
 (CPU 9, 7 paired rounds, recursive fib 22, new over previous compiler):
 x0.995 -- the seventeen-word copy is in the noise of a call.
+
+*** S4.0, second part: &rest, argument slots, other targets
+
+- *&rest callees.*  A same-unit call to a &rest defun built its list with
+  =nelisp_aot_listn=, which the reader has no bridge for, so the artifact
+  was refused (on 9d5f4a515 too).  The list is now built with =list= and
+  bound in a slot of its own, as eval.c funcall_lambda gives the callee a
+  fresh list; the callee has an internal entry like any other (its list
+  is one of at most six parameters).
+- *Arguments in slots of their own.*  GNU evaluates every argument into a
+  stack slot, left to right, and then calls.  A computed argument left
+  its value in OUT, which the next argument -- and the callee, which shares
+  OUT through the internal entry -- overwrote: =(f (list x) (list y))=
+  passed =(y)= twice.  Each computed argument is now bound first
+  (=nelisp-aot--user-init=, which copies a value out of OUT); a variable is
+  passed as it is (copying it would hand the callee a different object);
+  when every argument is a constant, a variable or a scalar operator over
+  them, nothing needs settling and they are evaluated in place.  A
+  same-unit call's result counts as possibly OUT.
+- *The internal entry fills slots by symbol.*  A parameter named like a
+  boundary slot (=out=, ...) takes that slot's place and has no hidden
+  slot, so the entry copies, for each hidden slot of the callee, the
+  caller's slot for the same boundary symbol.
+- *No entry, no direct call.*  A callee with more than six parameters,
+  and every same-unit callee on Win64 and AArch64, which have no internal
+  entry yet, is called by name through the native funcall provider (eval.c
+  Ffuncall), which enters it through the loader's trampoline.  An
+  emitted-code census per target (ERT
+  =nelisp-aot-compiler/lisp-same-unit-call-entry-per-target=) fails on
+  634ff925c and 9d5f4a515.  No native artifact runs on Windows today: the
+  loader refuses executable mappings there ("Windows legacy RWX mapping
+  refused"), shown under wine on PEs built from 634ff925c and 4c0c1b396.
+- *The differential driver* defines a case's defuns before the native run,
+  as GNU's =load= defines a file's defuns before any is called; a helper
+  called by name is then there.
+
+Corpus stage =unit=: 14 controls, all failing on 9d5f4a515 (crash,
+refused or wrong), pass.  Timing (CPU 9, 7 paired rounds): recursive fib
+22 new over 634ff925c x1.09-1.13 -- one more OUT clone per call
+(=nl_sexp_clone_into=, 8 to 9 sites); a &rest helper loop native over the
+interpreter x1.99 -- the =list= and =length= go through the dispatcher.
+
+** The native replay guard
+
+nemacs (=src/emacs-load.el=) replays a =.neln= native section in process
+as soon as the runtime defines both =nelisp--native-call-boundary= and
+=nelisp--runtime-symbol-address= (=emacs-load--artifact-native-prefix-eligible-p=),
+and its extern whitelist admits the native dispatcher
+(=nelisp_aot_builtin_call1=, =nelisp_aot_builtin_calln=).  No runtime
+defines either primitive today, so no production path runs Lisp-mode
+native code.
+
+*Rule:* no runtime may define either primitive while native artifacts
+still give known wrong answers.  =nelisp-aot-compiler-lisp-open-defects=
+lists them by corpus stage (S4.3 word, S4.4 overflow, S4.5 signal); each
+entry leaves with the commit that makes its stage's controls pass.  The
+ERT =nelisp-aot-compiler/no-native-replay-before-lisp-fixes= fails while
+the list is non-empty and any runtime source names either primitive, and
+the ledger's S4.0b (=codegen-check.py replay-guard=) fails once either is
+named unless the three stages pass.

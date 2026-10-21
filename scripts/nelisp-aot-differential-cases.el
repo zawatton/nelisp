@@ -154,7 +154,21 @@ cons constant loadable.")
     (unit control "(defun lv-unit-const (a) (length (lv-unit-k a))) (defun lv-unit-k (a) '(1 2 3))" (0))
     (unit control "(defun lv-unit-chain (x) (+ (lv-unit-b x) 1)) (defun lv-unit-b (x) (length (lv-unit-c x))) (defun lv-unit-c (x) (list x x x))" (1))
     (unit control "(defun lv-unit-len (l) (if l (+ 1 (lv-unit-len (cdr l))) 0))" ((1 2 3) nil))
-    (unit control "(defun lv-unit-opt (a) (lv-unit-o a)) (defun lv-unit-o (a &optional b) (list a b))" (1)))
+    (unit control "(defun lv-unit-opt (a) (lv-unit-o a)) (defun lv-unit-o (a &optional b) (list a b))" (1))
+    ;; A &rest callee: its list was built by `nelisp_aot_listn', which the
+    ;; reader cannot bridge, so the artifact was refused (on 9d5f4a515 too).
+    (unit control "(defun lv-unit-rest (a) (lv-unit-r a 2 3)) (defun lv-unit-r (a &rest xs) (cons a xs))" (1))
+    (unit control "(defun lv-unit-rest0 (a) (lv-unit-r0 a)) (defun lv-unit-r0 (a &rest xs) (list a xs))" (1))
+    (unit control "(defun lv-unit-rl (a) (+ (lv-unit-rn a a a) 1)) (defun lv-unit-rn (&rest xs) (length xs))" (1))
+    (unit control "(defun lv-unit-fresh (a) (eq (lv-unit-fr a 2) (lv-unit-fr a 2))) (defun lv-unit-fr (a &rest xs) xs)" (1))
+    ;; Arguments each in a slot of their own, left to right: a value one
+    ;; argument left in OUT survives the next argument and the callee.
+    (unit control "(defun lv-unit-two (x) (lv-unit-t2 (list x) (list (+ x 1)))) (defun lv-unit-t2 (a b) (list a b))" (1))
+    (unit control "(defun lv-unit-cc (x) (lv-unit-c2 (cons x nil) (cons (+ x 1) nil))) (defun lv-unit-c2 (a b) (cons b a))" (1))
+    (unit control "(defun lv-unit-mix (x) (lv-unit-m2 (lv-unit-mq x) (lv-unit-mq (+ x 1)))) (defun lv-unit-m2 (a b) (list a b)) (defun lv-unit-mq (x) (list x))" (1))
+    (unit control "(defun lv-unit-ord (x) (lv-unit-o2 x (setq x 5))) (defun lv-unit-o2 (a b) (list a b))" (1))
+    ;; A callee with no internal entry is called through the dispatcher.
+    (unit control "(defun lv-unit-seven (a) (lv-unit-s7 a 1 2 3 4 5 6)) (defun lv-unit-s7 (a b c d e f g) (list a g))" (1)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
 (defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit)
