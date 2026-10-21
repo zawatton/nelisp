@@ -14677,6 +14677,67 @@ immediate or variable reference emits nothing.  Elsewhere this is
            (nelisp-aot-compiler--emit-ptr-write-x86 node buf)))
      (t (nelisp-aot-compiler--emit-value node buf)))))
 
+(defconst nelisp-aot-compiler--x86-cmov-opcodes
+  '((< . #x4C) (>= . #x4D) (<= . #x4E) (> . #x4F) (= . #x44) (/= . #x45))
+  "Comparison op -> second opcode byte of CMOVcc (after 0x0F).")
+
+(defun nelisp-aot-compiler--x86-ifcvt-safe-p (node)
+  "Non-nil when NODE can be evaluated unconditionally: no effect, load,
+trap or call -- only immediates, variable references, shifts and the
+arithmetic that neither divides nor (with checked arithmetic) exits."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (cond
+     ((nelisp-aot-compiler--x86-leaf-operand node) t)
+     ((eq kind 'shift)
+      (and (nelisp-aot-compiler--x86-ifcvt-safe-p (nelisp-aot-compiler--ir-get node :a))
+           (nelisp-aot-compiler--x86-ifcvt-safe-p (nelisp-aot-compiler--ir-get node :b))))
+     ((eq kind 'arith)
+      (and (memq (nelisp-aot-compiler--ir-get node :op)
+                 (if nelisp-aot-compiler--checked-arith
+                     '(logand logior logxor)
+                   '(+ - * logand logior logxor)))
+           (nelisp-aot-compiler--x86-ifcvt-safe-p (nelisp-aot-compiler--ir-get node :a))
+           (nelisp-aot-compiler--x86-ifcvt-safe-p (nelisp-aot-compiler--ir-get node :b)))))))
+
+(defun nelisp-aot-compiler--emit-ifcvt-x86 (node buf)
+  "Emit effect-context `if' NODE as a conditional move, or return nil.
+GCC's if-conversion: `(if (CMP a b) (setq x V) LEAF)' (or with the arms
+the other way round), where x lives in a register (CG3), V can be
+computed unconditionally and a and b are direct operands, becomes
+V into rax; cmp a, b; cmovCC x, rax -- no branch to mispredict."
+  (let* ((test (nelisp-aot-compiler--ir-get node :test))
+         (then (nelisp-aot-compiler--ir-get node :then))
+         (else (nelisp-aot-compiler--ir-get node :else))
+         (op (and (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+                  (nelisp-aot-compiler--ir-get test :op)))
+         (arm (cond ((nelisp-aot-compiler--x86-pure-leaf-p else) then)
+                    ((nelisp-aot-compiler--x86-pure-leaf-p then) else)))
+         (cc-op (if (eq arm then) op
+                  (cdr (assq op '((< . >=) (>= . <) (> . <=) (<= . >) (= . /=) (/= . =))))))
+         (reg (and arm (eq (nelisp-aot-compiler--ir-kind arm) 'setq-local)
+                   (cdr (assq (nelisp-aot-compiler--ir-get arm :slot)
+                              nelisp-aot-compiler--promoted-slots))))
+         (ao (and op (nelisp-aot-compiler--x86-leaf-operand (nelisp-aot-compiler--ir-get test :a))))
+         (bo (and op (nelisp-aot-compiler--x86-leaf-operand (nelisp-aot-compiler--ir-get test :b)))))
+    (when (and reg cc-op ao bo
+               ;; Two memory or two immediate operands would need rax.
+               (not (and (eq (car ao) (car bo)) (memq (car ao) '(:mem :imm))))
+               (assq cc-op nelisp-aot-compiler--x86-cmov-opcodes)
+               (nelisp-aot-compiler--x86-ifcvt-safe-p
+                (nelisp-aot-compiler--ir-get arm :value-ir)))
+      (nelisp-aot-compiler--emit-value-into-x86
+       (nelisp-aot-compiler--ir-get arm :value-ir) buf 'rax)
+      ;; Both operands are direct, so the compare needs no scratch register.
+      (let ((op2 (if (nelisp-aot-compiler--emit-compare-x86
+                      (nelisp-aot-compiler--ir-get test :a)
+                      (nelisp-aot-compiler--ir-get test :b) buf cc-op)
+                     (cdr (assq cc-op nelisp-aot-compiler--cmp-swap))
+                   cc-op)))
+        (nelisp-aot-compiler--x86-op
+         buf t (unibyte-string #x0F (cdr (assq op2 nelisp-aot-compiler--x86-cmov-opcodes)))
+         reg '(:reg rax)))
+      t)))
+
 (defun nelisp-aot-compiler--emit-if-effect-x86 (node buf)
   "x86-64: emit `if' NODE in effect context (both arms are effects).
 An arm that is a bare leaf emits nothing, so `(if c (setq ...) 0)' is a
@@ -14687,6 +14748,7 @@ conditional jump around the update, with no join jump."
          (then (nelisp-aot-compiler--ir-get node :then))
          (else (nelisp-aot-compiler--ir-get node :else))
          (else-empty (nelisp-aot-compiler--x86-pure-leaf-p else)))
+   (unless (nelisp-aot-compiler--emit-ifcvt-x86 node buf)
     (nelisp-aot-compiler--emit-cond-jump
      (nelisp-aot-compiler--ir-get node :test) buf
      (if else-empty end-lbl else-lbl) nil)
@@ -14695,7 +14757,7 @@ conditional jump around the update, with no join jump."
       (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
       (nelisp-asm-x86_64-define-label buf else-lbl)
       (nelisp-aot-compiler--emit-effect else buf))
-    (nelisp-asm-x86_64-define-label buf end-lbl)))
+    (nelisp-asm-x86_64-define-label buf end-lbl))))
 
 (defun nelisp-aot-compiler--x86-pure-leaf-p (node)
   "Non-nil when NODE is an integer immediate or a GP variable reference."
@@ -14973,6 +15035,21 @@ takes any signed condition."
      ((and (memq (nelisp-aot-compiler--ir-kind node)
                  '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
            (nelisp-aot-compiler--emit-ptr-read-into-x86 node buf dst)))
+     ;; x +/- k with x in a register: one lea, as GCC computes it.
+     ((and (eq (nelisp-aot-compiler--ir-kind node) 'arith)
+           (memq (nelisp-aot-compiler--ir-get node :op) '(+ -))
+           (not nelisp-aot-compiler--checked-arith)
+           (eq (car (nelisp-aot-compiler--x86-leaf-operand
+                     (nelisp-aot-compiler--ir-get node :a)))
+               :reg)
+           (let ((k (nelisp-aot-compiler--imm-disp32 (nelisp-aot-compiler--ir-get node :b))))
+             (and k (nelisp-aot-compiler--x86-imm32-p (- k)))))
+      (let ((k (nelisp-aot-compiler--imm-disp32 (nelisp-aot-compiler--ir-get node :b))))
+        (nelisp-aot-compiler--x86-op
+         buf t (unibyte-string #x8D) dst
+         (list :mem (cadr (nelisp-aot-compiler--x86-leaf-operand
+                           (nelisp-aot-compiler--ir-get node :a)))
+               nil 1 (if (eq (nelisp-aot-compiler--ir-get node :op) '+) k (- k))))))
      (t
       (nelisp-aot-compiler--emit-value node buf)
       (unless (eq dst 'rax)
@@ -19678,6 +19755,32 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
             (push (cons (car (pop sorted)) (pop regs)) pairs))
           (cons (nreverse pairs) written))))))
 
+(defvar nelisp-aot-compiler--x86-text-base nil
+  "Address of the text buffer's first byte modulo 64, or nil if unknown.
+When known, a rotated loop's head is aligned to 32 bytes as GCC aligns
+loop heads (-falign-loops); the padding sits after the loop's entry
+jump, so it is never executed.")
+
+(defconst nelisp-aot-compiler--x86-nops
+  ["" "\x90" "\x66\x90" "\x0f\x1f\x00" "\x0f\x1f\x40\x00"
+   "\x0f\x1f\x44\x00\x00" "\x66\x0f\x1f\x44\x00\x00"
+   "\x0f\x1f\x80\x00\x00\x00\x00" "\x0f\x1f\x84\x00\x00\x00\x00\x00"
+   "\x66\x0f\x1f\x84\x00\x00\x00\x00\x00"]
+  "Recommended x86-64 NOP encodings by length, 0-9 bytes.")
+
+(defun nelisp-aot-compiler--x86-align-loop (buf)
+  "Pad BUF with NOPs so the next byte is 32-byte aligned in memory."
+  (when nelisp-aot-compiler--x86-text-base
+    (let ((pad (mod (- 32 (mod (+ nelisp-aot-compiler--x86-text-base
+                                  (nelisp-asm-x86_64-buffer-pos buf))
+                               32))
+                    32)))
+      (while (> pad 0)
+        (let ((n (min pad 9)))
+          (nelisp-asm-x86_64-emit-bytes
+           buf (string-to-unibyte (aref nelisp-aot-compiler--x86-nops n)))
+          (setq pad (- pad n)))))))
+
 (defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop)
   "Call EMIT-LOOP for while NODE with its variables in registers when possible.
 Saves the r12-r15 registers the plan uses, loads every promoted slot,
@@ -19741,6 +19844,7 @@ Layout:
          node buf
          (lambda ()
            (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
+           (nelisp-aot-compiler--x86-align-loop buf)
            (nelisp-asm-x86_64-define-label buf start-lbl)
            (dolist (form (nelisp-aot-compiler--ir-get node :body))
              (nelisp-aot-compiler--emit-effect form buf))

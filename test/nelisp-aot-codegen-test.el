@@ -204,6 +204,26 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
   ;; 2283 & 255 = 235
   235)
 
+;; If-conversion: a conditional register update becomes cmov (both arm
+;; orders), and an update that may trap (division) keeps its branch.
+(nelisp-aot-codegen-test--deftest nelisp-aot-codegen/if-conversion
+  "Conditional updates in a promoted loop, as cmov and as a branch."
+  (seq
+   (defun cv (n)
+     (let ((s 0) (t2 0) (u 0) (i 0))
+       (while (< i n)
+         (setq s (+ s i))
+         (if (>= s 1009) (setq s (- s 1009)) 0)
+         (setq t2 (+ t2 (* i 3)))
+         (if (< t2 997) 0 (setq t2 (- t2 997)))
+         (setq u (+ u i))
+         (if (> u 500) (setq u (/ u 2)) 0)
+         (setq i (+ i 1)))
+       (logand (+ s (+ (* t2 7) (* u 13))) 255)))
+   (exit (cv 300)))
+  ;; A Python model of the same loop gives 240.
+  240)
+
 ;; Globals: CG4 addresses `(ptr-read/write (data-addr SYM) OFF)' as
 ;; [rip + SYM + OFF]; the pc32 addend must also skip any immediate that
 ;; follows the displacement (stores and compares of constants).

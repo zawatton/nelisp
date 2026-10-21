@@ -235,7 +235,25 @@ stops if it already was.  The table's digest is part of every unit's
 cache key.  Off for the runtime-reload build, whose units are replaced one
 at a time, and with =NELISP_XINLINE=0=.
 
+** CG8 If-conversion
+GCC behaviour: the ifcvt pass turns a branch around a register update
+into a conditional move when the update is cheap and cannot trap.  The
+wall-clock gate showed why it matters: after CG3 fixnum-loop ran 6.05
+Ir per iteration against GCC's 7 yet took 0.746 ns against GCC's 0.679,
+because its =(if (>= s K) (setq s (- s K)) 0)= branch mispredicts where
+GCC's =cmovge= cannot.  In effect context, =(if (CMP a b) (setq x V)
+LEAF)= (either arm order), with x in a CG3 register, a and b direct
+operands and V free of loads, division, calls and (under checked
+arithmetic) overflow exits, becomes V into rax, =cmp a, b=, =cmovCC x,
+rax=.  An x ± k value goes through =lea=, as GCC computes it.
+
 * Constraints every mechanism keeps
+
+- CG5 must read a box's tag exactly as =--emit-sexp-tag= does.  On the
+  word-heap line a pointer word whose low three bits are 6 addresses its
+  box at word - 6 and the tag is the byte's low six bits; the combined
+  build with callpath-perf (eval/cp-cg-combined-20261021) died in the
+  prelude until CG5 followed that (its 1cf50eec8).
 
 - Two-pass emission: pass 1 measures text size and pass 2 uses real
   addresses, so every encoding choice depends only on the IR (immediate
