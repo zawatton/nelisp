@@ -316,3 +316,39 @@ through the provider, which builds the argument list in ten fresh 32-byte
 slots and the result through OUT; that path is slower than the evaluator's
 own funcall, and values crossing the boundary as words (S4.3) is the item
 that removes most of its allocation.
+
+** S4.2 Load-time constants
+
+GNU keeps a function's quoted constants in its constant vector (bytecode)
+or the unit's =d_reloc= (comp.c:479): each is one object, created when the
+code is loaded, so =eq= between two evaluations of the same quoted list is
+t.  Native artifacts rebuilt a quoted list, string or vector at every
+evaluation (and refused a quoted list outright before the loader stage).
+
+Now a quotation or a self-evaluating string or vector is a unit constant:
+the compiler numbers it (one index per source occurrence), the artifact
+records the printed constants (=:constants= in the native section and the
+manifest), and the loader reads them once, when it maps the artifact, into
+the handle.  Every call places them, by =nelisp--native-pin-copy= -- the
+object itself, not a rebuilt copy -- after the materializer's sixteen
+temporaries in the boundary scratch vector, where the code reads constant K
+as =(vector-ref-ptr scratch (+ 16 K))=.  A delegated call gets the constant
+without the snapshot copy a call result needs.  A constructor such as
+=(list 1 2)= stays fresh.  The C harness of =nelisp-artifact-native-exec-
+general= builds string constants itself and refuses other ones.
+
+Found on the way and fixed: a defun whose body is a lone string returned
+nil, the string taken for a docstring; GNU returns the string
+(byte-compile-lambda keeps it unless more forms follow).
+
+Timing (CPU 9, 7 paired rounds, new compiler over the previous one on one
+binary): a loop testing =(consp '(1 2 3))= 100,000 times x0.077, the same
+with a string literal x0.228.
+
+Not covered, and reported: a call from one defun of an artifact to another
+reaches the callee's prologue, but only the loader's trampoline fills the
+hidden boundary slots, so a callee that uses the dispatcher or a constant
+crashes ((defun a (x) (b x)) (defun b (x) (car (list x 2)))) -- on
+9d5f4a515 too.  The AOT dispatcher's =equal= crashes and =eql= answers nil
+for equal fixnums (a runtime builtin-dispatch defect, like its float =mod=);
+the evaluator's funcall of =equal= is correct.

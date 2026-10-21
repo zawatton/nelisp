@@ -1495,7 +1495,7 @@ string a loaded defun returns and far short of a runaway.")
 
 ;;;; Loading ----------------------------------------------------------
 
-(defun nelisp-native-load--make-scratch-vector (addr)
+(defun nelisp-native-load--make-scratch-vector (addr &optional size)
   "Write a fresh scratch vector Sexp into root slot ADDR.
 
 `nl_alloc_vector' returns the NlVector box; the Sexp that names it is
@@ -1503,7 +1503,7 @@ tag 8 with the box at payload+8, which is the shape the reader's own
 `nl_logic_build_scratch' builds and the shape `nl_vector_slot_ptr'
 expects -- it derefs payload+8 to reach the box."
   (let ((box (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_vector")
-                       nelisp-native-load-scratch-slots 0 0 0 0 0)))
+                       (or size nelisp-native-load-scratch-slots) 0 0 0 0 0)))
     (ptr-write-u64 addr 0 0)
     (ptr-write-u64 addr 8 0)
     (ptr-write-u64 addr 16 0)
@@ -5880,6 +5880,14 @@ what a cache wants and what the demo did."
             :return-repr (or (plist-get meta :return-repr) 'unknown)
             :rest-required-count (plist-get meta :rest-required-count)
             :arg-slots (+ slots arg-slot-base)
+            ;; Doc 229 S4.2: the artifact's quoted constants, created once
+            ;; here and handed to every call through the scratch vector, so
+            ;; eq between two evaluations of one quoted list is t (GNU's
+            ;; constant vector).
+            :constants (vconcat
+                        (mapcar (lambda (printed) (car (read-from-string printed)))
+                                (let ((c (plist-get native :constants)))
+                                  (if (and (symbolp c) (null c)) nil c))))
             :name name
             :path path))))
 
@@ -5977,7 +5985,9 @@ including nested native calls and cleanup after an error."
                    (patch-offsets (plist-get handle :boundary-imm64-offsets))
                    (patch-values (append (list out mirror frames scratch name-slot)
                                          callbacks)))
-              (nelisp-native-load--make-scratch-vector scratch)
+              (nelisp-native-load--make-scratch-vector
+               scratch (+ nelisp-native-load-scratch-slots
+                          (length (plist-get handle :constants))))
               ;; Keep each vector element pointer-backed for compiled code
               ;; that retains slot addresses across nested native calls.
               (while (< scratch-i nelisp-native-load-scratch-slots)
@@ -5985,6 +5995,23 @@ including nested native calls and cleanup after an error."
                 (ptr-call scratch-set-slot (ptr-read-u64 scratch 8)
                           scratch-i scratch-cell 0 0 0)
                 (setq scratch-i (1+ scratch-i)))
+              ;; Doc 229 S4.2: the quoted constants follow the temporaries.
+              (let ((constants (plist-get handle :constants))
+                    (k 0))
+                (while (< k (length constants))
+                  ;; The object itself, not a copy: `nelisp--native-pin-copy'
+                  ;; roots the value's own word, where `nelisp-native-load-box'
+                  ;; would rebuild a list and lose its identity.
+                  (ptr-call scratch-set-slot (ptr-read-u64 scratch 8)
+                            (+ nelisp-native-load-scratch-slots k)
+                            (if (fboundp 'nelisp--native-pin-copy)
+                                (nelisp--native-pin-copy env pin-frame
+                                                         (aref constants k))
+                              (nelisp-native-load-box scratch-cell
+                                                      (aref constants k)
+                                                      env pin-frame))
+                            0 0 0)
+                  (setq k (1+ k))))
               (while rest
                 (let ((slot
                        (if (fboundp 'nelisp--native-pin-copy)

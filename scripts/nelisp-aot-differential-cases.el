@@ -134,7 +134,18 @@ cons constant loadable.")
     ;; Not -7.5: GNU's optimizer makes this (mod a 3), and the AOT
     ;; dispatcher's float mod is a known runtime defect (gc-port S5).
     (apply control "(defun lv-apply-spread (a) (apply 'mod (list a 3)))" (-7 7))
-    (apply control "(defun lv-apply-n (a) (apply 'list 1 a (list 2 3)))" (9)))
+    (apply control "(defun lv-apply-n (a) (apply 'list 1 a (list 2 3)))" (9))
+    ;; Quoted constants (GNU's constant vector): one object for every
+    ;; evaluation, so eq between two of them is t.  On 9d5f4a515 a string or
+    ;; a vector is rebuilt per evaluation and a quoted list is refused.
+    (const control "(defun lv-const-str (a) (let ((r nil) (i 0)) (while (< i 2) (setq r (cons \"abc\" r)) (setq i (+ i 1))) (eq (car r) (car (cdr r)))))" (0))
+    (const control "(defun lv-const-vec (a) (let ((r nil) (i 0)) (while (< i 2) (setq r (cons [1 2] r)) (setq i (+ i 1))) (eq (car r) (car (cdr r)))))" (0))
+    (const control "(defun lv-const-list (a) (let ((r nil) (i 0)) (while (< i 2) (setq r (cons '(1 2) r)) (setq i (+ i 1))) (eq (car r) (car (cdr r)))))" (0))
+    (const control "(defun lv-const-loop (a) (let ((x nil) (same t) (i 0)) (while (< i 3) (let ((y '(p q))) (if (and x (not (eq x y))) (setq same nil)) (setq x y)) (setq i (+ i 1))) same))" (0))
+    ;; A constructor stays fresh: two (list 1 2) are two objects (refused
+    ;; on 9d5f4a515, the folded list being a cons literal).
+    (const control "(defun lv-const-fresh (a) (let ((x (list 1 2)) (y (list 1 2))) (list (eq x y) (eq (car x) (car y)))))" (0))
+    (const control "(defun lv-lone-string (a) \"abc\")" (0)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
 (defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply)

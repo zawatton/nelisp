@@ -4266,7 +4266,11 @@ intersection of exhaustive branches."
 A leading string is a docstring, and leading `declare' / `interactive'
 forms after that are function metadata rather than runtime body forms."
   (let ((forms body))
-    (when (and forms (stringp (car forms)))
+    (when (and forms (stringp (car forms))
+               ;; Doc 229: a lone string is the body, its value -- GNU's
+               ;; byte-compile-lambda keeps it ("doc" only when more forms
+               ;; follow), and the evaluator returns it.
+               (or (cdr forms) (not (nelisp-aot-compiler--lisp-values-p))))
       (setq forms (cdr forms)))
     (while (and forms
                 (consp (car forms))
@@ -6761,7 +6765,11 @@ conversion of Doc 229 answers exactly, by representation."
           (cl-loop for arg in args
                    for idx from 0
                    unless (or (assq idx keyword-slot-alist)
-                              (assq idx designator-slot-alist))
+                              (assq idx designator-slot-alist)
+                              ;; Doc 229 S4.2: a quoted constant is the
+                              ;; load-time object, not a fresh copy.
+                              (and (nelisp-aot-compiler--lisp-values-p)
+                                   (nelisp-aot-compiler--lisp-constant-object arg)))
                    when (nelisp-aot-compiler--top-level-literal-value arg)
                    collect idx))
          (literal-slots
@@ -6864,7 +6872,13 @@ conversion of Doc 229 answers exactly, by representation."
                    (push
                     (list (list slot :type 'sexp)
                           (cond
-                           ((consp form)
+                           ;; Doc 229 S4.2: a constant is a scratch element,
+                           ;; never OUT, so it needs no snapshot -- and a
+                           ;; snapshot would copy a string.
+                           ((and (consp form)
+                                 (not (and (nelisp-aot-compiler--lisp-values-p)
+                                           (nelisp-aot-compiler--lisp-constant-object
+                                            form))))
                               (let ((raw (nelisp-aot-compiler--gensym
                                           "aot-calln-raw")))
                                 `(let ((,raw ,form)
@@ -10309,6 +10323,21 @@ functions `((NAME . ARITY) ...)'."
 	   ;; Doc 129.7AU: boxed AOT helpers may need literal Sexp values in
    ;; ordinary value position, e.g. `(kbd "RET")' or quoted symbols
    ;; passed through dynamic top-level initializers.
+   ;; Doc 229 S4.2: a quoted list, vector or string is a load-time
+   ;; constant, read from the scratch vector the loader fills.
+   ;; Only a quotation or a self-evaluating string or vector: a
+   ;; constructor such as (list 1 2) makes a fresh object every time.
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (nelisp-aot-compiler--fenv-has-symbol-p fenv 'scratch)
+         (nelisp-aot-compiler--lisp-constant-object sexp))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value
+      `(vector-ref-ptr scratch
+                       ,(+ nelisp-aot-compiler--lisp-constant-base
+                           (nelisp-aot-compiler--lisp-constant-index
+                            (car (nelisp-aot-compiler--lisp-constant-object sexp)))))
+      env fenv defuns)
+     :repr 'sexp-ptr))
    ((nelisp-aot-compiler--runtime-sexp-literal-value sexp)
     (let ((lowered
            (nelisp-aot-compiler--runtime-sexp-literal-form sexp fenv)))
@@ -13578,6 +13607,46 @@ Every delegated builtin call pays it too, for the callee's name.
 
 Off by default: this changes code generation for every symbol literal,
 including in the reader's own build.")
+
+(defvar nelisp-aot-compiler--lisp-constants nil
+  "Doc 229 S4.2: the unit's quoted constants, ((OBJECT . INDEX) ...).
+A quoted list, vector or string in a native artifact is created once, when
+the loader maps the artifact, and every evaluation reads that object --
+GNU's constant vector (bytecode) and d_reloc (comp.c:479).  The loader puts
+constant INDEX in element `nelisp-aot-compiler--lisp-constant-base' + INDEX
+of the boundary scratch vector.")
+
+(defconst nelisp-aot-compiler--lisp-constant-base 16
+  "First scratch-vector element holding a constant.
+Elements below are the literal materializer's temporaries; equal to
+`nelisp-native-load-scratch-slots'.")
+
+(defun nelisp-aot-compiler--lisp-constant-index (object)
+  "Return OBJECT's index in the unit's constants, adding it when new."
+  (let ((cell (assq object nelisp-aot-compiler--lisp-constants)))
+    (if cell
+        (cdr cell)
+      (let ((index (length nelisp-aot-compiler--lisp-constants)))
+        (push (cons object index) nelisp-aot-compiler--lisp-constants)
+        index))))
+
+(defun nelisp-aot-compiler--lisp-constant-object (form)
+  "Return (OBJECT) when FORM evaluates to a constant heap object, else nil.
+A quoted list, string or non-empty vector, or a string or non-empty vector
+literal -- what GNU keeps in the constant vector."
+  (let ((obj (cond ((eq (car-safe form) 'quote) (cadr form))
+                   ((or (stringp form) (vectorp form)) form)
+                   (t :none))))
+    (when (or (consp obj) (stringp obj)
+              (and (vectorp obj) (> (length obj) 0)))
+      (list obj))))
+
+(defun nelisp-aot-compiler--lisp-constant-strings ()
+  "Return the unit's constants printed, in index order, for the loader to read."
+  (let ((print-length nil) (print-level nil) (print-escape-newlines t)
+        (print-circle nil))
+    (mapcar (lambda (cell) (prin1-to-string (car cell)))
+            (reverse nelisp-aot-compiler--lisp-constants))))
 
 (defvar nelisp-aot-compiler--symbol-literal-registry nil
   "Alist of LITERAL -> blob symbol for the unit being compiled.
@@ -23061,6 +23130,7 @@ register budgeting while ELF/Mach-O keep SysV."
          ;; Per unit: a global would carry one unit's cache slots into the
          ;; next, where the blobs they name do not exist.
          (nelisp-aot-compiler--symbol-literal-registry nil)
+         (nelisp-aot-compiler--lisp-constants nil)
          (source (if auto-frame-roots
                      (nelisp-aot-compiler--select-auto-frame-roots
                       sexp)
@@ -23412,7 +23482,8 @@ register budgeting while ELF/Mach-O keep SysV."
               :relocs (append relocs blob-data-relocs)
               :machine arch
               :defuns defun-layout
-              :extern-symbols extern-names)))))
+              :extern-symbols extern-names
+              :constants (nelisp-aot-compiler--lisp-constant-strings))))))
 
 ;;;###autoload
 (cl-defun nelisp-aot-compile-to-object
