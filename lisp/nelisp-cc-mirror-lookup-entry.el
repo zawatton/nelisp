@@ -259,9 +259,8 @@ written wrong, so the check must fire.  Anything else: no check."
     (defun nl_symcell_refresh (mirror-ptr key)
       (if (if (= key 0) 1 (= (logand key 1) 1)) 0
         (if (or (= (sexp-tag key) 4) (= (sexp-tag key) 5))
-            (let* ((idx (seq (extern-call nl_symcells_attach_lazy mirror-ptr)
-                             (extern-call nl_symcell_assign
-                                          (str-bytes-ptr key) (str-len key)))))
+            (let* ((idx (extern-call nl_symcell_assign
+                                     (str-bytes-ptr key) (str-len key))))
               (if (= idx 0) 0
                 (if (= (nl_symcell_reserve mirror-ptr idx) 0) 0
                   (let* ((entry (nelisp_mirror_lookup_hashed mirror-ptr key)))

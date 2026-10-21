@@ -338,11 +338,13 @@
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
       ;; The direct allocator also installs a stable name-Sexp edge for the
       ;; interned symbol; the reader token slot itself is scratch storage.
-      (nl_alloc_symbol_named
-       (heap-read-u64 src-str-slot 16)
-       (heap-read-u64 src-str-slot 24)
-       src-str-slot
-       dest-slot))
+      (let* ((rc (nl_alloc_symbol_named
+                  (heap-read-u64 src-str-slot 16)
+                  (heap-read-u64 src-str-slot 24)
+                  src-str-slot
+                  dest-slot)))
+        ;; Doc 226 D9 stage 3.1: the symbol gets its object when it is read.
+        (seq (if (= rc 0) 0 (extern-call nl_symobj_note dest-slot)) rc)))
 
     (defun nelisp_reader_p_make_uninterned_symbol (dest-slot src-str-slot)
       (let* ((identity (nl_next_symbol_identity)))
@@ -700,9 +702,11 @@
        ((= kind 23)
         (cond ((= (nelisp_reader_p_is_nil_name payload-slot) 1) 3)
               ((= (nelisp_reader_p_is_t_name payload-slot) 1) 7)
-              (t (nl_alloc_symbol_named_w
-                  (heap-read-u64 payload-slot 16)
-                  (heap-read-u64 payload-slot 24) payload-slot 0))))
+              (t (let* ((w (nl_alloc_symbol_named_w
+                            (heap-read-u64 payload-slot 16)
+                            (heap-read-u64 payload-slot 24) payload-slot 0)))
+                   ;; Doc 226 D9 stage 3.1: the symbol gets its object when it is read.
+                   (if (= w 0) 0 (extern-call nl_symobj_note w))))))
        ((= kind 24) (nl_imm_int (nelisp_reader_p_decode_char payload-slot)))
        ((= kind 25) (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))
        ((= kind 21)
