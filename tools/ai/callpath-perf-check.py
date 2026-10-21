@@ -701,13 +701,37 @@ def check_s63alloc():
 STASH_SLOTS = re.compile(r"\b(268435480|268435512)\b")
 
 
+def elisp_code_only(text):
+    """TEXT with comments, strings and character literals blanked (newlines
+    kept), so that only code remains."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "?" and i + 1 < n:
+            j = i + 2 if text[i + 1] != "\\" else i + 3
+            out.append(" " * (j - i)); i = j
+        elif c == ";":
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i)); i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append("".join(ch if ch == "\n" else " " for ch in text[i:j + 1])); i = j + 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
 def stash_readers(root=ROOT):
-    """The functions of the runtime sources that use the fixed-address Sexp
-    signal stash slots (tag @268435480, value @268435512), comments left out."""
+    """The functions of the runtime sources whose code (comments and strings
+    left out) uses the fixed-address Sexp signal stash slots (tag
+    @268435480, value @268435512)."""
     found = set()
     for path in [root / "scripts/nelisp-standalone-build.el"] + sorted((root / "lisp").glob("*.el")):
-        text = "\n".join(re.sub(r";.*$", "", line) for line in path.read_text(errors="replace").split("\n"))
-        starts = [(m.start(), m.group(1)) for m in re.finditer(r"\(defun ([A-Za-z0-9_-]+) ", text)]
+        text = elisp_code_only(path.read_text(errors="replace"))
+        starts = [(m.start(), m.group(1)) for m in re.finditer(r"\(defun ([A-Za-z0-9_-]+)[\s(]", text)]
         for m in STASH_SLOTS.finditer(text):
             owner = None
             for start, name in starts:
