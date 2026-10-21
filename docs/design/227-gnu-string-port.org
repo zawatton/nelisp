@@ -75,8 +75,9 @@ its line numbers below are approximate and are not patches to apply blindly.
   Boot image strings are pdumper objects marked in the boot bitmap; do not
   sweep them. Never move string data when conservative roots pinned it.
 
-These are integration requirements, not claims that the hooks are already
-exported or that image conversion is complete.
+This base calls the implemented String mark, reset, sweep and pin hooks.
+The placements above describe integration into gc-port after that lane
+merges. Dumping pooled Strings currently refuses before opening an image file.
 
 * Implementation boundary
 
@@ -336,3 +337,19 @@ is registered. This preserves GNU's multibyte ASCII symbol-name behavior
 for read and #: names. Ordinary ABI cloning still trusts the header and
 cannot undo clear-string through a stale view. The existing 43-row GNU
 unibyte/aset matrix now supplements the original 13-case fixture.
+
+* Acceptance boundary
+
+The final Linux dynamic/static binaries match the 13-case oracle and the
+43-row existing unibyte matrix. Retained-root layout and the compiled
+compaction/concurrency kernel pass. The public producer and R=80 timing
+criteria still fail: the existing Lisp property-copy bridge replaces the
+native concat path globally, unlike GNU's direct interval test. The final
+numbers and CPU-14 paired samples are recorded in the eight-criterion ledger.
+
+Linux's final 11-group run and separate 92-case standalone run each retain
+one pre-existing env-capture-roots failure, also reproduced on the base.
+MCP lists 40 tools. The frozen Windows snapshot fails the original native
+proof (297 helpers and a diagnostic 574645 text bytes versus 296 and
+524288); it produces no executable for Wine smoke. These remain blockers,
+not passing exceptions. No verifier limit or known-red list was revised.
