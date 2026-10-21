@@ -2,6 +2,7 @@
 (require 'json)
 (require 'nelisp-standalone-build)
 (defvar nelisp-aot-compiler--vector-value-convention)
+(defvar nelisp-aot-compiler--x86-inline-data-hook)
 (defconst codegen-runtime--directory
   (file-name-directory (or load-file-name buffer-file-name)))
 (defconst codegen-runtime--out
@@ -27,6 +28,9 @@
           (intern (or (getenv "CODEGEN_RUNTIME_VECTOR_CONVENTION") "compact-word")))
          (nelisp-standalone--target 'linux-x86_64)
          (source (cons 'seq (codegen-runtime--forms "runtime.nl.el")))
+         (inline-data nil)
+         (nelisp-aot-compiler--x86-inline-data-hook
+          (list (lambda (_buffer offset size) (push (list offset size) inline-data))))
          (unit (nelisp-standalone--compile-to-unit "runtime-study" source))
          (text (cdr (assq 'text (plist-get unit :sections))))
          (symbols (sort (cl-remove-if-not
@@ -37,6 +41,9 @@
     (make-directory codegen-runtime--out t)
     (with-temp-file (expand-file-name "runtime.nl.text" codegen-runtime--out)
       (set-buffer-multibyte nil) (insert text))
+    ;; Exact emitter-reported extents, relative to the emitted text buffer.
+    (with-temp-file (expand-file-name "runtime.nl.inline-data.json" codegen-runtime--out)
+      (insert (json-encode (vconcat (delete-dups inline-data)))))
     (while symbols
       (let* ((s (pop symbols)) (lo (plist-get s :value))
              (end (if symbols (plist-get (car symbols) :value) (length text))))

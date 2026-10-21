@@ -324,18 +324,31 @@ def classify(ins):
     return "mem" if "[" in rest else "alu"
 
 
-def census(binary, names, raw_symbols=None):
+def census(binary, names, raw_symbols=None, inline_data=None):
     result = {}
     # Objdump's symbol-delimited output, kept private. No address tables or
     # assembly are printed; symbol size avoids counting the next function.
     for name, symbol in names.items():
         if raw_symbols is not None:
             spec = raw_symbols[symbol]
-            args = ["objdump", "-D", "-b", "binary", "-m", "i386:x86-64", "-M", "intel", "--no-show-raw-insn",
-                    "--start-address=" + str(spec["offset"]), "--stop-address=" + str(spec["offset"] + spec["size"]), binary]
+            lo, end = spec["offset"], spec["offset"] + spec["size"]
+            spans = sorted((a, n) for a, n in (inline_data or []) if a < end and a + n > lo)
+            ranges, cursor = [], lo
+            for a, n in spans:
+                if n <= 0 or a < cursor or a + n > end:
+                    raise ValueError("Invalid compiler inline-data extent for " + name)
+                ranges.append((cursor, a))
+                cursor = a + n
+            ranges.append((cursor, end))
+            # Restart decoding after every exact data span. Filtering decoded
+            # addresses afterwards is insufficient: data can shift boundaries.
+            commands = [["objdump", "-D", "-b", "binary", "-m", "i386:x86-64", "-M", "intel", "--no-show-raw-insn",
+                         "--start-address=" + str(a), "--stop-address=" + str(b), binary]
+                        for a, b in ranges if a < b]
         else:
-            args = ["objdump", "-d", "-M", "intel", "--no-show-raw-insn", "--disassemble=" + symbol, binary]
-        out = run(args).stdout
+            spans = []
+            commands = [["objdump", "-d", "-M", "intel", "--no-show-raw-insn", "--disassemble=" + symbol, binary]]
+        out = "\n".join(run(args).stdout for args in commands)
         ins = []
         for line in out.splitlines():
             m = re.match(r"\s*[0-9a-f]+:\s+(.*)$", line)
@@ -344,7 +357,8 @@ def census(binary, names, raw_symbols=None):
                 # Alignment padding belongs to placement, not the body.
                 if text and not re.match(r"(?:[a-z]+\s+)*nop|data16|cs\s+nop", text):
                     ins.append(text)
-        result[name] = {"instructions": len(ins), "categories": dict(collections.Counter(map(classify, ins)))}
+        result[name] = {"instructions": len(ins), "categories": dict(collections.Counter(map(classify, ins))),
+                        "inline_data_spans": len(spans), "inline_data_bytes": sum(n for _, n in spans)}
     return result
 
 
@@ -366,7 +380,8 @@ def static_study():
         cfile.write_text(Lower(source, name).translate())
         run([cc(), "-O2", "-fwrapv", "-fno-strict-aliasing", "-c", cfile, "-o", obj])
         gcc.update(census(obj, {name: cname(name)}))
-    nl = census(OUT / "runtime.nl.text", {n: n for n in NAMES}, json.loads((OUT / "runtime.nl.symbols.json").read_text()))
+    nl = census(OUT / "runtime.nl.text", {n: n for n in NAMES}, json.loads((OUT / "runtime.nl.symbols.json").read_text()),
+                json.loads((OUT / "runtime.nl.inline-data.json").read_text()))
     result = {"revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "gcc": gcc, "nl": nl, "externs": lower.externs,
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
@@ -754,7 +769,7 @@ def endtoend():
         print("bytecode %s: candidate/base x%.4f (cap 1.03), candidate/GNU x%.4f" % (name, b, g))
     # Existing differential checks remain part of this end-to-end criterion.
     result["differential"] = {}
-    for stage in ("1", "loader", "2", "apply", "const", "unit"):
+    for stage in ("1", "loader", "2", "apply", "const", "unit", "word", "overflow", "signal"):
         proc = subprocess.run([sys.executable, str(ROOT / "tools/ai/codegen-check.py"), "lispvalue", stage],
                               capture_output=True, text=True, preexec_fn=bounded, cwd=ROOT)
         (OUT / ("differential-" + stage + ".log")).write_text(proc.stdout + proc.stderr)

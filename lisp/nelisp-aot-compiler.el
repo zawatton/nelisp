@@ -21129,6 +21129,104 @@ do, so only the materialized 0/1 disappears."
 See `nelisp-aot-compiler--emit-cond-jump'."
   (nelisp-aot-compiler--emit-cond-jump test buf false-lbl nil))
 
+(defvar nelisp-aot-compiler--x86-inline-data-hook nil
+  "Hook called with (BUFFER OFFSET SIZE) for each inline data span.
+Offsets are relative to BUFFER.  Profilers must exclude these proven data
+bytes from instruction censuses.  Emission passes may use distinct buffers.")
+
+(defun nelisp-aot-compiler--x86-equality-ref-key (test)
+  "Return (REF . KEY) for an unchecked GP-local equality predicate TEST."
+  (when (and (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+             (eq (nelisp-aot-compiler--ir-get test :op) '=))
+    (let ((a (nelisp-aot-compiler--ir-get test :a))
+          (b (nelisp-aot-compiler--ir-get test :b)))
+      (when (eq (nelisp-aot-compiler--ir-kind a) 'imm)
+        (cl-rotatef a b))
+      (when (and (eq (nelisp-aot-compiler--ir-kind a) 'ref)
+                 (eq (nelisp-aot-compiler--ir-kind b) 'imm)
+                 (nelisp-aot-compiler--x86-leaf-operand a)
+                 (nelisp-aot-compiler--x86-imm32-p
+                  (nelisp-aot-compiler--ir-get b :value)))
+        (cons a (nelisp-aot-compiler--ir-get b :value))))))
+
+(defun nelisp-aot-compiler--x86-dense-if-plan (node)
+  "Return (REF MIN MAX ARMS DEFAULT) for a dense raw equality chain.
+Only repeated reads of one GP local qualify: skipping their redundant
+reads cannot change effects or traps.  Require at least four distinct,
+contiguous signed32 keys; other shapes retain their existing lowering."
+  (when (and (eq nelisp-aot-compiler--arch 'x86_64)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not (cl-some (lambda (p) (memq (cdr p) '(rax r10)))
+                           nelisp-aot-compiler--promoted-slots)))
+    (let ((cursor node) ref slot arms keys pair invalid)
+      (while (and (eq (nelisp-aot-compiler--ir-kind cursor) 'if)
+                  (setq pair (nelisp-aot-compiler--x86-equality-ref-key
+                              (nelisp-aot-compiler--ir-get cursor :test)))
+                  (or (null ref)
+                      (= slot (nelisp-aot-compiler--ir-get (car pair) :slot))))
+        (setq ref (car pair) slot (nelisp-aot-compiler--ir-get ref :slot))
+        (when (memq (cdr pair) keys) (setq invalid t))
+        (push (cdr pair) keys)
+        (push (cons (cdr pair) (nelisp-aot-compiler--ir-get cursor :then)) arms)
+        (setq cursor (nelisp-aot-compiler--ir-get cursor :else)))
+      (when (and (not invalid) (>= (length arms) 4))
+        (let ((lo (apply #'min keys)) (hi (apply #'max keys)))
+          (when (and (= (1+ (- hi lo)) (length arms))
+                     (nelisp-aot-compiler--x86-imm32-p (- hi lo)))
+            (list ref lo hi (nreverse arms) cursor)))))))
+
+(defun nelisp-aot-compiler--emit-dense-if-x86 (node buf)
+  "Emit a relative jump table for eligible NODE, returning non-nil.
+GNU bytecode.c:577-600 dispatches through label targets, or switch cases.
+This adapts that mechanism with existing rel32 label fixups.  Each table
+entry is relative to its own end, so adding entry-address+4 reconstructs
+the selected target without an absolute relocation.  Only rax/r10 are
+scratch; arm code starts after the jump and keeps its ordinary contract."
+  (let ((plan (nelisp-aot-compiler--x86-dense-if-plan node)))
+    (when plan
+      (let* ((ref (nth 0 plan)) (lo (nth 1 plan)) (hi (nth 2 plan))
+             (arms (nth 3 plan)) (default (nth 4 plan))
+             (id (nelisp-aot-compiler--ir-get node :id))
+             (table (intern (format "%s-table" id)))
+             (fallback (intern (format "%s-default" id)))
+             (end (intern (format "%s-end" id))) labels)
+        (dolist (arm arms)
+          (push (cons (car arm) (intern (format "%s-case-%d" id (car arm)))) labels))
+        (nelisp-aot-compiler--emit-value ref buf)
+        ;; A modulo-2^64 subtraction plus unsigned bound rejects every
+        ;; out-of-range signed value, including the two int64 extrema.
+        (unless (= lo 0) (nelisp-asm-x86_64-sub-imm32 buf 'rax lo))
+        (nelisp-asm-x86_64-cmp-imm32 buf 'rax (- hi lo))
+        ;; JA rel32; the assembler's named Jcc API currently covers signed
+        ;; comparisons only.  Use its ordinary rel32 label fixup contract.
+        (let ((slot (+ 2 (nelisp-asm-x86_64-buffer-pos buf))))
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x0F #x87 0 0 0 0))
+          (nelisp-asm-x86_64-emit-fixup buf slot fallback))
+        (nelisp-asm-x86_64-lea-reg-rip-label buf 'r10 table)
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
+                                       '(:mem r10 rax 4 0))
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+                                       '(:mem r10 nil 1 0))
+        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
+                                       '(:mem r10 rax 1 4))
+        (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax))
+        (nelisp-asm-x86_64-define-label buf table)
+        (dotimes (i (1+ (- hi lo)))
+          (let ((slot (nelisp-asm-x86_64-buffer-pos buf)))
+            (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 0 0 0 0))
+            (nelisp-asm-x86_64-emit-fixup buf slot (cdr (assq (+ lo i) labels)))))
+        (run-hook-with-args 'nelisp-aot-compiler--x86-inline-data-hook
+                            buf (cdr (assq table (nelisp-asm-x86_64-buffer-labels buf)))
+                            (* 4 (length arms)))
+        (dolist (arm arms)
+          (nelisp-asm-x86_64-define-label buf (cdr (assq (car arm) labels)))
+          (nelisp-aot-compiler--emit-value (cdr arm) buf)
+          (nelisp-asm-x86_64-jmp-rel32 buf end))
+        (nelisp-asm-x86_64-define-label buf fallback)
+        (nelisp-aot-compiler--emit-value default buf)
+        (nelisp-asm-x86_64-define-label buf end))
+      t)))
+
 (defun nelisp-aot-compiler--emit-if (node buf)
   "Emit `if' branching code; result in rax.
 Layout (= each emitter call is byte-fixed so pass invariance
@@ -21144,7 +21242,8 @@ holds across the two-pass orchestration):
   (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (else-lbl (intern (format "%s-else" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (if (eq nelisp-aot-compiler--arch 'aarch64)
+    (unless (nelisp-aot-compiler--emit-dense-if-x86 node buf)
+      (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
           (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
@@ -21160,7 +21259,7 @@ holds across the two-pass orchestration):
       (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
       (nelisp-asm-x86_64-define-label buf else-lbl)
       (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :else) buf)
-      (nelisp-asm-x86_64-define-label buf end-lbl))))
+      (nelisp-asm-x86_64-define-label buf end-lbl)))))
 
 (defconst nelisp-aot-compiler--x86-promotable-kinds
   '(imm ref setq-local arith shift cmp if cond logic value-seq while

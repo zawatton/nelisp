@@ -105,5 +105,54 @@
       (should-not (nelisp-aot-compiler--emit-memory-tree-binop-x86
                    '+ (nelisp-aot-s5-test--ref 0) (nelisp-aot-s5-test--ref 1) buf))
       (should (equal (nelisp-asm-x86_64-buffer-bytes buf) "")))))
+(defun nelisp-aot-dense-test--chain (keys &optional class effect)
+  (let ((tail (nelisp-aot-compiler--make-ir 'imm :value 99)))
+    (dolist (key (reverse keys))
+      (let ((ref (nelisp-aot-compiler--make-ir 'ref :slot 0 :class (or class 'gp))))
+        (setq tail
+              (nelisp-aot-compiler--make-ir
+               'if :id (intern (format "dense-%d" key))
+               :test (nelisp-aot-compiler--make-ir
+                      'cmp :op '= :a (if effect (nelisp-aot-compiler--make-ir 'call :name 'effect) ref)
+                      :b (nelisp-aot-compiler--make-ir 'imm :value key))
+               :then (nelisp-aot-compiler--make-ir 'imm :value key) :else tail))))
+    tail))
+(ert-deftest nelisp-aot-dense/eligibility-and-clobbers ()
+  (let* ((nelisp-aot-compiler--arch 'x86_64)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (node (nelisp-aot-dense-test--chain '(3 1 2 0))))
+    (should (nelisp-aot-compiler--x86-dense-if-plan node))
+    (dolist (bad (list (nelisp-aot-dense-test--chain '(0 2 4 6))
+                      (nelisp-aot-dense-test--chain '(0 1 2))
+                      (nelisp-aot-dense-test--chain '(0 1 1 2))
+                      (nelisp-aot-dense-test--chain '(0 1 2 3) 'f64)
+                      (nelisp-aot-dense-test--chain '(0 1 2 3) nil t)))
+      (should-not (nelisp-aot-compiler--x86-dense-if-plan bad)))
+    (let ((nelisp-aot-compiler--arch 'aarch64))
+      (should-not (nelisp-aot-compiler--x86-dense-if-plan node)))
+    (let ((nelisp-aot-compiler--runtime-entry-params t))
+      (should-not (nelisp-aot-compiler--x86-dense-if-plan node)))
+    (dolist (reg '(rax r10))
+      (let ((nelisp-aot-compiler--promoted-slots (list (cons 9 reg))))
+        (should-not (nelisp-aot-compiler--x86-dense-if-plan node))))
+    (let ((nelisp-aot-compiler--promoted-slots '((9 . rbx))))
+      (should (nelisp-aot-compiler--x86-dense-if-plan node)))))
+(ert-deftest nelisp-aot-dense/exact-inline-data-and-labels ()
+  (let* ((nelisp-aot-compiler--arch 'x86_64)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (buf (nelisp-asm-x86_64-make-buffer))
+         spans
+         (nelisp-aot-compiler--x86-inline-data-hook
+          (list (lambda (b offset size) (should (eq b buf)) (push (cons offset size) spans)))))
+    (should (nelisp-aot-compiler--emit-dense-if-x86
+             (nelisp-aot-dense-test--chain '(-2147483648 -2147483646 -2147483645 -2147483647)) buf))
+    (should (= (length spans) 1))
+    (should (= (cdar spans) 16))
+    (should (< (+ (caar spans) (cdar spans)) (nelisp-asm-x86_64-buffer-pos buf)))
+    ;; Every table entry and branch uses the ordinary label resolver.
+    (should (stringp (nelisp-asm-x86_64-resolve-fixups buf)))))
+
 (provide 'nelisp-aot-s5-lowering-test)
 ;;; nelisp-aot-s5-lowering-test.el ends here
