@@ -55,7 +55,26 @@
                  (setq calls (1+ calls))
                  (funcall original character))))
       (should (eq (nlre-string-match pattern "a_b") 0))
-      (should (= calls 3)))))
+      (should (= calls 3)))
+    (should (equal nlre--standard-ascii-syntax
+                   (with-syntax-table (standard-syntax-table)
+                     (apply #'string (mapcar #'char-syntax (number-sequence 0 127))))))
+    ;; GNU reads the live table directly.  The bootstrap representation has
+    ;; class designators in hash slots rather than raw char-table entries.
+    (let* ((parent (record 'nelisp--syntax-table (make-hash-table :test 'eq) nil))
+           (table (record 'nelisp--syntax-table (make-hash-table :test 'eq) parent))
+           (plan (vector :syntax-run '(?w) nil 0))
+           (caps (vector nil))
+           (nlre--syntax-table-reader (lambda () table)))
+      (cl-letf (((symbol-function 'char-syntax)
+                 (lambda (_) (error "Public classifier must not run for bootstrap tables"))))
+        (should (eq (nlre--syntax-run-plan-match plan "a" 0 1 caps) 0))
+        (puthash ?a ?_ (aref parent 1))
+        (should-not (nlre--syntax-run-plan-match plan "a" 0 1 caps))
+        (puthash ?a ?w (aref table 1))
+        (should (eq (nlre--syntax-run-plan-match plan "a" 0 1 caps) 0))
+        (puthash ?a nil (aref table 1))
+        (should-not (nlre--syntax-run-plan-match plan "a" 0 1 caps))))))
 
 (ert-deftest nelisp-regexp-syntax-run-rejects-unsupported-shapes ()
   "Capturing alternatives and variable-width continuations retain fallback."

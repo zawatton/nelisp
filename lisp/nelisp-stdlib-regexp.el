@@ -1742,6 +1742,27 @@ one, which would demote them to the interpreter)."
              (min n nlre--match-end-limit)
            n)))
 
+(defconst nlre--standard-ascii-syntax ".........  .  .................. .\".ww_.()__._._wwwwwwwwww..___..wwwwwwwwwwwwwwwwwwwwwwwwww(\\)._.wwwwwwwwwwwwwwwwwwwwwwwwww(_).."
+  "GNU 31.1 standard syntax designators for ASCII, indexed by character.
+This is immutable default data, not a snapshot of any mutable syntax table.")
+(defconst nlre--syntax-entry-missing (make-symbol "nlre-syntax-entry-missing"))
+
+(defun nlre--host-char-syntax (character)
+  "Keep the host char-syntax bytecode outside the compiled matching loop."
+  (char-syntax character))
+
+(defun nlre--bootstrap-syntax-class (table character)
+  "Read bootstrap TABLE's live entries and inherited standard defaults.
+Adapt GNU lisp.h:2133-2155's ASCII lookup to the bootstrap record layout."
+  (let ((entry nlre--syntax-entry-missing) (cursor table))
+    (while (and cursor (eq entry nlre--syntax-entry-missing))
+      (setq entry (gethash character (aref cursor 1) nlre--syntax-entry-missing)
+            cursor (aref cursor 2)))
+    (if (eq entry nlre--syntax-entry-missing)
+        (if (< character 128) (aref nlre--standard-ascii-syntax character)
+          (funcall (symbol-function 'nelisp--syntax-default-class) character))
+      entry)))
+
 (defun nlre--syntax-run-plan-match (plan string start n caps)
   "Match PLAN using live syntax classes and fill CAPS on success.
 GNU regex-emacs.c:5175-5200 reads the current syntax class per character;
@@ -1749,8 +1770,14 @@ its capture registers at :4593-4628 retain the final repeated iteration.
 The compiled plan contains only class designators, so direct table edits
 remain visible even when they do not invalidate the compiled cache."
   (when (and (= start 0) (>= n (aref plan 3)))
-    (let ((classes (aref plan 1)) (end 0))
-      (while (and (< end n) (memq (char-syntax (aref string end)) classes))
+    (let* ((classes (aref plan 1)) (end 0)
+           (table (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader)))
+           (bootstrap (and (recordp table) (eq (aref table 0) 'nelisp--syntax-table))))
+      (while (and (< end n)
+                  (memq (if bootstrap
+                            (nlre--bootstrap-syntax-class table (aref string end))
+                          (nlre--host-char-syntax (aref string end)))
+                        classes))
         (setq end (1+ end)))
       (when (= end n)
         (aset caps 0 (cons 0 n))
