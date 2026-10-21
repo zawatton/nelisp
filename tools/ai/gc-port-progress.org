@@ -25,8 +25,11 @@
 # objective adds them inside the word-heap design.
 #
 # Base: eval/wh-s4f-20261021 at 3883d1672 (word heap through S4.2).
-# Speed bar: on the Doc 220 churn microbenchmarks, NeLisp GC plus
-# allocation Ir <= GNU's, four-layout mean, GC included.
+# Speed bar (user, 2026-10-21 16:30, COMMON "Measurement"): wall-clock
+# against GNU 31.1 on the same Lisp workload, median of 7 alternating runs,
+# warmed up, GC included, pinned with taskset.  Callgrind Ir only locates
+# where time goes; no criterion passes on it.  Before that switch the bar
+# was NeLisp GC plus allocation Ir <= GNU's (four-layout mean).
 
 * S0 Port plan
 ** S0.1 docs/design/223-gnu-alloc-port.org maps every alloc.c mechanism to its NeLisp structure, marked ported, adapted or impossible (with the reason), with each one's interaction with Doc 216 and the implementation order
@@ -37,25 +40,36 @@ cmd: python3 tools/ai/gc-port-check.py portplan
 * S1 Implementation and semantics
 ** S1.1 Conses are allocated from GNU-style cons blocks
 The blocks carry side mark bits and a free list. Sweeping is per type, and there is no exact-start index or heap-wide coalescing for conses. Semantics hold: the GC stress and conservative-scanning tests pass on dynamic and static.
-#+NOTE: 2026-10-21: ported GNU alloc.c cons blocks. Fcons (alloc.c:2599) -> nl_cons_alloc: cons_free_list pop, cons_block_index bump, new 32 KiB block from 512 KiB groups (lisp_align_malloc alloc.c:1060, BLOCK_ALIGN alloc.c:937, ABLOCKS_SIZE alloc.c:979). struct cons_block (alloc.c:2539) layout: cells, gcmarkbits, next; CONS_BLOCK_SIZE (alloc.c:2526) is 1356 for 24-byte cells (adapted: the refcount word stays until word-heap S2.2). XMARK_CONS (alloc.c:2550) side bits; mark_object's cons case (alloc.c:6733) takes no exact-start probe. sweep_conses (alloc.c:6814) ported with the all-marked fast path, the dead car marker and block release. mem_find (alloc.c:4213) adapted as an open-addressing registry of aligned groups with GNU's min/max address rejection; live_cons_holding (alloc.c:4627) and mark_maybe_pointer (alloc.c:4854) ported for the conservative stack scan. Images: pdumper's object copy adapted, the stream dump appends each cell as a legacy headered payload, so the loader is unchanged. Parallel sections keep the legacy CAS path (GNU's free list has one writer). gcstat (alloc.c:6886): an explicit garbage-collect counts block conses from sweep_conses and skips image objects, as GNU never counts pdumper objects. Dynamic c2 (2352633d): cold image loads (0.39 s start, 44.97 MB live vs base 45.64 MB), probe, gc-pressure, gc-conservative-cost, image-hole cons/loop/pause, four thread smokes and the free-symbol census pass.
+#+NOTE: 2026-10-21: ported GNU alloc.c cons blocks. Fcons (alloc.c:2599) -> nl_cons_alloc: cons_free_list pop, cons_block_index bump, new 32 KiB block from 512 KiB groups (lisp_align_malloc alloc.c:1060, BLOCK_ALIGN alloc.c:937, ABLOCKS_SIZE alloc.c:979). struct cons_block (alloc.c:2539) layout: cells, gcmarkbits, next; CONS_BLOCK_SIZE (alloc.c:2526) is 1356 for 24-byte cells (adapted: the refcount word stays until word-heap S2.2). XMARK_CONS (alloc.c:2550) side bits; mark_object's cons case (alloc.c:6733) takes no exact-start probe. sweep_conses (alloc.c:6814) ported with the all-marked fast path, the dead car marker and block release. mem_find (alloc.c:4213) adapted as an open-addressing registry of aligned groups with GNU's min/max address rejection; live_cons_holding (alloc.c:4627) and mark_maybe_pointer (alloc.c:4854) ported for the conservative stack scan. Images: pdumper's object copy adapted, the stream dump appends each cell as a legacy headered payload, so the loader is unchanged. Parallel sections keep the legacy CAS path (GNU's free list has one writer). gcstat (alloc.c:6886): an explicit garbage-collect counts block conses from sweep_conses and skips image objects, as GNU never counts pdumper objects. Dynamic c2 (2352633d): cold image loads (0.39 s start, 44.97 MB live vs base 45.64 MB), probe, gc-pressure, gc-conservative-cost, image-hole cons/loop/pause, four thread smokes and the free-symbol census pass; static c2 (7f8aa5b5) the same, thread smokes 5/5 each under a 4 GB cap, and word-heap-vectorlike-image.py (mid-run dumps, both linkages, 32 checks) passes.
+#+NOTE: 2026-10-21 measured (Doc 220 cons churn, layout 0, cold image restored): GC+alloc 2099.3M -> 1567.1M Ir (-25.3%), total 3080.9M -> 2582.2M (-16.2%); mark 1063.5 -> 674.0M (census 495.7 -> 164.5M), allocation 111.1 -> 83.2M. The residual is the image header walks GNU's pdumper never performs: nl_gc_sweep_merge_chunk 359M, nl_gc_index_prepare 300M, nl_gc_coalesce_chunks 92M (Doc 223, next increment). The sweep-derived cons count also shows conservatively retained lists that the base census never counted (the base's live bytes grow by them too), so c2 numbers are not a leak.
 #+TIMEOUT: 600
 cmd: python3 tools/ai/gc-port-check.py conses
 ** S1.2 Floats, symbols, strings (headers plus compacted sdata) and vectors (small vector blocks plus large vectors) follow GNU's typed blocks and sweeps
 Conservative scanning validates candidate pointers through persistent block metadata, as mem_find does.
+#+NOTE: 2026-10-21: known-red. Ported: cons blocks and the persistent block registry (S1.1). Blocked, with the layer named in Doc 223: floats (word-heap S5: a float is a caller-allocated 32-byte result slot whose type is written after allocation), symbols (word-heap S3: 32-byte slot plus the symbol-name sidecar and the intern region), strings with compact_small_strings (word-heap S3/S6: copyable 32-byte views alias one character buffer, Doc 149, so sdata has no single owner to update). Vector blocks are not blocked but were not landed this session; Doc 223 lists their integration points (nl_gc_block_elem_cap, nl_gc_in_arena, the image walker).
 cmd: python3 tools/ai/gc-port-check.py all-types
 
 * S2 Speed
-** S2.1 Cons churn: GC plus allocation Ir <= GNU
-cmd: python3 tools/ai/gc-port-check.py speed cons
-** S2.2 String churn: GC plus allocation Ir <= GNU
-cmd: python3 tools/ai/gc-port-check.py speed string
-** S2.3 Vector churn: GC plus allocation Ir <= GNU
-cmd: python3 tools/ai/gc-port-check.py speed vector
-** S2.4 The company profile workload: the GC plus allocation share of total Ir falls from 42.79% to at most 15%
+** S2.1 Cons churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
+#+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1567.1M Ir vs GNU 157.0M (x9.98); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
+#+NOTE: 2026-10-21 wall-clock (target/gc-port/wall/final.json, median of 7 alternating runs, taskset 28-31, warmed up, whole invocation with startup and three collections): c2 0.444s, base 0.583s (-24%), GNU 31.1 0.067s (x6.60). A nelisp-emacs-lib job held CPU 28 during the runs.
+cmd: python3 tools/ai/gc-port-check.py wall cons
+** S2.2 String churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
+#+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1585.8M Ir vs GNU 157.2M (x10.08); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
+#+NOTE: 2026-10-21 wall-clock (target/gc-port/wall/final.json, median of 7 alternating runs, taskset 28-31, warmed up, whole invocation with startup and three collections): c2 0.448s, base 0.594s (-24%), GNU 31.1 0.068s (x6.59). A nelisp-emacs-lib job held CPU 28 during the runs.
+cmd: python3 tools/ai/gc-port-check.py wall string
+** S2.3 Vector churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
+#+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1564.8M Ir vs GNU 157.4M (x9.94); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
+#+NOTE: 2026-10-21 wall-clock (target/gc-port/wall/final.json, median of 7 alternating runs, taskset 28-31, warmed up, whole invocation with startup and three collections): c2 0.430s, base 0.575s (-25%), GNU 31.1 0.069s (x6.22). A nelisp-emacs-lib job held CPU 28 during the runs.
+cmd: python3 tools/ai/gc-port-check.py wall vector
+** S2.4 The company workload's wall-clock on this branch is at most 0.67x the base's
+#+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "the GC plus allocation share of total Ir falls from 42.79% to at most 15%". 0.67 is the wall-clock equivalent with the rest unchanged (0.5721 / 0.85 = 0.673). The NOTE reports the GNU ratio once measured.
+#+NOTE: 2026-10-21: unmeasured on this branch. The Doc 220 profile ran (require 'company) on a nelisp-emacs-lib library image; reproducing it needs that image rebuilt for this binary (tools/c-core-image.sh with build/nemacs-bootstrap.el from nelisp-emacs-lib). Doc 220's 42.79% stays the before value.
 cmd: python3 tools/ai/gc-port-check.py company
 
 * S3 End to end
 ** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, the MCP smoke with 40 tools, and the word-heap ledger's previous PASS criteria still passing
+#+NOTE: 2026-10-21: c2 (dyn 2352633d, static 7f8aa5b5; target/gc-port/final -> final-c2): checks.sh 11 cases 0 failures (maphash-sparse known-red), standalone-checks PASS, anvil MCP 40 tools after 25 s of open stdin, and the word-heap ledger's binary criteria on these binaries (S1.2 census raw-header-read 0 and word idioms 0; S4.2 free symbols 0 and env-capture roots 56 on both linkages). The word-heap criteria pinned to evidence under the word-heap lane's own target/ (about 80 GB) cannot run here: all 29 fail in a clean worktree at the base commit too (target/gc-port/wh-meter-base.txt).
 cmd: python3 tools/ai/gc-port-check.py final
 ** S3.2 End to end: notes-65's S1.3 init on a library image from this branch, alternated with 9d5f4, is faster, and ccore stays 374/374
 pending

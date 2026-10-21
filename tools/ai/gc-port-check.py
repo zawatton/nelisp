@@ -259,16 +259,26 @@ def cmd_all_types():
     return 0
 
 
+def company_verdict(med):
+    return med['candidate'] <= 0.67 * med['base']
+
+
 def cmd_company():
+    """S2.4 (COMMON Measurement): company workload wall-clock at most 0.67x
+    the base's, the wall-clock equivalent of cutting GC plus allocation from
+    42.79% to 15% with the rest unchanged (0.5721 / 0.85)."""
     import json
-    path = ROOT / 'target/gc-port/company/summary.json'
+    if company_verdict({'candidate': 1.0, 'base': 1.0}):
+        return fail('company: negative control passed')
+    path = ROOT / 'target/gc-port/company/wall.json'
     if not path.exists():
-        return fail('company: the company profile on this branch has not been measured '
-                    '(needs the nelisp-emacs-lib library image, tools/c-core-image.sh)')
-    meta = json.loads(path.read_text())
-    share = meta['gc_alloc_ir'] / meta['total_ir']
-    line = f'company: GC+alloc {share*100:.2f}% of {meta["total_ir"]} Ir (bar 15%, Doc 220 42.79%)'
-    if share > 0.15:
+        return fail('company: wall-clock not measured on this branch (the (require '
+                    "'company) workload runs on a nelisp-emacs-lib library image, "
+                    'rebuilt for this binary with tools/c-core-image.sh)')
+    med = json.loads(path.read_text())['median']
+    line = (f"company: {med['candidate']:.3f}s vs base {med['base']:.3f}s "
+            f"(x{med['candidate'] / med['base']:.2f}, bar 0.67)")
+    if not company_verdict(med):
         return fail(line)
     print('PASS ' + line)
     return 0
@@ -297,7 +307,7 @@ def final_problems(out, dyn, st):
 
 
 def cmd_final():
-    out = ROOT / 'target/gc-port' / ('final-' + os.environ.get('GC_PORT_FINAL_TAG', 'final'))
+    out = ROOT / 'target/gc-port' / os.environ.get('GC_PORT_FINAL_DIR', 'final')
     dyn, st = binaries()
     if not final_problems(ROOT / 'target/gc-port/no-such-final', dyn, st):
         return fail('final: negative control passed')
@@ -306,6 +316,39 @@ def cmd_final():
         return fail('final: ' + '; '.join(problems))
     print('PASS final: checks.sh 11 groups 0 failures, standalone-checks, MCP 40 tools '
           'and the word-heap binary criteria on the verified binaries')
+    return 0
+
+
+WALL = ROOT / 'target/gc-port/wall/final.json'
+
+
+def wall_verdict(med):
+    return med['candidate'] <= med['gnu']
+
+
+def cmd_wall(kind):
+    """S2.1-S2.3 (COMMON Measurement): median wall-clock of 7 alternating runs,
+    GC included, against GNU 31.1 on the same Lisp workload."""
+    import hashlib
+    import json
+    if wall_verdict({'candidate': 2.0, 'gnu': 1.0}):
+        return fail('wall: negative control passed')
+    if not WALL.exists():
+        return fail(f'wall {kind}: no measurement at {WALL.relative_to(ROOT)}')
+    data = json.loads(WALL.read_text())
+    dyn = binaries()[0]
+    if not dyn.exists() or data['sha256']['candidate'] != hashlib.sha256(dyn.read_bytes()).hexdigest():
+        return fail(f'wall {kind}: measured binary is not {dyn}')
+    w = data['workloads'].get(kind)
+    if not w or w['failures'] or data['rounds'] < 7:
+        return fail(f'wall {kind}: incomplete or failing runs')
+    med = w['median']
+    line = (f"wall {kind}: NeLisp {med['candidate']:.3f}s vs GNU {med['gnu']:.3f}s "
+            f"(x{med['candidate'] / med['gnu']:.2f}; base {med['base']:.3f}s), "
+            f"median of {data['rounds']}, GC included")
+    if not wall_verdict(med):
+        return fail(line)
+    print('PASS ' + line)
     return 0
 
 
@@ -330,7 +373,9 @@ def main(argv):
         return cmd_final()
     if cmd == 'speed' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
         return cmd_speed(argv[1])
-    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|company|final')
+    if cmd == 'wall' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
+        return cmd_wall(argv[1])
+    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final')
     return 2
 
 
