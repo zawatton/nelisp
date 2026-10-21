@@ -4007,7 +4007,15 @@ loader's defalias rewrites or native artifact compilation.  Top-level
                 limit)
         (let ((parsed
                (condition-case err
-                   (read-from-string source position limit)
+                   ;; GNU Fload feeds its native reader at the current
+                   ;; stream cursor.  Reuse the existing bounded one-form
+                   ;; entry; the Lisp reference handles declined syntax.
+                   (or (and (fboundp 'nelisp--read-all-from-string-native)
+                            (condition-case nil
+                                (nelisp--read-all-from-string-native
+                                 source position limit)
+                              (error nil)))
+                       (read-from-string source position limit))
                  (end-of-file
                   ;; GNU's #@00 explicitly discards the remaining input.
                   (if (and (<= (+ position 4) limit)
