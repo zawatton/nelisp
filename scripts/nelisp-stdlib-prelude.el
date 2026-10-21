@@ -10294,12 +10294,11 @@ replacing the elements in the beginning of the constant-vector."
 ;; `(closure ENV ARGS . BODY)' representation: DOCSTRING and IFORM go back
 ;; in front of BODY exactly where `function' found them, so `aref'/`length'
 ;; (which recover GNU's slot view natively) read them back as slots 4/5.
-;; ENV keeps only its (SYMBOL . VALUE) bindings: GNU's `t' marker (lexical
-;; binding) and bare locally-special symbols have no counterpart in this
-;; runtime, whose closures are all lexical.  ENV is GNU's innermost-first
-;; slot-2 order; this runtime stores the captured frames outermost first
-;; (the native slot-2 view walks them back), so the bindings are reversed --
-;; except for a typed closure, see below.
+;; A non-nil ENV is evaluated by the existing lexical function constructor,
+;; which captures the runtime's mutable binding cells.  Copying raw alist
+;; values into a closure would reset assignments on every call.  That path
+;; also adapts GNU's innermost-first bindings to runtime capture order.
+;; Nil ENV keeps the dynamic closure representation and does not capture.
 ;; A DOCSTRING that is not a string (an OClosure type symbol, a DOC-file
 ;; offset) rides in front of BODY as the form (:documentation 'VALUE) -- the
 ;; very form GNU `function' evaluates for the same purpose -- which the
@@ -10311,12 +10310,12 @@ replacing the elements in the beginning of the constant-vector."
   (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
   (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
   (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
-  (cons 'closure
-        (cons (if (consp env) (reverse env) env)
-              (cons args
-                    (append (cond ((stringp docstring) (list docstring))
-                                  (docstring (list (list :documentation (list 'quote docstring)))))
-                            (and iform (list iform)) body))))))
+  (let ((forms (append (cond ((stringp docstring) (list docstring))
+                             (docstring (list (list :documentation (list 'quote docstring)))))
+                       (and iform (list iform)) body)))
+    (if env
+        (eval (list 'function (cons 'lambda (cons args forms))) env)
+      (cons 'closure (cons nil (cons args forms)))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
