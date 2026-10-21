@@ -522,10 +522,14 @@
           0
         (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
             0
-          (nelisp_frame_stack_find_kind_descend
-           (nl_record_slot_word frames-ptr 0)
-           (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
-           name-ptr dynamic))))
+          (let* ((regular
+                  (nelisp_frame_stack_find_kind_descend
+                   (nl_record_slot_word frames-ptr 0)
+                   (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
+                   name-ptr dynamic)))
+            (if (and (= dynamic 1) (/= (heap-read-u64 (- frames-ptr 32) 168) 0))
+                (nl_thread_dynamic_cell (- frames-ptr 32) name-ptr regular)
+              regular)))))
 
     (defun nelisp_frame_stack_find_value (frames-ptr name-ptr)
       ;; A lexical binding remains authoritative even if a later declaration

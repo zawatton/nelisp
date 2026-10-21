@@ -5,12 +5,13 @@ capture --tag TAG --dynamic BIN --static BIN [--source-root DIR]
 performance --tag TAG --dynamic BIN --static BIN [--jobs 4]
 check [--tag candidate] [--group provenance|source|parity|witness|floor]
 controls [--tag candidate]
+performance-controls [--tag candidate]
 
 All generated inputs, process outputs and receipts stay under
 target/wh-s4f/frames. Binary paths and GNU are arguments or environment values.
 GNU crashes/hangs are retained as defects; successful cases are never excluded.
-No cached PASS field is accepted. Performance uses the existing isolated
-callfloor harness and independently replays its authenticated raw profiles.
+No cached PASS field is accepted. Performance uses GC-isolated in-process
+callfloor intervals and independently replays its authenticated raw profiles.
 """
 from __future__ import annotations
 
@@ -140,14 +141,16 @@ def capture(args):
     env = selected_env(WHVS_SOURCE_ROOT=str(source_root),
                WHVS_ROWS=str(directory / "source-rows.json"))
     host_guard = run_raw(directory, "host-guard", [gnu, "-Q", "--batch", "--load", str(host_source)], env)
-    report = {"tag": args.tag, "gnu": pin(gnu), "probe": pin(PROBE),
+    report = {"tag": args.tag, "performance_tag": args.performance_tag or args.tag,
+              "gnu": pin(gnu), "probe": pin(PROBE),
               "checker": pin(__file__), "thread_providers": [pin(THREAD_PROVIDER / name) for name in THREAD_FILES],
               "source_root": str(source_root),
               "source_rows": pin(directory / "source-rows.json"),
               "guard_source": pin(host_source), "host_guard": host_guard,
               "tools": [pin(helper.__file__),
                         *[pin(ROOT / "tools/ai" / name) for name in
-                          ("prim-callfloor-check.py", "prim-callfloor-isolated.py", "prim-callfloor-perf.py")]],
+                          ("prim-callfloor-check.py", "prim-callfloor-perf.py", "word-heap-frames-ir.py",
+                           "word-heap-frames-ir-probe.el", "word-heap-frames-ir-client.c")]],
               "binaries": {}, "runs": {}}
     report["gnu_version"] = run_raw(directory, "gnu-version", [gnu, "-Q", "--batch", "--eval", "(princ emacs-version)"])
     for case in CASES:
@@ -178,11 +181,11 @@ def capture(args):
 
 def performance(args):
     need(shutil.disk_usage(ROOT).free >= 50_000_000_000, "less than 50 GB free")
-    module = load_tool("whf_isolated", "prim-callfloor-isolated.py")
+    module = load_tool("whf_isolated", "word-heap-frames-ir.py")
     module.OUT = OUT / args.tag / "performance"
     module.OUT.mkdir(parents=True, exist_ok=True)
     for linkage, binary in (("gnu", args.gnu), ("dynamic", args.dynamic), ("static", args.static)):
-        module.measure(binary, linkage, args.gnu, n=args.n, jobs=args.jobs)
+        module.measure(binary, linkage, args.gnu, n=args.n, jobs=args.jobs, emacs_include=args.emacs_include)
 
 
 def authenticate_runs(report):
@@ -363,9 +366,17 @@ def ratios_from_costs(costs, gnu):
     return ratios, failures
 
 
+def same_companions(measured, captured):
+    # Source capture additionally records byte counts, verified by provenance().
+    return measured == [{key: item[key] for key in ("path", "sha256")} for item in captured]
+
+
 def floor(report):
-    module = load_tool("whf_callfloor", "prim-callfloor-check.py")
-    module.OUT = OUT / report["tag"] / "performance"
+    module = load_tool("whf_callfloor", "word-heap-frames-ir.py")
+    performance_tag = report.get("performance_tag", report["tag"])
+    need(isinstance(performance_tag, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", performance_tag)),
+         "invalid performance tag")
+    module.OUT = OUT / performance_tag / "performance"
     gnu_report, gnu, _ = module.perf("gnu")
     need(gnu_report["qualified_binary"] == module.pin(report["gnu"]["path"]), "performance used a different GNU")
     ratios, failures = {}, []
@@ -374,10 +385,17 @@ def floor(report):
         need(measured.get("isolated") and measured["n"] == gnu_report["n"], "performance trials are not matched/isolated")
         need(measured["qualified_binary"] == module.pin(report["binaries"][linkage]["binary"]["path"]),
              linkage + " performance used another candidate")
+        need(same_companions(measured["binary_companions"], report["binaries"][linkage]["companions"]),
+             linkage + " performance used different binary companions")
         ratios[linkage], failed = ratios_from_costs(costs, gnu)
         failures.extend(linkage + " " + message for message in failed)
     print("callfloor ratios: " + json.dumps(ratios, sort_keys=True))
     need(not failures, "; ".join(failures))
+
+
+def performance_controls(args):
+    module = load_tool("whf_ir_test", "../../test/word-heap-frames-ir-test.py")
+    module.run(OUT / args.tag / "performance-controls.json")
 
 
 def check(args):
@@ -394,6 +412,7 @@ def check(args):
 
 
 def controls(args):
+    performance_controls(args)
     # Deliberately broken real counter rows must fail before any green is trusted.
     good = b"WH-FRAME witness ([10 10 0 0 4 8] [212 212 0 0 4 8] [220 220 1 1 4 8])\nWH-FRAME-DONE 1\n"
     witness_values(good)
@@ -492,8 +511,9 @@ def controls(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("capture", "performance", "check", "controls"))
+    parser.add_argument("command", choices=("capture", "performance", "check", "controls", "performance-controls"))
     parser.add_argument("--tag", default="candidate")
+    parser.add_argument("--performance-tag", help="capture against an existing performance campaign")
     parser.add_argument("--dynamic", default=os.getenv("WH_FRAME_DYNAMIC"))
     parser.add_argument("--static", default=os.getenv("WH_FRAME_STATIC"))
     parser.add_argument("--gnu", default=os.getenv("WH_FRAME_GNU", shutil.which("emacs")))
@@ -501,11 +521,15 @@ def main():
     parser.add_argument("--group", choices=GROUPS)
     parser.add_argument("--n", type=int, default=300)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--emacs-include", default=os.getenv("PCF_EMACS_INCLUDE"))
     args = parser.parse_args()
     need(bool(re.fullmatch(r"[A-Za-z0-9_-]+", args.tag)), "invalid evidence tag")
+    if args.performance_tag is not None:
+        need(args.command == "capture" and bool(re.fullmatch(r"[A-Za-z0-9_-]+", args.performance_tag)),
+             "performance tag requires capture and a valid evidence tag")
     if args.command in ("capture", "performance"):
         need(args.dynamic and args.static and args.gnu, "supply both binaries and GNU through flags or WH_FRAME_* environment")
-    globals()[args.command](args)
+    globals()[args.command.replace("-", "_")](args)
 
 
 if __name__ == "__main__":

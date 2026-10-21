@@ -23,7 +23,10 @@ Only function names and counts are printed.
   native-free-symbol-census.py count BIN [BIN ...]
       sites per binary; later binaries are compared with the first
   native-free-symbol-census.py check BIN --max N
-      exit 0 iff BIN has at most N sites
+      exit 0 iff a symbol-covered BIN has at most N sites
+
+The static native symbol table is required: stripping it makes call-target
+names unavailable and cannot establish a zero-site result.
 """
 import re
 import subprocess
@@ -31,13 +34,21 @@ import sys
 
 FUNC = re.compile(r'^[0-9a-f]+ <([^>]+)>:$')
 CALL = re.compile(r'\scall\s+[0-9a-f]+ <([^>+]+)>')
+REQUIRED_TARGETS = {"nl_alloc_symbol", "nelisp_env_lookup_value"}
 
 
 def scan(binary):
     """Return {function: sites} for the free-symbol lookup pattern."""
+    symbols = subprocess.run(["nm", "-P", "--defined-only", binary],
+                             capture_output=True, text=True, errors="replace")
+    text_symbols = {fields[0] for line in symbols.stdout.splitlines()
+                    if len(fields := line.split()) > 1 and fields[1] in ("T", "t")}
+    if symbols.returncode != 0 or not REQUIRED_TARGETS <= text_symbols:
+        raise SystemExit(f"FREE-SYMBOL missing native symbol coverage: {binary}")
     proc = subprocess.Popen(["objdump", "-d", "--no-show-raw-insn", binary],
                             stdout=subprocess.PIPE, text=True, errors="replace")
     hits = {}
+    covered = set()
     fn = None
     stack_name = False  # `mov %rsp,%rdi' since the last call
     pending = False     # previous call: nl_alloc_symbol of stack bytes
@@ -45,6 +56,8 @@ def scan(binary):
         m = FUNC.match(line)
         if m:
             fn, stack_name, pending = m.group(1), False, False
+            if fn in text_symbols:
+                covered.add(fn)
             continue
         if 'mov    %rsp,%rdi' in line:
             stack_name = True
@@ -58,6 +71,8 @@ def scan(binary):
             stack_name = False
     if proc.wait() != 0:
         raise SystemExit(f"objdump failed on {binary}")
+    if not REQUIRED_TARGETS <= covered:
+        raise SystemExit(f"FREE-SYMBOL missing disassembled native coverage: {binary}")
     return hits
 
 

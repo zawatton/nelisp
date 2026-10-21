@@ -34,6 +34,10 @@ BASE_MANIFESTS = {
     "dynamic": "014335687ae04d8dc38e5de2c40df3fd879571dbdb05a38268b6b2e8f41eda09",
     "static": "64c7d353d0ee3b9654385a735cc0d2a92e4b37d0785a26a31f8a48e6b201c7f8",
 }
+REGRESSION_MANIFESTS = {
+    "dynamic": "029da97472492177b0c25def51c43d1f796f0eb5ae743d1f249a5e6e268e7cd6",
+    "static": "beff4e697b9f10837a64491a5272dd4d12d41f63b9f3fcaf6dbc24533e3858e6",
+}
 MODES = ("boot", "files", "regex")
 LAYOUTS = (0, 700, 1400, 2100)
 LINKAGES = ("dynamic", "static")
@@ -329,7 +333,13 @@ def check(producer, source, args):
 def controls(producer, args):
     output, prefix = local(args.output), label(args.candidate_prefix)
     records, results = replay_all(producer, output, prefix)
-    need(all(not row["pass_original_cap"] for group in results.values() for row in group.values()),
+    need(all(row["pass_original_cap"] for group in results.values() for row in group.values()),
+         "qualified candidate must pass all six original caps")
+    for linkage, digest in REGRESSION_MANIFESTS.items():
+        need(sha(output / ("merged-" + linkage) / "measurement.json") == digest,
+             "historical merged regression manifest changed: " + linkage)
+    _, regression = replay_all(producer, output, "merged")
+    need(all(not row["pass_original_cap"] for group in regression.values() for row in group.values()),
          "real merged regression must be red in all six workload/linkage cells")
     rejected, accepted = {}, []
     # Copies retain original labels, binary paths and raw command paths. Only the
@@ -389,7 +399,9 @@ def controls(producer, args):
                 print(f"CONTROL {linkage}-{mutation} REJECT {rejected[linkage + '-' + mutation]}")
     need(len(accepted) == len(rejected) == 8, "incomplete control pairs")
     write_report(output / (prefix + "-gate-controls.json"),
-                 {"real_regression": results, "unmodified_shadows": accepted, "rejected": rejected})
+                 {"qualified_candidate": results, "real_regression": regression,
+                  "regression_manifests": REGRESSION_MANIFESTS,
+                  "unmodified_shadows": accepted, "rejected": rejected})
     print("CONTROLS PASS real-red-profiles=24 unmodified-shadows=8 corruptions=8 intended-reasons=8")
     return 0
 

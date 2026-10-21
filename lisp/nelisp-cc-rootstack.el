@@ -144,7 +144,11 @@
        name-ptr (alloc-bytes 32 1) (alloc-bytes 32 8) 0))
     (defun nl_thread_mirror_mutation_guard_registered (entry name-ptr)
       (if (= entry 0) 0
-        (nl_thread_mirror_mutation_signal name-ptr)))
+        ;; Legacy eval threads have private dynamic bindings and retain their
+        ;; ordinary shared-default writes. Registry workers keep their bounded
+        ;; no-mirror-mutation contract. env+168 is the legacy launch pointer.
+        (if (> (heap-read-u64 (heap-read-u64 entry 0) 168) 4096) 0
+          (nl_thread_mirror_mutation_signal name-ptr))))
     (defun nl_thread_mirror_mutation_guard (mirror-ptr name-ptr)
       ;; Outside a parallel section count is zero: one load + compare, no scan.
       (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)

@@ -67,6 +67,7 @@
 (require 'nelisp-runtime-reload-telemetry)
 (require 'nelisp-vendor-source)
 (require 'nelisp-boot-image)
+(require 'nelisp-version)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -79,6 +80,37 @@
   (file-name-directory
    (directory-file-name (file-name-directory nelisp-standalone--this-file)))
   "Repo root (parent of scripts/).")
+
+(defvar nelisp-standalone--build-version nil
+  "Runtime identity captured once for the current reader build.")
+
+(defvar nelisp-standalone--build-source-revision nil
+  "Source revision captured beside the runtime version before compilation.")
+
+(defun nelisp-standalone--version ()
+  "Return the current build's captured runtime identity."
+  (or nelisp-standalone--build-version
+      (nelisp-build-version nelisp-standalone--repo-root)))
+
+(defun nelisp-standalone--version-target ()
+  "Return the CLI spelling of this build's target."
+  (pcase (nelisp-standalone-arena-rewrite-target)
+    ('windows-x86_64 "x86_64-windows")
+    ('windows-aarch64 "aarch64-windows")
+    ('linux-aarch64 "aarch64-linux")
+    ('macos-aarch64 "aarch64-macos")
+    (_ "x86_64-linux")))
+
+(defun nelisp-standalone--version-linkage ()
+  "Describe the linked executable, independently of runtime FFI support."
+  (if (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+           (nelisp-standalone--reader-dynamic-p)) "dynamic" "static"))
+
+(defun nelisp-standalone--version-line ()
+  "Return the complete build-captured CLI version line."
+  (format "NeLisp %s (%s, %s)\n" (nelisp-standalone--version)
+          (nelisp-standalone--version-target)
+          (nelisp-standalone--version-linkage)))
 
 (defconst nelisp-standalone--verified-bytecode-dialect-id
   (if (not (and (boundp 'emacs-version)
@@ -4478,7 +4510,7 @@ REPL-facing module it feeds."
     (defun nl_gc_index_end ()
       (ptr-write-u64 (data-addr nl_gc_start_index) 16 0))
     (defun nl_gc_index_bytes (start end)
-      (nl_align_up (/ (+ (- end start) 63) 64) 8))
+      (nl_align_up (sar (+ (- end start) 63) 6) 8))
     ;; The header word is decoded inline (`nl_hdr_bt' / `nl_gc_bt_ok', whose
     ;; alignment test the 32-bit size mask already satisfies): this walk
     ;; visits every block of the heap once per collection.
@@ -4487,29 +4519,35 @@ REPL-facing module it feeds."
              (end (heap-read-u64 entry 8))
              (bits (heap-read-u64 entry 16))
              (prefix (+ bits (nl_gc_index_bytes start end)))
-             (prefix-bytes (* (/ (+ (- end start) 4095) 4096) 8))
-             (page 0) (previous 0) (hdr start) (ok 1) (bt 0) (slot 0) (byte 0))
+             (prefix-end (+ prefix (* (sar (+ (- end start) 4095) 12) 8)))
+             (page prefix) (boundary start) (previous 0)
+             (hdr start) (obj 0) (ok 1) (bt 0) (slot 0) (byte 0))
         (seq
          (while (and (= ok 1) (< hdr end))
            (setq bt (logand (heap-read-u64 hdr 0) 4294967288))
            (if (if (< bt 16) 1 (if (< end (+ hdr bt)) 1 0))
                (setq ok 0)
              (seq
-              (setq slot (/ (- (+ hdr 8) start) 8))
-              (setq byte (+ bits (/ slot 8)))
+              ;; All offsets are nonnegative after the header-chain bounds
+              ;; check.  Shift instead of signed division, and advance the
+              ;; page boundary once per page rather than multiply it again
+              ;; for every block of the (mostly restored) heap.
+              (setq obj (+ hdr 8))
+              (setq slot (sar (- obj start) 3))
+              (setq byte (+ bits (sar slot 3)))
               ;; The predecessor before each 4 KiB page is derived only
               ;; from the same validated header chain as the start bitmap.
-              (while (and (< page prefix-bytes)
-                          (<= (+ start (* page 512)) (+ hdr 8)))
-                (ptr-write-u64 prefix page previous)
-                (setq page (+ page 8)))
-              (setq previous (+ hdr 8))
+              (while (and (< page prefix-end) (<= boundary obj))
+                (ptr-write-u64 page 0 previous)
+                (setq page (+ page 8))
+                (setq boundary (+ boundary 4096)))
+              (setq previous obj)
               (ptr-write-u8 byte 0
                             (logior (heap-read-u8 byte 0)
                                     (shl 1 (logand slot 7))))
               (setq hdr (+ hdr bt)))))
-         (while (and (= ok 1) (< page prefix-bytes))
-           (ptr-write-u64 prefix page previous)
+         (while (and (= ok 1) (< page prefix-end))
+           (ptr-write-u64 page 0 previous)
            (setq page (+ page 8)))
          ok)))
     (defun nl_gc_index_prepare ()
@@ -4575,8 +4613,8 @@ REPL-facing module it feeds."
         (if (< obj (+ (heap-read-u64 entry 0) 8)) 0
           (if (< obj (heap-read-u64 entry 8)) 1 0))))
     (defun nl_gc_index_test (entry obj)
-      (let ((slot (/ (- obj (heap-read-u64 entry 0)) 8)))
-        (if (= (logand (heap-read-u8 (heap-read-u64 entry 16) (/ slot 8))
+      (let ((slot (sar (- obj (heap-read-u64 entry 0)) 3)))
+        (if (= (logand (heap-read-u8 (heap-read-u64 entry 16) (sar slot 3))
                       (shl 1 (logand slot 7))) 0) 0 1)))
     (defun nl_gc_object_start_p (obj)
       (if (= (logand obj 7) 0)
@@ -5412,6 +5450,51 @@ REPL-facing module it feeds."
             (nl_gc_reclaim_empty_one
              prev chunk (heap-read-u64 (+ chunk 48) 0)
              (heap-read-u64 chunk 0) (heap-read-u64 (+ chunk 8) 0))))))
+    ;; Only the sweep and a successful recorded sweep call this entry.
+    ;; Their lists were cleared and rebuilt from the coalesced header walk:
+    ;; an empty chunk contributes exactly one node to its own size bin.
+    ;; Keep the generic all-bin purge for noncoalesced diagnostic fixtures.
+    (defun nl_gc_freelist_purge_swept_chunk (chunk base size)
+      (let* ((hdr (heap-read-u64 chunk 24)) (bt (nl_hdr_bt hdr)))
+        (if (= (+ hdr bt) (nl_gc_chunk_end chunk))
+            (if (< bt 473)
+                (let ((head (+ 268435696 (- bt 16))))
+                  (seq (nl_gc_freelist_purge_chain head base size bt)
+                       (nl_freelist_small_mask_sync_head bt head)))
+              (let* ((bin (nl_freelist_large_bin bt))
+                     (head (nl_freelist_large_head bin)))
+                (seq (nl_gc_freelist_purge_chain head base size 0)
+                     (nl_freelist_large_mask_sync bin head))))
+          (nl_gc_freelist_purge_chunk base size))))
+    (defun nl_gc_reclaim_swept_chunks (previous current)
+      (let* ((prev previous) (chunk current) (next 0) (base 0) (size 0))
+        (while (and (> chunk 0)
+                    (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 24) 0)
+                    (= (heap-read-u64 (data-addr nl_thread_parallel_ctx) 16) 0))
+          (setq next (heap-read-u64 (+ chunk 48) 0))
+          (if (or (= chunk (heap-read-u64 268436160 0))
+                  (= chunk (heap-read-u64 268436168 0))
+                  (= (nl_gc_chunk_all_free chunk) 0))
+              (setq prev chunk)
+            (seq
+             (setq base (heap-read-u64 chunk 0))
+             (setq size (heap-read-u64 (+ chunk 8) 0))
+             (nl_gc_freelist_purge_swept_chunk chunk base size)
+             (ptr-write-u64 (data-addr nl_mxcache_epoch) 0
+                            (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+             (ptr-write-u64 (+ prev 48) 0 next)
+             (if (= (nl_os_reclaim_empty_chunk base size) 0)
+                 ;; CHUNK's descriptor was inside the unmapped region.
+                 (seq
+                  (ptr-write-u64 268436176 0 (- (heap-read-u64 268436176 0) 1))
+                  (ptr-write-u64 268436184 0 (- (heap-read-u64 268436184 0) size))
+                  (ptr-write-u64 268436200 0 (+ (heap-read-u64 268436200 0) size))
+                  (nl_alloc_diag_chunk_reclaimed size))
+               (seq (ptr-write-u64 (+ prev 48) 0 chunk)
+                    (nl_alloc_diag_release_failed)
+                    (setq prev chunk)))))
+          (setq chunk next))
+        0))
     ;; ===== Doc 201 §6.14 follow-up: allocation-debt trigger =====
     ;; The collector used to run only when `chunk-bytes-reserved' (268436184)
     ;; crossed a watermark re-armed at reserved+16 MiB -- i.e. once per 64 MiB
@@ -5423,8 +5506,10 @@ REPL-facing module it feeds."
     ;; The debt trigger fires on bytes allocated since the last collection
     ;; (nl_gc_stats+0, counted in `nl_alloc_bytes_uncheck') crossing a
     ;; threshold armed from the live bytes the last sweep counted:
-    ;;     threshold = max(FLOOR, live * PCT / 100)
-    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them
+    ;;     threshold = max(FLOOR, live * PCT / 100 + cold-image credit)
+    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them.
+    ;; The bounded credit below applies only to large restored heaps with
+    ;; the default percentage; diagnostic percentages select the plain ratio.
     ;; (`nelisp--debug-switch' 30/31).  300 % is the ratio the form-boundary
     ;; re-arm has always written as `live*3 + 1 MiB'; it never took effect
     ;; because `live' was advisory 0.  With the debt due before the free
@@ -5440,31 +5525,61 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_pct ()
       (if (= (heap-read-u64 (data-addr nl_gc_stats) 48) 0) 300
         (heap-read-u64 (data-addr nl_gc_stats) 48)))
+    ;; A collected cold image keeps less permanent garbage.  Give large
+    ;; restored heaps an allocation credit, capped by the image byte span
+    ;; beyond 96 MiB AND 1.5 live sets.  Reserving that image headroom keeps
+    ;; the old peak bound while recovering cadence without retaining garbage.
+    ;; Both uncapped 450% and credit for the whole image exceeded that bound.
+    ;; Small/source heaps and explicit diagnostic percentages stay unchanged.
+    ;; Only requested allocation and byte counts schedule GC; addresses,
+    ;; reservation size, free-list success and time are not scheduling clocks.
+    (defun nl_gc_debt_limit_for (live)
+      (let* ((fl (nl_gc_debt_floor)) (eligible live)
+             (pct (nl_gc_debt_pct))
+             (image-end (heap-read-u64 (data-addr nl_gc_stats) 56))
+             (large (if (and (>= live 134217728) (> image-end 0)
+                             (= (heap-read-u64 (data-addr nl_gc_stats) 48) 0)) 1 0))
+             (scaled 0) (credit 0))
+        ;; The opaque queue's payload bytes plus its headers are precisely
+        ;; the bytes conservatively pinned this collection. Keep those blocks,
+        ;; but do not reward transient raw roots with a larger debt budget.
+        ;; Explicit diagnostic percentages continue to use total live bytes.
+        (if (and (= large 1)
+                 (= (logand (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4) 4))
+            (let ((pinned (+ (heap-read-u64 (data-addr nl_gc_conserv_state) 40)
+                             (* (heap-read-u64 (data-addr nl_gc_conserv_state) 48) 8))))
+              (if (< pinned live) (setq eligible (- live pinned)) 0))
+          0)
+        (setq scaled (/ (* eligible pct) 100))
+        (if (= large 1)
+            (let* ((start (heap-read-u64 268435568 0))
+                   (span (if (< start image-end) (- image-end start) 0))
+                   (room (if (< 100663296 span) (- span 100663296) 0))
+                   (extra (/ (* eligible 150) 100)))
+              (setq credit (if (< extra room) extra room)))
+          0)
+        (setq scaled (+ scaled credit))
+        (if (< scaled fl) fl scaled)))
     ;; Recompute the armed limit after a diagnostic override.  The override
     ;; switches are used by the GC gate to separate the normal debt/reuse
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (let* ((fl (nl_gc_debt_floor))
-             (scaled (/ (* (heap-read-u64 (data-addr nl_gc_stats) 16)
-                           (nl_gc_debt_pct))
-                        100)))
-        (ptr-write-u64 (data-addr nl_gc_stats) 8
-                       (if (< scaled fl) fl scaled))))
+      (ptr-write-u64 (data-addr nl_gc_stats) 8
+                     (nl_gc_debt_limit_for
+                      (heap-read-u64 (data-addr nl_gc_stats) 16))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
     (defun nl_gc_debt_rearm_for (live)
-      (let* ((fl (nl_gc_debt_floor))
-             (scaled (/ (* live (nl_gc_debt_pct)) 100)))
-        (seq
-         (ptr-write-u64 268435576 0 live)
-         (ptr-write-u64 (data-addr nl_gc_stats) 8 (if (< scaled fl) fl scaled))
-         (ptr-write-u64 (data-addr nl_gc_stats) 32
-                        (+ (heap-read-u64 (data-addr nl_gc_stats) 32)
-                           (heap-read-u64 (data-addr nl_gc_stats) 0)))
-         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
-         0)))
+      (seq
+       (ptr-write-u64 268435576 0 live)
+       (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
+       (ptr-write-u64 (data-addr nl_gc_stats) 32
+                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32)
+                         (heap-read-u64 (data-addr nl_gc_stats) 0)))
+       (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+       0))
     (defun nl_gc_debt_rearm ()
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 24
@@ -5617,7 +5732,7 @@ REPL-facing module it feeds."
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (heap-read-u64 268436160 0))
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
-           (nl_gc_reclaim_empty_chunks
+           (nl_gc_reclaim_swept_chunks
             (heap-read-u64 268436160 0)
             (heap-read-u64 (+ (heap-read-u64 268436160 0) 48) 0))
          0)
@@ -5846,29 +5961,40 @@ REPL-facing module it feeds."
       (let ((owner (nl_gc_conserv_resolve w)))
         (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
     (defun nl_gc_conserv_scan (p0 top)
-      (let ((p p0))
+      (let* ((index (data-addr nl_gc_start_index))
+             (active (heap-read-u64 index 16))
+             (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
+             (lo (if (= active 1) (heap-read-u64 bounds 0) 0))
+             (hi (if (= active 1) (heap-read-u64 bounds 8) 0))
+             (p p0) (word 0))
         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
-          (nl_gc_conserv_word (heap-read-u64 p 0))
+          (setq word (heap-read-u64 p 0))
+          (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+              (nl_gc_conserv_word word) 0)
           (setq p (+ p 8)))
         0))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
-             (head (heap-read-u64 state 16)))
+             (index (data-addr nl_gc_start_index))
+             (active (heap-read-u64 index 16))
+             (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
+             (lo (if (= active 1) (heap-read-u64 bounds 0) 0))
+             (hi (if (= active 1) (heap-read-u64 bounds 8) 0))
+             (head (heap-read-u64 state 16)) (word 0))
         (while (and (< head (heap-read-u64 state 24))
                     (= (nl_gc_conserv_failed_p) 0))
-          ;; queue_grow may replace and unmap the old queue while a previous
-          ;; entry is being scanned.  Reload the published base for every
-          ;; dequeue; retaining it in the outer let would dereference the
-          ;; freed mapping on the next iteration.
+          ;; Queue growth can unmap the previous queue, but cannot mutate the
+          ;; stopped heap's index or envelope. Reload the queue base each time.
           (let* ((base (heap-read-u64 state 0))
                  (w (heap-read-u64 base (* head 8)))
                  (hdr (- w 8))
                  (end (+ hdr (nl_hdr_bt hdr)))
                  (p w))
             (while (and (< p end) (= (nl_gc_conserv_failed_p) 0))
-              (nl_gc_conserv_word (heap-read-u64 p 0))
-              (ptr-write-u64 state 40
-                             (+ (heap-read-u64 state 40) 8))
+              (setq word (heap-read-u64 p 0))
+              (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+                  (nl_gc_conserv_word word) 0)
+              (ptr-write-u64 state 40 (+ (heap-read-u64 state 40) 8))
               (setq p (+ p 8)))
             (setq head (+ head 1))
             (ptr-write-u64 state 16 head)))
@@ -7117,27 +7243,28 @@ REPL-facing module it feeds."
     ;; never compaction.
     (defun nl_gc_midform_collect ()
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
-          ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
           (if (if (< (heap-read-u64 268436184 0)
                      (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                  (if (= (nl_gc_debt_due) 0) 1 0)
-                0)
+                  (if (= (nl_gc_debt_due) 0) 1 0) 0)
               0
-             (nl_seq2 (nl_gc_collect_from_recorded_roots 0)
-             ;; Recorded collection holds ctx+24 while it marks/sweeps, so its
-             ;; embedded reclaim traversal must refuse.  Once the collector
-             ;; returns and clears ctx+24, perform the same Stage-4c traversal
-             ;; here; Tier 3a's +16 guard still blocks it under live workers.
-             (nl_seq2
-              (if (= (nl_os_empty_chunk_reclaim_p) 1)
-                  (nl_gc_reclaim_empty_chunks
-                   (heap-read-u64 268436160 0)
-                   (heap-read-u64 (+ (heap-read-u64 268436160 0) 48) 0))
-                0)
-              (nl_seq2 (nl_gc_growth_rearm)
-                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
-                                      (+ (heap-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
+            (let ((before (heap-read-u64 (data-addr nl_gc_stats) 24)))
+              (seq
+               (nl_gc_collect_from_recorded_roots 0)
+               ;; Inhibit was cleared on return. Only a completed sweep has
+               ;; rebuilt the lists; failed index/OOM/park paths cannot use
+               ;; the single-bin empty-chunk shortcut.
+               (if (= (nl_os_empty_chunk_reclaim_p) 1)
+                   (if (> (heap-read-u64 (data-addr nl_gc_stats) 24) before)
+                       (nl_gc_reclaim_swept_chunks
+                        (heap-read-u64 268436160 0)
+                        (heap-read-u64 (+ (heap-read-u64 268436160 0) 48) 0))
+                     (nl_gc_reclaim_empty_chunks
+                      (heap-read-u64 268436160 0)
+                      (heap-read-u64 (+ (heap-read-u64 268436160 0) 48) 0)))
+                 0)
+               (nl_gc_growth_rearm)
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
+                              (+ (heap-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
         0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
@@ -11955,7 +12082,10 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     (defun bf_garbage_collect_w (func args env _pad)
       (let ((argc (m5_list_len args 0)))
         (if (= argc 0)
-            (if (= (nl_sb_worker_p env) 1)
+            ;; A migrated main context needs private bindings but still owns
+            ;; the ordinary public GC snapshot. Only real registry workers
+            ;; use the bounded raw diagnostics result.
+            (if (/= (nl_thread_registry_find env) 0)
                 (seq (nl_gc_collect_from_recorded_roots 0) (bf_arena_stats_w 0))
               (bf_garbage_collect_snapshot_w env 0))
           (nl_abi_fail (bf_wrong_number_of_args func argc) 0))))
@@ -16413,8 +16543,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((carw (nl_cons_car_word event)))
         (if (= carw 0) 0
           (if (= (logand carw 1) 1) 0
-            (if (= (heap-read-u64 carw 0) 4) 1 0)))))
+            (if (or (= (heap-read-u64 carw 0) 4)
+                    (= (heap-read-u64 carw 0) 11)) 1 0)))))
     (defun wf_bytecode_w_lean_unbind (env event scratch)
+      ;; A migrated event's private Cell ceases to be visible when the caller
+      ;; removes this event from UNWINDS. It must never restore the mirror.
+      (if (= (nl_val_tag (nl_cons_car_word event)) 11) 0
       (let* ((name (nl_cons_car_word event))
              (saved (nl_cons_cdr_word event))
              (entry (nelisp_mirror_lookup_entry (+ env 0) name)))
@@ -16422,7 +16556,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= entry 0)
                  (nl_sb_set env name (wf_bytecode_w_view saved scratch))
                (ptr-write-u64 (+ (nl_word_payload entry) 16) 0 saved))
-             0)))
+             0))))
     (defun wf_bytecode_w_bind_formals (env formals args argc unwinds nil-unwinds tmp wtmp)
       ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
       ;; at ARGS (arity already checked) as events of this activation.
@@ -25154,8 +25288,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Private legacy evaluator context, built before publication to clone.
     (defun nl_make_thread_env (penv)
       ;; This path evaluates arbitrary Lisp after clone. Its inherited cells
-      ;; may be shared, but its frame stack and native state must be private.
-      (let* ((e (nl_os_alloc_chunk 184)) (i 0))
+      ;; may be shared, but its frames, roots and native state must be private.
+      ;; Match the registered evaluator worker's root reserve; an unregistered
+      ;; context would silently reserve from the parent's global root stack.
+      (let* ((e (nl_os_alloc_chunk 1052672)) (i 0))
         (if (< e 4096) (seq (bf_signal_memory_full) 0)
           (seq
            (while (< i 23) (seq (ptr-write-u64 e (* i 8) 0) (setq i (+ i 1))))
@@ -25163,7 +25299,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (ptr-write-u64 e 104 (heap-read-u64 penv 104))
            (ptr-write-u64 e 112 (heap-read-u64 penv 112))
            (nl_frame_stack_inherit penv e 0 0)
-           e))))
+           (ptr-write-u64 e 120 (+ e 4096))
+           (if (< (nl_thread_registry_add e) 0)
+               (seq (bf_signal_memory_full) 0)
+             e)))))
+    ;; A legacy Lisp worker may publish its user counter before native eval
+    ;; retirement. END must retain the registry until that final access ends.
+    ;; Registered workers leave env+168 zero; legacy workers point to a private
+    ;; launch record whose +16 completion word is published after retirement.
+    (defun nl_thread_legacy_wait_complete ()
+      (let* ((i 0) (launch 0))
+        (while (< i (heap-read-u64 (data-addr nl_thread_registry) 0))
+          (seq
+           (setq launch (heap-read-u64 (heap-read-u64 (nl_thread_registry_entry i) 0) 168))
+           (if (< launch 4096) 0
+             (while (= (atomic-fetch-add (+ launch 16) 0) 0) 0))
+           (setq i (+ i 1))))))
     ;; Child entry (clean frame on the clone stack): read FORM + the ALREADY-
     ;; BUILT fresh env from the heap box (box[8] is built by the PARENT before
     ;; the clone, so the child never copies the parent's live ctx — which the
@@ -25175,6 +25326,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (let ((out_slot (alloc-bytes 32 8)))
              (seq (extern-call nelisp_eval_call (heap-read-u64 box 0) (heap-read-u64 box 8) out_slot)
                   (nl_frame_stack_retire_env (heap-read-u64 box 8) 0)
+                  (atomic-fetch-add (+ box 16) 1)
                   (syscall-direct 60 0 0 0 0 0 0)))))
     ;; spin (COMPILED, iterative) until *ADDR == 0 — the spawn handshake wait.
     (defun nl_spin_zero (addr)
@@ -25182,13 +25334,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: Int 1 in the parent (the child never returns).  No box is
     ;; held across the spin, so nothing needs a root (R2).
     (defun bf_thread_spawn_w (args env _pad)
-      (let ((box (alloc-bytes 16 8)))
+      (let ((box (alloc-bytes 24 8)))
         (seq (ptr-write-u64 box 0 (wf_arg_ptr args 0))
              ;; build the per-thread env NOW (parent, ctx consistent) -- not in
              ;; the child concurrently with the parent's own ctx mutation.
              (ptr-write-u64 box 8 (nl_make_thread_env env))
              (if (< (heap-read-u64 box 8) 4096) 0
-               (seq (ptr-write-u64 268435688 0 box)
+               (seq (ptr-write-u64 box 16 0)
+                    (ptr-write-u64 (heap-read-u64 box 8) 168 box)
+                    (ptr-write-u64 268435688 0 box)
              (let ((stack (syscall-direct 9 0 67108864 3 34 -1 0)))
                (if (= (syscall-direct 56 768 (+ stack 67108864) 0 0 0 0) 0)
                    (nl_thread_run (heap-read-u64 268435688 0))
@@ -32064,7 +32218,9 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; `delete-directory' and `delete-file'.  All three answered
                     ;; -ENOSYS on this target, and `make-directory' silently
                     ;; created nothing (v1.2.0 parity gap 4).
-                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"))
+                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"
+                    ;; Same-volume rename(82), including atomic replacement.
+                    "MoveFileExW"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW"))
         ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
         ;; listening, readiness and connect-status operations implemented by
@@ -33783,7 +33939,7 @@ publishes the same providers before dumping."
 
 (defun nelisp-standalone--compat-metadata-src ()
   "Return verified dialect owners and genuine runtime version metadata."
-  (let ((version-forms nil) (parts nil)
+  (let ((parts nil)
         (inventory (with-temp-buffer
                      (set-buffer-multibyte nil)
                      (insert-file-contents-literally
@@ -33794,23 +33950,6 @@ publishes the same providers before dumping."
                    (concat "GNU Emacs 31.1; inventory-sha256="
                            (secure-hash 'sha256 inventory)))
       (error "Embedded inventory differs from build-verified GNU dialect"))
-    (with-temp-buffer
-      (insert-file-contents (expand-file-name "src/nelisp.el"
-                                            nelisp-standalone--repo-root))
-      (emacs-lisp-mode)
-      (check-parens)
-      (goto-char (point-min))
-      (condition-case nil
-          (while t
-            (let ((start (point)) (form (read (current-buffer))))
-              (when (and (eq (car-safe form) 'defconst)
-                         (eq (cadr form) 'nelisp-version))
-                (unless (stringp (nth 2 form))
-                  (error "Runtime version declaration is not a string"))
-                (push (buffer-substring-no-properties start (point)) version-forms))))
-        (end-of-file nil)))
-    (unless (= (length version-forms) 1)
-      (error "Expected exactly one genuine runtime version declaration"))
     (dolist (relative '("lisp/nelisp-bytecode-compiler-input-dialect.el"
                         "lisp/nelisp-stdlib-compat-metadata.el"))
       (let ((source (with-temp-buffer
@@ -33822,7 +33961,8 @@ publishes the same providers before dumping."
                       relative source) parts)))
     (concat (format "\n(defconst nelisp-bytecode-runtime-opcode-inventory %S)\n" inventory)
             (mapconcat #'identity (nreverse parts) "")
-            (car version-forms)
+            (format "\n(defconst nelisp-version %S)\n(setq nelisp--cli-version nelisp-version)\n"
+                    (nelisp-standalone--version))
             "\n(nelisp-stdlib-compat-metadata-install)\nt\n")))
 
 (defvar nelisp-standalone--native-cache-source-receipt nil
@@ -37298,8 +37438,9 @@ boundary (Doc 151 Phase B):
              (if (= e 80) (- 0 17)
                (if (= e 2) (- 0 2)
                  (if (= e 3) (- 0 2)
-                   (if (= e 145) (- 0 39)
-                     (- 0 13))))))))
+                   (if (= e 17) (- 0 18)
+                     (if (= e 145) (- 0 39)
+                       (- 0 13)))))))))
        (defun nl_os_win_mkdir (cpath)
          (let* ((wpath (nl_win_utf8_wcs_dup cpath))
                 (ok (extern-call CreateDirectoryW wpath 0)))
@@ -37318,7 +37459,17 @@ boundary (Doc 151 Phase B):
        (defun nl_os_syscall_path_int (nr cpath iarg)
          (if (= nr 21) (nl_os_win_access cpath)
            (if (= nr 83) (nl_os_win_mkdir cpath) (- 0 38))))
-       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
+       (defun nl_os_syscall_path2 (nr c1 c2)
+         (if (= nr 82)
+             ;; Adapt GNU fileio.c Frename_file's same-volume fast path and
+             ;; w32.c sys_rename_replace's UTF-16 replacement semantics.
+             ;; MOVEFILE_REPLACE_EXISTING=1; never COPY_ALLOWED=2: artifact
+             ;; staging files live beside their destination for atomic rename.
+             (let* ((old (nl_win_utf8_wcs_dup c1))
+                    (new (nl_win_utf8_wcs_dup c2))
+                    (ok (extern-call MoveFileExW old new 1)))
+               (if (= ok 0) (nl_os_win_errno) 0))
+           (- 0 38)))
        ;; stat(2) shim.  `GetFileAttributesExW' (not
        ;; `GetFileInformationByHandleEx') because it needs no open handle,
        ;; so a directory, a locked file and a read-protected one all answer
@@ -39580,10 +39731,12 @@ gets no native definitions and is gated by
           (if (= requested 0)
               (if (= (heap-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
                   (let* ((same
-                          (if (= (heap-read-u64
-                                  (data-addr nl_thread_parallel_ctx) 8)
-                                 (heap-read-u64 268436168 0))
-                              1 0)))
+                          (seq
+                           (nl_thread_legacy_wait_complete)
+                           (if (= (heap-read-u64
+                                   (data-addr nl_thread_parallel_ctx) 8)
+                                  (heap-read-u64 268436168 0))
+                               1 0))))
                     (seq
                      (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
                      (ptr-write-u64
@@ -40923,6 +41076,8 @@ correctly."
                                        "--neln-selftest")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_version
+                                       "--version")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
                                        "--help")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_prompt
@@ -41020,8 +41175,10 @@ correctly."
 	      'nl_cli_eval_suffix
 	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
+      'nl_cli_version_text (nelisp-standalone--version-line))
+    ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help|--version] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --version                      Print runtime version and exit\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -41097,7 +41254,8 @@ correctly."
     (defun nl_cli_eval_command_p (ptr)
       (nl_cstr_eq_eval ptr))
     (defun nl_cli_help_command_p (ptr)
-      (nl_cstr_eq_help ptr))
+      ;; Both are early informational commands, including shifted argv.
+      (if (= (nl_cstr_eq_version ptr) 1) 1 (nl_cstr_eq_help ptr)))
     (defun nl_cli_command_p (ptr)
       (if (= (nl_cli_help_command_p ptr) 1)
           1
@@ -41199,6 +41357,22 @@ correctly."
           (if (= (nl_cstr_eq_bare_repl ptr) 1)
               1
             (nl_cstr_eq_bare_help ptr)))))
+    ;; GNU sort_args promotes --version ahead of actions. Scan options without
+    ;; inspecting their operands, and stop at the application-argument separator.
+    (defun nl_cli_version_option_p (sp0 argc idx)
+      (if (>= idx argc) 0
+        (let* ((arg (nl_argv_word sp0 idx)))
+          (cond
+           ((= (nl_cstr_eq_version arg) 1) 1)
+           ((= (nl_cstr_eq_source_separator arg) 1) 0)
+           ((or (= (nl_cli_ldir_flag_p arg) 1)
+                (= (nl_cstr_eq_eval arg) 1)
+                (= (nl_cstr_eq_load arg) 1)
+                (= (nl_cstr_eq_dash_l arg) 1)
+                (= (nl_cstr_eq_dash_f arg) 1)
+                (= (nl_cstr_eq_cold_load_from arg) 1))
+            (nl_cli_version_option_p sp0 argc (+ idx 2)))
+           (t (nl_cli_version_option_p sp0 argc (+ idx 1)))))))
     (defun nl_cli_argv_shifted_p (argc slot0 slot1)
       (if (> argc 1)
           (if (= slot1 0)
@@ -42121,6 +42295,15 @@ correctly."
             (path (nl_argv_word sp0 eff_idx))
             (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
             (arg3 (if (< (+ eff_idx 2) argc) (nl_argv_word sp0 (+ eff_idx 2)) 0))
+            ;; Like GNU emacs.c:2226-2284, answer before image/prelude I/O.
+            (_version
+             (if (= (nl_cli_version_option_p sp0 argc base_idx0) 1)
+                 (let* ((text (alloc-bytes
+                               ,(length (encode-coding-string
+                                         (nelisp-standalone--version-line) 'utf-8 t)) 1))
+                        (n (nl_cli_version_text text 0)))
+                   (seq (nl_os_write_stdout text n) (nl_os_exit_process 0)))
+               0))
             ;; Ordinary commands restore the executable's own companion.
             ;; Artifact/runtime-image commands own separate bootstrap paths;
             ;; --embedded intentionally retains its bare-native test context.
@@ -42198,6 +42381,11 @@ correctly."
             (dd_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "default-directory"))) 1))
             (dd_sym (alloc-bytes 32 8))
             (dd_value (alloc-bytes 32 8))
+            (version_sym_buf (alloc-bytes 32 1))
+            (version_sym (alloc-bytes 32 8))
+            (cli_version_sym_buf (alloc-bytes 32 1))
+            (cli_version_sym (alloc-bytes 32 8))
+            (version_value (alloc-bytes 32 8))
             ;; feat/standalone-agent-loadpath: `noninteractive' / `invocation-
             ;; name' / `invocation-directory', same shallow-`let*'-then-
             ;; `nl_env_set_value'-in-the-`seq'-body idiom as `default-
@@ -42328,6 +42516,13 @@ correctly."
         ;; getcwd(2) answers it here, with the trailing slash Emacs keeps.
         (nl_os_getcwd dd_value)
         (nl_env_set_value ctx dd_sym dd_value)
+        ,@(nelisp-standalone--byte-write-forms 'version_sym_buf "nelisp-version")
+        (nl_alloc_symbol version_sym_buf 14 version_sym)
+        ,@(nelisp-standalone--byte-write-forms 'cli_version_sym_buf "nelisp--cli-version")
+        (nl_alloc_symbol cli_version_sym_buf 19 cli_version_sym)
+        (sexp-write-str-lit version_value ,(nelisp-standalone--version))
+        (nl_env_set_value ctx version_sym version_value)
+        (nl_env_set_value ctx cli_version_sym version_value)
         ;; feat/standalone-agent-loadpath: this standalone CLI is always
         ;; batch (no TTY interaction loop other than `--repl''s own line
         ;; reader, which does not consult `noninteractive'), so `t'
@@ -46015,16 +46210,152 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (record-slot-set out 0 backing)
          (record-slot-set out 1 (+ (* depth 4) 1))
          (nl_root_release env mark) 0)))
-    (defun nl_frame_stack_inherit (penv env _pad _pad2)
-      ;; Legacy thread-spawn evaluates an ordinary form with inherited lexical
-      ;; cells. Publish heap frames before clone, but never share its mutable
-      ;; backing vector, depth, descriptor, or off-heap frame addresses.
-      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv)))
+    ;; Convert the parent's active shallow bindings before publishing a child.
+    ;; GNU temporarily unbinds them while switching threads (thread.c:95-98,
+    ;; eval.c:4177-4191). Concurrent workers instead keep bindings in private
+    ;; cells and leave the shared mirror holding the actual default value.
+    (defun nl_thread_converted_name_p (names sym)
+      (if (= (nl_val_tag names) 7)
+          (let* ((item (nl_cons_car_word names)) (tag (nl_val_tag item)))
+            (if (or (and (or (= tag 4) (= tag 16))
+                         (= (nelisp_symbol_key_equal item sym) 1))
+                    (and (= tag 7)
+                         (= (nelisp_symbol_key_equal (nl_cons_car_ptr item) sym) 1)))
+                1 (nl_thread_converted_name_p (nl_cons_cdr_word names) sym))) 0))
+    (defun nl_thread_older_shallow_p (names sym)
+      (if (= (nl_val_tag names) 7)
+          (let* ((item (nl_cons_car_word names)))
+            (if (and (= (nl_val_tag item) 8)
+                     (= (nelisp_symbol_key_equal (nl_vector_slot_word item 0) sym) 1))
+                1 (nl_thread_older_shallow_p (nl_cons_cdr_word names) sym))) 0))
+    (defun nl_thread_unshallow_one (penv frame entry)
+      (let* ((sym (vector-ref-ptr entry 0)) (scratch (alloc-bytes 160 8)))
         (seq
-         (nl_frame_stack_snapshot penv saved)
-         (record-make (nl_record_type_word saved) 3 (+ env 32))
-         (record-slot-set (+ env 32) 0 (nl_record_slot_word saved 0))
-         (record-slot-set (+ env 32) 1 (nl_record_slot_word saved 1))
+         (if (= (nl_thread_converted_name_p (nl_record_slot_word frame 1) sym) 1) 0
+           (seq
+            (if (= (nelisp_env_lkv_mirror penv sym scratch 0) 0) 0
+              (nl_sexp_clone_into (+ penv 64) scratch))
+            (cell-make scratch (+ scratch 32))
+            (nelisp_frame_bind_in_frame frame sym (+ scratch 32)
+             (+ scratch 64) (+ scratch 96) (+ scratch 128))))
+         (nl_sb_set penv sym (nl_vector_slot_word entry 1)) 0)))
+    (defun nl_thread_unshallow_names (penv frame names)
+      (if (= (nl_val_tag names) 7)
+          (let* ((entry (nl_cons_car_word names)))
+            (seq
+             (if (= (nl_val_tag entry) 8)
+                 (seq
+                  (nl_thread_unshallow_one penv frame entry)
+                  (if (= (nl_thread_older_shallow_p (nl_cons_cdr_word names)
+                                                  (vector-ref-ptr entry 0)) 1)
+                      ;; Preserve repeat-binding watcher unwind values through
+                      ;; the existing (SYMBOL . OLD-CELL) deep history format.
+                      (let* ((scratch (alloc-bytes 64 8)))
+                        (seq
+                         (cell-make (nl_vector_slot_word entry 1) scratch)
+                         (nelisp_cons_construct (vector-ref-ptr entry 0) scratch (+ scratch 32))
+                         (cons-set-car names (+ scratch 32))))
+                    ;; The oldest binding unwinds to its outer frame/default.
+                    (cons-set-car names (vector-ref-ptr entry 0)))) 0)
+             (nl_thread_unshallow_names penv frame (nl_cons_cdr_word names))))
+        0))
+    (defun nl_thread_lean_depth (link)
+      (let* ((depth (heap-read-u64 link 24)) (events (heap-read-u64 link 16)))
+        (seq
+         (while (= (nl_val_tag events) 7)
+           (let* ((event (nl_cons_car_word events)))
+             (if (and (= (nl_val_tag (nl_cons_car_word event)) 2)
+                      (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                 (setq depth (+ depth 1)) 0))
+           (setq events (nl_cons_cdr_word events))) depth)))
+    (defun nl_thread_unshallow_lean_one (penv event depth)
+      (let* ((sym (nl_cons_car_word event)) (saved (nl_cons_cdr_word event))
+             (scratch (alloc-bytes 96 8)))
+        (seq
+         (if (= (nelisp_env_lkv_mirror penv sym scratch 0) 0) 0
+           (nl_sexp_clone_into (+ penv 64) scratch))
+         (cell-make scratch (+ scratch 32))
+         (vector-make 2 (+ scratch 64))
+         (vector-slot-set (+ scratch 64) 0 sym)
+         (vector-slot-set (+ scratch 64) 1 (+ (* depth 4) 1))
+         (nl_sb_set penv sym saved)
+         (cons-set-car event (+ scratch 32))
+         (cons-set-cdr event (+ scratch 64)) 0)))
+    (defun nl_thread_unshallow_lean_at (penv wanted)
+      (let* ((state (heap-read-u64 penv 176))
+             (link (if (= state 0) 0 (heap-read-u64 state 16))))
+        (while (/= link 0)
+          (let* ((depth (nl_thread_lean_depth link)) (events (heap-read-u64 link 16)))
+            (seq
+             (while (= (nl_val_tag events) 7)
+               (let* ((event (nl_cons_car_word events)) (tag (nl_val_tag (nl_cons_car_word event))))
+                 (seq
+                  (if (and (= tag 2) (= (wf_bytecode_w_int (nl_cons_car_word event)) 0))
+                      (setq depth (- depth 1)) 0)
+                  (if (and (= tag 4) (= depth wanted))
+                      (nl_thread_unshallow_lean_one penv event depth) 0)))
+               (setq events (nl_cons_cdr_word events)))
+             (setq link (heap-read-u64 link 8)))))))
+    (defun nl_thread_dynamic_frame_depth (frames sym)
+      (let* ((depth (sar (nl_record_slot_word frames 1) 2)) (found 0))
+        (seq
+         (while (and (> depth 0) (= found 0))
+           (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0) (- depth 1))))
+             (if (and (= (nelisp_frame_binding_dynamic_p frame sym) 1)
+                      (/= (nelisp_frame_stack_find_in_frame frame sym) 0))
+                 (setq found depth) (setq depth (- depth 1))))) found)))
+    (defun nl_thread_dynamic_cell (env sym regular)
+      (let* ((state (heap-read-u64 env 176))
+             (link (if (= state 0) 0 (heap-read-u64 state 16)))
+             (depth (if (= regular 0) 0 (nl_thread_dynamic_frame_depth (+ env 32) sym)))
+             (found 0))
+        (seq
+         (while (and (/= link 0) (= found 0))
+           (let* ((events (heap-read-u64 link 16)))
+             (seq
+              (while (and (= (nl_val_tag events) 7) (= found 0))
+                (let* ((event (nl_cons_car_word events)) (cell (nl_cons_car_word event)))
+                  (if (= (nl_val_tag cell) 11)
+                      (let* ((meta (nl_cons_cdr_word event)))
+                        (if (and (>= (sar (nl_vector_slot_word meta 1) 2) depth)
+                                 (= (nelisp_symbol_key_equal (nl_vector_slot_word meta 0) sym) 1))
+                            (setq found cell) 0)) 0))
+                (setq events (nl_cons_cdr_word events)))
+              (setq link (heap-read-u64 link 8)))))
+         (if (= found 0) regular found))))
+    (defun nl_thread_parent_unshallow (penv)
+      (if (/= (heap-read-u64 penv 168) 0) 0
+        (let* ((depth (sar (nl_record_slot_word (+ penv 32) 1) 2)))
+          (seq
+           (nl_frame_stack_promote_env penv 0)
+           (while (>= depth 0)
+             (seq
+              (nl_thread_unshallow_lean_at penv depth)
+              (if (> depth 0)
+                  (let* ((frame (nl_vector_slot_word
+                                 (nl_record_slot_word (+ penv 32) 0) (- depth 1))))
+                    (nl_thread_unshallow_names penv frame (nl_record_slot_word frame 1))) 0)
+              (setq depth (- depth 1))))
+           ;; Keep this context deep after END as well: an older converted
+           ;; binding can still be live when the parallel section finishes.
+           ;; env+168 is outside lexical-mode save/restore. Main contexts use
+           ;; sentinel 1; registered legacy contexts contain their launch ptr.
+           (if (= (nl_thread_registry_find penv) 0)
+               (ptr-write-u64 penv 168 1) 0) 0))))
+    (defun nl_frame_stack_inherit (penv env _pad _pad2)
+      ;; A GNU thread starts with an empty specpdl (thread.c:914-917). Inherit
+      ;; the lexical closure cells, including local declarations, through the
+      ;; same capture/install path as an ordinary closure, never dynamic cells.
+      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv))
+             (backing (nl_root_reserve penv)))
+        (seq
+         (nl_thread_parent_unshallow penv)
+         (nl_env_capture_lexical penv saved)
+         (vector-make 8 backing)
+         (record-make (nl_record_type_word (+ penv 32)) 3 (+ env 32))
+         (record-slot-set (+ env 32) 0 backing)
+         (record-slot-set (+ env 32) 1 1)
+         (nl_env_push_captured env saved)
          (nl_root_release penv mark) 0)))
     (defun nl_frame_stack_stats_w (env _pad)
       (let* ((control (nl_frame_stack_control)) (state (heap-read-u64 control 0))
@@ -46097,6 +46428,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (let* ((value 3))
               (seq
                (if (or (= (heap-read-u64 state 56) 1)
+                       (/= (heap-read-u64 env 168) 0)
                        ;; A registered worker can retain a pre-publication entry.
                        ;; Resolve the shared mirror afresh without cross-thread writes.
                        (and (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
@@ -46463,8 +46795,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= (bf_declared_special_p (+ env 0) name) 1) 1
           (nelisp_frame_local_special_p frames name))))
     (defun nl_sb_worker_p (env)
-      (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
-        (if (= (nl_thread_registry_find (+ env 0)) 0) 0 1)))
+      (if (/= (heap-read-u64 env 168) 0) 1
+        (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+          (if (= (nl_thread_registry_find (+ env 0)) 0) 0 1))))
     (defun nl_sb_plain_entry_p (entry)
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
@@ -47507,7 +47840,11 @@ bridge is deliberately callable only through a raw builtin descriptor."
   "Incrementally build the reader-path standalone binary; return its path.
 NELISP_STANDALONE_BUILD_TRACE opts into an appended JSONL phase trace.
 The trace parent directory must exist; tracing never skips a build stage."
-  (let ((nelisp-standalone--build-trace-path
+  (let ((nelisp-standalone--build-version
+         (nelisp-build-version nelisp-standalone--repo-root))
+        (nelisp-standalone--build-source-revision
+         (nelisp-build-source-revision nelisp-standalone--repo-root))
+        (nelisp-standalone--build-trace-path
          (let ((path (getenv "NELISP_STANDALONE_BUILD_TRACE")))
            (and path (not (string-empty-p path)) (expand-file-name path))))
         (nelisp-standalone--build-trace-unit nil)
@@ -47578,6 +47915,19 @@ The trace parent directory must exist; tracing never skips a build stage."
       (nelisp-standalone--build-cold-image out))
     (nelisp-standalone--build-trace-phase "artifact-runtime"
       (nelisp-standalone-build-artifact-runtime-cache))
+    (require 'json)
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-file (concat out ".version.json")
+        (insert (json-encode
+                 `((version . ,nelisp-standalone--build-version)
+                   (target . ,(nelisp-standalone--version-target))
+                   (linkage . ,(nelisp-standalone--version-linkage))
+                   (source_revision . ,nelisp-standalone--build-source-revision)
+                   (binary_sha256 . ,(with-temp-buffer
+                                       (set-buffer-multibyte nil)
+                                       (insert-file-contents-literally out)
+                                       (secure-hash 'sha256 (current-buffer)))))))
+        (insert "\n")))
     out))))
 
 (defun nelisp-standalone--cold-image-path (binary)
