@@ -119,7 +119,14 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
         owner = owners[name]
         start, end = owner["start"], owner["end"]
         size = end - start
-        if not 0 < size <= 65536 or total + size > 512 * 1024:
+        # 640 KiB: the F1 closure measures 530,615 B on Win64 (296 functions,
+        # call-path merge 915e1a17a plus the Schannel arity fix), 538,922 B at
+        # the symbols-lane tip, and 450,361 B (295) / 441,058 B (300) on
+        # Linux; the largest helper is nl_native_frame_v2 (50,690 B Win64,
+        # 47,664 B Linux).  The growth is GNU structures added on purpose:
+        # symbol cells, cons blocks and the typed-block registry, and the
+        # WORD-frame call path.
+        if not 0 < size <= 65536 or total + size > 640 * 1024:
             raise ValueError("Direct helper text size bound")
         normalized = bytearray(owner["text"][start:end])
         relocations = {}
