@@ -152,14 +152,31 @@
        env pv s1))
 
     (defun nl_sf_cc_after_eval_w (w clauses-ptr var-ptr env pv s1)
+      ;; Doc 216 S6.2: the S1 view is made here, after the protected form,
+      ;; and only for a `:success' clause or an error; the handler body is
+      ;; rooted (`nl_sf_cc_body_w') before anything can collect.
       (if (/= w 0)
           (seq
            (ptr-write-u64 pv 0 w)
-           (nl_sf_cc_try_success_w (nl_abi_word_to_rc (heap-read-u64 pv 0) s1)
-                                   clauses-ptr var-ptr env pv s1))
-        (nl_sf_cc_after_match_w
-         (extern-call nl_cc_match_and_bind clauses-ptr s1 var-ptr env)
-         env 0 s1)))
+           (if (= (extern-call nl_cc_has_success_p clauses-ptr 0) 1)
+               (nl_sf_cc_success_w (nl_sf_cc_box 0 0) clauses-ptr var-ptr env pv 0)
+             (heap-read-u64 pv 0)))
+        (if (= (heap-read-u64 268435472 0) 1)
+            (nl_sf_cc_error_w (nl_sf_cc_box 0 0) clauses-ptr var-ptr env)
+          0)))
+    (defun nl_sf_cc_success_w (s1 clauses-ptr var-ptr env pv _pad)
+      (nl_sf_cc_try_success_w (nl_abi_word_to_rc (heap-read-u64 pv 0) s1)
+                              clauses-ptr var-ptr env pv s1))
+    (defun nl_sf_cc_error_w (s1 clauses-ptr var-ptr env)
+      (seq (extern-call nl_exit_condition_into s1)
+           (nl_sf_cc_after_match_w
+            (extern-call nl_cc_match_and_bind clauses-ptr s1 var-ptr env)
+            env 0 s1)))
+    (defun nl_sf_cc_box (_p0 _p1)
+      ;; A nil view for the matcher, which rewrites its argument in place.
+      (let* ((b (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 b 0 0) (ptr-write-u64 b 8 0)
+             (ptr-write-u64 b 16 0) (ptr-write-u64 b 24 0) b)))
 
     ;; Keep the saved WORD in a checked root until matching/handler evaluation
     ;; finishes. Only the error datum remains in the legacy S1 view.
@@ -168,8 +185,8 @@
         (if (= pv 0)
             (seq (nl_root_release env mark) (nl_abi_fail 1 0))
           (let* ((w (nl_sf_cc_after_eval_w
-                     (extern-call nelisp_eval_call_with_err_w protected-ptr env 0 s1)
-                     clauses-ptr var-ptr env pv s1)))
+                     (extern-call nelisp_eval_call_with_err_w protected-ptr env 0 0)
+                     clauses-ptr var-ptr env pv 0)))
             (seq (nl_root_release env mark) w)))))
 
     (defun nl_sf_cc_split_rest_w (protected-ptr cdr1 var-ptr env _pad s1)
@@ -187,21 +204,11 @@
     ;; Own the error/body scratch across protected evaluation, clause matching
     ;; and the handler. Caller scratch is arena storage and may be reused by GC.
     (defun nl_sf_condition_case_w (args env _pad _caller-scratch)
-      ;; Doc 216 S6.2: S1, the error and handler-body view, is a 32-byte arena
-      ;; box; a WORD root holds its address (a legacy view WORD), so it stays
-      ;; traced across the protected form as the root-stack slot was.
-      (let* ((mark (nl_root_mark env)) (anchor (nl_root_word env))
-             (s1 (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 s1 0 0) (ptr-write-u64 s1 8 0)
-         (ptr-write-u64 s1 16 0) (ptr-write-u64 s1 24 0)
-         (ptr-write-u64 anchor 0 s1)
-         (let* ((w (if (= (sexp-tag args) 7)
-                       (nl_sf_cc_after_cdr1_w (nl_cons_cdr_word args) args env 0 s1 0)
-                     (nl_abi_fail 1 0))))
-           ;; Root release has no safepoint. W remains in the return register
-           ;; until the caller publishes it in its own precise root (R2).
-           (seq (nl_root_release env mark) w)))))
+      ;; Doc 216 S6.2: no scratch view is made up front; `nl_sf_cc_after_eval_w'
+      ;; makes the one view the matcher needs, when it needs it.
+      (if (= (sexp-tag args) 7)
+          (nl_sf_cc_after_cdr1_w (nl_cons_cdr_word args) args env 0 0 0)
+        (nl_abi_fail 1 0)))
 
     ;; (rc, OUT) adapter.
     (defun nl_sf_condition_case (args env out s1)

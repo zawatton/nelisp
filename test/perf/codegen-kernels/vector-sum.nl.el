@@ -1,0 +1,36 @@
+;; vector-sum: sum the fixnum elements of a simple vector.
+;; V is a vector Sexp box (tag byte 8) whose payload at +8 points to the
+;; NlVector (data pointer at +0, length at +16); each element is an 8-byte
+;; value WORD and a fixnum is (K << 2) | 1.  A non-fixnum element stops the
+;; loop and the result is -1.
+(defun ck_kernel (v)
+  (let ((d (ptr-read-u64 (ptr-read-u64 v 8) 0))
+        (n (ptr-read-u64 (ptr-read-u64 v 8) 16))
+        (s 0)
+        (w 0)
+        (i 0))
+    (while (and (< i n)
+                (= (logand (setq w (ptr-read-u64 d (shl i 3))) 3) 1))
+      (setq s (+ s (sar w 2)))
+      (setq i (+ i 1)))
+    (if (< i n) -1 s)))
+
+(defun ck_main (n r)
+  (let ((m 100000)
+        (v (ck_mmap 64))
+        (nv (ck_mmap 64))
+        (data (ck_mmap 800064))
+        (k 0))
+    (while (< k m)
+      (ptr-write-u64 data (* k 8) (+ (* (logand k 1023) 4) 1))
+      (setq k (+ k 1)))
+    (ptr-write-u8 v 0 8)
+    (ptr-write-u64 v 8 nv)
+    (ptr-write-u64 nv 0 data)
+    (ptr-write-u64 nv 8 m)
+    (ptr-write-u64 nv 16 n)
+    (let ((res 0) (j 0))
+      (while (< j r)
+        (setq res (ck_kernel v))
+        (setq j (+ j 1)))
+      res)))

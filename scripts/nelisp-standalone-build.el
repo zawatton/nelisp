@@ -968,6 +968,12 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     ;; A pending nonlocal exit's tag and value WORDs (GNU's handler val), see
     ;; `nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el.
+    ;; Doc 226 D9 stage 3: the mirror record root, one WORD inside
+    ;; `nl_typed_alloc' (+480, free until now; +464 and +472 are the dump's
+    ;; symbol region).  See `nl_symcells_mirror'.
+    (list (nelisp-link-symbol "nl_symcells_root"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 480)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
@@ -1552,8 +1558,8 @@ walker reads whatever happens to be on the stack."
 
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
-;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
-;; assembler emits the standard RELA -4 -- normalizing avoids the off-by-4).
+;; reloc :addend biased by +4 (the linker uses P = va+offset+4; the
+;; assembler emits the standard RELA -4, so a plain call or lea becomes 0).
 ;; ===================================================================
 (defun nelisp-standalone--arm64-link-unit-text+relocs (buf)
   "Return `(TEXT . RELOCS)' for an arm64 standalone link unit.
@@ -1948,6 +1954,131 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
     (setq source (nelisp-standalone--inline-small-defuns source imports)))
   source)
 
+;; CG7 (Doc 224): the small leaf helpers above are visible to every unit,
+;; as lisp.h's inline accessors are visible to every GNU translation unit.
+;; The within-unit pass leaves a call to a helper of ANOTHER unit a call,
+;; and the hottest ones live in the arena unit, which is linked last:
+;; `nl_seq2', `nl_hdr_bt' and `nl_hdr_mark' alone were a fifth of boot's
+;; Ir as calls from the GC unit.  Candidates are the same small leaf defuns
+;; `nelisp-standalone--inline-small-defuns' accepts (only `_'-named ones),
+;; registered from the arena source up front and from every unit as it
+;; passes `nelisp-standalone--cached-unit'; `compile-to-unit' inlines calls
+;; to helpers its source does not define itself.  A name registered twice
+;; with different bodies is never inlined again, and the build stops if it
+;; already was.  Off for the runtime-reload build, whose units can be
+;; replaced one at a time, and with NELISP_INLINE=0 or NELISP_XINLINE=0.
+(defvar nelisp-standalone--xinline-table nil
+  "Hash table NAME -> (PARAMS . BODY) of helpers inlinable in every unit.
+A value of `conflict' marks a name defined twice with different bodies.")
+
+(defvar nelisp-standalone--xinline-used nil
+  "Hash table of helper names already inlined into another unit.")
+
+(defun nelisp-standalone--xinline-enabled-p ()
+  "Non-nil when cross-unit inlining applies to this build."
+  (and (member (nelisp-standalone--inline-level) '("1" "2"))
+       (not (equal (getenv "NELISP_XINLINE") "0"))
+       (not (nelisp-standalone--runtime-reload-enabled-p))))
+
+(defun nelisp-standalone--xinline-refs-p (body names)
+  "Non-nil when BODY contains (data-addr N) for some N in NAMES."
+  (and (consp body)
+       (or (and (eq (car body) 'data-addr) (memq (cadr body) names))
+           (nelisp-standalone--xinline-refs-p (car body) names)
+           (nelisp-standalone--xinline-refs-p (cdr body) names))))
+
+(defun nelisp-standalone--xinline-register (source)
+  "Register the inlinable helpers of unit SOURCE (a (seq FORM...)).
+A body that addresses one of the unit's own `data-blob's stays out: blob
+symbols are local to their object, so another unit could not link it."
+  (when (eq (car-safe source) 'seq)
+    (let ((blobs (delq nil (mapcar (lambda (f) (and (eq (car-safe f) 'data-blob)
+                                                    (cadr f)))
+                                   (cdr source)))))
+    (dolist (form (cdr source))
+      (pcase form
+        (`(defun ,name ,params ,body)
+         (when (and (symbolp name) (string-match-p "_" (symbol-name name))
+                    (listp params) (cl-every #'symbolp params)
+                    (not (memq '&optional params)) (not (memq '&rest params))
+                    ;; Size first: it stops after a few dozen cells, so the
+                    ;; recursive walks below only see small bodies.
+                    (nelisp-standalone--inline-body-ok-p body name)
+                    (not (nelisp-standalone--inline-clone-p body))
+                    (not (nelisp-standalone--xinline-refs-p body blobs)))
+           (let ((old (gethash name nelisp-standalone--xinline-table))
+                 (new (cons params body)))
+             (cond
+              ((null old) (puthash name new nelisp-standalone--xinline-table))
+              ((eq old 'conflict))
+              ((equal old new))
+              ((gethash name nelisp-standalone--xinline-used)
+               (error "CG7: %s was inlined across units and is redefined" name))
+              (t (puthash name 'conflict nelisp-standalone--xinline-table)))))))))))
+
+(defun nelisp-standalone--xinline-prepare ()
+  "Create the cross-unit table on first use, seeded with the arena unit."
+  (when (and (null nelisp-standalone--xinline-table)
+             (nelisp-standalone--xinline-enabled-p))
+    (setq nelisp-standalone--xinline-table (make-hash-table :test 'eq)
+          nelisp-standalone--xinline-used (make-hash-table :test 'eq))
+    (nelisp-standalone--xinline-register
+     (nelisp-standalone--abi-box-split-source
+      (nelisp-standalone--target-arena-source)))))
+
+(defun nelisp-standalone--xinline-digest ()
+  "Digest of the cross-unit table: part of every unit's cache key."
+  (if (not nelisp-standalone--xinline-table)
+      "xinline=off"
+    (let ((entries nil))
+      (maphash (lambda (k v) (push (cons (symbol-name k) v) entries))
+               nelisp-standalone--xinline-table)
+      (secure-hash
+       'sha1
+       (let ((print-length nil) (print-level nil) (print-circle t))
+         (prin1-to-string (sort entries (lambda (a b) (string< (car a) (car b))))))))))
+
+(defun nelisp-standalone--xinline-expand (source)
+  "SOURCE with calls to other units' helpers replaced by their bodies.
+Arguments are bound in order to fresh names by `let*', exactly as the
+within-unit pass does; one level, so a helper body is spliced as written."
+  (if (not (and nelisp-standalone--xinline-table (eq (car-safe source) 'seq)))
+      source
+    (let ((own (make-hash-table :test 'eq)))
+      (dolist (form (cdr source))
+        (when (eq (car-safe form) 'defun)
+          (puthash (cadr form) t own)))
+      (cl-labels
+          ((expand (x)
+             (cond
+              ((not (consp x)) x)
+              ((eq (car x) 'quote) x)
+              ((eq (car x) 'data-addr) x)
+              (t
+               (let* ((args (mapcar #'expand (cdr x)))
+                      (cand (and (symbolp (car x))
+                                 (not (gethash (car x) own))
+                                 (gethash (car x) nelisp-standalone--xinline-table))))
+                 (if (and (consp cand) (= (length args) (length (car cand))))
+                     (let ((alist (mapcar (lambda (p)
+                                            (cons p (intern (format "%s__x%d" p (cl-incf nelisp-standalone--inline-counter)))))
+                                          (car cand))))
+                       (puthash (car x) t nelisp-standalone--xinline-used)
+                       (if alist
+                           `(let* ,(cl-mapcar (lambda (c a) (list (cdr c) a)) alist args)
+                              ,(nelisp-standalone--inline-rename (cdr cand) alist))
+                         (cdr cand)))
+                   (cons (car x) args)))))))
+        (cons 'seq
+              (mapcar (lambda (form)
+                        (pcase form
+                          (`(defun ,name ,params . ,body)
+                           (if (nelisp-standalone--inline-clone-p body)
+                               form
+                             `(defun ,name ,params ,@(mapcar #'expand body))))
+                          (_ form)))
+                      (cdr source)))))))
+
 (defconst nelisp-standalone--box-census-idioms
   '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
     nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
@@ -2081,6 +2212,9 @@ twice appears twice; readers keep the last occurrence of each unit."
          ;; `max-lisp-eval-depth' (signals `excessive-lisp-nesting').  Raise it
          ;; for the whole compile so adding FFI symbols stays a one-row change.
          (max-lisp-eval-depth (max max-lisp-eval-depth 40000))
+         ;; CG7: other units' helpers, before the rewrites below run on
+         ;; the expanded body exactly as on the unit's own forms.
+         (source (nelisp-standalone--xinline-expand source))
          (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone-arena-rewrite-source source))
@@ -2147,9 +2281,19 @@ twice appears twice; readers keep the last occurrence of each unit."
                                    :type (plist-get r :type)
                                    :symbol (or (plist-get r :symbol)
                                                (plist-get r :sym))
-                                   :addend (if (eq arch 'aarch64)
-                                               (or (plist-get r :addend) 0)
-                                             0)
+                                   ;; The static linker measures PC32 from
+                                   ;; the end of its field and the assembler
+                                   ;; addends from its start (-4 for a plain
+                                   ;; call or lea, which becomes 0); keep the
+                                   ;; rest of the addend, which a CG4
+                                   ;; RIP-relative operand uses for its
+                                   ;; displacement and trailing immediate.
+                                   :addend (cond
+                                            ((eq arch 'aarch64)
+                                             (or (plist-get r :addend) 0))
+                                            ((memq (plist-get r :type) '(pc32 plt32))
+                                             (+ (or (plist-get r :addend) 0) 4))
+                                            (t 0))
                                    :section 'text))
                            relocs0)))
       (when unit-data
@@ -2268,6 +2412,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
+                               (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)
                                (when (bound-and-true-p nelisp-standalone--inline-import-sources)
                                  (concat "\0imports="
@@ -2425,6 +2570,9 @@ directory tracks the tree rather than accumulating every key ever built."
           (or nelisp-standalone--inline-import-sources
               (nelisp-standalone--unit-inline-imports name)))
          (source (nelisp-standalone--abi-box-split-source source))
+         (_xinline (when (nelisp-standalone--xinline-enabled-p)
+                     (nelisp-standalone--xinline-prepare)
+                     (nelisp-standalone--xinline-register source)))
          (name (nelisp-standalone--target-object-name name))
          (nelisp-standalone--build-trace-unit name)
          (cache-dir (nelisp-standalone--target-cache-dir))
@@ -2772,6 +2920,38 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
       ;; GNU's dead_object marker for free cells.
       (defun nl_cons_dead_word () ,dead)
+    (defun nl_symcells_mirror ()
+        ;; Doc 226 D9 stage 3: the mirror record WORD (the globals record that
+        ;; the evaluator context views), or 0 before a mirror exists.
+        ;; `nl_alloc_symbol' has no env, so it finds the mirror here and walks
+        ;; it: ht (slot 0), buckets (ht slot 1), entry count (ht slot 2),
+        ;; cells vector (ht slot 3).  The collector marks the record beside the
+        ;; root stack (`nl_gc_mark_rootstack'), the image dump walks it
+        ;; (`nl_fa_symcells') and compaction rewrites it
+        ;; (`nl_compact_rw_symcells').  The slot is not an independent image
+        ;; root: it IS the globals record, whose pointer an image already
+        ;; stores and relocates (header goff, applied by
+        ;; `nl_cold_overwrite_globals'), and `nl_symcells_attach' re-derives it
+        ;; after the boot and after a cold load.
+        (heap-read-u64 (data-addr nl_symcells_root) 0))
+    (defun nl_symcells_set (w)
+        (ptr-write-u64 (data-addr nl_symcells_root) 0 w))
+    (defun nl_symcells_get ()
+        ;; The mirror table's cells vector WORD (record slot 3 of the table in
+        ;; the mirror's slot 0), or 0 when there is no mirror or the table has
+        ;; none.  Computed, never cached: the table replaces the vector when it
+        ;; grows (`nl_symcell_reserve').
+        (let ((m (nl_symcells_mirror)))
+          (if (= m 0) 0
+            (let ((ht (nl_record_slot_word m 0)))
+              (if (< (nl_record_length ht) 4) 0
+                (nl_record_slot_word ht 3))))))
+    (defun nl_symcells_attach (globals)
+        ;; Point the root at GLOBALS's record (the globals view: tag at +0, the
+        ;; record box at +8): after the bootstrap, and again after a cold load
+        ;; replaced the globals record.
+        (let ((box (heap-read-u64 globals 8)))
+          (nl_symcells_set (if (= box 0) 0 (+ box 6)))))
       ;; ---- Doc 226 D9 symbol blocks (alloc.c:3616-3700) ----
       ;; A symbol block holds 682 cells of GNU's 48-byte struct Lisp_Symbol
       ;; from offset 0, then the `next' block link at NEXT and the block type
@@ -8567,6 +8747,13 @@ REPL-facing module it feeds."
                       (nl_compact_rw_word (nl_compact_rw_word_edge (+ entry 80))))) 0)
                (setq i (+ i 1))))
            (nl_gc_symname_sweep_all)))))
+    (defun nl_compact_rw_symcells ()
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD edge like a
+      ;; vector slot (`nl_compact_rw_vec_slots'): forward it, then its
+      ;; target.  This collector never runs while a cons or symbol cell exists
+      ;; (see `nl_gc_collect'), so the rewrite is for a heap that has neither.
+      (if (= (nl_symcells_mirror) 0) 0
+        (nl_compact_rw_word (nl_compact_rw_word_edge (data-addr nl_symcells_root)))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
       (seq (nl_frame_stack_rewrite 0 0)
       (seq (nl_n4_rewrite_env ctx)
@@ -8579,6 +8766,7 @@ REPL-facing module it feeds."
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
+           (nl_compact_rw_symcells)
            (nl_compact_rw_slot (data-addr nl_symbol_name_nil))
            (nl_compact_rw_slot (data-addr nl_symbol_name_t))
            (nl_compact_rw_symname_entries)
@@ -11441,7 +11629,98 @@ leave symbols unresolved at link time."
                0)
               0)
              0))))))
+    (defun nl_symcells_selftest_record (n)
+      ;; A record box of N slots, all nil, with a nil type word.
+      (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 12 (* n 256)))
+             (ptr-write-u64 box 8 3)
+             (while (< i n)
+               (seq (ptr-write-u64 box (+ 16 (* i 8)) 3)
+                    (setq i (+ i 1))))
+             box)))
+    (defun nl_symcells_selftest_make (n hide)
+      ;; A mirror-shaped table that only the root keeps: the mirror record (3
+      ;; slots) holding the table record (4 slots: bucket count, buckets,
+      ;; entry count, cells) whose buckets and cells are vectors of N fixnums
+      ;; (bucket I holds I, cell I holds I+7).  HIDE 1 sets the root word's
+      ;; low bit, so the collector reads an immediate: the negative control.
+      (let* ((b (nl_alloc_vector n)) (c (nl_alloc_vector n))
+             (h (nl_symcells_selftest_record 4))
+             (r (nl_symcells_selftest_record 3)) (i 0))
+        (if (= b 0) 3
+          (if (= c 0) 3
+            (seq
+             (while (< i n)
+               (seq (ptr-write-u64 b (+ 8 (* i 8)) (+ (* i 4) 1))
+                    (ptr-write-u64 c (+ 8 (* i 8)) (+ (* (+ i 7) 4) 1))
+                    (setq i (+ i 1))))
+             (ptr-write-u64 h 16 (+ (* n 4) 1))
+             (ptr-write-u64 h 24 (+ b 6))
+             (ptr-write-u64 h 32 5)
+             (ptr-write-u64 h 40 (+ c 6))
+             (ptr-write-u64 r 16 (+ h 6))
+             (nl_symcells_set (if (= hide 1) (+ r 7) (+ r 6)))
+             (+ (* n 4) 1))))))
+    (defun nl_symcells_selftest_vec (w base)
+      ;; How many elements of the vector WORD W hold their index plus BASE; -1
+      ;; when W is no vector word, -2 when its header is not a vector's, -3
+      ;; when its block was freed.
+      (if (/= (logand w 7) 6) -1
+        (let* ((box (- w 6)) (h (heap-read-u64 box 0)))
+          (if (/= (logand h 63) 8) -2
+            (if (= (nl_hdr_mark (- box 8)) 2) -3
+              (let* ((n (sar h 8)) (i 0) (good 0))
+                (seq
+                 (while (< i n)
+                   (seq (if (= (heap-read-u64 box (+ 8 (* i 8))) (+ (* (+ i base) 4) 1))
+                            (setq good (+ good 1)) 0)
+                        (setq i (+ i 1))))
+                 good)))))))
+    (defun nl_symcells_selftest_check (_pad)
+      ;; The table the root keeps: the count of buckets and cells still
+      ;; holding their values (2 N for a table of N and N), or a negative code
+      ;; when a record or vector is gone (-1 no record word, -2 record header,
+      ;; -3 record block freed, -4 table not a record word, -5 table header,
+      ;; -6 table block freed, -7 a vector gone).
+      (let* ((w (nl_symcells_mirror))
+             (r (if (= (logand w 7) 7) (- w 1) w)))
+        (if (/= (logand r 7) 6) -1
+          (let* ((rb (- r 6)))
+            (if (/= (heap-read-u64 rb 0) (+ 12 (* 3 256))) -2
+              (if (= (nl_hdr_mark (- rb 8)) 2) -3
+                (let* ((hw (heap-read-u64 rb 16)))
+                  (if (/= (logand hw 7) 6) -4
+                    (let* ((hb (- hw 6)))
+                      (if (/= (heap-read-u64 hb 0) (+ 12 (* 4 256))) -5
+                        (if (= (nl_hdr_mark (- hb 8)) 2) -6
+                          (let* ((g1 (nl_symcells_selftest_vec (heap-read-u64 hb 24) 0))
+                                 (g2 (nl_symcells_selftest_vec (heap-read-u64 hb 40) 7)))
+                            (if (< g1 0) -7 (if (< g2 0) -7 (+ g1 g2)))))))))))))))
+    (defun nl_symcells_selftest_ctx (_pad)
+      ;; The evaluator context of the form being evaluated, or 0 outside one.
+      (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 0) 0
+        (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (defun nl_symcells_selftest_w (args)
+      ;; (nelisp--debug-switch 60): `nl_symcells_get', nil when 0;
+      ;; (61 N), (62 N): `nl_symcells_selftest_make', the root visible to the
+      ;; collector, hidden from it; (63): `..._check'; (64): 1 when the root
+      ;; is the record of the evaluator context's globals, else 0, and -1
+      ;; outside a form; (65): re-derive the root from the evaluator context;
+      ;; (66): clear it.  Callers restore the root with 65.
+      (let ((op (wf_argval args 0)) (ctx (nl_symcells_selftest_ctx 0)))
+        (if (= op 60) (if (= (nl_symcells_get) 0) 3 (nl_symcells_get))
+          (if (= op 61) (nl_symcells_selftest_make (wf_argval args 1) 0)
+            (if (= op 62) (nl_symcells_selftest_make (wf_argval args 1) 1)
+              (if (= op 63) (+ (* (nl_symcells_selftest_check 0) 4) 1)
+                (if (= op 64)
+                    (+ (* (if (= ctx 0) -1
+                            (if (= (nl_symcells_mirror) (+ (heap-read-u64 ctx 8) 6)) 1 0)) 4) 1)
+                  (if (= op 65)
+                      (seq (if (= ctx 0) 0 (nl_symcells_attach ctx)) 5)
+                    (seq (nl_symcells_set 0) 5)))))))))
     (defun bf_debug_switch_w (args _pad)
+      (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
+          (nl_symcells_selftest_w args)
       (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
           (nl_symbol_selftest_w args)
       (seq
@@ -11549,7 +11828,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
@@ -13751,11 +14030,26 @@ leave symbols unresolved at link time."
             (nl_seq2 (nl_fa_slot p ds span dest cin cout dir)
                      (nl_fa_rootstack_walk (+ p 32) end ds span dest cin cout dir)))
         0))
+    (defun nl_fa_symcells (ds span dest cin cout dir)
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD root in BSS: walk
+      ;; its target as `nl_fa_rootstack_walk' walks a frame slot, so the dump's
+      ;; marking and its relocation walk agree (a BSS field has no relocation
+      ;; of its own).  The image does not store the root; see
+      ;; `nl_symcells_mirror'.
+      (let ((vw (nl_symcells_mirror)))
+        (if (= vw 0) 0
+          (if (= (logand vw 1) 1) 0
+            (if (= (logand vw 7) 2)
+                (nl_fa_cons vw ds span dest cin cout dir)
+              (if (= (if (= (logand vw 7) 6) (nl_gc_mark_vbox (- vw 6)) (nl_gc_mark_block vw)) 0) 0
+                (nl_fa_slot vw ds span dest cin cout dir)))))))
     (defun nl_fa_rootstack (ds span dest cin cout dir)
-      (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
-        (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
-                              (heap-read-u64 (data-addr nl_rootstack_top) 0)
-                              ds span dest cin cout dir)))
+      (nl_seq2
+       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+         (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
+                               (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                               ds span dest cin cout dir))
+       (nl_fa_symcells ds span dest cin cout dir)))
     (defun nl_fa_symentry (ds span dest cin cout dir)
       (if (= (heap-read-u64 268436328 0) 0) 0
         (if (= (nl_gc_mark_block (heap-read-u64 268436328 0)) 0) 0
@@ -39295,7 +39589,10 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2" "nl_native_poll_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2")
+   ;; Doc 229: funcall and apply providers (nelisp-cc-evalport-aot-apply).
+   '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
@@ -44751,6 +45048,9 @@ correctly."
         ;; cold path: replace the fresh empty globals with the loaded image's
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
         (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
+        ;; Doc 226 D9 stage 3: the mirror record root names this process's
+        ;; globals record, fresh or restored from the image.
+        (nl_symcells_attach globals)
         (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         ;; Doc 221 M03/M17: static symbol ids (GNU lispsym) for dispatch.
         (nl_static_syms_init)
@@ -45516,6 +45816,7 @@ correctly."
     ("env-leaves-frame.o"  nelisp-cc-evalport-env-leaves-frame   nelisp-cc-evalport-env-leaves-frame--source)
     ("aot-builtin-call1.o" nelisp-cc-evalport-aot-builtin-call1  nelisp-cc-evalport-aot-builtin-call1--source)
     ("aot-builtin-calln.o" nelisp-cc-evalport-aot-builtin-calln  nelisp-cc-evalport-aot-builtin-calln--source)
+    ("aot-apply.o"         nelisp-cc-evalport-aot-apply          nelisp-cc-evalport-aot-apply--source)
     ("sf-eval-is-truthy.o" nelisp-cc-eval-is-truthy              nelisp-cc-eval-is-truthy--source)
     ("sf-let-setup.o"      nelisp-cc-evalport-env-leaves-logic   nelisp-cc-evalport-env-leaves-logic--source)
     ("sf-env-set-value.o"  nelisp-cc-evalport-env-leaves-bind    nelisp-cc-evalport-env-leaves-bind--source)
@@ -45568,25 +45869,23 @@ correctly."
     (defun nl_cce_clear (err_out)
       (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
            (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
-    (defun nelisp_eval_call_with_err_w (form env _pad err_out)
+    (defun nelisp_eval_call_with_err_w (form env _pad _err_out)
+      ;; Doc 216 S6.2: no error view is written here.  Answers the value
+      ;; WORD, or 0 when the form signalled (the signal stays stashed, the
+      ;; flag set, for the caller's `nl_exit_condition_into') or aborted
+      ;; otherwise.  A few low-level mirror APIs historically normalise their
+      ;; mutation helper's return value to success.  The physical mirror
+      ;; guard still stashes the signal and performs no write; a registered
+      ;; worker recovers that signal at its catch boundary so it stays
+      ;; catchable instead of becoming a stale flag.
       (let* ((w (nelisp_eval_call_w form env 0)))
         (if (/= w 0)
-            ;; A few low-level mirror APIs historically normalise their
-            ;; mutation helper's return value to success.  The physical
-            ;; mirror guard still stashes the signal and performs no write;
-            ;; recover that signal at the worker's catch boundary so it stays
-            ;; catchable instead of becoming a stale flag.
             (if (= (heap-read-u64 268435472 0) 1)
                 (if (= (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
-                    (seq (nl_cce_clear err_out) w)
-                  (seq (nl_exit_condition_into err_out)
-                       0))
-              (seq (nl_cce_clear err_out) w))
-          (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nl_exit_condition_into err_out)
-                   0)
-            ;; Preserve a non-signal abort without inventing an error.
-            (seq (nl_cce_clear err_out) 0)))))
+                    w
+                  0)
+              w)
+          0)))
     (defun nelisp_eval_call_with_err (form env out err_out)
       ;; Physical-view compatibility entry; do not reverse-adapt its result.
       (let* ((rc (nelisp_eval_call form env out)))

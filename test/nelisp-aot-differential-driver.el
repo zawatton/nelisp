@@ -36,9 +36,18 @@ run inside the arena rather than making the population smaller.")
 (defvar nelisp-aot-differential--checked 0)
 (defvar nelisp-aot-differential--skipped 0)
 
+(defun nelisp-aot-differential--define (source)
+  "Evaluate every form of SOURCE in the interpreter."
+  ;; Every form, so a case can define a helper next to the defun it calls.
+  (let ((pos 0) (read nil))
+    (while (setq read (condition-case nil (read-from-string source pos)
+                        (end-of-file nil)))
+      (eval (car read) t)
+      (setq pos (cdr read)))))
+
 (defun nelisp-aot-differential--interpreted (source name arg)
   "Define SOURCE in the interpreter and call NAME with ARG."
-  (eval (car (read-from-string source)) t)
+  (nelisp-aot-differential--define source)
   (funcall (intern name) arg))
 
 (defun nelisp-aot-differential--native (name args)
@@ -74,6 +83,10 @@ through (exit 137).  Load once, answer both arguments, release."
         ;; caller falls back to byte code.  Slower, not wrong.
         (setq nelisp-aot-differential--skipped
               (1+ nelisp-aot-differential--skipped))
+      ;; GNU's `load' defines every defun of a file before any is called,
+      ;; so the native NAME runs with its file's other defuns defined --
+      ;; a helper it calls by name is there, as after an artifact load.
+      (condition-case nil (nelisp-aot-differential--define source) (error nil))
       (let ((gots (condition-case e
                       (nelisp-aot-differential--native name args)
                     (error (mapcar (lambda (_) (list 'native-error e)) args))))
