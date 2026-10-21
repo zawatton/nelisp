@@ -123,7 +123,9 @@ equality test and the port-count test both check it.")
    ;; provided by nelisp-cc-evalport-aot-apply.  Appended, so every earlier
    ;; index stays where it was.
    '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
-     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn"))
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
+   ;; S4.5 reuses the existing VM condition hierarchy matcher.
+   '("wf_bytecode_condition_matches"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -1031,7 +1033,9 @@ preserved. Floats and bignums use the same authenticated copy when the reader
 provides it, preserving IEEE bits and bignum identity; otherwise they are
 decoded while rooted by the active pin frame. Without that context, strings
 retain the legacy byte conversion and conses, floats, and bignums are refused."
-  (let ((tag (ptr-read-u64 addr 0)))
+  ;; Native Sexp writers set the tag byte; the remaining header bytes are
+  ;; padding and may retain data when a result slot is reused.
+  (let ((tag (logand (ptr-read-u64 addr 0) 255)))
     (cond
      ((= tag nelisp-native-load-tag-nil) nil)
      ((= tag nelisp-native-load-tag-t) t)
@@ -5806,8 +5810,12 @@ what a cache wants and what the demo did."
         (while rest
           (let ((offset (+ stub-base (* nelisp-native-load-stub-bytes idx))))
             (setq stub-offsets (cons (cons (car rest) offset) stub-offsets))
+            ;; Shared data uses the same address getter as raw v2 units.
             (nelisp-native-load--poke-bytes
-             codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
+             codepage offset
+             (if (member (car rest) nelisp-native-load-raw-v2-data-symbols)
+                 '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3)
+               '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
             (ptr-write-u64 (+ codepage offset) 2
                            (nelisp-native-load--symbol-addr (car rest))))
           (setq idx (1+ idx))
@@ -5920,6 +5928,30 @@ what a cache wants and what the demo did."
           (and boxed (eq (plist-get handle :return-repr) 'unknown)))
       (nelisp-native-load-unbox raw))
      (t raw))))
+
+(defun nelisp-native-load--resume-native-exit (env pin-frame)
+  "Resume the evaluator's exact native signal/throw before decoding a result.
+Copy both descriptor values into pinned roots before clearing the shared
+stash: Lisp decoding may allocate or perform a nested runtime operation."
+  (let* ((arena (ptr-read-u64 (nelisp-native-load--symbol-addr "nl_arena_base") 0))
+         (kind (ptr-read-u64 arena 16)))
+    (unless (= kind 0)
+      (unless (memq kind '(1 2))
+        (error "nelisp-native-load: invalid native exit kind %S" kind))
+      (let ((tag-slot (nelisp-native-load--pin-reserve env pin-frame))
+            (value-slot (nelisp-native-load--pin-reserve env pin-frame))
+            (i 0))
+        (while (< i 8)
+          (ptr-write-u32 tag-slot (* i 4) (ptr-read-u32 arena (+ 24 (* i 4))))
+          (ptr-write-u32 value-slot (* i 4) (ptr-read-u32 arena (+ 56 (* i 4))))
+          (setq i (1+ i)))
+        (ptr-write-u64 arena 16 0)
+        (let ((tag (nelisp-native-load-unbox tag-slot env pin-frame))
+              (value (nelisp-native-load-unbox value-slot env pin-frame)))
+          (if (= kind 2) (throw tag value)
+            (unless (and (symbolp tag) tag)
+              (error "nelisp-native-load: malformed native signal"))
+            (signal tag value)))))))
 
 (defun nelisp-native-load--immediate-word (value)
   "Return VALUE's immediate native word, or nil when it needs a root."
@@ -6060,6 +6092,7 @@ including nested native calls and cleanup after an error."
                   (unless (= rc 0)
                     (error "nelisp-native-load: temporary trampoline munmap failed (%d)"
                            rc))))
+              (nelisp-native-load--resume-native-exit env pin-frame)
               ;; Some bodies carry dispatcher externs while returning a raw
               ;; register value.  Their metadata settles raw-bool exactly;
               ;; otherwise retain the existing low-address guard.

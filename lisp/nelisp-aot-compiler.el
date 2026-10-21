@@ -1227,8 +1227,7 @@ faithfully retain either representation in its frame slot."
 ;; The runtime's dialect units keep nil = 0 and the != 0 test.
 
 (defconst nelisp-aot-compiler-lisp-open-defects
-  '((signal . "an error signalled inside a native artifact does not reach \
-its caller as GNU's signal does (S4.5)"))
+  nil
   "Doc 229: wrong answers native artifacts still give, by corpus stage.
 Each entry leaves with the commit that makes its stage's controls pass.
 While any is here no runtime may define nemacs's two native replay
@@ -1753,6 +1752,275 @@ user `let' binding keeps its value as a GNU Lisp_Object does."
                       ,stable)))))
         env fenv defuns)
        :repr 'word)))))
+
+;; Doc 229 S4.5: use the evaluator's existing rooted non-local-exit stash.
+;; standalone-build's arena header is KIND@16, TAG@24, VALUE@56.  KIND is
+;; 1 for signals and 2 for throws.  No new provider or scratch ABI is needed.
+(defun nelisp-aot-compiler--lisp-exit-arena ()
+  (nelisp-aot-compiler--make-ir 'ptr-read-u64
+        ;; Use the loader's existing shared-data getter convention, as
+        ;; raw-v2-rewrite-data-addr does: mapped text may be far from BSS.
+        :ptr (nelisp-aot-compiler--make-ir 'extern-call :name 'nl_arena_base
+              :ret-class 'gp :args nil :varargs-p nil :f64-count 0)
+        :offset (nelisp-aot-compiler--make-ir 'imm :value 0)))
+
+(defun nelisp-aot-compiler--lisp-exit-field (offset)
+  (nelisp-aot-compiler--make-ir 'ptr-read-u64
+        :ptr (nelisp-aot-compiler--lisp-exit-arena)
+        :offset (nelisp-aot-compiler--make-ir 'imm :value offset)))
+
+(defun nelisp-aot-compiler--lisp-exit-ref (stem repr)
+  "Allocate a local GP frame slot and return its reference IR."
+  (let ((slot (car nelisp-aot-compiler--next-rt-let-slot)))
+    (setcar nelisp-aot-compiler--next-rt-let-slot (1+ slot))
+    (nelisp-aot-compiler--make-ir 'ref
+          :var (nelisp-aot-compiler--gensym stem) :reg nil :slot slot
+          :class 'gp :repr repr :root-p (memq repr '(sexp-ptr word)))))
+
+(defun nelisp-aot-compiler--lisp-exit-bind (ref value body)
+  (nelisp-aot-compiler--make-ir 'let-rt
+        :var (nelisp-aot-compiler--ir-get ref :var)
+        :slot (nelisp-aot-compiler--ir-get ref :slot)
+        :value-ir value :body body
+        :repr (nelisp-aot-compiler--lisp-repr body)))
+
+(defun nelisp-aot-compiler--lisp-exit-call-p (node)
+  (and (memq (nelisp-aot-compiler--ir-kind node) '(call extern-call))
+       (or (nelisp-aot-compiler--ir-get node :internal-boundary-disp)
+           (let ((name (nelisp-aot-compiler--ir-get node :name)))
+             (and (symbolp name)
+                  (or (string-prefix-p "nelisp_aot_" (symbol-name name))
+                      (memq name '(nelisp_env_lookup_value wf_bytecode_condition_matches))))))))
+
+(defun nelisp-aot-compiler--lisp-condition-test (error-ref condition env fenv defuns)
+  "Use the VM's existing condition matcher, independent of Lisp function cells."
+  (let* ((tag (nelisp-aot-compiler--gensym "lisp-error-symbol"))
+         (selector (nelisp-aot-compiler--gensym "lisp-error-condition"))
+         (node (nelisp-aot-compiler--parse-value
+                `(let ((,tag (nelisp-aot--user-init
+                              (nelisp-aot--generic-call car (nelisp-aot--parsed-ir ,error-ref))))
+                       (,selector (quote ,condition)))
+                   (extern-call wf_bytecode_condition_matches mirror
+                                (nelisp-aot--as-sexp ,tag)
+                                (nelisp-aot--as-sexp ,selector)))
+                env fenv defuns)))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--lisp-map-tail
+      node (lambda (leaf) (nelisp-aot-compiler--ir-with leaf :repr 'raw-bool)))
+     :repr 'raw-bool)))
+
+(defun nelisp-aot-compiler--lisp-parse-condition-case (sexp env fenv defuns)
+  "Parse Lisp condition-case into a marker for the exit-control-flow pass."
+  ;; Keep special bindings and :success on their existing evaluator path.
+  (when (or (eq (nth 1 sexp) t) (keywordp (nth 1 sexp))
+            (and (symbolp (nth 1 sexp))
+                 (nelisp-aot-compiler--special-var-p (nth 1 sexp)))
+            (assq :success (nthcdr 3 sexp)))
+    (signal 'nelisp-aot-compiler-error (list :lisp-condition-case-unsupported-binding sexp)))
+  (let* ((var (nth 1 sexp))
+         (error-ref (nelisp-aot-compiler--lisp-exit-ref "lisp-error" 'sexp-ptr))
+         (handler-fenv
+          (if (or (null var) (eq var 0)) fenv
+            (unless (symbolp var)
+              (signal 'nelisp-aot-compiler-error (list :condition-case-variable var)))
+            (cons (cons var (list :slot (nelisp-aot-compiler--ir-get error-ref :slot)
+                                  :class 'gp :repr 'sexp-ptr :root-p t)) fenv)))
+         (body (nelisp-aot-compiler--lisp-as-sexp
+                (nelisp-aot-compiler--parse-value (nth 2 sexp) env fenv defuns)
+                env fenv defuns))
+         (clauses
+          (mapcar
+           (lambda (clause)
+             (unless (and (consp clause)
+                          (or (symbolp (car clause))
+                              (and (listp (car clause))
+                                   (seq-every-p #'symbolp (car clause)))))
+               (signal 'nelisp-aot-compiler-error (list :condition-case-clause clause)))
+             (let* ((names (if (consp (car clause)) (car clause) (list (car clause))))
+                    ;; GNU eval.c:2241 matches the signal's error-conditions
+                    ;; hierarchy; t is Lisp's catch-all condition.
+                    (test (if (memq t names) t
+                            `(or ,@(mapcar
+                                    (lambda (name)
+                                      `(nelisp-aot--parsed-ir
+                                        ,(nelisp-aot-compiler--lisp-condition-test
+                                          error-ref name env handler-fenv defuns))) names))))
+                    (handler (if (cdr clause)
+                                 (nelisp-aot-compiler--body->form (cdr clause))
+                               `(nelisp-aot--parsed-ir
+                                 ,(nelisp-aot-compiler--lisp-imm-bool 0)))))
+               (cons (nelisp-aot-compiler--lisp-parse-test test env handler-fenv defuns)
+                     (nelisp-aot-compiler--lisp-as-sexp
+                      (nelisp-aot-compiler--parse-value handler env handler-fenv defuns)
+                      env handler-fenv defuns))))
+           (nthcdr 3 sexp))))
+    (nelisp-aot-compiler--make-ir 'aot-landing-label
+          :label (nelisp-aot-compiler--gensym "lisp-condition-landing")
+          :body body :repr 'sexp-ptr :lisp-condition-case t
+          :error-ref error-ref :clauses clauses)))
+
+(defun nelisp-aot-compiler--lisp-exit-control-flow (body env fenv defuns)
+  "Guard Lisp boundary calls and lower static condition-case landing pads.
+A failed call restores the enclosing pad's saved SP before branching.
+The pad is inside the ordinary function root scope, so normal root cleanup
+still runs.  Calls in handlers target the outer pad, never their own pad."
+  (let ((needed nil))
+    (nelisp-aot-compiler--walk-ir
+     body (lambda (node)
+            (when (or (nelisp-aot-compiler--lisp-exit-call-p node)
+                      (nelisp-aot-compiler--ir-get node :lisp-condition-case))
+              (setq needed t))))
+    (if (not needed) body
+      (let* ((sp (nelisp-aot-compiler--lisp-exit-ref "lisp-exit-sp" 'raw-i64))
+             (label (nelisp-aot-compiler--gensym "lisp-exit")))
+        (cl-labels
+            ((jump (saved target)
+               (nelisp-aot-compiler--make-ir 'aot-machine-landing-jump
+                     :saved-sp saved :target target))
+             (walk-value (value saved target)
+               (cond
+                ((nelisp-aot-compiler--ir-node-p value) (walk value saved target))
+                ((consp value) (cons (walk-value (car value) saved target)
+                                    (walk-value (cdr value) saved target)))
+                (t value)))
+             (walk (node saved target)
+               (if (nelisp-aot-compiler--ir-get node :lisp-condition-case)
+                   (let* ((pad-sp (nelisp-aot-compiler--lisp-exit-ref "lisp-handler-sp" 'raw-i64))
+                          (pad-label (nelisp-aot-compiler--ir-get node :label))
+                          (error-ref (nelisp-aot-compiler--ir-get node :error-ref))
+                          (capture-raw (nelisp-aot-compiler--make-ir
+                                    'extern-call :name 'nelisp_cons_construct :ret-class 'gp
+                                    :args (list
+                                           (nelisp-aot-compiler--make-ir
+                                            'arith :op '+ :a (nelisp-aot-compiler--lisp-exit-arena)
+                                            :b (nelisp-aot-compiler--make-ir 'imm :value 24))
+                                           (nelisp-aot-compiler--make-ir
+                                            'arith :op '+ :a (nelisp-aot-compiler--lisp-exit-arena)
+                                            :b (nelisp-aot-compiler--make-ir 'imm :value 56))
+                                           error-ref)))
+                          (capture (nelisp-aot-compiler--parse-value
+                                    `(extern-call nelisp_cons_construct
+                                                  ,@(mapcar (lambda (arg) `(nelisp-aot--parsed-ir ,arg))
+                                                            (nelisp-aot-compiler--ir-get capture-raw :args)))
+                                    env fenv defuns))
+                          (cases (jump saved target)))
+                     (dolist (clause (reverse (nelisp-aot-compiler--ir-get node :clauses)))
+                       (setq cases (nelisp-aot-compiler--make-ir
+                                    'if :id (nelisp-aot-compiler--gensym "lisp-exit-if") :test (walk (car clause) saved target)
+                                    :then (walk (cdr clause) saved target) :else cases :repr 'sexp-ptr)))
+                     (nelisp-aot-compiler--lisp-exit-bind
+                      pad-sp (nelisp-aot-compiler--make-ir 'aot-current-sp)
+                      (nelisp-aot-compiler--lisp-exit-bind
+                       error-ref
+                       (nelisp-aot-compiler--make-ir 'alloc-bytes
+                             :size (nelisp-aot-compiler--make-ir 'imm :value 32)
+                             :align (nelisp-aot-compiler--make-ir 'imm :value 8))
+                       (nelisp-aot-compiler--make-ir
+                        'if :id (nelisp-aot-compiler--gensym "lisp-exit-if") :test (nelisp-aot-compiler--make-ir 'imm :value 1)
+                        :then (nelisp-aot-compiler--make-ir
+                               'value-seq :repr 'sexp-ptr
+                               :forms (list
+                                       (nelisp-aot-compiler--make-ir
+                                        'ptr-write-u64 :ptr error-ref
+                                        :offset (nelisp-aot-compiler--make-ir 'imm :value 0)
+                                        :val (nelisp-aot-compiler--make-ir 'imm :value 0))
+                                       (walk (nelisp-aot-compiler--ir-get node :body) pad-sp pad-label)))
+                        :else (nelisp-aot-compiler--make-ir
+                               'aot-landing-label :label pad-label :repr 'sexp-ptr
+                               :body (nelisp-aot-compiler--make-ir
+                                      'if :id (nelisp-aot-compiler--gensym "lisp-exit-if") :test (nelisp-aot-compiler--make-ir
+                                                 'cmp :op '= :a (nelisp-aot-compiler--lisp-exit-field 16)
+                                                 :b (nelisp-aot-compiler--make-ir 'imm :value 1))
+                                      :then (nelisp-aot-compiler--make-ir
+                                             'value-seq :repr 'sexp-ptr
+                                             :forms (list capture
+                                                          (nelisp-aot-compiler--make-ir
+                                                           'ptr-write-u64 :ptr (nelisp-aot-compiler--lisp-exit-arena)
+                                                           :offset (nelisp-aot-compiler--make-ir 'imm :value 16)
+                                                           :val (nelisp-aot-compiler--make-ir 'imm :value 0))
+                                                          ;; Leave a declined signal available to an outer pad.
+                                                          (nelisp-aot-compiler--lisp-exit-declined
+                                                           cases saved target error-ref env fenv defuns)))
+                                      :else (jump saved target) :repr 'sexp-ptr))
+                        :repr 'sexp-ptr))))
+                 (let ((copy (copy-sequence node)))
+                   (cl-loop for i from 2 below (length copy) by 2
+                            do (aset copy i (walk-value (aref copy i) saved target)))
+                   (if (not (nelisp-aot-compiler--lisp-exit-call-p copy)) copy
+                     (let* ((repr (if (eq (nelisp-aot-compiler--ir-get copy :name)
+                                          'nelisp_env_lookup_value)
+                                      'raw-i64
+                                    (nelisp-aot-compiler--lisp-repr copy)))
+                            (result (nelisp-aot-compiler--lisp-exit-ref "lisp-call-result" repr)))
+                       (nelisp-aot-compiler--lisp-exit-bind
+                        result copy
+                        (nelisp-aot-compiler--make-ir
+                         'if :id (nelisp-aot-compiler--gensym "lisp-exit-if") :test (nelisp-aot-compiler--make-ir
+                                    'cmp :op '/= :a (nelisp-aot-compiler--lisp-exit-field 16)
+                                    :b (nelisp-aot-compiler--make-ir 'imm :value 0))
+                         :then (jump saved target) :else result :repr repr))))))))
+          (let* ((rewritten (walk body sp label))
+                 (repr (nelisp-aot-compiler--lisp-repr body)))
+            (nelisp-aot-compiler--lisp-exit-bind
+             sp (nelisp-aot-compiler--make-ir 'aot-current-sp)
+             (nelisp-aot-compiler--make-ir
+              'if :id (nelisp-aot-compiler--gensym "lisp-exit-if") :test (nelisp-aot-compiler--make-ir 'imm :value 1)
+              :then rewritten
+              :else (nelisp-aot-compiler--make-ir
+                     'aot-landing-label :label label :repr repr
+                     :body (nelisp-aot-compiler--make-ir 'imm :value 0 :repr repr))
+              :repr repr))))))))
+
+(defun nelisp-aot-compiler--lisp-exit-restore-signal (error-ref env fenv defuns)
+  "Restore M6's borrowed signal descriptor from rooted ERROR-REF.
+Condition matching runs after clearing KIND, and can allocate.  Re-read
+both words from the owned descriptor before making the stash live again;
+no allocation occurs between this snapshot and reinstating KIND."
+  (let ((nelisp-aot-compiler--runtime-entry-params nil)
+        (word (nelisp-aot-compiler--gensym "lisp-exit-word"))
+        (dst (nelisp-aot-compiler--gensym "lisp-exit-dst")))
+    (cl-labels
+        ((snapshot (field offset)
+           `(let ((,word (ptr-read-u64
+                         (ptr-read-u64 (nelisp-aot--parsed-ir ,error-ref) 8)
+                         ,field))
+                  (,dst (+ (nelisp-aot--parsed-ir
+                            ,(nelisp-aot-compiler--lisp-exit-arena)) ,offset)))
+              (seq (ptr-write-u64 ,dst 0 0)
+                   (ptr-write-u64 ,dst 8 0)
+                   (ptr-write-u64 ,dst 16 0)
+                   (ptr-write-u64 ,dst 24 0)
+                   (if (= (logand ,word 3) 1)
+                       (seq (ptr-write-u64 ,dst 0 ,nelisp-sexp--tag-int)
+                            (ptr-write-u64 ,dst 8 (sar ,word 2)))
+                     (if (= ,word 3) 0
+                       (if (= ,word 7)
+                           (ptr-write-u64 ,dst 0 ,nelisp-sexp--tag-t)
+                         (seq
+                          (ptr-write-u64 ,dst 0 (ptr-read-u64 ,word 0))
+                          (ptr-write-u64 ,dst 8 (ptr-read-u64 ,word 8))
+                          (ptr-write-u64 ,dst 16 (ptr-read-u64 ,word 16))
+                          (ptr-write-u64 ,dst 24 (ptr-read-u64 ,word 24))))))))))
+      (nelisp-aot-compiler--parse-value
+       `(seq ,(snapshot 0 24) ,(snapshot 8 56)
+             (ptr-write-u64 (nelisp-aot--parsed-ir
+                            ,(nelisp-aot-compiler--lisp-exit-arena)) 16 1))
+       env fenv defuns))))
+
+(defun nelisp-aot-compiler--lisp-exit-declined (node saved target error-ref env fenv defuns)
+  "Restore a declined signal before NODE's outer-pad jump."
+  (if (and (eq (nelisp-aot-compiler--ir-kind node) 'aot-machine-landing-jump)
+           (eq (nelisp-aot-compiler--ir-get node :target) target))
+      (nelisp-aot-compiler--make-ir
+       'value-seq :forms
+       (list (nelisp-aot-compiler--lisp-exit-restore-signal error-ref env fenv defuns)
+             node))
+    (if (eq (nelisp-aot-compiler--ir-kind node) 'if)
+        (nelisp-aot-compiler--ir-with
+         node :else (nelisp-aot-compiler--lisp-exit-declined
+                     (nelisp-aot-compiler--ir-get node :else) saved target
+                     error-ref env fenv defuns))
+      node)))
 
 (defun nelisp-aot-compiler--lisp-binding-init (init)
   "Return the preprocessed INIT of a user `let' binding (Doc 229).
@@ -6609,7 +6877,10 @@ caller-owned boundary params in the current defun:
     (unless (= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :aot-builtin1-call-arity sexp)))
-    (let* ((arg (nth 1 sexp))
+    (let* ((arg (if (nelisp-aot-compiler--lisp-values-p)
+                    (nelisp-aot-compiler--aot-dispatcher-arg-form
+                     (nth 1 sexp) fenv)
+                  (nth 1 sexp)))
            (boundary
             (nelisp-aot-compiler--aot-builtin1-boundary-symbols
              fenv sexp))
@@ -11608,20 +11879,23 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'signal)
          (not (assq 'signal defuns)))
-    (if (eq nelisp-aot-compiler--arch 'wasm32)
-        (nelisp-aot-compiler--parse-wasm-throw
-         (list 'throw (nth 1 sexp) (nth 2 sexp))
-         env fenv defuns)
-      (nelisp-aot-compiler--parse-aot-signal
-       sexp env fenv defuns)))
+    (cond ((nelisp-aot-compiler--lisp-values-p)
+           (nelisp-aot-compiler--parse-value
+            `(nelisp-aot--generic-call ,@sexp) env fenv defuns))
+          ((eq nelisp-aot-compiler--arch 'wasm32)
+           (nelisp-aot-compiler--parse-wasm-throw
+            (list 'throw (nth 1 sexp) (nth 2 sexp)) env fenv defuns))
+          (t (nelisp-aot-compiler--parse-aot-signal sexp env fenv defuns))))
    ;; Doc 129.8H/I — user-facing `error' is a specialised signal with
    ;; the standard `error' condition tag.  Multi-argument formatted
    ;; errors lower through the errorn bridge.
    ((and (consp sexp)
          (eq (car sexp) 'error)
          (not (assq 'error defuns)))
-    (nelisp-aot-compiler--parse-aot-error
-     sexp env fenv defuns))
+    (if (nelisp-aot-compiler--lisp-values-p)
+        (nelisp-aot-compiler--parse-value
+         `(nelisp-aot--generic-call ,@sexp) env fenv defuns)
+      (nelisp-aot-compiler--parse-aot-error sexp env fenv defuns)))
    ;; Doc 129.8E — first source-level handler synthesis.  This covers
    ;; normal-exit `catch' bodies only: the compiler emits balanced
    ;; push/body/pop control flow and rejects explicit non-local forms
@@ -11639,11 +11913,12 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'condition-case)
          (not (assq 'condition-case defuns)))
-    (if (eq nelisp-aot-compiler--arch 'wasm32)
-        (nelisp-aot-compiler--parse-wasm-condition-case
-         sexp env fenv defuns)
-      (nelisp-aot-compiler--parse-aot-condition-case-normal-exit
-       sexp env fenv defuns)))
+    (cond ((nelisp-aot-compiler--lisp-values-p)
+           (nelisp-aot-compiler--lisp-parse-condition-case sexp env fenv defuns))
+          ((eq nelisp-aot-compiler--arch 'wasm32)
+           (nelisp-aot-compiler--parse-wasm-condition-case sexp env fenv defuns))
+          (t (nelisp-aot-compiler--parse-aot-condition-case-normal-exit
+              sexp env fenv defuns))))
    ;; Doc 129.8G — source-level unwind-protect normal path.  Cleanup
    ;; forms run after BODY and the saved BODY value remains the result.
    ((and (consp sexp)
@@ -13657,6 +13932,11 @@ Returns one of:
                               (nelisp-aot-compiler--lisp-as-word
                                settled env parse-fenv defuns)
                             settled))))
+             (body-ir (if (nelisp-aot-compiler--lisp-values-p)
+                          (let ((nelisp-aot-compiler--next-rt-let-slot rt-slot-cell))
+                            (nelisp-aot-compiler--lisp-exit-control-flow
+                             body-ir env parse-fenv defuns))
+                        body-ir))
              ;; The parser maps both Lisp booleans and integer 0/1 to
              ;; immediate words.  Retain a source-proven boolean result
              ;; only when the parsed result tree is still the corresponding

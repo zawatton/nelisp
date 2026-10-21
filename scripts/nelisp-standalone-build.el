@@ -35360,7 +35360,9 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
    '("nl_native_frame_v2" "nl_native_poll_v2")
    ;; Doc 229: funcall and apply providers (nelisp-cc-evalport-aot-apply).
    '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
-     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn"))
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
+   ;; S4.5 exports an existing VM helper; no reader builtin is added.
+   '("wf_bytecode_condition_matches"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',

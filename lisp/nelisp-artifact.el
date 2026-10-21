@@ -4417,6 +4417,8 @@ implementation."
                         ;; string in it now carries the symbol.  The harness
                         ;; provides it the same way it provides the others.
                         "nl_alloc_bytes"
+                        ;; S4.5: the evaluator's existing non-local-exit arena.
+                        "nl_arena_base"
                         ;; A dispatcher result aliases the shared OUT
                         ;; slot, so storing one in a local copies it into
                         ;; a slot of its own first.  Any unit that assigns
@@ -4607,6 +4609,10 @@ harness builds the string ones in the scratch elements the code reads."
      "  NELN_TAG_UNIBYTE_MUT_STR = 15\n"
      "};\n"
      "\n"
+     ;; Match the runtime's existing exit header for success-path C proofs.
+     "static unsigned char neln_exit_arena[88] __attribute__((aligned(8)));\n"
+     "static uint64_t neln_arena_base = (uint64_t)(uintptr_t)neln_exit_arena;\n"
+     "void *nl_arena_base(void) { return &neln_arena_base; }\n"
      "NelnSexp neln_out;\n"
      "NelnSexp neln_mirror;\n"
      "NelnSexp neln_frames;\n"

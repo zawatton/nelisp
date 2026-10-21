@@ -184,10 +184,35 @@ cons constant loadable.")
     (word control "(defun lv-word-eql (a) (eql a 7))" (7 8))
     (word control "(defun lv-word-float-mod (a) (mod a 2.0))" (3.5))
     (word guard "(defun lv-word-id (a) a)" (nil t 0 -7 2305843009213693951 -2305843009213693952))
-    (word guard "(defun lv-word-return (a) (+ a 1))" (0 7)))
+    (word guard "(defun lv-word-return (a) (+ a 1))" (0 7))
+    ;; GNU comp.c push_handler / eval.c signal descriptors, Doc 229 S4.5.
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-unit (x) (+ 1 (lv-signal-leaf x)))
+(defun lv-signal-leaf (x) (funcall 'car x))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-handler-error (x) (condition-case outer (condition-case inner (funcall 'car x) (t (funcall 'car 9))) (t outer)))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-empty (x) (condition-case err (funcall 'car x) (t)))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-all (x) (condition-case err (funcall 'car x) (t err)))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-catch (x) (condition-case err (funcall 'car x) (error err)))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-stop (x) (let ((value 1)) (condition-case err (progn (funcall 'car x) (setq value 9) value) (t value))))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-nested (x) (condition-case outer (condition-case inner (funcall 'car x) (arith-error 9)) (error outer)))" (3 (4 5)))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-direct (x) (signal 'arith-error (list x 'payload)))" (3 nil))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-inherited (x) (condition-case err (signal 'file-missing (list x 'payload)) (file-error err)))" (3 nil))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-immediates (x) (if x (condition-case err (funcall 'car t) (error err)) (funcall 'car nil)))" (nil t))
+    (signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-uncaught (x) (condition-case err (funcall 'car x) (arith-error 9)))" (3 (4 5)))
+)
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit word overflow)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit word overflow signal)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")
