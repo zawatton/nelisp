@@ -95,17 +95,23 @@
     ;; its activation recorded, and no argument list.  A closure the VM
     ;; covers for ARGC arguments therefore runs through `m5_fx_call_words'
     ;; directly; anything else answers -3 and keeps the generic apply.
-    (defun m5_fx_primitive_funcall (fn stk sp argc resw env scratch)
+    ;; WS: a rooted WORD slot of the caller's frame, which holds a looked-up
+    ;; definition while it runs (0: no symbol lookup, the call declines).
+    ;; The VM's closure call needs no scratch (`m5_fx_call_words').
+    (defun m5_fx_primitive_funcall (fn stk sp argc resw env ws)
       (let* ((tag (nl_word_tag64 fn)))
         (if (or (= tag 4) (= tag 16))
-            (if (= (nelisp_env_lookup_function env (+ env 64) fn scratch) 0)
-                (m5_fx_primitive scratch stk sp argc resw env scratch) -3)
-          (let* ((st (m5_fx_primitive fn stk sp argc resw env scratch)))
+            (let* ((def (if (= ws 0) 2
+                          (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0))))
+              (if (= def 2) -3
+                (seq (ptr-write-u64 ws 0 def)
+                     (m5_fx_primitive def stk sp argc resw env ws))))
+          (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
             (if (/= st -3) st
-              (let* ((rec (m5_fx_covered fn argc env scratch)))
+              (let* ((rec (m5_fx_covered fn argc env 0)))
                 (if (= rec 0) -3
                   (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
-                                    env scratch resw 0)))))))))
+                                    env 0 resw 0)))))))))
   "Direct WORD transport for resolved existing VM primitives.")
 
 (provide 'nelisp-cc-fx-call-primitives)

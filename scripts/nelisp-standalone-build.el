@@ -19438,26 +19438,35 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; two rooted scratch slots (`m5_fx_run_body'): the callee's definition
     ;; and its legacy scratch. Results go directly to the rooted RESW word;
     ;; reusing OSLOT on a later call cannot overwrite an earlier result.
-    (defun m5_fx_callout (env sym stk sp argc resw fslot oslot nslot _pad)
+    ;; XW: two rooted WORD slots of the caller's frame, the callee's
+    ;; definition and its argument list.  GNU keeps the called function in
+    ;; its frame (bc_frame.fun, bytecode.c:373), so a definition replaced by
+    ;; FSET while it runs stays alive.  OSLOT: the frame's Sexp view slot,
+    ;; for `set''s value only (`m5_fx_globals_word').
+    (defun m5_fx_callout (env sym stk sp argc resw xw oslot _pad)
       (let* ((cache (if (= (nl_word_tag64 sym) 8) sym 0))
              (name (if (= cache 0) sym (nl_vector_slot_word cache 0)))
              (cached (if (or (= cache 0) (= (nl_sb_worker_p env) 1))
                          0 (m5_fx_cached_function cache env)))
-             (rc (if (= cached 0)
-                     (nelisp_env_lookup_function (+ env 0) (+ env 64) name fslot) 0))
-             (fn (if (= cached 0) fslot cached)))
-        (if (or (/= rc 0) (= (nl_word_tag64 fn) 0))
+             (fn (if (= cached 0)
+                     (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)
+                   cached)))
+        (if (or (= fn 2) (= (nl_word_tag64 fn) 0))
             (nl_cons_stash_void_function env name)
-          (let* ((global (m5_fx_globals_word fn stk sp argc resw env oslot 0))
-                 (direct (if (= global -3) (m5_fx_primitive fn stk sp argc resw env oslot) global))
-                 (rec (if (= direct -3) (m5_fx_covered fn argc env oslot) 0))
-                 (st (if (/= direct -3) direct
-                       (if (= rec 0) -3
-                         (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env oslot resw 0)))))
-            (if (= st -3)
-                (m5_fx_call_list name fn (m5_fx_list_slot (m5_fx_word_list stk sp argc 0) nslot)
-                                 env oslot resw)
-              st)))))
+          (seq
+           (ptr-write-u64 xw 0 fn)
+           (let* ((global (m5_fx_globals_word fn stk sp argc resw env oslot 0))
+                  (direct (if (= global -3) (m5_fx_primitive fn stk sp argc resw env xw) global))
+                  (rec (if (= direct -3) (m5_fx_covered fn argc env 0) 0))
+                  (st (if (/= direct -3) direct
+                        (if (= rec 0) -3
+                          (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env 0 resw 0)))))
+             (if (= st -3)
+                 (m5_fx_call_list name fn stk sp argc env resw (+ xw 8) oslot)
+               st))))))
+    ;; The frame's Sexp view slot, reserved on first use.
+    (defun m5_fx_view_slot (env slot)
+      (if (= slot 0) (nl_root_reserve env) slot))
     ;; Existing evaluator entries, called with the VM's rooted WORD operands.
     ;; Authenticate the resolved function cell so advice and redefinition
     ;; retain normal apply semantics. No argument conses are needed here.
@@ -19482,10 +19491,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                         env a (wf_bytecode_w_view b scratch))))
                               (if (= rc 0) (m5_fx_take b resw) rc)) -3))
                     -3))))))))
-    ;; The backtrace frame names SYM, as the interpreter's frame for a call
-    ;; form names its operator (`nl_apply_function' would name FN's value).
-    (defun m5_fx_call_list (sym fn lst env oslot resw)
-      (m5_fx_take (nl_n4_named_apply_w sym fn lst env 0) resw))
+    ;; The ordinary apply of FN to the ARGC words ending at STK[SP-1], under
+    ;; an activation naming SYM, as the interpreter's frame for a call form
+    ;; names its operator (`nl_apply_function' would name FN's value), with
+    ;; those words as its lazy arguments, as Ffuncall records them
+    ;; (eval.c:3204).  The argument list is built from the words and rooted
+    ;; in LSLOT; with no arguments it is the activation's own nil view.  A
+    ;; definition that is not a heap box (a compiled function's direct
+    ;; WORD) is handed over through VSLOT's view, as the cell's copy was.
+    (defun m5_fx_call_list (sym fn stk sp argc env resw lslot vslot)
+      (let* ((frame (nl_n4_push_words env sym (+ stk (* (- sp argc) 8)) argc)))
+        (if (= frame 0)
+            (nelisp_eval_call_stash_excessive_lisp_nesting env (nl_frame_stack_limit env 0))
+          (let* ((args (if (= argc 0) (+ frame 32) (m5_fx_word_list stk sp argc 0)))
+                 (fv (if (= (logand fn 7) 0) fn (seq (wf_word_store_out vslot fn) vslot))))
+            (seq
+             (if (= argc 0) 0 (ptr-write-u64 lslot 0 args))
+             (m5_fx_take (nl_n4_finish_w (nl_n4_apply_raw_w fv args env frame) env 0 frame)
+                         resw))))))
     ;; An argument list WORD as the Sexp slot the apply path still takes:
     ;; a cons WORD is its own 32-byte box; nil is written into NSLOT.
     (defun m5_fx_list_slot (w nslot)
@@ -19898,17 +19921,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
              (stksize (wf_bytecode_w_int (heap-read-u64 (+ base (* (- (nl_vector_length code) 1) 8)) 0)))
-             (nwords (+ nlocals stksize 1))
-             ;; The locals, the operand stack and the result word are one
-             ;; WORD frame on the root stack, as GNU's exec_byte_code pushes
-             ;; its frame on the thread's bytecode stack (bytecode.c:510-525):
-             ;; no heap vector, every word nil and traced until the release.
+             ;; The locals, the operand stack, the result word and two words
+             ;; for call-outs (the callee's definition and its argument list,
+             ;; `m5_fx_callout') are one WORD frame on the root stack, as
+             ;; GNU's exec_byte_code pushes its frame on the thread's bytecode
+             ;; stack (bytecode.c:510-525): no heap vector, every word nil and
+             ;; traced until the release.
+             (nwords (+ nlocals stksize 3))
              (mem (nl_root_frame env nwords))
-             ;; Rooted scratch for call-outs: the callee's definition and its
-             ;; result (see `m5_fx_callout'), reserved by the first call-out.
-             (fslot 0)
+             ;; The one Sexp slot left: the view a call-out hands to a Sexp
+             ;; API of another layer (`set''s value, `m5_fx_globals_word'),
+             ;; reserved by the first call-out.
              (oslot 0)
-             (nslot 0)
              (stk (+ mem (* nlocals 8)))
              (resw (+ stk (* stksize 8)))
              (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
@@ -19974,7 +19998,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                     (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
                                -1))
                      (if (= r -1)
-                         (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw fslot oslot nslot 0)))
+                         (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw (+ resw 8) oslot 0)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
                      (if (/= r 0) (setq status r)
                        (seq (setq sp (- sp 1))
@@ -19986,14 +20010,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
                                -1))
                      (if (= r -1)
-                         (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw fslot oslot nslot 0)))
+                         (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw (+ resw 8) oslot 0)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
                      (if (/= r 0) (setq status r)
                        (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (heap-read-u64 resw 0))
                             (setq pc (+ pc 2)))))
             (if (= op 16)
                 (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 2) 8)) 0)))
-                     (setq r (seq (if (= fslot 0) (seq (setq fslot (nl_root_reserve env)) (setq oslot (nl_root_reserve env)) (setq nslot (nl_root_reserve env))) 0) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw fslot oslot nslot 0)))
+                     (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw (+ resw 8) oslot 0)))
                      (if (/= r 0) (setq status r)
                        (seq (setq sp (+ (- sp n) 1))
                             (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (heap-read-u64 resw 0))
@@ -20012,14 +20036,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (ptr-write-u64 wout 0 (heap-read-u64 (+ stk (* sp 8)) 0)))
                      (setq status -1))
               (if (= op 18)
-                  (seq (if (= fslot 0)
-                           (seq (setq fslot (wf_bytecode_w_roots env 3))
-                                (if (= fslot 0) (setq status -4)
-                                  (seq (setq oslot (+ fslot 32))
-                                       (setq nslot (+ fslot 64))))) 0)
+                  (seq 0
                        (if (= status 0)
+                           ;; `wf_bytecode_w_varref' writes only RESW: no scratch.
                            (seq (setq r (m5_fx_alias_ref
-                                         (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) env resw oslot))
+                                         (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) env resw 0))
                                 (if (/= r 0) (setq status r)
                                   (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
