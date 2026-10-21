@@ -2466,6 +2466,49 @@
         (nreverse answers))
     (fmakunbound 'vsh-parity-throw)))
 
+;; GNU word-boundary opcodes accept either string edge, including punctuation.
+(list (string-match "\\b@\\b" "@")
+      (string-match "\\B@" "@")
+      (string-match "\\b" "")
+      (string-match "\\B" "")
+      (string-match "\\b@\\b" " @ "))
+
+;; Syntax mutations and inherited entries are observed through the public API.
+(let* ((old-table (syntax-table))
+       (parent (make-syntax-table))
+       (child (make-syntax-table parent)))
+  (unwind-protect
+      (progn
+        (set-syntax-table child)
+        (modify-syntax-entry ?@ "w" parent)
+        (let ((before (string-match "\\sw" "@")))
+          (modify-syntax-entry ?@ "." parent)
+          (list before (string-match "\\sw" "@")) ))
+    (set-syntax-table old-table)))
+
+;; Anchored syntax runs retain the last repeated capture, including empty runs.
+(let ((case-fold-search nil))
+  (mapcar (lambda (row)
+            (let ((hit (string-match (car row) (cadr row))))
+              (list hit (and hit (match-data t)))))
+          '(("\\`\\(\\sw\\|\\s_\\)*\\'" "unsigned_long")
+            ("\\`\\(\\sw\\|\\s_\\)*\\'" "")
+            ("\\`\\(\\sw\\|\\s_\\)*\\'" "a-b")
+            ("\\`\\(?:\\sw\\|\\s_\\)+\\'" "a_9"))))
+
+;; GNU rejects explicit group numbers beginning with zero.
+(mapcar (lambda (pattern)
+          (condition-case err (string-match pattern "ab")
+            (invalid-regexp err)))
+        '("\\`\\(?0:\\sw\\)*\\'" "\\`\\(?01:\\sw\\)*\\'"))
+
+;; Captures above GNU's one-byte register limit do not enter match data.
+(mapcar (lambda (pattern)
+          (let* ((hit (string-match pattern "ab"))
+                 (data (and hit (match-data t))))
+            (list hit (length data) (last data 2))))
+        '("\\`\\(?255:\\sw\\)*\\'" "\\`\\(?256:\\sw\\)*\\'"))
+
 ;; Closure slots participate in the same print graph as lists and vectors.
 (let ((f (eval '(let ((f nil)) (setq f (lambda () f)) f) t)))
   (list (let ((print-circle t)) (prin1-to-string f))

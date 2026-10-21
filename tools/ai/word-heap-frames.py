@@ -141,7 +141,8 @@ def capture(args):
     env = selected_env(WHVS_SOURCE_ROOT=str(source_root),
                WHVS_ROWS=str(directory / "source-rows.json"))
     host_guard = run_raw(directory, "host-guard", [gnu, "-Q", "--batch", "--load", str(host_source)], env)
-    report = {"tag": args.tag, "gnu": pin(gnu), "probe": pin(PROBE),
+    report = {"tag": args.tag, "performance_tag": args.performance_tag or args.tag,
+              "gnu": pin(gnu), "probe": pin(PROBE),
               "checker": pin(__file__), "thread_providers": [pin(THREAD_PROVIDER / name) for name in THREAD_FILES],
               "source_root": str(source_root),
               "source_rows": pin(directory / "source-rows.json"),
@@ -365,9 +366,17 @@ def ratios_from_costs(costs, gnu):
     return ratios, failures
 
 
+def same_companions(measured, captured):
+    # Source capture additionally records byte counts, verified by provenance().
+    return measured == [{key: item[key] for key in ("path", "sha256")} for item in captured]
+
+
 def floor(report):
     module = load_tool("whf_callfloor", "word-heap-frames-ir.py")
-    module.OUT = OUT / report["tag"] / "performance"
+    performance_tag = report.get("performance_tag", report["tag"])
+    need(isinstance(performance_tag, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", performance_tag)),
+         "invalid performance tag")
+    module.OUT = OUT / performance_tag / "performance"
     gnu_report, gnu, _ = module.perf("gnu")
     need(gnu_report["qualified_binary"] == module.pin(report["gnu"]["path"]), "performance used a different GNU")
     ratios, failures = {}, []
@@ -376,7 +385,7 @@ def floor(report):
         need(measured.get("isolated") and measured["n"] == gnu_report["n"], "performance trials are not matched/isolated")
         need(measured["qualified_binary"] == module.pin(report["binaries"][linkage]["binary"]["path"]),
              linkage + " performance used another candidate")
-        need(measured["binary_companions"] == report["binaries"][linkage]["companions"],
+        need(same_companions(measured["binary_companions"], report["binaries"][linkage]["companions"]),
              linkage + " performance used different binary companions")
         ratios[linkage], failed = ratios_from_costs(costs, gnu)
         failures.extend(linkage + " " + message for message in failed)
@@ -504,6 +513,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("capture", "performance", "check", "controls", "performance-controls"))
     parser.add_argument("--tag", default="candidate")
+    parser.add_argument("--performance-tag", help="capture against an existing performance campaign")
     parser.add_argument("--dynamic", default=os.getenv("WH_FRAME_DYNAMIC"))
     parser.add_argument("--static", default=os.getenv("WH_FRAME_STATIC"))
     parser.add_argument("--gnu", default=os.getenv("WH_FRAME_GNU", shutil.which("emacs")))
@@ -514,6 +524,9 @@ def main():
     parser.add_argument("--emacs-include", default=os.getenv("PCF_EMACS_INCLUDE"))
     args = parser.parse_args()
     need(bool(re.fullmatch(r"[A-Za-z0-9_-]+", args.tag)), "invalid evidence tag")
+    if args.performance_tag is not None:
+        need(args.command == "capture" and bool(re.fullmatch(r"[A-Za-z0-9_-]+", args.performance_tag)),
+             "performance tag requires capture and a valid evidence tag")
     if args.command in ("capture", "performance"):
         need(args.dynamic and args.static and args.gnu, "supply both binaries and GNU through flags or WH_FRAME_* environment")
     globals()[args.command.replace("-", "_")](args)

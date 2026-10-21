@@ -484,7 +484,13 @@ def check(revision=None, linked=None, historical=False):
         for name in (ACCESSORS, "tools/ai/box-census.py", "tools/ai/word-heap-accessor-code.el"):
             need(sha(ROOT / name) == manifest["hashes"][name], f"changed S1 accessor contract: {name}")
     for name, expected in manifest["hashes"].items():
-        actual = frozen.get(name) if (revision or historical) and not name.startswith("target/") else sha(ROOT / name)
+        artifact = ROOT / name
+        if historical and name == "target/final-verify/checks.sh":
+            # Keep the original S1 bytes while the live final-check entry advances.
+            need(expected == "2bda0cf225d74d569f1cc24775042ff2cb171f0f55eb878376ac377b414545d2",
+                 "changed historical final-check pin")
+            artifact = OUT / "frozen-final-checks.sh"
+        actual = frozen.get(name) if (revision or historical) and not name.startswith("target/") else sha(artifact)
         need(actual == expected, f"changed S1 evidence: {name}")
     need(manifest["facts"] == facts(historical=historical), "S1 measured facts changed")
     if revision:
