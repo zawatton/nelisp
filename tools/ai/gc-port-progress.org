@@ -49,6 +49,23 @@ Conservative scanning validates candidate pointers through persistent block meta
 #+NOTE: 2026-10-21: known-red. Ported: cons blocks and the persistent block registry (S1.1). Blocked, with the layer named in Doc 223: floats (word-heap S5: a float is a caller-allocated 32-byte result slot whose type is written after allocation), symbols (word-heap S3: 32-byte slot plus the symbol-name sidecar and the intern region), strings with compact_small_strings (word-heap S3/S6: copyable 32-byte views alias one character buffer, Doc 149, so sdata has no single owner to update). Vector blocks are not blocked but were not landed this session; Doc 223 lists their integration points (nl_gc_block_elem_cap, nl_gc_in_arena, the image walker).
 cmd: python3 tools/ai/gc-port-check.py all-types
 
+** S1.3 Word-heap S2.1: header-less cons, at most 32 arena bytes per retained cons (cell at most 24 B) and no cons header view in the image
+#+NOTE: Added 2026-10-21 with S1.4-S1.6 (denominator 9 -> 13) at the coordinator's request: the representation criteria from the word-heap ledger, checked by tools/ai/word-heap-stage-check.py, whose cmd lines are proposed for word-heap-progress.org too. Slopes come from word-heap-objsize.el (individual conses) and word-heap-cons-list.el (one make-list) on both linkages; the base binary is the negative control.
+#+NOTE: 2026-10-21 c6 (16adbe722): 56 B per cons on both linkages and both populations (a 40-byte legacy view plus a 16-byte cell); 172,394 cons header views in the image. Needs Doc 216's tag-010 header-less cons.
+cmd: python3 tools/ai/word-heap-stage-check.py s2.1 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
+
+** S1.4 Word-heap S2.2: cons refcount removed, at most 24 arena bytes per retained cons (cell at most 16 B), no count reader or writer linked
+#+NOTE: 2026-10-21 c6 (16adbe722): the count is gone (no lock-prefixed instruction or nl_atomic_fetch_add call in nelisp_nlconsbox_clone, nl_alloc_consbox or nl_alloc_consbox_init on either ELF; nelisp_nlconsbox_drop not linked; 16-byte cells), but 56 B per cons until the tag-010 view retirement (S1.3).
+cmd: python3 tools/ai/word-heap-stage-check.py s2.2 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
+
+** S1.5 Word-heap S5.1: no object type allocates a 32 B header box (image census by type), float <= 24, one-limb bignum <= 32 and detached marker <= 40 arena bytes, GNU numeric/error parity
+#+NOTE: 2026-10-21 c6: float 40, bignum 64, marker 48 B; image header aliases bignum 177, cell 79, float 211, string 9,295, symbol 120,544, vector 4, plus cons and immediate views; 4 of 44 parity cases differ from GNU 31.1 on the base too (format %d and float of a bignum, truncate to a bignum, truncate of an infinity). Strings and symbols belong to the strings lane (word-heap S3).
+cmd: python3 tools/ai/word-heap-stage-check.py s5.1 --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
+
+** S1.6 Word-heap S6.2: precise roots are WORD slots, no 32-byte nl_root_reserve slot outside the call path (call-path roots are word-heap S6.3, callpath-perf)
+#+NOTE: 2026-10-21 c6 static census: 154 nl_root_reserve sites in 66 functions outside the call path, 93 inside it.
+cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census target/gc-port/cur/census.tsv
+
 * S2 Speed
 ** S2.1 Cons churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1567.1M Ir vs GNU 157.0M (x9.98); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
