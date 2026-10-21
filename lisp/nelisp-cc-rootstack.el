@@ -459,7 +459,29 @@
              (seq (ptr-write-u64 env 120 next)
                   (nl_thread_registry_store_top entry next)))
            (+ top 32)))))
+    ;; The evaluator's normal state, the main thread with no worker
+    ;; registered and its stack set up, takes the frame inline: one bounds
+    ;; check, the header and the nil slots, as GNU's frame push is a few
+    ;; stores (bytecode.c:510-525).  Anything else goes through
+    ;; `nl_root_frame_at'.
     (defun nl_root_frame (env n)
+      (let* ((top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+             (next (+ top (+ 32 (logand (+ (* n 8) 31) -32)))))
+        (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                (if (= top 0) 0 (<= next (nl_rootstack_end))) 0)
+            (let* ((slot (+ top 32)) (end (+ slot (* n 8))))
+              (seq
+               (ptr-write-u64 top 0 1464226381)
+               (ptr-write-u64 top 8 n)
+               (ptr-write-u64 top 16 0)
+               (ptr-write-u64 top 24 0)
+               (while (< slot end)
+                 (seq (ptr-write-u64 slot 0 3)
+                      (setq slot (+ slot 8))))
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+               (+ top 32)))
+          (nl_root_frame_slow env n))))
+    (defun nl_root_frame_slow (env n)
       (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
                       (nl_thread_registry_find env))))
         (seq

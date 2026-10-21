@@ -9139,8 +9139,9 @@ argument (reachability + in-arena bounds checks).")
           (seq
            (nl_rootstack_init)
            (nl_thread_park_safepoint env)
-           (let* ((rec_cur_addr (+ env 96)) (rec_max (nl_frame_stack_limit env 0))
-                  (rec_cur (heap-read-u64 rec_cur_addr 0)))
+           (let* ((rec_cur_addr (+ env 96))
+                  (rec_cur (heap-read-u64 rec_cur_addr 0))
+                  (rec_max (nl_eval_depth_limit env rec_cur)))
              (if (>= rec_cur rec_max)
                  (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
                (seq
@@ -9177,16 +9178,17 @@ argument (reachability + in-arena bounds checks).")
            ;; Doc 199 Tier 3b: every evaluator recursion boundary is a worker
            ;; park safepoint.
            (nl_thread_park_safepoint env)
-           ;; Context/backtrace records still consume views.  The evaluator
-           ;; receives FORM's original WORD, including immediate literals.
-           (let* ((form_ptr (wf_word_view form))
-                  (rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
-             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_frame_stack_limit env 0)))
+           ;; Context/backtrace records still consume views; only an armed
+           ;; record takes one.  The evaluator receives FORM's original
+           ;; WORD, including immediate literals.
+           (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
+             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_eval_depth_limit env rec_cur)))
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
                    (if (= (nl_gc_frame_record_armed_p) 1)
-                       (let* ((pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
+                       (let* ((form_ptr (wf_word_view form))
+                              (pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
                         (nelisp_eval_call_recorded_done_w
                          (nelisp_eval_call_record_result
                           (nl_eval_inner_w form env 0 0) pushed)
@@ -21078,7 +21080,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; boxed, no variable is looked up by name and no argument list is
     ;; consed on the fast paths.  Opcodes (vector elements; operands follow):
     ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   8 JMP pc   9 JMPNIL pc
-    ;;  11 POP   12 DUP   0 HALT
+    ;;  11 POP   12 DUP   0 HALT   19 VARREF sym (a global variable's value)
     ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
     ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
     ;;  16 CALL sym argc
@@ -21457,13 +21459,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; GNU's eval_sub keeps ARGS_LEFT in a scanned local (eval.c:2686-2691):
     ;; a form that cuts its own argument list cannot free the rest, and N
     ;; bounds the walk if one lengthens it.  A non-cons tail ends it early.
+    ;; A variable is read in place, as GNU's eval_sub returns a symbol's
+    ;; lexical or global value before it counts depth or records a frame
+    ;; (eval.c:2585-2599); self-evaluating scalars and keywords are their
+    ;; own value.  Everything else goes through the evaluator's entry.
     (defun m5_fx_eval_forms (tail env base n)
-      (let* ((cur tail) (k 0) (rc 0) (w 0) (cslot (+ base (* n 8))))
+      (let* ((cur tail) (k 0) (rc 0) (w 0) (tag 0) (cslot (+ base (* n 8))))
         (seq
          (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
            (seq (ptr-write-u64 cslot 0 cur)
                 (setq w (nl_cons_car_word cur))
-                (let* ((ew (if (< (nl_val_tag w) 4) w (nelisp_eval_call_w w env 0))))
+                (setq tag (nl_val_tag w))
+                (let* ((ew (if (< tag 4) w
+                             (if (if (or (= tag 4) (= tag 16)) (= (nl_kw_is_keyword w) 0) 0)
+                                 (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
+                               (nelisp_eval_call_w w env 0)))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
@@ -21556,7 +21566,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (if (= status -2) (nl_abi_fail (bf_wrong_type_arrayp code) 0) 0)))))
              (seq (nl_root_release env mark) word))))))
     (defun m5_fx_run (code nlocals env out args nparams argw wout)
-      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (nl_frame_stack_limit env 0)))
+      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (nl_eval_depth_limit env (+ rec 2))))
         (if (>= (+ rec 2) rec_max)
             (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
           (seq (ptr-write-u64 (+ env 96) 0 (+ rec 2))
@@ -21680,6 +21690,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= op 1)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            ;; 19 VARREF sym: GNU's Bvarref (bytecode.c:636-648) pushes the
+            ;; variable's value read directly, Fsymbol_value only off the
+            ;; plain path; the bytecode VM's varref entry does both, and
+            ;; signals void-variable.  No call of `symbol-value' the
+            ;; function, so no call-out, lookup of it, or kind decode.
+            (if (= op 19)
+                (seq (setq r (wf_bytecode_w_varref env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) resw 0))
+                     (if (/= r 0) (setq status r)
+                       (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
+                            (setq sp (+ sp 1)) (setq pc (+ pc 2)))))
             (if (= op 9)
                 (seq (setq sp (- sp 1))
                      (if (= (nl_val_tag (heap-read-u64 (+ stk (* sp 8)) 0)) 0)
@@ -21744,7 +21764,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (if (/= r 0) (setq status r)
                                   (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
-                (setq status -2))))))))))))))))
+                (setq status -2)))))))))))))))))
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed. Checked root failure
@@ -46088,18 +46108,33 @@ nothing."
 
 (defun nelisp-standalone--special-prefilter-helper (form)
   "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
-match a special-form name tested in FORM."
-  (let ((test 0))
+match a special-form name tested in FORM.
+The test is a balanced decision on the length, then the first bytes of
+the names of that length: a few comparisons, where a chain over every
+name took one pair of comparisons per name for each evaluated call."
+  (let ((by-len (make-hash-table)))
     (dolist (name (nelisp-standalone--special-prefilter-names form))
-      (setq test `(if (= (if (= len ,(length name)) (if (= b0 ,(aref name 0)) 1 0) 0) 1)
-                      1 ,test)))
-    `(defun nl_sp_maybe_special (name_ptr)
-       (if (= (sexp-tag name_ptr) 4)
-           (let* ((len (heap-sexp-length name_ptr)))
-             (if (< len 1) 0
-               (let* ((b0 (heap-read-u8 (heap-sexp-data name_ptr) 0)))
-                 ,test)))
-         0))))
+      (cl-pushnew (aref name 0) (gethash (length name) by-len)))
+    (cl-labels
+        ((first-bytes (bytes)
+           (let ((test 0))
+             (dolist (b (sort (copy-sequence bytes) #'>))
+               (setq test `(if (= b0 ,b) 1 ,test)))
+             test))
+         (tree (lens)
+           (if (null lens) 0
+             (let* ((mid (/ (length lens) 2))
+                    (len (nth mid lens)))
+               `(if (= len ,len) ,(first-bytes (gethash len by-len))
+                  (if (< len ,len) ,(tree (cl-subseq lens 0 mid))
+                    ,(tree (cl-subseq lens (1+ mid)))))))))
+      `(defun nl_sp_maybe_special (name_ptr)
+         (if (= (sexp-tag name_ptr) 4)
+             (let* ((len (heap-sexp-length name_ptr)))
+               (if (< len 1) 0
+                 (let* ((b0 (heap-read-u8 (heap-sexp-data name_ptr) 0)))
+                   ,(tree (sort (hash-table-keys by-len) #'<)))))
+           0)))))
 
 (defun nelisp-standalone--patch-n3-specials (source)
   "Honor GNU special-form function cells and reject evaluated invocation."
@@ -48206,6 +48241,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                (if (and (/= entry 0) (> (record-slot-count entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
          (nl_root_release env mark) 0)))
+    ;; GNU eval_sub and Ffuncall (eval.c:2604-2608, 3196-3200) read
+    ;; `max-lisp-eval-depth' only once the depth passes it, and count a
+    ;; limit below 100 as 100: no evaluation shallower than 100 levels reads
+    ;; the variable at all.  DEPTH is the depth the caller is about to
+    ;; check; the answer is the limit it checks against.
+    (defun nl_eval_depth_limit (env depth)
+      (if (< depth 100) 100
+        (let* ((limit (nl_frame_stack_limit env 0)))
+          (if (< limit 100) 100 limit))))
     (defun nl_frame_stack_limit (env _pad)
       ;; ENV is an aligned EvalCtx; existing compact WORD roots stay at32/40/48.
       (let* ((state (heap-read-u64 env 176)))
@@ -49097,13 +49141,16 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; builtin), the evaluated WORDs become the ordinary apply's argument
     ;; list, so no argument is evaluated twice.  `funcall' has its own
     ;; WORD path, `nl_eic_funcall_w'.
+    ;; The primitive's id is decoded once (`m5_fx_primitive_id', funcall
+    ;; included); a builtin that is no WORD primitive answers 2 before any
+    ;; argument is evaluated, and the caller's ordinary path evaluates them.
     (defun nl_eic_primitive_w (fn tail env fw call_name)
       (let* ((name (m5_fx_builtin_name fn 0))
-             (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
-        (if (< argc 1) 2
-        (if (= (sexp-name-eq name "funcall") 1)
+             (argc (if (= name 0) 0 (m5_fx_form_count tail 0)))
+             (id (if (< argc 1) 0 (m5_fx_primitive_id name argc))))
+        (if (= id 0) 2
+        (if (= id 13)
             (nl_eic_funcall_w tail env argc fn fw call_name)
-        (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
               (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
@@ -49111,13 +49158,13 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  ;; The activation shows the evaluated arguments, as GNU's
                  ;; set_backtrace_args (eval.c:2693).
                  (m5_fx_frame_lazy env base argc 0)
-                 (let* ((st (m5_fx_primitive_named name base argc argc
-                                                   (+ base (* argc 8)) env 0)))
+                 (let* ((st (m5_fx_primitive_run id base argc argc
+                                                 (+ base (* argc 8)) env 0)))
                    (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
                      (if (= st -3)
                          (nl_eic_after_args_w (m5_fx_slot_list base argc)
                                               env fw call_name)
-                       0))))))))))))
+                       0)))))))))))
     ;; GNU Ffuncall (eval.c:3185) and funcall_general (eval.c:3149) on the
     ;; WORDs eval_sub evaluated.  FUNCTION and its arguments go into one
     ;; WORD frame, with three more slots: the resolved definition, the

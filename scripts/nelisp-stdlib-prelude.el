@@ -26304,7 +26304,8 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; Compiles a form, after `macroexpand-all', into the instruction vector
 ;; `nelisp--fx-run' executes on runtime WORDs.  Covered: constants of any
 ;; kind, `quote', lexical variables (resolved to slots), global variables
-;; (through `symbol-value' / `set'), let/let* of non-special variables,
+;; (read by VARREF, GNU's Bvarref; set through `set'), let/let* of
+;; non-special variables,
 ;; setq, progn, if, while, and calls of named functions -- < > = + - 1+ 1-
 ;; inline on fixnums, everything else through the VM's call-out.  Anything
 ;; else (special-variable bindings, lambda/function, catch, condition-case,
@@ -26389,7 +26390,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
            ;; Track the operand-stack depth along the code as laid out; at a
            ;; label the real depth is never larger, so MAXDEPTH bounds it.
            (let ((op (car items)))
-             (setq depth (+ depth (cond ((memq op '(1 2 12 18)) 1)
+             (setq depth (+ depth (cond ((memq op '(1 2 12 18 19)) 1)
                                         ((memq op '(3 9 11 4 5 6 13 14 0)) -1)
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
@@ -26412,16 +26413,18 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
             ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
              (let ((c (assq x vars)))
                (if c (emit 2 (cdr c))
+                 ;; A global variable: VARREF, GNU's Bvarref, reads it
+                 ;; directly instead of calling `symbol-value'.
                  (if (not (and alias-hints (memq x alias-hints)
                                (fboundp 'nelisp--env-globals-op)))
-                     (progn (emit 1 x) (emit 16 'symbol-value 1))
+                     (emit 19 x)
                  (let* ((gen-cell nelisp--fx-special-gen)
                         (snapshot (aref gen-cell 0))
                         (base (nelisp--env-globals-op 'indirect-variable x)))
                    ;; Cache a name, never a cell or value. Every read checks
                    ;; the generation, including after arbitrary callouts.
                    (if (or (eq base x) (null base) (eq base t) (keywordp base))
-                       (progn (emit 1 x) (emit 16 'symbol-value 1))
+                       (emit 19 x)
                      (emit 18 (vector x base gen-cell snapshot))))))))
             ((not (consp x)) (emit 1 x))
             (t
