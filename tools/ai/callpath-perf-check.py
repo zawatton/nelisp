@@ -225,7 +225,8 @@ def arity_report(report, tag, *, link_build=True):
             boundaries.append(maximum + 1)
         for argc in boundaries:
             boundary_specs.append((name, argc))
-            for callable_ in (name, "(builtin " + name + ")", "(builtin " + name + ")"):
+            # The reader prints a builtin callable as GNU prints a subr.
+            for callable_ in (name, "#<subr " + name + ">", "#<subr " + name + ">"):
                 expected.append(f"({number} (wrong-number-of-arguments {callable_} {argc}))")
                 number += 1
     need((c["min"], c["max"]) == (low, high) and low > 0 and high > 0, "arity boundary counts differ")
@@ -278,7 +279,11 @@ def arity_report(report, tag, *, link_build=True):
     required_valid = {"rdf", "nelisp--syscall-read-file", "nelisp--readdir-scan-raw",
                       "nelisp--syscall-readdir-names", "nelisp--read-all-from-string-native",
                       "nelisp--debug-switch", "nelisp-portable-syscall", "syscall-direct"}
-    need(all(sum(case["name"] == name for case in cases) >= 2 for name in required_valid),
+    # A fixed-arity builtin (syscall-direct takes exactly 7) has one valid
+    # boundary; the others need both their min and their max case.
+    fixed = {row[0] for row in read(auth(report["contracts"]))[1] if row[1] == row[2]}
+    need(all(sum(case["name"] == name for case in cases) >= (1 if name in fixed else 2)
+             for name in required_valid),
          "missing private optional min/max valid-boundary controls")
     need(sum(case["name"] == "nelisp--gc-diag" for case in cases) >= 2 and
          all(any(case["name"] == name for case in cases) for name in
@@ -290,11 +295,12 @@ def arity_report(report, tag, *, link_build=True):
          "private optional valid-boundary controls failed/incomplete")
     need(report["passed"] is True, "arity reporter failed")
     if link_build:
-        campaign = read(OUT / "floors-queued" / ("result-" + tag) / "campaign.json")
-        auth(campaign["binary"])
-        check_memory_policy(campaign["memory_policy"])
-        need(campaign["binary"]["sha256"] == report["binary"]["sha256"] and
-             campaign["source"] == source_identity(), "arity report is not the fresh current-source result build")
+        # Since the switch to wall-clock (2026-10-21) the measured result
+        # build is the wall report's candidate, not an Ir campaign's binary.
+        floors = read(WALL / ("result-" + tag) / "floors.json")
+        auth(floors["engines"]["candidate"])
+        need(floors["engines"]["candidate"]["sha256"] == report["binary"]["sha256"] and
+             floors["source"] == source_identity(), "arity report is not the fresh current-source result build")
     return number
 
 
