@@ -9,5 +9,6 @@
   (unless (byte-code-function-p (symbol-function name))
     (error "FX helper is not bytecode: %S" name)))
 (princ "GNU-FX-HELPERS bytecode=5 PASS\n")
+(kill-emacs 0)
 
 ;;; standalone-gnu-semantics-fx-helpers-check.el ends here
