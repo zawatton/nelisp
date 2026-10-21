@@ -1,0 +1,37 @@
+#+TITLE: Version identity: nelisp --version and a genuine :nelisp-version in runtime manifests
+
+# User request 2026-10-21: "nelisp.exe --versionでバージョンが表示されるようにして".
+# Today the IME on Windows runs v1.5.0-59-g0afd1a77d (2026-10-10). Its
+# operators had to work the version out from the runtime directory name:
+# `nelisp.exe --version` prints usage, and the bundled manifest records
+# :nelisp-version "unknown" (lisp/nelisp-artifact.el reads
+# `nelisp--cli-version', which the standalone binary never binds).
+# Base: eval/core-20261017 at 9d5f4a515 (v1.5.0-1546-g9d5f4a515). This
+# lands on eval/core after candidate 3.
+# Env (set by whoever runs the meter): VER_DYN, VER_STATIC are the
+# dynamic/static builds of HEAD; VER_OLD is the deployed 9d5f4a515 binary.
+
+* S1 Version identity
+** S1.1 `--version` on dynamic and static
+Each prints exactly one line, `NeLisp <describe> (<target>, <linkage>)`, where <describe> equals `git describe --tags --long --always --dirty` of the build source. It exits 0 with empty stderr and loads no user files. A control shows VER_OLD fails this check.
+#+NOTE: 2026-10-21 GNU src/emacs.c:1501-1509 recognizes --version before Lisp startup; :2226-2284 prints its compiled PACKAGE_VERSION (declared :159) and exits. Adapt this early argv path to the required single-line NeLisp target/linkage format, without a reader builtin. Old 9d5f4a515 binary exits 2; five-process median 139.090 ms (target/version/baseline-timing.json). Adapt GNU sort_args (emacs.c:2748,2758,2804,2830) by scanning option positions, skipping operands and stopping at --. Version queries skip cold-image/prelude I/O. New dirty dynamic five-process median 2.268 ms versus old 139.090 ms (target/version/candidate-timing.json); old rc2 becomes rc0. This also removes cold-image startup from the next session's version-identification loop.
+cmd: python3 tools/ai/version-check.py cli
+** S1.2 Runtime identity: at runtime `nelisp-version` and `nelisp--cli-version` are bound to the same <describe> string, and an artifact manifest written by the binary records :nelisp-version equal to it rather than "unknown"
+#+NOTE: GNU src/emacs.c:3605-3612 initializes emacs-version from the compiled emacs_version. Adopt a build-captured string for both NeLisp runtime variables; no new native entry.
+cmd: python3 tools/ai/version-check.py runtime
+** S1.3 Provenance controls
+- A build with NELISP_VERSION=<override> reports the override.
+- A build from a tree with an uncommitted change reports a -dirty suffix.
+- A build outside git, from an exported tree, reports the override or "unknown-<sha>". If none is derivable it reports "unknown", never a stale value.
+#+NOTE: Build-time resolver rejects exported subtrees inside unrelated parent Git repositories; NELISP_SOURCE_REVISION supplies an optional known SHA for unknown-<sha>. Actual dirty, override and exported-source binaries are required by the checker, in addition to resolver controls.
+cmd: python3 tools/ai/version-check.py controls
+
+* S2 No regression and end to end
+** S2.1 Final verification on the new builds: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
+cmd: python3 tools/ai/version-check.py final
+** S2.2 End to end: a Windows nelisp.exe built from HEAD prints the same <describe> under wine with `--version`, and a runtime manifest written there records it
+#+NOTE: 2026-10-21 follow-up 1: artifact staging already uses write-region then rename-file (lisp/nelisp-artifact.el:2434-2440). Windows nl_os_syscall_path2 returned -ENOSYS for nr82; rename-file mislabeled the error as missing, and unwind cleanup removed the staging files. Adapt GNU fileio.c:5461,5635-5656 string-write/create path and :2803 emacs_rename -> sysdep.c:2723 -> w32.c:4868 UTF-16 _wrename, :4886-4913 replacement semantics. This GNU tree has no MoveFileExW call: NeLisp uses its existing raw Win32 layer (no CRT rename provider) and MoveFileExW(REPLACE_EXISTING), without COPY_ALLOWED, for the same-volume fast path. Existing syscall-path2 nr82 only; no new reader builtin. Clause 3 permits raw OS access. Cross-volume copy fallback and general directory-rename parity remain separate from same-directory artifact publication.
+#+NOTE: Follow-up verification: host Windows-shim regression was red (4/5 failures) before the fix, green (5/5) after it; deleting the import registration makes the focused check red. Both existing artifact atomic-publication tests pass. Evidence: target/version/followup1/host-{red,green,negative-import}.log and artifact-host.log. The prescribed Windows recipe links the PE, then winepath fails before cold-image creation because the sandbox makes /run/user/1000/wine/server-25-60130/lock read-only; target/version/followup1/win-script-driver.log and probe2.err record the blocker. No Windows runtime pass is claimed.
+The coordinator verifies Windows completion.
+#+NOTE: 2026-10-21 12:24 coordinator host run of target/final-verify/run-win-version.sh at HEAD 5cf329cfe (v1.5.0-1549-g5cf329cfe), built with the known-good cold-image recipe (cold image 155,250,736 bytes) and run under wine with ulimit -v 8388608 via bin/heavy-run.sh. `nelisp.exe --version` printed `NeLisp v1.5.0-1549-g5cf329cfe (x86_64-windows, static)`, exit 0, empty stderr. nelisp-version equals nelisp--cli-version, and both are the describe string. nelisp-artifact-compile-file wrote a manifest recording :nelisp-version "v1.5.0-1549-g5cf329cfe". Before 5cf329cfe the artifact step failed on Windows (file-missing "Renaming"); candidate 3's Windows build fails the same way, so the defect predates this branch.
+evidence: target/final-verify/win-version-5cf329cfe.log sha256=0556525c7cb05b2ede4444684bb17700b59fe6428ea59bd326ab385b1ca82ab7
