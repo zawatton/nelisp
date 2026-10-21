@@ -249,5 +249,20 @@
                (upcase-region 1 (make-marker))
              (error condition))))))
 
+(casetab--row "ascii-domain-proof-observes-subject-mutation"
+ (lambda ()
+   (with-temp-buffer
+     (let ((table (copy-case-table (standard-case-table)))
+           (text (string-to-multibyte "a"))
+           (case-fold-search t))
+       (set-case-table table)
+       ;; ASCII retains its standard mapping, but a non-ASCII subject can
+       ;; match an ASCII literal through this explicitly supplied canon.
+       (set-char-table-range (char-table-extra-slot table 1) 955 97)
+       (let ((first (string-match "a" text)))
+         (aset text 0 98)
+         (list first (append text nil) (string-match "a" text)
+               (string-match "a" (string 955))))))))
+
 (princ (format "CASETAB-DONE behaviour %d\n" casetab--count))
 (kill-emacs 0)

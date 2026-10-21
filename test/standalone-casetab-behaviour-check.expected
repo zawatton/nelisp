@@ -44,4 +44,5 @@
 (CASETAB behaviour "region-modified-tick-deltas" (ok ((t 2 2) (nil 0 0) (t 2 2) (t 6 6) (t 4 4))))
 (CASETAB behaviour "string-properties-by-byte-representation" (ok (((97) nil kept kept) ((97) nil kept kept) ((97) t nil kept))))
 (CASETAB behaviour "detached-region-marker-errors" (ok ((error "Marker does not point anywhere") (error "Marker does not point anywhere"))))
-CASETAB-DONE behaviour 46
+(CASETAB behaviour "ascii-domain-proof-observes-subject-mutation" (ok (0 (98) nil 0)))
+CASETAB-DONE behaviour 47
