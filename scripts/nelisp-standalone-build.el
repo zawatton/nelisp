@@ -602,7 +602,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 16 8
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -937,14 +937,18 @@ storage — not an arena reservation."
     ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
     (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
       (list (nelisp-link-symbol "nl_win_cold_io"
-                                (- (nelisp-standalone--driver-bss-size) 176)
+                                (- (nelisp-standalone--driver-bss-size) 184)
                                 :section 'bss :bind 'global :type 'object)))
     ;; Doc 216 S4.2: transient descriptor registry and opt-in counters.
     (list (nelisp-link-symbol "nl_frame_stack_registry"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
-                              (- (nelisp-standalone--driver-bss-size) 16)
+                              (- (nelisp-standalone--driver-bss-size) 24)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Transient weak-table chain; metadata slot 10 holds the next box.
+    (list (nelisp-link-symbol "nl_gc_weak_head"
+                              (- (nelisp-standalone--driver-bss-size) 8)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
                               (+ 57616 4194304 96 176 64 56 40 1040
@@ -4794,6 +4798,257 @@ REPL-facing module it feeds."
     ;; ceiling on windows-x86_64, the same shape that killed
     ;; `nl_gc_poison_fill'.  The car side stays recursive: its depth is
     ;; bounded by object nesting, not by list length.
+    ;; GNU 31.1 fns.c:5231/5251 and alloc.c:5670: mark weak entries to a
+    ;; fixed point, then unlink dead entries.  The table is a Lisp cons here,
+    ;; so preserve its bucket/list storage separately from endpoint payloads.
+    ;; Marker slot 10 is an immediate-encoded transient next-table box.
+    (defun nl_gc_weak_meta_slot (meta i)
+      (+ (+ (nl_word_payload meta) 8) (* i 8)))
+    (defun nl_gc_weak_table_mode (box)
+      (let ((meta (ptr-read-u64 box 0)))
+        ;; Ordinary in-flight conses can contain 0/unbound sentinels.
+        ;; The generic marker rejects those as non-objects before reading;
+        ;; this hash-specific classifier must do the same.
+        (if (or (< meta 4096) (= (logand meta 1) 1)) 0
+          (if (= (nl_val_tag meta) 8)
+              (if (< (vector-len meta) 11) 0
+                (let* ((marker (ptr-read-u64 (nl_gc_weak_meta_slot meta 0) 0))
+                       (weak (ptr-read-u64 (nl_gc_weak_meta_slot meta 4) 0)))
+                  (if (or (< marker 4096) (= (logand marker 1) 1)) 0
+                    (if (and (= (ptr-read-u64 marker 0) 4)
+                             (= (ptr-read-u64 marker 24) 10))
+                        (let ((p (ptr-read-u64 marker 16)))
+                          (if (and (= (ptr-read-u64 p 0) 7089075026832613736)
+                                   (= (ptr-read-u16 (+ p 8) 0) 25964))
+                              (if (or (< weak 4096) (= (logand weak 1) 1)) 0
+                                (if (= (ptr-read-u64 weak 0) 4)
+                                    (let ((n (ptr-read-u64 weak 24))
+                                          (q (ptr-read-u64 weak 16)))
+                                      (if (= n 3)
+                                          (if (= (logand (ptr-read-u32 q 0) 16777215)
+                                                 7955819) 1 0)
+                                        (if (= n 5)
+                                            (if (= (logand (ptr-read-u64 q 0) 1099511627775)
+                                                   435761734006) 2 0)
+                                          (if (= n 12)
+                                              (if (and (= (ptr-read-u64 q 0) 8515588292257342827)
+                                                       (= (ptr-read-u32 (+ q 8) 0) 1702194273)) 3 0)
+                                            (if (= n 13)
+                                                (if (and (= (ptr-read-u64 q 0) 3270860593031636331)
+                                                         (= (logand (ptr-read-u64 (+ q 8) 0)
+                                                                    1099511627775) 435761734006)) 4 0)
+                                              0)))))
+                                  0))
+                            0))
+                      0))))
+            0))))
+    (defun nl_gc_weak_preserve_list (word)
+      (while (and (> word 0) (= (logand word 1) 0))
+        (if (= (nl_val_tag word) 7)
+            (let* ((box (ptr-read-u64 word 8))
+                   (entry (ptr-read-u64 box 0)))
+              (seq
+               (nl_gc_mark_block word)
+               (nl_gc_mark_block box)
+               (if (= (logand entry 1) 1) 0
+                 (if (= (ptr-read-u64 entry 0) 7)
+                     (seq (nl_gc_mark_block entry)
+                          (nl_gc_mark_block (ptr-read-u64 entry 8))) 0))
+               (setq word (ptr-read-u64 box 8))))
+          ;; Retain a boxed nil terminator too. Its wrapper is storage, not
+          ;; a weak key/value, and bucket rebuilding can install this form.
+          (seq (nl_gc_mark_block word) (nl_gc_mark_slot word)
+               (setq word 3))))
+      0)
+    (defun nl_gc_weak_preserve_vector_storage (word)
+      (if (= (logand word 1) 1) 0
+        (if (= (nl_val_tag word) 8)
+            (let* ((box (nl_word_payload word)) (data (+ box 8))
+                   (n (vector-len word)) (i 0))
+              (seq 0
+                   (nl_gc_mark_block box)
+                   0
+                   (while (< i n)
+                     (let ((entry (ptr-read-u64 (+ data (* i 8)) 0)))
+                       (seq
+                        (if (= (logand entry 1) 1) 0
+                          (if (= (ptr-read-u64 entry 0) 7)
+                              (seq (nl_gc_mark_block entry)
+                                   (nl_gc_mark_block (ptr-read-u64 entry 8))) 0))
+                        (setq i (+ i 1)))))))
+          0)))
+    (defun nl_gc_weak_preserve_meta (meta)
+      (let* ((box (nl_word_payload meta)) (data (+ box 8))
+             (n (vector-len meta)) (i 0))
+        (seq
+         (nl_gc_mark_block (nl_word_payload meta))
+         (nl_gc_mark_block box)
+         0
+         (while (< i n)
+           (let ((word (ptr-read-u64 (+ data (* i 8)) 0)))
+             (seq
+              ;; Insertion order stores pair references.  Its backing words
+              ;; are strong storage; the pair endpoints remain weak.
+              (if (= i 11) (nl_gc_weak_preserve_vector_storage word)
+                (nl_gc_weak_mark_word word))
+              (setq i (+ i 1)))))
+         0)))
+    (defun nl_gc_weak_preserve_table (box)
+      (let* ((meta (ptr-read-u64 box 0))
+             (buckets (ptr-read-u64 box 8))
+             (vbox (nl_word_payload buckets))
+             (data (+ vbox 8))
+             (n (vector-len buckets)) (i 0))
+        (seq
+         (ptr-write-u64 (nl_gc_weak_meta_slot meta 10) 0
+                        (+ (* (ptr-read-u64 (data-addr nl_gc_weak_head) 0) 4) 1))
+         (ptr-write-u64 (data-addr nl_gc_weak_head) 0 box)
+         (nl_gc_weak_preserve_meta meta)
+         (nl_gc_mark_block (nl_word_payload buckets))
+         (nl_gc_mark_block vbox)
+         0
+         (while (< i n)
+           (seq (nl_gc_weak_preserve_list (ptr-read-u64 (+ data (* i 8)) 0))
+                (setq i (+ i 1))))
+         0)))
+    (defun nl_gc_weak_owner_live (owner)
+      (if (= (nl_gc_in_arena owner) 0) 1
+        (let ((mark (nl_hdr_mark (- owner 8))))
+          (if (or (= mark 1) (= mark 4)) 1
+            ;; Non-hole image blocks survive sweep even without a mark.
+            ;; A free block (mark 2) must never acquire that lifetime.
+            (if (= mark 0) (nl_gc_is_boot (- owner 8)) 0)))))
+    (defun nl_gc_weak_survives (word)
+      (if (= (logand word 7) 6) (nl_gc_weak_owner_live (- word 6))
+        (if (= (logand word 1) 1) 1
+        (let ((tag (nl_val_tag word)))
+          ;; Scalars and interned symbols are non-collectible identities.
+          ;; Float tag 3 is copied by value in this runtime, like a scalar;
+          ;; exact weak-float identity requires the separate scalar redesign.
+          (if (or (= tag 0) (= tag 1) (= tag 2) (= tag 3) (= tag 4)) 1
+            (if (or (= tag 5) (= tag 14))
+                ;; GNU's two canonical empty strings are staticpro roots.
+                (if (= (ptr-read-u64 word 24) 0) 1
+                  (nl_gc_weak_owner_live (ptr-read-u64 word 16)))
+              (if (or (= tag 13) (= tag 16))
+                  (nl_gc_weak_owner_live (ptr-read-u64 word 16))
+                (nl_gc_weak_owner_live (ptr-read-u64 word 8)))))))))
+    (defun nl_gc_weak_keep (mode key_live value_live)
+      (if (= mode 1) key_live
+        (if (= mode 2) value_live
+          (if (= mode 3)
+              (if (or (= key_live 1) (= value_live 1)) 1 0)
+            (if (and (= key_live 1) (= value_live 1)) 1 0)))))
+    (defun nl_gc_weak_mark_word (word)
+      (if (= (logand word 7) 6)
+          (let ((live (nl_gc_weak_owner_live (- word 6)))) (seq (nl_gc_mark_vectorlike (- word 6)) (if (= live 1) 0 1)))
+        (if (= (logand word 1) 1) 0
+        (let ((changed (nl_gc_mark_block word)))
+          (seq (nl_gc_mark_slot word) changed)))))
+    (defun nl_gc_weak_order_remove_at (meta data n entry i)
+      (if (or (< i 0) (>= i n)) 0
+        (let ((word (ptr-read-u64 (+ data (* i 8)) 0)))
+          (if (= (logand word 1) 1) 0
+            (if (= (nl_val_tag word) 7)
+                (if (= (ptr-read-u64 word 8) (ptr-read-u64 entry 8))
+                    (seq
+                     (ptr-write-u64 (+ data (* i 8)) 0
+                                    (ptr-read-u64 (nl_gc_weak_meta_slot meta 13) 0))
+                     (ptr-write-u64 (nl_gc_weak_meta_slot meta 13) 0 (+ (* i 4) 1))
+                     1)
+                  0)
+              0)))))
+    (defun nl_gc_weak_order_remove (meta entry)
+      (let* ((mbox (nl_word_payload meta)) (mlen (vector-len meta)))
+        (if (< mlen 14) 0
+          (let ((order (ptr-read-u64 (nl_gc_weak_meta_slot meta 11) 0)))
+            (if (= (logand order 1) 1) 0
+              (if (= (nl_val_tag order) 8)
+                  (let* ((box (nl_word_payload order)) (data (+ box 8))
+                         (n (vector-len order))
+                         (cached (ptr-read-u64 entry 16))
+                         (i 0) (found 0))
+                    (seq
+                     ;; Insertion caches index+1 in a spare Cons Sexp word;
+                     ;; the full-slot clone preserves it across wrapper copies.
+                     (if (> cached 0)
+                         (setq found (nl_gc_weak_order_remove_at meta data n entry (- cached 1)))
+                       0)
+                     ;; Legacy entries without the cache retain compatibility.
+                     (while (and (= found 0) (< i n))
+                       (seq (setq found (nl_gc_weak_order_remove_at meta data n entry i))
+                            (setq i (+ i 1))))
+                     0))
+                0))))))
+    (defun nl_gc_weak_visit (box remove)
+      (let* ((meta (ptr-read-u64 box 0)) (mode (nl_gc_weak_table_mode box))
+             (buckets (ptr-read-u64 box 8)) (vbox (nl_word_payload buckets))
+             (data (+ vbox 8)) (n (vector-len buckets))
+             (i 0) (changed 0) (count 0))
+        (seq
+         (while (< i n)
+           (let* ((head (+ data (* i 8))) (word (ptr-read-u64 head 0)) (prev 0))
+             (seq
+              ;; A bucket can hold a boxed nil as well as the immediate nil
+              ;; word. Follow collision nodes only while they are conses,
+              ;; just as nl_ht_find does; a low-bit test alone is insufficient.
+              (while (and (> word 0) (= (logand word 1) 0)
+                          (= (nl_val_tag word) 7))
+                (let* ((node (ptr-read-u64 word 8))
+                       (next (ptr-read-u64 node 8))
+                       (entry (ptr-read-u64 node 0))
+                       (pair (ptr-read-u64 entry 8))
+                       (key (ptr-read-u64 pair 0)) (value (ptr-read-u64 pair 8))
+                       (key_live (nl_gc_weak_survives key))
+                       (value_live (nl_gc_weak_survives value))
+                       (keep (nl_gc_weak_keep mode key_live value_live)))
+                  (seq
+                   (if (= keep 1)
+                       (seq
+                        (setq count (+ count 1))
+                        (if (= remove 1) 0
+                          (seq
+                           (if (and (= key_live 1) (= value_live 1)) 0
+                             (setq changed 1))
+                           ;; A permanent boot owner can survive before its
+                           ;; graph has been traversed.  Newly visited wrapper
+                           ;; edges therefore require another fixed-point pass.
+                           (if (= (nl_gc_weak_mark_word key) 1) (setq changed 1) 0)
+                           (if (= (nl_gc_weak_mark_word value) 1) (setq changed 1) 0)))
+                        (setq prev node))
+                     (if (= remove 0) 0
+                       (seq
+                        (if (= prev 0) (ptr-write-u64 head 0 next)
+                          (ptr-write-u64 prev 8 next))
+                        (nl_gc_weak_order_remove meta entry)
+                        (ptr-write-u64 pair 0 3)
+                        (ptr-write-u64 pair 8 3))))
+                   (setq word next))))
+              (setq i (+ i 1)))))
+         (if (= remove 0) 0
+           (seq (ptr-write-u64 (nl_gc_weak_meta_slot meta 1) 0 (+ (* count 4) 1))
+                (ptr-write-u64 (nl_gc_weak_meta_slot meta 5) 0 (+ (* count 4) 1))))
+         changed)))
+    (defun nl_gc_weak_finish ()
+      (let ((changed 1) (box 0))
+        (seq
+         (while (= changed 1)
+           (seq
+            (setq changed 0 box (ptr-read-u64 (data-addr nl_gc_weak_head) 0))
+            (while (> box 0)
+              (seq
+               (if (= (nl_gc_weak_visit box 0) 1) (setq changed 1) 0)
+               (setq box (sar (ptr-read-u64
+                              (nl_gc_weak_meta_slot (ptr-read-u64 box 0) 10) 0) 2))))))
+         (setq box (ptr-read-u64 (data-addr nl_gc_weak_head) 0))
+         (while (> box 0)
+           (let* ((meta (ptr-read-u64 box 0))
+                  (next (sar (ptr-read-u64 (nl_gc_weak_meta_slot meta 10) 0) 2)))
+             (seq (nl_gc_weak_visit box 1)
+                  (ptr-write-u64 (nl_gc_weak_meta_slot meta 10) 0 1)
+                  (setq box next))))
+         (ptr-write-u64 (data-addr nl_gc_weak_head) 0 0)
+         0)))
     (defun nl_gc_mark_cons (sp)
       (let ((go 1))
         (seq (while (= go 1)
@@ -4801,25 +5056,32 @@ REPL-facing module it feeds."
             (let ((box (heap-read-u64 sp 8)))
               (nl_gc_typed_slot sp 7)
               (if (= (nl_gc_mark_block box) 0) 0
-                (seq (nl_gc_mark_word (heap-read-u64 box 0))
-                  (let ((dw (heap-read-u64 box 8)))
-                    (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (nl_gc_mark_vectorlike (- dw 6))
-                        (if (= (nl_gc_mark_block dw) 0) 0
-                          (if (= (nl_val_tag dw) 7)
-                              (seq (setq sp dw) (setq go 1))
-                            (nl_gc_mark_slot dw))))))))))) 0)))
-    ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
-    ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
-    ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
-    ;; dereference, matching `nl_gc_mark_vec_slots''s defensive contract.
-    ;; LEN is NOT trusted.  A tag-9 slot in an uninitialised parse-pool cell
-    ;; reaches here with `entries_len' read out of a block that is not a
-    ;; char-table box, i.e. an arbitrary 64-bit word.  Measured 2026-08-29:
-    ;; len came back as 0x7fffacd2d6f0 (a pointer) against a 40-byte entries
-    ;; block, and this loop walked 31,478,841 slots -- 1.26 GB -- past the end
-    ;; of the arena before SIGSEGV in `nl_gc_mark_slot'.  Clamp the walk to
-    ;; what the buffer's own block can hold.
+                (if (> (nl_gc_weak_table_mode box) 0)
+                          (let* ((meta (ptr-read-u64 box 0))
+             (buckets (ptr-read-u64 box 8))
+             (vbox (nl_word_payload buckets))
+             (data (+ vbox 8))
+             (n (vector-len buckets)) (i 0))
+        (seq
+         (ptr-write-u64 (nl_gc_weak_meta_slot meta 10) 0
+                        (+ (* (ptr-read-u64 (data-addr nl_gc_weak_head) 0) 4) 1))
+         (ptr-write-u64 (data-addr nl_gc_weak_head) 0 box)
+         (nl_gc_weak_preserve_meta meta)
+         (nl_gc_mark_block (nl_word_payload buckets))
+         (nl_gc_mark_block vbox)
+         0
+         (while (< i n)
+           (seq (nl_gc_weak_preserve_list (ptr-read-u64 (+ data (* i 8)) 0))
+                (setq i (+ i 1))))
+         0))
+                  (seq (nl_gc_mark_word (heap-read-u64 box 0))
+                    (let ((dw (heap-read-u64 box 8)))
+                      (if (= (logand dw 1) 1) 0
+                        (if (= (logand dw 7) 6) (nl_gc_mark_vectorlike (- dw 6))
+                          (if (= (nl_gc_mark_block dw) 0) 0
+                            (if (= (nl_val_tag dw) 7)
+                                (seq (setq sp dw) (setq go 1))
+                              (nl_gc_mark_slot dw)))))))))))) 0)))
     (defun nl_gc_mark_char_table_slots (base i len stride off)
       (if (= (nl_gc_in_arena base) 0) 0
         (let* ((cap (nl_gc_block_elem_cap base stride))
@@ -4862,7 +5124,8 @@ REPL-facing module it feeds."
     (defun nl_gc_symname_epoch_begin ()
       (let* ((state (data-addr nl_symbol_name_state))
              (epoch (+ (heap-read-u64 state 24) 1)))
-        (ptr-write-u64 state 24 (if (= epoch 0) 1 epoch))))
+        (seq (ptr-write-u64 (data-addr nl_gc_weak_head) 0 0)
+             (ptr-write-u64 state 24 (if (= epoch 0) 1 epoch)))))
     ;; A kind-1 entry is keyed on the name buffer of whichever occurrence
     ;; created it.  Another live occurrence with the same name keeps the
     ;; entry this epoch, so the entry must keep its own key buffer too:
@@ -6026,6 +6289,7 @@ REPL-facing module it feeds."
         ok))
     (defun nl_gc_mark_reset_all ()
       (let ((chunk (heap-read-u64 268436160 0)))
+        (ptr-write-u64 (data-addr nl_gc_weak_head) 0 0)
         (while (> chunk 0)
           (nl_gc_mark_reset_chunk chunk)
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
@@ -7200,9 +7464,10 @@ REPL-facing module it feeds."
                          ;; and the terminal OOM state before giving up.
                          (seq (nl_gc_mark_reset_all) (nl_gc_index_end)
                               (nl_gc_conserv_state_clear) 0)
+                     (nl_seq2 (nl_gc_weak_finish)
                      (nl_seq2 (nl_gc_index_end)
                               (nl_seq2 (nl_gc_sweep)
-                                       (nl_gc_conserv_state_clear)))))))))))))))
+                                       (nl_gc_conserv_state_clear))))))))))))))))
     (defun nl_gc_collect_recorded_mark_sweep (mode)
       ;; On allocation failure or a broken header chain, leave the heap
       ;; untouched: sweeping a partially indexed/marked heap is unsafe.
@@ -7299,6 +7564,7 @@ REPL-facing module it feeds."
              (seq (nl_gc_mark_reset_all) (nl_gc_index_end)
                   (nl_gc_conserv_state_clear) 0)
            (seq (nl_gc_symname_mark_roots)
+                (nl_gc_weak_finish)
                 (nl_gc_index_end)
                 1)))))
     (defun nl_gc_collect_parked_mark_sweep
@@ -8189,17 +8455,17 @@ argument (reachability + in-arena bounds checks).")
                                       (nl_abi_fail (bf_wrong_number_of_args name_ptr argc) 0)
                                     (let* ((h (wf_arg_ptr args 2)))
                                       (if (= (bf_hash_table_p_raw h) 1)
-                                          (seq (wf_dirty) (nl_ht_put_w args 0))
+                                          (seq (wf_dirty) (nl_ht_put_w args env))
                                         (nl_abi_fail (bf_wrong_type_hash_table h) 0))))))
     ((:lit "gethash")          :word . (if (= (bf_hash_table_p_raw (wf_arg_ptr args 1)) 1)
-                            (nl_ht_get_w args 0)
+                            (nl_ht_get_w args env)
                           (nl_abi_fail (bf_wrong_type_hash_table (wf_arg_ptr args 1)) 0)))
     ((:lit "remhash")          :word . (let* ((argc (m5_list_len args 0)))
                                   (if (/= argc 2)
                                       (nl_abi_fail (bf_wrong_number_of_args name_ptr argc) 0)
                                     (let* ((h (wf_arg_ptr args 1)))
                                       (if (= (bf_hash_table_p_raw h) 1)
-                                          (seq (wf_dirty) (nl_ht_rem_w args 0))
+                                          (seq (wf_dirty) (nl_ht_rem_w args env))
                                         (nl_abi_fail (bf_wrong_type_hash_table h) 0))))))
     ;; This read a count out of whatever it was handed: (hash-table-count 0)
     ;; answered 0, which is also what an empty table answers.
@@ -12355,7 +12621,8 @@ eval applyfn.")
     ;; contents for every test: identical objects have identical contents,
     ;; so the bucket is right, and the comparison decides.
     (defun nl_ht_key_match (ka kb mode)
-      (if (= mode 0) (wf_key_eq ka kb)
+      (if (= mode 0)
+          (if (= (nl_val_tag ka) 13) (bf_eql2 ka kb) (wf_key_eq ka kb))
         (if (= mode 1) (bf_eq2 ka kb)
           (bf_eql2 ka kb))))
     (defun nl_ht_data_slot (table_ptr) (nl_cons_cdr_ptr table_ptr))
@@ -12502,6 +12769,10 @@ eval applyfn.")
     ;; conses of one list (4000 keys 1.76 s).  Addresses move only when
     ;; compaction or image relocation moves objects; `nl_ht_identity_sync'
     ;; rehashes an eq/eql table after either before any lookup.
+    ;; GNU fns.c:sxhash_eq/sxhash_eql and lisp.h:reduce_emacs_uint_to_hash_hash.
+    ;; NeLisp copies 32-byte value views: hash their shared owner, never the
+    ;; address of the view. Inline floats have value bits rather than an
+    ;; independently boxed identity; preserve that representation contract.
     (defun nl_ht_identity_key_hash (key_ptr mode)
       (if (and (= mode 2) (= (heap-sexp-tag-word key_ptr) 13))
           (nl_ht_key_hash key_ptr 8)
@@ -12511,7 +12782,11 @@ eval applyfn.")
              (h (if (= mode 0) (nl_ht_key_hash key_ptr 8)
                   (nl_ht_identity_key_hash key_ptr mode))))
         (if (= (logand n (- n 1)) 0)
-            (logand h (- n 1))
+            (if (= mode 0) (logand h (- n 1))
+            ;; GNU knuth_hash: take the HIGH index bits of the low 32-bit
+            ;; product. Multiplying by N then dividing by 2^32 expresses
+            ;; the same shift without an index-width loop on every lookup.
+              (/ (* (logand (* h 2654435769) 4294967295) n) 4294967296))
           (mod h n))))
     (defun nl_ht_find (node_ptr key_ptr mode)
       (let* ((node node_ptr)
@@ -12565,11 +12840,10 @@ eval applyfn.")
                    (w (nl_vector_slot_word data_ptr idx))
                    (entry_ptr (if (= (logand w 1) 0) (nl_ht_find w key_ptr mode) 0)))
               (if (= entry_ptr 0)
-                  ;; N2: eq/eql retain identity after destructive string
-                  ;; mutation, while these shared buckets hash string bytes.
-                  ;; A miss must search for that same object under its old
-                  ;; bucket. Keep content-keyed equal table behavior intact.
-                  (if (and (> mode 0)
+                  ;; Legacy tables still hash string contents. Stamped
+                  ;; identity tables need no mutation fallback: their exact
+                  ;; bucket has already been synchronized after relocation.
+                  (if (and (= hmode 0) (> mode 0)
                            (= (m5_string_tag_p (heap-sexp-tag-word key_ptr)) 1))
                       (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)
                     ;; An identity bucket is exact once the table is synced.
@@ -12679,13 +12953,22 @@ eval applyfn.")
              (sym (alloc-bytes 32 8)) (cnt (alloc-bytes 32 8))
              (out (alloc-bytes 32 8)))
         (seq
-         (vector-make 3 marker)
+         (vector-make 14 marker)
          (vector-slot-set marker 0 (nl_ht_write_marker_sym_w 0))
          (ptr-write-u64 cnt 0 2) (ptr-write-u64 cnt 8 0)
          (ptr-write-u64 cnt 16 0) (ptr-write-u64 cnt 24 0)
          (vector-slot-set marker 1 cnt)
          ;; Slot 2 records the requested :test (default `eql').
          (vector-slot-set marker 2 (nl_ht_write_eql_sym_w 0))
+         (vector-slot-set marker 3 29)
+         (vector-slot-set marker 5 1)
+         (vector-slot-set marker 6 1)
+         (vector-slot-set marker 7 1)
+         (vector-slot-set marker 10 1)
+         (vector-slot-set marker 12 1)
+         (vector-slot-set marker 13 -3)
+         (let* ((order (alloc-bytes 32 8)))
+           (seq (vector-make 7 order) (vector-slot-set marker 11 order)))
          ;; 8 buckets; `nl_ht_maybe_grow' doubles them past twice the count.
          (vector-make 8 buckets)
          (nelisp_cons_construct marker buckets out)
@@ -12711,6 +12994,68 @@ eval applyfn.")
       (seq (ptr-write-u64 (+ (nl_word_payload meta) 8) (* i 8) w) 0))
     ;; The hash used for TABLE's buckets: its test mode for a stamped
     ;; identity table, else 0 (content hash).
+    ;; Clause 1: read tagged descriptor/order slots of the existing hash
+    ;; object. Callback evaluation uses the existing evaluator entry.
+    (defun nl_ht_custom_function_w (table index)
+      (let* ((meta (nl_ht_meta_slot table)))
+        (if (< (vector-len meta) 9) 3
+          (let* ((descriptor (nl_ht_marker_word meta 8)))
+            (if (= (nl_word_tag64 descriptor) 8)
+                (nl_ht_marker_word descriptor index)
+              3)))))
+    ;; GNU fns.c:hash_put/hash_remove_from_table: retain entry-array order,
+    ;; with freed indices linked through unused slots (immediate integers).
+    (defun nl_ht_order_insert (table entry)
+      (let* ((meta (nl_ht_meta_slot table)))
+        (if (< (vector-len meta) 14) 0
+          (let* ((order (vector-ref-ptr meta 11))
+                 (free (sar (nl_ht_marker_word meta 13) 2))
+                 (index (if (>= free 0) free (sar (nl_ht_marker_word meta 12) 2)))
+                 (n (vector-len order)))
+            (seq
+             (if (>= index n)
+                 (let* ((new_n (if (< n 6) 6 (* n 2)))
+                        (new_order (alloc-bytes 32 8)) (i 0))
+                   (seq
+                    (if (<= new_n index) (setq new_n (+ index 1)) 0)
+                    (vector-make new_n new_order)
+                    (while (< i n)
+                      (seq (vector-slot-set new_order i (nl_ht_marker_word order i))
+                           (setq i (+ i 1))))
+                    (vector-slot-set meta 11 new_order)
+                    (setq order new_order))) 0)
+             (if (>= free 0)
+                 (nl_ht_marker_word_set meta 13 (nl_ht_marker_word order index))
+               (nl_ht_marker_word_set meta 12 (+ (* (+ index 1) 4) 1)))
+             ;; Cons wrappers reserve +16; clone preserves this scalar cache.
+             ;; Set it before either bucket or order slot clones the wrapper.
+             (ptr-write-u64 entry 16 (+ index 1))
+             (vector-slot-set order index entry)
+             0)))))
+    (defun nl_ht_order_remove (table entry)
+      (let* ((meta (nl_ht_meta_slot table)))
+        (if (< (vector-len meta) 14) 0
+          (let* ((order (vector-ref-ptr meta 11))
+                 (n (sar (nl_ht_marker_word meta 12) 2))
+                 (cached (- (ptr-read-u64 entry 16) 1))
+                 (i 0) (found 0))
+            (seq
+             (if (and (>= cached 0) (< cached n))
+                 (let* ((word (nl_ht_marker_word order cached)))
+                   (if (= (nl_word_tag64 word) 7)
+                       (if (= (ptr-read-u64 word 8) (ptr-read-u64 entry 8))
+                           (seq (setq i cached) (setq found 1)) 0) 0)) 0)
+             ;; Only legacy uncached wrappers need the compatibility scan.
+             (while (and (< i n) (= found 0))
+               (let* ((word (nl_ht_marker_word order i)))
+                 (if (= (nl_word_tag64 word) 7)
+                     (if (= (ptr-read-u64 word 8) (ptr-read-u64 entry 8))
+                         (setq found 1) (setq i (+ i 1)))
+                   (setq i (+ i 1)))))
+             (if (= found 1)
+                 (seq (nl_ht_marker_word_set order i (nl_ht_marker_word meta 13))
+                      (nl_ht_marker_word_set meta 13 (+ (* i 4) 1))) 0)
+             0)))))
     (defun nl_ht_hash_mode (table_ptr mode)
       (if (= mode 0) 0
         (let* ((meta (nl_cons_car_word table_ptr)))
@@ -12753,9 +13098,12 @@ eval applyfn.")
            (let* ((mode (nl_ht_test_mode table)))
              (nl_ht_find_table_h (nl_ht_data_slot table) key_ptr mode
                                  (nl_ht_hash_mode table mode)))))
-    (defun nl_ht_put_w (args _pad)
-      (nl_ht_put_values_w (wf_arg_ptr args 0) (wf_arg_word args 1)
-                          (wf_arg_ptr args 2) 0))
+    (defun nl_ht_put_w (args env)
+      (let* ((table (wf_arg_ptr args 2))
+             (custom (nl_ht_custom_function_w table 3)))
+        (if (= custom 3)
+            (nl_ht_put_values_w (wf_arg_ptr args 0) (wf_arg_word args 1) table 0)
+          (nl_apply_function_w custom args env 0))))
     (defun nl_ht_put (args out)
       (nl_abi_word_to_rc (nl_ht_put_w args 0) out))
     (defun nl_ht_put_values_w (key_ptr val_ptr table_ptr _pad)
@@ -12783,6 +13131,7 @@ eval applyfn.")
                           (seq
                            (wf_write_nil nil_s)
                            (nelisp_cons_construct key_ptr val_ptr pair_s)
+                           (nl_ht_order_insert table_ptr pair_s)
                            (nelisp_cons_construct pair_s nil_s newhead_s)
                            (cons-set-cdr table_ptr newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
@@ -12796,6 +13145,7 @@ eval applyfn.")
                                  (newhead_s (alloc-bytes 32 8)))
                             (seq
                              (nelisp_cons_construct key_ptr val_ptr pair_s)
+                           (nl_ht_order_insert table_ptr pair_s)
                              (nelisp_cons_construct pair_s bucket_slot newhead_s)
                              (vector-slot-set data_slot idx newhead_s)
                              (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
@@ -12804,6 +13154,7 @@ eval applyfn.")
                         (let* ((pair_s (alloc-bytes 32 8)) (newhead_s (alloc-bytes 32 8)))
                           (seq
                            (nelisp_cons_construct key_ptr val_ptr pair_s)
+                           (nl_ht_order_insert table_ptr pair_s)
                            (nelisp_cons_construct pair_s data_slot newhead_s)
                            (nl_ht_copy32 data_slot newhead_s)
                            (nl_ht_meta_set_count table_ptr (+ (nl_ht_meta_count table_ptr) 1))
@@ -12816,9 +13167,12 @@ eval applyfn.")
             1)))
     (defun nl_ht_put_values_synced_w (key_ptr val_ptr table_ptr _pad)
       (if (= (nl_ht_mutate_values_synced key_ptr val_ptr table_ptr 0) 0) val_ptr 3))
-    (defun nl_ht_get_w (args _pad)
-      (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
-           (nl_ht_get_synced_w args 0)))
+    (defun nl_ht_get_w (args env)
+      (let* ((table (wf_arg_ptr args 1))
+             (custom (nl_ht_custom_function_w table 2)))
+        (if (= custom 3)
+            (seq (nl_ht_identity_sync table) (nl_ht_get_synced_w args 0))
+          (nl_apply_function_w custom args env 0))))
     (defun nl_ht_get (args out)
       (nl_abi_word_to_rc (nl_ht_get_w args 0) out))
     (defun nl_ht_get_synced_w (args _pad)
@@ -12834,9 +13188,12 @@ eval applyfn.")
         (if (= entry_ptr 0)
             (nl_ht_get_default_w args 0)
           (nl_cons_cdr_word entry_ptr))))
-    (defun nl_ht_rem_w (args _pad)
-      (seq (nl_ht_identity_sync (wf_arg_ptr args 1))
-           (nl_ht_rem_synced_w args 0)))
+    (defun nl_ht_rem_w (args env)
+      (let* ((table (wf_arg_ptr args 1))
+             (custom (nl_ht_custom_function_w table 4)))
+        (if (= custom 3)
+            (seq (nl_ht_identity_sync table) (nl_ht_rem_synced_w args 0))
+          (nl_apply_function_w custom args env 0))))
     (defun nl_ht_rem_synced_w (args _pad)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_word args 1)))
         (seq
@@ -12855,7 +13212,7 @@ eval applyfn.")
                       (if (= (heap-sexp-tag-word data_slot) 8)
                           (if (= entry_ptr 0)
                               0
-                            (if (= (if (and (> mode 0)
+                            (if (= (if (and (= hmode 0) (> mode 0)
                                             (= (m5_string_tag_p (heap-sexp-tag-word key_ptr)) 1))
                                        0
                                      (if (> hmode 0) 1 (nl_ht_key_hash_stable_p key_ptr 8)))
@@ -12867,7 +13224,8 @@ eval applyfn.")
                                            data_slot))
                       (if (= entry_ptr 0)
                           0
-                        (nl_ht_meta_set_count table_ptr (- (nl_ht_meta_count table_ptr) 1)))))))
+                        (seq (nl_ht_order_remove table_ptr entry_ptr)
+                             (nl_ht_meta_set_count table_ptr (- (nl_ht_meta_count table_ptr) 1))))))))
              0))
          3)))
     (defun nl_ht_rem_vec (vec key_ptr i n mode)
@@ -22530,8 +22888,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 0)))
         0))
     (defun bf_hash_table_p_raw (h)
+      ;; GNU CHECK_HASH_TABLE allocates nothing. Our cons-backed table needs
+      ;; its marker, but not bf_marker_vec_is's temporary name buffer.
       (if (= (heap-sexp-tag-word h) 7)
-          (bf_marker_vec_is (nl_cons_car_ptr h) 7089075026832613736 25964 10)
+          (let ((meta (nl_cons_car_word h)))
+            (if (and (= (logand meta 1) 0)
+                     (= (nl_val_tag meta) 8)
+                     (>= (vector-len meta) 2))
+                (let ((sy (nl_ht_marker_word meta 0)))
+                  (if (and (= (logand sy 1) 0)
+                           (= (ptr-read-u64 sy 0) 4)
+                           (= (ptr-read-u64 sy 24) 10))
+                      (let ((name (ptr-read-u64 sy 16)))
+                        (if (and (= (ptr-read-u64 name 0) 7089075026832613736)
+                                 (= (ptr-read-u16 (+ name 8) 0) 25964)) 1 0))
+                    0))
+              0))
         0))
     ;; `string<' accepts a string OR a symbol (nil and t included, they carry
     ;; their own tags).  A vector is neither, and comparing one read whatever

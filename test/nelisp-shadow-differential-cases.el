@@ -149,6 +149,17 @@
          (eq (gethash 'word table) value)
          (puthash 'word 0 table) (gethash 'word table 'missing)
          (nthcdr 1 '(a . 0)) (butlast '(nil t 0 -7) 2)))
+ ;; Equal text has distinct eq identities; deletion reuses GNU's free slot.
+ (let ((table (make-hash-table :test 'eq :size 1))
+       (a (copy-sequence "hash-key")) (b (copy-sequence "hash-key"))
+       (c (copy-sequence "hash-key")) order)
+   (puthash a 'first table)
+   (puthash b 'second table)
+   (remhash a table)
+   (puthash c 'third table)
+   (maphash (lambda (_key value) (setq order (cons value order))) table)
+   (list (hash-table-count table) (gethash a table 'missing)
+         (gethash b table) (gethash c table) (nreverse order)))
  ;; Cleanup and :success evaluation retain the protected object's WORD.
  (let ((saved (vector nil t -7 "saved")))
    (list (eq saved (unwind-protect saved (garbage-collect)))

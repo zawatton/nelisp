@@ -1,0 +1,46 @@
+#+TITLE: GNU 31.1 hash-table storage port
+#+STATUS: IN-PROGRESS
+
+* Source and representation
+GNU Emacs 31.1 is the oracle. This port changes hash storage only. The
+word-heap runtime still exposes the existing table handle (a cons whose
+car is metadata); keys and values occupy words in a native vector rather
+than individually allocated entry conses. This handle is an architectural
+adaptation, not a per-entry allocation.
+
+| GNU source | Mechanism | NeLisp mapping |
+| src/lisp.h:2562-2645 | Lisp_Hash_Table | metadata vector in existing handle |
+| src/lisp.h:2598 | index | native vector of immediate entry indices |
+| src/lisp.h:2602 | hash | native vector of immediate hash words |
+| src/lisp.h:2609 | key_and_value | native vector, key at 2i, value at 2i+1 |
+| src/lisp.h:2619 | next | native vector of collision/free-list indices |
+| src/fns.c:4956 | maybe_resize_hash_table | native reserve and rehash; 0->6, small x4, large x2 |
+| src/fns.c:5087 | hash_find_with_hash (hash_lookup) | native bucket/next walk, identity first |
+| src/fns.c:5132 | hash_put | take next_free, fill pair and hash, link bucket |
+| src/fns.c:5161 | hash_remove_from_table | unlink bucket, clear pair, prepend free list |
+| src/fns.c:5201 | hash_clear | reset next/index and clear pairs |
+| src/fns.c:5251 | sweep_weak_table | fixed point and unlink using same vector chains |
+| src/fns.c:4780-4820 | hashfn_eq/hashfn_eql | retained eqhash identity hash and relocation stamps |
+
+* Metadata contract
+Slots 0-10 retain the existing marker, count, test, capacity, weakness,
+legacy budget, identity generation/address, custom descriptor, callback
+guard and transient weak-chain link. Slot 11 is key_and_value, 12 is
+hash, 13 is next_free, 14 is next. The handle cdr is index. Empty keys
+use the immediate -1 sentinel in hash (all occupied hashes are unsigned
+32-bit), so every Lisp object, including nil, is a valid key. Slots in
+next and index store -1 for end of chain. Native reserve publishes all
+new vectors together after allocation, preserving old indices and order.
+
+* Boundary and checks
+No public primitive is added for this representation. Existing hash
+allocation/tagged-object access uses minimal-native clause 1. Lisp owns
+keyword validation and user-defined callbacks; the native storage does
+not evaluate arbitrary callbacks outside the existing evaluator bridge.
+The previous implementation is retained in Git as the reference before
+this change. Layout acceptance checks actual populated storage and free
+chains, with the old cons representation as a negative control.
+
+Weak endpoint marking depends on the collector/root lane. The sweep is
+adapted to the new vectors; unresolved GNU weak fixture differences stay
+red in S1.2 and are recorded with their exact case names.

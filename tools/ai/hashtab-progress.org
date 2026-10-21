@@ -31,6 +31,7 @@
 
 * S0 Plan
 ** S0.1 docs/design/228-gnu-hash-table-port.org maps fns.c hash table storage, lookup, insertion, removal, growth and the weak sweep to native NeLisp structures, after merging eqhash onto this base
+#+NOTE: 2026-10-21: Content-merge of eval/eqhash-20261021 at 6e4c3bc96 onto the word heap. Direct git merge is prevented by the read-only git mount; relay 001 records the resolved content. GNU fns.c:4956,5087,5132,5161,5251 and lisp.h:2562 are mapped in Doc 228. The merged dynamic binary passes all 32 ordinary GNU fixture cases; the new storage census fails on its cons entries (negative control). CPU 15, layout 0, median of 7 paired wall-clock own-cost ratios before the vector port: eq/hit 59.810x GNU (1826.6 ns); eq/miss 53.385x GNU (1216.8 ns); eq/put 1407.958x GNU (74426.0 ns); equal/hit 47.368x GNU (2044.4 ns); equal/miss 81.647x GNU (1900.1 ns); equal/put 3312.632x GNU (91308.9 ns). No threshold revision. The full four-layout measurement continues against an immutable binary.
 cmd: python3 tools/ai/hashtab-check.py plan
 
 * S1 Port and semantics
@@ -48,4 +49,4 @@ cmd: python3 tools/ai/hashtab-check.py speed
 ** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
 cmd: python3 tools/ai/hashtab-check.py final
 ** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
-pending
+cmd: python3 tools/ai/hashtab-check.py notes65

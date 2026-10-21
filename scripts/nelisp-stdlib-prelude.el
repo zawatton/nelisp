@@ -3910,29 +3910,14 @@ trailing newline) that `message' would otherwise do.")
        (let ((m (car x)))
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
 (defun maphash (fn table)
-  (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
-  ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
-  ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
-  ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
-  ;; The branch through the native `nelisp--hash-table-entries' went with
-  ;; that native's demotion (63a1055c8); its guarded call to the undefined
-  ;; name kept the word VM from compiling this function at all, so every
-  ;; bucket slot cost an interpreted `let'.
-  (let ((data (cdr table)))
-    (if (vectorp data)
-        (let ((i 0) (n (length data)))
-          (while (< i n)
-            (let ((node (aref data i)))
-              (while (consp node)
-                (let ((entry (car node)))
-                  (when (consp entry) (funcall fn (car entry) (cdr entry))))
-                (setq node (cdr node))))
-            (setq i (1+ i))))
-      (let ((node data))
-        (while (consp node)
-          (let ((entry (car node)))
-            (when (consp entry) (funcall fn (car entry) (cdr entry))))
-          (setq node (cdr node))))))
+  (nelisp--hash-capacity table)
+  ;; GNU fns.c:Fmaphash visits key/value array slots in increasing order,
+  ;; independent of bucket hash and collision-chain order.
+  (let* ((marker (car table)) (i 0))
+    (while (< i (aref marker 12))
+      (let ((entry (aref (aref marker 11) i)))
+        (when (consp entry) (funcall fn (car entry) (cdr entry))))
+      (setq i (1+ i))))
   nil)
 
 (unless (fboundp 'hash-table-test)
@@ -3961,40 +3946,56 @@ trailing newline) that `message' would otherwise do.")
     (while (<= size capacity) (setq size (* size 2)))
     size))
 
-(defun nelisp--hash-new (test capacity &optional weakness)
-  ;; Slots 6 and 7 are the runtime's identity stamp for eq/eql buckets
-  ;; (`nl_ht_identity_sync'); a 0 address never matches a live stamp.
-  (cons (vector 'hash-table 0 test capacity weakness 0 0 0)
+(defun nelisp--hash-new (test capacity &optional weakness descriptor)
+  ;; GNU's entry array and free-slot chain are separate from bucket links.
+  ;; 8 custom callbacks/hash cache; 9 callback guard; 10 GC weak-chain link;
+  ;; 11 entry array; 12 next unused slot; 13 free-list head (-1 is empty).
+  (cons (vector 'hash-table 0 test capacity weakness 0 0 0
+                (and (not (memq test '(eq eql equal)))
+                     (nelisp--hash-custom-descriptor test capacity descriptor))
+                nil 0 (make-vector capacity nil) 0 -1)
         (make-vector (nelisp--hash-index-size capacity) nil)))
 
 (defun nelisp--hash-resize (table capacity)
-  "Reserve CAPACITY in TABLE without changing its identity or key test."
-  (let ((new (nelisp--hash-new (or (aref (car table) 2) 'eql) capacity
-                               (and (> (length (car table)) 4)
-                                    (aref (car table) 4))))
-        (count 0))
-    (if (vectorp (cdr table))
-        (let* ((buckets (cdr table)) (i 0) (n (length buckets)))
+  "Reserve CAPACITY in TABLE, retaining GNU entry slots and free links."
+  (let* ((old (car table))
+         (ordered (>= (length old) 14))
+         (custom (and ordered (aref old 8)))
+         (new (nelisp--hash-new (or (aref old 2) 'eql) capacity
+                                (and (> (length old) 4) (aref old 4)) custom))
+         (marker (car new)) (count 0))
+    (if ordered
+        (let ((i 0) (n (aref old 12)) (order (aref old 11)))
           (while (< i n)
-            (let ((nodes (aref buckets i)))
-              (while nodes
-                (let ((entry (car nodes)))
-                  (nelisp--hash-put-leaf (car entry) (cdr entry) new))
-                (setq count (1+ count) nodes (cdr nodes))))
-            (setq i (1+ i))))
-      ;; Reader data is newest-first and may repeat a key.  Retain the
-      ;; first entry, while reserving the original number of data pairs.
-      (let ((entries (cdr table)))
-        (while entries
-          (let ((entry (car entries)))
-            (when (eq (nelisp--hash-get-leaf (car entry) new
-                               nelisp--hash-absent) nelisp--hash-absent)
-              (nelisp--hash-put-leaf (car entry) (cdr entry) new)
-              (setq count (1+ count))))
-          (setq entries (cdr entries)))))
-    (aset (car new) 1 count)
-    (aset (car new) 5 count)
-    (setcar table (car new))
+            (let ((entry (aref order i)))
+              (if (consp entry)
+                  (progn
+                    ;; A fresh marker has no free slots; choose the original
+                    ;; slot for the native/custom insertion that follows.
+                    (aset marker 12 i)
+                    (if custom
+                        (nelisp--hash-custom-place (cons (car entry) (cdr entry))
+                                                   (aref (aref custom 5) i) new)
+                      (nelisp--hash-put-leaf (car entry) (cdr entry) new))
+                    (setq count (1+ count)))
+                (aset (aref marker 11) i entry)))
+            (setq i (1+ i)))
+          (aset marker 12 n)
+          (aset marker 13 (aref old 13)))
+      (let ((buckets (cdr table)) (i 0))
+        (while (< i (if (vectorp buckets) (length buckets) 1))
+          (let ((nodes (if (vectorp buckets) (aref buckets i) buckets)))
+            (while nodes
+              (let ((entry (car nodes)))
+                (when (eq (nelisp--hash-get-leaf (car entry) new nelisp--hash-absent)
+                          nelisp--hash-absent)
+                  (nelisp--hash-put-leaf (car entry) (cdr entry) new)
+                  (setq count (1+ count))))
+              (setq nodes (cdr nodes))))
+          (setq i (1+ i)))))
+    (aset marker 1 count)
+    (aset marker 5 count)
+    (setcar table marker)
     (setcdr table (cdr new)))
   table)
 
@@ -4006,25 +4007,13 @@ of two index vector reserves INDEX-SIZE minus one slots.  They are
 internal compatibility objects, not calls to the new public constructor."
   (unless (hash-table-p table)
     (signal 'wrong-type-argument (list 'hash-table-p table)))
-  (when (< (length (car table)) 6)
-    (let* ((marker (car table))
-           (buckets (cdr table))
-           (count (nelisp--hash-count-leaf table)))
-      (if (and (= (length marker) 3) (vectorp buckets)
-               (> (length buckets) count)
-               (= (logand (length buckets) (1- (length buckets))) 0))
-          ;; Cold-image caches already own their native bucket reservation.
-          ;; Extending metadata avoids a hot interpreted rehash on adoption.
-          (setcar table (vector 'hash-table count (or (aref marker 2) 'eql)
-                                (1- (length buckets)) nil count 0 0))
-        (let ((capacity (if (> (length marker) 3) (aref marker 3)
-                          (if (vectorp buckets) count (aref marker 1)))))
-          (if (= count 0)
-              (let ((new (nelisp--hash-new (or (aref marker 2) 'eql) capacity
-                                          (and (> (length marker) 4) (aref marker 4)))))
-                (setcar table (car new))
-                (setcdr table (cdr new)))
-            (nelisp--hash-resize table capacity))))))
+  (when (< (length (car table)) 14)
+    (let* ((marker (car table)) (buckets (cdr table))
+           (count (nelisp--hash-count-leaf table))
+           (capacity (if (> (length marker) 3) (aref marker 3)
+                       (if (vectorp buckets) (max count (1- (length buckets)))
+                         (aref marker 1)))))
+      (nelisp--hash-resize table capacity)))
   (aref (car table) 3))
 
 (defun hash-table-size (table)
@@ -4040,19 +4029,22 @@ internal compatibility objects, not calls to the new public constructor."
           (and (eq (car keys) :test)
                (memq (cadr keys) '(eq eql equal))
                (null (cddr keys))))
-      (cons (vector 'hash-table 0 (if keys (cadr keys) 'eql) 0 nil 0 0 0)
-            (vector nil))
+      (nelisp--hash-new (if keys (cadr keys) 'eql) 0)
     (let ((ks keys))
+      ;; GNU 31.1 fns.c:Fmake_hash_table validates arity before keywords.
+      (when (= (logand (length keys) 1) 1)
+        (signal 'error (list "Odd number of arguments")))
       (while ks
         (let ((k (car ks)) (rest (cdr ks)))
           (unless (and (consp rest)
                        (memq k '(:test :size :rehash-size :rehash-threshold
                                  :weakness :purecopy)))
-            (nelisp--signal-invalid "Invalid argument list" k))
+            (nelisp--signal-invalid "Invalid keyword argument" k))
           (let ((v (car rest)))
             (cond
              ((eq k :test)
-              (unless (memq v '(eq eql equal))
+              (unless (or (memq v '(eq eql equal))
+                          (and (symbolp v) (get v 'hash-table-test)))
                 (nelisp--signal-invalid "Invalid hash table test" v)))
              ((eq k :size)
               (unless (natnump v)
@@ -4067,13 +4059,15 @@ internal compatibility objects, not calls to the new public constructor."
                         (if (eq weakness t) 'key-and-value weakness)))))
 
 (defun puthash (key value table)
-  ;; Below the reservation limit, insertion attempts bound the real count.
-  ;; Let the native leaf validate TABLE before changing policy metadata,
-  ;; avoiding redundant interpreted type checks on every hot insertion.
+  ;; Keep metadata reads in one protected operation. Short legacy markers
+  ;; take adoption once; ordinary native insertions need no Lisp type walk.
   (condition-case nil
       (let* ((marker (car table))
+             (custom (aref marker 8))
              (budget (aref marker 5))
              (capacity (aref marker 3)))
+        (if custom
+            (nelisp--hash-put-leaf key value table)
           (if (< budget capacity)
               (prog1 (nelisp--hash-put-leaf key value table)
                 (aset marker 5 (1+ budget)))
@@ -4081,22 +4075,18 @@ internal compatibility objects, not calls to the new public constructor."
                       nelisp--hash-absent)
               (let ((count (nelisp--hash-count-leaf table)))
                 (when (>= count capacity)
-                  ;; Zero grows to 6; <=64 grows fourfold (minimum 24);
-                  ;; larger reservations double.  Buckets never have size 0.
                   (if (= capacity 0)
-                      (progn (aset marker 3 6) (setcdr table (make-vector 8 nil)))
+                      (progn (aset marker 3 6)
+                             (setcdr table (make-vector 8 nil)))
                     (nelisp--hash-resize table
                      (* (max capacity 6) (if (<= capacity 64) 4 2)))
                     (setq marker (car table))))
                 (aset marker 1 count)
                 (aset marker 5 (1+ count))))
-            (nelisp--hash-put-leaf key value table)))
-    ;; A short reader/cold-image marker takes the one-time adoption path.
+            (nelisp--hash-put-leaf key value table))))
     (args-out-of-range
      (nelisp--hash-capacity table)
      (puthash key value table))
-    ;; Invalid metadata reads must report the primitive's hash-table-p
-    ;; error, including nil, non-conses and malformed legacy markers.
     (wrong-type-argument (nelisp--hash-put-leaf key value table))))
 
 (defun hash-table-count (table)
@@ -4107,16 +4097,22 @@ internal compatibility objects, not calls to the new public constructor."
 
 (defun remhash (key table)
   (nelisp--hash-capacity table)
-  (unless (eq (nelisp--hash-get-leaf key table nelisp--hash-absent)
-              nelisp--hash-absent)
-    (aset (car table) 5 (max 0 (1- (aref (car table) 5)))))
-  (nelisp--hash-rem-leaf key table)
-  (aset (car table) 1 (nelisp--hash-count-leaf table))
+  (if (aref (car table) 8)
+      (nelisp--hash-rem-leaf key table)
+    (unless (eq (nelisp--hash-get-leaf key table nelisp--hash-absent)
+                nelisp--hash-absent)
+      (aset (car table) 5 (max 0 (1- (aref (car table) 5)))))
+    (nelisp--hash-rem-leaf key table)
+    (aset (car table) 1 (nelisp--hash-count-leaf table)))
   nil)
 
 (defun clrhash (table)
   (nelisp--hash-capacity table)
+  (nelisp--hash-check-mutable table)
   (setcdr table (make-vector (length (cdr table)) nil))
+  (aset (car table) 11 (make-vector (aref (car table) 3) nil))
+  (aset (car table) 12 0)
+  (aset (car table) 13 -1)
   (aset (car table) 1 0)
   (aset (car table) 5 0)
   table)
@@ -4126,12 +4122,139 @@ internal compatibility objects, not calls to the new public constructor."
   (and (> (length (car table)) 4) (aref (car table) 4)))
 
 (defun copy-hash-table (table)
-  (let ((new (nelisp--hash-new (hash-table-test table)
-                              (nelisp--hash-capacity table)
-                              (hash-table-weakness table))))
-    (maphash (lambda (k v) (puthash k v new)) table)
-    (aset (car new) 1 (nelisp--hash-count-leaf new))
+  (nelisp--hash-capacity table)
+  (let* ((marker (car table))
+         (new (nelisp--hash-new (hash-table-test table) (aref marker 3)
+                                (hash-table-weakness table) (aref marker 8))))
+    ;; Resize's exact-slot copier also preserves captured custom callbacks.
+    (setcar new (copy-sequence marker))
+    (setcdr new (cdr table))
+    (nelisp--hash-resize new (aref marker 3))
     new))
+
+(defun define-hash-table-test (name test hash)
+  (put name 'hash-table-test (list test hash)))
+
+(defun nelisp--hash-custom-descriptor (test capacity &optional previous)
+  (let ((functions (or previous (get test 'hash-table-test))))
+    (when functions
+      (vector (if previous (aref previous 0) (car functions))
+              (if previous (aref previous 1) (cadr functions))
+              (symbol-function 'nelisp--hash-custom-get)
+              (symbol-function 'nelisp--hash-custom-put)
+              (symbol-function 'nelisp--hash-custom-rem)
+              (make-vector capacity nil)))))
+
+(defun nelisp--hash-custom-call (table function &rest arguments)
+  ;; GNU fns.c:4725: callbacks may read the table recursively, but their
+  ;; attempts to mutate it signal. Restore the guard even when they signal.
+  (let* ((marker (car table)) (previous (aref marker 9)))
+    (unwind-protect
+        (progn (aset marker 9 t) (apply function arguments))
+      (aset marker 9 previous))))
+
+(defun nelisp--hash-check-mutable (table)
+  (when (aref (car table) 9)
+    (signal 'error (list "hash table test modifies table" table))))
+
+(defun nelisp--hash-custom-hash (key table)
+  ;; GNU fns.c:4805 and lisp.h:reduce_emacs_uint_to_hash_hash.
+  (let ((hash (nelisp--hash-custom-call table (aref (aref (car table) 8) 1) key)))
+    (unless (fixnump hash) (setq hash (sxhash hash)))
+    (setq hash (logand hash 18446744073709551615))
+    (logand (logxor hash (lsh hash -32)) 4294967295)))
+
+(defun nelisp--hash-custom-index (hash buckets)
+  (/ (* (logand (* hash 2654435769) 4294967295) (length buckets)) 4294967296))
+
+(defun nelisp--hash-entry-index (entry marker)
+  (let ((order (aref marker 11)) (i 0) (n (aref marker 12)) found)
+    (while (and (< i n) (null found))
+      (when (eq (aref order i) entry) (setq found i))
+      (setq i (1+ i)))
+    found))
+
+(defun nelisp--hash-custom-find (key hash table)
+  (let* ((marker (car table)) (descriptor (aref marker 8))
+         (hashes (aref descriptor 5))
+         (nodes (aref (cdr table) (nelisp--hash-custom-index hash (cdr table)))) found)
+    (while (and nodes (null found))
+      (let* ((entry (car nodes)) (index (nelisp--hash-entry-index entry marker)))
+        ;; GNU's comparator receives the probe key before the stored key.
+        (when (or (eq key (car entry))
+                  (and (eql hash (aref hashes index))
+                       (nelisp--hash-custom-call table (aref descriptor 0) key (car entry))))
+          (setq found entry)))
+      (setq nodes (cdr nodes)))
+    found))
+
+(defun nelisp--hash-order-insert (entry marker)
+  (let* ((free (aref marker 13))
+         (index (if (>= free 0) free (aref marker 12)))
+         (order (aref marker 11)))
+    (when (>= index (length order))
+      (let ((new (make-vector (max (1+ index) (aref marker 3)) nil)) (i 0))
+        (while (< i (length order))
+          (aset new i (aref order i))
+          (setq i (1+ i)))
+        (setq order new)
+        (aset marker 11 order)))
+    (if (>= free 0) (aset marker 13 (aref order index))
+      (aset marker 12 (1+ index)))
+    (aset order index entry)
+    index))
+
+(defun nelisp--hash-custom-place (entry hash table)
+  (let* ((marker (car table)) (index (nelisp--hash-order-insert entry marker))
+         (hashes (aref (aref marker 8) 5))
+         (bucket (nelisp--hash-custom-index hash (cdr table))))
+    (when (>= index (length hashes))
+      (let ((new (make-vector (length (aref marker 11)) nil)) (i 0))
+        (while (< i (length hashes))
+          (aset new i (aref hashes i))
+          (setq i (1+ i)))
+        (setq hashes new)
+        (aset (aref marker 8) 5 hashes)))
+    (aset hashes index hash)
+    (aset (cdr table) bucket (cons entry (aref (cdr table) bucket)))
+    (aset marker 1 (1+ (aref marker 1)))
+    (aset marker 5 (aref marker 1))))
+
+(defun nelisp--hash-custom-get (key table &optional default)
+  (let ((entry (nelisp--hash-custom-find key (nelisp--hash-custom-hash key table) table)))
+    (if entry (cdr entry) default)))
+
+(defun nelisp--hash-custom-put (key value table)
+  (nelisp--hash-check-mutable table)
+  (let* ((hash (nelisp--hash-custom-hash key table))
+         (entry (nelisp--hash-custom-find key hash table))
+         (marker (car table)) (capacity (aref marker 3)))
+    (if entry (setcdr entry value)
+      (when (>= (aref marker 1) capacity)
+        (nelisp--hash-resize table
+                            (if (= capacity 0) 6
+                              (* (max capacity 6) (if (<= capacity 64) 4 2)))))
+      (nelisp--hash-custom-place (cons key value) hash table)))
+  value)
+
+(defun nelisp--hash-custom-rem (key table)
+  (nelisp--hash-check-mutable table)
+  (let* ((hash (nelisp--hash-custom-hash key table))
+         (entry (nelisp--hash-custom-find key hash table)))
+    (when entry
+      (let* ((marker (car table)) (index (nelisp--hash-entry-index entry marker))
+             (bucket (nelisp--hash-custom-index hash (cdr table)))
+             (nodes (aref (cdr table) bucket)) previous)
+        (while (not (eq (car nodes) entry))
+          (setq previous nodes nodes (cdr nodes)))
+        (if previous (setcdr previous (cdr nodes))
+          (aset (cdr table) bucket (cdr nodes)))
+        (aset (aref marker 11) index (aref marker 13))
+        (aset marker 13 index)
+        (aset (aref (aref marker 8) 5) index nil)
+        (aset marker 1 (1- (aref marker 1)))
+        (aset marker 5 (aref marker 1)))))
+  nil)
 
 (unless (fboundp 'byte-compile-file)
   (defun byte-compile-file (filename &optional _load)
