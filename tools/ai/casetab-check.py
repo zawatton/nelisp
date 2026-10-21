@@ -189,7 +189,10 @@ def run_mode(mode, kind, timeout):
     result["pass"] = (result["rc"] == 0 and not result["timeout"] and
                       not stderr and result["exact_stdout"] and
                       result["output_error"] is None)
-    write_json(OUT / ("red" if kind == "base" else kind) / f"{mode}.json", result)
+    # Elapsed time is diagnostic only; repeated successful meter runs must
+    # leave the hash-bound parity evidence unchanged.
+    proof = {key: value for key, value in result.items() if key != "seconds"}
+    write_json(OUT / ("red" if kind == "base" else kind) / f"{mode}.json", proof)
     print(f"CASETAB {kind} {mode}: {result['count']} cases, "
           f"{result['different_rows']} differing rows, "
           f"{'PASS' if result['pass'] else 'FAIL'} ({result['seconds']:.3f}s)")
