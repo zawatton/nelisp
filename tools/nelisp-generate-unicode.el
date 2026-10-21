@@ -79,7 +79,7 @@
          (equivalence-table (char-table-extra-slot standard-case 2))
         (category-names nil)
         (c 0) category-ranges category-start category-value
-        simple-up simple-down full-up full-down full-title canonical equivalence)
+        simple-up simple-down simple-title full-up full-down full-title canonical equivalence)
     ;; char-code-property tables store compact numeric indices; extra slot 4
     ;; is the stable symbol vector used by `get-char-code-property'.
     (setq category-names (char-table-extra-slot category-table 4))
@@ -103,6 +103,7 @@
           (let* ((source (string c))
                  (simple-upcase (upcase c))
                  (simple-downcase (downcase c))
+                 (title-property (get-char-code-property c 'titlecase))
                  (upper (upcase source))
                  (lower (downcase source))
                  (title (upcase-initials source)))
@@ -110,6 +111,8 @@
               (setq simple-up (cons (cons c simple-upcase) simple-up)))
             (unless (= simple-downcase c)
               (setq simple-down (cons (cons c simple-downcase) simple-down)))
+            (when title-property
+              (setq simple-title (cons (cons c title-property) simple-title)))
             (unless (equal upper (string simple-upcase))
               (setq full-up (cons (list c upper) full-up)))
             (unless (equal lower (string simple-downcase))
@@ -127,6 +130,8 @@
       (nelisp-generate-unicode--compress-mappings (nreverse simple-up)))
      (nelisp-generate-unicode--flat-vector
       (nelisp-generate-unicode--compress-mappings (nreverse simple-down)))
+     (nelisp-generate-unicode--flat-vector
+      (nelisp-generate-unicode--compress-mappings (nreverse simple-title)))
      (nelisp-generate-unicode--flat-vector (nreverse full-up))
      (nelisp-generate-unicode--flat-vector (nreverse full-down))
      (nelisp-generate-unicode--flat-vector (nreverse full-title))
@@ -187,6 +192,21 @@ default because the generated table deliberately covers Unicode scalars.\"
   (if (and (>= character ?A) (<= character ?Z))
       (+ character 32)
     (nelisp--unicode-simple-map nelisp--unicode-simple-downcase-ranges character)))
+
+(defun nelisp-unicode-titlecase-property (character)
+  \"Return CHARACTER's GNU titlecase property, or nil when absent.\"
+  (if (and (>= character ?a) (<= character ?z))
+      (- character 32)
+    (let ((table nelisp--unicode-titlecase-property-ranges)
+          (lo 0) (hi (1- (/ (length nelisp--unicode-titlecase-property-ranges) 4))) record)
+      (while (<= lo hi)
+        (let* ((mid (/ (+ lo hi) 2)) (base (* mid 4)))
+          (cond ((< character (aref table base)) (setq hi (1- mid)))
+                ((> character (aref table (1+ base))) (setq lo (1+ mid)))
+                (t (setq record base lo (1+ hi))))))
+      (and record
+           (= 0 (% (- character (aref table record)) (aref table (+ record 2))))
+           (+ character (aref table (+ record 3)))))))
 
 (defun nelisp-unicode-canonical-character (character)
   \"Return CHARACTER's GNU 31.1 standard case canonical representative.\"
@@ -259,6 +279,7 @@ ACTION is `upper', `lower', or `title'; title preserves noninitial case.\"
          (names '(nelisp--unicode-category-ranges
                   nelisp--unicode-simple-upcase-ranges
                   nelisp--unicode-simple-downcase-ranges
+                  nelisp--unicode-titlecase-property-ranges
                   nelisp--unicode-full-upcase
                   nelisp--unicode-full-downcase
                   nelisp--unicode-full-titlecase

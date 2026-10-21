@@ -124,6 +124,13 @@ and matching.  Nil selects the portable downcase fallback.")
                      (and (fboundp 'current-case-table)
                           (setq nlre--case-table-reader 'current-case-table))))
          (case-table (and reader (funcall reader))))
+    ;; GNU search.c uses the buffer's canonical map.  Its buffer fields are
+    ;; represented here by extras, so apply casefiddle.c's preparation rule.
+    (when (and case-table
+               (null (if (fboundp 'case-table--get-extra-slot)
+                         (case-table--get-extra-slot case-table 1)
+                       (char-table-extra-slot case-table 1))))
+      (set-case-table case-table))
     (and case-table
          (cond ((fboundp 'case-table--get-extra-slot)
                 (case-table--get-extra-slot case-table slot))

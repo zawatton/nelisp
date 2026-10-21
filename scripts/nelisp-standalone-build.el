@@ -19893,11 +19893,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;;                            layout matches the drop/clone kernels this
     ;;                            build does not yet link.
     ;;
-    ;; This build has no per-subtype `char-table-extra-slots' property
-    ;; machinery (out of Doc 186's scope), so every char-table gets the
-    ;; fixed 10-slot buffer regardless of SUBTYPE; a subtype that Emacs
-    ;; would register with fewer (or zero) extra slots is more permissive
-    ;; here, not less -- an accepted, documented simplification.
+    ;; Public allocation follows GNU chartab.c:105-136: the subtype property
+    ;; determines the actual extra count and INIT fills those physical slots.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_p_w (args _pad)
       (seq
@@ -19905,9 +19902,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
           7 3)
         ))
     (defun nl_ct_extra_fill (ptr i n)
+      (nl_ct_extra_fill_value ptr i n 3))
+    (defun nl_ct_extra_fill_value (ptr i n value)
       (if (>= i n) ptr
-        (seq (nl_ct_store_word (+ ptr (* i 32)) 3)
-             (nl_ct_extra_fill ptr (+ i 1) n))))
+        (seq (nl_ct_store_word (+ ptr (* i 32)) value)
+             (nl_ct_extra_fill_value ptr (+ i 1) n value))))
     ;; The table owns canonical child WORDs, with 24 bytes of zero padding
     ;; per cell to retain its interval/extra buffer strides.
     (defun nl_ct_store_word (slot word)
@@ -19926,12 +19925,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; discipline `nl_char_table_get_raw'/`_set_raw' use internally.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_char_table_alloc_w (subtype default-word _pad)
+      ;; Preserve the legacy raw allocator ABI's ten nil auxiliary slots.
+      (let* ((result (nl_char_table_alloc_count_w subtype default-word 10)))
+        (seq (nl_ct_extra_fill (ptr-read-u64 (nl_word_payload result) 96) 0 10)
+             result)))
+    (defun nl_char_table_alloc_count_w (subtype default-word extra-count)
       (let* ((object (alloc-bytes 32 8)) (box (alloc-bytes 128 8))
-             (extra (nl_ct_extra_fill (alloc-bytes 320 8) 0 10)))
+             (extra (nl_ct_extra_fill_value
+                     (alloc-bytes (* extra-count 32) 8) 0 extra-count default-word)))
         (seq (nl_ct_store_word box subtype) (nl_ct_store_word (+ box 32) default-word)
              (ptr-write-u64 box 64 0) (ptr-write-u64 box 72 0) (ptr-write-u64 box 80 0)
              (ptr-write-u64 box 88 0) (ptr-write-u64 box 96 extra)
-             (ptr-write-u64 box 104 10) (ptr-write-u64 box 112 10) (ptr-write-u64 box 120 1)
+             (ptr-write-u64 box 104 extra-count) (ptr-write-u64 box 112 extra-count)
+             (ptr-write-u64 box 120 1)
              (if (= default-word 3) 0 (nl_ct_set_range box 0 4194303 default-word))
              (ptr-write-u64 object 0 9) (ptr-write-u64 object 8 box)
              (ptr-write-u64 object 16 0) (ptr-write-u64 object 24 0) object)))
@@ -20011,11 +20017,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; arg list one cons early, the same shape `bf_make_vector'/`bf_record'
     ;; rely on for their own arg-list walks.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
-    (defun bf_make_char_table_w (args _pad)
+    (defun bf_make_char_table_w (args env _pad)
       (if (= (nl_val_tag args) 7)
-          (let* ((subtype (nl_cons_car_word args)) (rest (nl_cons_cdr_word args)))
-            (nl_char_table_alloc_w subtype
-             (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3) 0))
+          (let* ((mark (nl_root_mark env))
+                 (subtype (nl_root_reserve env))
+                 (property (nl_root_reserve env))
+                 (extra-count (nl_root_reserve env)))
+            (seq
+             (wf_bytecode_copy subtype (wf_arg_ptr args 0))
+             (wf_bytecode_copy property 'char-table-extra-slots)
+             (let* ((rc (wf_bytecode_get_box env subtype property extra-count)))
+               (if (= rc 0)
+                   (if (or (= (sexp-tag extra-count) 0)
+                           (and (= (sexp-tag extra-count) 2)
+                                (>= (ptr-read-u64 extra-count 8) 0)))
+                       (let* ((count (if (= (sexp-tag extra-count) 0) 0
+                                       (ptr-read-u64 extra-count 8)))
+                              (rest (nl_cons_cdr_word args))
+                              (result (nl_char_table_alloc_count_w
+                                       (nl_cons_car_word args)
+                                       (if (= (nl_val_tag rest) 7)
+                                           (nl_cons_car_word rest) 3) count)))
+                         (seq (nl_root_release env mark) result))
+                     (seq (bf_wrong_type_wholenump extra-count)
+                          (nl_root_release env mark) 0))
+                 (seq (nl_root_release env mark) 0)))))
         (nl_abi_rc_nil (bf_wrong_number_of_args_make_char_table) 0)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_subtype_w (args _pad)
@@ -20078,17 +20104,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (nl_root_release env mark)
                        (if (= rc 0) 3 (nl_abi_fail rc 0))))))
               (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))))
-    ;; char-table-extra-slot / set-char-table-extra-slot: N must be a fixnum
-    ;; in [0, 10) (Emacs's own MAX_CHAR_TABLE_EXTRA_SLOTS ceiling); out of
-    ;; range signals `args-out-of-range', matching Emacs's own error shape
-    ;; for this accessor (verified against host Emacs).
+    ;; GNU chartab.c:539-575 bounds each accessor by the table's actual
+    ;; extra-slot count, rather than the subtype's current allocation property.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_extra_slot_w (args _pad)
       (let* ((table (wf_arg_word args 0)) (index (wf_arg_word args 1)))
         (if (= (nl_val_tag table) 9)
             (if (= (nl_val_tag index) 2)
                 (let* ((n (nl_word_payload index)) (box (nl_word_payload table)))
-                  (if (or (< n 0) (>= n 10)) (nl_abi_fail (bf_args_out_of_range table index) 0)
+                  (if (or (< n 0) (>= n (ptr-read-u64 box 112)))
+                      (nl_abi_fail (bf_args_out_of_range table index) 0)
                     (ptr-read-u64 (+ (ptr-read-u64 box 96) (* n 32)) 0)))
               (nl_abi_fail (bf_wrong_type_fixnump index) 0))
           (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
@@ -20097,7 +20122,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (seq  (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1))
              (val (wf_arg_word args 2)))
           (if (= (nl_word_tag64 ct) 9) (if (= (nl_word_tag64 nbox) 2) (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
-          (if (if (< n 0) 1 (if (< n 10) 0 1)) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 box 96) (* n 32)) val) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
+          (if (or (< n 0) (>= n (ptr-read-u64 box 112))) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 box 96) (* n 32)) val) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
     ;; char-table-range / set-char-table-range, GNU semantics.  RANGE is
     ;; nil (the default slot), t (every char; set only), a char, or a
     ;; (FROM . TO) cons of chars.  GET on a cons answers the value at FROM
@@ -24455,7 +24480,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--char-table-vector-bridge-p") :word . (wf_write_t_w 0))
     ;; --- char-table ops (Doc 186 P0/P1/P2) ---
     ((:lit "char-table-p")           :word . (bf_char_table_p_w args 0))
-    ((:lit "make-char-table")        :word . (bf_make_char_table_w args 0))
+    ((:lit "make-char-table")        :word . (bf_make_char_table_w args env 0))
     ((:lit "char-table-subtype")     :word . (bf_char_table_subtype_w args 0))
     ((:lit "char-table-parent")      :word . (bf_char_table_parent_w args 0))
     ((:lit "set-char-table-parent")  :word . (bf_set_char_table_parent_w args 0))
@@ -46544,6 +46569,7 @@ unrelated to char-tables and confirmed present before this branch --
              ;; P1: subtype.
              "(defvar nelisp-ct-check7 (eq 'my-subtype (char-table-subtype (make-char-table 'my-subtype nil))))\n"
              ;; P1: extra-slot get/set roundtrip + out-of-range.
+             "(put 'test 'char-table-extra-slots 1)\n"
              "(defvar nelisp-ct-etbl (make-char-table 'test nil))\n"
              "(defvar nelisp-ct-check8 (eq nil (char-table-extra-slot nelisp-ct-etbl 0)))\n"
              "(set-char-table-extra-slot nelisp-ct-etbl 0 'hi)\n"

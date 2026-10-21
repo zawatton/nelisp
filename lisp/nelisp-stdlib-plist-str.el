@@ -738,48 +738,169 @@ when CH is not an ASCII letter."
       (setq i (1+ i)))
     (concat (nreverse out))))
 
-(defun upcase (obj)
-  "Convert OBJ to upper case.  OBJ may be a string (each ASCII letter
-upcased) or an int char (single-char upcase).  Non-ASCII bytes pass
-through unchanged."
-  (cond
-   ((stringp obj) (nelisp--map-string obj (function nelisp--ascii-upcase-char)))
-   ((integerp obj) (nelisp--ascii-upcase-char obj))
-   (t (signal 'wrong-type-argument (list 'stringp-or-characterp obj)))))
+;; Adapt GNU casefiddle.c's prepared context and per-character action.  The
+;; downcase table and its upcase extra slot are the buffer's simple maps;
+;; generated Unicode facts supply the separate full and titlecase mappings.
+(defun nelisp--case-prepare-table ()
+  "Return the current simple case table, deriving invalidated extras."
+  (when (fboundp 'current-case-table)
+    (let ((table (current-case-table)))
+      (when (and table (null (case-table--get-extra-slot table 1)))
+        (set-case-table table))
+      table)))
 
-(defun downcase (obj)
-  "Convert OBJ to lower case.  OBJ may be a string or an int char.
-Non-ASCII bytes pass through unchanged."
-  (cond
-   ((stringp obj) (nelisp--map-string obj (function nelisp--ascii-downcase-char)))
-   ((integerp obj) (nelisp--ascii-downcase-char obj))
-   (t (signal 'wrong-type-argument (list 'stringp-or-characterp obj)))))
+(defun nelisp--case-simple-character (character action table)
+  "Case CHARACTER with prepared TABLE and simple ACTION."
+  (let* ((upper (not (eq action 'lower)))
+         (mapping (and table (if upper (case-table--get-extra-slot table 0) table)))
+         (value (or (and (eq action 'title)
+                         (fboundp 'nelisp-unicode-titlecase-property)
+                         (nelisp-unicode-titlecase-property character))
+                    (and mapping (case-table--ref mapping character)))))
+    (cond ((and (integerp value) (>= value 0)) value)
+          (table character)
+          ((and upper (fboundp 'nelisp-unicode-simple-upcase))
+           (nelisp-unicode-simple-upcase character))
+          ((and (not upper) (fboundp 'nelisp-unicode-simple-downcase))
+           (nelisp-unicode-simple-downcase character))
+          (upper (if (and (<= ?a character) (<= character ?z))
+                     (- character 32) character))
+          (t (if (and (<= ?A character) (<= character ?Z))
+                 (+ character 32) character)))))
 
-(defun capitalize (s)
-  "Title-case S: upcase every word-initial ASCII letter, downcase the
-rest of each word.  Word boundary = transition non-letter → letter.
-Non-letter chars pass through unchanged."
-  (cond
-   ((not (stringp s))
-    (signal 'wrong-type-argument (list 'stringp s)))
-   (t
-    (let ((out nil)
-          (i 0)
-          (n (length s))
-          (at-word-start t))
-      (while (< i n)
-        (let ((ch (aref s i)))
-          (cond
-           ((not (nelisp--ascii-letter-p ch))
-            (setq out (cons ch out))
-            (setq at-word-start t))
-           (at-word-start
-            (setq out (cons (nelisp--ascii-upcase-char ch) out))
-            (setq at-word-start nil))
-           (t
-            (setq out (cons (nelisp--ascii-downcase-char ch) out)))))
-        (setq i (1+ i)))
-      (concat (nreverse out))))))
+(defun nelisp--case-word-character-p (character)
+  "Return whether CHARACTER continues a casing word in the current syntax."
+  (let ((syntax (if (fboundp 'char-syntax) (char-syntax character)
+                  (if (or (and (<= ?0 character) (<= character ?9))
+                          (and (<= ?A character) (<= character ?Z))
+                          (and (<= ?a character) (<= character ?z))
+                          (>= character 128)) ?w ?_))))
+    (or (eq syntax ?w)
+        (and (boundp 'case-symbols-as-words) case-symbols-as-words
+             (eq syntax ?_)))))
+
+(defun nelisp--case-character-piece (character action table full)
+  "Return CHARACTER's case mapping for ACTION as a string.
+FULL permits the one-to-many Unicode mappings used by multibyte strings."
+  (let* ((simple (nelisp--case-simple-character character action table))
+         (special (cond ((eq action 'lower)
+                         (and full (boundp 'nelisp--unicode-full-downcase)
+                              nelisp--unicode-full-downcase))
+                        ((eq action 'title)
+                         (and (boundp 'nelisp--unicode-full-titlecase)
+                              nelisp--unicode-full-titlecase))
+                        (t (and full (boundp 'nelisp--unicode-full-upcase)
+                                nelisp--unicode-full-upcase))))
+         (piece (if (and special (fboundp 'nelisp--unicode-full-map))
+                    (nelisp--unicode-full-map special character simple)
+                  (char-to-string simple))))
+    ;; Single characters can use a simple titlecase property, but cannot
+    ;; expand through a special titlecase string (case_single_character).
+    (if (and (not full) (/= (length piece) 1))
+        (char-to-string simple) piece)))
+
+(defun nelisp--case-byte (byte mapped action)
+  "Constrain MAPPED to a byte, using GNU's ASCII fallback for BYTE."
+  (if (and (< byte 128) (>= mapped 256))
+      (if (eq action 'lower)
+          (if (and (<= ?A byte) (<= byte ?Z)) (+ byte 32) byte)
+        (if (and (<= ?a byte) (<= byte ?z)) (- byte 32) byte))
+    (logand mapped 255)))
+
+(defun nelisp--case-object (object action)
+  "Case character or string OBJECT with the current buffer's case table.
+ACTION is `upper', `lower', `capitalize', or `initials'."
+  (let ((table (nelisp--case-prepare-table)))
+    (cond
+     ((and (integerp object) (>= object 0) (fixnump object))
+      ;; do_casify_natnum preserves modifier flags and noncharacters.
+      (if (> object #xfc00000) object
+        (let* ((flags (logand object #xfc00000))
+               (character (logand object #x3fffff))
+               (unibyte (and (< character 256)
+                             (boundp 'enable-multibyte-characters)
+                             (not enable-multibyte-characters)))
+               (key (if (and unibyte (>= character 128))
+                        (+ character #x3fff00) character))
+               (mode (if (memq action '(capitalize initials)) 'title action))
+               (mapped (aref (nelisp--case-character-piece key mode table nil) 0)))
+          (logior flags (if unibyte (logand mapped 255) mapped)))))
+     ((not (stringp object))
+      (signal 'wrong-type-argument (list 'char-or-string-p object)))
+     ((= (length object) 0) object)
+     (t
+      (let ((unibyte (unibyte-string-p object))
+            (i 0) (n (length object)) (inword nil) parts)
+        (while (< i n)
+          (let* ((byte (aref object i))
+                 (character (if (and unibyte (>= byte 128))
+                                (+ byte #x3fff00) byte))
+                 (word (nelisp--case-word-character-p character))
+                 (mode (cond ((eq action 'capitalize) (if inword 'lower 'title))
+                             ((eq action 'initials) (and (not inword) 'title))
+                             (t action)))
+                 (piece (if mode
+                            (nelisp--case-character-piece character mode table
+                                                          (not unibyte))
+                          (char-to-string character))))
+            ;; GNU applies final sigma after ordinary mapping, based on the
+            ;; immediately preceding and following word-syntax characters.
+            (when (and (not unibyte) inword (= character #x3a3)
+                       (not (equal piece (char-to-string character)))
+                       (or (= (1+ i) n)
+                           (not (nelisp--case-word-character-p
+                                 (aref object (1+ i))))))
+              (setq piece "ς"))
+            (push (if unibyte
+                      (nelisp--case-byte byte (aref piece 0) mode)
+                    piece) parts)
+            (setq inword word i (1+ i))))
+        (if unibyte
+            (let ((result (apply #'unibyte-string (nreverse parts))) (position 0))
+              ;; GNU copies the unibyte input, including its properties.
+              (while (< position n)
+                (let ((end (or (next-property-change position object) n)))
+                  (set-text-properties position end
+                                       (text-properties-at position object) result)
+                  (setq position end)))
+              result)
+          (string-make-multibyte (apply #'concat (nreverse parts)))))))))
+
+(defun upcase (object)
+  "Convert character or string OBJECT to uppercase using the current case table."
+  (nelisp--case-object object 'upper))
+
+(defun downcase (object)
+  "Convert character or string OBJECT to lowercase using the current case table."
+  (nelisp--case-object object 'lower))
+
+(defun capitalize (object)
+  "Capitalize each word of OBJECT using the current case and syntax tables."
+  (nelisp--case-object object 'capitalize))
+
+(defun upcase-initials (object)
+  "Uppercase each word initial of OBJECT, preserving the rest of each word."
+  (nelisp--case-object object 'initials))
+
+(defun char-equal (a b)
+  "Return whether characters A and B match with the current case-fold setting."
+  (unless (characterp a)
+    (signal 'wrong-type-argument (list 'characterp a)))
+  (unless (characterp b)
+    (signal 'wrong-type-argument (list 'characterp b)))
+  (or (= a b)
+      (and case-fold-search
+           (let ((table (and (fboundp 'current-case-table) (current-case-table)))
+                 (unibyte (and (boundp 'enable-multibyte-characters)
+                               (not enable-multibyte-characters))))
+             ;; editfns.c compares downcase-table values before converting
+             ;; back to bytes; numeric downcase would truncate those values.
+             (= (nelisp--case-simple-character
+                 (if (and unibyte (>= a 128) (< a 256)) (+ a #x3fff00) a)
+                 'lower table)
+                (nelisp--case-simple-character
+                 (if (and unibyte (>= b 128) (< b 256)) (+ b #x3fff00) b)
+                 'lower table))))))
 
 ;; Rust-min (2026-05-06 batch 5b): bool-vector / char-table.
 ;;
