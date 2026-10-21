@@ -39013,6 +39013,31 @@ Keep this source-only boundary usable by Windows preflight and host controls."
       ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
            '(nl_fa_write_all (extern-call GetStdHandle 4294967284) buf len 0)
          '(syscall-direct 1 2 buf len 0 0 0)))
+    ;; GNU emacs.c load_pdump: a dump file named explicitly with --dump-file
+    ;; that cannot be loaded is fatal -- "emacs: could not load dump file
+    ;; \"PATH\": REASON", exit status 1 -- where the default dump file only
+    ;; falls back.  `--cold-load-from PATH' is the explicit form here.  The
+    ;; reason is GNU's for a file that cannot be opened, else its "not a
+    ;; dump file" (the loader has already said why it rejected the image).
+    (defun nl_cold_load_fatal (path)
+      (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(+ (data-addr nl_win_cold_io) 32)
+                      '(alloc-bytes 64 1)))
+             (fd (nl_os_open_read path)))
+        (seq
+         ,@(nelisp-standalone--byte-write-forms
+            'buf "nelisp: could not load dump file \"")
+         (nl_cold_diag buf ,(length "nelisp: could not load dump file \""))
+         (nl_cold_diag path (nl_cstr_len path))
+         (if (< fd 0)
+             (seq ,@(nelisp-standalone--byte-write-forms
+                     'buf "\": could not open file\n")
+                  (nl_cold_diag buf ,(length "\": could not open file\n")))
+           (seq (nl_os_close_handle fd)
+                ,@(nelisp-standalone--byte-write-forms
+                   'buf "\": not a dump file\n")
+                (nl_cold_diag buf ,(length "\": not a dump file\n"))))
+         (nl_os_exit_process 1))))
     (defun nl_cold_diag_bad_header ()
       (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                         '(+ (data-addr nl_win_cold_io) 32)
@@ -40725,6 +40750,10 @@ correctly."
             ;; the arena + bump the cursor past it so every following alloc
             ;; lands after the image (no clobber).  -1 = no marker / no flag.
             (_cl (nl_cold_load_arena cold_image))
+            ;; Only the executable's own companion image may fall back to a
+            ;; normal boot; an explicitly named one is fatal, as in GNU.
+            (_cl_fatal (if (= cold_override 0) 0
+                         (if (< _cl 0) (nl_cold_load_fatal cold_override) 0)))
             ;; A restored image must use this process's signal disposition.
             (_sigpipe_image (nl_os_sigpipe 1))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
