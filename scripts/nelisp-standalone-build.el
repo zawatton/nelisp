@@ -16823,87 +16823,65 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (nl_env_pop_frame env)
                (nl_root_release env mark)
                (wf_bytecode_unbind frames (- n 1))))))
-    (defun wf_bytecode_unwind_push (env unwinds kind payload)
-      ;; UNWINDS is a rooted ordered stack.  Event = (KIND PAYLOAD), with
-      ;; kind 0 for an existing dynamic frame and 1 for a cleanup action.
-      (let* ((mark (nl_root_mark env))
-             (kind-slot (nl_root_reserve env))
-             (nil-slot (nl_root_reserve env))
-             (fields (nl_root_reserve env))
-             (event (nl_root_reserve env))
-             (next (nl_root_reserve env)))
-        (seq (wf_write_int kind-slot kind)
-             (wf_write_nil nil-slot)
-             (nelisp_cons_construct payload nil-slot fields)
-             (nelisp_cons_construct kind-slot fields event)
-             (nelisp_cons_construct event unwinds next)
-             (wf_bytecode_copy unwinds next)
-             (nl_root_release env mark)
-             0)))
+    (defun wf_bytecode_unwind_push (env aux kind payload)
+      ;; GNU record_unwind_protect / specbind (eval.c:3520, 3600): AUX's
+      ;; unwinds cell is the ordered event stack, an event is (KIND PAYLOAD),
+      ;; kind 0 an existing dynamic frame and 1 a cleanup action.  Allocation
+      ;; only, so nothing here can collect.
+      (seq (ptr-write-u64 (+ aux 8) 0
+                          (wf_bytecode_w_cons2
+                           (wf_bytecode_w_cons2 (+ (shl kind 2) 1)
+                                                (wf_bytecode_w_cons2 payload 3))
+                           (heap-read-u64 (+ aux 8) 0)))
+           0))
     (defun wf_bytecode_unwind_cleanup (env cleanup)
       ;; Function handlers use bcall0 semantics.  Other handlers are a list
       ;; of forms evaluated as a PROGN, like Emacs's prog_ignore callback.
+      ;; CLEANUP is a WORD that the caller keeps alive while this runs.
       (let* ((mark (nl_root_mark env))
-             (args (nl_root_reserve env))
-             (lookup-args (nl_root_reserve env))
-             (result (nl_root_reserve env))
-             (cursor (nl_root_reserve env))
-             (nil-slot (nl_root_reserve env))
-             (function-cell (nl_root_reserve env))
-             (form (nl_root_reserve env))
              (saved-flag (heap-read-u64 268435472 0))
              ;; The pending exit's two WORDs, rooted for the cleanup.
              (saved (nl_exit_save env))
-             (lookup-rc 1)
-             (is-function 0)
-             (rc 0))
+             (tag (wf_bytecode_w_tag cleanup))
+             (func 3) (is-function 0) (cursor 3) (rc 0))
         (if (= saved 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
-        (seq
-         (wf_write_nil args)
-         (wf_write_nil nil-slot)
-         (wf_write_nil lookup-args)
-         (if (= (sexp-tag cleanup) 17)
-             (setq is-function 1)
-           (if (= (sexp-tag cleanup) 4)
-               (seq
-                ;; Resolve symbols through a rooted argument cell.  The raw
-                ;; cleanup slot is movable and is not a valid mirror key here.
-                (nelisp_cons_construct cleanup nil-slot lookup-args)
-                (setq lookup-rc
-                      (nelisp_env_lookup_function
-                       env (+ env 64) (nl_cons_car_word lookup-args) function-cell))
-                (if (= lookup-rc 0)
-                    (setq is-function (bf_fboundp_cell_p function-cell))
-                  0))
-             (if (= (sexp-tag cleanup) 7)
-                 (let* ((head (nl_cons_car_word cleanup)))
-                   (if (= (wf_bytecode_w_tag head) 4)
-                       (if (or (= (symbol-eq head 'lambda) 1)
-                               (= (symbol-eq head 'closure) 1)
-                               (= (symbol-eq head 'builtin) 1))
-                           (setq is-function 1) 0)
-                     0))
-               0)))
-         (ptr-write-u64 268435472 0 0)
-         (if (= is-function 1)
-             (if (= (sexp-tag cleanup) 4)
-                 (setq rc (if (= (nl_apply_function_w function-cell args env 0) 0) 1 0))
-               (setq rc (if (= (nl_apply_function_w cleanup args env 0) 0) 1 0)))
-           (seq
-            (wf_bytecode_copy cursor cleanup)
-            (while (and (= rc 0) (= (heap-sexp-tag-word cursor) 7))
-              (seq
-               (setq rc (if (= (nelisp_eval_call_w (nl_cons_car_word cursor) env 0) 0) 1 0))
-               (wf_bytecode_w_load cursor (nl_cons_cdr_word cursor))))))
-         ;; A normally returning cleanup preserves the pending exit.  An
-         ;; exit raised by the cleanup remains in the shared stash and wins.
-         (if (= rc 0)
-             (seq (nl_exit_restore saved)
-                  (ptr-write-u64 268435472 0 saved-flag))
-           0)
-         (nl_root_release env mark)
-         rc))))
+          (seq
+           (if (= tag 17)
+               (seq (setq is-function 1) (setq func cleanup))
+             (if (= tag 4)
+                 ;; A symbol is applied through its function cell, if bound.
+                 (let* ((fw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) cleanup 0)))
+                   (if (= fw 2) 0
+                     (if (= (wf_bytecode_w_tag fw) 0) 0
+                       (seq (setq is-function 1) (setq func fw)))))
+               (if (= tag 7)
+                   (let* ((head (nl_cons_car_word cleanup)))
+                     (if (= (wf_bytecode_w_tag head) 4)
+                         (if (or (= (symbol-eq head 'lambda) 1)
+                                 (= (symbol-eq head 'closure) 1)
+                                 (= (symbol-eq head 'builtin) 1))
+                             (seq (setq is-function 1) (setq func cleanup))
+                           0)
+                       0))
+                 0)))
+           (ptr-write-u64 268435472 0 0)
+           (if (= is-function 1)
+               (setq rc (if (= (nl_apply_function_w func 3 env 0) 0) 1 0))
+             (seq
+              (setq cursor cleanup)
+              (while (and (= rc 0) (= (wf_bytecode_w_consp cursor) 1))
+                (seq
+                 (setq rc (if (= (nelisp_eval_call_w (nl_cons_car_word cursor) env 0) 0) 1 0))
+                 (setq cursor (nl_cons_cdr_word cursor))))))
+           ;; A normally returning cleanup preserves the pending exit.  An
+           ;; exit raised by the cleanup remains in the shared stash and wins.
+           (if (= rc 0)
+               (seq (nl_exit_restore saved)
+                    (ptr-write-u64 268435472 0 saved-flag))
+             0)
+           (nl_root_release env mark)
+           rc))))
     (defun wf_bytecode_legacy (env mem sp opcode argc)
       ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
       ;; The rooted registry precedes user code; never use a public cell.
@@ -16927,160 +16905,146 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= rc 0)
                   (wf_bytecode_w_store mem (- sp argc) result) 0)) 0)
          (nl_root_release env mark) rc)))
-    (defun wf_bytecode_save_state (env unwinds opcode)
-      ;; The interpreter and native frame policy use the SAME Lisp factory.
-      ;; No buffer, marker or narrowing semantics are implemented here.
-      (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_call_root_frame env 1))
-             (rc 2))
-        (if (= roots 0) (seq (nl_root_release env mark) 2)
-          (seq
-           (setq rc (bf_dynamic_lookup env 'nelisp-bytecode-cleanup-factory roots))
-           (if (= rc 0)
+    (defun wf_bytecode_save_state (env aux opcode)
+      ;; The interpreter and native frame policy use the SAME Lisp factory
+      ;; (the value of `nelisp-bytecode-cleanup-factory'), called with the
+      ;; opcode; the cleanup it answers becomes an unwind event.  No buffer,
+      ;; marker or narrowing semantics are implemented here.  0 when pushed.
+      (let* ((fn (bf_dynamic_lookup_w env 'nelisp-bytecode-cleanup-factory 0)))
+        (if (if (= fn 0) 1 (= fn 2))
+            1
+          (let* ((r (nl_apply_function_w
+                     fn (wf_bytecode_w_cons2 (+ (shl opcode 2) 1) 3) env 0)))
+            (if (= r 0)
+                1
+              (seq (wf_bytecode_unwind_push env aux 1 r) 0))))))
+    (defun wf_bytecode_unwind_step (env aux target remaining)
+      ;; Undo the events of AUX's unwinds stack down to the list tail TARGET,
+      ;; innermost first, one at a time (GNU unbind_to, eval.c:3624-3651): pop
+      ;; the event, undo it, go on.  The event being undone waits in AUX's
+      ;; event cell while a cleanup runs.  A cleanup that exits stops the walk
+      ;; and the answer is 1, so the replacement exit searches the handlers
+      ;; still active before an enclosing cleanup is consumed.  REMAINING
+      ;; counts the frame bindings still to undo; the count left is in AUX's
+      ;; unwind-bindings cell.
+      (let* ((unwinds (+ aux 8))
+             (evcell (+ aux 72))
+             (rc 0) (left remaining) (go 1))
+        (seq
+         (while (= go 1)
+           (if (= (heap-read-u64 unwinds 0) target)
+               (setq go 0)
+             (if (= (wf_bytecode_w_consp (heap-read-u64 unwinds 0)) 0)
+                 ;; The stack ends before TARGET: leave it at TARGET and fail.
+                 (seq (ptr-write-u64 unwinds 0 target)
+                      (setq rc 1)
+                      (setq go 0))
                (seq
-                (wf_write_int (+ roots 32) opcode)
-                (setq rc (wf_bytecode_call_gateway env roots roots 1 1 (+ roots 64)))
-                (if (= rc 0) (wf_bytecode_unwind_push env unwinds 1 (+ roots 64)) 0)) 0)
-           (nl_root_release env mark) rc))))
-    (defun wf_bytecode_unwind_step (env unwinds target remaining out-bindings handlers pool)
-      ;; Re-enter after every callback rather than relying on AOT loop state:
-      ;; callbacks can allocate, move roots, and initiate another exit.
-      ;; An already-reached target consumes no event and needs no scratch roots.
-      (if (= (wf_bytecode_w_eqw unwinds target) 1)
-          (seq (wf_write_int out-bindings remaining) 0)
-      (let* ((mark (nl_root_mark env))
-             (event (nl_root_reserve env))
-             (tail-slot (nl_root_reserve env))
-             (payload (nl_root_reserve env))
-             (kind 0)
-             (next-remaining remaining)
-             (current-failed 0)
-             (next-failed 0))
-        (if (= (wf_bytecode_w_eqw unwinds target) 1)
-            (seq (wf_write_int out-bindings remaining)
-                 (nl_root_release env mark)
-                 0)
-          (if (= (heap-sexp-tag-word unwinds) 7)
-              (seq
-               (wf_bytecode_handlers_cross_unwind env handlers unwinds pool)
-               ;; Copy both fields to roots before changing UNWINDS or calling
-               ;; a cleanup; the cons interior pointers are transient.
-               (wf_bytecode_w_load event (nl_cons_car_word unwinds))
-               (wf_bytecode_w_load tail-slot (nl_cons_cdr_word unwinds))
-               (wf_bytecode_copy unwinds tail-slot)
-               (if (= (wf_bytecode_w_lean_event_p event) 1)
-                   (seq (wf_bytecode_w_lean_unbind env event payload)
-                        (setq kind 3))
-                 (seq (setq kind (wf_bytecode_w_int (nl_cons_car_word event)))
-                      (wf_bytecode_w_load payload (nl_cons_car_word (nl_cons_cdr_word event)))))
-               (if (= kind 3) 0
-               (if (= kind 0)
-                   (seq (if (> remaining 0)
-                            (wf_bytecode_unbind (+ env 32) 1) 0)
-                        (setq next-remaining
-                              (if (> remaining 0) (- remaining 1) 0)))
-                 (if (= kind 1)
-                     (if (= (wf_bytecode_unwind_cleanup env payload) 0)
-                         0
-                       (setq current-failed 1))
-                   (setq current-failed 1))))
-               ;; A replacement exit must search still-active handlers before
-               ;; consuming any enclosing cleanup event.
-               (if (= current-failed 0)
-                   (setq next-failed
-                         (wf_bytecode_unwind_step env unwinds target
-                                                  next-remaining out-bindings
-                                                  handlers pool))
-                 (wf_write_int out-bindings next-remaining))
-               (nl_root_release env mark)
-               (if (= next-failed 0) current-failed 1))
-            (seq (wf_bytecode_copy unwinds target)
-                 (wf_write_int out-bindings remaining)
-                 (nl_root_release env mark)
-                 1))))))
-    (defun wf_bytecode_unwind_to (env unwinds target bindings out-bindings handlers pool)
-      (wf_bytecode_unwind_step env unwinds target bindings out-bindings handlers pool))
-    (defun wf_bytecode_handlers_push (env handlers tag destination sp bindings unwinds pool)
-      ;; Keep the handler chain in a rooted Lisp list: `handlers' is a root
-      ;; slot, and each frame retains TAG across collections.  The frame is
-      ;; (TAG DESTINATION SP BINDINGS UNWINDS . PREVIOUS-HANDLERS).
-      ;; Reuse popped pairs; root consumption follows maximum nesting, never
-      ;; loop iterations. Checked reservation cannot fall back to GC scratch.
-      (let* ((allocation-mark (nl_root_mark env))
-             (free-node (heap-read-u64 pool 8))
-             (catch-node (if (< destination 0) 0
-                           (if (= free-node 0) (nl_root_reserve_checked env)
-                             free-node)))
-             (catch-tag (if (< destination 0) 0
-                          (if (= free-node 0) (nl_root_reserve_checked env)
-                            (heap-read-u64 free-node 16))))
-             (mark (nl_root_mark env))
-             (roots (if (and (>= destination 0)
-                             (or (= catch-node 0) (= catch-tag 0))) 0
-                      (wf_bytecode_call_root_frame env 2)))
-             (dest-slot roots)
-             (sp-slot (+ roots 32))
-             (bindings-slot (+ roots 64))
-             (unwinds-slot (+ roots 96))
-             (tail (+ roots 128))
-             (frame (+ roots 160)))
-        (if (= roots 0)
-            (seq (nl_root_release env allocation-mark) 1)
+                (wf_bytecode_handlers_cross_unwind env aux)
+                (ptr-write-u64 evcell 0 (nl_cons_car_word (heap-read-u64 unwinds 0)))
+                (ptr-write-u64 unwinds 0 (nl_cons_cdr_word (heap-read-u64 unwinds 0)))
+                (let* ((event (heap-read-u64 evcell 0)))
+                  (if (= (wf_bytecode_w_lean_event_p event) 1)
+                      (wf_bytecode_w_lean_unbind env event)
+                    (let* ((kind (wf_bytecode_w_int (nl_cons_car_word event))))
+                      (if (= kind 0)
+                          (seq (if (> left 0) (wf_bytecode_unbind (+ env 32) 1) 0)
+                               (setq left (if (> left 0) (- left 1) 0)))
+                        (if (= kind 1)
+                            (if (= (wf_bytecode_unwind_cleanup
+                                    env (nl_cons_car_word (nl_cons_cdr_word event))) 0)
+                                0
+                              (seq (setq rc 1) (setq go 0)))
+                          (seq (setq rc 1) (setq go 0)))))))))))
+         (ptr-write-u64 (+ aux 24) 0 (+ (shl left 2) 1))
+         rc)))
+    (defun wf_bytecode_unwind_to (env aux target bindings)
+      (wf_bytecode_unwind_step env aux target bindings))
+    (defun wf_bytecode_handlers_push (env aux tag destination sp bindings)
+      ;; GNU push_handler (eval.c:1280-1297): AUX's handlers cell is a Lisp
+      ;; list of frames (TAG DESTINATION SP BINDINGS UNWINDS . PREVIOUS-
+      ;; HANDLERS), the specpdl depth being the saved UNWINDS list.  A catch
+      ;; (DESTINATION >= 0) also registers its tag in the catch chain through a
+      ;; three-WORD root-stack node (+0 fixnum 0, +8 the previous node, +16 the
+      ;; tag), as GNU's struct handler sits on the C stack; popped nodes wait
+      ;; in AUX's pool and are reused, so root consumption follows maximum
+      ;; nesting, never loop iterations.  Answers 1 when the root stack cannot
+      ;; hold a node.
+      (let* ((pool (+ aux 56))
+             (free (sar (heap-read-u64 pool 0) 2))
+             (node (if (< destination 0) 0
+                     (if (= free 0) (nl_root_frame env 3) free))))
+        (if (if (>= destination 0) (= node 0) 0)
+            1
           (seq
-         (if (and (>= destination 0) (/= free-node 0))
-             (wf_write_int pool (heap-read-u64 free-node 8)) 0)
-         (wf_write_int dest-slot destination)
-         (wf_write_int sp-slot sp)
-         (wf_write_int bindings-slot bindings)
-         (wf_bytecode_copy unwinds-slot unwinds)
-         (nelisp_cons_construct unwinds-slot handlers tail)
-         (nelisp_cons_construct bindings-slot tail handlers)
-         (nelisp_cons_construct sp-slot handlers frame)
-         (nelisp_cons_construct dest-slot frame tail)
-         (nelisp_cons_construct tag tail frame)
-         (wf_bytecode_copy handlers frame)
-         (if (>= destination 0)
-             (seq (wf_bytecode_w_load catch-tag (nl_cons_car_word handlers))
-                  (nl_ct_active_push env catch-tag catch-node)) 0)
-         (nl_root_release env mark)
-         0))))
-    (defun wf_bytecode_handlers_pop (env handlers pool)
+           (if (if (>= destination 0) (/= free 0) 0)
+               (ptr-write-u64 pool 0 (+ (shl (heap-read-u64 free 8) 2) 1))
+             0)
+           (ptr-write-u64 aux 0
+                          (wf_bytecode_w_cons2
+                           tag
+                           (wf_bytecode_w_cons2
+                            (+ (shl destination 2) 1)
+                            (wf_bytecode_w_cons2
+                             (+ (shl sp 2) 1)
+                             (wf_bytecode_w_cons2
+                              (+ (shl bindings 2) 1)
+                              (wf_bytecode_w_cons2 (heap-read-u64 (+ aux 8) 0)
+                                                   (heap-read-u64 aux 0)))))))
+           (if (>= destination 0)
+               (let* ((head (nl_ct_head_slot env)))
+                 (seq (ptr-write-u64 node 0 1)
+                      (ptr-write-u64 node 8 (heap-read-u64 head 0))
+                      (ptr-write-u64 node 16 (nl_word_canon tag))
+                      (ptr-write-u64 head 0 node)))
+             0)
+           0))))
+    (defun wf_bytecode_handlers_pop (env aux)
       ;; Frame (TAG DESTINATION SP BINDINGS UNWINDS . PREVIOUS): read the
-      ;; destination word, then make PREVIOUS the chain.
-      (if (= (sexp-tag handlers) 7)
-          (let* ((c1 (nl_cons_cdr_word handlers))
-                 (c2 (nl_cons_cdr_word c1))
-                 (c3 (nl_cons_cdr_word c2))
-                 (c4 (nl_cons_cdr_word c3))
-                 (previous (nl_cons_cdr_word c4))
-                 (destination (wf_bytecode_w_int (nl_cons_car_word c1))))
-            (seq
-             (if (>= destination 0)
-                 (let* ((node (heap-read-u64 (nl_ct_head_slot env) 0)))
-                   (seq (nl_ct_active_pop env node)
-                        (wf_write_nil (heap-read-u64 node 16))
-                        (ptr-write-u64 node 8 (heap-read-u64 pool 8))
-                        (wf_write_int pool node))) 0)
-             (wf_bytecode_w_load handlers previous)
-             0))
-        1))
-    (defun wf_bytecode_handlers_drop_to (env handlers previous pool)
-      ;; Remove every crossed catch after reaching its unwind tail. PREVIOUS
-      ;; is a rooted list value, retained across allocating frame accessors.
+      ;; destination, then make PREVIOUS the chain (GNU pop_handler,
+      ;; eval.c:1299).  A catch's node leaves the catch chain, forgets its tag
+      ;; and goes to the pool.
+      (let* ((h (heap-read-u64 aux 0)))
+        (if (= (wf_bytecode_w_consp h) 1)
+            (let* ((c1 (nl_cons_cdr_word h))
+                   (c2 (nl_cons_cdr_word c1))
+                   (c3 (nl_cons_cdr_word c2))
+                   (c4 (nl_cons_cdr_word c3))
+                   (previous (nl_cons_cdr_word c4))
+                   (destination (wf_bytecode_w_int (nl_cons_car_word c1))))
+              (seq
+               (if (>= destination 0)
+                   (let* ((head (nl_ct_head_slot env))
+                          (node (heap-read-u64 head 0)))
+                     (seq (ptr-write-u64 head 0 (heap-read-u64 node 8))
+                          (ptr-write-u64 node 16 3)
+                          (ptr-write-u64 node 8 (sar (heap-read-u64 (+ aux 56) 0) 2))
+                          (ptr-write-u64 (+ aux 56) 0 (+ (shl node 2) 1))))
+                 0)
+               (ptr-write-u64 aux 0 previous)
+               0))
+          1)))
+    (defun wf_bytecode_handlers_drop_to (env aux previous)
+      ;; Remove every crossed catch after reaching its unwind tail.  PREVIOUS
+      ;; is the handler list to stop at.
       (seq
-       (while (and (= (sexp-tag handlers) 7)
-                   (= (wf_bytecode_w_eqw handlers previous) 0))
-         (wf_bytecode_handlers_pop env handlers pool))
+       (while (if (= (wf_bytecode_w_consp (heap-read-u64 aux 0)) 1)
+                  (/= (heap-read-u64 aux 0) previous)
+                0)
+         (wf_bytecode_handlers_pop env aux))
        0))
-    (defun wf_bytecode_handlers_cross_unwind (env handlers unwinds pool)
+    (defun wf_bytecode_handlers_cross_unwind (env aux)
       ;; Retire handlers established inside this event before its cleanup.
       ;; Enclosing catches (earlier unwind tails) stay visible to cleanup throw.
       (let* ((go 1))
         (seq
-         (while (and (= go 1) (= (sexp-tag handlers) 7))
+         (while (if (= go 1) (= (wf_bytecode_w_consp (heap-read-u64 aux 0)) 1) 0)
            (let* ((c4 (nl_cons_cdr_word
-                       (nl_cons_cdr_word (nl_cons_cdr_word (nl_cons_cdr_word handlers))))))
-             (if (= (wf_bytecode_w_eqv unwinds (nl_cons_car_word c4)) 1)
-                 (wf_bytecode_handlers_pop env handlers pool)
+                       (nl_cons_cdr_word
+                        (nl_cons_cdr_word
+                         (nl_cons_cdr_word (heap-read-u64 aux 0)))))))
+             (if (= (nl_cons_car_word c4) (heap-read-u64 (+ aux 8) 0))
+                 (wf_bytecode_handlers_pop env aux)
                (setq go 0))))
          0)))
     (defun wf_bytecode_condition_matches (env symbol spec)
@@ -17105,34 +17069,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (seq
                       (setq chain conditions)
                       (while (if (= matched 0) (wf_bytecode_w_consp chain) 0)
-                        (if (= (wf_bytecode_w_eqw (heap-read-u64 (heap-sexp-payload patterns) 0)
+                        (if (= (wf_bytecode_w_eqw (heap-read-u64 (nl_word_payload patterns) 0)
                                                   (heap-read-u64 (nl_word_payload chain) 0)) 1)
                             (setq matched 1)
                           (setq chain (heap-read-u64 (nl_word_payload chain) 8))))
-                      (setq patterns (heap-read-u64 (heap-sexp-payload patterns) 8)))))
+                      (setq patterns (heap-read-u64 (nl_word_payload patterns) 8)))))
                (if (= (sexp-tag spec) 1) (setq matched 1) 0)))
          matched))))
-    (defun wf_bytecode_try_throw (env handlers current-bindings unwinds
-                                      resume-dest resume-sp resume-bindings pool)
-      ;; Search from the innermost frame (TAG DESTINATION SP BINDINGS
-      ;; UNWINDS . PREVIOUS); a catch frame has DESTINATION >= 0.  SAVED-
-      ;; UNWINDS and PREVIOUS are roots: dynamic unbinding below can allocate.
-      (let* ((mark (nl_root_mark env))
-             (previous (nl_root_reserve env))
-             (saved-unwinds (nl_root_reserve env))
-             (out-bindings (nl_root_reserve env))
-             (cursor handlers)
-             (found 0)
-             (destination 0)
-             (saved-sp 0)
-             (saved-bindings 0)
-             (unwind-rc 0)
-             (new-bindings 0)
-             (result 0))
+    (defun wf_bytecode_try_throw (env aux current-bindings)
+      ;; GNU Fthrow / unwind_to_catch (eval.c:1432-1454): search from the
+      ;; innermost frame (TAG DESTINATION SP BINDINGS UNWINDS . PREVIOUS) for
+      ;; a catch (DESTINATION >= 0) whose tag is the thrown one, undo the
+      ;; events above it and drop the handlers it crossed.  The frame's saved
+      ;; unwinds and the handler tail after it wait in AUX's temp cells while
+      ;; cleanups run.  Answers 1 with the resume point in AUX's resume cells,
+      ;; 0 when nothing caught it or a cleanup exited again.
+      (let* ((cursor (heap-read-u64 aux 0))
+             (found 0) (destination 0) (saved-sp 0)
+             (unwind-rc 0) (new-bindings 0) (result 0))
         (seq
-         (wf_write_nil previous)
-         (while (if (= found 0) (wf_bytecode_w_consp cursor) 0)
-           (let* ((c1 (heap-read-u64 (heap-sexp-payload cursor) 8))
+         (while (if (= found 0) (= (wf_bytecode_w_consp cursor) 1) 0)
+           (let* ((c1 (nl_cons_cdr_word cursor))
                   (c2 (nl_cons_cdr_word c1))
                   (c3 (nl_cons_cdr_word c2))
                   (c4 (nl_cons_cdr_word c3))
@@ -17141,121 +17098,113 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (if (>= dest 0)
                      (if (= (nl_val_tag (nl_exit_tag_w)) 0)
                          0
-                       (wf_bytecode_w_eqv (nl_exit_tag_w) (heap-read-u64 (heap-sexp-payload cursor) 0)))
+                       (wf_bytecode_w_eqw (nl_exit_tag_w) (nl_cons_car_word cursor)))
                    0)
                  (seq
                   (setq destination dest)
                   (setq saved-sp (wf_bytecode_w_int (nl_cons_car_word c2)))
-                  (setq saved-bindings (wf_bytecode_w_int (nl_cons_car_word c3)))
-                  (wf_bytecode_w_load saved-unwinds (nl_cons_car_word c4))
-                  (wf_bytecode_w_load previous c5)
+                  (ptr-write-u64 (+ aux 80) 0 (nl_cons_car_word c4))
+                  (ptr-write-u64 (+ aux 88) 0 c5)
                   (setq found 1))
                (setq cursor c5))))
          (if (= found 1)
              (seq
               (setq unwind-rc
-                    (wf_bytecode_unwind_to env unwinds saved-unwinds
-                                           current-bindings out-bindings handlers pool))
-              (setq new-bindings (sexp-int-unwrap out-bindings))
+                    (wf_bytecode_unwind_to env aux (heap-read-u64 (+ aux 80) 0)
+                                           current-bindings))
+              (setq new-bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
               (if (= unwind-rc 0)
-                  (seq (wf_bytecode_handlers_drop_to env handlers previous pool)
-                       (wf_write_int resume-dest destination)
-                       (wf_write_int resume-sp saved-sp)
-                       (wf_write_int resume-bindings new-bindings)
+                  (seq (wf_bytecode_handlers_drop_to env aux (heap-read-u64 (+ aux 88) 0))
+                       (ptr-write-u64 (+ aux 32) 0 (+ (shl destination 2) 1))
+                       (ptr-write-u64 (+ aux 40) 0 (+ (shl saved-sp 2) 1))
+                       (ptr-write-u64 (+ aux 48) 0 (+ (shl new-bindings 2) 1))
                        (setq result 1))
-                (seq (wf_write_int resume-dest -2)
-                     (wf_write_int resume-bindings new-bindings)
+                (seq (ptr-write-u64 (+ aux 32) 0 -7)
+                     (ptr-write-u64 (+ aux 48) 0 (+ (shl new-bindings 2) 1))
                      (setq result 0))))
            (setq result 0))
-         (nl_root_release env mark)
          result)))
-    (defun wf_bytecode_try_signal (env mem handlers current-bindings unwinds
-                                      resume-dest resume-sp resume-bindings pool)
-      ;; A signal searches condition-case frames and deliberately steps over
-      ;; catch frames. The signal stash carries its condition symbol and data.
-      (let* ((mark (nl_root_mark env))
-             (previous (nl_root_reserve env))
-             (saved-unwinds (nl_root_reserve env))
-             (out-bindings (nl_root_reserve env))
-             (error-object (nl_root_reserve env))
-             (spec-slot (nl_root_reserve env))
-             (cursor handlers)
+    (defun wf_bytecode_try_signal (env mem aux current-bindings)
+      ;; GNU signal_or_quit / find_handler_clause (eval.c:2010-2064): a signal
+      ;; searches condition-case frames (DESTINATION encoded below zero) and
+      ;; deliberately steps over catch frames.  The signal stash carries its
+      ;; condition symbol and data; the handler's variable gets the condition
+      ;; object (SIGNAL . DATA), stored at the frame's saved stack index.
+      (let* ((cursor (heap-read-u64 aux 0))
              (found 0) (destination 0) (saved-sp 0)
              (unwind-rc 0) (new-bindings 0))
         (seq
-         (while (if (= found 0) (wf_bytecode_w_consp cursor) 0)
-           (let* ((c1 (heap-read-u64 (heap-sexp-payload cursor) 8))
+         (while (if (= found 0) (= (wf_bytecode_w_consp cursor) 1) 0)
+           (let* ((c1 (nl_cons_cdr_word cursor))
                   (c2 (nl_cons_cdr_word c1))
                   (c3 (nl_cons_cdr_word c2))
                   (c4 (nl_cons_cdr_word c3))
                   (c5 (nl_cons_cdr_word c4))
                   (encoded (wf_bytecode_w_int (nl_cons_car_word c1))))
              (if (< encoded 0)
-                 (seq
-                  (wf_bytecode_w_load spec-slot (heap-read-u64 (heap-sexp-payload cursor) 0))
-                  (if (if (= (wf_bytecode_condition_matches env (nl_exit_tag_w) spec-slot) 1)
-                          (= (heap-read-u64 268435472 0) 1) 0)
-                      (seq (setq destination (- (- encoded) 1))
-                           (setq saved-sp (wf_bytecode_w_int (nl_cons_car_word c2)))
-                           (wf_bytecode_w_load saved-unwinds (nl_cons_car_word c4))
-                           (wf_bytecode_w_load previous c5)
-                           (setq found 1))
-                    (setq cursor c5)))
+                 (if (if (= (wf_bytecode_condition_matches
+                             env (nl_exit_tag_w) (nl_cons_car_word cursor)) 1)
+                         (= (heap-read-u64 268435472 0) 1) 0)
+                     (seq (setq destination (- (- encoded) 1))
+                          (setq saved-sp (wf_bytecode_w_int (nl_cons_car_word c2)))
+                          (ptr-write-u64 (+ aux 80) 0 (nl_cons_car_word c4))
+                          (ptr-write-u64 (+ aux 88) 0 c5)
+                          (setq found 1))
+                   (setq cursor c5))
                (setq cursor c5))))
          (if (= found 1)
              (seq
               (setq unwind-rc
-                    (wf_bytecode_unwind_to env unwinds saved-unwinds
-                                           current-bindings out-bindings handlers pool))
-              (setq new-bindings (sexp-int-unwrap out-bindings))
+                    (wf_bytecode_unwind_to env aux (heap-read-u64 (+ aux 80) 0)
+                                           current-bindings))
+              (setq new-bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
               (if (= unwind-rc 0)
                   (seq
-                   (wf_bytecode_handlers_drop_to env handlers previous pool)
-                   (wf_write_int resume-dest destination)
-                   (wf_write_int resume-sp saved-sp)
-                   (wf_write_int resume-bindings new-bindings)
+                   (wf_bytecode_handlers_drop_to env aux (heap-read-u64 (+ aux 88) 0))
+                   (ptr-write-u64 (+ aux 32) 0 (+ (shl destination 2) 1))
+                   (ptr-write-u64 (+ aux 40) 0 (+ (shl saved-sp 2) 1))
+                   (ptr-write-u64 (+ aux 48) 0 (+ (shl new-bindings 2) 1))
                    ;; Bind the full condition object (SIGNAL . DATA).
-                   (nl_exit_condition_into error-object)
-                   (wf_bytecode_w_store mem saved-sp error-object)
+                   (ptr-write-u64 (+ mem (* saved-sp 8)) 0
+                                  (wf_bytecode_w_cons2 (nl_exit_tag_w) (nl_exit_val_w)))
                    0)
-                (seq (wf_write_int resume-dest -2)
-                     (wf_write_int resume-bindings new-bindings))))
+                (seq (ptr-write-u64 (+ aux 32) 0 -7)
+                     (ptr-write-u64 (+ aux 48) 0 (+ (shl new-bindings 2) 1)))))
            0)
-         (nl_root_release env mark)
          0)))
-    (defun wf_bytecode_pending_exit (env mem handlers unwinds nil-unwinds
-                                        bindings resume-dest resume-sp
-                                        resume-bindings pool)
+    (defun wf_bytecode_pending_exit (env mem aux bindings0)
       ;; One dispatcher owns throw/signal selection and cleanup replacement.
       ;; -2 requests reselection after a cleanup exits; never drain an outer
       ;; cleanup before an applicable inner handler has seen the new exit.
-      (let* ((go 1) (kind 0) (caught 0) (rc 0))
-        (while (= go 1)
-          (seq
-           (wf_write_int resume-dest -1)
-           (setq kind (heap-read-u64 268435472 0))
-           (if (= kind 2)
-               (seq (setq caught
-                          (wf_bytecode_try_throw env handlers bindings unwinds
-                                                 resume-dest resume-sp
-                                                 resume-bindings pool))
-                    (if (= caught 1)
-                        (wf_bytecode_w_store mem (sexp-int-unwrap resume-sp) (nl_exit_val_w)) 0))
-             (if (= kind 1)
-                 (wf_bytecode_try_signal env mem handlers bindings unwinds
-                                         resume-dest resume-sp resume-bindings pool)
-               0))
-           (if (>= (sexp-int-unwrap resume-dest) 0)
-               (setq go 0)
-             (if (= (sexp-int-unwrap resume-dest) -2)
-                 (setq bindings (sexp-int-unwrap resume-bindings))
-               (seq
-                (setq rc (wf_bytecode_unwind_to env unwinds nil-unwinds
-                                               bindings resume-bindings
-                                               handlers pool))
-                (setq bindings (sexp-int-unwrap resume-bindings))
-                (if (= rc 0) (setq go 0) 0))))))
-        0))
+      ;; On return AUX's resume cells hold the resume point (resume-dest >= 0)
+      ;; or, with none, the binding count left.
+      (let* ((go 1) (kind 0) (caught 0) (rc 0) (bindings bindings0))
+        (seq
+         (while (= go 1)
+           (seq
+            (ptr-write-u64 (+ aux 32) 0 -3)
+            (setq kind (heap-read-u64 268435472 0))
+            (if (= kind 2)
+                (seq (setq caught (wf_bytecode_try_throw env aux bindings))
+                     (if (= caught 1)
+                         (ptr-write-u64
+                          (+ mem (* (sar (heap-read-u64 (+ aux 40) 0) 2) 8)) 0
+                          (nl_exit_val_w))
+                       0))
+              (if (= kind 1)
+                  (wf_bytecode_try_signal env mem aux bindings)
+                0))
+            (let* ((rd (sar (heap-read-u64 (+ aux 32) 0) 2)))
+              (if (>= rd 0)
+                  (setq go 0)
+                (if (= rd -2)
+                    (setq bindings (sar (heap-read-u64 (+ aux 48) 0) 2))
+                  (seq
+                   (setq rc (wf_bytecode_unwind_to env aux 3 bindings))
+                   (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
+                   (ptr-write-u64 (+ aux 48) 0 (+ (shl bindings 2) 1))
+                   (if (= rc 0) (setq go 0) 0)))))))
+         0)))
     (defun wf_bytecode_car (value out safe)
       (let* ((tag (sexp-tag value)))
         (if (= tag 7)
@@ -18332,9 +18281,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; unwinding writes SAVED back.  No env frame, no [NAME SAVED] record,
     ;; and no 32-byte copies.  Every exit of an activation unwinds its list,
     ;; so the binding never outlives it.
-    (defun wf_bytecode_w_lean_bind (env name valw unwinds tmp)
+    (defun wf_bytecode_w_lean_bind (env name valw aux)
       ;; 0 when bound; 1 when NAME needs the general binder (nothing done).
       ;; Watchers use the frame binder, whose unwind retains callback state.
+      ;; A shallow binding is the event (NAME . SAVED-VALUE) on AUX's unwinds.
       (if (/= (logand (heap-read-u64 env 112) 1048576) 0) 1
       (if (= (logand name 1) 1) 1
         (if (/= (heap-sexp-tag-word name) 4) 1
@@ -18348,7 +18298,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (if (= (nl_sb_plain_entry_p entry) 0) 1
                     (let* ((saved (nl_record_slot_word entry 0)))
                       (seq
-                       (nelisp_cons_construct (wf_bytecode_w_cons name saved tmp) unwinds unwinds)
+                       (ptr-write-u64 (+ aux 8) 0
+                                      (wf_bytecode_w_cons2
+                                       (wf_bytecode_w_cons2 name saved)
+                                       (heap-read-u64 (+ aux 8) 0)))
                        (wf_dirty)
                        (ptr-write-u64 (+ (nl_word_payload entry) 16) 0 valw)
                        0)))))))))))
@@ -18358,19 +18311,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (= (logand carw 1) 1) 0
             (if (or (= (sexp-tag carw) 4)
                     (= (sexp-tag carw) 11)) 1 0)))))
-    (defun wf_bytecode_w_lean_unbind (env event scratch)
+    (defun wf_bytecode_w_lean_unbind (env event)
       ;; A migrated event's private Cell ceases to be visible when the caller
-      ;; removes this event from UNWINDS. It must never restore the mirror.
+      ;; removes this event from the unwinds.  It must never restore the mirror.
       (if (= (nl_val_tag (nl_cons_car_word event)) 11) 0
       (let* ((name (nl_cons_car_word event))
              (saved (nl_cons_cdr_word event))
              (entry (nelisp_mirror_lookup_entry (+ env 0) name)))
         (seq (wf_dirty)
              (if (= entry 0)
-                 (nl_sb_set env name (wf_bytecode_w_view saved scratch))
+                 (nl_sb_set env name (wf_bytecode_w_view saved (alloc-bytes 32 8)))
                (ptr-write-u64 (+ (nl_word_payload entry) 16) 0 saved))
              0))))
-    (defun wf_bytecode_w_bind_formals (env formals args argc unwinds nil-unwinds tmp wtmp)
+    (defun wf_bytecode_w_bind_formals (env formals args argc aux wtmp)
       ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
       ;; at ARGS (arity already checked) as events of this activation.
       ;; Answers 2 * (frame bindings made) + (1 if a binder signalled).
@@ -18388,8 +18341,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (setq k (- argc 1))
                         (while (>= k index)
                           (seq (ptr-write-u64
-                                wtmp 0 (wf_bytecode_w_cons (heap-read-u64 (+ args (* k 8)) 0)
-                                                           (heap-read-u64 wtmp 0) tmp))
+                                wtmp 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ args (* k 8)) 0)
+                                                            (heap-read-u64 wtmp 0)))
                                (setq k (- k 1))))
                         (setq name (heap-read-u64 (nl_word_payload params) 0))
                         (setq stop 1))
@@ -18397,11 +18350,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (seq (ptr-write-u64 wtmp 0 (heap-read-u64 (+ args (* index 8)) 0))
                           (setq index (+ index 1)))
                    (ptr-write-u64 wtmp 0 3)))
-               (if (= (wf_bytecode_w_lean_bind env name (heap-read-u64 wtmp 0) unwinds tmp) 0)
+               (if (= (wf_bytecode_w_lean_bind env name (heap-read-u64 wtmp 0) aux) 0)
                    0
                  (if (= (wf_bytecode_varbind
                          env name (heap-read-u64 wtmp 0)) 0)
-                     (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                     (seq (wf_bytecode_unwind_push env aux 0 3)
                           (setq bound (+ bound 1)))
                    (seq (setq rc 1) (setq stop 1))))))))
          (+ (* bound 2) rc))))
@@ -18625,35 +18578,38 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (ptr-write-u64 cell 8 fp2)
                    (+ maxargs rest (if (> argc maxargs) 65536 0))))))))))))))))))))))
     (defun wf_bytecode_frame_aux (env foot state)
-      ;; The frame's aux block: the Sexp-slot state that the handler, unwind
-      ;; and binding helpers take as views, allocated when the frame first
-      ;; needs it (a frame that only calls and returns has none).  Nine
-      ;; contiguous roots: +0 handlers, +32 unwinds, +64 binding-link, +96
-      ;; unwind-bindings, +128 resume-dest, +160 resume-sp, +192
-      ;; resume-bindings, +224 catch-pool, +256 the binding count while the
-      ;; frame is not the one running.  Answers its address, or 0 when the
-      ;; root stack cannot hold it.
+      ;; The frame's aux block: the state the handler, unwind and binding
+      ;; helpers keep per frame, allocated when the frame first needs it (a
+      ;; frame that only calls and returns has none).  Twelve WORD slots on the
+      ;; root stack, every one a valid WORD: +0 handlers (GNU's handlerlist),
+      ;; +8 unwinds (its specpdl), +16 the binding-link record, +24
+      ;; unwind-bindings, +32 resume-dest, +40 resume-sp, +48 resume-bindings
+      ;; (fixnums), +56 catch-pool (the fixnum-coded address of the first free
+      ;; catch node, 1 for none), +64 the binding count while the frame is not
+      ;; the one running, +72 the event being undone, +80 and +88 the unwind
+      ;; target and the handler tail of a non-local exit while its cleanups
+      ;; run.  The binding-link record is a 32-byte integer-tagged arena block
+      ;; that the slot at +16 keeps alive: +8 the previous link, +16 the address
+      ;; of the unwinds cell, +24 the binding depth, raw words the collector
+      ;; never reads; N4 state +16 threads it for the thread walkers.  Answers
+      ;; the aux address, or 0 when the root stack cannot hold it.
       (let* ((a (heap-read-u64 foot 40)))
         (if (/= a 3) (sar a 2)
-          (let* ((aux (wf_bytecode_w_roots env 9)))
+          (let* ((aux (nl_root_frame env 12)))
             (if (= aux 0) 0
-              (seq
-               (wf_write_nil aux)
-               (wf_write_nil (+ aux 32))
-               (wf_write_int (+ aux 224) 0)
-               ;; Metadata is an integer root; the separate unwind root owns data.
-               (sexp-int-make (+ aux 64) (heap-read-u64 state 16))
-               (ptr-write-u64 (+ aux 64) 16 (+ aux 32))
-               (ptr-write-u64 (+ aux 64) 24
-                              (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
-               (ptr-write-u64 state 16 (+ aux 64))
-               (wf_write_int (+ aux 96) 0)
-               (wf_write_nil (+ aux 128))
-               (wf_write_nil (+ aux 160))
-               (wf_write_nil (+ aux 192))
-               (wf_write_int (+ aux 256) 0)
-               (ptr-write-u64 foot 40 (+ (shl aux 2) 1))
-               aux))))))
+              (let* ((link (alloc-bytes 32 8)))
+                (seq
+                 (sexp-int-make link (heap-read-u64 state 16))
+                 (ptr-write-u64 link 16 (+ aux 8))
+                 (ptr-write-u64 link 24
+                                (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+                 (ptr-write-u64 (+ aux 16) 0 link)
+                 (ptr-write-u64 state 16 link)
+                 (ptr-write-u64 (+ aux 24) 0 1)
+                 (ptr-write-u64 (+ aux 56) 0 1)
+                 (ptr-write-u64 (+ aux 64) 0 1)
+                 (ptr-write-u64 foot 40 (+ (shl aux 2) 1))
+                 aux)))))))
 
     ;; GNU bytecode.c:856-867: the dispatch loop polls quit (and GC) once
     ;; every 256 backward branches (quitcounter), not per instruction.  The
@@ -19515,17 +19471,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (fp (if (= roots 0) 0 (nl_root_frame env (+ depth 7))))
              (mem fp)
              (foot (+ mem (* (+ depth 1) 8)))
-             (aux 0) (asynced 0)
-             (handlers 0)
-             (unwinds 0)
-             ;; Immutable nil needs no transport box or GC root (Doc 215).
-             (nil-unwinds 3)
-             (unwind-bindings 0)
-             (resume-dest 0)
-             (resume-sp 0)
-             (resume-bindings 0)
-             (catch-pool 0)
-             (binding-link 0)
+             (aux 0)
              (bx roots)
              (bt (+ roots 96))
              (curfp (+ roots 128))
@@ -19590,7 +19536,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (if (= a 0)
                    (setq done 5)
                  (let* ((r (wf_bytecode_w_bind_formals env formals initial-words initial-argc
-                                                       (+ a 32) nil-unwinds bt resw)))
+                                                       a resw)))
                    (seq (setq aux a)
                         (setq bindings (sar r 1))
                         (ptr-write-u64 resw 0 3)
@@ -19614,7 +19560,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   ;; the frame left keeps its binding count.
                   (if (/= reload 0)
                       (seq
-                       (if (/= aux 0) (wf_write_int (+ aux 256) bindings) 0)
+                       (if (/= aux 0)
+                           (ptr-write-u64 (+ aux 64) 0 (+ (shl bindings 2) 1))
+                         0)
                        (setq mem reload)
                        (setq reload 0)
                        ;; Fresh names throughout: the activation's first frame
@@ -19638,32 +19586,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (= a2 3)
                                   (seq (setq aux 0) (setq bindings 0))
                                 (seq (setq aux (sar a2 2))
-                                     (setq bindings (sexp-int-unwrap (+ aux 256)))))))
+                                     (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2))))))
                        (setq unwind-rc 0))
-                    0)
-                  (if (/= asynced aux)
-                      (seq
-                       (if (/= aux 0)
-                           (seq (setq handlers aux)
-                                (setq unwinds (+ aux 32))
-                                (setq binding-link (+ aux 64))
-                                (setq unwind-bindings (+ aux 96))
-                                (setq resume-dest (+ aux 128))
-                                (setq resume-sp (+ aux 160))
-                                (setq resume-bindings (+ aux 192))
-                                (setq catch-pool (+ aux 224)))
-                         0)
-                       (setq asynced aux))
                     0)
                   (if (and (= done 0) (>= pc code-len)) (setq done 2) 0)
                   (if (and (/= done 0) (/= done 4))
                       (if (/= aux 0)
                           (seq
                            (setq unwind-rc
-                                 (wf_bytecode_unwind_to
-                                  env unwinds nil-unwinds bindings unwind-bindings
-                                  handlers catch-pool))
-                           (setq bindings (sexp-int-unwrap unwind-bindings))
+                                 (wf_bytecode_unwind_to env aux 3 bindings))
+                            (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
                            (if (/= unwind-rc 0) (setq done 4) 0))
                         0)
                     0)
@@ -19671,14 +19603,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (seq
                      (if (/= aux 0)
                          (seq
-                          (wf_bytecode_pending_exit
-                           env mem handlers unwinds nil-unwinds bindings
-                           resume-dest resume-sp resume-bindings catch-pool)
-                          (setq bindings (sexp-int-unwrap resume-bindings))
-                          (if (>= (sexp-int-unwrap resume-dest) 0)
+                          (wf_bytecode_pending_exit env mem aux bindings)
+                          (setq bindings (sar (heap-read-u64 (+ aux 48) 0) 2))
+                          (if (>= (sar (heap-read-u64 (+ aux 32) 0) 2) 0)
                               (seq
-                               (setq pc (sexp-int-unwrap resume-dest))
-                               (setq sp (+ (sexp-int-unwrap resume-sp) 1))
+                               (setq pc (sar (heap-read-u64 (+ aux 32) 0) 2))
+                               (setq sp (+ (sar (heap-read-u64 (+ aux 40) 0) 2) 1))
                                (setq unwind-rc 0)
                                (ptr-write-u64 268435472 0 0)
                                (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
@@ -19730,16 +19660,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (if (= a 0)
                            (setq done 5)
                          (seq (setq aux a)
-                              (setq bindings 0)
-                              (setq asynced a)
-                              (setq handlers a)
-                              (setq unwinds (+ a 32))
-                              (setq binding-link (+ a 64))
-                              (setq unwind-bindings (+ a 96))
-                              (setq resume-dest (+ a 128))
-                              (setq resume-sp (+ a 160))
-                              (setq resume-bindings (+ a 192))
-                              (setq catch-pool (+ a 224)))))
+                              (setq bindings 0))))
                    0))
              0)
            (if (and (= done 0) (= reload 0))
@@ -19962,12 +19883,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (setq bad-op raw) (setq done 2))
                         (if (= (wf_bytecode_w_lean_bind
                                 env (heap-read-u64 (+ cdata (* operand 8)) 0)
-                                (heap-read-u64 top 0) unwinds bt) 0)
+                                (heap-read-u64 top 0) aux) 0)
                             (setq sp (- sp 1))
                           (if (= (wf_bytecode_varbind
                                   env (heap-read-u64 (+ cdata (* operand 8)) 0)
                                   (wf_bytecode_w_view (heap-read-u64 top 0) bx)) 0)
-                              (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                              (seq (wf_bytecode_unwind_push env aux 0 3)
                                    (setq sp (- sp 1)) (setq bindings (+ bindings 1)))
                             (setq done 4)))))
                      ((= base 16)
@@ -20096,7 +20017,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (let* ((argc (if (= base 143) 3
                                       (if (or (= base 141) (= base 145)) 2 1))))
                         (if (or (< sp argc)
-                                (and (= base 145) (= (heap-sexp-tag-word unwinds) 0)))
+                                (and (= base 145) (= (heap-read-u64 (+ aux 8) 0) 3)))
                             (seq (setq bad-op raw) (setq done 2))
                           (if (= (wf_bytecode_legacy env mem sp base argc) 0)
                               (seq
@@ -20106,27 +20027,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            env 'standard-output
                                            (wf_bytecode_w_view
                                             (heap-read-u64 (+ mem (* (- sp 1) 8)) 0) bx)) 0)
-                                       (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                                       (seq (wf_bytecode_unwind_push env aux 0 3)
                                             (setq bindings (+ bindings 1)))
                                      (setq done 4))
                                  (if (= base 145)
                                      (seq
-                                      (if (= (seq (wf_bytecode_w_load bx (nl_cons_cdr_word unwinds))
-                                                (wf_bytecode_unwind_to env unwinds
-                                                 bx bindings unwind-bindings
-                                                 handlers catch-pool)) 0)
-                                          (setq bindings (sexp-int-unwrap unwind-bindings))
+                                      (if (= (wf_bytecode_unwind_to
+                                              env aux (nl_cons_cdr_word (heap-read-u64 (+ aux 8) 0)) bindings) 0)
+                                          (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
                                         (setq done 4))) 0)))
                             (setq done 4)))))
                      ((or (= base 97) (= base 114) (= base 138) (= base 140))
-                      (if (= (wf_bytecode_save_state env unwinds base) 0)
+                      (if (= (wf_bytecode_save_state env aux base) 0)
                           0 (setq done 4)))
                      ((= base 142)
                       (if (<= sp 0)
                           (seq (setq bad-op raw) (setq done 2))
                         (seq
-                         (wf_bytecode_unwind_push
-                          env unwinds 1 (wf_bytecode_w_view (heap-read-u64 top 0) bx))
+                         (wf_bytecode_unwind_push env aux 1 (heap-read-u64 top 0))
                          (setq sp (- sp 1)))))
                      ((or (= base 50) (= base 49))
                       (if (if (<= sp 0) 1
@@ -20135,14 +20053,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (setq bad-op raw) (setq done 2))
                         (seq
                          (if (= (wf_bytecode_handlers_push
-                                 env handlers
-                                 (wf_bytecode_w_view (heap-read-u64 top 0) bx)
+                                 env aux
+                                 (heap-read-u64 top 0)
                                  (if (= base 50) operand (- 0 (+ operand 1)))
-                                 (- sp 1) bindings unwinds catch-pool) 0)
+                                 (- sp 1) bindings) 0)
                              0 (setq done 5))
                          (setq sp (- sp 1)))))
                      ((= base 48)
-                      (if (= (wf_bytecode_handlers_pop env handlers catch-pool) 0)
+                      (if (= (wf_bytecode_handlers_pop env aux) 0)
                           0
                         (seq (setq bad-op raw) (setq done 2))))
                      ((= base 177)
@@ -20159,27 +20077,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (setq sp (- sp (- operand 1)))
                            (setq done 4)))))
                      ((= base 40)
-                      (let* ((mark2 (nl_root_mark env))
-                             (target (nl_root_reserve env))
+                      (let* ((target (heap-read-u64 (+ aux 8) 0))
                              (k 0))
                         (seq
-                         (wf_bytecode_copy target unwinds)
                          (while (and (< k operand)
-                                     (= (heap-sexp-tag-word target) 7))
-                           (seq (wf_bytecode_w_load target (nl_cons_cdr_word target))
+                                     (= (wf_bytecode_w_consp target) 1))
+                           (seq (setq target (nl_cons_cdr_word target))
                                 (setq k (+ k 1))))
                          (if (< k operand)
                              (seq (setq bad-op raw) (setq done 2))
                            (seq
-                            (if (= (wf_bytecode_unwind_to
-                                    env unwinds target bindings
-                                    unwind-bindings handlers catch-pool) 0)
-                                (setq bindings
-                                      (sexp-int-unwrap unwind-bindings))
-                              (seq (setq bindings
-                                         (sexp-int-unwrap unwind-bindings))
-                                   (setq done 4)))))
-                         (nl_root_release env mark2))))
+                            (if (= (wf_bytecode_unwind_to env aux target bindings) 0)
+                                (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
+                              (seq (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
+                                   (setq done 4))))))))
                      ((= base 165)
                       (if (< sp 2)
                           (seq (setq bad-op raw) (setq done 2))
@@ -20238,8 +20149,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; The frame ends: its handlers and its link in the binding chain go
          ;; (a frame without an aux block pushed none).
          (if (/= aux 0)
-             (seq (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
-                  (ptr-write-u64 binding-state 16 (heap-sexp-payload binding-link)))
+             (seq (wf_bytecode_handlers_drop_to env aux 3)
+                  (ptr-write-u64 binding-state 16
+                                 (heap-read-u64 (heap-read-u64 (+ aux 16) 0) 8)))
            0)
          ;; A frame this activation pushed ends here: Breturn pops it
          ;; (bytecode.c:892-923) and an exit unwinds it on the way to the frame
@@ -25911,7 +25823,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (setq i (+ i 1)))
          (while (/= link 0)
            (let* ((at-depth (heap-read-u64 link 24))
-                  (events (heap-read-u64 link 16))
+                  (events (heap-read-u64 (heap-read-u64 link 16) 0))
                   (cursor events))
              ;; General binding events push actual frames. Count them before
              ;; comparing a lean event with a shallow frame in this same
@@ -48736,7 +48648,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (nl_thread_unshallow_names penv frame (nl_cons_cdr_word names))))
         0))
     (defun nl_thread_lean_depth (link)
-      (let* ((depth (heap-read-u64 link 24)) (events (heap-read-u64 link 16)))
+      (let* ((depth (heap-read-u64 link 24)) (events (heap-read-u64 (heap-read-u64 link 16) 0)))
         (seq
          (while (= (nl_val_tag events) 7)
            (let* ((event (nl_cons_car_word events)))
@@ -48761,7 +48673,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (let* ((state (heap-read-u64 penv 176))
              (link (if (= state 0) 0 (heap-read-u64 state 16))))
         (while (/= link 0)
-          (let* ((depth (nl_thread_lean_depth link)) (events (heap-read-u64 link 16)))
+          (let* ((depth (nl_thread_lean_depth link)) (events (heap-read-u64 (heap-read-u64 link 16) 0)))
             (seq
              (while (= (nl_val_tag events) 7)
                (let* ((event (nl_cons_car_word events)) (tag (nl_val_tag (nl_cons_car_word event))))
@@ -48787,7 +48699,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (found 0))
         (seq
          (while (and (/= link 0) (= found 0))
-           (let* ((events (heap-read-u64 link 16)))
+           (let* ((events (heap-read-u64 (heap-read-u64 link 16) 0)))
              (seq
               (while (and (= (nl_val_tag events) 7) (= found 0))
                 (let* ((event (nl_cons_car_word events)) (cell (nl_cons_car_word event)))
