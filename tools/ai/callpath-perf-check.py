@@ -505,6 +505,7 @@ def wall(tag, kind="floors"):
         rows = {(r["engine"], r["suite"], r["mode"], r["round"]) for r in report["runs"]}
         need(len(rows) == len(report["runs"]) == 3 * 2 * 3 * 7, "incomplete wall campaign")
         need(report["medians_us"] == wall_medians(report["runs"]), "wall medians differ from the runs")
+        need(report.get("paired_ratios") == wall_paired(report["runs"]), "wall paired ratios differ from the runs")
     if tag.startswith("result-"):
         need(report["source"] == source_identity(), "wall candidate source is stale")
     return report
@@ -519,47 +520,75 @@ def wall_medians(runs):
             for e, modes in table.items()}
 
 
+def wall_paired(runs):
+    """Median over rounds of the per-round candidate/GNU and candidate/base
+    ratios (COMMON.md Measurement: clocks vary second to second)."""
+    own = {}
+    for row in runs:
+        for op, value in row["own_s"].items():
+            own.setdefault((row["mode"], op, row["round"]), {})[row["engine"]] = value
+    ratios = {}
+    for (mode, op, _), engines in sorted(own.items()):
+        if {"candidate", "gnu", "base"} <= set(engines):
+            c, g, b = engines["candidate"], engines["gnu"], engines["base"]
+            slot = ratios.setdefault(mode, {}).setdefault(op, {"gnu": [], "base": []})
+            slot["gnu"].append(c / g if g > 0 else float("inf"))
+            slot["base"].append(c / b if b > 0 else float("inf"))
+    return {mode: {op: {"cand_over_gnu": statistics.median(v["gnu"]),
+                        "cand_over_base": statistics.median(v["base"]),
+                        "rounds": len(v["gnu"])} for op, v in ops.items()}
+            for mode, ops in ratios.items()}
+
+
 def check_wallfuncall(mode, factor, tag="result-dynamic"):
     mode = {"interp": "interpreter", "byte": "bytecode"}.get(mode, mode)
     need(factor == GNU_FACTORS[mode], "factor must equal the ledger multiplier")
-    med = wall(tag)["medians_us"]
-    value, gnu, base = (med[e][mode]["pcf-funcall"] for e in ("candidate", "gnu", "base"))
-    print(f"wall {tag}/{mode} funcall {value:.4f}us GNU={gnu:.4f}us ratio={value / gnu:.2f} "
-          f"cap={factor}x base={base:.4f}us")
-    need(value <= factor * gnu, "wall-clock funcall cap not reached")
+    report = wall(tag)
+    med, pr = report["medians_us"], report["paired_ratios"][mode]["pcf-funcall"]
+    print(f"wall {tag}/{mode} funcall paired cand/GNU={pr['cand_over_gnu']:.2f} cap={factor}x "
+          f"cand/base={pr['cand_over_base']:.3f} (medians {med['candidate'][mode]['pcf-funcall']:.4f}us, "
+          f"GNU {med['gnu'][mode]['pcf-funcall']:.4f}us)")
+    need(pr["cand_over_gnu"] <= factor, "wall-clock funcall cap not reached")
 
 
 def check_wallbuiltin(prefix="result"):
     failures = []
     for linkage in LINKAGES:
-        med = wall(prefix + "-" + linkage)["medians_us"]
+        ratios = wall(prefix + "-" + linkage)["paired_ratios"]
         for mode in MODES:
-            value, gnu = med["candidate"][mode]["pcf-builtin"], med["gnu"][mode]["pcf-builtin"]
-            print(f"wall {linkage}/{mode} builtin {value:.4f}us GNU={gnu:.4f}us ratio={value / gnu:.2f} "
-                  f"cap={GNU_FACTORS[mode]}x")
-            if value > GNU_FACTORS[mode] * gnu:
-                failures.append(f"{linkage}/{mode} {value / gnu:.2f}x")
+            ratio = ratios[mode]["pcf-builtin"]["cand_over_gnu"]
+            print(f"wall {linkage}/{mode} builtin paired cand/GNU={ratio:.2f} cap={GNU_FACTORS[mode]}x")
+            if ratio > GNU_FACTORS[mode]:
+                failures.append(f"{linkage}/{mode} {ratio:.2f}x")
     need(not failures, "wall-clock builtin caps not reached: " + "; ".join(failures))
 
 
 def check_wallnoregress(prefix="result"):
     failures, checked = [], 0
     for linkage in LINKAGES:
-        med = wall(prefix + "-" + linkage)["medians_us"]
+        ratios = wall(prefix + "-" + linkage)["paired_ratios"]
         for mode in MODES:
             for op in ("builtin", "let", "while"):
-                c, b, g = (med[e][mode][WALL_OPS[op]] for e in ("candidate", "base", "gnu"))
+                pr = ratios[mode][WALL_OPS[op]]
                 checked += 1
-                print(f"wall {linkage}/{mode}/{op} cand/base={c / b:.3f} cand/GNU={c / g:.2f}")
-                if c > 1.03 * b:
-                    failures.append(f"{linkage}/{mode}/{op} {c / b:.3f}")
-    procs = wall(prefix + "-dynamic", "procs")["medians_s"]
+                print(f"wall {linkage}/{mode}/{op} paired cand/base={pr['cand_over_base']:.3f} "
+                      f"cand/GNU={pr['cand_over_gnu']:.2f}")
+                if pr["cand_over_base"] > 1.03:
+                    failures.append(f"{linkage}/{mode}/{op} {pr['cand_over_base']:.3f}")
+    procs = wall(prefix + "-dynamic", "procs")
+    rounds = {}
+    for row in procs["runs"]:
+        rounds.setdefault((row["mode"], row["round"]), {})[row["engine"]] = row["seconds"]
     for mode in ("boot", "files", "regex"):
-        c, b = procs["candidate"][mode], procs["base"][mode]
+        ratios = [e["candidate"] / e["base"] for (m, _), e in rounds.items()
+                  if m == mode and {"candidate", "base"} <= set(e)]
+        need(len(ratios) == 7, "incomplete process rounds: " + mode)
+        ratio = statistics.median(ratios)
+        need(abs(ratio - procs["paired_cand_over_base"][mode]) < 1e-12, "procs paired ratio differs from runs")
         checked += 1
-        print(f"wall dynamic/{mode} cand/base={c / b:.3f}")
-        if c > 1.03 * b:
-            failures.append(f"dynamic/{mode} {c / b:.3f}")
+        print(f"wall dynamic/{mode} paired cand/base={ratio:.3f}")
+        if ratio > 1.03:
+            failures.append(f"dynamic/{mode} {ratio:.3f}")
     print(f"wallnoregress checked={checked} failures={len(failures)}")
     need(not failures, "; ".join(failures))
 

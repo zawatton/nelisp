@@ -34,7 +34,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/callpath-perf/wall"
 ROUNDS = 7
-CPUS = os.environ.get("CALLPATH_WALL_CPUS", "28-31")
+CPUS = os.environ.get("CALLPATH_WALL_CPUS", "12")
 MODES = ("interpreter", "vm", "bytecode")
 SUITES = {"study": ("pcf-while", "pcf-funcall"),
           "floors": ("pcf-while", "pcf-builtin", "pcf-let")}
@@ -73,10 +73,20 @@ def timing_form(ops, n):
             % (n, names))
 
 
+def cpu_khz():
+    """The measurement CPU's current clock (diagnostic: boost varies with load)."""
+    first = CPUS.split(",")[0].split("-")[0]
+    try:
+        return int(Path(f"/sys/devices/system/cpu/cpu{first}/cpufreq/scaling_cur_freq").read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def run(argv, env):
     cmd = ["bash", "-c", 'ulimit -v 8388608; exec taskset -c "$0" setarch "$(uname -m)" -R "$@"', CPUS] + argv
     start = time.perf_counter()
     proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, timeout=900)
+    proc.khz = cpu_khz()
     return proc, time.perf_counter() - start
 
 
@@ -126,13 +136,14 @@ def floors(args):
                     own["pcf-while"] = seconds["pcf-while"] / n
                     report["runs"].append({"suite": suite, "mode": mode, "round": r, "engine": engine,
                                            "n": n, "seconds": seconds, "own_s": own,
-                                           "process_s": elapsed})
+                                           "process_s": elapsed, "cpu_khz_after": proc.khz})
                     (dest / "floors.json").write_text(json.dumps(report, indent=1) + "\n")
                     print(f"{suite}/{mode} r{r} {engine} " +
                           " ".join(f"{k}={v * 1e6:.4f}us" for k, v in own.items()), flush=True)
     report["medians_us"] = medians(report["runs"])
+    report["paired_ratios"] = paired_ratios(report["runs"])
     (dest / "floors.json").write_text(json.dumps(report, indent=1) + "\n")
-    summarize(report["medians_us"])
+    summarize(report["medians_us"], report["paired_ratios"])
 
 
 def medians(runs):
@@ -144,15 +155,36 @@ def medians(runs):
             for e, modes in table.items()}
 
 
-def summarize(med):
+def paired_ratios(runs):
+    """COMMON.md Measurement (2026-10-21): candidate/GNU and candidate/base
+    inside each alternating round, then the median over rounds."""
+    own = {}
+    for row in runs:
+        for op, value in row["own_s"].items():
+            own.setdefault((row["mode"], op, row["round"]), {})[row["engine"]] = value
+    ratios = {}
+    for (mode, op, _), engines in sorted(own.items()):
+        if {"candidate", "gnu", "base"} <= set(engines):
+            c, g, b = engines["candidate"], engines["gnu"], engines["base"]
+            slot = ratios.setdefault(mode, {}).setdefault(op, {"gnu": [], "base": []})
+            slot["gnu"].append(c / g if g > 0 else float("inf"))
+            slot["base"].append(c / b if b > 0 else float("inf"))
+    return {mode: {op: {"cand_over_gnu": statistics.median(v["gnu"]),
+                        "cand_over_base": statistics.median(v["base"]),
+                        "rounds": len(v["gnu"])} for op, v in ops.items()}
+            for mode, ops in ratios.items()}
+
+
+def summarize(med, ratios):
     for mode in MODES:
         for op in ("pcf-funcall", "pcf-builtin", "pcf-let", "pcf-while"):
             row = [med.get(e, {}).get(mode, {}).get(op) for e in ("candidate", "base", "gnu")]
-            if None in row:
+            pr = ratios.get(mode, {}).get(op)
+            if None in row or pr is None:
                 continue
             c, b, g = row
             print(f"{mode:11s} {op:12s} cand={c:9.4f}us base={b:9.4f}us gnu={g:8.4f}us "
-                  f"cand/gnu={c / g if g > 0 else float('nan'):7.2f} cand/base={c / b if b > 0 else float('nan'):5.3f}")
+                  f"paired cand/gnu={pr['cand_over_gnu']:7.2f} cand/base={pr['cand_over_base']:5.3f}")
 
 
 def procs(args):
@@ -177,6 +209,7 @@ def procs(args):
                 if proc.returncode != 0:
                     raise RuntimeError(f"{engine} {mode} round {r}: rc={proc.returncode}")
                 report["runs"].append({"mode": mode, "round": r, "engine": engine, "seconds": elapsed,
+                                       "cpu_khz_after": proc.khz,
                                        "stdout_sha256": hashlib.sha256(proc.stdout).hexdigest()})
                 (dest / "procs.json").write_text(json.dumps(report, indent=1) + "\n")
                 print(f"{mode} r{r} {engine} {elapsed:.3f}s", flush=True)
@@ -184,10 +217,23 @@ def procs(args):
     for row in report["runs"]:
         med.setdefault(row["engine"], {}).setdefault(row["mode"], []).append(row["seconds"])
     report["medians_s"] = {e: {m: statistics.median(v) for m, v in modes.items()} for e, modes in med.items()}
+    report["paired_cand_over_base"] = procs_paired(report["runs"])
     (dest / "procs.json").write_text(json.dumps(report, indent=1) + "\n")
     for mode in workloads:
         c, b = report["medians_s"]["candidate"][mode], report["medians_s"]["base"][mode]
-        print(f"{mode:6s} cand={c:.3f}s base={b:.3f}s cand/base={c / b:.3f}")
+        print(f"{mode:6s} cand={c:.3f}s base={b:.3f}s paired cand/base={report['paired_cand_over_base'][mode]:.3f}")
+
+
+def procs_paired(runs):
+    """Median over rounds of the per-round candidate/base process-time ratio."""
+    rounds = {}
+    for row in runs:
+        rounds.setdefault((row["mode"], row["round"]), {})[row["engine"]] = row["seconds"]
+    ratios = {}
+    for (mode, _), engines in rounds.items():
+        if {"candidate", "base"} <= set(engines):
+            ratios.setdefault(mode, []).append(engines["candidate"] / engines["base"])
+    return {mode: statistics.median(v) for mode, v in ratios.items()}
 
 
 def main():

@@ -59,6 +59,8 @@ cmd: python3 tools/ai/callpath-perf-check.py arity
 
 #+NOTE: 2026-10-21 step 5a (GNU bytecode.c:658-666, CASE (Bcar) and Bcdr inline in exec_byte_code's one dispatch loop): the fast runner handles Bcar/Bcdr itself instead of leaving the loop for the full dispatcher on every car. Wall-clock own cost (us), median of 7 alternating pinned rounds: bytecode builtin 0.0243 (s1e 0.0722, base 0.1352, GNU 0.0042: 5.86x, cap 5x); bytecode funcall 0.181 (15.8x); interp/VM unchanged (funcall 1.835/1.574, builtin 1.485/0.296). A GNU-compiled car/cdr probe (cons, nil, symbol, integer and string operands, nested) prints the same as GNU 31.1. Evidence: target/callpath-perf/wall/s5a-dynamic.
 
+#+NOTE: 2026-10-21 17:00 wall-clock protocol revised by the coordinator (COMMON.md Measurement): timed runs are pinned to this lane's CPU 12 (28-31 are the hyperthread siblings of 12-15 and several lanes timed there), and the gates use paired ratios: candidate/GNU and candidate/base inside each alternating round, then the median over the 7 rounds; every run records the CPU 12 clock (the 5950X ran near 90 C with clocks moving between 1.7 and 4.4 GHz, so absolute medians were bimodal). wallfuncall/wallbuiltin/wallnoregress now check the paired medians, recomputed from the runs. Re-derived from the kept runs, step 5a on CPU 12: funcall interp/VM/byte 29.8x/24.9x/15.6x GNU, builtin 53.7x/13.4x/5.91x; on 28-31 the same build gave 29.4x/25.5x/15.8x and 70.3x/13.9x/5.89x (the interpreter builtin row stays the noisiest).
+
 ** S2.1 Interpreter funcall wall-clock own cost <= 10x GNU 31.1 (median of 7 alternating pinned rounds)
 cmd: python3 tools/ai/callpath-perf-check.py wallfuncall interp 10
 ** S2.2 VM funcall wall-clock own cost <= 5x GNU 31.1 (GNU's VM row is its interpreter)
