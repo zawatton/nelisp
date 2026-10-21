@@ -175,6 +175,10 @@ cmd: printf '%s\n' 'S4.3: implementation or complete acceptance evidence remains
 #+NOTE: 2026-10-21 the GC-port lane owns this criterion (coordinator). Checker: tools/ai/word-heap-stage-check.py s5.1 (gc-port ledger S1.5). WH_REPR_DYN/WH_REPR_STATIC name the two linkages (each with its .cold), WH_REPR_BASE a binary that still allocates header boxes (negative control), WH_REPR_CENSUS a NELISP_BOX_CENSUS file.
 cmd: python3 tools/ai/word-heap-stage-check.py s5.1 --dyn "${WH_REPR_DYN:-target/gc-port/cur/nelisp-dyn}" --static "${WH_REPR_STATIC:-target/gc-port/cur/nelisp-static}" --control "${WH_REPR_BASE:-target/gc-port/base/nelisp-dyn}"
 
+** S5.3 Special forms are subr objects (GNU PVEC_SUBR, max_args UNEVALLED); census of special-form tag-7 views = 0
+#+NOTE: Added 2026-10-21 by the coordinator with the GC-port lane (word-heap denominator +1). GNU: lisp.h:2175 struct Lisp_Subr, PVEC_SUBR (lisp.h:1000), eval.c:2651 eval_sub's UNEVALLED branch. NeLisp's interim encoding keeps (builtin NAME ...) in a tag-7 view whose data word carries the marker 13108; word-heap-census.py counts those as special-form subrs, not cons header aliases (S2.1/S2.2). 21 today; crosses evaluator dispatch (callpath-perf), function cells and subrp/functionp/func-arity (symbols) and the printer, so the coordinator assigns it at a sync point.
+cmd: python3 tools/ai/word-heap-stage-check.py s5-subr --dyn "${WH_REPR_DYN:-target/gc-port/cur/nelisp-dyn}" --static "${WH_REPR_STATIC:-target/gc-port/cur/nelisp-static}" --control "${WH_REPR_BASE:-target/gc-port/base/nelisp-dyn}"
+
 ** S5.2 End to end: full suite, GC-root checks, image round-trip, numeric parity cases, wine smoke
 cmd: printf '%s\n' 'S5.2: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 
