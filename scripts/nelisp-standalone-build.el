@@ -4432,13 +4432,16 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; Doc 216: pointer WORDs dispatch on their low three bits -- 000 a
     ;; legacy view, 010 a direct cons (payload | 2), 110 a vectorlike.
     (defun nl_val_tag (v)
-      (if (= (logand v 1) 0)
-          (if (= (logand v 7) 4)
-              (if (< (heap-read-u64 (- v 4) 8) 0) 14 5)
-            (if (= (logand v 7) 6) (logand (heap-read-u8 (- v 6) 0) 63)
-              (if (= (logand v 7) 2) 7
-                (heap-read-u8 v 0))))
-        (if (= (logand v 3) 1) 2 (if (= v 3) 0 1))))
+      ;; A legacy slot pointer (low bits 000) is the common operand: test it
+      ;; first, as the inline sexp-tag sequence does.
+      (if (= (logand v 7) 0) (heap-read-u8 v 0)
+        (if (= (logand v 1) 0)
+            (if (= (logand v 7) 4)
+                (if (< (heap-read-u64 (- v 4) 8) 0) 14 5)
+              (if (= (logand v 7) 6) (logand (heap-read-u8 (- v 6) 0) 63)
+                (if (= (logand v 7) 2) 7
+                  (heap-read-u8 v 0))))
+          (if (= (logand v 3) 1) 2 (if (= v 3) 0 1)))))
     ;; Word accessors (eval-core box migration): the container slot's own
     ;; tagged WORD, never a materialized 32-byte view, so reading an
     ;; immediate allocates nothing.  Classify with `nl_val_tag', read an

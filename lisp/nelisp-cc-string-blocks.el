@@ -36,6 +36,11 @@
               (seq (setq i (logand (+ i 1) (- cap 1)))
                    (setq row (+ rows (* i 24))))))) row))
 (defun nl_string_mapping_op (w end kind)
+  ;; An allocated-header query (kind 1) first asks the last header it found
+  ;; (st+136): string code reads the same few strings repeatedly. GNU's
+  ;; live_string_p walks the block mem_find returned; the page index answers
+  ;; here. A sweep clears the memo, the only time a header is freed.
+  (if (if (= kind 1) (= w (heap-read-u64 (data-addr nl_strings_state) 136)) 0) 1
   (if (< kind 3)
       (let*
 	  ((st (data-addr nl_strings_state))
@@ -66,7 +71,7 @@
 			(if
 			    (and (= block-kind 3) (= (logand w 31) 0)
 				 (/= (heap-read-u64 w 24) 0))
-			    1
+			    (seq (ptr-write-u64 st 136 w) 1)
 			  0)
 		      packed)
 		  0))))))
@@ -126,7 +131,7 @@
 	     (ptr-write-u64 row 16 (logior w kind))
 	     (ptr-write-u64 row 0 1))
 	   (setq page (+ page 4096)))
-	 1)))))
+	 1))))))
 
     (defun nl_string_register_mapping (base end kind)
   (nl_string_mapping_op base end kind))
@@ -173,21 +178,25 @@
     (defun nl_string_read64 (p off)
       ;; OFF=-1 is the old tag-byte read. Both widths return an i64 and
       ;; share ownership validation; no second private getter is needed.
-      (let* ((st (data-addr nl_strings_state))
-             (header (if (and (= (logand p 7) 4)
-                              (>= p (+ (heap-read-u64 st 96) 4))
-                              (< p (+ (heap-read-u64 st 104) 4)))
-                         (nl_string_field_header p) 0)))
-        (if (= off -1)
-            (if (and (/= header 0) (= p (+ header 4)))
-                (nl_string_kind header) (heap-read-u8 p 0))
-          (if (= header 0) (heap-read-u64 p off)
-            (let* ((s header))
-              (setq off (+ off (- p (+ s 4))))
-              (if (= off 0) (nl_string_kind s)
-                (if (= off 8) (nl_string_capacity s)
-                  (if (= off 16) (heap-read-u64 s 24)
-                    (if (= off 24) (nl_string_nbytes s) (heap-read-u64 p off))))))))))
+      ;; Every generic slot read of the runtime passes through here, so the
+      ;; common case (a legacy slot or buffer address, low bits not 100) is
+      ;; decided by one test, before any string state is loaded.
+      (if (/= (logand p 7) 4)
+          (if (= off -1) (heap-read-u8 p 0) (heap-read-u64 p off))
+        (let* ((st (data-addr nl_strings_state))
+               (header (if (and (>= p (+ (heap-read-u64 st 96) 4))
+                                (< p (+ (heap-read-u64 st 104) 4)))
+                           (nl_string_field_header p) 0)))
+          (if (= off -1)
+              (if (and (/= header 0) (= p (+ header 4)))
+                  (nl_string_kind header) (heap-read-u8 p 0))
+            (if (= header 0) (heap-read-u64 p off)
+              (let* ((s header))
+                (setq off (+ off (- p (+ s 4))))
+                (if (= off 0) (nl_string_kind s)
+                  (if (= off 8) (nl_string_capacity s)
+                    (if (= off 16) (heap-read-u64 s 24)
+                      (if (= off 24) (nl_string_nbytes s) (heap-read-u64 p off)))))))))))
     (defun nl_string_write64 (p off value)
       (if (= (nl_string_word_p p) 0) (ptr-write-u64 p off value)
         (let* ((s (- p 4)))
@@ -333,6 +342,7 @@
 			 (ptr-write-u64 s 8
 					(if (= unibyte 1) -1 nbytes))
 			 (ptr-write-u64 s 24 (+ data 8))
+			 (ptr-write-u64 st 136 s)
 			 (ptr-write-u8 (+ data 8) nbytes 0)
 			 (ptr-write-u64 (data-addr nl_gc_stats) 0
 					(+
@@ -447,6 +457,7 @@
       (let* ((st (data-addr nl_strings_state)) (b (heap-read-u64 st 0))
              (kept 0) (empty 0) (count 0) (bytes 0))
         (ptr-write-u64 st 8 0)
+        (ptr-write-u64 st 136 0)
         (while (/= b 0)
           (let* ((next (heap-read-u64 b 32744)) (before (heap-read-u64 st 8))
                  (live 0) (i 0))

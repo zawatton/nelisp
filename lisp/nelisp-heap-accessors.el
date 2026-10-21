@@ -86,7 +86,8 @@ Keep direct/native/explicit-extern calls distinct: their old ABI is retained.")
   "Variables that hold runtime records, stack cells or buffers, never a Lisp value.
 A generic slot read through one of them addresses runtime memory, so it keeps
 its physical load instead of the String-aware read. The list comes from the
-Doc 227 audit of every String-aware read site in the reader units.")
+Doc 227 audit of every String-aware read site in the reader units
+(tools/ai/strings-check.py audit lists the bases that remain).")
 
 (defconst nelisp-heap-accessors-record-accessors
   '(nl_eln_callback_record_at nl_thread_registry_entry nl_tty_slot_fd
@@ -102,6 +103,16 @@ from one, or a call to a record accessor."
               (cl-every #'integerp (cddr form))))
         ((consp form) (and (memq (car form) nelisp-heap-accessors-record-accessors) t))
         (t nil)))
+
+(defconst nelisp-heap-accessors-guarded-functions
+  '(nl_apply_sym_eq_w nl_apply_sym_eq_bytes nl_apply_name_classify nelisp_fnv1a
+    nl_ht_test_mode m5_push_str_promoted m5_forced_multibyte_p nl_str_aref_byte_off
+    nl_str_sub_byte_off bf_keyword_raw nl_positioned_flag m5_fmt_loop)
+  "Value readers on hot paths. Their String-aware slot reads test the WORD tag
+inline and call nl_string_read64 only for a String WORD.")
+
+(defvar nelisp-heap-accessors--string-guarded nil
+  "Non-nil inside a function listed in `nelisp-heap-accessors-guarded-functions'.")
 
 (defvar nelisp-heap-accessors--string-physical nil
   "Non-nil inside a storage API whose caller has already decoded WORDs.")
@@ -215,6 +226,11 @@ Every operand is retained exactly once; dotted data is preserved."
           (let ((nelisp-heap-accessors--string-physical t))
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
+         ((and (eq (car source) 'defun)
+               (memq (cadr source) nelisp-heap-accessors-guarded-functions))
+          (let ((nelisp-heap-accessors--string-guarded t))
+            (append (list 'defun (cadr source) (caddr source))
+                    (nelisp-heap-accessors--lower-tail (cdddr source)))))
          ((eq (car source) 'sexp-tag)
           (nelisp-heap-accessors--lower-string-tag (cadr source)))
          ((memq (car source) '(nl_val_tag nl_word_tag64))
@@ -245,10 +261,17 @@ Every operand is retained exactly once; dotted data is preserved."
                (not (nelisp-heap-accessors--string-raw-base-p (cadr source)))
                (not (nelisp-heap-accessors--computed-address-p (cadr source)))
                (not (nelisp-heap-accessors--record-base-p (cadr source))))
-          (if (eq (car source) 'heap-read-u64)
-              (cons 'nl_string_read64
-                    (nelisp-heap-accessors--lower-tail (cdr source)))
-            (list 'nl_string_read64 (nelisp-heap-accessors-lower (cadr source)) -1)))
+          (let* ((u64 (eq (car source) 'heap-read-u64))
+                 (off (if u64 (nth 2 source) -1)))
+            (if nelisp-heap-accessors--string-guarded
+                ;; Only a String WORD reaches the call; every other operand
+                ;; (a slot pointer, a buffer address) is one load, as before.
+                (let ((g (make-symbol "string-read-base")))
+                  `(let* ((,g ,(nelisp-heap-accessors-lower (cadr source))))
+                     (if (= (logand ,g 7) 4)
+                         (nl_string_read64 ,g ,off)
+                       ,(if u64 `(ptr-read-u64 ,g ,off) `(ptr-read-u8 ,g 0)))))
+              (list 'nl_string_read64 (nelisp-heap-accessors-lower (cadr source)) off))))
          (field
           ;; These operands denote Lisp values, unlike the raw storage
           ;; accessors below. Preserve legacy views while accepting direct
