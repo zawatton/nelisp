@@ -47278,12 +47278,15 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; no argument list, no OUT box.  2 when FN is no such builtin.  When
     ;; the primitive declines (a type or an arity it leaves to the full
     ;; builtin), the evaluated WORDs become the ordinary apply's argument
-    ;; list, so no argument is evaluated twice.  `funcall' keeps the
-    ;; ordinary path: its VM entry needs a Sexp scratch slot.
+    ;; list, so no argument is evaluated twice.  `funcall' has its own
+    ;; WORD path, `nl_eic_funcall_w'.
     (defun nl_eic_primitive_w (fn tail env args_slot call_name)
       (let* ((name (m5_fx_builtin_name fn 0))
              (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
-        (if (if (< argc 1) 1 (if (> argc 2) 1 (sexp-name-eq name "funcall"))) 2
+        (if (< argc 1) 2
+        (if (= (sexp-name-eq name "funcall") 1)
+            (nl_eic_funcall_w tail env argc fn args_slot call_name)
+        (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
               (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
@@ -47297,7 +47300,73 @@ tails run against a private box), and the (rc, OUT) adapter F."
                      (if (= st -3)
                          (nl_eic_after_args_w (m5_fx_slot_list base argc)
                                               env fn args_slot call_name)
-                       0))))))))))
+                       0))))))))))))
+    ;; GNU Ffuncall (eval.c:3185) and funcall_general (eval.c:3149) on the
+    ;; WORDs eval_sub evaluated.  FUNCTION and its arguments go into one
+    ;; WORD frame, with three more slots: the resolved definition, the
+    ;; result and the callee's argument list.  A WORD primitive runs on the
+    ;; argument words; a closure the VM covers runs in the VM; a closure or
+    ;; lambda the interpreter applies runs under its own activation, as
+    ;; Ffuncall records one (eval.c:3204), with its argument list built from
+    ;; the frame -- none for no arguments -- for funcall_lambda to bind
+    ;; (eval.c:3350).  Anything else takes the ordinary `funcall' builtin
+    ;; with the same evaluated WORDs as its argument list.
+    (defun nl_eic_funcall_w (tail env argc fn args_slot call_name)
+      (let* ((base (nl_root_frame env (+ argc 3))))
+        (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
+          (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
+            (seq
+             (m5_fx_frame_lazy env base argc 0)
+             (let* ((w (nl_eic_funcall_words base (- argc 1) env)))
+               (if (= w 2)
+                   (nl_eic_after_args_w (m5_fx_slot_list base argc)
+                                        env fn args_slot call_name)
+                 w)))))))
+    ;; BASE holds FUNCTION, then the N arguments, then the definition, result
+    ;; and list slots.  The value WORD, 0 with a signal stashed, or 2 for
+    ;; the ordinary path (no effect has happened yet).
+    (defun nl_eic_funcall_words (base n env)
+      (let* ((fw (heap-read-u64 base 0))
+             (tag (nl_val_tag fw))
+             (def (if (or (= tag 4) (= tag 16))
+                      (nl_lookup_fn_autoload_w env (+ env 64) fw 0)
+                    fw))
+             (argp (+ base 8))
+             (resw (+ base (* (+ n 2) 8))))
+        (if (or (= def 0) (= def 2) (= def 3)) 2
+          (seq
+           (ptr-write-u64 (+ base (* (+ n 1) 8)) 0 def)
+           (let* ((name (m5_fx_builtin_name def 0)))
+             (if (/= name 0)
+                 (if (if (< n 1) 1 (if (> n 2) 1 (sexp-name-eq name "funcall"))) 2
+                   (if (= (m5_fx_primitive_named name argp n n resw env 0) 0)
+                       (heap-read-u64 resw 0) 2))
+               (let* ((rec (m5_fx_covered def n env 0)))
+                 (if (/= rec 0)
+                     (let* ((st (m5_fx_call_words rec fw argp n env 0 resw 0)))
+                       (if (= st 0) (heap-read-u64 resw 0)
+                         (if (or (= st -3) (= st -2)) 2 0)))
+                   (nl_eic_funcall_lambda_w fw def argp n env
+                                            (+ base (* (+ n 3) 8)))))))))))
+    ;; DEF is (closure ENV ARGS . BODY) or (lambda ARGS . BODY): apply it
+    ;; under an activation naming FW with the N words at ARGP as its lazy
+    ;; arguments.  LSLOT roots the argument list while it is bound; with no
+    ;; arguments the list is the activation's own nil argument view, as the
+    ;; ordinary path passes a nil slot (no nil box is materialised).  2 for
+    ;; any other definition, or when the activation stack is full.
+    (defun nl_eic_funcall_lambda_w (fw def argp n env lslot)
+      (let* ((head (if (= (m5_fx_word_cons_p def 0) 1) (nl_cons_car_word def) 3))
+             (kind (if (/= (nl_val_tag head) 4) 2
+                     (if (= (nl_apply_name_eq_closure head) 1) 1
+                       (if (= (nl_apply_name_eq_lambda head) 1) 0 2)))))
+        (if (= kind 2) 2
+          (let* ((frame (nl_n4_push_words env fw argp n)))
+            (if (= frame 0) 2
+              (let* ((args (if (= n 0) (+ frame 32) (m5_fx_slot_list argp n))))
+                (seq
+                 (if (= n 0) 0 (ptr-write-u64 lslot 0 args))
+                 (nl_n4_finish_w (nl_apply_closure_or_lambda_w def kind args env 0)
+                                 env 0 frame))))))))
     (defun nl_eic_after_args_w (args_w env func_slot args_slot call_name)
       (if (= args_w 0) 0
         (seq
