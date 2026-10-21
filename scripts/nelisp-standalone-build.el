@@ -44199,13 +44199,9 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
                            mirror_ptr sym_ptr scratch_slot 0)
                           (nl_sexp_clone_into def_ptr out)
                           0))
-                     (if (if (= (heap-read-u64 def_ptr 0) 4)
-                             (if (= (heap-read-u64 sym_ptr 0) 4)
-                                 (let* ((r (alloc-bytes 32 8)))
-                                   (seq (nelisp_eq_symbol sym_ptr def_ptr r)
-                                        (if (= (heap-read-u64 r 0) 1) 1 0)))
-                               0)
-                           0)
+                     ;; GNU data.c:911-914: refuse a DEFINITION whose
+                     ;; function-cell chain leads back to SYMBOL.
+                     (if (= (nl_fset_cycle_p sym_ptr def_ptr env) 1)
                          (bf_cyclic_function sym_ptr)
                        (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64))
                               (def_tag (heap-read-u64 def_ptr 0)))
@@ -44995,6 +44991,22 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
        (if (= (nl_val_tag cur) 0) 0
          (bf_wrong_type_listp (wf_word_view cur)))))))
 
+;; GNU data.c:911-914 (Ffset): walk DEFINITION's function-cell chain and
+;; refuse it when the chain reaches SYMBOL.  GNU's chains are acyclic by
+;; this very check; the hop bound only ends a walk that an internal writer
+;; made cyclic without SYMBOL on it.  SYM and DEF are physical views.
+(defun nl_fset_cycle_p (sym def env)
+  (let* ((cur def) (hops 0) (cycle 0))
+    (seq
+     (while (and (= cycle 0) (< hops 65536)
+                 (/= cur 0) (/= cur 2) (/= cur 3)
+                 (or (= (nl_val_tag cur) 4) (= (nl_val_tag cur) 16)))
+       (if (= (wf_bytecode_w_eqw cur sym) 1)
+           (setq cycle 1)
+         (seq (setq cur (nelisp_env_lookup_function_w (+ env 0) (+ env 64) cur 0))
+              (setq hops (+ hops 1)))))
+     cycle)))
+
 (defun nl_apply_do_apply_w (args env _pad)
   (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
     ;; GNU eval.c:2803,2814-2828: the sole operand is the spread list.
@@ -45004,6 +45016,10 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
             (if (= (nl_val_tag spread) 0)
                 (nl_abi_fail (nl_cons_stash_void_function env (wf_word_view spread)) 0)
               (nl_apply_do_funcall_w spread env 0))))
+    ;; GNU eval.c:2811 measures the spread list (list_length: listp or
+    ;; circular-list errors) before FUN is resolved or called.
+    (if (/= (nl_apply_single_list_valid
+             (nl_apply_list_last_word (nl_cons_cdr_word args))) 0) 0
     (let* ((mark (nl_root_mark env)) (input (nl_root_reserve env))
            (function-root (nl_root_reserve env)) (prefix (nl_root_reserve env))
            (holder (nl_root_reserve env)) (spliced (nl_root_reserve env)))
@@ -45027,7 +45043,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                         (seq
                          (wf_word_store_out spliced joined)
                          (nl_n4_named_apply_w (wf_word_view name) function-root spliced env 0)))))))))
-         (seq (nl_root_release env mark) word)))))))
+         (seq (nl_root_release env mark) word))))))))
 
 (defun nl_apply_do_funcall_w (args env _pad)
   (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
@@ -46097,7 +46113,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (seq (wf_copy32 (+ frame 32) args)
              (ptr-write-u64 frame 152 0)
              (ptr-write-u64 frame 112 1)
-             (nl_n4_apply_raw_w function args env 0))))
+             ;; GNU eval.c:3151: errors name ORIGINAL_FUN, the operator
+             ;; this activation recorded (its first 32 bytes).
+             (nl_n4_apply_raw_w function args env frame))))
     (defun nl_n4_direct_apply (function args env out)
       (nl_abi_word_to_rc (nl_n4_direct_apply_w function args env 0) out))
     (defun nl_n4_apply_name (function)
@@ -46108,7 +46126,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
           function)))
     (defun nl_n4_named_apply_w (name function args env _pad)
       (let* ((frame (nl_n4_push env name args 1)))
-        (nl_n4_finish_w (nl_n4_apply_raw_w function args env 0) env 0 frame)))
+        (nl_n4_finish_w (nl_n4_apply_raw_w function args env frame) env 0 frame)))
     (defun nl_n4_named_apply (name function args env out)
       (nl_abi_word_to_rc (nl_n4_named_apply_w name function args env 0) out))
     (defun nl_n4_mark_env (env)
@@ -46537,29 +46555,66 @@ tails run against a private box), and the (rc, OUT) adapter F."
               ;; FSLOT only copied it before recursive dispatch.  Retain the
               ;; original miss/nil errors; materialise only an immediate
               ;; invalid-function value that the raw dispatcher must inspect.
-              (let ((matches 0))
+              ;;
+              ;; GNU eval.c:3149-3182 (funcall_general) keeps ORIGINAL_FUN
+              ;; while it follows the symbol's function cells, and signals
+              ;; void-function / invalid-function with it, not with the
+              ;; last alias or the final non-function value.  The fourth
+              ;; parameter carries that original as a view: the caller's
+              ;; activation record (`nl_n4_push' stores the operator in its
+              ;; first 32 bytes, rooted by `nl_n4_mark_env'), or 0 when the
+              ;; caller has none, meaning FUNC_PTR itself is the original.
+              (setq wparams (append (butlast wparams) '(orig)))
+              (let ((matches 0) (stashes 0))
                 (cl-labels
                     ((walk (tree)
                        (cond
                         ((not (consp tree)) tree)
+                        ((and (memq (car tree) '(nl_cons_stash_void_function
+                                                 nl_apply_stash_invalid_function))
+                              (equal (cdr tree) '(env func_ptr)))
+                         (cl-incf stashes)
+                         `(,(car tree) env (if (= orig 0) func_ptr orig)))
                         ((and (eq (car tree) 'let*)
                               (equal (cadr tree)
                                      '((mirror_ptr (+ env 0))
                                        (unbound_ptr (+ env 64))
                                        (fslot (alloc-bytes 32 8)))))
                          (cl-incf matches)
+                         ;; GNU eval.c:3153-3155 follows the chain with
+                         ;; indirect_function (data.c:2550), iteratively; the
+                         ;; hop bound only ends a chain that an internal
+                         ;; writer made cyclic past `fset''s refusal.
                          '(let* ((definition_w
                                   (nl_lookup_fn_autoload_w
-                                   (+ env 0) (+ env 64) func_ptr 0)))
-                            (if (or (= definition_w 0) (= definition_w 2)
-                                    (= definition_w 3))
-                                (nl_abi_fail (nl_cons_stash_void_function env func_ptr) 0)
-                              (nl_n4_apply_raw_w (wf_word_view definition_w)
-                                                args_list_ptr env 0))))
+                                   (+ env 0) (+ env 64) func_ptr 0))
+                                 (hops 0))
+                            (seq
+                             (while (and (< hops 65536)
+                                         (/= definition_w 0) (/= definition_w 2)
+                                         (/= definition_w 3)
+                                         (or (= (nl_val_tag definition_w) 4)
+                                             (= (nl_val_tag definition_w) 16)))
+                               (seq (setq definition_w
+                                          (nl_lookup_fn_autoload_w
+                                           (+ env 0) (+ env 64) definition_w 0))
+                                    (setq hops (+ hops 1))))
+                             (if (>= hops 65536)
+                                 (nl_abi_fail (bf_cyclic_function
+                                               (if (= orig 0) func_ptr orig)) 0)
+                               (if (or (= definition_w 0) (= definition_w 2)
+                                       (= definition_w 3))
+                                   (nl_abi_fail (nl_cons_stash_void_function
+                                                 env (if (= orig 0) func_ptr orig)) 0)
+                                 (nl_n4_apply_raw_w (wf_word_view definition_w)
+                                                   args_list_ptr env
+                                                   (if (= orig 0) func_ptr orig)))))))
                         (t (mapcar #'walk tree)))))
                   (setq word-body (walk word-body)))
                 (unless (= matches 1)
-                  (error "apply word ABI: expected one symbol lookup, got %s" matches))))
+                  (error "apply word ABI: expected one symbol lookup, got %s" matches))
+                (when (= stashes 0)
+                  (error "apply word ABI: no void/invalid-function stash to keep ORIG"))))
             (push `(defun ,wname ,wparams ,word-body) result)
             (push `(defun ,name ,params
                      (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
@@ -46645,9 +46700,41 @@ tails run against a private box), and the (rc, OUT) adapter F."
                      (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
                    (nl_eic_eval_args_w tail_ptr env func_slot
                                        (nl_root_reserve env) head_ptr)))))))))
+    ;; GNU eval.c:2634-2638: eval_sub follows the operator's whole function
+    ;; chain (indirect_function, data.c:2550) before any argument is
+    ;; evaluated, so an argument that redefines a later link does not change
+    ;; this call.  FUNC_SLOT holds the first link, a symbol; on 1 it holds
+    ;; the final definition.  A special form or macro at the end, or a chain
+    ;; an internal writer made cyclic, keeps the first link and its existing
+    ;; handling.  0: the chain ends unbound.
+    (defun nl_eic_resolve_alias_w (func_slot env)
+      (let* ((alias-slot (nl_root_reserve env)) (w 0) (hops 0) (status 2))
+        (seq
+         (wf_copy32 alias-slot func_slot)
+         (while (= status 2)
+           (seq
+            (setq w (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) func_slot 0))
+            (setq hops (+ hops 1))
+            (if (or (= w 0) (= w 2) (= w 3)) (setq status 0)
+              (seq (wf_word_store_out func_slot w)
+                   (if (and (< hops 65536)
+                            (or (= (sexp-tag func_slot) 4)
+                                (= (sexp-tag func_slot) 16)))
+                       0
+                     (setq status 1))))))
+         (if (= status 0) 0
+           (seq
+            (if (or (>= hops 65536)
+                    (= (logior (logxor (sexp-tag func_slot) 7)
+                               (logxor (heap-sexp-data func_slot) 13108)) 0)
+                    (= (nl_cons_is_macro func_slot) 1))
+                (wf_copy32 func_slot alias-slot) 0)
+            1)))))
     (defun nl_eic_alias_w (w tail_ptr env func_slot call_name _pad)
       (if (= w 2)
-          (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
+          (if (= (nl_eic_resolve_alias_w func_slot env) 0)
+              (nl_abi_fail (nl_cons_stash_void_function env call_name) 0)
+            (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
