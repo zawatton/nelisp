@@ -1,4 +1,4 @@
-;;; symbol-object-word-probe.el --- every symbol consumer accepts the interned symbol's object WORD -*- lexical-binding: t; -*-
+;;; standalone-symbol-object-word-check.el --- every symbol consumer accepts the interned symbol's object WORD -*- lexical-binding: t; -*-
 
 ;; Doc 226 D9 stage 3 makes an interned symbol's Lisp value its object WORD
 ;; (class 110, kind 4; GNU's Lisp_Object for a symbol is the pointer to the
@@ -9,9 +9,7 @@
 ;; results must be equal, errors included, and a change made through one
 ;; must show through the other.
 ;;
-;; Prints "SOWC checks=N failures=F PASS|FAIL" last.  It becomes
-;; test/standalone-symbol-object-word-check.el (and joins the standalone
-;; checks) when it passes.
+;; Prints "SOWC checks=N failures=F PASS|FAIL" last.
 
 (defvar sowc-checks 0)
 (defvar sowc-failures 0)
