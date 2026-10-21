@@ -62,6 +62,7 @@ SYM intern-eq (t t "symfix-i1")
 SYM intern-soft (symfix-i1 nil symfix-i1 nil t)
 SYM unintern (t nil nil value-u1 nil)
 SYM unintern-missing nil
+SYM unintern-fresh (t nil nil old-value new-value nil)
 SYM make-symbol (nil "symfix-i1" 3 4 (2) nil nil)
 SYM obarray-make (t t nil t t nil ob-value nil)
 SYM mapatoms-ob ("b1" "c1")

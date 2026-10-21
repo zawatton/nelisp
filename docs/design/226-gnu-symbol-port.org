@@ -124,7 +124,7 @@ decided on paired per-round ratios (COMMON.md "Measurement").
 | add-variable-watcher | data.c:1857 | Lisp hash and global notify mode | adapted: TRAPPED_WRITE bit, watchers kept in the Lisp table |
 | intern | lread.c:4773, oblookup lread.c:4932 | native table, FNV-1a per byte | ported: =hash_char_array= (fns.c:5342) word-at-a-time hash |
 | intern-soft | lread.c:4809 | native lookup / prelude | ported |
-| unintern | lread.c:4858 | global: unsupported-feature | blocked until symbol identity is the struct (see D6) |
+| unintern | lread.c:4858 | global: unsupported-feature | adapted: tombstone in the native table; =eq= compares canonical buffers (D6) |
 | obarray-make | lread.c:5089 | prelude record over an equal hash | adapted: obarray record, =obarray= bound to the initial obarray |
 | mapatoms | lread.c:5156 | global: unsupported-feature | ported: walks the initial obarray |
 
@@ -233,9 +233,12 @@ storage (a permanent region the collector does not scan, so it cannot
 hold heap symbol objects), with GNU's =hash_char_array= word-at-a-time
 hash replacing the per-byte FNV-1a.  =obarray= is bound to an obarray
 object that stands for it; =intern=, =intern-soft=, =unintern= and
-=mapatoms= accept it.  Global =unintern= stays blocked: with name-based
-=eq= a re-interned name would be =eq= to the old symbol; it follows the
-header-less WORD.
+=mapatoms= accept it.  Global =unintern= tombstones the name's slot (bit
+62 of its length word: no probe matches it, probe chains stay intact),
+so a later =intern= makes a new canonical buffer, a new symbol.  For that
+to be a different symbol, =eq= (=bf_eq2=) now compares two interned
+symbols by their canonical buffer, GNU's pointer identity, and keeps the
+name comparison only for a plain (non-canonical) buffer.
 
 ** D7 Verify build
 
@@ -277,3 +280,33 @@ times the globals probe on CPU 13 and commits with the numbers.
 3. specbind/unbind_to on the cells (D4).
 4. Obarray and intern (D6).
 5. Uninterned symbols as header-less objects (S1.1).
+
+* Status (2026-10-21)
+
+- Step 1 (71d4a44d3): one nine-slot object per symbol, found without the
+  name hash; an empty slot of an interned symbol means "no state".
+- Steps 2-3 (002b89a59): =nl_sym_find_value_w= / =nl_sym_set_w= (GNU's
+  find_symbol_value and set_internal over the object, no frame search in
+  the main thread); FORWARDED =max-lisp-eval-depth= (intfwd) and
+  =print-escape-newlines= (boolfwd) with GNU's conversions and refusals;
+  specbind records the cell's old value directly.  Adapted storage: a
+  FORWARDED value lives in the object's slot 0, which the frame-depth
+  check reads directly (GNU reads the C variable).
+- Build constraint: functions reachable from the native compiler's F1
+  roots are capped at 296 (scripts/nelisp-native-compiler-f1-prelink.py);
+  step 1 is at 295 and steps 2-3 at 296, so new code on those paths is
+  inlined or uses helpers the closure already holds.
+- Step 4: =declared_special= becomes a bit of the object (slot 6, bit 64),
+  set by every native declaration and by the globals operations behind
+  =internal--define-uninitialized-variable= and
+  =internal-make-var-non-special=; the registry hash stays for Lisp
+  readers.  =obarray=, global =mapatoms= and global =unintern= as D6.
+- Not reached in this lane:
+  - S1.1 header-less symbol WORDs.  A symbol WORD is still a 32-byte view
+    copied per occurrence; making it the object needs the GC to trace and
+    rewrite a view's object field (or a direct WORD that every symbol
+    consumer and the =symbol-eq= emitter accept).  =make-symbol= costs
+    56 B per symbol against GNU's 48 B.
+  - S2.1 own cost at GNU's level: each access still reaches the object
+    through view -> name buffer -> header index -> symbol table, plus the
+    builtin's classification, against GNU's single load.

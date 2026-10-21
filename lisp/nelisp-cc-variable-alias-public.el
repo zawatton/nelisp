@@ -306,6 +306,12 @@
         ;; Doc 226 D5: GNU Fdefvaralias refuses a FORWARDED new alias.
         (if (= (sexp-name-eq op "variable-forwarded-p") 1)
             (if (= (extern-call nl_sym_forwarded_p env name) 1) 7 3)
+        ;; GNU eval.c:889 internal--define-uninitialized-variable sets the
+        ;; declared_special bit; internal-make-var-non-special clears it.
+        (if (= (sexp-name-eq op "variable-declare-special") 1)
+            (seq (extern-call bf_declare_special env name) 3)
+        (if (= (sexp-name-eq op "variable-make-non-special") 1)
+            (seq (extern-call nl_sym_set_special env name 0) 3)
         (if (or (= (sexp-name-eq op "variable-default-value") 1)
                 (= (sexp-name-eq op "variable-default-boundp") 1)
                 (= (sexp-name-eq op "variable-set-default") 1))
@@ -336,7 +342,7 @@
               (if (= canonical 0) 0
                 (if (= (sexp-name-eq op "constant-variable-p") 1)
                     (if (= (nelisp_mirror_is_constant env canonical) 1) 7 3)
-                  (nl_pa_public_name canonical 0))))))))))))))
+                  (nl_pa_public_name canonical 0))))))))))))))))
   "WORD-only variable alias operations; no additional public native entry.")
 
 (provide 'nelisp-cc-variable-alias-public)

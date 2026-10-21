@@ -927,8 +927,18 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Only the mirror's entry writers call this, never a reader.
     ;; The header's low 32 bits hold the cell index, its high 32 bits the
     ;; static symbol id (`nl_sym_set_sid').
+    ;; Doc 226 D6: a key whose bytes are a canonical buffer (a symbol view
+    ;; or a key string sharing it) is its own symbol: use that buffer's
+    ;; header, not the name's current table entry, which after a global
+    ;; `unintern' names a different symbol.  Other keys map by name.
     (defun nl_symcell_assign (bytes-ptr n)
-      (let* ((buf (nl_intern_canonical_buf bytes-ptr n)))
+      (let* ((base (heap-read-u64 268436288 0))
+             (buf (if (if (= base 0) 0
+                        (if (> bytes-ptr (+ base 16777224))
+                            (< bytes-ptr (heap-read-u64 268436296 0))
+                          0))
+                      bytes-ptr
+                    (nl_intern_canonical_buf bytes-ptr n))))
         (if (= buf 0) 0
           (let* ((hdr (heap-read-u64 (- buf 8) 0))
                  (idx (logand hdr 4294967295)))
@@ -967,6 +977,8 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (while (and (< scan 1048576) (= word 0))
           (setq slot (+ table (* scan 16)))
           (setq word (heap-read-u64 slot 0))
+          ;; A removed name (`nl_intern_remove') is not enumerated.
+          (if (/= (logand word 4611686018427387904) 0) (setq word 0) 0)
           (if (= word 0) (setq scan (+ scan 1)) 0))
         (if (= word 0)
             -1
@@ -974,6 +986,24 @@ lifetime of a Sexp value.  No `let' binding needed.")
            (nl_intern_write_sexp
             dest-slot (heap-read-u64 slot 8) (- word 1))
            (+ scan 1)))))
+    ;; GNU lread.c:4858 Funintern on the initial obarray (Doc 226 D6).  The
+    ;; name's slot becomes a tombstone: its length word gains bit 62, which
+    ;; no probe matches and which keeps probe chains intact.  A later intern
+    ;; of the name makes a new canonical buffer, a new symbol, while the
+    ;; removed symbol keeps its buffer, its object and its cells.  BUF is
+    ;; the symbol's canonical buffer; 1 when it was the interned one.
+    (defun nl_intern_remove (buf n)
+      (if (= (heap-read-u64 268436288 0) 0) 0
+        (let* ((slot (nl_intern_probe
+                      (heap-read-u64 268436288 0)
+                      (logand (nl_intern_hash buf 0 n 2166136261) 1048575)
+                      buf n 0)))
+          (if (= slot 0) 0
+            (if (= (heap-read-u64 slot 0) 0) 0
+              (if (/= (heap-read-u64 slot 8) buf) 0
+                (seq (ptr-write-u64 slot 0 (logior (heap-read-u64 slot 0)
+                                                   4611686018427387904))
+                     1)))))))
     (defun nl_intern_next (cursor dest-slot)
       (if (or (< cursor 0) (>= cursor 1048576)
               (= (heap-read-u64 268436288 0) 0))

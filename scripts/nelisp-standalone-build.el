@@ -20816,8 +20816,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
        (while (> i 0)
          (seq
           (setq i (- i 1))
+          ;; A removed name (`nl_intern_remove', bit 62) is not listed.
           (if (if (= (heap-read-u64 (+ base (* i 16)) 0) 0) 1
-                (nl_intern_slot_unbound_marker_p (+ base (* i 16)))) 0
+                (if (/= (logand (heap-read-u64 (+ base (* i 16)) 0)
+                                4611686018427387904) 0) 1
+                  (nl_intern_slot_unbound_marker_p (+ base (* i 16))))) 0
             (let* ((object (alloc-bytes 32 8)))
               (seq (nl_intern_write_sexp object
                      (heap-read-u64 (+ base (* i 16)) 8)
@@ -22920,8 +22923,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= table 0) 1
               (seq (wf_write_t value) (wf_dirty)
                    (bf_fx_special_bump env)
+                   (nl_sym_set_special env name 1)
                    (nl_ht_put_values name value table value))))
         (bf_wrong_type_symbolp name)))
+    ;; GNU lisp.h:786 declared_special, one bit of the symbol: Fdefvar,
+    ;; Fdefconst and Fdefvaralias set it, internal-make-var-non-special
+    ;; clears it, and let consults it (eval.c:1133).  Doc 226 D1 keeps the
+    ;; bit fields in slot 6 of the symbol object as a fixnum; bit 6 (64) is
+    ;; declared_special.  The registry hash table stays for Lisp readers.
+    (defun nl_sym_set_special (env name on)
+      (let* ((obj (nl_pa_entry env name)))
+        (if (or (= obj 0) (< (record-slot-count obj) 9)) 0
+          (let* ((w (nl_record_slot_word obj 6))
+                 (bits (if (= (logand w 3) 1) (sar w 2) 0)))
+            (seq (record-slot-set obj 6
+                                  (nl_imm_int (if (= on 1) (logior bits 64)
+                                                (logand bits -65))))
+                 1)))))
     ;; Count a declaration in `nelisp--fx-special-gen' (prelude), a vector
     ;; whose slot 0 compiled VM code compares at entry; see the prelude.
     (defun bf_fx_special_bump (env)
@@ -22943,10 +22961,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (wf_write_int_w 0 (+ (wf_bytecode_w_int w) 1))) 0)
                       0))
                 0)))))))
+    ;; The declared_special bit of NAME's object (see `nl_sym_set_special');
+    ;; a symbol without an object has never been declared.  Objects made
+    ;; before the bit existed (short records) keep the registry lookup.
     (defun bf_declared_special_p (mirror name)
-      (let* ((table (bf_special_registry mirror 0)))
-        (if (= table 0) 0
-          (if (= (nl_ht_find_in table name) 0) 0 1))))
+      (let* ((obj (nelisp_mirror_lookup_entry mirror name)))
+        (if (= obj 0) 0
+          (if (< (record-slot-count obj) 9)
+              (let* ((table (bf_special_registry mirror 0)))
+                (if (= table 0) 0
+                  (if (= (nl_ht_find_in table name) 0) 0 1)))
+            (let* ((w (nl_record_slot_word obj 6)))
+              (if (= (logand w 3) 1)
+                  (if (= (logand (sar w 2) 64) 0) 0 1)
+                0))))))
     (defun bf_declare_local_value_w (env name _pad)
   ;; NAME comes directly from the argument list as a canonical WORD.
   (let* ((rc (bf_declare_local_status env name)))
@@ -24760,7 +24788,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= ta tb)
             (cond
              ((= ta 2) (if (= (nl_word_payload a) (nl_word_payload b)) 1 0))
-             ((= ta 4) (symbol-eq a b))
+             ;; Doc 226 D6: a symbol is its canonical name buffer, so two
+             ;; interned symbols are eq iff they share it (GNU EQ compares
+             ;; the struct pointer); a removed-and-reinterned name differs.
+             ;; A plain (non-canonical) buffer keeps the name comparison.
+             ((= ta 4)
+              (let* ((ba (heap-read-u64 a 16))
+                     (bb (heap-read-u64 b 16)))
+                (if (= ba bb) 1
+                  (let* ((lo (+ (heap-read-u64 268436288 0) 16777224))
+                         (hi (heap-read-u64 268436296 0)))
+                    (if (and (> ba lo) (< ba hi) (> bb lo) (< bb hi)) 0
+                      (symbol-eq a b))))))
              ((= ta 0) 1)
              ((= ta 1) 1)
              ;; Doc 201 §6.17: strings are compared by IDENTITY, as in
@@ -45197,6 +45236,12 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 (defun nl_apply_do_globals_op_w (args env _pad)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "frame-stack-stats") 1)
       (nl_frame_stack_stats_w env 0)
+  ;; Doc 226 D6: GNU Funintern on the initial obarray (lread.c:4858).
+  (if (= (sexp-name-eq (nl_apply_list_nth args 0) "intern-remove") 1)
+      (let ((s (nl_apply_list_nth args 1)))
+        (if (= (nl_val_tag s) 4)
+            (if (= (nl_intern_remove (heap-read-u64 s 16) (heap-read-u64 s 24)) 1) 7 3)
+          3))
 
   (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry") 1)
@@ -45209,13 +45254,17 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-source-kind") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1)
           ;; Doc 226 D5: whether a symbol is a forwarded built-in.
-          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-forwarded-p") 1))
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-forwarded-p") 1)
+          ;; Doc 226: GNU's declared_special bit (internal--define-
+          ;; uninitialized-variable, internal-make-var-non-special).
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-declare-special") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-make-non-special") 1))
       (nl_pa_operation_w args env 0)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
       (nl_n3_globals_mode_w args env 0)
     (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
         (nl_n4_frame_op_w args env 0)
-      (nl_n3_globals_raw_w args env 0))))))
+      (nl_n3_globals_raw_w args env 0)))))))
 
 (defun nl_n4_snapshot_w (env _pad)
       (seq (nl_frame_stack_promote_env env 0)

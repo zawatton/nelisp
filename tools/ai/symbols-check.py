@@ -382,8 +382,18 @@ def cmd_census(args):
     for path, row in report["per_iteration"].items():
         a, b = (row[t] for t in CENSUS_TARGETS)
         print(f"| {path} | {a:.3f} | {b:.3f} |")
-        if not path.startswith("uninterned") and (a > 0.001 or b > 0.001):
+        # Every path counts, the uninterned symbol's PLAINVAL value too
+        # (ledger S1.2 NOTE: claimed only once uninterned symbols reach
+        # their object without the hash).
+        if a > 0.001 or b > 0.001:
             failures.append(path)
+    # Negative control: the base build hashes on these paths, so the
+    # census must count there (target/symbols/census/census-m0.json).
+    base = CENSUS / "census-m0.json"
+    need(base.is_file(), "missing the base census (negative control)")
+    counted = [p for p, r in json.loads(base.read_text())["per_iteration"].items()
+               if r["nelisp_mirror_lookup_hashed"] > 0.5]
+    need(len(counted) >= 9, "the census does not count hashed walks on the base build")
     need(not failures, "mirror-table lookups on " + ", ".join(failures))
     print("CENSUS PASS")
 

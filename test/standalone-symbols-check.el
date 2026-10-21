@@ -171,6 +171,13 @@
     (list (unintern "symfix-u1" obarray) (intern-soft "symfix-u1")
           (eq old (intern "symfix-u1")) (symbol-value old) (boundp (intern "symfix-u1")))))
 (symfix-case unintern-missing (unintern "symfix-never-interned-y" obarray))
+(symfix-case unintern-fresh
+  (let ((old (intern "symfix-u2")))
+    (list (unintern old obarray) (unintern old obarray)
+          (progn (set old 'old-value) (boundp (intern "symfix-u2")))
+          (progn (set (intern "symfix-u2") 'new-value) (symbol-value old))
+          (symbol-value (intern "symfix-u2"))
+          (eq old (intern-soft "symfix-u2")))))
 (symfix-case make-symbol (let ((a (make-symbol "symfix-i1")))
                            (set a 3) (put a 'p 4) (fset a 'cdr)
                            (list (eq a 'symfix-i1) (symbol-name a) (symbol-value a) (get a 'p)
