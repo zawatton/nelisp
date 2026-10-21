@@ -1,0 +1,48 @@
+#+TITLE: Syntax lookups and string-match entry: GNU 31.1 real-time parity
+
+# Found by the coordinator (2026-10-21, 16:15), measuring wall-clock instead
+# of Ir. Setup: taskset -c 28-31, warmed up, interpreted probe lambdas.
+# Probes are in target/syntax-rt/probes/.
+#
+#                               GNU 31.1   NeLisp 9d5f4   batch C
+#   (char-syntax ?a)              0.2 us       360 us       362 us
+#   (string-match "\\sw+" "alpha") 0.6 us     2,493 us     2,232 us
+#   string-match, plain pattern   0.3 us     64-190 us     208 us
+#   interpreted call (rt-id i)    0.51 us      9.1 us
+#
+# The string-match cost does not depend on the string's length (60, 600 and
+# 6000 characters cost the same): it is a fixed per-call overhead. A syntax
+# class pattern pays about one char-syntax-sized lookup per character.
+# GNU's references:
+# - syntax.h SYNTAX_ENTRY/SYNTAX: CHAR_TABLE_REF on the buffer's syntax
+#   table, then the class from the entry's car;
+# - chartab.c char_table_ref: O(1) through sub-char-tables;
+# - search.c compile_pattern: a cache hit compares the pattern, the
+#   translate table, posix and multibyte, and the syntax table by identity
+#   (search.c:222).
+#
+# Base: eval/integ-20261021d at bdc34c979 (9d5f4 plus version,
+# free-symbol, regex-syncache and casetab).
+#
+# Bar (the user's): an operation's own cost, that is the call minus a
+# same-shape trivial subr call, is at most GNU's own cost. It is measured
+# in wall-clock: the median of 7 alternating runs on idle pinned CPUs.
+# Instruction counts may be reported as well, but they do not decide.
+
+* S0 Locate
+** S0.1 docs/design/225-syntax-and-match-entry-gnu-parity.org splits the per-call time of char-syntax, a syntax-class string-match and a plain string-match into its owners, as wall-clock shares, and maps each one to the GNU mechanism to port
+cmd: python3 tools/ai/syntax-rt-check.py plan
+
+* S1 Port and semantics
+** S1.1 Syntax lookups follow GNU's structure, and a GNU 31.1 oracle fixture matches on dynamic and static
+The fixture covers char-syntax, syntax-after, modify-syntax-entry, inheritance from the standard syntax table, string-to-syntax, syntax-class-to-char, with-syntax-table and \sw \s- \s_ \b \< \> in string-match and re-search-forward.
+cmd: python3 tools/ai/syntax-rt-check.py semantics
+** S1.2 char-syntax own cost <= GNU's own cost (wall-clock)
+cmd: python3 tools/ai/syntax-rt-check.py speed char-syntax
+** S1.3 string-match own cost <= GNU's own cost for a plain and a syntax-class pattern on a short string (wall-clock)
+cmd: python3 tools/ai/syntax-rt-check.py speed string-match
+
+* S2 End to end
+** S2.1 Real workloads gain in wall-clock against the base, with no regression
+The workloads are the anvil MCP smoke (40 tools; initialize plus memory-search latency) and the regex6000 and files workloads. Verification: COMMON.md 11 groups with 0 failures, standalone-checks, dynamic and static.
+cmd: python3 tools/ai/syntax-rt-check.py final
