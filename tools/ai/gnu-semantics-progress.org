@@ -18,6 +18,7 @@ cmd: bash tools/ai/gnu-semantics-check.sh shadow
 cmd: bash tools/ai/gnu-semantics-check.sh variables
 ** S1.5 Source load eagerly macroexpands and aborts with GNU's error on expansion failure
 #+NOTE: Port GNU lread.c:2135-2153 and :2185-2190 evaluator structure; call the genuine Lisp macroexp.el internal-macroexpand-for-load. Adapt :2222 per-file macroexp--dynvars binding through existing declared-variable binder. New environment-restoration row is red on the first eager candidate (nil vs GNU t). Native additions are internal evaluator glue only; no reader-builtin or :lit entry is added. Canonical Lisp loader retains the same reference structure.
+#+NOTE: A further GNU source-dispatch fixture checks explicit/bare existing source reloads and require's already-provided short circuit (GNU fns.c:3821-3824). The deferred compiler shim previously skipped source and initialized unrelated compiler proofs, taking 22.935 s in a focused frame test; eager expansion itself took only 1.617 s of a 25.717 s profile. Preserve bundled startup for unresolved bare native modules and route real sources through normal load. The fixture is red on the previous candidate; no timeout or eager-expansion contract is weakened.
 cmd: bash tools/ai/gnu-semantics-check.sh load
 ** S1.6 Bool-vector and floating-point printing match GNU
 #+NOTE: Adapt GNU print.c:1187-1286 (float descriptor/decimal point), :1653-1695 (bool-vector bytes/escapes/print-length), :357 (octal) and lread.c:4522-4538,4575-4578 (NaN payload). Reuse existing native representation access/formatting; no new native entry. GNU-generated corpus now has 887 cases plus completion marker; denominator remains eight. Updated baseline is red, first dynamic candidate matches all cases.
@@ -26,4 +27,5 @@ cmd: bash tools/ai/gnu-semantics-check.sh printer
 #+NOTE: Adapt GNU syntax.c:2107-2265 skip_syntaxes, :3091-3133 backward-prefix-chars, :534-556 quoting and :410-428 property selection in Lisp using the current buffer table. Thirty-four GNU rows match the source-loaded port and first dynamic candidate; final fixture is red on base. Evidence: target/gnu-semantics/syntax/.
 cmd: bash tools/ai/gnu-semantics-check.sh syntax
 ** S1.8 Both linkages pass final checks, standalone checks, MCP and paired regression measurements
+#+NOTE: Development loop improvement: explicit --dev ITEM BINARY checks one layout while default ledger commands retain both. Measured printer fixture latency 4.573889 s (old two-candidate workaround) to 2.674774 s (one-layout path), same candidate/corpus; new path passes candidate and fails base. Evidence: target/gnu-semantics/dev-check-timing.json. Eight criteria and all final requirements remain unchanged.
 cmd: bash tools/ai/gnu-semantics-check.sh final

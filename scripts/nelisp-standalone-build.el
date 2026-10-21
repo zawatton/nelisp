@@ -21840,18 +21840,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; elisp, then called something that was never a function.  A nil cell
     ;; (how `fmakunbound' unbinds) is not a function either.
     (defun bf_fboundp_cell_p (tmp)
-      (let* ((tg (nl_word_tag64 tmp)))
-        (if (= tg 0) 0
-          ;; `nl_sp_eq_lit' compares at most two words; the sentinel's name is
-          ;; 22 bytes, so match on length plus the first two words -- no other
-          ;; 22-byte symbol in this runtime starts "nelisp--unbound-".
-          (if (= tg 4)
-              (if (= (ptr-read-u64 tmp 24) 22)
-                  (if (= (ptr-read-u64 (ptr-read-u64 tmp 16) 0) 3255381746650998126)
-                      (if (= (ptr-read-u64 (+ (ptr-read-u64 tmp 16) 8) 0) 3270860680036773493) 0 1)
-                    1)
-                1)
-            1))))
+      ;; Every caller has passed through nelisp_env_lookup_function(_w),
+      ;; which excludes the private unbound marker by identity. GNU's
+      ;; Ffboundp tests only whether the remaining function cell is nil;
+      ;; an ordinary alias symbol may have any name, including the marker's.
+      (if (= (nl_word_tag64 tmp) 0) 0 1))
     ;; nil and t are symbols whose function cell is never set here, so they
     ;; answer nil instead of signalling.  This used to live in a prelude
     ;; wrapper around the native arm; every `fboundp' call then ran as an
@@ -32475,8 +32468,11 @@ publishes the same providers before dumping."
      "                        (error \"Native startup incomplete\"))\n"
      "                      (setq state 'ready) t)\n"
      "             (error (setq state 'failed) (signal (car err) (cdr err)))))))\n"
-     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (when (and (memq state '(pending failed)) (or (memq feature '%S)\n              (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n    (nelisp-native-startup-ensure))\n  (if (featurep feature) feature (funcall base-require feature filename noerror))))\n" features)
-     (format "(fset 'load (lambda (file &rest arguments)\n  (let ((first (and (memq state '(pending failed)) (stringp file)\n                    (member (file-name-sans-extension (file-name-nondirectory file)) '%S))))\n    (when first (nelisp-native-startup-ensure))\n    (if (and first (featurep (intern (file-name-sans-extension (file-name-nondirectory file))))) t\n      (apply base-load file arguments)))))\n)\n" (mapcar #'symbol-name features))
+     ;; GNU Frequire checks features before loading anything. An explicit
+     ;; source or a library found on load-path must also reach the real loader;
+     ;; reserve the frozen companion for otherwise unresolved bundled modules.
+     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (if (featurep feature) feature\n    (progn\n      (when (and (memq state '(pending failed)) (or (memq feature '%S)\n                  (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n        (nelisp-native-startup-ensure))\n      (if (featurep feature) feature (funcall base-require feature filename noerror))))))\n" features)
+     (format "(fset 'load (lambda (file &rest arguments)\n  (let ((first (and (memq state '(pending failed)) (stringp file)\n                    (not (file-name-directory file)) (not (file-name-extension file))\n                    (not (locate-library file (nth 2 arguments)))\n                    (member file '%S))))\n    (when first (nelisp-native-startup-ensure))\n    (if (and first (featurep (intern file))) t\n      (apply base-load file arguments)))))\n)\n" (mapcar #'symbol-name features))
      (mapconcat (lambda (name) (format "(autoload '%S \"nelisp-native-load\")" name)) names "\n")
      "\n(autoload 'nelisp-native-cache-compile \"nelisp-native-cache\")\n"
      "(autoload 'nelisp-native-cache-load \"nelisp-native-cache\")\n")))
