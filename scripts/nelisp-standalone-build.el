@@ -45054,25 +45054,23 @@ correctly."
     (defun nl_cce_clear (err_out)
       (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
            (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
-    (defun nelisp_eval_call_with_err_w (form env _pad err_out)
+    (defun nelisp_eval_call_with_err_w (form env _pad _err_out)
+      ;; Doc 216 S6.2: no error view is written here.  Answers the value
+      ;; WORD, or 0 when the form signalled (the signal stays stashed, the
+      ;; flag set, for the caller's `nl_exit_condition_into') or aborted
+      ;; otherwise.  A few low-level mirror APIs historically normalise their
+      ;; mutation helper's return value to success.  The physical mirror
+      ;; guard still stashes the signal and performs no write; a registered
+      ;; worker recovers that signal at its catch boundary so it stays
+      ;; catchable instead of becoming a stale flag.
       (let* ((w (nelisp_eval_call_w form env 0)))
         (if (/= w 0)
-            ;; A few low-level mirror APIs historically normalise their
-            ;; mutation helper's return value to success.  The physical
-            ;; mirror guard still stashes the signal and performs no write;
-            ;; recover that signal at the worker's catch boundary so it stays
-            ;; catchable instead of becoming a stale flag.
             (if (= (heap-read-u64 268435472 0) 1)
                 (if (= (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
-                    (seq (nl_cce_clear err_out) w)
-                  (seq (nl_exit_condition_into err_out)
-                       0))
-              (seq (nl_cce_clear err_out) w))
-          (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nl_exit_condition_into err_out)
-                   0)
-            ;; Preserve a non-signal abort without inventing an error.
-            (seq (nl_cce_clear err_out) 0)))))
+                    w
+                  0)
+              w)
+          0)))
     (defun nelisp_eval_call_with_err (form env out err_out)
       ;; Physical-view compatibility entry; do not reverse-adapt its result.
       (let* ((rc (nelisp_eval_call form env out)))
