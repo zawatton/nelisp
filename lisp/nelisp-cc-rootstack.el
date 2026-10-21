@@ -128,54 +128,73 @@
     ;; internal_lisp_condition_case read handlerlist->val (eval.c:1399,
     ;; 1659).  NeLisp leaves by return code, so a pending exit waits for its
     ;; handler in one place: its kind (@268435472: 1 signal, 2 throw, 0
-    ;; none) and two values, the condition symbol and its data or the
-    ;; throw's tag and value.  A raise site records a signal here with
-    ;; WORDs or 32-byte views, and the mutation epoch (@268435544) moves
-    ;; because the values escape.  Transitional storage: the two 32-byte
-    ;; stash slots, until every reader takes WORDs.
+    ;; none) and its two values, the condition symbol and its data or the
+    ;; throw's tag and value, as WORDs in `nl_exit_values' (+0, +8).  The
+    ;; values outlive the exit (only the kind is cleared), the collector
+    ;; marks them (`nl_gc_mark_rootstack'), and 0, before the first exit,
+    ;; reads as nil.  A raise site hands over WORDs or 32-byte views, stored
+    ;; as a cons cell stores its car (`nl_val_clone_into': a cons or a
+    ;; vectorlike keeps its identity), and the mutation epoch (@268435544)
+    ;; moves because the values escape.
     (defun nl_exit_signal_w (sym data)
-      (seq (extern-call wf_copy32 268435480 sym)
-           (extern-call wf_copy32 268435512 data)
+      (seq (extern-call nl_val_clone_into sym (data-addr nl_exit_values))
+           (extern-call nl_val_clone_into data (+ (data-addr nl_exit_values) 8))
            (ptr-write-u64 268435472 0 1)
            (atomic-fetch-add 268435544 1)
            0))
-    ;; The same with an explicit kind (1 signal, 2 throw): a frame that
-    ;; caught an exit and passes it on.
+    ;; The same with an explicit kind (1 signal, 2 throw): a throw, or a
+    ;; frame that caught an exit and passes it on.
     (defun nl_exit_raise_w (kind tag val)
-      (seq (extern-call wf_copy32 268435480 tag)
-           (extern-call wf_copy32 268435512 val)
+      (seq (extern-call nl_val_clone_into tag (data-addr nl_exit_values))
+           (extern-call nl_val_clone_into val (+ (data-addr nl_exit_values) 8))
            (ptr-write-u64 268435472 0 kind)
            (atomic-fetch-add 268435544 1)
            0))
-    ;; The exit's two values for its handler (handlerlist->val).  A reader
-    ;; that keeps one copies it (wf_copy32, nelisp_cons_construct, ...):
-    ;; with the transitional storage each is the slot itself, valid until
-    ;; the next exit.
-    (defun nl_exit_tag_w () 268435480)
-    (defun nl_exit_val_w () 268435512)
+    ;; The exit's two values for its handler (handlerlist->val).
+    (defun nl_exit_tag_w ()
+      (let ((w (heap-read-u64 (data-addr nl_exit_values) 0))) (if (= w 0) 3 w)))
+    (defun nl_exit_val_w ()
+      (let ((w (heap-read-u64 (data-addr nl_exit_values) 8))) (if (= w 0) 3 w)))
     ;; GNU signal_or_quit's Fcons (error_symbol, data) (eval.c:1952): the
     ;; value a condition-case variable receives, built into OUT.
     (defun nl_exit_condition_into (out)
       (extern-call nelisp_cons_construct (nl_exit_tag_w) (nl_exit_val_w) out))
-    ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
-    ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
+    ;; GNU runs unwind-protect cleanups inside unbind_to while the catch
+    ;; holds the exit's value (unwind_to_catch, eval.c:1432, 1445-1454).  Here a cleanup that
+    ;; returns normally must leave a pending exit as it found it: save the
+    ;; two WORDs in a WORD frame on ENV's root stack, which keeps them alive
+    ;; while the cleanup runs, and put them back afterwards.  The caller
+    ;; releases the frame with a mark taken before the save.  0: no room.
+    (defun nl_exit_save (env)
+      (let ((frame (nl_root_frame env 2)))
+        (if (= frame 0) 0
+          (seq (ptr-write-u64 frame 0 (nl_exit_tag_w))
+               (ptr-write-u64 (+ frame 8) 0 (nl_exit_val_w))
+               frame))))
+    (defun nl_exit_restore (frame)
+      (seq (ptr-write-u64 (data-addr nl_exit_values) 0 (heap-read-u64 frame 0))
+           (ptr-write-u64 (data-addr nl_exit_values) 8 (heap-read-u64 (+ frame 8) 0))
+           0))
+    ;; Catchable mirror-write refusal, recorded through `nl_exit_signal_w'.
+    ;; Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
     (defun nl_thread_mirror_mutation_signal_at
         (name-ptr tag-buf nil-slot _pad)
-      (seq
-       (ptr-write-u64 tag-buf 0 8587643705457665390)
-       (ptr-write-u64 (+ tag-buf 8) 0 7596778115794956911)
-       (ptr-write-u64 (+ tag-buf 16) 0 8391733522635649650)
-       (ptr-write-u64 (+ tag-buf 24) 0 474315584609)
-       (extern-call nl_alloc_symbol tag-buf 29 268435480)
-       (ptr-write-u64 nil-slot 0 0)
-       (ptr-write-u64 (+ nil-slot 8) 0 0)
-       (ptr-write-u64 (+ nil-slot 16) 0 0)
-       (ptr-write-u64 (+ nil-slot 24) 0 0)
-       (extern-call nelisp_cons_construct name-ptr nil-slot 268435512)
-       (ptr-write-u64 268435472 0 1)
-       (atomic-fetch-add 268435544 1)
-       1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 tag-buf 0 8587643705457665390)
+         (ptr-write-u64 (+ tag-buf 8) 0 7596778115794956911)
+         (ptr-write-u64 (+ tag-buf 16) 0 8391733522635649650)
+         (ptr-write-u64 (+ tag-buf 24) 0 474315584609)
+         (extern-call nl_alloc_symbol tag-buf 29 sig-tag)
+         (ptr-write-u64 nil-slot 0 0)
+         (ptr-write-u64 (+ nil-slot 8) 0 0)
+         (ptr-write-u64 (+ nil-slot 16) 0 0)
+         (ptr-write-u64 (+ nil-slot 24) 0 0)
+         (extern-call nelisp_cons_construct name-ptr nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
+         1)))
     (defun nl_thread_mirror_mutation_signal (name-ptr)
       (nl_thread_mirror_mutation_signal_at
        name-ptr (alloc-bytes 32 1) (alloc-bytes 32 8) 0))
@@ -882,11 +901,12 @@
                (nl_gc_mark_rootstack_walk (+ p (+ 32 (logand (+ (* n 8) 31) -32))) end)))
           (seq (extern-call nl_gc_mark_slot p)
                (nl_gc_mark_rootstack_walk (+ p 32) end)))))
-    ;; The non-local exit stash is a root too.  TAG @268435480 and VAL
-    ;; @268435512 keep the last thrown or signalled tag and value after the
-    ;; exit completes (the flag @268435472 is cleared, the slots are not),
-    ;; and `nl_n3_notify', `unwind-protect' and the bytecode handlers save
-    ;; and restore them on every pass, cloning whatever they hold.  Unrooted,
+    ;; The nonlocal exit's values are a root too.  `nl_exit_values' keeps
+    ;; the last thrown or signalled tag and value after the exit completes
+    ;; (the flag @268435472 is cleared, the values are not), as GNU marks
+    ;; each handler's val (thread.c:679, mark_one_thread); the cleanups that
+    ;; keep a pending exit save and restore the two WORDs.  (History: the
+    ;; 32-byte stash slots this replaced were cloned on every pass.)  Unrooted,
     ;; a thrown cons dies once its catcher drops it and those clones then
     ;; bump the refcount word of whatever reuses the block.  Once cold-image
     ;; holes became collectable, the (FORM . END) cons that
@@ -900,8 +920,10 @@
          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
                                     (heap-read-u64 (data-addr nl_rootstack_top) 0)))
        (nl_gc_mark_pinned_roots)
-       (extern-call nl_gc_mark_slot 268435480)
-       (extern-call nl_gc_mark_slot 268435512)))
+       (let* ((tag (heap-read-u64 (data-addr nl_exit_values) 0))
+              (val (heap-read-u64 (data-addr nl_exit_values) 8)))
+         (seq (if (= tag 0) 0 (extern-call nl_gc_mark_word tag))
+              (if (= val 0) 0 (extern-call nl_gc_mark_word val))))))
     (defun nl_gc_mark_pinned_roots ()
       (let* ((base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add

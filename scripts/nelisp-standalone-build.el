@@ -604,7 +604,11 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
   "Return driver BSS size including roots, loader state and catch head."
   (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96
      ;; Doc 223: `nl_typed_alloc', the GNU typed-block allocator state.
-     512 16
+     512
+     ;; `nl_exit_values': a pending nonlocal exit's tag and value WORDs.
+     16
+     ;; `nl_cold_chunk0_domain'.
+     16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -947,6 +951,11 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_typed_alloc"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96)
+                              :section 'bss :bind 'global :type 'object))
+    ;; A pending nonlocal exit's tag and value WORDs (GNU's handler val), see
+    ;; `nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el.
+    (list (nelisp-link-symbol "nl_exit_values"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -9687,8 +9696,9 @@ nelisp--syscall) ...)' JIT-era alias in `nelisp-jit-strategy.el', which
 called deleted-Rust `nl-jit-call-syscall' and which the standalone reader
 never loads -- fell through the unmatched-builtin default that used to
 `nl_os_write_stderr' the bare name and return rc=1 WITHOUT going through the
-signal/unwind protocol (flag@268435472 / TAG@268435480 / VAL@268435512, the
-same stash `bf_signal'/`bf_error'/`nl_cons_stash_void_function' use).  The
+signal/unwind protocol (the pending exit: kind flag@268435472, TAG and VAL
+WORDs in `nl_exit_values', recorded through `nl_exit_signal_w' as
+`bf_signal'/`bf_error'/`nl_cons_stash_void_function' do).  The
 top-level driver then reported \"nelisp: form aborted without signal\" and
 `condition-case' never ran: uncatchable by construction, not by any handler
 bug.  Stashing a real signal here instead of printing makes every call that
@@ -10065,7 +10075,9 @@ leave symbols unresolved at link time."
           (seq (nl_abi_stash_unstashed) 0)
         0))
     (defun nl_abi_stash_unstashed ()
-      (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 (+ buf 0) 0 2322292198855173486)
@@ -10079,10 +10091,9 @@ leave symbols unresolved at link time."
          (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_value_w (word _pad check)
@@ -12081,15 +12092,14 @@ leave symbols unresolved at link time."
          (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_signal_memory_full ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 7362674498223301997)
          (ptr-write-u64 (+ sbuf 8) 0 7105653)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 11 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 11 sig-tag)
+         (nl_exit_signal_w sig-tag 3)
          1)))
     ;; Doc 215 word-transport helpers (lane M2).  A WORD is a fixnum
     ;; (n<<2)|1, nil 3, t 7, or a pointer WORD: a legacy physical view or
@@ -14863,13 +14873,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; `memory-full' is the ordinary condition for a frame that cannot fit
       ;; in the registered root region. The caller releases partial reserves
       ;; before entering here, so symbol construction has normal root space.
-      (let* ((sbuf (alloc-bytes 16 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 16 1)))
         (seq (ptr-write-u64 sbuf 0 7362674498223301997)
              (ptr-write-u64 (+ sbuf 8) 0 7105653)
-             (nl_alloc_symbol sbuf 11 268435480)
-             (wf_write_nil 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nl_alloc_symbol sbuf 11 sig-tag)
+             (nl_exit_signal_w sig-tag 3)
              1)))
     (defun wf_bytecode_error (env opcode offset out)
       (let* ((buf (alloc-bytes 56 1))
@@ -15739,7 +15748,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
                          (event (+ roots 416)) (payload (+ roots 448))
                          (saved-tag (+ roots 480)) (saved-value (+ roots 512))
-                         (saved-kind 0) (cleanup-rc 0) (rc 2)
+                         (saved-kind 0) (saved-tag-w 0) (saved-value-w 0) (cleanup-rc 0) (rc 2)
                          (direct 0) (event-count 0) (binding-count 0)
                          (entry 0) (address 0) (hash 0))
                     (seq
@@ -15964,16 +15973,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (seq
                                         (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_word event)))
                                         (setq saved-kind (heap-read-u64 268435472 0))
-                                        (wf_bytecode_copy saved-tag 268435480)
-                                        (wf_bytecode_copy saved-value 268435512)
+                                        ;; The pending exit's WORDs, rooted in the pinned
+                                        ;; slots while the cleanup runs (GNU's unbind_to
+                                        ;; under unwind_to_catch keeps them in the catch).
+                                        (setq saved-tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+                                        (setq saved-value-w (heap-read-u64 (data-addr nl_exit_values) 8))
+                                        (wf_bytecode_copy saved-tag (if (= saved-tag-w 0) 3 saved-tag-w))
+                                        (wf_bytecode_copy saved-value (if (= saved-value-w 0) 3 saved-value-w))
                                         (ptr-write-u64 268435472 0 0)
                                         ;; Payloads are Lisp wrappers, so the
                                         ;; sole native boundary stays APPLY;
                                         ;; forms evaluation belongs to Lisp.
                                         (setq cleanup-rc (wf_bytecode_call_gateway env payload roots 1 0 scratch))
                                         (if (= cleanup-rc 0)
-                                            (seq (wf_bytecode_copy 268435480 saved-tag)
-                                                 (wf_bytecode_copy 268435512 saved-value)
+                                            (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) saved-tag-w)
+                                                          (= (heap-read-u64 (data-addr nl_exit_values) 8) saved-value-w))
+                                                     0
+                                                   (seq (nl_val_clone_into saved-tag (data-addr nl_exit_values))
+                                                        (nl_val_clone_into saved-value (+ (data-addr nl_exit_values) 8))))
                                                  (ptr-write-u64 268435472 0 saved-kind))
                                           (setq rc 1)))
                                      (seq
@@ -16051,8 +16068,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (let* ((kind (heap-read-u64 268435472 0)))
                     (if (or (= kind 1) (= kind 2))
                         (seq
-                         (wf_bytecode_copy result-slot 268435480)
-                         (wf_bytecode_copy value-slot 268435512)
+                         (wf_bytecode_copy result-slot (nl_exit_tag_w))
+                         (wf_bytecode_copy value-slot (nl_exit_val_w))
                          (wf_write_int status-slot kind)
                          1)
                       2))
@@ -16217,17 +16234,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (result (nl_root_reserve env))
              (cursor (nl_root_reserve env))
              (nil-slot (nl_root_reserve env))
-             (saved-tag (nl_root_reserve env))
-             (saved-value (nl_root_reserve env))
              (function-cell (nl_root_reserve env))
              (form (nl_root_reserve env))
              (saved-flag (heap-read-u64 268435472 0))
+             ;; The pending exit's two WORDs, rooted for the cleanup.
+             (saved (nl_exit_save env))
              (lookup-rc 1)
              (is-function 0)
              (rc 0))
+        (if (= saved 0)
+            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
         (seq
-         (wf_bytecode_copy saved-tag 268435480)
-         (wf_bytecode_copy saved-value 268435512)
          (wf_write_nil args)
          (wf_write_nil nil-slot)
          (wf_write_nil lookup-args)
@@ -16267,12 +16284,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; A normally returning cleanup preserves the pending exit.  An
          ;; exit raised by the cleanup remains in the shared stash and wins.
          (if (= rc 0)
-             (seq (wf_bytecode_copy 268435480 saved-tag)
-                  (wf_bytecode_copy 268435512 saved-value)
+             (seq (nl_exit_restore saved)
                   (ptr-write-u64 268435472 0 saved-flag))
            0)
          (nl_root_release env mark)
-         rc)))
+         rc))))
     (defun wf_bytecode_legacy (env mem sp opcode argc)
       ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
       ;; The rooted registry precedes user code; never use a public cell.
@@ -23744,17 +23760,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_setting_constant (offender)
-      (let* ((sbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 3271705053512361331)
          (ptr-write-u64 (+ sbuf 8) 0 8389750308618530659)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 16 268435480)
+         (nl_alloc_symbol sbuf 16 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_numberp (offender)
       (bf_wrong_type_named offender 31650977160197486 0 0 7))
@@ -26145,7 +26162,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
            0)
          1)))
     (defun bf_wrong_number_of_args (name argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (count (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
              (data-tail (alloc-bytes 32 8))
@@ -26166,13 +26185,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct reported data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct reported data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_number_of_args_list_access (name argc)
       (let* ((bytes (alloc-bytes 8 1)) (symbol (alloc-bytes 32 8)))
@@ -30526,15 +30544,12 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                   (heap-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
               (nl_ct_no_catch env tag_slot val_slot)
           (seq
-           (wf_copy32 268435480 tag_slot)
-           (wf_copy32 268435512 val_slot)
-           ;; Flag value 2 = `throw' (vs 1 = signal/error).  The shared M6
-           ;; stash is used by BOTH throw and signal; using a distinct value
-           ;; lets `condition-case' trap ONLY signals (flag==1) and `catch'
-           ;; trap ONLY throws (flag==2), so a `throw' no longer matches an
-           ;; `error'/`t' condition-case handler.
-           (ptr-write-u64 268435472 0 2)
-           (atomic-fetch-add 268435544 1)
+           ;; GNU Fthrow (eval.c:1464-1478).  Kind 2 = `throw' (vs 1 =
+           ;; signal/error): the one pending exit serves BOTH throw and
+           ;; signal; the distinct kind lets `condition-case' trap ONLY
+           ;; signals and `catch' trap ONLY throws, so a `throw' never
+           ;; matches an `error'/`t' condition-case handler.
+           (nl_exit_raise_w 2 tag_slot val_slot)
            1))
         1))
     (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
@@ -35876,8 +35891,8 @@ u64/i64 has no Lisp printed representation of its own here)."
   "Return error-diagnostic defun forms (Doc 152 DEFECT-2 + REPL visibility;
 Doc 180 Phase 1 form-location).
 `nl_eval_source_print_error' writes a short diagnostic for the top-level M6
-stash (FLAG @268435472, TAG @268435480, VAL @268435512 -- see the catch/throw
-unit's comment block for the stash contract) to stderr.  Uncaught throws
+exit (FLAG @268435472, TAG and VAL WORDs in `nl_exit_values' -- see
+`nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el for the contract) to stderr.  Uncaught throws
 report the condition class `no-catch' instead of using the catch tag as the
 error class.  Doc 180 Phase 1 adds five trailing parameters -- FILE_PTR,
 FILE_LEN (the source name: a real --load path, or a static \"<eval>\"/
@@ -44928,6 +44943,10 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (where (nl_root_reserve env))
              (tag-save (nl_root_reserve env)) (val-save (nl_root_reserve env))
              (flag (heap-read-u64 268435472 0))
+             ;; The pending exit's WORDs: unchanged after the watcher, they
+             ;; need no restore (the exit fields kept them alive).
+             (tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+             (val-w (heap-read-u64 (data-addr nl_exit_values) 8))
              ;; Raw pending-binding links hold only pointers to live roots.
              ;; Header +24 is per EvalCtx, separate from lean unwind +16.
              (state (nl_n4_state env)) (pending (alloc-bytes 16 8))
@@ -44944,8 +44963,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (if (> (record-slot-count entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
-         (nl_sexp_clone_into 268435480 tag-save)
-         (nl_sexp_clone_into 268435512 val-save)
+         (wf_copy32 tag-save (if (= tag-w 0) 3 tag-w))
+         (wf_copy32 val-save (if (= val-w 0) 3 val-w))
          (ptr-write-u64 268435472 0 0)
          (ptr-write-u64 buf 0 7021161792682421605) ; emacs-pa
          (ptr-write-u64 (+ buf 8) 0 8316298228994959730) ; rity-mis
@@ -44982,8 +45001,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (setq rc (nl_apply_function fn args env result)) 0)
          (if (= operation 2) (ptr-write-u64 state 24 (heap-read-u64 pending 0)) 0)
          (if (= rc 0)
-             (seq (nl_sexp_clone_into tag-save 268435480)
-                  (nl_sexp_clone_into val-save 268435512)
+             (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) tag-w)
+                           (= (heap-read-u64 (data-addr nl_exit_values) 8) val-w))
+                      0
+                    (seq (nl_val_clone_into tag-save (data-addr nl_exit_values))
+                         (nl_val_clone_into val-save (+ (data-addr nl_exit_values) 8))))
                   (ptr-write-u64 268435472 0 flag)) 0)
          (nl_root_release env mark)
          rc)))
@@ -45758,29 +45780,10 @@ match a special-form name tested in FORM."
         (nl_env_stash_write_name_sym name_sym_slot)
         (nl_env_set_value env name_sym_slot signal_slot)
         ;; Formal-binding errors used to write only nelisp--last-signal-data
-        ;; in the Env.  Top-level standalone reporting reads the M6 arena
-        ;; stash, so mirror the same (TAG . VAL) signal there as well.
-        ;; Doc 215: an immediate WORD is written straight into the stash.
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand tag_w 7) 0)
-            (extern-call nl_sexp_clone_into tag_w 268435480)
-          (seq
-           (ptr-write-u64 268435480 0 (heap-read-u64 tag_w 0))
-           (ptr-write-u64 (+ 268435480 8) 0 (heap-read-u64 (+ tag_w 8) 0))
-           (ptr-write-u64 (+ 268435480 16) 0 (heap-read-u64 (+ tag_w 16) 0))
-           (ptr-write-u64 (+ 268435480 24) 0 (heap-read-u64 (+ tag_w 24) 0))))
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand val_w 7) 0)
-            (extern-call nl_sexp_clone_into val_w 268435512)
-          (seq
-           (ptr-write-u64 268435512 0 (heap-read-u64 val_w 0))
-           (ptr-write-u64 (+ 268435512 8) 0 (heap-read-u64 (+ val_w 8) 0))
-           (ptr-write-u64 (+ 268435512 16) 0 (heap-read-u64 (+ val_w 16) 0))
-           (ptr-write-u64 (+ 268435512 24) 0 (heap-read-u64 (+ val_w 24) 0))))
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        ;; in the Env.  Top-level standalone reporting reads the pending
+        ;; exit, so record the same (TAG . VAL) signal there as well; the
+        ;; cell's car and cdr are WORDs already.
+        (nl_exit_signal_w tag_w val_w)
         1)))
   "M6-visible replacement for env-leaves-bind `nl_env_stash_signal'.")
 
