@@ -19744,7 +19744,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_interp_run_w (rec fn tail env argc code scratch)
       (let* ((base (m5_fx_arg_words env argc)))
         (if (and (= base 0) (> argc 0)) 0
-          (let* ((rc (m5_fx_eval_forms tail env base 0)))
+          (let* ((rc (m5_fx_eval_forms tail env base argc)))
             (if (/= rc 0) 0
               (seq
                (m5_fx_frame_lazy env base argc 0)
@@ -19757,7 +19757,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_fx_interp_run (rec fn tail env out argc code scratch)
       (let* ((base (m5_fx_arg_words env argc)))
         (if (if (= base 0) (> argc 0) 0) 1
-          (let* ((rc (m5_fx_eval_forms tail env base 0)))
+          (let* ((rc (m5_fx_eval_forms tail env base argc)))
             (if (/= rc 0) rc
               (seq (m5_fx_frame_lazy env base argc 0)
                    (m5_fx_interp_run_done
@@ -19789,20 +19789,33 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; `memory-full' stashed when the region is full.
     (defun m5_fx_arg_words (env n)
       (if (= n 0) 0
-        (let* ((base (nl_root_frame env n)))
+        (let* ((base (nl_root_frame env (+ n 1))))
           (if (= base 0) (seq (wf_bytecode_root_exhausted) 0) base))))
-    ;; Evaluate forms once and publish each WORD before the next evaluation.
-    (defun m5_fx_eval_forms (tail env base _pad)
-      (let* ((cur tail) (k 0) (rc 0) (w 0))
+    ;; Evaluate the first N forms of TAIL once into BASE[0..N), publishing
+    ;; each WORD before the next evaluation.  BASE[N] roots the cursor, as
+    ;; GNU's eval_sub keeps ARGS_LEFT in a scanned local (eval.c:2686-2691):
+    ;; a form that cuts its own argument list cannot free the rest, and N
+    ;; bounds the walk if one lengthens it.  A non-cons tail ends it early.
+    (defun m5_fx_eval_forms (tail env base n)
+      (let* ((cur tail) (k 0) (rc 0) (w 0) (cslot (+ base (* n 8))))
         (seq
-         (while (if (= rc 0) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0)
-           (seq (setq w (nl_cons_car_word cur))
+         (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
+           (seq (ptr-write-u64 cslot 0 cur)
+                (setq w (nl_cons_car_word cur))
                 (let* ((ew (if (< (nl_val_tag w) 4) w (nelisp_eval_call_w w env 0))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
-                (setq cur (nl_cons_cdr_word cur))))
+                (setq cur (nl_cons_cdr_word (heap-read-u64 cslot 0)))))
          rc)))
+    ;; The number of conses in the argument list ARGS before its first
+    ;; non-cons tail.
+    (defun m5_fx_arg_count (args _pad)
+      (let* ((n 0) (cur args))
+        (seq
+         (while (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0)
+           (seq (setq n (+ n 1)) (setq cur (nl_cons_cdr_word cur))))
+         n)))
     ;; The cons evaluator's frame for this call (the top one, as
     ;; `nl_n4_direct_apply' assumes) now holds evaluated arguments.
     (defun m5_fx_frame_lazy (env base argc _pad)
@@ -47383,7 +47396,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
         (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
-              (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
+              (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
                 (seq
                  ;; The activation shows the evaluated arguments, as GNU's
                  ;; set_backtrace_args (eval.c:2693).
@@ -47408,7 +47421,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_funcall_w (tail env argc fn fw call_name)
       (let* ((base (nl_root_frame env (+ argc 3))))
         (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
-          (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
+          (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
             (seq
              (m5_fx_frame_lazy env base argc 0)
              (let* ((w (nl_eic_funcall_words base (- argc 1) env)))
