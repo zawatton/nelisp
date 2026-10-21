@@ -16,6 +16,10 @@ wall CAND BASE [CORPUS_LOG]
     back and the ratios are the medians of the per-round ratios, written to
     target/codegen/endtoend.json; regex-per-character is the slope between
     16 and 128 characters.
+corpus LOG
+    Record in target/codegen/endtoend.json whether the validate.sh run in
+    LOG (standalone corpus, bytecode and native suites, AOT differential)
+    passed on the measured candidate.
 summarize CAND [CORPUS_LOG]
     Combine the stored workloads into target/codegen/endtoend.json, bound
     to CAND by sha256; CORPUS_LOG is a validate.sh output whose result says
@@ -261,12 +265,25 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
     return 0
 
 
+def cmd_corpus(log):
+    path = ROOT / "target/codegen/endtoend.json"
+    rec = json.loads(path.read_text())
+    text = Path(log).read_text()
+    rec["corpus_identical"] = ": 0 failing groups" in text
+    rec["corpus_log"] = str(Path(log).resolve())
+    path.write_text(json.dumps(rec, indent=1))
+    print(f"corpus identical: {rec['corpus_identical']}")
+    return 0
+
+
 def main(argv):
     if len(argv) >= 5 and argv[1] == "run":
         jobs = int(argv[6]) if len(argv) == 7 and argv[5] == "--jobs" else 4
         if argv[2] not in ("base", "cand"):
             raise SystemExit(__doc__)
         return cmd_run(argv[2], Path(argv[3]), argv[4], jobs)
+    if len(argv) == 3 and argv[1] == "corpus":
+        return cmd_corpus(argv[2])
     if len(argv) in (4, 5) and argv[1] == "wall":
         return cmd_wall(Path(argv[2]), Path(argv[3]), argv[4] if len(argv) == 5 else None)
     if len(argv) in (3, 4) and argv[1] == "summarize":
