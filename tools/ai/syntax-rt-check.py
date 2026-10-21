@@ -467,8 +467,12 @@ def run_fixture(runtime, binary=None, fixture=FIXTURE):
     command = (["taskset", "-c", CPUS, str(binary), "--load", str(fixture)]
                if runtime == "nelisp"
                else [GNU_BIN, "-Q", "--batch", "-l", str(fixture)])
+    # GNU quotes `like this' as curved quotes only in a UTF-8 locale; the
+    # pins were made in one, and the meter exports LC_ALL=C.
+    env = dict(os.environ, LC_ALL="C.UTF-8")
     result = subprocess.run(["bash", "-c", "ulimit -v %d; exec \"$@\"" % MEMORY_LIMIT_KB,
-                             "run", *command], capture_output=True, timeout=600, cwd=ROOT)
+                             "run", *command], capture_output=True, timeout=600, cwd=ROOT,
+                            env=env)
     return result.returncode, result.stdout, result.stderr
 
 
