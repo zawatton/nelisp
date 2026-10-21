@@ -175,7 +175,15 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                         (cdr data-input))
                  (equal (alist-get 'owner-source-sha256 data) builder-hash)
                  (<= 1 (length (alist-get 'records closure)) 128)
-                 (<= (alist-get 'total_bytes closure) 524288)
+                 ;; 640 KiB: the F1 closure measures 530,615 B on Win64
+                 ;; (296 functions, call-path merge 915e1a17a plus the
+                 ;; Schannel arity fix), 538,922 B at the symbols-lane tip,
+                 ;; and 450,361 B (295) / 441,058 B (300) on Linux; the
+                 ;; largest helper is nl_native_frame_v2 (50,690 B Win64,
+                 ;; 47,664 B Linux).  The growth is GNU structures added on
+                 ;; purpose: symbol cells, cons blocks and the typed-block
+                 ;; registry, and the WORD-frame call path.
+                 (<= (alist-get 'total_bytes closure) 655360)
                  (if (nelisp-native-load--windows-p)
                      (and (equal (plist-get layout :domain) "nelisp-rooted-pe-v2")
                           (eq (plist-get layout :target) 'x86_64-windows)
