@@ -698,6 +698,36 @@ def check_s63alloc():
     print("s63alloc PASS")
 
 
+STASH_SLOTS = re.compile(r"\b(268435480|268435512)\b")
+
+
+def stash_readers(root=ROOT):
+    """The functions of the runtime sources that use the fixed-address Sexp
+    signal stash slots (tag @268435480, value @268435512), comments left out."""
+    found = set()
+    for path in [root / "scripts/nelisp-standalone-build.el"] + sorted((root / "lisp").glob("*.el")):
+        text = "\n".join(re.sub(r";.*$", "", line) for line in path.read_text(errors="replace").split("\n"))
+        starts = [(m.start(), m.group(1)) for m in re.finditer(r"\(defun ([A-Za-z0-9_-]+) ", text)]
+        for m in STASH_SLOTS.finditer(text):
+            owner = None
+            for start, name in starts:
+                if start > m.start():
+                    break
+                owner = name
+            found.add((path.name, owner or "<top level>"))
+    return found
+
+
+def check_stash():
+    """S4.4: GNU's signal_or_quit carries the condition and data as
+    Lisp_Object values to the handler; no runtime function uses the
+    fixed-address Sexp stash slots."""
+    found = stash_readers()
+    print(f"stash readers={len(found)}: " + ", ".join(sorted(f for _, f in found))[:300])
+    need(not found, f"{len(found)} functions still use the fixed-address Sexp signal stash")
+    print("stash PASS")
+
+
 def check_s63e2e():
     """S4.4: the final verification and the wall-clock regression guard on the current source."""
     check_final()
@@ -708,7 +738,8 @@ def check_s63e2e():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="check", required=True)
-    for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e"):
+    for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e",
+                 "stash"):
         sub.add_parser(name)
     p = sub.add_parser("s63census")
     p.add_argument("kind", choices=("roots", "materialisers"))
@@ -748,7 +779,7 @@ def main():
         else:
             {"portplan": check_portplan, "arity": check_arity,
              "noregress": check_noregress, "final": check_final,
-             "s63alloc": check_s63alloc, "s63e2e": check_s63e2e}[args.check]()
+             "s63alloc": check_s63alloc, "s63e2e": check_s63e2e, "stash": check_stash}[args.check]()
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("FAIL " + str(error))
         return 1

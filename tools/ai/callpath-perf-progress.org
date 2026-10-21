@@ -125,5 +125,8 @@ cmd: python3 tools/ai/callpath-perf-check.py s63census roots
 cmd: python3 tools/ai/callpath-perf-check.py s63census materialisers
 ** S4.3 Allocations per call of funcall, car and apply (the wall-clock floors fixture over its empty loop) at most GNU 31.1's objects per call, in the interpreter, the VM and bytecode
 cmd: python3 tools/ai/callpath-perf-check.py s63alloc
-** S4.4 End to end: on the same build, the final verification (S3.1) and the wall-clock regression guard (S2.4) pass
+** S4.4 Signal stash: no runtime function uses the fixed-address Sexp stash slots (tag @268435480, value @268435512); the condition and data travel as WORDs, as GNU's signal_or_quit hands them to the handler
+#+NOTE: 2026-10-21 added on the coordinator's request (criteria 12 -> 13), baseline 75 functions in the runtime sources (comments left out).
+cmd: python3 tools/ai/callpath-perf-check.py stash
+** S4.5 End to end: on the same build, the final verification (S3.1) and the wall-clock regression guard (S2.4) pass
 cmd: python3 tools/ai/callpath-perf-check.py s63e2e
