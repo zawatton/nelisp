@@ -5929,29 +5929,19 @@ what a cache wants and what the demo did."
       (nelisp-native-load-unbox raw))
      (t raw))))
 
-(defun nelisp-native-load--resume-native-exit (env pin-frame)
-  "Resume the evaluator's exact native signal/throw before decoding a result.
-Copy both descriptor values into pinned roots before clearing the shared
-stash: Lisp decoding may allocate or perform a nested runtime operation."
-  (let* ((arena (ptr-read-u64 (nelisp-native-load--symbol-addr "nl_arena_base") 0))
-         (kind (ptr-read-u64 arena 16)))
-    (unless (= kind 0)
-      (unless (memq kind '(1 2))
-        (error "nelisp-native-load: invalid native exit kind %S" kind))
-      (let ((tag-slot (nelisp-native-load--pin-reserve env pin-frame))
-            (value-slot (nelisp-native-load--pin-reserve env pin-frame))
-            (i 0))
-        (while (< i 8)
-          (ptr-write-u32 tag-slot (* i 4) (ptr-read-u32 arena (+ 24 (* i 4))))
-          (ptr-write-u32 value-slot (* i 4) (ptr-read-u32 arena (+ 56 (* i 4))))
-          (setq i (1+ i)))
-        (ptr-write-u64 arena 16 0)
-        (let ((tag (nelisp-native-load-unbox tag-slot env pin-frame))
-              (value (nelisp-native-load-unbox value-slot env pin-frame)))
-          (if (= kind 2) (throw tag value)
-            (unless (and (symbolp tag) tag)
-              (error "nelisp-native-load: malformed native signal"))
-            (signal tag value)))))))
+(defun nelisp-native-load--resume-native-exit (kind tag-slot value-slot env pin-frame)
+  "Resume a frozen native exit after the call's cleanup has completed.
+The already-running public caller copied the pair into pinned roots and
+cleared the shared stash before any cleanup or cold helper dispatch."
+  (unless (= kind 0)
+    (unless (memq kind '(1 2))
+      (error "nelisp-native-load: invalid native exit kind %S" kind))
+    (let ((tag (nelisp-native-load-unbox tag-slot env pin-frame))
+          (value (nelisp-native-load-unbox value-slot env pin-frame)))
+      (if (= kind 2) (throw tag value)
+        (unless (and (symbolp tag) tag)
+          (error "nelisp-native-load: malformed native signal"))
+        (signal tag value)))))
 
 (defun nelisp-native-load--immediate-word (value)
   "Return VALUE's immediate native word, or nil when it needs a root."
@@ -6004,6 +5994,13 @@ including nested native calls and cleanup after an error."
                    (frames (+ env 32))
                    (scratch (nelisp-native-load--pin-reserve env pin-frame))
                    (name-slot (nelisp-native-load--pin-reserve env pin-frame))
+                   ;; Resolve and reserve while no native exit is pending.
+                   ;; Cold helper entry and munmap can enter the evaluator.
+                   (exit-arena (ptr-read-u64
+                                (nelisp-native-load--symbol-addr "nl_arena_base") 0))
+                   (exit-tag (nelisp-native-load--pin-reserve env pin-frame))
+                   (exit-value (nelisp-native-load--pin-reserve env pin-frame))
+                   (exit-kind 0)
                    (callbacks
                     (let ((i 0) (slots nil))
                       (while (< i nelisp-native-load-callback-slots)
@@ -6087,12 +6084,25 @@ including nested native calls and cleanup after an error."
                                    (plist-get handle :trampoline-entry-imm64-offset)
                                    (+ (plist-get handle :codepage)
                                       (plist-get handle :body-entry)))
-                    (setq raw (apply (function ptr-call) call-entry passed)))
+                    (setq raw (apply (function ptr-call) call-entry passed))
+                    ;; Capture inline before cleanup or the first invocation
+                    ;; of a helper can clear the evaluator's shared stash.
+                    (setq exit-kind (ptr-read-u64 exit-arena 16))
+                    (unless (= exit-kind 0)
+                      (let ((i 0))
+                        (while (< i 8)
+                          (ptr-write-u32 exit-tag (* i 4)
+                                         (ptr-read-u32 exit-arena (+ 24 (* i 4))))
+                          (ptr-write-u32 exit-value (* i 4)
+                                         (ptr-read-u32 exit-arena (+ 56 (* i 4))))
+                          (setq i (1+ i))))
+                      (ptr-write-u64 exit-arena 16 0)))
                 (let ((rc (nelisp-native-load--unmap call-entry call-size)))
                   (unless (= rc 0)
                     (error "nelisp-native-load: temporary trampoline munmap failed (%d)"
                            rc))))
-              (nelisp-native-load--resume-native-exit env pin-frame)
+              (nelisp-native-load--resume-native-exit
+               exit-kind exit-tag exit-value env pin-frame)
               ;; Some bodies carry dispatcher externs while returning a raw
               ;; register value.  Their metadata settles raw-bool exactly;
               ;; otherwise retain the existing low-address guard.

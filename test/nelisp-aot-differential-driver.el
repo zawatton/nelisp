@@ -4,6 +4,8 @@
 
 ;; Runs each generated program twice inside the reader -- once through
 ;; the interpreter, once as loaded native code -- and compares.
+;; Keep values and signals in distinct packets, preserving the full error
+;; symbol and data. The execution-path labels belong only in diagnostics.
 ;;
 ;; The expected answer is computed, not written down.  That is the whole
 ;; difference from `nelisp-native-load-driver.el': a fixture with a
@@ -62,8 +64,9 @@ through (exit 137).  Load once, answer both arguments, release."
                  name))
         (out nil))
     (dolist (arg args)
-      (push (condition-case e (nelisp-native-load-call handle (list arg))
-              (error (list 'native-error e)))
+      (push (condition-case e
+                (list 'value (nelisp-native-load-call handle (list arg)))
+              (error (list 'signal e)))
             out))
     (nelisp-native-load-unload handle)
     (nreverse out)))
@@ -96,9 +99,10 @@ through (exit 137).  Load once, answer both arguments, release."
                 (got (car gots))
                 (want nil))
             (setq want (condition-case e
-                           (nelisp-aot-differential--interpreted
-                            source name arg)
-                         (error (list 'interpreter-error e))))
+                           (list 'value
+                                 (nelisp-aot-differential--interpreted
+                                  source name arg))
+                         (error (list 'signal e))))
             (setq nelisp-aot-differential--checked
                   (1+ nelisp-aot-differential--checked))
             (unless (equal want got)

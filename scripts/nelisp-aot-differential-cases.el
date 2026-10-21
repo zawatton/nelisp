@@ -63,7 +63,11 @@ cons constant loadable.")
 ;; defun the case calls, a helper it calls.  The whole list runs through
 ;; tools/ai/codegen-lispvalue.py against both compilers.
 (defconst nelisp-aot-differential-lisp-value-cases
-  '((1 control "(defun lv-if-param (a) (if a 1 2))" (nil t 0 "s"))
+  ;; Raise on the first native call, before any helper cache is warm.
+  '((signal control ";;; -*- lexical-binding: t; -*-
+(defun lv-signal-unit (x) (+ 1 (lv-signal-leaf x)))
+(defun lv-signal-leaf (x) (funcall 'car x))" (3 (4 5)))
+    (1 control "(defun lv-if-param (a) (if a 1 2))" (nil t 0 "s"))
     (1 control "(defun lv-when-param (a) (when a 5))" (nil 1))
     (1 control "(defun lv-unless-param (a) (unless a 5))" (nil 1))
     (1 control "(defun lv-cond-null (a) (cond ((null a) 1) (a 2) (t 3)))" (nil 1))
@@ -186,9 +190,7 @@ cons constant loadable.")
     (word guard "(defun lv-word-id (a) a)" (nil t 0 -7 2305843009213693951 -2305843009213693952))
     (word guard "(defun lv-word-return (a) (+ a 1))" (0 7))
     ;; GNU comp.c push_handler / eval.c signal descriptors, Doc 229 S4.5.
-    (signal control ";;; -*- lexical-binding: t; -*-
-(defun lv-signal-unit (x) (+ 1 (lv-signal-leaf x)))
-(defun lv-signal-leaf (x) (funcall 'car x))" (3 (4 5)))
+
     (signal control ";;; -*- lexical-binding: t; -*-
 (defun lv-signal-handler-error (x) (condition-case outer (condition-case inner (funcall 'car x) (t (funcall 'car 9))) (t outer)))" (3 (4 5)))
     (signal control ";;; -*- lexical-binding: t; -*-

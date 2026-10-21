@@ -616,11 +616,12 @@ Returns 0 if the section entry is absent."
           ((eq section-name 'bss) bytes)
           (t (length bytes)))))
 
-(defun nelisp-link--compute-layout (combined &optional base-va page-size)
+(defun nelisp-link--compute-layout (combined &optional base-va page-size text-alignment)
   "Compute section VA layout matching the Doc 91 ELF writer.
 COMBINED is the alist returned by `nelisp-link-combine-sections'.
 BASE-VA defaults to `nelisp-link--default-base-va' (= #x400000),
 PAGE-SIZE defaults to `nelisp-link--default-page-size' (= 4 KB).
+TEXT-ALIGNMENT defaults to 1; x86-64 callers pass 16, matching the writer.
 Returns an alist `((SECTION-NAME . VA) ...)' covering `text',
 `rodata', `data', `bss'.  Placement strategy mirrors
 `nelisp-elf--build-rich': Ehdr + Phdrs precede `.text', `.rodata'
@@ -635,8 +636,10 @@ page (= RW segment), `.bss' immediately follows `.data'.  PHNUM =
          (bss-size    (nelisp-link--section-len combined 'bss))
          (have-rw     (or (> data-size 0) (> bss-size 0)))
          (phnum       (if have-rw 2 1))
-         (text-off    (+ nelisp-link--ehdr-size
-                         (* nelisp-link--phdr-size phnum)))
+         (text-off    (nelisp-link--align-up
+                       (+ nelisp-link--ehdr-size
+                          (* nelisp-link--phdr-size phnum))
+                       (or text-alignment 1)))
          (text-va     (+ bv text-off))
          (rodata-off  (+ text-off text-size))
          (rodata-va   (+ bv rodata-off))
@@ -714,9 +717,11 @@ relocs are fully resolved into the bytes already, so the writer
 must NOT emit a `.rela.text' section).  Returns FILE-PATH."
   (require 'nelisp-elf-write)
   (let* ((mach (or machine 'x86_64))
+         (text-alignment (if (memq mach '(x86_64 62)) 16 1))
          (combined (nelisp-link-combine-sections units mach))
          (layout (or section-layout
-                     (nelisp-link--compute-layout combined)))
+                     (nelisp-link--compute-layout
+                      combined nil nil text-alignment)))
          (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
@@ -727,6 +732,7 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
          (bss-size (or (cdr (assq 'bss bytes)) 0))
          (entry (or entry-sym "_start"))
          (plist (list :text text
+                      :text-alignment text-alignment
                       :rodata rodata
                       :data data
                       :bss-size bss-size
@@ -1024,7 +1030,7 @@ GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
                     (text-size imports &optional interp rodata-size data-size
                                bss-size))
   (declare-function nelisp-elf-build-dynamic-binary "nelisp-elf-write" (plist))
-  (let* ((combined (nelisp-link-combine-sections units))
+  (let* ((combined (nelisp-link-combine-sections units 'x86_64))
          (text-size (nelisp-link--section-len combined 'text))
          (rodata-size (nelisp-link--section-len combined 'rodata))
          (data-size (nelisp-link--section-len combined 'data))
