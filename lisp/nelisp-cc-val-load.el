@@ -161,6 +161,12 @@
                     (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
                 (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
     (defun nl_val_clone_into (src_slot dst_word_ptr)
+      (if (= (logand src_slot 7) 4)
+          (seq (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
+        (if (and (= (logand src_slot 7) 0)
+                 (/= (nl_string_view_header src_slot) 0))
+            (let ((word (nl_string_from_view src_slot)))
+              (seq (ptr-write-u64 dst_word_ptr 0 word) word))
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
         (if (= (logand src_slot 7) 6)
@@ -172,7 +178,7 @@
                    (and (ptr-write-u64 box 0
                          (+ (logand (heap-read-u64 box 0) -64) tag))
                         (ptr-write-u64 dst_word_ptr 0 word)) word))
-              (nl_val_clone_legacy src_slot dst_word_ptr)))))))
+              (nl_val_clone_legacy src_slot dst_word_ptr)))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

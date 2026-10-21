@@ -94,6 +94,9 @@
     ;; str_ptr: *const Sexp — any string-y variant (Str/Symbol/MutStr).
     ;; Returns: codepoint count; 0 for non-string variant.
     (defun nl_str_char_count (str-ptr)
+      (if (= (logand str-ptr 7) 4)
+          (logand (heap-read-u64 (- str-ptr 4) 0) 9223372036854775807)
+        (seq
       (if (= (sexp-tag str-ptr) 15)
           ;; UnibyteMutStr: character count is its boxed byte length.
           (heap-read-u64 (heap-read-u64 str-ptr 8) 16)
@@ -113,7 +116,7 @@
               (nl_str_char_count_str
                (heap-read-u64 str-ptr 16)
                (heap-read-u64 str-ptr 24))
-            0)))))))
+            0)))))))))
   "AOT direct-symbol source for `nl_str_char_count'.
 
 Exports `nl_str_char_count' (C-linkage) to replace the Rust

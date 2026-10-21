@@ -171,7 +171,8 @@
           (seq (ptr-write-u64 dst_ptr 0 1) (ptr-write-u64 dst_ptr 8 0)
                (ptr-write-u64 dst_ptr 16 0) (ptr-write-u64 dst_ptr 24 0) dst_ptr))))
     (defun nl_sexp_clone_into (src dst_ptr)
-      (if (= (logand src 1) 1) (nl_sci_store_imm src dst_ptr)
+      (if (= (logand src 7) 4) (nl_string_store_view src dst_ptr)
+        (if (= (logand src 1) 1) (nl_sci_store_imm src dst_ptr)
         (if (= (logand src 7) 6)
             (let ((base (- src 6)))
               (nl_sci_prog2
@@ -179,7 +180,7 @@
                     (ptr-write-u64 dst_ptr 8 base)
                     (ptr-write-u64 dst_ptr 16 0)
                     (ptr-write-u64 dst_ptr 24 0)) dst_ptr))
-          (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0))))))
+          (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))
   "AOT source for nl_sexp_clone_into.
 
 Re-provides the deleted Rust clone entry point from

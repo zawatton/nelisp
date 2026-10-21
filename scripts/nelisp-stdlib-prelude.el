@@ -661,7 +661,9 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
 ;; strip, even though strings can carry them since Doc 210.
 (unless (fboundp 'substring-no-properties)
   (defun substring-no-properties (string &optional from to)
-    (substring string from to)))
+    (let ((result (substring string from to)))
+      (remhash result nelisp--tp-string-properties)
+      result)))
 ;; Doc 210: strings can carry properties now, so this can no longer be
 ;; plain `equal' -- it additionally requires the same property plist
 ;; (compared with `equal', not `eq': this is the user-facing predicate,
@@ -12582,6 +12584,48 @@ point, since it appends TEXT straight onto it."
 (defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
   "STRING (by identity) -> its text-property interval list, 0-based.")
 
+;; GNU fns.c copies intervals together with character data.  Until the
+;; Lisp interval engine writes Lisp_String.intervals directly, mirror that
+;; ownership operation in its identity table. Install only on first write.
+(defvar nelisp--tp-string-copies-installed nil)
+(defun nelisp--tp-copy-range (source from to shift)
+  (let (result)
+    (dolist (iv (gethash source nelisp--tp-string-properties))
+      (let ((start (max from (nth 0 iv))) (end (min to (nth 1 iv))))
+        (when (< start end)
+          (push (list (+ shift (- start from)) (+ shift (- end from))
+                      (copy-sequence (nth 2 iv))) result))))
+    (nreverse result)))
+(defun nelisp--tp-install-string-copies ()
+  (unless nelisp--tp-string-copies-installed
+    (setq nelisp--tp-string-copies-installed t)
+    (fset 'nelisp--concat-without-property-copy (symbol-function 'concat))
+    (fset 'nelisp--substring-without-property-copy (symbol-function 'substring))
+    (fset 'concat
+          (lambda (&rest sequences)
+            (let ((result (apply #'nelisp--concat-without-property-copy sequences))
+                  (position 0) intervals)
+              (dolist (source sequences)
+                (when (stringp source)
+                  (setq intervals
+                        (append intervals (nelisp--tp-copy-range
+                                           source 0 (length source) position))))
+                (setq position (+ position (length source))))
+              (when intervals (puthash result intervals nelisp--tp-string-properties))
+              result)))
+    (fset 'substring
+          (lambda (source &optional from to)
+            (let ((result (if to
+                              (nelisp--substring-without-property-copy source from to)
+                            (nelisp--substring-without-property-copy source from))))
+              (when (stringp source)
+                (let* ((n (length source)) (start (or from 0)) (end (or to n))
+                       (intervals (nelisp--tp-copy-range
+                                   source (if (< start 0) (+ n start) start)
+                                   (if (< end 0) (+ n end) end) 0)))
+                  (when intervals (puthash result intervals nelisp--tp-string-properties))))
+              result)))))
+
 (defun nelisp--tp-plist-at (pos intervals)
   "Return the PLIST covering POS in INTERVALS, or nil if none does."
   (catch 'nelisp--tp-found
@@ -12712,7 +12756,8 @@ range change nothing)."
   "Store NEW as OBJECT's interval list (nil = current buffer)."
   (if (stringp object)
       (if new
-          (puthash object new nelisp--tp-string-properties)
+          (progn (nelisp--tp-install-string-copies)
+                 (puthash object new nelisp--tp-string-properties))
         (remhash object nelisp--tp-string-properties))
     (setf (nelisp-buffer-text-properties (or object nelisp--current-buffer)) new)))
 

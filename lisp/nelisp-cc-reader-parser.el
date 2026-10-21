@@ -739,8 +739,9 @@
     ;; ===========================================================
     ;; Quote-family head-symbol byte writers.  Each push the
     ;; canonical name into a (freshly-reset) SCRATCH MutStr.  The
-    ;; caller then `mut-str-finalize's into a slot and overwrites
-    ;; the tag byte to convert Sexp::Str -> Sexp::Symbol.
+    ;; caller interns the byte span with the existing Symbol allocator.
+    ;; A pooled GNU String cannot be retagged as a legacy Symbol: that
+    ;; would discard its header's GC ownership edge.
     ;; ===========================================================
 
     (defun nelisp_reader_p_push_quote_bytes (scratch)
@@ -786,33 +787,32 @@
        ((= tag-byte 113)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_quote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             ;; SEXP_TAG_SYMBOL = 4.
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 98)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_backquote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 99)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_comma_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 100)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_comma_at_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 102)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_function_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        (t 0)))
 

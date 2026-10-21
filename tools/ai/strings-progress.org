@@ -28,6 +28,7 @@
 * S0 Plan
 ** S0.1 docs/design/227-gnu-string-port.org maps the GNU string mechanisms (alloc.c string_block, sdata, compaction; character.h and fns.c producers) to NeLisp, with a census of string view, copy and alias sites
 #+NOTE: 2026-10-21 S0: Doc 227 maps alloc.c:1318-2055, lisp.h:1555-1640, character.h byte8 rules and fns.c producers. The initial census classifies 14 executable definitions and explicitly includes raw parser/image/mutation callers beyond that set. strings-check.py plan passes. No runtime changed; allocation and CPU-14 timings remain required in the implementation increments. GNU 56 B supersedes the historical 48 B string threshold as authorized in c20eb1d8f.
+#+NOTE: 2026-10-22 census expansion: quote-head symbol creation and canonical return transport bring the named executable census from 14 to 16. The former now uses the existing Symbol allocator instead of retagging an owned String; the latter returns a canonical String WORD directly. These are source-census counts, not acceptance-threshold revisions.
 cmd: python3 tools/ai/strings-check.py plan
 
 * S1 Port and semantics
@@ -35,13 +36,16 @@ cmd: python3 tools/ai/strings-check.py plan
 #+NOTE: 2026-10-21 coordinator: the strings lane stopped on a GNU-against-ledger contradiction (target/strings/blocker.json). GNU's Lisp_String is 32 B (lisp.h:1555-1579) and sdata_size(8) is 24 B (alloc.c:1352-1394), so GNU's own structure needs at least 56 B, above the word-heap S0-revised 48 B. That threshold predates the user's 2026-10-21 rule to imitate GNU's implementation, so GNU's layout is the target. The criteria count is unchanged.
 cmd: python3 tools/ai/strings-check.py layout
 ** S1.2 String data lives in GNU-style sdata blocks, and compact_small_strings reclaims fragmentation; a fragmentation test bounds string bytes after churn
+#+NOTE: 2026-10-22 implementation: alloc.c:1318-2055 string blocks/sdata are ported with a temporary OS alignment adapter; alloc.c:4581/4925 live_string_holding is adapted for raw buffer owners as well as conservative roots. The compiled kernel passes header/back-pointer, large release, compaction, four parallel allocators and data-only pinning. Whole-runtime GC verification is still outstanding; this NOTE does not claim S1.1 or S1.3 complete. Native-function, text, proof-node and metadata caps are unchanged.
 cmd: python3 tools/ai/strings-check.py compaction
 ** S1.3 A GNU 31.1 oracle fixture matches on dynamic and static
 The fixture covers multibyte and unibyte, aset on both, substring, concat, string text properties, make-string, string-to-multibyte, string-to-unibyte, string-as-unibyte, format and number-to-string.
+#+NOTE: 2026-10-22 first working port: build32 dynamic matches all 13 GNU cases, including explicit-GC alias identity, clear-string, text-property copy and error data. Kernel tests also cover direct canonical return, data-only pinning and uninitialized final sdata. Authenticated native closure is 296 functions / 520061 text bytes, under the unchanged caps. Static and COMMON verification remain to run.
 cmd: python3 tools/ai/strings-check.py semantics
 
 * S2 Speed (wall-clock against GNU, paired ratios, CPU 14)
 ** S2.1 Own cost of concat, substring and format on short strings <= GNU's own cost
+#+NOTE: 2026-10-22 CPU-14 checkpoint, N=2000, one alternating candidate/GNU/base round with same-arity subtraction: candidate/base concat 104.234x, substring 7.997x, format 8.536x. Candidate own ns/call 304416 / 90961 / 91284. This is not acceptance evidence: GNU concat subtraction was negative, and the seven-round campaign is still required. The port currently regresses; String-compatible name comparison and retained-heap accounting need investigation. The original S2 bars stay failing.
 cmd: python3 tools/ai/strings-check.py speed producers
 ** S2.2 The unibyte R=80 pressure workload gains against the base (median paired ratio < 1.0), with the GNU ratio reported
 cmd: python3 tools/ai/strings-check.py speed pressure

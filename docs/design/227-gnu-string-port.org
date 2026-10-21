@@ -77,3 +77,150 @@ its line numbers below are approximate and are not patches to apply blindly.
 
 These are integration requirements, not claims that the hooks are already
 exported or that image conversion is complete.
+
+* Implementation boundary
+
+The first port uses OS-backed, 32 KiB aligned header blocks (type 3 at
++32752), with a header free list, and GNU's 8192-byte sblocks. GNU's
+approximately 1 KiB header block is adapted to gc-port's ablock boundary;
+per-string header and sdata layouts are unchanged. Each header block owns
+its original OS mapping so it can be released. This base lacks gc-port's
+ablock allocator, and therefore calls its existing nl_os_alloc_chunk/free
+abstraction. This temporary alignment adapter reserves 64 KiB for each
+32 KiB header block; its unused reservation is additional block overhead.
+The 56 B figure measures the GNU header plus sdata, not resident memory.
+The gc-port ablock allocator replaces this adapter at integration.
+The pool's own BSS symbol is nl_strings_state, appended after
+all existing driver BSS; it does not use nl_typed_alloc offsets. The active
+build authentication has one BSS owner, so a separate BSS-only unit cannot
+be used by this base's startup proof.
+
+Canonical strings carry tag 100 and have one stable header. Generic legacy
+consumers decode fields through the existing accessor boundary; explicit
+allocator, GC and value-transport storage remains physical. Legacy C ABI
+out slots contain a caller-owned transport record, not a newly allocated
+string object. Those records retain the canonical header identity, and GC
+repairs their data pointers after sdata compaction. The remaining producer
+and transport census must be completed before claiming zero materializers.
+
+GNU serializes allocation through its interpreter lock. NeLisp's parallel
+evaluators need a lock around the shared string free list and sblock cursor.
+The focused compiled-Elisp kernel probe exercises four concurrent allocators,
+header identity, data contents, large-string release and compaction.
+GNU data.c:2619-2680 restricts multibyte aset to ASCII-for-ASCII replacement;
+size-changing/non-ASCII writes must retain GNU's errors.
+
+The local development probe compiles only the real string kernel and links
+it to a small C driver, avoiding a complete reader rebuild for storage
+questions. strings-build.sh keeps errors bounded without changing build
+checks. A paired error-display probe took 1.356 s / 456718 output B before,
+and 0.053 s / 25 B with bounded batch backtraces. These are diagnostic costs,
+not runtime performance evidence.
+
+The current WORD split is String=100, vectorlike=110, legacy boxed symbols
+remain 000 with logical kinds 4/16. GNU's first string word is its character
+count, not Doc 216 S0's proposed packed kind/length. A future direct-symbol
+merge cannot reuse String's 100 decoder with a packed symbol header; agree
+that discriminator with the symbols/gc-port lanes before merging. Existing
+000, fixnum, nil and t encodings are unchanged.
+
+Live-only image output currently refuses before opening the destination:
+"String block image relocation is not implemented". The legacy image format
+only relocates arena and intern regions and cannot safely persist the new
+OS-backed headers/sdata. Old image strings remain legacy boot objects and
+are not enrolled into the new string sweep. Library-image criterion S3.2
+remains pending; do not treat a source-only MCP smoke as an image proof.
+
+* Producer allocation paths
+
+GNU alloc.c:2082-2118 allocates make-string's final sdata first, writes one
+encoded character, then doubles the initialized span. The port uses a
+non-owning counting builder to measure one character's encoding, allocates
+the final header/data, writes one character and doubles its initialized
+prefix. Zero length and the explicit multibyte argument retain their own
+representation. Characters above MAX_CHAR (4194303) signal characterp.
+
+GNU fns.c:839-958 computes concat's character and byte totals, including
+unibyte promotion, before allocating its destination. The port shares its
+existing native encoder between a non-allocating sizing pass (builder
+capacity -1) and the final sdata writer. The native simple-format subset
+uses the same two passes; its validation excludes user callbacks. This
+adapts GNU's pre-sizing algorithm to NeLisp's existing encoder ABI. A builder
+retains its ordinary NlStr reference count; the sdata back-pointer identifies
+the canonical header when publishing the result.
+
+Substring resolves character indices to byte offsets and copies directly
+into its single final sdata allocation. It no longer copies a temporary
+mutable buffer into a second character allocation. The remaining scratch
+builders in parsing and printing are temporary byte encoders, not aliased
+immutable String objects. Necessary copies into independent values remain.
+Runtime semantic/layout evidence and paired timings are still required;
+source inspection alone does not establish the acceptance criteria.
+
+* Implicit grammar receivers
+
+The source census also includes implicit field reads in =str-eq=,
+=sexp-tag= and =sexp-name-eq=. Generic heap-read adaptation alone is
+insufficient: the former inline emitters read legacy offsets after source
+lowering. Mirror keys are strings, so the original str-eq made every
+installed native function unfindable even though the table was populated.
+The next receiver failure was make-symbol's sexp-tag check during prelude
+loading. These operators now decode GNU headers in the accessor layer,
+without adding a machine emitter or a reader builtin. Operands are evaluated
+once, and existing immediate/vector WORD encodings retain their old decoder.
+Symbol-name table transport materializes a canonical String WORD into its
+existing caller-owned 32 B slot; it must not bit-copy header+4 as an address.
+
+The focused native kernel includes the real lowered equality/tag/name
+operators. It checks String WORD versus legacy Symbol equality, mismatch,
+literal-name matching, and unchanged fixnum/nil/t/vector tags. Recompiling
+that probe with the original accessor layer exits on its equality assertion;
+the new layer passes. This is a receiver regression check, not a claim that
+the full prelude or GNU fixture already passes.
+
+* Reader quote-family boundary
+
+The fifteenth executable census site is
+=nelisp_reader_p_build_head_symbol= (five quote-family branches). It used a
+String builder finalizer followed by changing only the tag to Symbol. With
+GNU pooled storage that discarded the String header's owning edge: a later
+sweep wrote the dead sdata length into what the Symbol still used as its
+name bytes. The reader now sends the scratch byte span to the existing
+Symbol allocator directly. Symbol storage and allocation policy remain
+owned by their lane; this boundary no longer retags a pooled String.
+
+* Data-only owners in the base collector
+
+GNU alloc.c:4581 live_string_holding recovers a header from an interior
+character pointer; the conservative marker at alloc.c:4925 keeps it alive.
+This base also has precise buffer-only owners routed through nl_gc_mark_buf.
+The failed old-arena object-start branch in nl_gc_mark_block therefore calls
+nl_string_pin_word and returns zero (there is no old-arena child to recurse).
+The string helper validates its own header/data ranges and pool membership,
+marks the canonical header, and disables sdata movement for that collection.
+This hook accompanies the coordinator's conservative typed-root hook.
+Small and large sblocks share one physical walk to keep the authenticated
+native proof within its existing bounds. None of those bounds is widened.
+
+The base's Windows nl_os_alloc_chunk reserves memory but commits only its
+first page. The alignment adapter calls nl_os_commit_range for the entire
+header/sdata mapping before publishing it; Linux's implementation is a no-op.
+GNU obtains committed allocator memory instead. This is an OS adapter, not a
+change to the GNU header or sdata layout.
+
+* Canonical return transport
+
+The sixteenth named census definition is nl_g4arm_copy_w: canonical String
+WORDs return directly, just as immediate values already do. Its legacy
+32-byte scratch allocation remains for other types. This removes a temporary
+owned view without changing String identity or an independent-value copier.
+nl_abi_word_to_rc handles String WORDs before entering its physical legacy
+copy branch; that branch is explicitly physical in the accessor lowering.
+It must not expand four generic String field decoders into every ABI caller.
+
+The base's optimized cons cdr walk originally called nl_gc_mark_block before
+recognizing a non-cons WORD. A String WORD names a pool header outside the
+old arena, so this skipped lexical bindings whose value was a dotted cdr.
+Its precise String branch must call nl_gc_mark_word directly; it must not
+conservatively pin that ordinary edge. Audit the analogous char-table WORD
+walk when integrating the new String tag into gc-port.

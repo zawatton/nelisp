@@ -93,6 +93,7 @@ cmd: printf '%s\n' 'S2.3: implementation or complete acceptance evidence remains
 * S3 strings and symbols header-less
 
 ** S3.1 bytes per 8-char string and per uninterned symbol at or below the S0-revised thresholds
+#+NOTE: 2026-10-21 coordinator decision (strings lane, c20eb1d8f): the historical string8<=48 arena B target contradicts GNU 31.1 lisp.h:1555-1579 and alloc.c:1352-1394. GNU's 32 B Lisp_String plus 24 B sdata is the target: <=56 B per 8-character string, excluding block bookkeeping. tools/ai/strings-progress.org S1.1 governs this port; canonical WORDs remove separately owned alias views. The symbol target and all criterion counts are unchanged.
 #+NOTE: 2026-10-20 S0 revision S3: old unspecified limits -> string8<=48 arena B; symbol handle<=32 arena B with shared name charged separately. Reason: tagged payload plus allocator prefix; preserve GNU name identity/eq and mutation without hiding name storage.
 cmd: printf '%s\n' 'S3.1: implementation or complete acceptance evidence remains outstanding' >&2; exit 1
 

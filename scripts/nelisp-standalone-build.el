@@ -40,6 +40,7 @@
 ;;; Code:
 
 (require 'nelisp-heap-accessors)
+(require 'nelisp-cc-string-blocks)
 
 (require 'cl-lib)
 
@@ -649,6 +650,18 @@ binary's own digest.  Returns the digest as a hex string."
           (set-file-modes binary modes)))
       hex)))
 
+(defun nelisp-standalone--strings-extend-bss (unit)
+  "Append strings' own BSS symbol without moving any existing storage."
+  (let* ((sections (plist-get unit :sections))
+         (bss (assq 'bss sections))
+         (offset (logand (+ (cdr bss) 7) -8)))
+    (setcdr bss (+ offset 144))
+    (plist-put unit :symbols
+               (append (plist-get unit :symbols)
+                       (list (nelisp-link-symbol "nl_strings_state" offset
+                               :section 'bss :bind 'global :type 'object))))
+    unit))
+
 (defun nelisp-standalone--arena-base-slot-unit ()
   "Doc 140 Stage 8: a tiny driver-owned bss link unit exporting
 `nl_arena_base'.  `nl_arena_init' stores the runtime chunk-0 base in this
@@ -657,7 +670,8 @@ metadata access load the slot (via `data-addr') + offset.  The slot lives in
 the binary's own bss (linker-assigned VA, present in the program headers like
 any C global), so the ONLY remaining fixed address is driver-owned global
 storage — not an arena reservation."
-  (nelisp-link-unit-make
+  (nelisp-standalone--strings-extend-bss
+   (nelisp-link-unit-make
    (nelisp-standalone--target-object-name "arena-base.o")
    ;; Doc 152 §11.37 Stage 2: + nl_rootstack_top as
    ;; driver-owned bss globals.  The arena reserved-prefix "free gap" [0xf8,0x2b8)
@@ -1002,7 +1016,7 @@ storage — not an arena reservation."
                              (+ (nelisp-standalone--root-pin-region-offset)
                                 (* nelisp-standalone--root-pin-slots 32))
                              :section 'bss :bind 'global :type 'object)))
-   nil))
+   nil)))
 
 ;; ===================================================================
 ;; Doc 170 Stage 2 — checked allocator (debug-only, default OFF).
@@ -1040,7 +1054,7 @@ storage — not an arena reservation."
 ;;    first-bad-hdr site live-blocks live-bytes)
 ;; where live-blocks / live-bytes count non-boot blocks not on the
 ;; free-list (= still-reachable allocations; run `garbage-collect'
-;; first to drop garbage so the residue is the true retention).
+;; first to drop garbage so the residue is the true retention).)
 
 (defconst nelisp-standalone--alloc-check-guard-hi #x5AFEC4EC
   "High 32 bits of the checked-allocator guard word.
@@ -1686,39 +1700,41 @@ position and under `data-addr'."
 (defvar nelisp-standalone--inline-import-sources nil
   "Normalized dependency sources visible only while compiling their caller.")
 (defconst nelisp-standalone--unit-inline-dependencies
-  '(("arena.o" "reader-gc.o")
-    ("mirror-lookup.o" "reader-gc.o" "arena.o")
-    ("val-load.o" "reader-gc.o" "arena.o")
-    ("car-ptr.o" "arena.o")
-    ("cdr-ptr.o" "arena.o")
-    ("vec-slot-ptr.o" "arena.o")
-    ("record-slot-ptr.o" "arena.o")
-    ("sf-frame-stack-find.o" "arena.o")
-    ("fnv1a.o" "arena.o")
-    ("str-bytes.o" "arena.o")
-    ("rootstack.o" "arena.o")
-    ("applyfn-reader.o" "arena.o")
-    ("combiner-apply-fix.o" "arena.o")
-    ("combiner-cons-mxcache.o" "arena.o")
-    ("reader-catch-throw.o" "arena.o")
-    ("reader-fileio.o" "arena.o")
-    ("reader-gc.o" "arena.o")
-    ("arglist.o" "arena.o")
-    ("lookup-fn.o" "arena.o")
-    ("sf-frame-bind.o" "arena.o")
-    ("sf-env-lookup-value.o" "arena.o")
-    ("frame-pop-epoch.o" "arena.o")
-    ("frame-push-epoch.o" "arena.o")
-    ("sf-let-setup.o" "arena.o")
-    ("shim.o" "arena.o")
-    ("apply-lambda-inner.o" "arena.o")
-    ("sf-progn.o" "arena.o")
-    ("reader-capture.o" "arena.o")
-    ("sf-eval-is-truthy.o" "arena.o")
-    ("sf-while.o" "arena.o")
-    ("sf-setq.o" "arena.o")
-    ("reader-parser.o" "arena.o")
-    ("driver.o" "arena.o"))
+  '(("arena.o" "reader-gc.o" "string-blocks.o")
+    ("alloc-str.o" "string-blocks.o")
+    ("clone.o" "string-blocks.o")
+    ("mirror-lookup.o" "reader-gc.o" "arena.o" "string-blocks.o")
+    ("val-load.o" "reader-gc.o" "arena.o" "string-blocks.o")
+    ("car-ptr.o" "arena.o" "string-blocks.o")
+    ("cdr-ptr.o" "arena.o" "string-blocks.o")
+    ("vec-slot-ptr.o" "arena.o" "string-blocks.o")
+    ("record-slot-ptr.o" "arena.o" "string-blocks.o")
+    ("sf-frame-stack-find.o" "arena.o" "string-blocks.o")
+    ("fnv1a.o" "arena.o" "string-blocks.o")
+    ("str-bytes.o" "arena.o" "string-blocks.o")
+    ("rootstack.o" "arena.o" "string-blocks.o")
+    ("applyfn-reader.o" "arena.o" "string-blocks.o")
+    ("combiner-apply-fix.o" "arena.o" "string-blocks.o")
+    ("combiner-cons-mxcache.o" "arena.o" "string-blocks.o")
+    ("reader-catch-throw.o" "arena.o" "string-blocks.o")
+    ("reader-fileio.o" "arena.o" "string-blocks.o")
+    ("reader-gc.o" "arena.o" "string-blocks.o")
+    ("arglist.o" "arena.o" "string-blocks.o")
+    ("lookup-fn.o" "arena.o" "string-blocks.o")
+    ("sf-frame-bind.o" "arena.o" "string-blocks.o")
+    ("sf-env-lookup-value.o" "arena.o" "string-blocks.o")
+    ("frame-pop-epoch.o" "arena.o" "string-blocks.o")
+    ("frame-push-epoch.o" "arena.o" "string-blocks.o")
+    ("sf-let-setup.o" "arena.o" "string-blocks.o")
+    ("shim.o" "arena.o" "string-blocks.o")
+    ("apply-lambda-inner.o" "arena.o" "string-blocks.o")
+    ("sf-progn.o" "arena.o" "string-blocks.o")
+    ("reader-capture.o" "arena.o" "string-blocks.o")
+    ("sf-eval-is-truthy.o" "arena.o" "string-blocks.o")
+    ("sf-while.o" "arena.o" "string-blocks.o")
+    ("sf-setq.o" "arena.o" "string-blocks.o")
+    ("reader-parser.o" "arena.o" "string-blocks.o")
+    ("driver.o" "arena.o" "string-blocks.o"))
   "Explicit unit dependencies available to the general small-function inliner.")
 
 (defun nelisp-standalone--inline-static-data-p (form)
@@ -3123,8 +3139,10 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_imm_t () 7)
     (defun nl_val_tag (v)
       (if (= (logand v 1) 0)
-          (if (= (logand v 7) 6) (logand (heap-read-u8 (- v 6) 0) 63)
-            (heap-read-u8 v 0))
+          (if (= (logand v 7) 4)
+              (if (< (heap-read-u64 (- v 4) 8) 0) 14 5)
+            (if (= (logand v 7) 6) (logand (heap-read-u8 (- v 6) 0) 63)
+              (heap-read-u8 v 0)))
         (if (= (logand v 3) 1) 2 (if (= v 3) 0 1))))
     ;; Word accessors (eval-core box migration): the container slot's own
     ;; tagged WORD, never a materialized 32-byte view, so reading an
@@ -3147,8 +3165,12 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_word_payload (w)
       (if (= (logand w 1) 1)
           (if (= (logand w 3) 1) (sar w 2) 0)
-        (if (= (logand w 7) 6) (- w 6) (heap-read-u64 w 8))))
-    (defun nl_word_data (w)
+        (if (= (logand w 7) 4)
+            (let* ((header (- w 4)))
+              (if (< (heap-read-u64 header 8) 0) header
+                (logior header 4611686018427387904)))
+          (if (= (logand w 7) 6) (- w 6) (heap-read-u64 w 8)))))
+    (defun nl_word_data_legacy (w)
       ;; Legacy strings/symbols keep their physical +16 field. A compact
       ;; vectorlike or its physical view keeps flags in the backing header;
       ;; never cache those flags in a transient view.
@@ -3160,8 +3182,12 @@ directory tracks the tree rather than accumulating every key ever built."
               (if (/= (logand bits 128) 0) 13110
                 (if (/= (logand bits 64) 0) 13109 0)))
           (heap-read-u64 w 16))))
+    (defun nl_word_data (w)
+      (if (= (logand w 7) 4) (heap-read-u64 (- w 4) 24)
+        (nl_word_data_legacy w)))
     (defun nl_word_length (w)
-      (if (= (logand w 7) 6) 0 (heap-read-u64 w 24)))
+      (if (= (logand w 7) 4) (nl_string_nbytes (- w 4))
+        (if (= (logand w 7) 6) 0 (heap-read-u64 w 24))))
     (defun nl_vector_length (v)
       (sar (heap-read-u64 (nl_word_payload v) 0) 8))
     (defun nl_record_length (v)
@@ -3176,7 +3202,7 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; A container slot WORD as the value record-slot-ref / vector-ref
     ;; produced: immediates as they are, a heap value cloned into a fresh box.
     (defun nl_word_clone (w)
-      (if (or (= (logand w 1) 1) (= (logand w 7) 6)) w
+      (if (or (= (logand w 1) 1) (= (logand w 7) 6) (= (logand w 7) 4)) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
     (defun nl_w_vector_make (n _pad)
       (let ((b (alloc-bytes 32 8)))
@@ -3209,7 +3235,7 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; produces it, and its adapter nl_apply_special must hand it on.
     (defun nl_abi_word_to_rc (w out)
       (if (= w 0) 1 (if (= w 2) 2
-        (if (or (= (logand w 1) 1) (= (logand w 7) 6))
+        (if (or (= (logand w 1) 1) (= (logand w 7) 6) (= (logand w 7) 4))
             (seq (nl_sexp_clone_into w out) 0)
           (seq (ptr-write-u64 out 0 (heap-read-u64 w 0))
                (ptr-write-u64 out 8 (heap-read-u64 w 8))
@@ -4661,7 +4687,10 @@ REPL-facing module it feeds."
       ;; (upgrade 4->1, return 1 = "recurse").  mark 1/2/3/5 -> already
       ;; recursed/free -> skip (return 0).  This DECOUPLES "alive" (pinned) from
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
-      (if (= (nl_gc_object_start_p obj) 0) 0
+      (if (= (nl_gc_object_start_p obj) 0)
+          ;; A data-only owner cannot be repaired by a WORD relocation.
+          ;; Find its GNU sdata back-pointer, keep the header, and pin data.
+          (nl_seq2 (nl_string_pin_word obj) 0)
         (let* ((hdr (- obj 8))
                (raw (heap-read-u64 hdr 0)))
           ;; A precise Sexp edge must name the block's object start.  The
@@ -4725,9 +4754,19 @@ REPL-facing module it feeds."
                  (setq k (+ k 1)))) 0)))
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
-        (if (= (logand word 7) 6)
+        (if (= (logand word 7) 4)
+            ;; GNU MARK_STRING: mark the canonical header directly. Keeping
+            ;; this in the collector also avoids a new mutually recursive
+            ;; native helper at the authenticated mark-word boundary.
+            (let* ((s (- word 4)) (size (heap-read-u64 s 0)))
+              (if (< size 0) 0
+                (seq (nl_gc_typed_add 3 s (nl_string_nbytes s) 48 1)
+                     (ptr-write-u64 s 0 (logior size -9223372036854775808))
+                     (if (/= (heap-read-u64 s 16) 0)
+                         (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1)))
+          (if (= (logand word 7) 6)
             (nl_gc_mark_vectorlike (- word 6))
-          (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))
+          (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))
     (defun nl_gc_mark_inline_words (owner offset n)
       (let* ((cap (nl_gc_block_elem_cap owner 8)) (i offset)
              (end (+ offset n)))
@@ -5046,7 +5085,8 @@ REPL-facing module it feeds."
                       (if (= (nl_gc_mark_block box) 0) 0
                         (nl_gc_mark_buf (heap-read-u64 box 8))))
                   (if (or (= tag 5) (= tag 14))
-                      (nl_gc_mark_buf (heap-read-u64 sp 16)) ; Str/UnibyteStr
+                      (if (= (nl_string_mark_view sp) 0)
+                          (nl_gc_mark_buf (heap-read-u64 sp 16)) 0) ; legacy transport
                     (if (or (= tag 4) (= tag 16))
                         (nl_seq2
                          (nl_gc_mark_buf (heap-read-u64 sp 16))
@@ -5066,8 +5106,9 @@ REPL-facing module it feeds."
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
     (defun nl_gc_mark_slot (sp)
-      (if (= (logand sp 7) 6) (nl_gc_mark_vectorlike (- sp 6))
-        (nl_gc_mark_legacy_slot sp)))
+      (if (= (logand sp 7) 4) (nl_gc_mark_word sp)
+        (if (= (logand sp 7) 6) (nl_gc_mark_vectorlike (- sp 6))
+          (nl_gc_mark_legacy_slot sp))))
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
     ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
     ;; a helper so the sweep loop body has no nested let + outer setq.
@@ -5726,6 +5767,7 @@ REPL-facing module it feeds."
     (defun nl_gc_sweep ()
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
+       (nl_sweep_strings)
        (nl_gc_symname_sweep_all)
        (nl_native_subr_weak_sweep)
        (nl_alloc_run_reset)
@@ -5958,8 +6000,11 @@ REPL-facing module it feeds."
     ;; callers in the precise path no longer use it.
     (defun nl_gc_conserv_owner (w) (nl_gc_conserv_pin w))
     (defun nl_gc_conserv_word (w)
-      (let ((owner (nl_gc_conserv_resolve w)))
-        (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
+      (if (= (nl_string_pin_word w) 1)
+          (seq (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                 (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 1)
+        (let ((owner (nl_gc_conserv_resolve w)))
+          (if (= owner 0) 0 (nl_gc_conserv_pin owner)))))
     (defun nl_gc_conserv_scan (p0 top)
       (let* ((index (data-addr nl_gc_start_index))
              (active (heap-read-u64 index 16))
@@ -5969,6 +6014,9 @@ REPL-facing module it feeds."
              (p p0) (word 0))
         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
           (setq word (heap-read-u64 p 0))
+          (if (= (nl_string_pin_word word) 1)
+              (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                             (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
               (nl_gc_conserv_word word) 0)
           (setq p (+ p 8)))
@@ -6025,6 +6073,7 @@ REPL-facing module it feeds."
               (setq hdr (+ hdr bt)))))
         ok))
     (defun nl_gc_mark_reset_all ()
+      (nl_string_unmark)
       (let ((chunk (heap-read-u64 268436160 0)))
         (while (> chunk 0)
           (nl_gc_mark_reset_chunk chunk)
@@ -7001,6 +7050,7 @@ REPL-facing module it feeds."
     ;; Orchestrate phases 2-6.  Takes the 7 roots (for phase 3 rewrite).
     (defun nl_gc_compact (ctx result out pool src cursor bsym)
       (seq
+       (nl_sweep_strings)
        ;; perf/macroexpansion-cache: bump MXCACHE_EPOCH FIRST, before any
        ;; relocation happens.  This makes every existing cache entry O(1)
        ;; invisible to `nl_mxcache_lookup' from this point on (epoch
@@ -8310,24 +8360,23 @@ argument (reachability + in-arena bounds checks).")
      (if (if (= (heap-read-u64 (wf_arg_ptr args 0) 0) 2)
              (if (< (heap-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
          (if (if (= (heap-read-u64 (wf_arg_ptr args 1) 0) 2)
-                 (if (< (heap-read-u64 (wf_arg_ptr args 1) 8) 0) 0 1) 0)
+                 (if (or (< (heap-read-u64 (wf_arg_ptr args 1) 8) 0)
+                         (> (heap-read-u64 (wf_arg_ptr args 1) 8) 4194303)) 0 1) 0)
              (let* ((cp (heap-read-u64 (wf_arg_ptr args 1) 8))
                     (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
                     (forced (if (= (heap-read-u64 rest 0) 7)
                                 (if (= (heap-read-u64 (wf_arg_ptr args 2) 0) 0) 0 1) 0))
-                    (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
-                    (sb (alloc-bytes 32 8)))
-               (seq (m5_make_builder sb 16 (- 1 multi))
-                    (nl_u8_repeat sb (heap-read-u64 (wf_arg_ptr args 0) 8) cp)
-                    (nl_g4arm_finish_string_w sb multi)))
+                    (multi (if (= forced 1) 1 (if (< cp 128) 0 1))))
+               (m5_make_repeated_string (heap-read-u64 (wf_arg_ptr args 0) 8) cp (- 1 multi)))
            (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
        (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
     ((:lit "concat")           :word . (let* ((why (m5_concat_first_bad_kind args)))
                                    (if (= why 0)
                                        (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
-                                           (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder
-                                                   sb (m5_concat_string_capacity args 0)
-                                                   all-unibyte)
+                                           (let ((sb (alloc-bytes 32 8)))
+                                             (seq (m5_count_builder sb all-unibyte)
+                                                  (m5_concat_walk sb args)
+                                                  (m5_builder_allocate_string sb all-unibyte)
                                                   (m5_concat_walk sb args)
                                                   (nl_g4arm_finish_string_w sb (- 1 all-unibyte)))))
                                      (let* ((bad (m5_concat_first_bad_ptr args)))
@@ -8417,9 +8466,8 @@ argument (reachability + in-arena bounds checks).")
                                                         0)))
                                             (if (if (< cf-byte 0) 1 (if (< ct-byte 0) 1 0))
                                                 (nl_abi_fail (bf_args_out_of_range3 s from-box to-box) 0)
-                                              (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 16 uni)
-                                                   (m5_push_str_bytes sb s cf-byte ct-byte)
-                                                   (nl_g4arm_finish_string_w sb (- 1 uni))))))))
+                                              (nl_string_new (+ (bf_str_ptr s) cf-byte)
+                                                             (- ct-byte cf-byte) uni)))))
                                      (let* ((clen (m5_length s))
                                             (to (if (= has-to 1) to-raw clen))
                                             (cf (if (< from 0) (+ clen from) from))
@@ -8442,25 +8490,22 @@ argument (reachability + in-arena bounds checks).")
                                                              1
                                                            (- 1 (m5_forced_multibyte_p s)))
                                                        (m5_observably_unibyte_p s))))
-                                           (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 16 uni)
-                                                ;; CF/CT are CHAR indices -> byte offsets
-                                                (m5_push_str_bytes sb s
-                                                  (if (= direct 1) cf
-                                                    (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1)
-                                                        cf
-                                                      (nl_u8_cidx_byte s 0 nb 0 cf)))
-                                                  (if (= direct 1) ct
-                                                    (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1)
-                                                        ct
-                                                      (nl_u8_cidx_byte s 0 nb 0 ct))))
-                                                (nl_g4arm_finish_string_w sb (- 1 uni)))))))))))
+                                           (let* ((begin (if (= direct 1) cf
+                                                            (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) cf
+                                                              (nl_u8_cidx_byte s 0 nb 0 cf))))
+                                                  (end (if (= direct 1) ct
+                                                          (if (= (m5_unibyte_tag_p (heap-read-u64 s 0)) 1) ct
+                                                            (nl_u8_cidx_byte s 0 nb 0 ct)))))
+                                             (nl_string_new (+ (bf_str_ptr s) begin) (- end begin) uni)))))))))
                           (nl_abi_fail (bf_wrong_type_integerp (wf_arg_ptr args 1)) 0))))
     ((:lit "format")           :word . (let* ((fmt (wf_arg_ptr args 0))
                                         (all-unibyte (m5_concat_all_unibyte_p args)))
-                                     (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 32 all-unibyte)
-                                          (m5_fmt_loop sb fmt 0 (m5_strlen fmt)
-                                                       (nl_cons_cdr_ptr args))
-                                          (nl_g4arm_finish_string_w sb (- 1 all-unibyte))))))
+                                     (let ((sb (alloc-bytes 32 8)))
+                                       (seq (m5_count_builder sb all-unibyte)
+                                            (m5_fmt_loop sb fmt 0 (m5_strlen fmt) (nl_cons_cdr_ptr args))
+                                            (m5_builder_allocate_string sb all-unibyte)
+                                            (m5_fmt_loop sb fmt 0 (m5_strlen fmt) (nl_cons_cdr_ptr args))
+                                            (nl_g4arm_finish_string_w sb (- 1 all-unibyte))))))
     ((:lit "nelisp--repr")     :word . (let ((sb (alloc-bytes 32 8))) (seq (mut-str-make-empty sb 32)
                                         (m5_prin1 sb (wf_arg_ptr args 0))
                                         (mut-str-finalize sb sb) sb)))
@@ -9192,7 +9237,7 @@ leave symbols unresolved at link time."
              (ptr-write-u64 dst_ptr 8 (heap-read-u64 src 8))
              (ptr-write-u64 dst_ptr 16 (heap-read-u64 src 16))
              (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)) 0)
-        (if (or (= (logand src 1) 1) (= (logand src 7) 6))
+        (if (or (= (logand src 1) 1) (= (logand src 7) 4) (= (logand src 7) 6))
             (seq (nl_sexp_clone_into src dst_ptr) 0)
           (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 src 0))
              (ptr-write-u64 dst_ptr 8 (heap-read-u64 src 8))
@@ -9219,13 +9264,9 @@ leave symbols unresolved at link time."
     ;; did for the old arms) and answer SB as the result WORD: one box, where
     ;; m5_finish_string_w would finalise into a second fresh box.
     (defun nl_g4arm_finish_string_w (sb multibyte)
-      (seq (mut-str-finalize sb sb)
-           (if (= multibyte 1)
-               (ptr-write-u64 sb 8 (logior (heap-read-u64 sb 8) 4611686018427387904))
-             0)
-           sb))
+      (m5_finish_string_w sb 0 multibyte))
     (defun nl_g4arm_copy_w (_pad word)
-  (if (= (logand word 1) 1) word
+  (if (or (= (logand word 1) 1) (= (logand word 7) 4)) word
     (let ((object (alloc-bytes 32 8)))
       (seq (wf_copy32 object word) object))))
     ;; Doc 187: `wf_write_int' ALWAYS returns 0 (its own `seq' ends in 0), so
@@ -9772,7 +9813,7 @@ leave symbols unresolved at link time."
          0)))
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
-          0
+          (nl_string_unmark)
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
                                      reach total))))
@@ -10812,10 +10853,7 @@ leave symbols unresolved at link time."
                         (nl_abi_fail 1 0)))))
               (nl_abi_fail 1 0))))))
     (defun bf_sig_copy32 (dst_ptr src)
-      (seq (ptr-write-u64 dst_ptr 0 (heap-read-u64 src 0))
-           (ptr-write-u64 dst_ptr 8 (heap-read-u64 src 8))
-           (ptr-write-u64 dst_ptr 16 (heap-read-u64 src 16))
-           (ptr-write-u64 dst_ptr 24 (heap-read-u64 src 24)) 0))
+      (wf_copy32 dst_ptr src))
     ;; bf_arith_error / bf_wrong_type_number_or_marker /
     ;; bf_wrong_type_int_or_marker / bf_first_non_integer: the
     ;; mod/percent/arithmetic/comparison arms of
@@ -11012,7 +11050,22 @@ leave symbols unresolved at link time."
                     (setq i (+ i 1))))
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_to_file_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_to_file keeps the (rc, OUT) ABI.
+    (defun bf_string_image_refused_w ()
+      (let* ((bytes (alloc-bytes 64 8)) (message 0) (arguments 0))
+        (seq
+         (ptr-write-u64 bytes 0 7070765138884850771)
+         (ptr-write-u64 bytes 8 7020382982102019948)
+         (ptr-write-u64 bytes 16 7165064715131970919)
+         (ptr-write-u64 bytes 24 8316213845604004961)
+         (ptr-write-u64 bytes 32 8101246892822720032)
+         (ptr-write-u64 bytes 40 7234316393937462636)
+         (setq message (nl_alloc_str_w bytes 48 0))
+         (setq arguments (nelisp_cons_construct_w message 3 0))
+         (bf_error_w arguments 0))))
     (defun bf_arena_dump_image_to_file_w (args _pad)
+      (if (/= (heap-read-u64 (data-addr nl_strings_state) 0) 0)
+          (bf_string_image_refused_w)
+        (seq
       (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (heap-read-u64 268436160 0))
@@ -11072,7 +11125,7 @@ leave symbols unresolved at link time."
             (nl_fa_write_all fd tbl (* tlen 8) 0)
             (nl_fa_write_all fd dest (+ slen isz) 0)
             (nl_os_close_handle fd)
-            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz))))))))))
+            (wf_write_int_w 0 (+ 64 (+ (* tlen 8) (+ slen isz))))))))))))
     (defun bf_arena_dump_image_to_file (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_to_file_w args 0) out))
     ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
@@ -11111,6 +11164,9 @@ leave symbols unresolved at link time."
          0)))
     ;; Doc 215 builtin word ABI: bf_arena_dump_image_stream_w returns the result WORD (0 = signal stashed); bf_arena_dump_image_stream keeps the (rc, OUT) ABI.
     (defun bf_arena_dump_image_stream_w (args _pad)
+      (if (/= (heap-read-u64 (data-addr nl_strings_state) 0) 0)
+          (bf_string_image_refused_w)
+        (seq
       (seq (nl_frame_stack_export_all 0 0)
       (seq
 
@@ -11229,7 +11285,7 @@ leave symbols unresolved at link time."
                                  '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
                                       written -1)
                                '(+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
-)))
+)))))
     (defun bf_arena_dump_image_stream (args out)
       (nl_abi_word_to_rc (bf_arena_dump_image_stream_w args 0) out))
     ;; Doc 215 builtin word ABI: bf_arena_load_image_from_file_w returns the result WORD (0 = signal stashed); bf_arena_load_image_from_file keeps the (rc, OUT) ABI.
@@ -11935,6 +11991,10 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; No replacement payload is allocated, and traversal changes only aliases
     ;; of this object. Substring/conversion/copy constructors own fresh backing.
     (defun bf_clear_string_bytes_w (args env _pad)
+      (let* ((value (wf_arg_word args 0))
+             (header (if (= (logand value 7) 4) (- value 4)
+                       (if (= (logand value 7) 0) (nl_string_view_header value) 0))))
+        (if (= header 0) (seq
       (let* ((sx (wf_arg_ptr args 0)) (tag (heap-read-u64 sx 0))
              (st (data-addr nl_gc_typed_state))
              (ptr (bf_str_ptr sx)) (len (bf_str_len sx))
@@ -11964,6 +12024,11 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
                (nl_gc_index_end)
                (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
                3))))))
+          (let* ((data (heap-read-u64 header 24)) (n (nl_string_nbytes header)) (i 0))
+            (while (< i n) (ptr-write-u8 data i 0) (setq i (+ i 1)))
+            (nl_aref_cache_invalidate data)
+            (ptr-write-u64 header 0 n) (ptr-write-u64 header 8 -1)
+            (wf_dirty) 3))))
     ;; N2 clause 2: collect and copy a typed snapshot before Lisp constructs
     ;; GNU-shaped rows. The allocator has no typed free-cell pools; their
     ;; truthful free count is zero (raw arena diagnostics remain separate).
@@ -17865,13 +17930,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
         0))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun m5_finish_string_w (ms _pad multibyte)
-      (let* ((out (alloc-bytes 32 8)))
-        (seq (mut-str-finalize ms out)
-           (if (= multibyte 1)
-               (ptr-write-u64 out 8
-                 (logior (heap-read-u64 out 8) 4611686018427387904))
-             0)
-           out)))
+      (let* ((n (nl_mut_str_len ms))
+             (data (heap-read-u64 (heap-sexp-payload ms) 8))
+             (unibyte (if (= multibyte 1) 0
+                        (if (= (sexp-tag ms) 15) 1
+                          (if (= (nl_string_char_count data n) n) 1 0)))))
+        (let* ((owner (heap-read-u64 data -8)) (word (+ owner 4)))
+          (if (= (nl_string_header_p owner) 0) (nl_string_new data n unibyte)
+            (seq (ptr-write-u64 (- word 4) 0 (if (= unibyte 1) n (nl_string_char_count data n)))
+                 (ptr-write-u64 (- word 4) 8 (if (= unibyte 1) -1 n)) word)))))
     (defun m5_finish_string (ms out multibyte)
       (nl_abi_word_to_rc (m5_finish_string_w ms 0 multibyte) out))
     (defun m5_raw_high_p (str)
@@ -17925,6 +17992,39 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 1
               (m5_concat_has_raw_high_p (nl_cons_cdr_ptr cur))))
         0))
+    ;; GNU fns.c concat's first pass counts the exact encoded bytes. No
+    ;; character buffer is owned by a counting builder (capacity=-1).
+    (defun m5_count_builder (slot unibyte)
+      (let* ((box (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 box 0 -1) (ptr-write-u64 box 8 0)
+             (ptr-write-u64 box 16 0) (ptr-write-u64 box 24 1)
+             (ptr-write-u64 slot 0 (if (= unibyte 1) 15 6))
+             (ptr-write-u64 slot 8 box) (ptr-write-u64 slot 16 0)
+             (ptr-write-u64 slot 24 0) slot)))
+    (defun m5_builder_allocate_string (slot unibyte)
+      (let* ((box (heap-sexp-payload slot)) (n (heap-read-u64 box 16))
+             (word (nl_string_new 0 n unibyte)))
+        (seq (ptr-write-u64 box 0 n)
+             (ptr-write-u64 box 8 (heap-sexp-data word))
+             (ptr-write-u64 box 16 0) word)))
+    ;; GNU alloc.c make-string writes one encoded character and doubles the
+    ;; initialized prefix. Header and data are allocated only once.
+    (defun m5_make_repeated_string (n cp unibyte)
+      (let* ((slot (alloc-bytes 32 8)))
+        (seq (m5_count_builder slot unibyte) (nl_u8_encode slot cp)
+             (let* ((box (heap-sexp-payload slot))
+                    (width (heap-read-u64 box 16)) (bytes (* width n)))
+               (seq (ptr-write-u64 box 16 bytes)
+                    (m5_builder_allocate_string slot unibyte)
+                    (if (= n 0) 0
+                      (seq (nl_u8_encode slot cp)
+                           (let* ((data (heap-read-u64 box 8)) (filled width))
+                             (while (< filled bytes)
+                               (let* ((count (if (< (- bytes filled) filled) (- bytes filled) filled)))
+                                 (nl_string_copy_bytes data (+ data filled) count)
+                                 (setq filled (+ filled count)))))))
+                    (ptr-write-u64 box 16 bytes)
+                    (m5_finish_string_w slot 0 (- 1 unibyte)))))))
     (defun m5_make_builder (slot cap unibyte)
       (if (= unibyte 1)
           (nl_alloc_unibyte_mut_str cap slot)
@@ -19989,11 +20089,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; helpers below) so character counting is O(1) native stack regardless
     ;; of string length.
     (defun nl_str_charlen (p)
+      (if (= (logand p 7) 4)
+          (logand (heap-read-u64 (- p 4) 0) 9223372036854775807)
+        (seq
       (let* ((n (m5_strlen p)) (i 0) (acc 0))
         (while (< i n)
           (if (= (logand (m5_byte_at p i) 192) 128) nil (setq acc (+ acc 1)))
           (setq i (+ i 1)))
-        acc))
+        acc))))
     ;; char index TARGET -> byte offset (walks whole codepoints)
     (defun nl_u8_cidx_byte (p bi n c target)
       ;; Keep native stack use constant for substring and mutable strings.
@@ -20151,12 +20254,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the table (a direct walk is cheaper than a probe and they would only
     ;; evict the cursor of a large string).
     (defun nl_str_charlen_c (p)
+      (if (= (logand p 7) 4)
+          (logand (heap-read-u64 (- p 4) 0) 9223372036854775807)
+        (seq
       (let* ((nb (m5_strlen p)))
         (if (or (< nb 64)
                 (or (> nb 2147483647)
                     (= (heap-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)))
             (nl_str_charlen p)
-          (let* ((bufptr (heap-read-u64 p 16))
+          (let* ((bufptr (heap-sexp-data p))
                  (slot (nl_aref_cache_slot bufptr))
                  (w (heap-read-u64 slot 8))
                  (hit (if (= (heap-read-u64 slot 0) bufptr)
@@ -20171,7 +20277,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (seq (ptr-write-u64 slot 0 bufptr)
                         (ptr-write-u64 slot 8 (+ nb (* (+ n 1) 4294967296)))
                         (ptr-write-u64 slot 16 0)))
-                 n)))))))
+                 n)))))))))
     (defun nl_aref_cache_clear_slot (i)
       (ptr-write-u64 (+ (data-addr nl_aref_cache_table) (* i 24)) 0 0))
     (defun nl_aref_cache_clear ()
@@ -20505,12 +20611,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_string_unibyte_p (sx)
       (m5_unibyte_tag_p (heap-read-u64 sx 0)))
     (defun bf_copy_string_tag (sx tag out)
-      (if (= (bf_string_inline_p sx) 1)
-          (seq (wf_copy32 out sx) (ptr-write-u8 out 0 tag) 0)
-        (if (= tag 14)
-            (seq (nl_alloc_unibyte_str
-                  (bf_str_ptr sx) (bf_str_len sx) out) 0)
-          (seq (nl_alloc_str (bf_str_ptr sx) (bf_str_len sx) out) 0))))
+      (let* ((data (bf_str_ptr sx)) (n (bf_str_len sx))
+             (word (nl_string_new data n (if (= tag 14) 1 0))))
+        (if (= word 0) (bf_signal_memory_full)
+          (seq (nl_string_store_view word out) 0))))
     ;; Return the character index containing the first non-ASCII byte, or -1.
     ;; UTF-8 continuation bytes do not advance the character index.
     (defun bf_first_nonascii_char (sx i n char-index)
@@ -20768,7 +20872,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((builder (alloc-bytes 32 8))
                    (unibyte (if (= (m5_observably_unibyte_p fmt) 1)
                                 (m5_concat_all_unibyte_p argl) 0)))
-              (seq (m5_make_builder builder 32 unibyte)
+              (seq (m5_count_builder builder unibyte)
+                   (m5_fmt_loop builder fmt 0 (m5_strlen fmt) argl)
+                   (m5_builder_allocate_string builder unibyte)
                    (m5_fmt_loop builder fmt 0 (m5_strlen fmt) argl)
                    (m5_finish_string_w builder 0 (- 1 unibyte))))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
@@ -27017,15 +27123,15 @@ extern arms in dynamic builds."
 (defconst nelisp-standalone--fileio-forms-part1
   '(
     (defun nl_bi_strptr (sx)
-      (let* ((tag (heap-read-u64 sx 0)))
+      (let* ((tag (heap-sexp-tag-word sx)))
         (if (or (= tag 6) (= tag 15))
-            (heap-read-u64 (heap-read-u64 sx 8) 8)
-          (heap-read-u64 sx 16))))
+            (heap-read-u64 (heap-sexp-payload sx) 8)
+          (heap-sexp-data sx))))
     (defun nl_bi_strlen (sx)
-      (let* ((tag (heap-read-u64 sx 0)))
+      (let* ((tag (heap-sexp-tag-word sx)))
         (if (or (= tag 6) (= tag 15))
-            (heap-read-u64 (heap-read-u64 sx 8) 16)
-          (heap-read-u64 sx 24))))
+            (heap-read-u64 (heap-sexp-payload sx) 16)
+          (heap-sexp-length sx))))
     (defun nl_bi_cpath_loop (src to i n)
       (if (= i n)
           (nl_seq2 (ptr-write-u8 to n 0) to)
@@ -30984,6 +31090,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ;; Doc 147 Phase 2 — word->32B-slot materialiser for vector-ref-ptr.
     ("vec-slot-ptr.o"     nelisp-cc-nlvector-slot-ptr            nelisp-cc-nlvector-slot-ptr--source)
     ("vec-clone.o"        nelisp-cc-nlvector-clone                nelisp-cc-nlvector-clone--source)
+    ("string-blocks.o"    :glue                                  nelisp-cc-string-blocks--source)
     ("alloc-str.o"        nelisp-cc-nlstr-direct-ops              nelisp-cc-nlstr-direct-ops--alloc-str-source)
     ("str-bytes.o"        nelisp-cc-nlstr-direct-ops              nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source)
     ("str-clone.o"        nelisp-cc-nlstr-clone                   nelisp-cc-nlstr-clone--source)
@@ -31100,20 +31207,20 @@ outside it needs; copied rather than the whole block pulled in."
         '(defun nl_os_write_stderr (ptr len)
            (syscall-direct 1 2 ptr len 0 0 0))))
     (defun nl_bi_strptr (sx)
-      (let* ((tag (heap-read-u64 sx 0)))
+      (let* ((tag (heap-sexp-tag-word sx)))
         (if (or (= tag 6) (= tag 15))
-            (heap-read-u64 (heap-read-u64 sx 8) 8)
-          (heap-read-u64 sx 16))))
+            (heap-read-u64 (heap-sexp-payload sx) 8)
+          (heap-sexp-data sx))))
     (defun nl_bi_strlen (sx)
-      (let* ((tag (heap-read-u64 sx 0)))
+      (let* ((tag (heap-sexp-tag-word sx)))
         (if (or (= tag 6) (= tag 15))
-            (heap-read-u64 (heap-read-u64 sx 8) 16)
-          (heap-read-u64 sx 24))))
+            (heap-read-u64 (heap-sexp-payload sx) 16)
+          (heap-sexp-length sx))))
     (defun nl_positioned_flag (_printing) 0)
     (defun bf_eq2 (a b)
-      (let* ((ta (heap-read-u64 a 0)) (tb (heap-read-u64 b 0)))
+      (let* ((ta (heap-sexp-tag-word a)) (tb (heap-sexp-tag-word b)))
         (if (= ta tb)
-            (if (= ta 2) (if (= (heap-read-u64 a 8) (heap-read-u64 b 8)) 1 0)
+            (if (= ta 2) (if (= (heap-sexp-payload a) (heap-sexp-payload b)) 1 0)
               (if (= ta 4) (symbol-eq a b)
                 (if (= ta 0) 1
                   (if (= ta 1) 1
@@ -31121,13 +31228,13 @@ outside it needs; copied rather than the whole block pulled in."
                     ;; len@24), not contents -- same arm as the reader's
                     ;; `bf_eq2' in `nelisp-standalone--applyfn-bf-helpers'.
                     (if (or (= ta 5) (= ta 14))
-                        (if (= (heap-read-u64 a 24) (heap-read-u64 b 24))
-                            (if (= (heap-read-u64 a 24) 0)
+                        (if (= (heap-sexp-length a) (heap-sexp-length b))
+                            (if (= (heap-sexp-length a) 0)
                                 1
-                              (if (= (heap-read-u64 a 16) (heap-read-u64 b 16)) 1 0))
+                              (if (= (heap-sexp-data a) (heap-sexp-data b)) 1 0))
                           0)
-                      (if (= ta 13) (if (= (heap-read-u64 a 16) (heap-read-u64 b 16)) 1 0)
-                        (if (= (heap-read-u64 a 8) (heap-read-u64 b 8)) 1 0)))))))
+                      (if (= ta 13) (if (= (heap-sexp-data a) (heap-sexp-data b)) 1 0)
+                        (if (= (heap-sexp-payload a) (heap-sexp-payload b)) 1 0)))))))
           0)))
     (defun bf_eq_w (args _pad)
       (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) 7 3))
@@ -44115,20 +44222,8 @@ match a special-form name tested in FORM."
         ;; in the Env.  Top-level standalone reporting reads the M6 arena
         ;; stash, so mirror the same (TAG . VAL) signal there as well.
         ;; Doc 215: an immediate WORD is written straight into the stash.
-        (if (= (logand tag_w 1) 1)
-            (extern-call nl_sci_store_imm tag_w 268435480)
-          (seq
-           (ptr-write-u64 268435480 0 (heap-read-u64 tag_w 0))
-           (ptr-write-u64 (+ 268435480 8) 0 (heap-read-u64 (+ tag_w 8) 0))
-           (ptr-write-u64 (+ 268435480 16) 0 (heap-read-u64 (+ tag_w 16) 0))
-           (ptr-write-u64 (+ 268435480 24) 0 (heap-read-u64 (+ tag_w 24) 0))))
-        (if (= (logand val_w 1) 1)
-            (extern-call nl_sci_store_imm val_w 268435512)
-          (seq
-           (ptr-write-u64 268435512 0 (heap-read-u64 val_w 0))
-           (ptr-write-u64 (+ 268435512 8) 0 (heap-read-u64 (+ val_w 8) 0))
-           (ptr-write-u64 (+ 268435512 16) 0 (heap-read-u64 (+ val_w 16) 0))
-           (ptr-write-u64 (+ 268435512 24) 0 (heap-read-u64 (+ val_w 24) 0))))
+        (wf_word_store_out 268435480 tag_w)
+        (wf_word_store_out 268435512 val_w)
         (ptr-write-u64 268435472 0 1)
         (atomic-fetch-add 268435544 1)
         1)))
@@ -45357,9 +45452,11 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 ;; object like GNU.
 (defconst nelisp-standalone--autoload-lookup-helpers
   '((defun nl_autoload_cell_p (cell)
-      (if (= (sexp-tag cell) 7)
+      ;; These two predicates accept the base's physical cons and symbol
+      ;; slots only. A canonical String WORD is never an autoload symbol.
+      (if (and (= (logand cell 7) 0) (= (ptr-read-u8 cell 0) 7))
           (let* ((head (nl_cons_car_ptr cell)))
-            (if (= (sexp-tag head) 4)
+            (if (and (= (logand head 7) 0) (= (ptr-read-u8 head 0) 4))
                 (nl_apply_sym_eq_w head 7233184988050781537 0 0 0 8 1 0)
               0))
         0))
