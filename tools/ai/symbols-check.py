@@ -181,6 +181,112 @@ def cmd_plan(_args):
     print(f"PLAN PASS refs={len(refs)} ops={len(named)} census-rows={len(want) - 1}")
 
 
+# ---------------------------------------------------------------- S1.1 layout
+OBJSIZE = ROOT / "tools/ai/word-heap-objsize.el"
+GNU_SYMBOL_BYTES = 48            # sizeof (struct Lisp_Symbol), lisp.h:786-829
+
+
+def objsize(command, n):
+    env = dict(os.environ, WH_TYPE="symbol", WH_N=str(n))
+    proc = subprocess.run(command, env=env, capture_output=True, preexec_fn=cap_memory,
+                          timeout=600)
+    m = re.search(rb"WH-OBJECT symbol (\d+) (-?\d+)", proc.stdout)
+    need(proc.returncode == 0 and m, "objsize probe failed: " + " ".join(map(str, command)))
+    return int(m.group(2)) / int(m.group(1))
+
+
+def cmd_layout(_args):
+    """Bytes per uninterned symbol (make-symbol slope, shared name) vs GNU."""
+    gnu = objsize([GNU, "-Q", "--batch", "-l", str(OBJSIZE)], 20000)
+    print(f"GNU 31.1: {gnu:.1f} B per make-symbol (sizeof struct Lisp_Symbol {GNU_SYMBOL_BYTES})")
+    failures = []
+    for kind, binary in head_builds().items():
+        slopes = [objsize([str(binary), "--load", str(OBJSIZE)], n) for n in (4000, 16000)]
+        print(f"{kind}: {slopes[0]:.1f} / {slopes[1]:.1f} B per make-symbol (N=4000/16000)")
+        if max(slopes) > GNU_SYMBOL_BYTES:
+            failures.append(f"{kind} {max(slopes):.1f} B > {GNU_SYMBOL_BYTES} B")
+    need(not failures, "; ".join(failures))
+    print("LAYOUT PASS")
+
+
+# ---------------------------------------------------------------- S3.1 final
+def cmd_final(_args):
+    """COMMON.md final verification evidence for builds of the current sources."""
+    builds = head_builds()
+    tag = "symbols-final"
+    log = ROOT / "target/final-verify" / ("checks-" + tag)
+    summary = OUT / "final" / "summary.json"
+    need(summary.is_file(), "no final verification recorded (target/symbols/final/summary.json)")
+    s = json.loads(summary.read_text())
+    need(s.get("tree") == tree_hash(), "final verification is not from the current sources")
+    need(Path(s["dyn"]).resolve() == builds["dyn"].resolve()
+         and Path(s["static"]).resolve() == builds["static"].resolve(),
+         "final verification used other binaries")
+    text = (log / "summary.log").read_text() if (log / "summary.log").is_file() else s.get("gate", "")
+    need("GATE-COUNT: 11 cases, 0 failures" in text, "COMMON checks: not 11 cases with 0 failures")
+    need(s.get("mcp_tools") == 40, "MCP smoke did not list 40 tools")
+    need(s.get("standalone_checks_failures") == 0, "standalone-checks failed")
+    print("FINAL PASS 11 groups, 0 failures; standalone-checks 0 failures; MCP 40 tools")
+
+
+# ---------------------------------------------------------------- S1.3 semantics
+FIXTURE = ROOT / "test/standalone-symbols-check.el"
+EXPECTED = ROOT / "test/standalone-symbols-check.expected"
+
+
+def tree_hash():
+    """Content hash of the build inputs (target/symbols/tree-hash.sh)."""
+    files = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "lisp", "scripts", "src"],
+                           capture_output=True, check=True).stdout.split(b"\0")
+    lines = []
+    for f in sorted(x for x in files if x):
+        lines.append(f"{sha(ROOT / f.decode())}  {f.decode()}\n")
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def head_builds():
+    """The newest dynamic and static builds of the current build inputs."""
+    tree = tree_hash()
+    found = {}
+    for kind in ("dyn", "static"):
+        best = None
+        for d in sorted((OUT / "bin").glob("*-" + kind)):
+            h = d / "SOURCE-TREE"
+            if not (d / "nelisp").is_file() or not h.is_file():
+                continue
+            if h.read_text().strip() != tree:
+                continue
+            if best is None or (d / "nelisp").stat().st_mtime > (best / "nelisp").stat().st_mtime:
+                best = d
+        need(best is not None, f"no {kind} build of the current sources ({tree[:12]})")
+        found[kind] = best / "nelisp"
+    return found
+
+
+def fixture_lines(command):
+    proc = subprocess.run(command, capture_output=True, preexec_fn=cap_memory, timeout=600)
+    return proc.returncode, [l for l in proc.stdout.decode(errors="replace").splitlines()
+                             if l.startswith("SYM")]
+
+
+def cmd_semantics(_args):
+    expected = EXPECTED.read_text().splitlines()
+    rc, gnu = fixture_lines([GNU, "-Q", "--batch", "-l", str(FIXTURE)])
+    need(rc == 0 and gnu == expected, "GNU 31.1 output differs from the .expected file")
+    failures = []
+    for kind, binary in head_builds().items():
+        rc, got = fixture_lines([str(binary), "--load", str(FIXTURE)])
+        bad = [e.split(" ", 2)[1] for e, g in zip(expected, got) if e != g]
+        if len(got) != len(expected):
+            bad.append(f"{len(got)}/{len(expected)} lines")
+        print(f"{kind}: {len(expected) - len(bad)}/{len(expected)} lines equal GNU 31.1"
+              + ("" if not bad else " -- differ: " + ", ".join(bad)))
+        if bad:
+            failures.append(kind)
+    need(not failures, "fixture differs from GNU 31.1 on " + ", ".join(failures))
+    print("SEMANTICS PASS")
+
+
 # ---------------------------------------------------------------- S1.2 census
 CENSUS = OUT / "census"
 CENSUS_PATHS = ("plain-read", "plain-write", "plain-bind", "alias-read", "alias-write",
@@ -269,9 +375,8 @@ def cmd_census(args):
     else:
         need((CENSUS / "census.json").is_file(), "no census recorded")
         report = json.loads((CENSUS / "census.json").read_text())
-        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
-        need(report["source"][0] == head, "census evidence is not from a build of HEAD")
+        need(len(report["source"]) > 2 and report["source"][2] == tree_hash(),
+             "census evidence is not from a build of the current sources")
     print("| path | hashed walks/iter | insertions/iter |")
     failures = []
     for path, row in report["per_iteration"].items():
@@ -376,10 +481,15 @@ def run_probe(engine, binary, probe, env, marker):
 
 
 def source_head(binary):
-    head = Path(binary).resolve().parent / "SOURCE-HEAD"
-    diff = Path(binary).resolve().parent / "SOURCE-DIFF-SHA"
-    return (head.read_text().strip() if head.is_file() else None,
-            diff.read_text().split()[0] if diff.is_file() else None)
+    """(HEAD, diff sha, build-input tree hash) recorded by build.sh."""
+    d = Path(binary).resolve().parent
+    def read(name, split=False):
+        f = d / name
+        if not f.is_file():
+            return None
+        text = f.read_text()
+        return text.split()[0] if split else text.strip()
+    return (read("SOURCE-HEAD"), read("SOURCE-DIFF-SHA", True), read("SOURCE-TREE"))
 
 
 def measure_globals(cand, base, tag):
@@ -470,10 +580,8 @@ def fmt(x):
 
 
 def current_build_ok(report):
-    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-                          capture_output=True, text=True).stdout.strip()
     src = report["source"]["candidate"]
-    return src[0] == head
+    return len(src) > 2 and src[2] == tree_hash()
 
 
 def cmd_speed(args):
@@ -489,7 +597,7 @@ def cmd_speed(args):
         name = "globals.json" if what == "globals" else "mxlib.json"
         need((SPEED / name).is_file(), f"no {what} measurement recorded")
         report = json.loads((SPEED / name).read_text())
-        need(current_build_ok(report), f"{what} evidence is not from a build of HEAD")
+        need(current_build_ok(report), f"{what} evidence is not from a build of the current sources")
     failures = []
     if what == "globals":
         print("| mode | op | cand ns | GNU ns | base ns | median(cand-GNU) | cand/GNU | cand/base |")
@@ -534,11 +642,11 @@ def not_yet(name):
 COMMANDS = {
     "plan": cmd_plan,
     "census-static": cmd_census_static,
-    "layout": not_yet("S1.1"),
+    "layout": cmd_layout,
     "census": cmd_census,
-    "semantics": not_yet("S1.3"),
+    "semantics": cmd_semantics,
     "speed": cmd_speed,
-    "final": not_yet("S3.1"),
+    "final": cmd_final,
 }
 
 

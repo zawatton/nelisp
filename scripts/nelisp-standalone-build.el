@@ -14990,10 +14990,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (seq
                   (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
                                             (nl_frame_push_sym1_ptr) scratch)
-                  (if (= (nl_sb_bind env frames canonical saved) 0) 0
+                  (let ((sb (nl_sb_bind env frames canonical saved))) (if (= sb 0) 0 (if (= sb -2) (setq rc 1)
                     (seq
                      (wf_bytecode_mark_dynamic frames canonical)
-                     (nl_bind_frame_fast frames canonical saved)))) 0))) 0)
+                     (nl_bind_frame_fast frames canonical saved)))))) 0))) 0)
            (nl_root_release env mark) rc))))
     (defun wf_bytecode_unbind (frames n)
       (if (= n 0)
@@ -22988,16 +22988,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
         ;; variable lexically.  The frame's +24 declaration cache is no
         ;; longer filled (`nl_push_and_bind').
         (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-            (if (= (nl_sb_bind env frames name value) 0) 1
+            (let ((sb (nl_sb_bind env frames name value))) (if (= sb 0) 1 (if (= sb -2) 0
               (let* ((canonical (nl_pa_binding_name env frames name)))
                 (if (= canonical 0) 0
-                  (if (= (nl_sb_bind env frames canonical value) 0) 1
+                  (let ((sb (nl_sb_bind env frames canonical value))) (if (= sb 0) 1 (if (= sb -2) 0
                     (seq
                      (nl_bind_frame_fast frames canonical value)
                      (if (= (nelisp_frame_binding_dynamic_p frame canonical) 1) 1
                        (let* ((names (alloc-bytes 32 8)))
                          (seq (cons-make-with-clone canonical (nl_record_slot_word frame 1) names)
-                              (record-slot-set frame 1 names) (wf_dirty) 1))))))))
+                              (record-slot-set frame 1 names) (wf_dirty) 1))))))))))))
           (seq (nl_bind_frame_fast frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
@@ -23030,8 +23030,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (or (= tag 4) (= tag 16))
               (if (= (bf_keyword_raw sym) 1)
                   7
-                (if (= (bf_dynamic_lookup env sym (alloc-bytes 32 8)) 0)
-                    7 3))
+                (let ((w (nl_sym_find_value_w env sym 0)))
+                  (if (or (= w 0) (= w 2)) 3 7)))
             (nl_abi_fail (bf_wrong_type_symbolp sym) 0)))))
     ;; The reader keeps provided features in the evaluator's global mirror.
     ;; That makes the list visible to the collector and gives `features' the
@@ -23419,9 +23419,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (bf_setting_constant sym)
         (if (= (bf_keyword_raw sym) 1)
             (if (= (wf_bytecode_w_eqw sym val) 1) 0 (bf_setting_constant sym))
+      (let ((direct (nl_sym_set_w env sym val)))
+        (if (= direct 0) 0
+          (if (= direct 2) 1
       (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n3_set_dynamic_raw env sym val)
-        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))))
+        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1)))))))))
 
     (defun nl_n3_set_dynamic_raw (env sym val)
       (let* ((entry (nelisp_mirror_lookup_entry env sym)))
@@ -23567,6 +23570,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (or (= tag 4) (= tag 16))
               (if (= (bf_keyword_raw sym) 1)
                   (nl_abi_fail (bf_setting_constant sym) 0)
+                (if (= (nl_sym_forwarded_p env sym) 1)
+                    (nl_abi_fail (nl_sym_signal_unbind_builtin sym) 0)
                 ;; A real alias is detached and unbound in its own entry.
                 ;; Preserve the legacy path for absent, legacy, or ordinary
                 ;; entries. The helper checks constants and the mutation guard
@@ -23587,7 +23592,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (if (= alias-rc 2)
                                     (nl_abi_fail (nelisp_env_makunbound_alias_signal_cycle sym 0) 0)
                                   (nl_abi_fail (nelisp_env_makunbound_alias_signal_malformed sym 0) 0))))))))
-                  result))
+                  result)))
             (nl_abi_fail (bf_wrong_type_symbolp sym) 0)))))
     ;; `symbol-value' reads dynamic cells and then the global mirror.  Lexical
     ;; cells are not symbol values.  Both public read paths share the unbound
@@ -23601,8 +23606,161 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; is the same two lines, so the two ways of reading a variable now
     ;; fail the same way.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; ---- Doc 226 D3: GNU find_symbol_value / set_internal ----
+    ;; GNU data.c:1619 find_symbol_value and data.c:1678 set_internal switch
+    ;; on struct Lisp_Symbol's redirect (lisp.h:771) and read or write the
+    ;; symbol's own cell.  The NeLisp symbol object (Doc 226 D1, reached
+    ;; through the name header without hashing) keeps the val union members
+    ;; in slots 0 (PLAINVAL value, and the FORWARDED storage), 4 (VARALIAS
+    ;; target) and 5 (LOCALIZED), and the FORWARDED descriptor in slot 7.
+    ;; Main-thread dynamic bindings are shallow (the object holds the
+    ;; current dynamic value, Doc 226 D4), so no frame is searched, as in
+    ;; GNU.  Doc 199 workers bind deeply and keep the general path.
+    ;; nl_sym_redirect: 0 PLAINVAL, 1 VARALIAS, 2 LOCALIZED, 3 FORWARDED in
+    ;; lisp.h:771 order; 4 for a shape only the general path handles (a
+    ;; short legacy entry, a non-symbol alias slot, slot 5 used as an
+    ;; alias-presence flag).
+    (defun nl_sym_redirect (obj)
+      (if (< (record-slot-count obj) 9) 4
+        (if (/= (nl_record_slot_word obj 7) 3) 3
+          (let ((a (nelisp_env_alias_slot_candidate obj 0)))
+            (if (= a 0) 1
+              (if (/= a 3) 4
+                (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
+                  (if (= t5 0) 0 (if (= t5 8) 2 4)))))))))
+    ;; 1 when ENV reads and writes symbol objects directly: not a Doc 199
+    ;; worker and not inside the legacy root-pin capture (the conditions
+    ;; under which `nl_sb_bind' binds deeply).
+    (defun nl_sym_direct_env_p (env)
+      (if (= (nl_sb_worker_p env) 1) 0
+        (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                 (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                 (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env)) 0 1)))
+    ;; GNU data.c:1619.  SYM is a symbol WORD (tag 4 or 16) from an owned
+    ;; container.  Answers the value WORD, 2 when void, 0 after a stashed
+    ;; signal -- the contract of `bf_dynamic_lookup_w', the general path.
+    (defun nl_sym_find_value_w (env sym _pad)
+      (if (= (nl_sym_direct_env_p env) 0)
+          (bf_dynamic_lookup_w env sym 0)
+        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+               (hops 0) (result 1))
+          (seq
+           (while (= result 1)
+             (if (= obj 0) (setq result 2)
+               (let ((r (nl_sym_redirect obj)))
+                 (if (or (= r 0) (= r 3))
+                     (let ((v (nl_record_slot_word obj 0)))
+                       (setq result (if (= (wf_bytecode_w_unbound_p env v) 1) 2 v)))
+                   (if (and (= r 1) (< hops 100))
+                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                       env (nl_record_slot_word obj 4)))
+                            (setq hops (+ hops 1)))
+                     (setq result (bf_dynamic_lookup_w env sym 0)))))))
+           result))))
+    ;; GNU store_symval_forwarding (data.c:1470) on the object's storage:
+    ;; descriptor 1 is an intfwd (integer check), 2 a boolfwd (t or nil).
+    ;; VAL may be a WORD or a 32-byte view (`wf_bytecode_w_view').  Answers
+    ;; the value to store, or 0 after stashing wrong-type-argument.
+    (defun nl_sym_fwd_value (obj val)
+      (let ((kind (sar (nl_record_slot_word obj 7) 2)))
+        (if (= kind 2) (if (= (nl_val_tag val) 0) 3 7)
+          (if (= kind 1)
+              (if (= (logand val 3) 1) val
+                (if (and (= (logand val 1) 0)
+                         (or (= (nl_val_tag val) 2) (= (nl_val_tag val) 13))) val
+                  (seq (bf_wrong_type_integerp (wf_word_view val)) 0)))
+            val))))
+    ;; GNU data.c:1678 set_internal for `set' and `set-default' (bindflag
+    ;; SET_INTERNAL_SET) outside LOCALIZED.  The caller has refused nil, t
+    ;; and keywords.  Answers 0 after the store, 1 when the general path
+    ;; must decide (watched variables -- GNU's TRAPPED_WRITE -- while the
+    ;; global watcher mode is on, workers, constants, no object yet,
+    ;; LOCALIZED), or 2 after a stashed signal.
+    (defun nl_sym_set_w (env sym val)
+      (if (or (= (nl_sym_direct_env_p env) 0)
+              (/= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0))
+          1
+        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+               (hops 0) (result -1))
+          (seq
+           (while (= result -1)
+             (if (= obj 0) (setq result 1)
+               (if (= (nl_val_tag (nl_record_slot_word obj 3)) 1) (setq result 1)
+                 (let ((r (nl_sym_redirect obj)))
+                   (if (and (= r 1) (< hops 100))
+                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                       env (nl_record_slot_word obj 4)))
+                            (setq hops (+ hops 1)))
+                     (if (= r 0)
+                         (seq (if (= (logand val 1) 0) (wf_dirty) 0)
+                              (record-slot-set obj 0 val) (setq result 0))
+                       (if (= r 3)
+                           (if (= (wf_bytecode_w_unbound_p env val) 1)
+                               (setq result 1)
+                             (let ((v (nl_sym_fwd_value obj val)))
+                               (if (= v 0) (setq result 2)
+                                 (seq (if (= (logand v 1) 0) (wf_dirty) 0)
+                                      (record-slot-set obj 0 v) (setq result 0)))))
+                         (setq result 1))))))))
+           result))))
+    ;; Doc 226 D5: GNU's forwarded built-ins (DEFVAR_INT max-lisp-eval-depth,
+    ;; eval.c; DEFVAR_BOOL print-escape-newlines, print.c).  The descriptor
+    ;; in slot 7 (1 intfwd, 2 boolfwd) makes every store check and convert
+    ;; the value as store_symval_forwarding (data.c:1470) does.  The storage
+    ;; is the object's slot 0, which the frame-depth check reads directly
+    ;; (GNU reads the C variable max_lisp_eval_depth).
+    (defun nl_sym_fwd_mark (env bytes n kind)
+      (let* ((name (alloc-bytes 32 8)))
+        (seq (nl_alloc_symbol bytes n name)
+             (let* ((obj (nl_pa_entry env name)))
+               (if (or (= obj 0) (< (record-slot-count obj) 9)) 0
+                 (seq (record-slot-set obj 7 (nl_imm_int kind))
+                      (if (= kind 2)
+                          (let ((v (nl_record_slot_word obj 0)))
+                            (if (= (wf_bytecode_w_unbound_p env v) 1) 0
+                              (record-slot-set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
+                        0)
+                      1))))))
+    (defun nl_sym_fwd_init (env)
+      (let* ((bytes (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 bytes 0 8102936067909902701)
+         (ptr-write-u64 bytes 8 7306014439016654125)
+         (ptr-write-u64 bytes 16 6845552)
+         (nl_sym_fwd_mark env bytes 19 1)
+         (ptr-write-u64 bytes 0 8315102265101349488)
+         (ptr-write-u64 bytes 8 8603403804415648099)
+         (ptr-write-u64 bytes 16 495622973804)
+         (nl_sym_fwd_mark env bytes 21 2)
+         0)))
+    ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
+    (defun nl_sym_forwarded_p (env sym)
+      (let* ((obj (nelisp_mirror_lookup_entry env sym)))
+        (if (= obj 0) 0
+          (if (< (record-slot-count obj) 9) 0
+            (if (= (nl_record_slot_word obj 7) 3) 0 1)))))
+    ;; GNU set_internal (data.c:1678): "Built-in variable may not be unbound".
+    ;; Stashes (error "Built-in variable may not be unbound : NAME") and
+    ;; answers 1, the stashed-signal status.
+    (defun nl_sym_signal_unbind_builtin (sym)
+      (let* ((n (str-len sym)) (buf (alloc-bytes (+ 40 n) 1))
+             (msg (alloc-bytes 32 8)) (tag (alloc-bytes 8 8)))
+        (seq
+         (ptr-write-u64 buf 0 7955940194784998722)
+         (ptr-write-u64 buf 8 7809911809332311584)
+         (ptr-write-u64 buf 16 8029390891345846373)
+         (ptr-write-u64 buf 24 7092735245155442804)
+         (ptr-write-u64 buf 32 9071110053066095)
+         (nl_alloc_str_copy_loop (str-bytes-ptr sym) (+ buf 39) 0 n)
+         (nl_alloc_str buf (+ 39 n) msg)
+         (ptr-write-u64 tag 0 491496043109)
+         (nl_alloc_symbol tag 5 268435480)
+         (nelisp_cons_construct msg 3 268435512)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
     (defun bf_symbol_value_w (args env _pad)
-  (let* ((sym (wf_arg_ptr args 0)) (w (bf_dynamic_lookup_w env sym 0)))
+  (let* ((sym (wf_arg_ptr args 0)) (w (nl_sym_find_value_w env sym 0)))
     (if (or (= w 0) (= w 2)) (seq (nl_stash_void_variable env sym) 0) w)))
     ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
@@ -42480,6 +42638,8 @@ correctly."
         (nl_sexp_clone_into globals (+ ctx 0))
         (nl_sexp_clone_into frames (+ ctx 32))
         (nl_sexp_clone_into unbound (+ ctx 64))
+        ;; Doc 226 D5: forwarded built-ins (max-lisp-eval-depth, ...).
+        (nl_sym_fwd_init ctx)
         ;; Doc 152 (artifact-cli-silent-noop fix): publish `nelisp-standalone-argv'
         ;; HERE, at shallow nesting depth, right after `ctx' is fully built --
         ;; NOT from deep inside the `path' dispatch `if' chain below.  Root cause
@@ -45047,7 +45207,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-set") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-delete") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-source-kind") 1)
-          (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1))
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1)
+          ;; Doc 226 D5: whether a symbol is a forwarded built-in.
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-forwarded-p") 1))
       (nl_pa_operation_w args env 0)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
       (nl_n3_globals_mode_w args env 0)
@@ -46828,17 +46990,28 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (let* ((saved (if (= (logand value 1) 1) value
                           (seq (nl_sexp_clone_into value (+ copies 32))
                                (+ copies 32)))))
-             (if (= (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) copies)) 0) -1
-               (nl_sb_bind_plain env frames copies saved)))))))
-    (defun nl_sb_bind_plain (env frames sym val)
-      (let* ((old (alloc-bytes 32 8)) (rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8)))
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
+               (if (= (nl_sb_plain_entry_p entry) 0) -1
+                 (nl_sb_bind_plain env frames copies saved entry))))))))
+    ;; GNU specbind (eval.c:3656) for SYMBOL_PLAINVAL: record the symbol's
+    ;; own cell as the old value, then store the new value into the cell
+    ;; (do_specbind, eval.c:3613).  ENTRY is the symbol's object (Doc 226
+    ;; D1) or 0 when the symbol has no state yet.  The record [NAME OLD] on
+    ;; the frame's name list stands in for GNU's specpdl entry.  Objects do
+    ;; not move inside a form (mid-form collections only sweep), and ENTRY
+    ;; is reachable from the symbol table, so it stays valid across the
+    ;; record allocations.  -2: a forwarded variable refused VAL (signal
+    ;; stashed); the record is already on the frame, as GNU's specbind
+    ;; pushes before do_specbind signals.
+    (defun nl_sb_bind_plain (env frames sym val entry)
+      (let* ((rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8))
+             (box (nl_alloc_vector 2)))
         (seq
-         (if (= (nelisp_env_lkv_mirror (+ env 0) sym old 0) 0) 0
-           (nl_sexp_clone_into (+ env 64) old))
-         (let* ((box (nl_alloc_vector 2)))
-           (seq (nl_vector_set_slot box 0 sym) (nl_vector_set_slot box 1 old)
-                (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
-                (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)))
+         (nl_vector_set_slot box 0 sym)
+         (nl_vector_set_slot box 1 (if (= entry 0) (+ env 64)
+                                     (nl_record_slot_word entry 0)))
+         (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
+         (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)
          ;; The depth and the frame's name list are read as raw WORDs: the
          ;; depth is always a fixnum and the list starts as nil, and the
          ;; materialising readers boxed both on every binding.  The cons
@@ -46847,9 +47020,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
            (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
-         (nl_sb_set env sym val)
-         (wf_dirty)
-         0)))
+         (if (= (nl_sb_set env sym val) 0)
+             (seq (wf_dirty) 0)
+           -2))))
     ;; 1 when NAME's dynamic bindings are all shallow (mirror-held): a
     ;; plain variable outside a worker.
     (defun nl_sb_mirror_only_p (env name)
@@ -46888,7 +47061,39 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (nelisp_env_setv_mirror_lazy (+ env 0) sym
               (if (= (logand val 1) 1) (nl_val_load val (alloc-bytes 32 8)) val)
               (+ env 64))
-          (seq (record-slot-set entry 0 val) 0))))
+          ;; Doc 226 D5: a forwarded variable stores the value as GNU's
+          ;; store_symval_forwarding (data.c:1470) does: a boolfwd stores t
+          ;; or nil, an intfwd refuses a non-integer (1 after the signal);
+          ;; an unbound saved value is restored as it was bound.  Inline,
+          ;; with helpers already in the F1 prelink closure (capped at 296).
+          (if (if (< (record-slot-count entry) 9) 0
+                (if (= (nl_record_slot_word entry 7) 3) 0
+                  (if (= (nl_val_tag val) 4)
+                      (if (= (symbol-eq val (+ env 64)) 1) 0 1)
+                    1)))
+              (if (= (sar (nl_record_slot_word entry 7) 2) 2)
+                  (seq (record-slot-set entry 0 (if (= (nl_val_tag val) 0) 3 7)) 0)
+                (if (if (= (logand val 3) 1) 1
+                      (if (= (logand val 1) 0)
+                          (if (= (nl_val_tag val) 2) 1 (= (nl_val_tag val) 13))
+                        0))
+                    (seq (record-slot-set entry 0 val) 0)
+                  ;; (wrong-type-argument integerp VAL), stashed with the
+                  ;; constructors the closure already holds.
+                  (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
+                         (tail (alloc-bytes 32 8)))
+                    (seq (ptr-write-u64 bytes 0 8751669898145395319)
+                         (ptr-write-u64 bytes 8 7887324063363589488)
+                         (ptr-write-u64 bytes 16 7630437)
+                         (nl_alloc_symbol bytes 19 268435480)
+                         (ptr-write-u64 bytes 0 8102650174351109737)
+                         (nl_alloc_symbol bytes 8 pred)
+                         (nelisp_cons_construct val 3 tail)
+                         (nelisp_cons_construct pred tail 268435512)
+                         (ptr-write-u64 268435472 0 1)
+                         (atomic-fetch-add 268435544 1)
+                         1))))
+            (seq (record-slot-set entry 0 val) 0)))))
     ;; NAMES is the frame's name list as a WORD (pointer or immediate nil);
     ;; walking it by WORD keeps the nil terminator and a saved immediate
     ;; value from being boxed on every restore.
@@ -46905,9 +47110,36 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_bind_declared (env frames name value)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
-             (nl_n4_bind_declared_1 env frames copies
-               (if (= (logand value 1) 1) value
-                 (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))
+             ;; Doc 226 D5: GNU specbind stores through set_internal, so an
+             ;; intfwd built-in refuses a non-integer binding.  Checked here,
+             ;; before the binder, so `nl_n4_bind_declared_1' stays small
+             ;; enough to inline (the F1 prelink closure is capped at 296).
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
+               (if (if (= entry 0) 0
+                     (if (< (record-slot-count entry) 9) 0
+                       (if (/= (sar (nl_record_slot_word entry 7) 2) 1) 0
+                         (if (= (logand value 3) 1) 0
+                           (if (= (logand value 1) 1) 1
+                             (if (= (nl_val_tag value) 2) 0
+                               (if (= (nl_val_tag value) 13) 0 1)))))))
+                   ;; (wrong-type-argument integerp VALUE), stashed with the
+                   ;; constructors the closure already holds.
+                   (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
+                          (tail (alloc-bytes 32 8)))
+                     (seq (ptr-write-u64 bytes 0 8751669898145395319)
+                          (ptr-write-u64 bytes 8 7887324063363589488)
+                          (ptr-write-u64 bytes 16 7630437)
+                          (nl_alloc_symbol bytes 19 268435480)
+                          (ptr-write-u64 bytes 0 8102650174351109737)
+                          (nl_alloc_symbol bytes 8 pred)
+                          (nelisp_cons_construct value 3 tail)
+                          (nelisp_cons_construct pred tail 268435512)
+                          (ptr-write-u64 268435472 0 1)
+                          (atomic-fetch-add 268435544 1)
+                          0))
+                 (nl_n4_bind_declared_1 env frames copies
+                   (if (= (logand value 1) 1) value
+                     (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))))
     (defun nl_n4_bind_declared_1 (env frames name value)
       (if (= (nl_sb_dynamic_p env frames name) 1)
           (if (= (nl_sb_bind env frames name value) 0) 1

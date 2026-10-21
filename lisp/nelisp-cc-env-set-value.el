@@ -116,7 +116,35 @@
                    (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0)))
           (if (= (extern-call nl_thread_mirror_mutation_guard mirror-ptr name-ptr) 1)
               1
-            (seq (record-slot-set entry 0 val-ptr) 0)))))
+            ;; Doc 226 D5: a forwarded variable converts or refuses VAL as
+            ;; GNU store_symval_forwarding does (data.c:1470).
+            ;; Inline, with helpers already in the F1 prelink closure.
+            (if (if (< (record-slot-count entry) 9) 0
+                  (if (= (nl_record_slot_word entry 7) 3) 0
+                    (if (= (sexp-tag val-ptr) 4) (if (= (symbol-eq val-ptr unbound-ptr) 1) 0 1) 1)))
+                (if (= (sar (nl_record_slot_word entry 7) 2) 2)
+                    (seq (record-slot-set entry 0 (if (= (sexp-tag val-ptr) 0) 3 7)) 0)
+                  (if (if (= (logand val-ptr 3) 1) 1
+                        (if (= (logand val-ptr 1) 0)
+                            (if (= (sexp-tag val-ptr) 2) 1 (= (sexp-tag val-ptr) 13))
+                          0))
+                      (seq (record-slot-set entry 0 val-ptr) 0)
+                    ;; (wrong-type-argument integerp VAL), stashed with the
+                    ;; constructors the F1 closure already holds.
+                    (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
+                           (tail (alloc-bytes 32 8)))
+                      (seq (ptr-write-u64 bytes 0 8751669898145395319)
+                           (ptr-write-u64 bytes 8 7887324063363589488)
+                           (ptr-write-u64 bytes 16 7630437)
+                           (extern-call nl_alloc_symbol bytes 19 268435480)
+                           (ptr-write-u64 bytes 0 8102650174351109737)
+                           (extern-call nl_alloc_symbol bytes 8 pred)
+                           (extern-call nelisp_cons_construct val-ptr 3 tail)
+                           (extern-call nelisp_cons_construct pred tail 268435512)
+                           (ptr-write-u64 268435472 0 1)
+                           (atomic-fetch-add 268435544 1)
+                           1))))
+              (seq (record-slot-set entry 0 val-ptr) 0))))))
 
     ;; On a frame miss, route an existing alias to its canonical variable.
     ;; SCRATCH-PTR=0 selects the lazy mirror writer; nonzero preserves the
