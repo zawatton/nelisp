@@ -50,7 +50,7 @@ REGEX_EL = r'''
 # 128 characters is the per-character cost.
 REGEXCHAR_EL = r'''
 (let ((s (make-string LEN ?a)) (i 0) (hits 0))
-  (while (< i 200)
+  (while (< i COUNT)
     (when (string-match "\\`[a-z0-9_]*\\'" s) (setq hits (1+ hits)))
     (setq i (1+ i)))
   (princ (format "REGEXCHAR LEN %d\n" hits)))
@@ -99,7 +99,7 @@ def cmd_run(who, binary, workload, jobs):
         variants = {}
         for length in (16, 128):
             f = tmp / f"regexchar-{length}.el"
-            f.write_text(REGEXCHAR_EL.replace("LEN", str(length)))
+            f.write_text(REGEXCHAR_EL.replace("LEN", str(length)).replace("COUNT", "200"))
             variants[str(length)] = (["--load", str(f)], f"REGEXCHAR {length} 200")
     else:
         raise SystemExit(f"unknown workload {workload}")
@@ -160,6 +160,7 @@ def cmd_summarize(cand, corpus_log=None):
 
 
 GNU = os.environ.get("CODEGEN_GNU", "/usr/local/bin/emacs")
+GNU_REGEXCHAR_COUNT = 200000
 
 
 def idle_cpu():
@@ -172,7 +173,8 @@ def wall_args(who, binary, workload, files):
     """Command line for one wall-clock run of WORKLOAD."""
     if who == "gnu":
         base = [GNU, "-Q", "--batch"]
-        return base + (["--eval", "nil"] if workload == "boot" else ["-l", str(files[workload])])
+        f = files.get(f"{workload}-gnu", files.get(workload))
+        return base + (["--eval", "nil"] if workload == "boot" else ["-l", str(f)])
     return [str(binary)] + (["--eval", "nil"] if workload == "boot"
                             else ["--load", str(files[workload])])
 
@@ -184,13 +186,21 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
     (tmp / "regex.el").write_text(REGEX_EL)
     for length in (16, 128):
         f = tmp / f"regexchar-{length}.el"
-        f.write_text(REGEXCHAR_EL.replace("LEN", str(length)))
+        f.write_text(REGEXCHAR_EL.replace("LEN", str(length)).replace("COUNT", "200"))
         files[f"regexchar{length}"] = f
+        # GNU's per-character cost is a few ns: 200 matches would put the
+        # 16-to-128 difference inside process noise, so GNU runs 1000 times
+        # as many and its slope divides by its own count.
+        g = tmp / f"regexchar-{length}-gnu.el"
+        g.write_text(REGEXCHAR_EL.replace("LEN", str(length)).replace("COUNT", str(GNU_REGEXCHAR_COUNT)))
+        files[f"regexchar{length}-gnu"] = g
     cpu = idle_cpu()
     runtimes = {"base": base, "cand": cand, "gnu": None}
     workloads = ["boot", "files", "regex", "regexchar16", "regexchar128"]
     markers = {"files": "ABI-FILES (1000 527500", "regex": "ABI-REGEX 6000",
-               "regexchar16": "REGEXCHAR 16 200", "regexchar128": "REGEXCHAR 128 200"}
+               "regexchar16": "REGEXCHAR 16 200", "regexchar128": "REGEXCHAR 128 200",
+               "regexchar16-gnu": f"REGEXCHAR 16 {GNU_REGEXCHAR_COUNT}",
+               "regexchar128-gnu": f"REGEXCHAR 128 {GNU_REGEXCHAR_COUNT}"}
 
     def freq():
         try:
@@ -208,7 +218,8 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
                               cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)
         t = time.perf_counter() - t0
         out = proc.stdout + proc.stderr
-        if proc.returncode != 0 or (w in markers and markers[w] not in out):
+        key = f"{w}-gnu" if who == "gnu" and f"{w}-gnu" in markers else w
+        if proc.returncode != 0 or (key in markers and markers[key] not in out):
             raise RuntimeError(f"{who} {w}: exit {proc.returncode}: {out[-300:]}")
         return t, khz
 
@@ -234,7 +245,8 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
 
     def value(row, w, who):
         if w == "regex-per-character":
-            return (row["regexchar128"][who]["s"] - row["regexchar16"][who]["s"]) / (112 * 200) * 1e9
+            count = GNU_REGEXCHAR_COUNT if who == "gnu" else 200
+            return (row["regexchar128"][who]["s"] - row["regexchar16"][who]["s"]) / (112 * count) * 1e9
         return row[w][who]["s"]
     result = {}
     for w, unit in (("boot", "s"), ("files", "s"), ("regex", "s"), ("regex-per-character", "ns/char")):
