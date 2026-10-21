@@ -2484,13 +2484,13 @@ directory tracks the tree rather than accumulating every key ever built."
   "GNU ABLOCKS_SIZE blocks (alloc.c:979) per group, aligned to this size.")
 (defconst nelisp-standalone--gc-block-type-offset 32752
   "Offset of a typed block's type word (1 = cons; 0 = free).")
-(defconst nelisp-standalone--cons-cell-bytes 24
-  "NeLisp cons payload: car WORD, cdr WORD and the refcount word that
-`nelisp_nlconsbox_clone' still increments (Doc 216 S2.2 removes it).")
+(defconst nelisp-standalone--cons-cell-bytes 16
+  "NeLisp cons payload: GNU's 16-byte struct Lisp_Cons, car WORD and cdr
+WORD (Doc 216 S2.2 removed the refcount word).")
 (defconst nelisp-standalone--cons-block-size
   (/ (* (- (- 32768 8) 8 (- nelisp-standalone--cons-cell-bytes 8)) 8)
      (1+ (* nelisp-standalone--cons-cell-bytes 8)))
-  "GNU CONS_BLOCK_SIZE (alloc.c:2526) for 24-byte cells: 1356.")
+  "GNU CONS_BLOCK_SIZE (alloc.c:2526): 2030 for 16-byte cells.")
 (defconst nelisp-standalone--cons-marks-offset
   (* nelisp-standalone--cons-block-size nelisp-standalone--cons-cell-bytes)
   "Offset of a cons block's gcmarkbits (alloc.c:2543).")
@@ -2507,11 +2507,15 @@ directory tracks the tree rather than accumulating every key ever built."
   "Return the Doc 223 typed-block allocation forms for arena.o."
   (let ((n nelisp-standalone--cons-block-size)
         (cell nelisp-standalone--cons-cell-bytes)
+        ;; A dumped cell is a headered legacy block: 8 + cell bytes.
+        (cb (+ 8 nelisp-standalone--cons-cell-bytes))
         (marks nelisp-standalone--cons-marks-offset)
         (next nelisp-standalone--cons-next-offset)
         (ty nelisp-standalone--gc-block-type-offset)
         (dead nelisp-standalone--cons-dead-word))
-    (unless (and (= n 1356) (<= (+ next 8) ty))
+    ;; The link and the block ordinal (NEXT+8) sit below the type word; the
+    ;; dump's rank table holds a cell index in 16 bits.
+    (unless (and (= cell 16) (= n 2030) (<= (+ next 16) ty) (< n 65535))
       (error "Doc 223 cons block geometry changed: %S %S" n next))
     `(;; Registry probe start for group base G (a 512 KiB multiple).
       (defun nl_typed_hash (g mask) (logand (+ (sar g 19) (sar g 29)) mask))
@@ -2796,7 +2800,7 @@ directory tracks the tree rather than accumulating every key ever built."
                           (heap-read-u16 (heap-read-u64 st 344) (* (+ (* o ,n) idx) 2)))))
                 (if (= r 65535) (nl_dump_excluded addr)
                   (+ (heap-read-u64 st 328)
-                     (+ (* (+ (heap-read-u64 (heap-read-u64 st 360) (* o 8)) r) 32)
+                     (+ (* (+ (heap-read-u64 (heap-read-u64 st 360) (* o 8)) r) ,cb)
                         (+ 8 within)))))
             (let ((i (nl_dump_bsearch addr 0)))
               (if (< i 0) (nl_dump_excluded addr)
@@ -2810,7 +2814,7 @@ directory tracks the tree rather than accumulating every key ever built."
         (let ((st (data-addr nl_typed_alloc)))
           (if (>= logoff (heap-read-u64 st 328))
               (let* ((rel (- logoff (heap-read-u64 st 328)))
-                     (g (/ rel 32)) (within (- (- rel (* g 32)) 8))
+                     (g (/ rel ,cb)) (within (- (- rel (* g ,cb)) 8))
                      (pre (heap-read-u64 st 360))
                      (lo 0) (hi (- (heap-read-u64 st 136) 1)) (o -1) (mid 0))
                 (if (< within 0) 0
@@ -2836,6 +2840,8 @@ directory tracks the tree rather than accumulating every key ever built."
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
   (let ((n nelisp-standalone--cons-block-size)
         (cell nelisp-standalone--cons-cell-bytes)
+        ;; A dumped cell is a headered legacy block: 8 + cell bytes.
+        (cb (+ 8 nelisp-standalone--cons-cell-bytes))
         (marks nelisp-standalone--cons-marks-offset)
         (next nelisp-standalone--cons-next-offset)
         (dead nelisp-standalone--cons-dead-word))
@@ -3078,8 +3084,8 @@ directory tracks the tree rather than accumulating every key ever built."
                     (setq i (+ i 1))))
              (if (= ok 0) 0 (nl_dump_compact_rank_cells st))))))
       ;; Write the image span: every included block in address order with its
-      ;; mark bits cleared, then every reached cell as a 32-byte legacy
-      ;; payload block (header, car/cdr as swizzled, refcount), through a
+      ;; mark bits cleared, then every reached cell as a headered legacy
+      ;; payload block (header, then car and cdr as swizzled), through a
       ;; 1 MiB buffer.  Returns the bytes written.
       (defun nl_dump_compact_write (fd)
         (let* ((st (data-addr nl_typed_alloc))
@@ -3120,18 +3126,17 @@ directory tracks the tree rather than accumulating every key ever built."
                 (setq r 0)
                 (while (< r cnt)
                   (seq
-                   (if (> (+ fill 32) 1048576)
+                   (if (> (+ fill ,cb) 1048576)
                        (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
                             (setq fill 0))
                      0)
                    (setq c (+ blk (* (heap-read-u16 (heap-read-u64 st 352)
                                                     (* (+ (* o ,n) r) 2))
                                      ,cell)))
-                   (ptr-write-u64 buf fill 32)
+                   (ptr-write-u64 buf fill ,cb)
                    (ptr-write-u64 buf (+ fill 8) (heap-read-u64 c 0))
                    (ptr-write-u64 buf (+ fill 16) (heap-read-u64 c 8))
-                   (ptr-write-u64 buf (+ fill 24) (heap-read-u64 c 16))
-                   (setq fill (+ fill 32))
+                   (setq fill (+ fill ,cb))
                    (setq r (+ r 1))))
                 (setq o (+ o 1))))
              (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
@@ -12099,7 +12104,8 @@ leave symbols unresolved at link time."
                   (seq
                    (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
                    (setq ctotal (+ (heap-read-u64 (+ (data-addr nl_typed_alloc) 328) 0)
-                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0) 32)))
+                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
+                                      ,(+ 8 nelisp-standalone--cons-cell-bytes))))
                    (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
                    (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))

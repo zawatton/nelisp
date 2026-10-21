@@ -101,7 +101,16 @@ def cmd_portplan():
 
 
 CUR = ROOT / 'target/gc-port/cur'
-CONS_BLOCK_SIZE = 1356
+
+
+def cons_block_size():
+    """GNU CONS_BLOCK_SIZE (alloc.c:2526) for the build script's cell size."""
+    text = (ROOT / 'scripts/nelisp-standalone-build.el').read_text()
+    cell = int(re.search(r'\(defconst nelisp-standalone--cons-cell-bytes (\d+)', text)[1])
+    return ((32768 - 8 - 8 - (cell - 8)) * 8) // (cell * 8 + 1)
+
+
+CONS_BLOCK_SIZE = cons_block_size()
 
 
 def binaries():

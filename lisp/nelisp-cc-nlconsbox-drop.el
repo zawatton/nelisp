@@ -131,18 +131,11 @@
      ;; → dealloc.
     ;; Doc 147 Phase 3: refcount offset 64 -> 16, box size 72 -> 24 (car
     ;; WORD @0 + cdr WORD @8 + refcount @16).
-    (defun nelisp_nlconsbox_drop (box-ptr)
-      (if (= (atomic-fetch-add (+ box-ptr 16) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Drop the
-          ;; interior payload (= recursively walk car + cdr) then free
-          ;; the 24-byte allocation.
-          (nelisp_nlconsbox_drop_prog2
-           (extern-call nl_consbox_drop_inner box-ptr)
-           (dealloc-bytes box-ptr 24 8))
-        ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
-        ;; the dealloc-bytes arm's return convention so the caller
-        ;; sees a uniform `i64 = 1' on both branches.
-        1)))
+    ;; Retired by Doc 216 S2.2: cons cells are 16 bytes with no count and
+    ;; only the tracing collector frees them.  Dropping a reference is a
+    ;; no-op; the old decrement-and-free would write past the cell.
+    (defun nelisp_nlconsbox_drop (_box-ptr)
+      (nelisp_nlconsbox_drop_prog2 0 1)))
   "AOT source for the Doc 124 §124.G NlConsBox Drop kernel.
 
 Two-entry `(seq DEFUN ...)' manifest mirroring §124.A:

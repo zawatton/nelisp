@@ -24,7 +24,7 @@
 ;;   4 Symbol(String) — deep copy: read bytes-ptr@16 + len@24, nl_alloc_symbol.
 ;;   5 Str(String)  — deep copy: read bytes-ptr@16 + len@24, nl_alloc_str.
 ;;   6 MutStr(NlStrRef) — boxed, refcount bump via nelisp_nlstr_clone.
-;;   7 Cons(NlConsBoxRef) — boxed, refcount bump via nelisp_nlconsbox_clone.
+;;   7 Cons(NlConsBoxRef) — boxed; no count (Doc 216 S2.2, 16-byte cell).
 ;;   8 Vector       — boxed, refcount bump via nelisp_nlvector_clone.
 ;;   9 CharTable    — boxed, refcount bump via nelisp_nlchartable_clone.
 ;;  10 BoolVector   — boxed, refcount bump via nelisp_nlboolvector_clone.
@@ -96,7 +96,7 @@
     ;; dispatch to the per-type clone (each bumps rc + returns box-ptr).
     ;; tag 6 MutStr holds NlStrRef -> nelisp_nlstr_clone (NOT a deep copy).
     (defun nl_sci_bump (tag box)
-      (if (= tag 7)  (nelisp_nlconsbox_clone box)
+      (if (= tag 7)  box     ; Doc 216 S2.2: cons cells carry no count
         (if (or (= tag 6) (= tag 15)) (nelisp_nlstr_clone box)
           (if (= tag 8)  (nelisp_nlvector_clone box)
             (if (= tag 9)  (nelisp_nlchartable_clone box)
