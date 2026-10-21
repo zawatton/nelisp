@@ -14769,6 +14769,26 @@ then delete CATEGORY from the category set instead of adding it.
   (and (nelisp--chartab-standalone-p) (nelisp--category-install))
   "Non-nil once the category.c functions above answer the public names.")
 
+;; GNU international/mule.el.  Guarded, as the category functions are, so
+;; host Emacs keeps its own when gates load this file.
+(unless (fboundp 'with-category-table)
+  (defmacro with-category-table (table &rest body)
+    "Execute BODY like `progn' with TABLE the current category table.
+The category table of the current buffer is saved, BODY is evaluated,
+then the saved table is restored, even in case of an abnormal exit.
+Value is what BODY returns."
+    (declare (indent 1) (debug t))
+    (let ((old-table (make-symbol "old-table"))
+          (old-buffer (make-symbol "old-buffer")))
+      `(let ((,old-table (category-table))
+             (,old-buffer (current-buffer)))
+         (unwind-protect
+             (progn
+               (set-category-table ,table)
+               ,@body)
+           (with-current-buffer ,old-buffer
+             (set-category-table ,old-table)))))))
+
 ;; ---- Doc 225 P1: syntax tables as GNU 31.1 char-tables -------------------
 ;;
 ;; GNU keeps a syntax table as a char-table of subtype `syntax-table' with no
