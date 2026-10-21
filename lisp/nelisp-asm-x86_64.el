@@ -882,7 +882,15 @@ every fixup-bearing byte through the interpreted accessor rather
 than the native `aset'."
   (let* ((bytes (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
          (labels (aref buf 2))
-         (fixups (aref buf 3)))
+         (fixups (aref buf 3))
+         ;; One hash lookup per fixup instead of an `assq' over every
+         ;; label: a large unit (applyfn-reader.o) has tens of thousands
+         ;; of each, and the quadratic walk took most of its build.  The
+         ;; first binding of a label wins, exactly as `assq' answered.
+         (label-table (make-hash-table :test 'eq)))
+    (dolist (cell labels)
+      (unless (gethash (car cell) label-table)
+        (puthash (car cell) cell label-table)))
     (when (multibyte-string-p bytes)
       ;; Every chunk is built from `unibyte-string' (see above), so this
       ;; would mean some caller fed a multibyte piece into the buffer —
@@ -893,7 +901,7 @@ than the native `aset'."
     (dolist (fix fixups)
       (let* ((slot (car fix))
              (label (cdr fix))
-             (cell (assq label labels)))
+             (cell (gethash label label-table)))
         (unless cell
           (signal 'nelisp-asm-x86_64-error
                   (list :unresolved-label label :at-slot slot)))
