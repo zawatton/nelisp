@@ -39,8 +39,9 @@
   ;; An allocated-header query (kind 1) first asks the last header it found
   ;; (st+136): string code reads the same few strings repeatedly. GNU's
   ;; live_string_p walks the block mem_find returned; the page index answers
-  ;; here. A sweep clears the memo, the only time a header is freed.
-  (if (if (= kind 1) (= w (heap-read-u64 (data-addr nl_strings_state) 136)) 0) 1
+  ;; here. A sweep clears the memo, the only time a header is freed. Zero is
+  ;; the cleared memo, never a header, so it never hits.
+  (if (if (= kind 1) (if (= w 0) 0 (= w (heap-read-u64 (data-addr nl_strings_state) 136))) 0) 1
   (if (< kind 3)
       (let*
 	  ((st (data-addr nl_strings_state))
