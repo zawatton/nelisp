@@ -18,16 +18,39 @@
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")
     (nelisp-process-buffer . "lisp/nelisp-process-buffer.el")))
 
+(defun nelisp-boot-image--macroexp-source (source path)
+  "Bake admitted GNU macroexp functions, retaining rejected functions as source."
+  ;; GNU macroexp.el:954-962 reloads compiled macroexp during bootstrap when
+  ;; the preloaded provider is interpreted. Use the existing whole-file GNU
+  ;; compiler and VM opcode selection rather than interpreting every helper.
+  (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
+    (require 'nelisp-prelude-bytecode)
+    (let* ((print-escape-nonascii t)
+           (print-escape-multibyte t)
+           (dirs (list (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                                         nelisp-boot-image--root)
+                       (expand-file-name "vendor/emacs-lisp"
+                                         nelisp-boot-image--root)))
+           (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
+           (report (expand-file-name "target/nelisp-boot-image/macroexp-bytecode.tsv"
+                                     nelisp-boot-image--root)))
+      (make-directory (file-name-directory report) t)
+      (nelisp-prelude-bytecode-write-report report (nth 2 result))
+      (car result))))
+
 (defun nelisp-boot-image-provider (name)
-  "Return NAME's exact provider source for embedding, with a trailing form."
-  (let ((path (or (cdr (assq name nelisp-boot-image--providers))
-                  (error "Unknown boot provider: %S" name))))
+  "Return NAME's provider for embedding, with a trailing form.
+GNU macroexp functions use the existing reviewed bytecode selector. Other
+providers and source-only builds retain their exact source text."
+  (let* ((path (or (cdr (assq name nelisp-boot-image--providers))
+                   (error "Unknown boot provider: %S" name)))
+         (source (with-temp-buffer
+                   (insert-file-contents (expand-file-name path nelisp-boot-image--root))
+                   (buffer-string))))
     ;; Snapshot exactly the file the former runtime load would have read.
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
-     (with-temp-buffer
-       (insert-file-contents (expand-file-name path nelisp-boot-image--root))
-       (buffer-string))
+     (if (eq name 'macroexp) (nelisp-boot-image--macroexp-source source path) source)
      "\nt\n")))
 
 (defun nelisp-boot-image-prelude (source)

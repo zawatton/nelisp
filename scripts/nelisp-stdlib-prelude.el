@@ -27257,6 +27257,9 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                  (assq symbol nelisp--special-form-arities))
       (signal 'wrong-type-argument (list 'special-form-p symbol)))
     (setcar (cddr object) implementation)
+    ;; Publish the changed implementation through the function-cell path,
+    ;; retaining the special object shared by aliases.
+    (fset symbol object)
     nil))
 
 ;; GNU editfns.c:Fsave_current_buffer records an unwind action before
@@ -27264,9 +27267,12 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; keep its implementation in Lisp, using the same unwind structure.
 (defmacro nelisp--save-current-buffer (&rest body)
   (let ((saved (make-symbol "saved-buffer")))
-    `(let ((,saved (current-buffer)))
-       (unwind-protect (progn ,@body)
-         (when (buffer-live-p ,saved) (set-buffer ,saved))))))
+    ;; This fixed unwind frame needs no general backquote traversal.  Emit
+    ;; the evaluator's conditional directly, including its implicit nil arm.
+    (list 'let (list (list saved '(current-buffer)))
+          (list 'unwind-protect (cons 'progn body)
+                (list 'if (list 'buffer-live-p saved)
+                      (list 'set-buffer saved))))))
 (nelisp--set-special-form-implementation
  'save-current-buffer (symbol-function 'nelisp--save-current-buffer))
 

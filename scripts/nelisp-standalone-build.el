@@ -22650,6 +22650,30 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= (nl_intern_lookup buf 17 sym) 0) 0
            (if (= (bf_dynamic_lookup env sym value) 0)
                (bf_bind_frame_declared env (+ env 32) sym value) 0)))))
+    (defun nl_load_eager_enabled (env)
+      ;; GNU lread.c:2183-2190 selects eager expansion once per file,
+      ;; before the first form, including the compiled-file exclusion.
+      (let* ((name (alloc-bytes 32 8)) (value (alloc-bytes 32 8))
+             (buf (alloc-bytes 32 8)) (enabled 1))
+        (seq
+         (bf_load_file_name_symbol name)
+         (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) name value) 0)
+             (if (= (sexp-tag value) 5)
+                 (let* ((n (m5_strlen value)) (p (nl_bi_strptr value)))
+                   (if (and (>= n 4) (= (ptr-read-u8 p (- n 4)) 46)
+                            (= (ptr-read-u8 p (- n 3)) 101)
+                            (= (ptr-read-u8 p (- n 2)) 108)
+                            (= (ptr-read-u8 p (- n 1)) 99))
+                       (setq enabled 0) 0)) 0) 0)
+         (ptr-write-u64 buf 0 7809644666444607081)
+         (ptr-write-u64 buf 8 8675462794283412781)
+         (ptr-write-u64 buf 16 8245921787883184496)
+         (ptr-write-u64 buf 24 431131421741)
+         (if (= (nl_intern_lookup buf 29 name) 0) (setq enabled 0)
+           (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name value) 0)
+               (if (= (bf_fboundp_cell_p value) 1) 0 (setq enabled 0))
+             (setq enabled 0)))
+         enabled)))
     ;; GNU lread.c:readevalloop_eager_expand_eval. This is evaluator glue,
     ;; not a new Lisp native: macro expansion remains the genuine Lisp
     ;; internal-macroexpand-for-load, including its error/abort behavior.
@@ -22666,20 +22690,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (let* ((original roots) (name (+ roots 32))
                   (function (+ roots 64)) (arguments (+ roots 96))
                   (expanded (+ roots 128)) (tail (+ roots 160))
-                  (value (+ roots 192)) (filename (+ roots 224))
+                  (value (+ roots 192))
                   (buf (alloc-bytes 32 8)) (enabled 1))
              (seq
               (wf_copy32 original form)
-              ;; Do not eagerly expand compiled files (GNU lread.c:2185).
-              (bf_load_file_name_symbol name)
-              (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) name filename) 0)
-                  (if (= (sexp-tag filename) 5)
-                      (let* ((n (m5_strlen filename)) (p (nl_bi_strptr filename)))
-                        (if (and (>= n 4) (= (ptr-read-u8 p (- n 4)) 46)
-                                 (= (ptr-read-u8 p (- n 3)) 101)
-                                 (= (ptr-read-u8 p (- n 2)) 108)
-                                 (= (ptr-read-u8 p (- n 1)) 99))
-                            (setq enabled 0) 0)) 0) 0)
               ;; internal-macroexpand-for-load, interned only if available.
               (ptr-write-u64 buf 0 7809644666444607081)
               (ptr-write-u64 buf 8 8675462794283412781)
@@ -22690,7 +22704,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (if (= (bf_fboundp_cell_p function) 1) 0 (setq enabled 0))
                   (setq enabled 0)))
               (if (= enabled 0)
-                  (setq answer (nelisp_eval_call_w original env 0))
+                  (nl_cons_stash_void_function env name)
                 (seq
                  (nelisp_cons_construct original (nelisp_cons_construct_w 3 3 0) arguments)
                  (let* ((word (nl_n4_named_apply_w name function arguments env 0)))
@@ -22732,6 +22746,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq (if (= pushed 1) (nl_gc_ctx_pop) 0)
                       (if (= rc 0) drain-rc rc)))))))
     (defun bf_load_eval_loop (src cursor result pool env out bsym more)
+      (let* ((eager (nl_load_eager_enabled env)))
       ;; GNU `readevalloop' binds `internal-interpreter-environment' once
       ;; for the whole file, so a bodyless top-level `(defvar SYM)' stays
       ;; a local special declaration for the rest of THAT file (and only
@@ -22764,7 +22779,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= prc 1)
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym 1)))
+                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym eager)))
                   ;; GC trigger must compare TOTAL allocated bytes across all
                   ;; chunks (268436184 = chunk-bytes-reserved running counter),
                   ;; not the chunk-0 bump offset (268435456) — after Doc 140's
@@ -22794,7 +22809,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; on a bad token finished "loaded".
              (if (= prc 2) (setq more 0) (setq more 3))))))
       (nl_env_pop_frame env)
-      more)
+      more))
     (defun bf_eval_source_string_loop (src cursor result pool env out bsym more)
       (while (= more 1)
         (seq
@@ -33357,6 +33372,7 @@ no-catch tail above, not this defensive path."
        (if (= report_errors 4) (nl_load_bind_macroexp_dynvars ctx) 0)
        (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
        (let* ((more 1)
+              (eager (if (= report_errors 4) (nl_load_eager_enabled ctx) 0))
               ;; Doc 180 Phase 1: FORM_INDEX is 1-based and counts every
               ;; top-level read attempt that is not a clean EOF -- both a
               ;; form successfully handed to `eval' AND a form whose own
@@ -33441,7 +33457,7 @@ no-catch tail above, not this defensive path."
                        ;; reports failure.
                        (let* ((form_rc (nl_driver_eval_with_recorded_roots
                                         result ctx out pool src cursor builtin_sym
-                                        (if (= report_errors 4) 1 0))))
+                                        eager)))
                          (if (= form_rc 0)
                              0
                            ;; M6 stash flag @268435472: 0 = "nothing in
@@ -42646,7 +42662,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     `((defun nl_n3_special_name (name) ,test)
       (defun nl_n3_special_bit (name) ,bits)
       (defun nl_n3_special_install (name object env)
-        (let* ((bit (nl_n3_special_bit name)))
+        (seq
+         ;; Function publication can replace a macro implementation without
+         ;; moving either its call form or its special object.  Invalidate
+         ;; cached expansions before publishing the changed function cell.
+         (atomic-fetch-add (data-addr nl_mxcache_epoch) 1)
+         (let* ((bit (nl_n3_special_bit name)))
           (if (= bit 0) 0
             (seq
              (if (and (= (sexp-tag object) 7)
@@ -42655,7 +42676,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (ptr-write-u64 (+ env 112) 0
                                 (logand (ptr-read-u64 (+ env 112) 0) (logxor bit -1)))
                (ptr-write-u64 (+ env 112) 0
-                              (logior (ptr-read-u64 (+ env 112) 0) bit))) 0))))
+                              (logior (ptr-read-u64 (+ env 112) 0) bit))) 0)))))
       (defun nl_n3_special_object (object)
         ;; Metadata is in an unused Sexp-view word, not a new heap layout.
         ;; Cloning/image transport already preserves all four view words.
@@ -42673,7 +42694,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (nl_abi_word_to_rc (nl_n3_special_cell_w name_ptr args_ptr env_ptr 0) out))
       ;; Result WORD or 0 (never 2: an unhandled name falls back to the
       ;; cell's implementation).
-      (defun nl_n3_special_call_w (object args env _pad)
+      (defun nl_n3_special_call_w (object args env form_ptr)
         (let* ((name (nl_apply_list_nth object 1))
                (w (if (= (sexp-name-eq name "interactive") 1)
                       3
@@ -42682,7 +42703,19 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
               (let* ((impl (nl_apply_list_nth object 2)))
                 (if (= impl 0) (nl_abi_fail (nl_apply_stash_invalid_function env object) 0)
                   (if (= (nl_cons_is_macro impl) 1)
-                      (nl_cons_macro_apply_eval_w object impl args env 0)
+                      ;; Cache this implementation's expansion at its caller,
+                      ;; as for an ordinary macro.  The shared special object
+                      ;; is not a call site: distinct bodies must not share it.
+                      (if (/= form_ptr 0)
+                          (nl_cons_macro_apply_eval_w form_ptr impl args env 0)
+                        ;; Direct special dispatch has no stable caller form.
+                        ;; Expand/evaluate normally without publishing a key.
+                        (let* ((mw (nl_cons_cdr_word impl))
+                               (macrofn_ptr (if (= (logand mw 1) 0) mw
+                                              (nl_cons_cdr_ptr impl)))
+                               (exp_w (nl_apply_function_w macrofn_ptr args env 0)))
+                          (if (= exp_w 0) 0
+                            (nelisp_eval_call_w exp_w env 0))))
                     (nl_apply_function_w impl args env 0))))
             w)))
       (defun nl_n3_special_call (object args env out)
@@ -45037,7 +45070,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
           (wf_word_store_out func_slot lookup_w)
           (if (= (logior (logxor (sexp-tag func_slot) 7)
                           (logxor (ptr-read-u64 func_slot 16) 13108)) 0)
-               (nl_n3_special_call_w func_slot tail_ptr env 0)
+               (nl_n3_special_call_w func_slot tail_ptr env form_ptr)
              (if (= (sexp-tag func_slot) 0)
                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
                (if (= (sexp-tag func_slot) 4)

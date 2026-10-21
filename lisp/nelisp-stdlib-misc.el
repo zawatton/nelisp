@@ -543,19 +543,18 @@ top-level form reachable until the end of the load.")
           (setq done t)))))
     pos))
 
-(defun nelisp--load-eager-expand-eval (form)
+(defun nelisp--load-eager-expand-eval (form macroexpand)
   "Expand and evaluate one source FORM as GNU readevalloop does.
 The genuine `internal-macroexpand-for-load' owns expansion errors."
-  (if (or (not (fboundp 'internal-macroexpand-for-load))
-          (and load-file-name (string-suffix-p ".elc" load-file-name)))
+  (if (not macroexpand)
       (eval form)
-    (setq form (internal-macroexpand-for-load form nil))
+    (setq form (funcall macroexpand form nil))
     (if (eq (car-safe form) 'progn)
         (let ((result nil))
           (dolist (subform (cdr form))
-            (setq result (nelisp--load-eager-expand-eval subform)))
+            (setq result (nelisp--load-eager-expand-eval subform macroexpand)))
           result)
-      (eval (internal-macroexpand-for-load form t)))))
+      (eval (funcall macroexpand form t)))))
 
 (defun nelisp--load-eval-source-incremental (source)
   "Read and eval SOURCE top-level forms one at a time.
@@ -566,6 +565,10 @@ overflow the standalone arena on upstream-sized package files."
         (len (length source))
         (last nil)
         (count 0)
+        (macroexpand (and (fboundp 'internal-macroexpand-for-load)
+                          (not (and load-file-name
+                                    (string-suffix-p ".elc" load-file-name)))
+                          'internal-macroexpand-for-load))
         (macroexp--dynvars (and (boundp 'macroexp--dynvars) macroexp--dynvars)))
     (while (progn
              (setq pos (nelisp--load-skip-space-and-comments source pos))
@@ -573,7 +576,7 @@ overflow the standalone arena on upstream-sized package files."
       (let ((res (read-from-string source pos)))
         (when (or (not (consp res)) (<= (cdr res) pos))
           (signal 'end-of-file (list "load reader made no progress" pos)))
-        (setq last (nelisp--load-eager-expand-eval (car res)))
+        (setq last (nelisp--load-eager-expand-eval (car res) macroexpand))
         (setq pos (cdr res))
         (setq count (+ count 1))
         (when (and load-garbage-collect-interval

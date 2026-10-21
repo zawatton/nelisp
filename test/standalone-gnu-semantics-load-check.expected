@@ -5,3 +5,5 @@
 (gs-load-deferred (void-function gs-load-deferred))
 (fallback-count 1)
 (abort nil expansion-environment-restored t)
+(expander-selected-at-file-start remove (void-function internal-macroexpand-for-load) nil 0)
+(expander-selected-at-file-start define t t 0)
