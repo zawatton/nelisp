@@ -807,6 +807,13 @@ FULL permits the one-to-many Unicode mappings used by multibyte strings."
         (if (and (<= ?a byte) (<= byte ?z)) (- byte 32) byte))
     (logand mapped 255)))
 
+(defun nelisp--case-multibyte-p ()
+  "Return the current buffer's multibyte flag for case operations."
+  (if (fboundp 'nelisp--buffer-multibyte-p)
+      (nelisp--buffer-multibyte-p (current-buffer))
+    (or (not (boundp 'enable-multibyte-characters))
+        enable-multibyte-characters)))
+
 (defun nelisp--case-object (object action)
   "Case character or string OBJECT with the current buffer's case table.
 ACTION is `upper', `lower', `capitalize', or `initials'."
@@ -817,9 +824,7 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
       (if (> object #xfc00000) object
         (let* ((flags (logand object #xfc00000))
                (character (logand object #x3fffff))
-               (unibyte (and (< character 256)
-                             (boundp 'enable-multibyte-characters)
-                             (not enable-multibyte-characters)))
+               (unibyte (and (< character 256) (not (nelisp--case-multibyte-p))))
                (key (if (and unibyte (>= character 128))
                         (+ character #x3fff00) character))
                (mode (if (memq action '(capitalize initials)) 'title action))
@@ -891,8 +896,7 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
   (or (= a b)
       (and case-fold-search
            (let ((table (and (fboundp 'current-case-table) (current-case-table)))
-                 (unibyte (and (boundp 'enable-multibyte-characters)
-                               (not enable-multibyte-characters))))
+                 (unibyte (not (nelisp--case-multibyte-p))))
              ;; editfns.c compares downcase-table values before converting
              ;; back to bytes; numeric downcase would truncate those values.
              (= (nelisp--case-simple-character

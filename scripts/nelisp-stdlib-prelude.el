@@ -1157,21 +1157,18 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
+(defvar nelisp--buffer-multibyte-table (make-hash-table :test 'eq)
+  "BUFFER -> multibyte flag (t/nil).  Absent means multibyte (t).")
+
 (defun nelisp--buffer-multibyte-p (buffer)
-  "Return BUFFER's local multibyte flag, defaulting to t."
-  ;; Every `insert' consults this with the CURRENT buffer.  Selecting a
-  ;; buffer that is already current is a no-op in Emacs, but in the GUI
-  ;; image `with-current-buffer' costs two full owner `set-buffer' calls
-  ;; (local-cell swap bookkeeping), which measured 22% of a `json-encode'.
-  ;; Read the flag directly in that case; the value is identical.
-  (if (eq buffer (current-buffer))
-      (if (local-variable-p 'enable-multibyte-characters)
-          enable-multibyte-characters
-        t)
-    (with-current-buffer buffer
-      (if (local-variable-p 'enable-multibyte-characters)
-          enable-multibyte-characters
-        t))))
+  "Return BUFFER's multibyte flag, defaulting to t for a new buffer."
+  ;; GNU buffer.c reads this from the buffer's own BVAR.  The bootstrap
+  ;; buffer has no such slot, so its existing side table is authoritative.
+  (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+      (gethash buffer nelisp--buffer-multibyte-table t)
+    ;; Keep hosted calls on GNU's own buffer-local storage.
+    (if (eq buffer (current-buffer)) enable-multibyte-characters
+      (with-current-buffer buffer enable-multibyte-characters))))
 
 (defun nelisp--time-invalid ()
   "Signal the GNU error for an invalid time value."
@@ -1976,6 +1973,13 @@ FULL permits the one-to-many Unicode mappings used by multibyte strings."
         (if (and (<= ?a byte) (<= byte ?z)) (- byte 32) byte))
     (logand mapped 255)))
 
+(defun nelisp--case-multibyte-p ()
+  "Return the current buffer's multibyte flag for case operations."
+  (if (fboundp 'nelisp--buffer-multibyte-p)
+      (nelisp--buffer-multibyte-p (current-buffer))
+    (or (not (boundp 'enable-multibyte-characters))
+        enable-multibyte-characters)))
+
 (defun nelisp--case-object (object action)
   "Case character or string OBJECT with the current buffer's case table.
 ACTION is `upper', `lower', `capitalize', or `initials'."
@@ -1986,9 +1990,7 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
       (if (> object #xfc00000) object
         (let* ((flags (logand object #xfc00000))
                (character (logand object #x3fffff))
-               (unibyte (and (< character 256)
-                             (boundp 'enable-multibyte-characters)
-                             (not enable-multibyte-characters)))
+               (unibyte (and (< character 256) (not (nelisp--case-multibyte-p))))
                (key (if (and unibyte (>= character 128))
                         (+ character #x3fff00) character))
                (mode (if (memq action '(capitalize initials)) 'title action))
@@ -2060,8 +2062,7 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
   (or (= a b)
       (and case-fold-search
            (let ((table (and (fboundp 'current-case-table) (current-case-table)))
-                 (unibyte (and (boundp 'enable-multibyte-characters)
-                               (not enable-multibyte-characters))))
+                 (unibyte (not (nelisp--case-multibyte-p))))
              ;; editfns.c compares downcase-table values before converting
              ;; back to bytes; numeric downcase would truncate those values.
              (= (nelisp--case-simple-character
@@ -11764,16 +11765,6 @@ reproduce of Emacs's coding-region/buffer-multibyte interaction.
 ;; how text is stored, not a flag next to it; see item 3's own
 ;; commentary at `decode-coding-region' for the evidence this was
 ;; measured, not assumed, to be out of reach at this layer.
-(unless (boundp 'nelisp--buffer-multibyte-table)
-  (defvar nelisp--buffer-multibyte-table (make-hash-table :test 'eq)
-    "BUFFER -> multibyte flag (t/nil).  Absent means multibyte (t)."))
-
-(unless (fboundp 'nelisp--buffer-multibyte-p)
-  (defun nelisp--buffer-multibyte-p (buffer)
-    "Return BUFFER's declared multibyte flag; t when never set (Emacs's
-own default for a buffer `set-buffer-multibyte' was never called on)."
-    (gethash buffer nelisp--buffer-multibyte-table t)))
-
 (unless (fboundp 'nelisp--char-arg-to-string)
   (defun nelisp--char-arg-to-string (char multibyte)
     "Convert CHAR (an Emacs character code) to the string `insert'/
@@ -11799,6 +11790,7 @@ never an error, for any integer argument."
   (defun set-buffer-multibyte (flag)
   "Set the current buffer's multibyte flag and return FLAG."
   (let ((old (nelisp--buffer-multibyte-p (current-buffer))))
+    (puthash (current-buffer) (and flag t) nelisp--buffer-multibyte-table)
     (set (make-local-variable 'enable-multibyte-characters) (and flag t))
     (unless (eq old (and flag t))
       (set (make-local-variable 'buffer-undo-list) nil)))
@@ -12446,6 +12438,27 @@ point, since it appends TEXT straight onto it."
   (setf (nelisp-buffer-modified (nelisp-buffer--ambient buf))
         (and flag t))
   flag)
+
+(unless (fboundp 'buffer-modified-p)
+  (defun buffer-modified-p (&optional buffer)
+    "Return whether BUFFER has been modified; nil means the current buffer."
+    (nelisp-buffer-modified-p buffer)))
+
+(unless (fboundp 'set-buffer-modified-p)
+  (defun set-buffer-modified-p (flag)
+    "Mark the current buffer modified according to FLAG and return nil."
+    (nelisp-buffer-set-modified flag (current-buffer))
+    nil))
+
+(unless (fboundp 'buffer-modified-tick)
+  (defun buffer-modified-tick (&optional buffer)
+    "Return BUFFER's text-change counter; nil means the current buffer."
+    (gethash (nelisp-buffer--ambient buffer) nelisp-buffer--tick 0)))
+
+(unless (fboundp 'buffer-chars-modified-tick)
+  (defun buffer-chars-modified-tick (&optional buffer)
+    "Return BUFFER's character-change counter; nil means the current buffer."
+    (gethash (nelisp-buffer--ambient buffer) nelisp-buffer--tick 0)))
 
 (defun nelisp-markerp (obj)
   "Return non-nil when OBJ is a `nelisp-marker'."
@@ -15567,8 +15580,11 @@ call -- scans the buffer text natively; anything else goes through
 `re-search-forward' on `regexp-quote', which folds case."
     (if (and (stringp string) (or (null count) (eql count 1))
              (fboundp 'nelisp--string-search-chars)
-             (or (not case-fold-search) (nelisp--caseless-ascii-p string)
-                 (and (fboundp 'nelisp--ascii-downcase) (nelisp--ascii-p string))))
+             (or (not case-fold-search)
+                 (and (not (fboundp 'current-case-table))
+                      (or (nelisp--caseless-ascii-p string)
+                          (and (fboundp 'nelisp--ascii-downcase)
+                               (nelisp--ascii-p string))))))
         (nelisp--search-forward-literal string bound noerror)
       (re-search-forward (regexp-quote string) bound noerror count)))
   ;; Non-nil if STRING is ASCII without letters, so case folding cannot
