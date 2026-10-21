@@ -623,7 +623,7 @@ LEDGER = ROOT / "tools/ai/callpath-perf-progress.org"
 # The S4 allowlist may only shrink (coordinator, 2026-10-21): these are its
 # totals when it was frozen; a larger sum fails, and an entry that has to be
 # added is a defect to report.
-S63_ALLOWLIST_MAX = {"roots": None, "materialisers": None}
+S63_ALLOWLIST_MAX = {"roots": 7, "materialisers": 3}
 
 
 def s63_allowlist():

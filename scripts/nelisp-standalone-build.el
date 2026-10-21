@@ -19445,7 +19445,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; definition and its argument list.  GNU keeps the called function in
     ;; its frame (bc_frame.fun, bytecode.c:373), so a definition replaced by
     ;; FSET while it runs stays alive.  OSLOT: the frame's Sexp view slot,
-    ;; for `set''s value only (`m5_fx_globals_word').
+    ;; for `set''s value only (`m5_fx_globals_run').
     (defun m5_fx_callout (env sym stk sp argc resw xw oslot _pad)
       (let* ((cache (if (= (nl_word_tag64 sym) 8) sym 0))
              (name (if (= cache 0) sym (nl_vector_slot_word cache 0)))
@@ -19458,8 +19458,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_cons_stash_void_function env name)
           (seq
            (ptr-write-u64 xw 0 fn)
-           (let* ((global (m5_fx_globals_word fn stk sp argc resw env oslot 0))
-                  (direct (if (= global -3) (m5_fx_primitive fn stk sp argc resw env xw) global))
+           (let* ((kind (m5_fx_site_kind cache fn argc))
+                  (direct (if (= kind 0) -3
+                            (if (> kind 20) (m5_fx_globals_run kind stk sp argc resw env oslot)
+                              (m5_fx_primitive_run kind stk sp argc resw env xw))))
                   (rec (if (= direct -3) (m5_fx_covered fn argc env 0) 0))
                   (st (if (/= direct -3) direct
                         (if (= rec 0) -3
@@ -19473,27 +19475,48 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Existing evaluator entries, called with the VM's rooted WORD operands.
     ;; Authenticate the resolved function cell so advice and redefinition
     ;; retain normal apply semantics. No argument conses are needed here.
-    (defun m5_fx_globals_word (fn stk sp argc resw env scratch _pad)
-      (if (= (m5_fx_word_cons_p fn 0) 0) -3
-        (let* ((head (nl_cons_car_word fn)) (tail (nl_cons_cdr_word fn)))
-          (if (or (= (logand head 1) 1) (= (m5_fx_word_cons_p tail 0) 0)) -3
-            (if (= (sexp-name-eq head "builtin") 0) -3
-              (let* ((name (nl_cons_car_word tail))
-                     (a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3)))
-                (if (and (= argc 1) (= (sexp-name-eq name "symbol-value") 1))
-                    (if (or (= a 3) (= a 7)) (m5_fx_take a resw)
-                      (if (= (logand a 1) 1) -3
-                        (if (or (= (sexp-tag a) 4) (= (sexp-tag a) 16))
-                            (if (= (bf_keyword_raw a) 1) (m5_fx_take a resw)
-                              (wf_bytecode_w_varref env a resw scratch)) -3)))
-                  (if (and (= argc 2) (= (sexp-name-eq name "set") 1))
-                      (if (= (logand a 1) 1) -3
-                        (if (or (= (sexp-tag a) 4) (= (sexp-tag a) 16))
-                            (let* ((b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
-                                   (rc (bf_set_dynamic_value
-                                        env a (wf_bytecode_w_view b scratch))))
-                              (if (= rc 0) (m5_fx_take b resw) rc)) -3))
-                    -3))))))))
+    ;; `symbol-value' (kind 21) and `set' (kind 22) on the VM's rooted WORD
+    ;; operands, through the existing evaluator entries; -3 declines.
+    (defun m5_fx_globals_run (kind stk sp argc resw env scratch)
+      (let* ((a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3)))
+        (if (= kind 21)
+            (if (or (= a 3) (= a 7)) (m5_fx_take a resw)
+              (if (= (logand a 1) 1) -3
+                (if (or (= (nl_val_tag a) 4) (= (nl_val_tag a) 16))
+                    (if (= (bf_keyword_raw a) 1) (m5_fx_take a resw)
+                      (wf_bytecode_w_varref env a resw scratch)) -3)))
+          (if (= (logand a 1) 1) -3
+            (if (or (= (nl_val_tag a) 4) (= (nl_val_tag a) 16))
+                (let* ((b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
+                       (rc (bf_set_dynamic_value
+                            env a (wf_bytecode_w_view b scratch))))
+                  (if (= rc 0) (m5_fx_take b resw) rc)) -3)))))
+    ;; What a call-out of FN with ARGC arguments runs: 21/22 the globals
+    ;; above, 1..13 a primitive (`m5_fx_primitive_id'), 0 the ordinary
+    ;; covered-closure or apply path.  Names are compared here only, once
+    ;; per call site and definition.
+    (defun m5_fx_callout_kind (fn argc)
+      (let* ((name (m5_fx_builtin_name fn 0)))
+        (if (= name 0) 0
+          (if (if (= argc 1) (= (sexp-name-eq name "symbol-value") 1) 0) 21
+            (if (if (= argc 2) (= (sexp-name-eq name "set") 1) 0) 22
+              (m5_fx_primitive_id name argc))))))
+    ;; The call site's inline cache: CACHE is the compiler's
+    ;; [SYMBOL nil nil nil nil] (`nelisp--fx-compile'); slot 1 holds the
+    ;; last definition seen, slot 2 its kind.  The definition itself is
+    ;; the key, so a FSET or advice takes effect at the next call, and a
+    ;; cached definition stays rooted, so its address cannot be reused.
+    (defun m5_fx_site_kind (cache fn argc)
+      (if (= cache 0) (m5_fx_callout_kind fn argc)
+        (if (= (nl_vector_slot_word cache 1) fn) (sar (nl_vector_slot_word cache 2) 2)
+          (let* ((kind (m5_fx_callout_kind fn argc)))
+            (seq
+             (if (>= (nl_vector_length cache) 3)
+                 (seq (wf_dirty)
+                      (ptr-write-u64 (+ (nl_word_payload cache) 16) 0 fn)
+                      (ptr-write-u64 (+ (nl_word_payload cache) 24) 0 (+ (shl kind 2) 1)))
+               0)
+             kind)))))
     ;; The ordinary apply of FN to the ARGC words ending at STK[SP-1], under
     ;; an activation naming SYM, as the interpreter's frame for a call form
     ;; names its operator (`nl_apply_function' would name FN's value), with
@@ -19936,7 +19959,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (nwords (+ nlocals stksize 3))
              (mem (nl_root_frame env nwords))
              ;; The one Sexp slot left: the view a call-out hands to a Sexp
-             ;; API of another layer (`set''s value, `m5_fx_globals_word'),
+             ;; API of another layer (`set''s value, `m5_fx_globals_run'),
              ;; reserved by the first call-out.
              (oslot 0)
              (stk (+ mem (* nlocals 8)))
