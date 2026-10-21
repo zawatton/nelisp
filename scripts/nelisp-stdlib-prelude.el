@@ -12984,6 +12984,9 @@ stale pointer into the dead buffer."
         (setf (nelisp-marker-buffer m) nil))
       (setf (nelisp-buffer-markers b) nil)
       (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
+      ;; GNU frees the buffer's syntax_table slot with the buffer.
+      (when (fboundp 'nelisp--syntax-forget-buffer)
+        (nelisp--syntax-forget-buffer b))
       (or (nelisp-kill-buffer b) t))))
 ;; Doc 205 P1: eight more standard names onto the same model.  Every one of
 ;; them already had its implementation here under a `nelisp-' name -- these
@@ -14980,12 +14983,29 @@ overrides `emacs-lisp-mode' installs that this runtime's consumers need --
 `set-syntax-table' called on it and resolves to the ambient default
 \(see `nelisp--syntax-current-table').")
 
+(defun nelisp--syntax-forget-buffer (buffer)
+  "Drop BUFFER's entry from `nelisp--syntax-buffer-tables'; return nil.
+GNU frees a killed buffer's syntax_table slot with the buffer.  The
+runtime's `kill-buffer' calls this, and so does the library's, through
+the runtime's (emacs-fileio--primitive-kill-buffer).  The map is a
+plain `eq' table, so the entry goes here, by `remhash'."
+  (remhash buffer nelisp--syntax-buffer-tables)
+  nil)
+
+(defvar nelisp--buffer-defaults-syntax-table nil
+  "The syntax table of a buffer that has not run `set-syntax-table':
+GNU's buffer_defaults.syntax_table.  The bare runtime's is
+`emacs-lisp-mode-syntax-table' (Doc 204 P3), set where that table is
+seeded; the library sets it to (standard-syntax-table).  GNU copies the
+default into a buffer when the buffer is made; this is read at each
+lookup, so a change also reaches buffers that already exist.")
+
 (defun nelisp--syntax-current-table ()
   "The active syntax table for `nelisp--current-buffer': its own table if
 `set-syntax-table' has been called on it, else
-`emacs-lisp-mode-syntax-table', this image's ambient default."
+`nelisp--buffer-defaults-syntax-table'."
   (or (gethash nelisp--current-buffer nelisp--syntax-buffer-tables)
-      emacs-lisp-mode-syntax-table))
+      nelisp--buffer-defaults-syntax-table))
 
 ;; Seeded below with the standard table's child; search for "Doc 204 P3
 ;; table seed".  Guarded so host Emacs's own value is never touched.
@@ -15136,7 +15156,7 @@ character `w' (119) is returned."
       (setq character (+ character #x3fff00)))
     (let ((entry (aref (or (gethash nelisp--current-buffer
                                     nelisp--syntax-buffer-tables)
-                           emacs-lisp-mode-syntax-table)
+                           nelisp--buffer-defaults-syntax-table)
                        character)))
       (aref nelisp--syntax-code-classes
             (if (consp entry) (logand (car entry) 255) 0)))))
@@ -18691,6 +18711,9 @@ as a likely mistake.")
 (setq nelisp--syntax-standard-table (nelisp--syntax-build-standard-table))
 (when (null emacs-lisp-mode-syntax-table)
   (setq emacs-lisp-mode-syntax-table (nelisp--syntax-build-emacs-lisp-table)))
+;; The bare runtime's buffer default (GNU buffer_defaults.syntax_table).
+(unless nelisp--buffer-defaults-syntax-table
+  (setq nelisp--buffer-defaults-syntax-table emacs-lisp-mode-syntax-table))
 
 ;; `void-function' on 1 of the ~80 census files
 ;; (../nelisp-agent/lisp/nl-agent-ui.el:309: `(define-derived-mode
