@@ -187,24 +187,30 @@ Reserved for future nemacs layer parity."
 
 ;;;; --- buffer/syntax `with-*' family (interpreter-mode stubs) ----------
 
-;; NeLisp has no buffer / syntax-table concept.  These macros' BODY
+;; Bootstrap stubs for an evaluator without buffers or syntax tables: BODY
 ;; runs without the buffer-context save/restore that host Emacs would
-;; install — sufficient for tree-walker loading of vendor files; if a
-;; vendor function actually depends on the buffer context at call
-;; time, the call site will fail later (= deferred to a more specific
-;; blocker).
+;; install -- sufficient for tree-walker loading of vendor files.  A
+;; runtime that already has these macros keeps its own: the standalone
+;; prelude defines the real ones, a library image may redefine them, and
+;; both tests that reload this canonical file
+;; (test/nelisp-shadow-differential-cases.el,
+;; test/nelisp-special-variables-test.py) then keep running.  Each stub is
+;; therefore defined only where its name is still unbound.
 
-(defmacro with-current-buffer (_buffer &rest body)
-  "Stub: ignore BUFFER, run BODY in current context."
-  (cons 'progn body))
+(if (fboundp 'with-current-buffer) nil
+  (defmacro with-current-buffer (_buffer &rest body)
+    "Stub: ignore BUFFER, run BODY in current context."
+    (cons 'progn body)))
 
-(defmacro with-temp-buffer (&rest body)
-  "Stub: ignore temp-buffer scoping, run BODY in current context."
-  (cons 'progn body))
+(if (fboundp 'with-temp-buffer) nil
+  (defmacro with-temp-buffer (&rest body)
+    "Stub: ignore temp-buffer scoping, run BODY in current context."
+    (cons 'progn body)))
 
-(defmacro with-syntax-table (_table &rest body)
-  "Stub: ignore TABLE, run BODY in current context."
-  (cons 'progn body))
+(if (fboundp 'with-syntax-table) nil
+  (defmacro with-syntax-table (_table &rest body)
+    "Stub: ignore TABLE, run BODY in current context."
+    (cons 'progn body)))
 
 (defmacro with-no-warnings (&rest body)
   "Stub: no warning suppression infrastructure yet, just `progn'."
@@ -216,13 +222,17 @@ Reserved for future nemacs layer parity."
 
 ;;;; --- setq alias / defvar family --------------------------------------
 
-(defmacro setq-default (&rest pairs)
-  "NeLisp has no buffer-local; equivalent to `setq'."
-  (cons 'setq pairs))
+;; Guarded like the `with-*' stubs above: a runtime with buffer-local
+;; variables (a library image) keeps its own `setq-default'/`setq-local'.
+(if (fboundp 'setq-default) nil
+  (defmacro setq-default (&rest pairs)
+    "NeLisp has no buffer-local; equivalent to `setq'."
+    (cons 'setq pairs)))
 
-(defmacro setq-local (&rest pairs)
-  "NeLisp has no buffer-local; equivalent to `setq'."
-  (cons 'setq pairs))
+(if (fboundp 'setq-local) nil
+  (defmacro setq-local (&rest pairs)
+    "NeLisp has no buffer-local; equivalent to `setq'."
+    (cons 'setq pairs)))
 
 (defmacro defvar (name &rest args)
   "Define NAME as a global variable, set initial VALUE if unbound.

@@ -37,7 +37,7 @@ capped() { (ulimit -v 8388608; exec "$@"); }
 
 # run_fixture BIN FIXTURE LOCALE OUTFILE ERRFILE -> exit status
 run_nelisp() {
-  env LC_ALL="$3" capped timeout 300 "$1" --load "$2" > "$4" 2> "$5"
+  env LC_ALL="$3" capped timeout 300 "$1" -l "$2" > "$4" 2> "$5"
 }
 run_gnu() {
   env LC_ALL="$2" LANG= LANGUAGE= capped timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> /dev/null
@@ -77,7 +77,7 @@ eval_both() {   # eval_both FORM EXPECTED-STDOUT
     bin=$DYN; [ $tag = static ] && bin=$ST
     [ -x "$bin" ] || fail "missing $tag binary $bin"
     printf '%s\n' "$1" > "$OUT/eval.el"
-    got=$(capped timeout 120 "$bin" --load "$OUT/eval.el" 2>/dev/null)
+    got=$(capped timeout 120 "$bin" -l "$OUT/eval.el" 2>/dev/null)
     [ "$got" = "$2" ] || fail "$tag: $1 printed '$got', want '$2'"
   done
 }
