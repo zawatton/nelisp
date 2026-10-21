@@ -22682,7 +22682,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (roots (nl_root_reserve_checked env))
              (i 1) (valid (if (= roots 0) 0 1)) (answer 0))
         (seq
-         (while (and (= valid 1) (< i 8))
+         (while (and (= valid 1) (< i 7))
            (let* ((slot (nl_root_reserve_checked env)))
              (if (= slot (+ roots (* i 32))) (setq i (+ i 1))
                (setq valid 0))))
@@ -45081,16 +45081,45 @@ tails run against a private box), and the (rc, OUT) adapter F."
                (nl_n3_special_call_w func_slot tail_ptr env form_ptr)
              (if (= (sexp-tag func_slot) 0)
                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
-               (if (= (sexp-tag func_slot) 4)
+               (if (or (= (sexp-tag func_slot) 4) (= (sexp-tag func_slot) 16))
                    (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
-                                   tail_ptr env func_slot head_ptr 0)
+                                   tail_ptr env func_slot head_ptr form_ptr)
                  (if (= (nl_cons_is_macro func_slot) 1)
                      (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
                    (nl_eic_eval_args_w tail_ptr env func_slot
                                        (nl_root_reserve env) head_ptr)))))))))
-    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name _pad)
+    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name form_ptr)
       (if (= w 2)
-          (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
+          ;; GNU eval.c:2634-2652 resolves symbol indirections before the
+          ;; UNEVALLED check.  Reuse normal dispatch on the terminal cell.
+          (let* ((checkpoint (nl_root_reserve env)) (power 1) (distance 0)
+                 (status 1) (lookup_w 2))
+            (seq
+             (wf_copy32 checkpoint func_slot)
+             (while (and (= status 1)
+                         (or (= (sexp-tag func_slot) 4) (= (sexp-tag func_slot) 16)))
+               (setq lookup_w (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) func_slot 0))
+               (if (= lookup_w 0) (setq status 0)
+                 (if (= lookup_w 2) (setq status 2)
+                   (seq
+                    (wf_word_store_out func_slot lookup_w)
+                    (setq distance (+ distance 1))
+                    ;; Brent's constant-space cycle check keeps one rooted
+                    ;; symbol across autoload/GC, with no alias depth limit.
+                    (if (and (or (= (sexp-tag func_slot) 4) (= (sexp-tag func_slot) 16))
+                             (= (symbol-eq func_slot checkpoint) 1))
+                        (setq status 3)
+                      (if (= distance power)
+                          (seq (wf_copy32 checkpoint func_slot)
+                               (setq power (* power 2)) (setq distance 0)) 0))))))
+             (if (= status 0) 0
+               (if (= status 3) (nl_abi_fail (bf_cyclic_function call_name) 0)
+                 (if (= status 2)
+                     ;; A native primitive may have no mirror cell.  Keep
+                     ;; its existing named apply fallback in that case.
+                     (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
+                   (nl_eic_after_lookup_w lookup_w form_ptr call_name tail_ptr env
+                                          (nl_root_mark env) func_slot))))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.

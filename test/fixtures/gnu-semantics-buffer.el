@@ -39,6 +39,12 @@
                   (gs-buffer-alias (set-buffer b) 9)
                   (buffer-name (current-buffer)))))
         (set-buffer a)
+        (gs-buffer-row 'symbol-alias
+          (lambda () (fset 'gs-buffer-symbol-alias 'save-current-buffer)
+            (list (special-form-p 'gs-buffer-symbol-alias)
+                  (gs-buffer-symbol-alias (set-buffer b) 10)
+                  (buffer-name (current-buffer)))))
+        (set-buffer a)
         (gs-buffer-row 'killed
           (lambda () (list (save-current-buffer (set-buffer b) (kill-buffer a) 'killed)
                            (buffer-name (current-buffer))))))
