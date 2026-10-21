@@ -23648,14 +23648,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; lisp.h:771 order; 4 for a shape only the general path handles (a
     ;; short legacy entry, a non-symbol alias slot, slot 5 used as an
     ;; alias-presence flag).
+    ;; A forwarded variable made buffer-local is LOCALIZED (GNU
+    ;; make-local-variable turns SYMBOL_FORWARDED into a blv whose fwd is
+    ;; the old forwarding), so slot 5 is tested before the descriptor.
     (defun nl_sym_redirect (obj)
       (if (< (record-slot-count obj) 9) 4
-        (if (/= (nl_record_slot_word obj 7) 3) 3
-          (let ((a (nelisp_env_alias_slot_candidate obj 0)))
-            (if (= a 0) 1
-              (if (/= a 3) 4
-                (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
-                  (if (= t5 0) 0 (if (= t5 8) 2 4)))))))))
+        (let ((a (nelisp_env_alias_slot_candidate obj 0)))
+          (if (= a 0) 1
+            (if (/= a 3) 4
+              (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
+                (if (= t5 8) 2
+                  (if (/= t5 0) 4
+                    (if (/= (nl_record_slot_word obj 7) 3) 3 0)))))))))
     ;; 1 when ENV reads and writes symbol objects directly: not a Doc 199
     ;; worker and not inside the legacy root-pin capture (the conditions
     ;; under which `nl_sb_bind' binds deeply).
@@ -23762,11 +23766,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_sym_fwd_mark env bytes 21 2)
          0)))
     ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
+    ;; 1 when SYM is FORWARDED (redirect 3); a forwarded variable made
+    ;; buffer-local is LOCALIZED instead (see `nl_sym_redirect').
     (defun nl_sym_forwarded_p (env sym)
       (let* ((obj (nelisp_mirror_lookup_entry env sym)))
         (if (= obj 0) 0
-          (if (< (record-slot-count obj) 9) 0
-            (if (= (nl_record_slot_word obj 7) 3) 0 1)))))
+          (if (= (nl_sym_redirect obj) 3) 1 0))))
     ;; GNU set_internal (data.c:1678): "Built-in variable may not be unbound".
     ;; Stashes (error "Built-in variable may not be unbound : NAME") and
     ;; answers 1, the stashed-signal status.

@@ -38,7 +38,7 @@ SYM alias-cycle symfix-al2
 SYM alias-constant (error error "Cannot make a constant an alias: nil")
 SYM alias-indirect-plain (symfix-al2 symfix-never-bound 12)
 SYM alias-takes-value (symfix-new2 nil)
-SYM alias-of-bound (symfix-target2 target target)
+SYM alias-of-bound (symfix-target2 target target ((defvaralias losing-value symfix-src2)))
 SYM alias-doc ("alias doc" 11)
 SYM watch-set ((symfix-w 2 set nil) (symfix-w 3 set nil) (symfix-w 4 set nil))
 SYM watch-let ((symfix-w 5 let nil) (symfix-w 6 set nil) (symfix-w 4 unlet nil))

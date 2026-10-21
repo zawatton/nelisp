@@ -110,11 +110,19 @@
 (defvar symfix-old 'old-value)
 (defvar symfix-new)
 (symfix-case alias-takes-value (list (defvaralias 'symfix-old2 'symfix-new2) (boundp 'symfix-old2)))
+(defvar symfix--warnings nil)
+(defun symfix-capture-warnings (thunk)
+  "Call THUNK with `display-warning' recording its TYPE (keeps stderr empty)."
+  (let ((orig (symbol-function 'display-warning)))
+    (fset 'display-warning (lambda (type &rest _) (push type symfix--warnings)))
+    (unwind-protect (funcall thunk) (fset 'display-warning orig))))
 (symfix-case alias-of-bound
   (progn (defvar symfix-target2 'target)
          (defvar symfix-src2 'src)
-         (list (condition-case e (defvaralias 'symfix-src2 'symfix-target2) (error e))
-               symfix-src2 symfix-target2)))
+         (symfix-capture-warnings
+          (lambda ()
+            (list (condition-case e (defvaralias 'symfix-src2 'symfix-target2) (error e))
+                  symfix-src2 symfix-target2 symfix--warnings)))))
 (symfix-case alias-doc (progn (defvaralias 'symfix-al3 'symfix-base "alias doc")
                               (list (get 'symfix-al3 'variable-documentation) symfix-al3)))
 
@@ -231,3 +239,4 @@
 (symfix-case fwd-alias-refused (defvaralias 'max-lisp-eval-depth 'symfix-a))
 
 (princ "SYM-DONE\n")
+(kill-emacs 0)
