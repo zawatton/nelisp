@@ -150,6 +150,16 @@ cons constant loadable.")
     ;; Same-unit calls: the callee reads the dispatcher boundary from hidden
     ;; slots only the loader's trampoline filled, so a helper that calls the
     ;; runtime or reads a constant crashed (on 9d5f4a515 too).
+    ;; GNU bytecode.c Bplus/Bdiff/Bnegate/Bmult/Bquo: overflowing fixnum
+    ;; results delegate to the runtime, including arithmetic folded in ENV.
+    ;; All six controls fail on the measured pre-S4.4 compiler; small inputs
+    ;; in the same groups guard the existing nonoverflow path and effects.
+    (overflow control "(defun lv-overflow-add-effects (a) (let ((trace 0)) (list (+ (progn (setq trace (+ trace 1)) a) (progn (setq trace (+ (* trace 10) 2)) 1)) trace)))" (0 2305843009213693951))
+    (overflow control "(defun lv-overflow-sub (a) (- a 1))" (0 -2305843009213693951 -2305843009213693952 2305843009213693951))
+    (overflow control "(defun lv-overflow-neg (a) (- a))" (0 -2305843009213693952 2305843009213693951))
+    (overflow control "(defun lv-overflow-mul (a) (* a a))" (0 1 -1 1518500249 1518500250 4294967296 2305843009213693951 -2305843009213693952))
+    (overflow control "(defun lv-overflow-known (a) (let ((x 4294967296)) (* x x)))" (0))
+    (overflow control "(defun lv-overflow-div (a) (/ a -1))" (0 -2305843009213693952 2305843009213693951))
     (unit control "(defun lv-unit-call (a) (lv-unit-car a)) (defun lv-unit-car (a) (car (list a 2)))" (7))
     (unit control "(defun lv-unit-const (a) (length (lv-unit-k a))) (defun lv-unit-k (a) '(1 2 3))" (0))
     (unit control "(defun lv-unit-chain (x) (+ (lv-unit-b x) 1)) (defun lv-unit-b (x) (length (lv-unit-c x))) (defun lv-unit-c (x) (list x x x))" (1))
@@ -171,7 +181,7 @@ cons constant loadable.")
     (unit control "(defun lv-unit-seven (a) (lv-unit-s7 a 1 2 3 4 5 6)) (defun lv-unit-s7 (a b c d e f g) (list a g))" (1)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply const unit overflow)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")

@@ -1520,8 +1520,31 @@ The defun then runs in the evaluator, which signals it."
         `(let ((,tmp ,(car args)))
            (if ,tmp ,tmp ,(cons 'or (cdr args)))))))))
 
+(defun nelisp-aot-compiler--lisp-fixnum-range-form (value)
+  "Return a raw truth form testing the target's signed 62-bit fixnum range."
+  `(and (nelisp-aot--raw-op >= ,value -2305843009213693952)
+        (nelisp-aot--raw-op <= ,value 2305843009213693951)))
+
+(defun nelisp-aot-compiler--lisp-fixnum-result-form (op a b fallback)
+  "Return a guarded raw OP form, delegating an overflowing result to FALLBACK.
+GNU bytecode.c Bplus/Bdiff check FIXNUM_OVERFLOW_P; Bmult also uses
+ckd_mul.  This IR has no overflow-bit result, so multiplication adapts
+the runtime wf_prod_w's division round trip after its range check.
+That check excludes INT64_MIN before division, and a zero multiplier
+short circuits the division.  A and B are already evaluated fixnums."
+  (let ((result (nelisp-aot-compiler--gensym "lisp-result")))
+    `(let ((,result (nelisp-aot--raw-op ,op ,a ,b)))
+       (if (and ,(nelisp-aot-compiler--lisp-fixnum-range-form result)
+                ,(if (eq op '*)
+                     `(or (nelisp-aot--raw-op = ,a 0)
+                          (nelisp-aot--raw-op =
+                           (nelisp-aot--raw-op / ,result ,a) ,b))
+                   t))
+           ,result
+         ,fallback))))
+
 (defun nelisp-aot-compiler--lisp-numeric-op (op a b env fenv defuns)
-  "Return Lisp OP on the parsed operands A and B, at least one not a known fixnum.
+  "Return Lisp OP on parsed A and B with type and fixnum overflow guards.
 GNU's structure (bytecode.c:1331 Bplus, 1278 Blss): when both operands
 are fixnums the machine operation runs, otherwise the runtime's own
 function does -- for a float, a marker, or a wrong type, which it
@@ -1540,13 +1563,21 @@ the generic function answers the zero divisor as GNU does."
                           `(nelisp-aot--fixnump ,ta))
                         (unless (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64)
                           `(nelisp-aot--fixnump ,tb))
+                        (when (memq op '(+ - * / mod))
+                          (nelisp-aot-compiler--lisp-fixnum-range-form ta))
+                        (when (memq op '(+ - * / mod))
+                          (nelisp-aot-compiler--lisp-fixnum-range-form tb))
                         (when (memq op '(/ mod))
                           `(nelisp-aot--raw-op /= ,tb 0))))))
     (nelisp-aot-compiler--parse-value
      `(let ((,ta ,a-form))
         (let ((,tb (nelisp-aot--parsed-ir ,b)))
           (if ,(if (cdr guards) `(and ,@guards) (car guards))
-              ,(if (eq op 'mod)
+              ,(cond
+                ((memq op '(+ - * /))
+                 (nelisp-aot-compiler--lisp-fixnum-result-form
+                  op ta tb `(nelisp-aot--generic-call ,op ,ta ,tb)))
+                ((eq op 'mod)
                    ;; GNU `mod' is floored (data.c Fmod): the machine
                    ;; remainder takes the divisor's sign when it differs.
                    (let ((r (nelisp-aot-compiler--gensym "lisp-mod")))
@@ -1555,8 +1586,8 @@ the generic function answers the zero divisor as GNU does."
                                  (nelisp-aot--raw-op
                                   < (nelisp-aot--raw-op logxor ,r ,tb) 0))
                             (nelisp-aot--raw-op + ,r ,tb)
-                          ,r)))
-                 `(nelisp-aot--raw-op ,op ,ta ,tb))
+                          ,r))))
+                (t `(nelisp-aot--raw-op ,op ,ta ,tb)))
             (nelisp-aot--generic-call ,op ,ta ,tb))))
      env fenv defuns)))
 
@@ -10631,7 +10662,14 @@ functions `((NAME . ARITY) ...)'."
    ((and (nelisp-aot-compiler--lisp-values-p) (memq sexp '(nil t)))
     (nelisp-aot-compiler--lisp-imm-bool (if sexp 1 0)))
 	   ;; Compile-time foldable -> immediate.
-	   ((nelisp-aot-compiler--int-foldable-p sexp env fenv)
+	   ((and (nelisp-aot-compiler--int-foldable-p sexp env fenv)
+                 ;; A folded Lisp arithmetic overflow must still reach the
+                 ;; runtime's bignum function, never a truncated imm64.
+                 (or (not (nelisp-aot-compiler--lisp-values-p))
+                     (not (consp sexp))
+                     (<= -2305843009213693952
+                         (nelisp-aot-compiler--fold-int sexp env)
+                         2305843009213693951)))
 	    (nelisp-aot-compiler--make-ir 'imm
 	          :value (nelisp-aot-compiler--fold-int sexp env)))
 	   ;; Object compatibility: common timeout math uses float literals
@@ -10915,7 +10953,7 @@ functions `((NAME . ARITY) ...)'."
       (when (nelisp-aot-compiler--lisp-values-p)
         (nelisp-aot-compiler--lisp-check-numbers sexp a b))
       (if (and (nelisp-aot-compiler--lisp-values-p)
-               (or (memq (car sexp) '(/ mod))
+               (or (memq (car sexp) '(+ - * / mod))
                    (not (and (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64)
                              (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64)))))
           (nelisp-aot-compiler--lisp-numeric-op (car sexp) a b env fenv defuns)

@@ -7791,7 +7791,7 @@ argument (reachability + in-arena bounds checks).")
                               (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail rest (wf_elem_fbits (nl_cons_car_ptr args) b) b) b))
                             (if (= (wf_zero_divisor rest) 1)
                                 (nl_abi_fail (bf_arith_error) 0)
-                              (wf_write_int_w 0 (wf_quot rest (wf_argval args 0)))))
+                              (wf_write_integer_w 0 (wf_quot rest (wf_argval args 0)))))
                         (if (= f 1)
                             (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail args (wf_int_fbits 1 b) b) b))
                           (if (= (wf_argval args 0) 0)
@@ -7819,7 +7819,7 @@ argument (reachability + in-arena bounds checks).")
                               (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail rest (wf_elem_fbits (nl_cons_car_ptr args) b) b) b))
                             (if (= (wf_zero_divisor rest) 1)
                                 (nl_abi_fail (bf_arith_error) 0)
-                              (wf_write_int_w 0 (wf_quot rest (wf_argval args 0)))))
+                              (wf_write_integer_w 0 (wf_quot rest (wf_argval args 0)))))
                         (if (= f 1)
                             (let ((b (alloc-bytes 32 8))) (seq (wf_fdivtail args (wf_int_fbits 1 b) b) b))
                           (if (= (wf_argval args 0) 0)
@@ -9144,6 +9144,17 @@ leave symbols unresolved at link time."
           (let* ((s (alloc-bytes 32 8)))
             (seq (ptr-write-u64 s 0 2) (ptr-write-u64 s 8 v)
                  (ptr-write-u64 s 16 0) (ptr-write-u64 s 24 0) s))
+        (nl_imm_int v)))
+    ;; GNU data.c arith_driver returns make_int(accum), and lisp.h
+    ;; make_int promotes a machine integer outside the fixnum range.
+    ;; Keep raw compatibility writers unchanged; arithmetic boundaries
+    ;; needing a canonical Lisp integer use the existing bignum finish.
+    (defun wf_write_integer_w (_pad v)
+      (if (or (< v -2305843009213693952) (> v 2305843009213693951))
+          (let* ((limbs (alloc-bytes 8 4))
+                 (sign (nl_bignum_int_limbs v limbs))
+                 (count (nl_bignum_canon_count limbs 2)))
+            (nl_bignum_finish_w sign limbs count 0))
         (nl_imm_int v)))
     ;; The (rc, OUT) writers keep their direct stores: an adapter through
     ;; the WORD would encode the value only for nl_sci_store_imm to decode
