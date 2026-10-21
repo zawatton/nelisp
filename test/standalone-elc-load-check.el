@@ -9,7 +9,9 @@
   (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-fns.el" source-root) nil t t)
   (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-eval.el" source-root) nil t t)
   (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-load.el" source-root) nil t t)
-  (copy-file (expand-file-name "test/fixtures/elc-load-fixture.elc-data" root) file t)
+  (write-region (emacs-load--read-file-string
+                 (expand-file-name "test/fixtures/elc-load-fixture.elc-data" root))
+                nil file nil 'silent)
   (load file nil t t)
   (unless (and (featurep 'nelisp-elc-load)
                (byte-code-function-p (symbol-function 'elc-load-fixture-add))
