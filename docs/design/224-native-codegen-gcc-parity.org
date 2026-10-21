@@ -1,5 +1,5 @@
 #+TITLE: Native compiler code quality: GCC -O2 parity for the runtime's inner loops
-#+STATUS: IN-PROGRESS
+#+STATUS: IMPLEMENTED
 #+DATE: 2026-10-21
 
 * Summary
@@ -351,6 +351,49 @@ The harness feeds N as six digits in both runs ("100000" and "000000"),
 so the stdin parse costs the same in the N and zero runs; with "0" the
 NeLisp harness's own (slower) digit loop left about 0.0008 Ir per
 iteration of residue in every NeLisp figure.
+
+** Wall-clock (the acceptance metric since 2026-10-21 16:30)
+
+Kernels after CG1-CG8, CPU 9, paired ratios (each of 7 rounds times every
+variant back to back at N and 0 iterations; the figure is the median of
+the per-round NeLisp/C ratios):
+
+| kernel      | NeLisp / gcc -O2 GNU | NeLisp / gcc -O2 NeLisp layout | NeLisp / its 9d5f4a515 build | ns per iteration (NeLisp, gcc) |
+|-------------+----------------------+--------------------------------+------------------------------+--------------------------------|
+| byte-scan   | 0.983                | 0.981                          | 0.175                        | 0.247, 0.255                   |
+| list-walk   | 2.027                | 1.002                          | 0.945                        | 1.908, 0.938                   |
+| fixnum-loop | 1.002                | 1.004                          | 0.549                        | 0.688, 0.689                   |
+| class-table | 1.022                | 1.022                          | 0.157                        | 0.245, 0.242                   |
+| vector-sum  | 1.004                | 1.004                          | 0.264                        | 0.471, 0.468                   |
+
+byte-scan, fixnum-loop, class-table and vector-sum execute the same
+number of instructions per iteration as gcc -O2 (6, 7, 6, 10) with the
+same branch structure; their wall-clock ratios sit within the per-round
+spread of this machine (single rounds range from 0.96 to 1.14), so
+whether a given run lands at or just above 1.0 is decided by noise, not
+by code.  fixnum-loop needed CG8: with its branch it was 6.05 Ir but
+1.10x GCC's time.  list-walk is at parity with C on NeLisp's layout and
+2.0x GNU's: per element it chases two dependent loads (box payload, then
+the cell's cdr) where GNU chases one, which is the latency the loop is
+bound by.
+
+End to end, final build (CG1-CG8, dynamic) against 9d5f4a515, CPU 9,
+paired ratios; Ir for diagnosis (four layouts, GC included):
+
+| workload            | Ir 9d5f4a515 -> final       | wall 9d5f4a515 -> final | ratio | final / GNU 31.1 |
+|---------------------+-----------------------------+-------------------------+-------+------------------|
+| boot (--eval nil)   | 534.0M -> 263.3M (-50.7%)   | 0.159 -> 0.127 s        | 0.838 | 2.39             |
+| files               | 4.638G -> 2.977G (-35.8%)   | 0.643 -> 0.569 s        | 0.861 | 5.45             |
+| regex6000           | 6.121G -> 3.990G (-34.8%)   | 0.812 -> 0.705 s        | 0.885 | 11.2             |
+| regex per character | 210.2K -> 136.8K Ir (-34.9%) | 21.84 -> 19.51 us       | 0.869 | 2107             |
+
+Wall-clock gains are a third of the Ir gains: the instructions removed
+(frame loads and stores, push/pop temporaries, register shuffles,
+materialized booleans) were cheap ones that ran in parallel with the
+work; what remains is the work itself, calls and dependent loads.  The
+regex rows are dominated by the byte-code VM interpreting the Lisp
+matcher (=wf_bytecode_execute_frame=), which is why they stay 11x and
+2,000x GNU's C matcher.
 
 ** Whole runs, CG1-CG5
 
