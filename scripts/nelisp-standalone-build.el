@@ -8539,6 +8539,89 @@ by name pending that follow-up; this paragraph is the record of why."
         (atomic-fetch-add 268435544 1)
         1))))
 
+;;; Static symbol ids (Doc 221 M03/M17; GNU lisp.h DEFSYM/lispsym and the
+;;; subr dispatch of eval.c:3254 funcall_subr).  GNU compares symbols with
+;;; EQ against statically allocated symbols and calls a subr through its
+;;; function pointer.  NeLisp's builtin dispatch compared name bytes: a
+;;; length bucket, then `sexp-name-eq' per candidate, on every call.  The
+;;; names below get a fixed id (position + 1), stored at boot in the high 32
+;;; bits of their canonical name header (`nl_sym_set_sid'); the builtin
+;;; dispatch trees key on the id, and a symbol without one keeps the old
+;;; name path, so a missed initialization costs time, never an answer.
+;;; Generic name tests stay byte compares: a mismatched length already
+;;; rejects them in one compare, which an id read cannot beat.
+(defconst nelisp-standalone--static-symbol-extras
+  '("builtin" "lambda" "closure" "macro" "autoload" "symbol-value" "set"
+    "funcall" "apply" "eval" "quote" "function" "throw" "signal"
+    "symbol-function" "fset" "consp" "not" "null" "nth" "nthcdr" "setcar"
+    "setcdr" "string<" "<" "car" "cdr" "eq")
+  "Static names beyond the builtin dispatch table (heads and name tests).")
+
+(defvar nelisp-standalone--static-symbol-index nil
+  "Hash table NAME -> static symbol id, built once from the builtin tables.")
+
+(defun nelisp-standalone--static-symbols ()
+  "The statically numbered names, in id order (id = position + 1)."
+  (let ((seen (make-hash-table :test 'equal)) (out nil))
+    ;; Only tables defined before the build script's first dispatch is
+    ;; generated (at load time), so every generated form sees one list.
+    (dolist (name (append
+                   (mapcar (lambda (e) (cadr (car e))) nelisp-standalone--applyfn-dispatch-table)
+                   nelisp-standalone--static-symbol-extras))
+      (when (and (stringp name) (not (member name '("nil" "t")))
+                 (<= (length (encode-coding-string name 'utf-8 t)) 120)
+                 (not (gethash name seen)))
+        (puthash name (1+ (hash-table-count seen)) seen)
+        (push name out)))
+    (setq nelisp-standalone--static-symbol-index seen)
+    (nreverse out)))
+
+(defun nelisp-standalone--sid (name)
+  "NAME's static symbol id, or nil."
+  (unless nelisp-standalone--static-symbol-index
+    (nelisp-standalone--static-symbols))
+  (gethash name nelisp-standalone--static-symbol-index))
+
+(defun nelisp-standalone--sid-read-form (w)
+  "Inline form: the static id of the interned symbol WORD/view W, else 0."
+  `(let* ((nl_sw ,w))
+     (if (or (= (logand nl_sw 1) 1) (= (logand nl_sw 7) 6)) 0
+       (if (/= (heap-read-u8 nl_sw 0) 4) 0
+         (let* ((nl_sb (heap-read-u64 nl_sw 16)))
+           (if (and (> nl_sb (+ (heap-read-u64 268436288 0) 16777224))
+                    (< nl_sb (heap-read-u64 268436296 0)))
+               (sar (heap-read-u64 (- nl_sb 8) 0) 32)
+             0))))))
+
+(defun nelisp-standalone--key-tree (var pairs default)
+  "A balanced `if' tree over VAR for PAIRS ((KEY . FORM)...) sorted by KEY."
+  (cond
+   ((null pairs) default)
+   ((null (cdr pairs)) `(if (= ,var ,(caar pairs)) ,(cdar pairs) ,default))
+   (t (let* ((mid (/ (length pairs) 2))
+             (right (nthcdr mid pairs))
+             (left (butlast pairs (- (length pairs) mid))))
+        `(if (< ,var ,(caar right))
+             ,(nelisp-standalone--key-tree var left default)
+           ,(nelisp-standalone--key-tree var right default))))))
+
+(defun nelisp-standalone--static-syms-init-defun ()
+  "`nl_static_syms_init': give every static name its id (boot, both drivers)."
+  (let ((forms nil) (sid 0))
+    (dolist (name (nelisp-standalone--static-symbols))
+      (setq sid (1+ sid))
+      (let* ((bytes (encode-coding-string name 'utf-8 t)) (len (length bytes)) (off 0))
+        (while (< off len)
+          (let ((chunk 0))
+            (dotimes (k (min 8 (- len off)))
+              (setq chunk (logior chunk (ash (aref bytes (+ off k)) (* 8 k)))))
+            (push `(ptr-write-u64 (+ buf ,off) 0 ,chunk) forms))
+          (setq off (+ off 8)))
+        (push `(nl_sym_init_one buf ,len ,sid scratch) forms)))
+    `(defun nl_static_syms_init ()
+       (let* ((buf (alloc-bytes 128 1)) (scratch (alloc-bytes 32 8)))
+         (seq ,@(nreverse forms) 0)))))
+
 (defun nelisp-standalone--applyfn-word-arm (impl)
   "Return IMPL's direct WORD producer, or reject a legacy result arm."
   (cond
@@ -8631,22 +8714,40 @@ leave symbols unresolved at link time."
             (setq dispatch `(if (= (sexp-name-eq name_ptr ,(cadr (car entry))) 1)
                                 ,(cdr entry) ,dispatch)))
           dispatch)
-    (let ((tree dispatch-default))
-      ;; Longest bucket wrapped first => shortest names tested first (the
-      ;; hot 1-3 byte operators `+' `<' `car' `eq' ...).
-      (dolist (bucket (sort buckets (lambda (a b) (> (car a) (car b)))))
-        (let ((chain dispatch-default))
-          (dolist (entry (cdr bucket))
-            (setq chain `(if (= (sexp-name-eq name_ptr ,(cadr (car entry))) 1)
-                             ,(cdr entry)
-                           ,chain)))
-          (setq tree `(if (= nl_name_len ,(car bucket)) ,chain ,tree))))
-      `(let* ((nl_name_len
-               (if (= (sexp-tag name_ptr) 4) (heap-read-u64 name_ptr 24)
-                 (if (= (sexp-tag name_ptr) 5) (heap-read-u64 name_ptr 24)
-                   (if (= (sexp-tag name_ptr) 14) (heap-read-u64 name_ptr 24)
-                     -1)))))
-         ,tree)))))
+    ;; Doc 221 M03/M17 (GNU eval.c:3254 calls a subr through its pointer):
+    ;; the static symbol id of NAME_PTR selects the arm through a balanced
+    ;; tree of integer compares.  The name tree below now only maps a
+    ;; name without an id to its key, so every arm body occurs once.
+    (let* ((keys (make-hash-table :test 'equal)) (pairs nil) (i 0))
+      ;; The first table occurrence of a name wins, as in the name chain.
+      (dolist (entry entries)
+        (let ((name (cadr (car entry))))
+          (unless (gethash name keys)
+            (let ((key (or (nelisp-standalone--sid name) (+ 1000000 i))))
+              (puthash name key keys)
+              (push (cons key (cdr entry)) pairs))))
+        (setq i (1+ i)))
+      (let ((tree 0))
+        ;; Longest bucket wrapped first => shortest names tested first (the
+        ;; hot 1-3 byte operators `+' `<' `car' `eq' ...).
+        (dolist (bucket (sort buckets (lambda (a b) (> (car a) (car b)))))
+          (let ((chain 0))
+            (dolist (entry (cdr bucket))
+              (setq chain `(if (= (sexp-name-eq name_ptr ,(cadr (car entry))) 1)
+                               ,(gethash (cadr (car entry)) keys)
+                             ,chain)))
+            (setq tree `(if (= nl_name_len ,(car bucket)) ,chain ,tree))))
+        `(let* ((nl_ds ,(nelisp-standalone--sid-read-form 'name_ptr))
+                (nl_dk (if (/= nl_ds 0) nl_ds
+                         (let* ((nl_name_len
+                                 (if (= (sexp-tag name_ptr) 4) (heap-read-u64 name_ptr 24)
+                                   (if (= (sexp-tag name_ptr) 5) (heap-read-u64 name_ptr 24)
+                                     (if (= (sexp-tag name_ptr) 14) (heap-read-u64 name_ptr 24)
+                                       -1)))))
+                           ,tree))))
+           ,(nelisp-standalone--key-tree
+             'nl_dk (sort pairs (lambda (a b) (< (car a) (car b))))
+             dispatch-default)))))))
 
 ;; Core wf_* helpers (arithmetic / list / write-int-t-nil / name-match).  Shared
 ;; by BOTH the baked and the reader applyfn -- they reference only cons/symbol
@@ -16379,13 +16480,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
     (defun wf_bytecode_w_fast_run
-        (data length mem depth constants nconst pc sp env)
+        (data length mem depth constants nconst pc sp env bx)
       (let*
           ((last-owner 0) (last-table 0) (last-table-data 0)
            (last-buckets 0) (last-count 0) (last-entry-data 0)
            (last-slots 0) (last-index -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
-           (ref 0) (cmp 0) (branch 0))
+           (ref 0) (cmp 0) (branch 0) (failed 0))
         (while (> go 0)
           (setq go (- go 1))
           (if (or (< pc 0) (>= pc (- length 1))) (setq go 0)
@@ -16408,28 +16509,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (shl (heap-read-u8 data (+ pc 2)) 8)))
                           (if (< target length) (setq pc target)
                             (setq go 0))))
-                     (if (or (= raw 64) (= raw 65))
-                         ;; GNU bytecode.c:658-666 CASE (Bcar) and the Bcdr
-                         ;; case: a cons TOP becomes its car/cdr, nil stays
-                         ;; nil, anything else leaves for the full
-                         ;; dispatcher, which signals wrong-type-argument.
-                         (if (<= sp 0) (setq go 0)
-                           (let* ((top (+ mem (* (- sp 1) 8)))
-                                  (w (heap-read-u64 top 0))
-                                  (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
-                                         (if (= (logand w 7) 6)
-                                             (logand (heap-read-u8 (- w 6) 0) 63)
-                                           (heap-read-u8 w 0)))))
-                             (if (= tag 7)
-                                 (seq (ptr-write-u64 top 0
-                                                     (heap-read-u64
-                                                      (+ (heap-read-u64 w 8)
-                                                         (if (= raw 64) 0 8)) 0))
-                                      (setq pc (+ pc 1)))
-                               (if (= tag 0)
-                                   (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
-                                 (setq go 0)))))
-                       (if (and (>= raw 8) (< raw 14))
+                     (if (and (>= raw 8) (< raw 14))
                          (let* ((index (- raw 8)) (value 0))
                            (if (>= sp depth) (setq go 0)
                              (seq
@@ -17069,8 +17149,44 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                   (+ mem (* (- sp 1) 8)) 0
                                                   word)
                                                  (setq pc (+ pc 1)))))))))
-                                     (seq (setq go 0))))))))))))))))
-        (+ (shl pc 17) sp)))
+                                     (if (or (= raw 64) (= raw 65))
+                                         ;; GNU bytecode.c:658-666 CASE (Bcar) and the Bcdr case: a cons TOP
+                                         ;; becomes its car/cdr, nil stays nil, anything else leaves for the
+                                         ;; full dispatcher, which signals wrong-type-argument.  Last in the
+                                         ;; chain, so the loop opcodes tested before it pay nothing.
+                                         (if (<= sp 0) (setq go 0)
+                           (let* ((top (+ mem (* (- sp 1) 8)))
+                                  (w (heap-read-u64 top 0))
+                                  (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
+                                         (if (= (logand w 7) 6)
+                                             (logand (heap-read-u8 (- w 6) 0) 63)
+                                           (heap-read-u8 w 0)))))
+                             (if (= tag 7)
+                                 (seq (ptr-write-u64 top 0
+                                                     (heap-read-u64
+                                                      (+ (heap-read-u64 w 8)
+                                                         (if (= raw 64) 0 8)) 0))
+                                      (setq pc (+ pc 1)))
+                               (if (= tag 0)
+                                   (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
+                                 (setq go 0)))))
+                                         (if (and (>= raw 32) (< raw 38))
+                                             ;; GNU bytecode.c:758-829 CASE (Bcall): the call is made
+                                             ;; from the dispatch loop itself.  The callee still runs
+                                             ;; on host recursion (Doc 221 M19 open); a collection in
+                                             ;; it may move the varref cache's entry, so the cache is
+                                             ;; dropped.  A signal ends the run with -1.
+                                             (let* ((argc (- raw 32)))
+                                               (if (< sp (+ argc 1)) (setq go 0)
+                                                 (let* ((rc (wf_bytecode_call env mem sp argc bx)))
+                                                   (seq
+                                                    (setq last-index -1)
+                                                    (if (= rc 0)
+                                                        (seq (setq sp (- sp argc))
+                                                             (setq pc (+ pc 1)))
+                                                      (seq (setq failed 1) (setq go 0)))))))
+                                           (seq (setq go 0)))))))))))))))))
+        (if (= failed 1) -1 (+ (shl pc 17) sp))))
 
 
     (defun wf_bytecode_execute_frame (code constants depth env out initial-args
@@ -17227,8 +17343,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
 			     (if (< first-op 192)
 				 (if (/= (logand 892 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
-                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env)))
-                        (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))) 0)) 0)
+                      (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env bx)))
+                        ;; -1: a call made from the fast loop signalled; the
+                        ;; pending exit then unwinds as after the full Bcall arm.
+                        (if (< state 0) (setq done 4)
+                          (seq (setq pc (sar state 17)) (setq sp (logand state 131071))))) 0)) 0)
            (let* ((offset pc) (raw (heap-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0)
                   (top (+ mem (* (- sp 1) 8)))
@@ -26591,7 +26710,8 @@ set, which lacks the reader-only `nl_os_write_stderr')."
      ;; link set (DEFAULT-FORM nil) carries the units the signal needs.
      (unless default-form
        (list `(defun nl_applyfn_unsupported (name_ptr)
-                ,(nelisp-standalone--applyfn-unsupported-primitive-form))))
+                ,(nelisp-standalone--applyfn-unsupported-primitive-form))
+             (nelisp-standalone--static-syms-init-defun)))
      ;; Doc 215 builtin word ABI: the dispatcher returns the result WORD, 0
      ;; after stashing a signal.  `nelisp_apply_function' keeps the legacy
      ;; (rc, OUT) ABI as an adapter for callers not converted yet and for
@@ -42112,6 +42232,8 @@ correctly."
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
         (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
         (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
+        ;; Doc 221 M03/M17: static symbol ids (GNU lispsym) for dispatch.
+        (nl_static_syms_init)
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ;; PERF (2026-07-03): populate the two shared frame-push-scratch

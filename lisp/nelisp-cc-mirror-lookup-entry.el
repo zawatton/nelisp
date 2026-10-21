@@ -187,7 +187,7 @@ written wrong, so the check must fire.  Anything else: no check."
              (base (heap-read-u64 268436288 0)))
         (if (and (> buf (+ base 16777224))
                  (< buf (heap-read-u64 268436296 0)))
-            (let* ((idx (heap-read-u64 (- buf 8) 0)))
+            (let* ((idx (logand (heap-read-u64 (- buf 8) 0) 4294967295)))
               (if (= idx 0) 0
                 (let* ((mp (if (= (logand mirror-ptr 7) 6) (- mirror-ptr 6)
                              (heap-read-u64 mirror-ptr 8)))

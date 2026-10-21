@@ -925,16 +925,36 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; has no canonical buffer: such keys keep the hashed mirror path, like
     ;; GNU's non-SYMBOL_PLAINVAL redirects falling back to Fsymbol_value.
     ;; Only the mirror's entry writers call this, never a reader.
+    ;; The header's low 32 bits hold the cell index, its high 32 bits the
+    ;; static symbol id (`nl_sym_set_sid').
     (defun nl_symcell_assign (bytes-ptr n)
       (let* ((buf (nl_intern_canonical_buf bytes-ptr n)))
         (if (= buf 0) 0
-          (let* ((idx (heap-read-u64 (- buf 8) 0)))
+          (let* ((hdr (heap-read-u64 (- buf 8) 0))
+                 (idx (logand hdr 4294967295)))
             (if (/= idx 0) idx
               (let* ((counter (+ (heap-read-u64 268436288 0) 16777216))
                      (next (+ (heap-read-u64 counter 0) 1)))
                 (seq (ptr-write-u64 counter 0 next)
-                     (ptr-write-u64 (- buf 8) 0 next)
+                     (ptr-write-u64 (- buf 8) 0 (+ hdr next))
                      next)))))))
+    ;; GNU lisp.h DEFSYM / lispsym: a builtin symbol has a fixed index, and
+    ;; EQ (x, Qcar) is one compare.  NeLisp gives the interned names the
+    ;; build lists (`nelisp-standalone--static-symbols') a static symbol id
+    ;; in the high 32 bits of their name header; generated code compares
+    ;; ids where it compared name bytes, and keeps the byte compare for a
+    ;; symbol without an id (uninterned, plain overflow name, or a string).
+    (defun nl_sym_set_sid (bytes-ptr n sid)
+      (let* ((buf (nl_intern_canonical_buf bytes-ptr n)))
+        (if (= buf 0) 0
+          (let* ((hdr (heap-read-u64 (- buf 8) 0)))
+            (seq (ptr-write-u64 (- buf 8) 0
+                                (+ (logand hdr 4294967295) (shl sid 32)))
+                 1)))))
+    ;; Intern BYTES-PTR/N (SCRATCH receives a symbol view) and give it SID.
+    (defun nl_sym_init_one (bytes-ptr n sid scratch)
+      (seq (nl_alloc_symbol bytes-ptr n scratch)
+           (nl_sym_set_sid bytes-ptr n sid)))
 
     ;; Internal read-only cursor used by native diagnostics and future
     ;; obarray work.  CURSOR is a slot index in [0, 2^20].  A hit writes the

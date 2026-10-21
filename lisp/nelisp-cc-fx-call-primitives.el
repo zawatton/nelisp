@@ -86,12 +86,22 @@
          (if (/= index 0) -1
            (if (= tail 1) items
              (if (= (m5_fx_word_cons_p items 0) 1) (nl_cons_car_word items) -1))))))
+    ;; GNU eval.c:3185-3215 Ffuncall -> funcall_general -> funcall_lambda: a
+    ;; compiled callee runs on the already evaluated argument words, with
+    ;; its activation recorded, and no argument list.  A closure the VM
+    ;; covers for ARGC arguments therefore runs through `m5_fx_call_words'
+    ;; directly; anything else answers -3 and keeps the generic apply.
     (defun m5_fx_primitive_funcall (fn stk sp argc resw env scratch)
       (let* ((tag (nl_word_tag64 fn)))
         (if (or (= tag 4) (= tag 16))
             (if (= (nelisp_env_lookup_function env (+ env 64) fn scratch) 0)
                 (m5_fx_primitive scratch stk sp argc resw env scratch) -3)
-          (m5_fx_primitive fn stk sp argc resw env scratch)))))
+          (let* ((st (m5_fx_primitive fn stk sp argc resw env scratch)))
+            (if (/= st -3) st
+              (let* ((rec (m5_fx_covered fn argc env scratch)))
+                (if (= rec 0) -3
+                  (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
+                                    env scratch resw 0)))))))))
   "Direct WORD transport for resolved existing VM primitives.")
 
 (provide 'nelisp-cc-fx-call-primitives)
