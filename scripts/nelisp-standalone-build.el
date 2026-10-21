@@ -1478,8 +1478,8 @@ walker reads whatever happens to be on the stack."
 
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
-;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
-;; assembler emits the standard RELA -4 -- normalizing avoids the off-by-4).
+;; reloc :addend biased by +4 (the linker uses P = va+offset+4; the
+;; assembler emits the standard RELA -4, so a plain call or lea becomes 0).
 ;; ===================================================================
 (defun nelisp-standalone--arm64-link-unit-text+relocs (buf)
   "Return `(TEXT . RELOCS)' for an arm64 standalone link unit.
@@ -1881,9 +1881,19 @@ twice appears twice; readers keep the last occurrence of each unit."
                                    :type (plist-get r :type)
                                    :symbol (or (plist-get r :symbol)
                                                (plist-get r :sym))
-                                   :addend (if (eq arch 'aarch64)
-                                               (or (plist-get r :addend) 0)
-                                             0)
+                                   ;; The static linker measures PC32 from
+                                   ;; the end of its field and the assembler
+                                   ;; addends from its start (-4 for a plain
+                                   ;; call or lea, which becomes 0); keep the
+                                   ;; rest of the addend, which a CG4
+                                   ;; RIP-relative operand uses for its
+                                   ;; displacement and trailing immediate.
+                                   :addend (cond
+                                            ((eq arch 'aarch64)
+                                             (or (plist-get r :addend) 0))
+                                            ((memq (plist-get r :type) '(pc32 plt32))
+                                             (+ (or (plist-get r :addend) 0) 4))
+                                            (t 0))
                                    :section 'text))
                            relocs0)))
       (when unit-data

@@ -181,6 +181,17 @@ indexes, =(shl i k)= or =(* i 2^k)= becomes a scaled index and =(+ x d)= a
 displacement; =(= (ptr-read-u8 B X) K)= becomes =cmp byte [B+X], K=.
 Predicted: vector-sum -1, class-table -1.
 
+A global read or written at a constant offset, =(ptr-read-u64 (data-addr
+SYM) OFF)= (521 sites in the runtime source), becomes one RIP-relative
+instruction, =mov rax, [rip + SYM + OFF]=, where it was a =lea= and a load.
+The pc32 relocation's addend carries OFF and the length of any immediate
+after the displacement.  The standalone build used to rewrite every x86
+pc32 addend to 0, which was right only for the plain -4 of a call or
+=lea=; the first build with this folding read every such global at the
+wrong address and died in the prelude.  The unit builder now biases the
+assembler addend by +4 (the static linker measures from the end of the
+field), as its data-blob path already did.
+
 ** CG5 Tag-test fusion
 GCC behaviour: a type test is one masked compare (=CONSP=, lisp.h:394).
 NeLisp boxes carry the tag in memory, so the closest equivalent is
@@ -203,10 +214,26 @@ against GCC's 5, the representation floor.
   that re-read an invariant field in the loop test are a follow-up
   (CG6: hoist =ptr-read= out of call-free loops that store nothing).
 - Accessor inlining (GCC inlines lisp.h's =XCDR=, =XCAR=, =AREF=): the
-  kernels inline the accessor body by construction.  In the runtime, a
-  loop that calls =nl_cons_cdr_word= pays a call per element and is
-  excluded from CG3; inlining small leaf accessors (CG7) would make such
-  loops call-free.  Follow-up after CG1-CG5.
+  kernels inline the accessor body by construction.  In the runtime it is
+  CG7 below.
+
+** CG7 Accessor inlining across units
+GCC behaviour: lisp.h's accessors are =INLINE= functions
+(conf_post.h:326-346; =CONSP= lisp.h:1455, =XCDR= lisp.h:1500) visible
+to every translation unit, so every caller inlines them.  The build
+already inlines small leaf defuns, but only within the unit that defines
+them (=nelisp-standalone--inline-small-defuns=), and the hottest helpers
+live in the arena unit, linked last: at 9d5f4a515 =nl_seq2=, =nl_hdr_bt=
+and =nl_hdr_mark= are 20.6% of boot's Ir as calls from the GC unit.
+CG7 makes the same candidates visible to every unit: the arena unit's are
+registered before the first unit compiles, every other unit's as it is
+compiled, and =compile-to-unit= inlines calls to helpers its source does
+not define, under the same =let*= binding as the within-unit pass.  A
+helper that addresses its own unit's (local) data blob stays out; a name
+defined twice with different bodies is never inlined again, and the build
+stops if it already was.  The table's digest is part of every unit's
+cache key.  Off for the runtime-reload build, whose units are replaced one
+at a time, and with =NELISP_XINLINE=0=.
 
 * Constraints every mechanism keeps
 
@@ -216,8 +243,10 @@ against GCC's 5, the representation floor.
 - The compiler also runs inside the standalone (artifact compilation)
   with native emit kernels for =imm= and =ref=; promoted =ref= nodes must
   bypass =nelisp_emit_value_ref_gp=.
-- Win64 and aarch64 keep their current lowering; the new paths are
-  x86_64 SysV.
+- aarch64 keeps its lowering.  CG1, CG2, CG4 and CG5 apply to every
+  x86-64 target; CG3 (it relies on the SysV prologue saving rbx) and
+  RIP-relative globals (the ELF pc32 addend carries the displacement) are
+  x86-64 SysV on Linux only.
 - No new natives: these are compiler changes only (AGENTS.md, minimal
   native surface).
 
@@ -231,6 +260,26 @@ dispatch: CG1, CG2, CG4 and CG5 reach it through the VM's own dialect code
 (its dispatch is chains of =(if (= ...))= over slot variables), while CG3
 reaches only its call-free inner loops.
 
+The whole-run shape matches the kernels.  Executed instructions of the
+9d5f4a515 dynamic build by category (=attribute-run.py= on callgrind
+=--dump-instr=yes= profiles; boot is =--eval nil=, the regex run is the
+per-character workload at 16 characters, 200 matches):
+
+| category                                | boot (534.0M Ir) | regex run (1,223.1M Ir) |
+|-----------------------------------------+------------------+-------------------------|
+| frame-slot loads and stores             | 24.79%           | 23.48%                  |
+| push/pop temporaries                    | 20.76%           | 19.13%                  |
+| immediate loads into scratch registers  | 9.60%            | 11.12%                  |
+| register-to-register moves              | 4.66%            | 5.69%                   |
+| boolean materialization                 | 6.33%            | 5.41%                   |
+| unconditional jumps                     | 2.47%            | 2.32%                   |
+| compare/branch, arithmetic, memory work | 26.71%           | 28.97%                  |
+| call/ret                                | 3.32%            | 3.30%                   |
+| outside the binary (loader, libc)       | 1.35%            | 0.59%                   |
+
+67-69% of both runs is the accumulator code shape the mechanisms
+target.
+
 * Blocked
 
 - list-walk: 2 Ir per element of representation (above).  Owner: the
@@ -242,4 +291,58 @@ reaches only its call-free inner loops.
 
 * Results
 
-Filled in per mechanism as it lands.
+** Kernels, mechanism by mechanism
+
+Ir per iteration at layout 0 after each mechanism (development probe;
+the four-layout gate numbers follow below and agree to the third
+decimal, since the kernels are layout-independent):
+
+| kernel      | base  | +CG1  | +CG2  | +CG3  | +CG4  | +CG5  | gcc -O2 GNU | gcc -O2 NeLisp layout |
+|-------------+-------+-------+-------+-------+-------+-------+-------------+-----------------------|
+| byte-scan   | 31.00 | 22.00 | 12.00 | 11.00 | 6.00  | 6.00  | 6.00        | 6.00                  |
+| list-walk   | 18.00 | 17.00 | 13.00 | 13.00 | 11.00 | 7.00  | 5.00        | 7.00                  |
+| fixnum-loop | 22.20 | 21.20 | 8.05  | 6.05  | 6.05  | 6.05  | 7.00        | 7.00                  |
+| class-table | 33.00 | 24.00 | 17.00 | 16.00 | 11.00 | 6.00  | 6.00        | 6.00                  |
+| vector-sum  | 43.00 | 34.00 | 19.00 | 18.00 | 10.00 | 10.00 | 10.00       | 10.00                 |
+
+CG1 removed exactly the predicted branch column (-9, -1, -1, -9, -9).
+CG2 removed the push/pop temporaries and most scratch loads.  CG3 then
+mattered most where operands must be registers (fixnum-loop's compares
+and updates); the rest of its effect is realized by CG4, whose
+addressing needs register bases and indexes.  class-table's last 5 Ir
+came with the relaxed operand-order rule (a variable may be read after
+an operand that assigns no local), which lets the table load fold into
+=cmp byte [table+rax], 0=.  CG5 took list-walk from 11 to 7.
+
+Four kernels are at or below gcc -O2 on GNU's layout.  list-walk is at
+gcc -O2 on NeLisp's own layout (7.00) and 2 Ir above GNU's: the
+representation share measured in the baseline, which no compiler change
+removes.
+
+The gate (=codegen-check.py kernel NAME=, four layouts) after CG1-CG5:
+
+| kernel      | NeLisp   | gcc -O2 GNU layout | gcc -O2 NeLisp layout | verdict                |
+|-------------+----------+--------------------+-----------------------+------------------------|
+| byte-scan   | 6.00000  | 6.00000            | 6.00000               | PASS                   |
+| list-walk   | 7.00002  | 5.00006            | 7.00002               | FAIL (representation)  |
+| fixnum-loop | 6.04999  | 7.00004            | 7.00004               | PASS                   |
+| class-table | 6.00000  | 6.00000            | 6.00000               | PASS                   |
+| vector-sum  | 10.00000 | 10.00001           | 10.00001              | PASS                   |
+
+The harness feeds N as six digits in both runs ("100000" and "000000"),
+so the stdin parse costs the same in the N and zero runs; with "0" the
+NeLisp harness's own (slower) digit loop left about 0.0008 Ir per
+iteration of residue in every NeLisp figure.
+
+** Whole runs, CG1-CG5
+
+| build          | boot (=--eval nil=) Ir | vs 9d5f4a515 |
+|----------------+------------------------+--------------|
+| 9d5f4a515      | 533,629,168            |              |
+| +CG1           | 489,422,506            | -8.3%        |
+| +CG2-CG5       | 345,296,432            | -35.3%       |
+
+After CG5 the frame-slot and push/pop columns of boot are concentrated in
+=nl_seq2=, =nl_hdr_bt= and =nl_hdr_mark= (prologues and parameter
+spills) and in the GC loops that call them, which CG3 cannot promote
+because of those calls: the CG7 target.
