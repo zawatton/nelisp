@@ -11483,6 +11483,19 @@ functions `((NAME . ARITY) ...)'."
    ;;   SIMD copies that double-free the inner payloads when CAR/CDR
    ;;   are refcounted variants.  Replaces the Rust `nl_jit_cons_make'
    ;;   trampoline (= -24 LOC `build-tool/src/jit/cons.rs').
+   ;; Doc 229: a native artifact calls only what the loader bridges, and
+   ;; `nl_alloc_consbox' and `nl_val_clone_into' are not in the bridge,
+   ;; so a quoted list made the artifact unloadable.  Build the cons with
+   ;; the runtime's own constructor, the one the reader builds every cons
+   ;; with.  GNU builds a quoted constant once, at load (comp.c:479
+   ;; d_reloc); here it is built per evaluation, because the loader's call
+   ;; frame carries no per-artifact constant vector.
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp) (eq (car sexp) 'cons-make-with-clone)
+         (= (length sexp) 4))
+    (nelisp-aot-compiler--parse-value
+     `(extern-call nelisp_cons_construct ,@(cdr sexp))
+     env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'cons-make-with-clone))
     (unless (= (length sexp) 4)
       (signal 'nelisp-aot-compiler-error

@@ -42,14 +42,14 @@ apart by looking at the answer.")
 
 (defconst nelisp-aot-differential-tag-values
   '(("nil" "nil") ("t" "t") ("fix" "(length v)") ("elt" "(aref v 0)")
-    ("str" "\"ab\"") ("sym" "'foo")
+    ("cons" "(list 1 2)") ("str" "\"ab\"") ("sym" "'foo")
     ("vec" "v") ("deep" "(aref w 1)") ("flt" "1.5"))
   "(TAG . FORM) for values of every type the tag predicates tell apart.
 Doc 224 CG5 fuses a predicate's (= (sexp-tag X) K) in a test into a
 pointer test and a tag-byte compare; each of these values goes through
-every fused predicate and the interpreter answers for comparison.  nil and
-t came back once Doc 229 made them the Lisp objects; the cons waits for
-the quoted-constant fix in the loader stage.")
+every fused predicate and the interpreter answers for comparison.  nil, t
+and the cons came back once Doc 229 made them the Lisp objects and the
+cons constant loadable.")
 
 ;; Doc 229: Lisp values in native artifacts follow GNU's Lisp_Object
 ;; rules.  Each entry is (STAGE KIND SOURCE ARGS).  KIND `control' marks a
@@ -124,7 +124,7 @@ the quoted-constant fix in the loader stage.")
     (2 control "(defun lv-float-lit-cmp (a) (if (< a 2.5) 1 2))" (2 3)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")
