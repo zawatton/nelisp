@@ -20,8 +20,13 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     if tuple(roots) != ROOTS:
         raise ValueError("Constructor operation root policy differs")
     digest = prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root)
-    # Measured 291: C-core owners plus P3.4 allocator-mask and native-to-OS helpers.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=296, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
+    # Measured 300: the 291 C-core owners plus P3.4 allocator-mask and
+    # native-to-OS helpers, then GNU structures added on purpose: symbol cells
+    # (nl_symcell_assign/capacity/refresh/reserve) and, from the GC port, cons
+    # blocks and the typed-block registry (nl_cons_alloc, nl_cons_alloc_block,
+    # nl_ablock_new_group, nl_typed_find, nl_typed_registry_grow,
+    # nl_typed_registry_lookup); nelisp_nlconsbox_clone left the closure.
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=304, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",

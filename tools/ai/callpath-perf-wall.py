@@ -205,8 +205,13 @@ def procs(args):
         for r in range(ROUNDS):
             order = ["candidate", "base"] if r % 2 == 0 else ["base", "candidate"]
             for engine in order:
+                # As tools/ai/abi-ir.py runs them: an empty cache per process and
+                # the source root the file workload resolves its inputs from.
+                cache = dest / f"cache-{engine}-{mode}-{r}"
+                shutil.rmtree(cache, ignore_errors=True)
+                cache.mkdir(parents=True)
                 env = dict(os.environ, LC_ALL="C", TMPDIR=str(ROOT / "target/tmp"),
-                           XDG_CACHE_HOME=str(dest / f"cache-{engine}-{mode}-{r}"))
+                           XDG_CACHE_HOME=str(cache), ABI_SOURCE_ROOT=str(ROOT), ABI_LAYOUT_PAD="")
                 proc, elapsed = run([str(engines[engine])] + extra, env)
                 if proc.returncode != 0:
                     raise RuntimeError(f"{engine} {mode} round {r}: rc={proc.returncode}")

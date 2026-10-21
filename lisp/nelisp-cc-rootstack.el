@@ -769,7 +769,7 @@
     ;; did); an immediate is written as its storage form (tag 0 nil, 1 t,
     ;; 2 fixnum) without allocating.  Returns 0 (success status).
     (defun nl_native_store_word_v2 (output w)
-      (if (or (= (logand w 1) 1) (= (logand w 7) 6))
+      (if (/= (logand w 7) 0)
           (seq (nl_sexp_clone_into w output) 0)
         (seq (ptr-write-u64 output 0 (heap-read-u64 w 0))
              (ptr-write-u64 output 8 (heap-read-u64 w 8))

@@ -92,15 +92,20 @@
     ;; only matters for the brief pre-fill window + GC safety if a
     ;; collection lands mid-construction.
     (defun nl_alloc_consbox_init (box-ptr)
+      ;; Doc 216 S2.2: GNU's 16-byte struct Lisp_Cons (car, cdr).  The
+      ;; tracing collector frees cells, so there is no refcount word.
       (and (ptr-write-u64 box-ptr 0 3)        ; car WORD = Nil immediate
            (ptr-write-u64 box-ptr 8 3)        ; cdr WORD = Nil immediate
-           (ptr-write-u64 box-ptr 16 1)       ; refcount = 1
            box-ptr))
 
     ;; Public entry — allocate 24-byte NlConsBox with alignment 8,
     ;; initialise fields, return raw pointer as i64.
+    ;; Doc 223: the payload is a cell of a GNU-style cons block
+    ;; (`nl_cons_alloc', Fcons alloc.c:2599).  0 selects the legacy
+    ;; headered payload (parallel sections, typed conses disabled).
     (defun nl_alloc_consbox ()
-      (nl_alloc_consbox_init (alloc-bytes 24 8))))
+      (let ((cell (extern-call nl_cons_alloc)))
+        (nl_alloc_consbox_init (if (= cell 0) (alloc-bytes 16 8) cell)))))
   "AOT source for the `nl_alloc_consbox' allocator swap.
 
 Two-entry `(seq DEFUN ...)' manifest:

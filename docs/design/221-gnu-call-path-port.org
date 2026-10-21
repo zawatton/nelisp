@@ -179,3 +179,34 @@ That crosses the current binding/object/loader limits. Within this scope,
 the common entry can preserve the mirror read as an explicit adaptation;
 it cannot claim GNU's no-hash symbol field. Measure the remaining lookup
 cost and report this boundary if it prevents the required port/caps.
+
+* Outcome of run B (2026-10-21, wall-clock acceptance)
+
+Ported or adapted and committed, each with GNU anchors and measurements
+in tools/ai/callpath-perf-progress.org:
+- 1a/1c direct symbol cells (M02/M23): no name hash on interned symbols;
+- 1b funcall_general parity (M30): original_fun in errors, iterative
+  indirect_function, Ffset cycle refusal, Fapply spread order, eval_sub
+  resolving the whole chain before arguments, and macros reached through
+  alias chains;
+- 2 subr dispatch keyed on static symbol ids (M03/M17), funcall_subr's
+  arity check before the unsupported default, and FX Ffuncall of covered
+  closures on the evaluated words (no argument list);
+- 5a-5c exec_byte_code: Bcar/Bcdr and Bcall inside the dispatch loop,
+  quit polling every 256 backward branches (bytecode.c:856-867).
+
+Not started: steps 3 (funcall_lambda environments), 4 (specpdl and
+unbind_to) and 6 (roots), and M19's single-loop bytecode frames.  The
+measurements show why they cannot reach the interpreter caps alone: with
+no call involved, the interpreter's `let' runs at about 20x and `while' at
+about 65x GNU in wall-clock, so the per-form evaluator cost (frame
+push/bind/lookup, generated functions such as nelisp_apply_function_w at
+175k instructions, a two-load accessor at 54 instructions, the cell read at
+290) sits under every interpreter metric.  Steps 3 and 4 would need the
+frame contract that M09 kept to be revised.  The VM and bytecode engines
+run non-call work near GNU speed (VM while 1.2x, let 0.7x; bytecode while
+3.5x, let 1x); their remaining call gaps are M19 (bytecode callees still
+recurse on the host; the literal-program check is its symptom) and the
+per-call FX frame vector (M04/M29).  Word-heap S6.3 (WORD root slots,
+stack argv, no clone/copy materialisers on the call path) is the next
+item.

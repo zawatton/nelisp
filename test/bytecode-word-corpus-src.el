@@ -112,6 +112,11 @@
 (defun bwc-sort (l) (sort (copy-sequence l) #'<))
 (defun bwc-hash (n) (let ((h (make-hash-table :test 'equal))) (dotimes (i n) (puthash (format "k%d" i) i h)) (list (gethash "k3" h) (hash-table-count h))))
 (defun bwc-format (a b) (format "%s=%S;%d" a b (length (list a b))))
+;; Bget runs Fget on the symbol's plist (bytecode.c Bget, fns.c Fget).
+(defun bwc-get-put (v)
+  (put 'bwc-prop-sym 'bwc-key v)
+  (list (get 'bwc-prop-sym 'bwc-key) (get 'bwc-prop-sym 'bwc-missing) (get nil 'bwc-key)))
+(defun bwc-get-wta (x) (condition-case e (get x 'bwc-key) (wrong-type-argument (car e))))
 
 ;; Each case: (FUNCTION ARGUMENTS...).  Answers are compared as `%S' text;
 ;; a signal compares as (error ERROR-SYMBOL).
@@ -151,6 +156,7 @@
     (bwc-temp-buffer "hello") (bwc-char "abc" 0) (bwc-eq-ints 5) (bwc-eq-ints 6) (bwc-stack-heavy 1 x)
     (bwc-ignore-errors 5) (bwc-ignore-errors (q)) (bwc-nested-cc inner) (bwc-nested-cc outer)
     (bwc-symbol-value bwc-dyn) (bwc-set bwc-dyn2 changed) (bwc-intern "bwc-sym") (bwc-number-seq 5)
-    (bwc-sort (3 1 2)) (bwc-hash 10) (bwc-format x "y")))
+    (bwc-sort (3 1 2)) (bwc-hash 10) (bwc-format x "y")
+    (bwc-get-put 42) (bwc-get-put (a b)) (bwc-get-wta 5) (bwc-get-wta "s")))
 
 ;;; bytecode-word-corpus-src.el ends here

@@ -444,7 +444,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                result))))))
 
     (defun nl_record_type_own (word)
-      (if (or (= (logand word 1) 1) (= (logand word 7) 6)) word
+      (if (/= (logand word 7) 0) word
         (if (= (nl_val_tag word) 4)
             (nl_record_type_intern_own word)
           (let* ((storage (alloc-bytes 8 8)))

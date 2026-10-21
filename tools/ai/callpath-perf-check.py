@@ -225,7 +225,8 @@ def arity_report(report, tag, *, link_build=True):
             boundaries.append(maximum + 1)
         for argc in boundaries:
             boundary_specs.append((name, argc))
-            for callable_ in (name, "(builtin " + name + ")", "(builtin " + name + ")"):
+            # The reader prints a builtin callable as GNU prints a subr.
+            for callable_ in (name, "#<subr " + name + ">", "#<subr " + name + ">"):
                 expected.append(f"({number} (wrong-number-of-arguments {callable_} {argc}))")
                 number += 1
     need((c["min"], c["max"]) == (low, high) and low > 0 and high > 0, "arity boundary counts differ")
@@ -278,7 +279,11 @@ def arity_report(report, tag, *, link_build=True):
     required_valid = {"rdf", "nelisp--syscall-read-file", "nelisp--readdir-scan-raw",
                       "nelisp--syscall-readdir-names", "nelisp--read-all-from-string-native",
                       "nelisp--debug-switch", "nelisp-portable-syscall", "syscall-direct"}
-    need(all(sum(case["name"] == name for case in cases) >= 2 for name in required_valid),
+    # A fixed-arity builtin (syscall-direct takes exactly 7) has one valid
+    # boundary; the others need both their min and their max case.
+    fixed = {row[0] for row in read(auth(report["contracts"]))[1] if row[1] == row[2]}
+    need(all(sum(case["name"] == name for case in cases) >= (1 if name in fixed else 2)
+             for name in required_valid),
          "missing private optional min/max valid-boundary controls")
     need(sum(case["name"] == "nelisp--gc-diag" for case in cases) >= 2 and
          all(any(case["name"] == name for case in cases) for name in
@@ -290,11 +295,12 @@ def arity_report(report, tag, *, link_build=True):
          "private optional valid-boundary controls failed/incomplete")
     need(report["passed"] is True, "arity reporter failed")
     if link_build:
-        campaign = read(OUT / "floors-queued" / ("result-" + tag) / "campaign.json")
-        auth(campaign["binary"])
-        check_memory_policy(campaign["memory_policy"])
-        need(campaign["binary"]["sha256"] == report["binary"]["sha256"] and
-             campaign["source"] == source_identity(), "arity report is not the fresh current-source result build")
+        # Since the switch to wall-clock (2026-10-21) the measured result
+        # build is the wall report's candidate, not an Ir campaign's binary.
+        floors = read(WALL / ("result-" + tag) / "floors.json")
+        auth(floors["engines"]["candidate"])
+        need(floors["engines"]["candidate"]["sha256"] == report["binary"]["sha256"] and
+             floors["source"] == source_identity(), "arity report is not the fresh current-source result build")
     return number
 
 
@@ -498,7 +504,9 @@ def wall(tag, kind="floors"):
     need(report["engines"]["base"]["sha256"] == sha(BASE_BINARIES[linkage]), "wall baseline is not base02 " + linkage)
     need(report["engines"]["candidate"]["sha256"] != report["engines"]["base"]["sha256"], "candidate is the base binary")
     if kind == "floors":
-        need(Path(report["engines"]["gnu"]["path"]).name == "emacs", "GNU reference is not emacs")
+        # /usr/local/bin/emacs resolves to its versioned executable.
+        need(Path(report["engines"]["gnu"]["path"]).name in ("emacs", "emacs-31.1"),
+             "GNU reference is not emacs 31.1")
         for pins in report["fixtures"].values():
             for pin in pins:
                 auth(pin)
@@ -593,11 +601,148 @@ def check_wallnoregress(prefix="result"):
     need(not failures, "; ".join(failures))
 
 
+S63 = ROOT / "target/callpath-perf/s63"
+S63_SLACK = 0.005  # a constant few allocations (warm-up, a collection) over the probe's 20000 calls
+
+
+def s63_tool():
+    spec = importlib.util.spec_from_file_location("callpath_perf_s63", ROOT / "tools/ai/callpath-perf-s63.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def s63_result_build():
+    """Every stage-S4 report must come from the current source's wall-clock result build."""
+    floors = read(WALL / "result-dynamic" / "floors.json")
+    need(floors["source"] == source_identity(), "the wall-clock result build is not the current source")
+    return auth(floors["engines"]["candidate"]) and floors["engines"]["candidate"]["sha256"]
+
+
+LEDGER = ROOT / "tools/ai/callpath-perf-progress.org"
+# The S4 allowlist may only shrink (coordinator, 2026-10-21): these are its
+# totals when it was frozen; a larger sum fails, and an entry that has to be
+# added is a defect to report.
+S63_ALLOWLIST_MAX = {"roots": 7, "materialisers": 3}
+
+
+def s63_allowlist():
+    """{(defun, kind): count} from the ledger's "#+NOTE: S4-ALLOWLIST" lines:
+    DEFUN KIND=COUNT lane=LANE reason: TEXT, KIND roots or materialisers."""
+    allowed = {}
+    for line in LEDGER.read_text().splitlines():
+        m = re.match(r"#\+NOTE: S4-ALLOWLIST (\S+) (roots|materialisers)=(\d+) lane=(\S+) reason: \S", line)
+        if line.startswith("#+NOTE: S4-ALLOWLIST"):
+            need(m is not None, "malformed allowlist entry: " + line[:120])
+            key = (m.group(1), m.group(2))
+            need(key not in allowed, "duplicate allowlist entry: " + line[:120])
+            allowed[key] = int(m.group(3))
+    return allowed
+
+
+def check_s63census(kind):
+    """S4.1/S4.2: box-census debt on the call path (SCOPE in callpath-perf-s63.py)
+    beyond the ledger's allowlist of sites that wait for other lanes."""
+    tool = s63_tool()
+    report = read(S63 / "census.json")
+    need(report["source"] == source_identity() and report["stage_source"] == report["source"],
+         "the census is not a build of the current source")
+    for key in ("binary", "producer"):
+        auth(report[key])
+    need(report["binary"]["sha256"] == s63_result_build(), "the census build is not the wall-clock result build")
+    need(report["scope"] == tool.SCOPE.pattern, "the census scope differs from the checker's")
+    counts = tool.census_counts(auth(report["census"]))
+    need(counts["units"] >= 100 and counts["scope_defuns"] >= 200, "the census does not cover the call path")
+    allowed = s63_allowlist()
+    budget = sum(n for (fn, k), n in allowed.items() if k == kind)
+    if S63_ALLOWLIST_MAX[kind] is not None:
+        need(budget <= S63_ALLOWLIST_MAX[kind], f"the {kind} allowlist grew: {budget} > {S63_ALLOWLIST_MAX[kind]}")
+    excess = {}
+    for fn, row in counts["per_defun"].items():
+        n = sum(v for i, v in row.items() if (i in tool.ROOTS) == (kind == "roots"))
+        if n > allowed.get((fn, kind), 0):
+            excess[fn] = n - allowed.get((fn, kind), 0)
+    left = sum(excess.values())
+    print(f"s63census {kind}={counts[kind]} over {counts['scope_defuns']} call-path defuns; allowlisted {budget}; "
+          f"beyond it {left}; most: " + ", ".join(f"{fn}={n}" for fn, n in sorted(excess.items(), key=lambda kv: -kv[1])[:5]))
+    need(left == 0, f"{left} {kind} sites remain on the call path beyond the allowlist")
+    print(f"s63census {kind} PASS")
+
+
+def check_s63alloc():
+    """S4.3: allocations per call at most GNU 31.1's objects per call, every mode."""
+    tool = s63_tool()
+    report = read(S63 / "alloc.json")
+    need(report["source"] == source_identity(), "the allocation probe is stale")
+    for key in ("binary", "gnu", "producer"):
+        auth(report[key])
+    for row in report["fixture"]:
+        auth(row)
+    need(report["binary"]["sha256"] == s63_result_build(), "the probe did not run the wall-clock result build")
+    need(Path(report["gnu"]["path"]).name in ("emacs", "emacs-31.1"), "GNU reference is not emacs 31.1")
+    fails = []
+    for mode in tool.MODES:
+        row = report["modes"][mode]
+        for engine in ("nelisp", "gnu"):
+            need(row[engine]["returncode"] == 0, f"{engine} {mode} probe failed")
+        mine = tool.per_call(row["nelisp"]["raw"], "nelisp", report["n"])
+        gnu = tool.per_call(row["gnu"]["raw"], "gnu", report["n"])
+        need(mine["control"] >= 1 and gnu["control"] >= 1, f"{mode}: a counter missed the control's allocations")
+        need(not any(gnu["vector_cells"].values()), f"{mode}: GNU allocated vectors, which the object count omits")
+        for op in tool.OPS:
+            ok = mine[op] <= gnu[op] + S63_SLACK
+            print(f"s63alloc {mode} {op} nelisp={mine[op]:.3f} gnu={gnu[op]:.3f}{'' if ok else ' OVER'}")
+            if not ok:
+                fails.append(f"{mode}/{op}")
+    need(not fails, "allocations per call above GNU: " + ", ".join(fails))
+    print("s63alloc PASS")
+
+
+STASH_SLOTS = re.compile(r"\b(268435480|268435512)\b")
+
+
+def stash_readers(root=ROOT):
+    """The functions of the runtime sources that use the fixed-address Sexp
+    signal stash slots (tag @268435480, value @268435512), comments left out."""
+    found = set()
+    for path in [root / "scripts/nelisp-standalone-build.el"] + sorted((root / "lisp").glob("*.el")):
+        text = "\n".join(re.sub(r";.*$", "", line) for line in path.read_text(errors="replace").split("\n"))
+        starts = [(m.start(), m.group(1)) for m in re.finditer(r"\(defun ([A-Za-z0-9_-]+) ", text)]
+        for m in STASH_SLOTS.finditer(text):
+            owner = None
+            for start, name in starts:
+                if start > m.start():
+                    break
+                owner = name
+            found.add((path.name, owner or "<top level>"))
+    return found
+
+
+def check_stash():
+    """S4.4: GNU's signal_or_quit carries the condition and data as
+    Lisp_Object values to the handler; no runtime function uses the
+    fixed-address Sexp stash slots."""
+    found = stash_readers()
+    print(f"stash readers={len(found)}: " + ", ".join(sorted(f for _, f in found))[:300])
+    need(not found, f"{len(found)} functions still use the fixed-address Sexp signal stash")
+    print("stash PASS")
+
+
+def check_s63e2e():
+    """S4.4: the final verification and the wall-clock regression guard on the current source."""
+    check_final()
+    check_wallnoregress()
+    print("s63e2e PASS")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="check", required=True)
-    for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress"):
+    for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e",
+                 "stash"):
         sub.add_parser(name)
+    p = sub.add_parser("s63census")
+    p.add_argument("kind", choices=("roots", "materialisers"))
     p = sub.add_parser("wallfuncall")
     p.add_argument("mode", choices=("interp", "vm", "byte"))
     p.add_argument("factor", type=float)
@@ -629,9 +774,12 @@ def main():
                           gnu_tag=args.gnu_tag, linkages=args.linkage or LINKAGES)
         elif args.check == "focused":
             check_focused(args.tag)
+        elif args.check == "s63census":
+            check_s63census(args.kind)
         else:
             {"portplan": check_portplan, "arity": check_arity,
-             "noregress": check_noregress, "final": check_final}[args.check]()
+             "noregress": check_noregress, "final": check_final,
+             "s63alloc": check_s63alloc, "s63e2e": check_s63e2e, "stash": check_stash}[args.check]()
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("FAIL " + str(error))
         return 1
