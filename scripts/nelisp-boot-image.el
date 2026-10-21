@@ -20,6 +20,15 @@
 
 (defun nelisp-boot-image--macroexp-source (source path)
   "Bake admitted GNU macroexp functions, retaining rejected functions as source."
+  ;; GNU's primitive macroexpand follows aliases/environment entries directly.
+  ;; Its Lisp port shares the provider's lexical compilation and source fallback.
+  (setq source
+        (concat source "\n"
+                (with-temp-buffer
+                  (insert-file-contents
+                   (expand-file-name "lisp/nelisp-load-macroexpand.el"
+                                     nelisp-boot-image--root))
+                  (buffer-string))))
   ;; GNU macroexp.el:954-962 reloads compiled macroexp during bootstrap when
   ;; the preloaded provider is interpreted. Use the existing whole-file GNU
   ;; compiler and VM opcode selection rather than interpreting every helper.
