@@ -19957,9 +19957,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; discipline `nl_char_table_get_raw'/`_set_raw' use internally.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_char_table_alloc_w (subtype default-word _pad)
-      ;; Preserve the legacy raw allocator ABI's ten nil auxiliary slots.
-      (let* ((result (nl_char_table_alloc_count_w subtype default-word 10)))
-        (seq (nl_ct_extra_fill (ptr-read-u64 (nl_word_payload result) 96) 0 10)
+      ;; Preserve the legacy raw allocator ABI's ten nil auxiliary slots,
+      ;; after Doc 225's cell 0.
+      (let* ((result (nl_char_table_alloc_count_w subtype default-word 11)))
+        (seq (nl_ct_extra_fill (ptr-read-u64 (nl_word_payload result) 96) 1 11)
              result)))
     (defun nl_char_table_alloc_count_w (subtype default-word extra-count)
       (let* ((object (alloc-bytes 32 8)) (box (alloc-bytes 128 8))
@@ -19970,7 +19971,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (ptr-write-u64 box 88 0) (ptr-write-u64 box 96 extra)
              (ptr-write-u64 box 104 extra-count) (ptr-write-u64 box 112 extra-count)
              (ptr-write-u64 box 120 1)
-             (if (= default-word 3) 0 (nl_ct_set_range box 0 4194303 default-word))
              (ptr-write-u64 object 0 9) (ptr-write-u64 object 8 box)
              (ptr-write-u64 object 16 0) (ptr-write-u64 object 24 0) object)))
     (defun nl_char_table_alloc (subtype default_ptr out)
@@ -20066,10 +20066,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (let* ((count (if (= (sexp-tag extra-count) 0) 0
                                        (ptr-read-u64 extra-count 8)))
                               (rest (nl_cons_cdr_word args))
+                              ;; Doc 225 S3: cell 0 holds the slot vector.
                               (result (nl_char_table_alloc_count_w
                                        (nl_cons_car_word args)
                                        (if (= (nl_val_tag rest) 7)
-                                           (nl_cons_car_word rest) 3) count)))
+                                           (nl_cons_car_word rest) 3) (+ count 1))))
                          (seq (nl_root_release env mark) result))
                      (seq (bf_wrong_type_wholenump extra-count)
                           (nl_root_release env mark) 0))
@@ -20144,9 +20145,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= (nl_val_tag table) 9)
             (if (= (nl_val_tag index) 2)
                 (let* ((n (nl_word_payload index)) (box (nl_word_payload table)))
-                  (if (or (< n 0) (>= n (ptr-read-u64 box 112)))
+                  (if (or (< n 0) (>= (+ n 1) (ptr-read-u64 box 112)))
                       (nl_abi_fail (bf_args_out_of_range table index) 0)
-                    (ptr-read-u64 (+ (ptr-read-u64 box 96) (* n 32)) 0)))
+                    (ptr-read-u64 (+ (ptr-read-u64 box 96) (* (+ n 1) 32)) 0)))
               (nl_abi_fail (bf_wrong_type_fixnump index) 0))
           (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
@@ -20154,7 +20155,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (seq  (let* ((ct (wf_arg_word args 0)) (nbox (wf_arg_word args 1))
              (val (wf_arg_word args 2)))
           (if (= (nl_word_tag64 ct) 9) (if (= (nl_word_tag64 nbox) 2) (let* ((n (nl_word_payload nbox)) (box (nl_word_payload ct)))
-          (if (or (< n 0) (>= n (ptr-read-u64 box 112))) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 box 96) (* n 32)) val) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
+          (if (or (< n 0) (>= (+ n 1) (ptr-read-u64 box 112))) (nl_abi_fail (bf_args_out_of_range ct nbox) 0) (seq (wf_dirty) (nl_ct_store_word (+ (ptr-read-u64 box 96) (* (+ n 1) 32)) val) val))) (nl_abi_fail (bf_wrong_type_fixnump nbox) 0)) (nl_abi_fail (bf_wrong_type_char_table_p ct) 0)))))
     ;; char-table-range / set-char-table-range, GNU semantics.  RANGE is
     ;; nil (the default slot), t (every char; set only), a char, or a
     ;; (FROM . TO) cons of chars.  GET on a cons answers the value at FROM
@@ -20529,6 +20530,60 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (vector-slot-set object 1 (nl_cons_cdr_word ifcdr)) object)
         (nl_cons_car_word ifcdr))
     3))
+    ;; Doc 225 S3: GNU chartab.c's structure.  Cell 0 of a char-table box's
+    ;; 32-byte cell buffer (+96 pointer, +112 count) holds a 65-slot vector,
+    ;; GNU's `ascii' slot followed by contents[64]; cells 1.. are the extra
+    ;; slots.  A sub-char-table is a vector
+    ;;   [nelisp--sub-char-table DEPTH MIN-CHAR c0 ... c(N-1)]
+    ;; with N = 16, 32 or 128 for DEPTH 1, 2 or 3 (chartab.c:30-53), reached
+    ;; through those slots, so the collector's existing cell marking covers
+    ;; every edge.  Only the lookup is native (clause 1, char-table slot
+    ;; access); the setters and the rest of chartab.c are prelude Lisp.
+    (defun nl_ct2_sub_p (w)
+      (if (= (nl_val_tag w) 8)
+          (if (< (vector-len w) 19) 0
+            (let* ((marker (vector-ref-ptr w 0)))
+              (if (= (ptr-read-u64 marker 0) 4)
+                  (sexp-name-eq marker "nelisp--sub-char-table")
+                0)))
+        0))
+    ;; GNU chartab.c:210-223 sub_char_table_ref: index (C - MIN) >> bits[DEPTH].
+    (defun nl_ct2_sub_ref (w c)
+      (let* ((depth (nl_word_payload (nl_vector_slot_word w 1)))
+             (min (nl_word_payload (nl_vector_slot_word w 2)))
+             (val (nl_vector_slot_word
+                   w (+ 3 (/ (- c min)
+                             (if (= depth 1) 4096 (if (= depth 2) 128 1)))))))
+        (if (= (nl_ct2_sub_p val) 1) (nl_ct2_sub_ref val c) val)))
+    ;; The contents value of C before the default and parent fallback:
+    ;; chartab.c:225-249 char_table_ref with lisp.h:2133-2155's ASCII path.
+    ;; A table without its slot vector (never built by `make-char-table')
+    ;; answers cell 0 for every character.
+    (defun nl_ct2_contents_ref (box c)
+      (let* ((slots (ptr-read-u64 (ptr-read-u64 box 96) 0)))
+        (if (/= (nl_val_tag slots) 8)
+            slots
+          (if (< c 128)
+              (let* ((ascii (nl_vector_slot_word slots 0)))
+                (if (= (nl_ct2_sub_p ascii) 1)
+                    (nl_vector_slot_word ascii (+ 3 c))
+                  ascii))
+            (let* ((top (nl_vector_slot_word slots (+ 1 (/ c 65536)))))
+              (if (= (nl_ct2_sub_p top) 1) (nl_ct2_sub_ref top c) top))))))
+    ;; Cell 0 for the prelude's chartab.c code: `nelisp--char-table-slots'
+    ;; and `nelisp--char-table-set-slots' (clause 1, char-table slot access).
+    (defun bf_ct2_slots_w (args _pad)
+      (let* ((table (wf_arg_word args 0)))
+        (if (= (nl_val_tag table) 9)
+            (ptr-read-u64 (ptr-read-u64 (nl_word_payload table) 96) 0)
+          (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
+    (defun bf_ct2_set_slots_w (args _pad)
+      (let* ((table (wf_arg_word args 0)) (val (wf_arg_word args 1)))
+        (if (= (nl_val_tag table) 9)
+            (seq (wf_dirty)
+                 (nl_ct_store_word (ptr-read-u64 (nl_word_payload table) 96) val)
+                 val)
+          (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -20902,11 +20957,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (nl_abi_word_to_rc (bf_aref_nemacs_bridge_w args env 0) out))
     (defun bf_aset_nemacs_bridge_w (args env _pad)
       (if (= (nl_word_tag64 (wf_arg_word args 1)) 2)
+          (if (= (nl_val_tag (wf_arg_word args 0)) 9)
+              ;; Doc 225 S3: GNU CHAR_TABLE_SET (lisp.h) is prelude Lisp.
+              (bf_n2_call_lisp_char_table_aset_w args env 0)
           (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
               (bf_nemacs_char_table_call_w args env 0 499918266669)
             ;; bf_aset_checked is the adapter of bf_aset_checked_w: call the word
             ;; form (no box filled and turned back into a WORD).
-            (bf_aset_checked_w args 0))
+            (bf_aset_checked_w args 0)))
         (nl_abi_fail (bf_wrong_type_fixnump (wf_arg_word args 1)) 0)))
     (defun bf_aset_nemacs_bridge (args env out)
       (nl_abi_word_to_rc (bf_aset_nemacs_bridge_w args env 0) out))
@@ -21577,6 +21635,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ((= tag 17) (nl_imm_int (record-slot-count p)))
          ;; BoolVector(10): N lives at offset 0 of the box at p+8.
          ((= tag 10) (nl_imm_int (ptr-read-u64 (ptr-read-u64 p 8) 0)))
+         ;; CharTable(9): GNU fns.c:148, MAX_CHAR + 1 (Doc 225 S3).
+         ((= tag 9) (nl_imm_int 4194304))
          (t (nl_abi_fail (bf_wrong_type_sequencep p) 0)))))
     (defun bf_length_checked (p out)
       (nl_abi_word_to_rc (bf_length_checked_w p 0) out))
@@ -24512,6 +24572,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--char-table-vector-bridge-p") :word . (wf_write_t_w 0))
     ;; --- char-table ops (Doc 186 P0/P1/P2) ---
     ((:lit "char-table-p")           :word . (bf_char_table_p_w args 0))
+    ;; Doc 225 S3: GNU chartab.c slot vector access (clause 1).
+    ((:lit "nelisp--char-table-slots")     :word . (bf_ct2_slots_w args 0))
+    ((:lit "nelisp--char-table-set-slots") :word . (bf_ct2_set_slots_w args 0))
     ((:lit "make-char-table")        :word . (bf_make_char_table_w args env 0))
     ((:lit "char-table-subtype")     :word . (bf_char_table_subtype_w args 0))
     ((:lit "char-table-parent")      :word . (bf_char_table_parent_w args 0))
@@ -24782,6 +24845,8 @@ families.")
     "char-table-parent" "set-char-table-parent"
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
+    ;; Doc 225 S3: GNU chartab.c slot vector access.
+    "nelisp--char-table-slots" "nelisp--char-table-set-slots"
     "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
@@ -25646,7 +25711,9 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
         `(defun ,(car entry) (args env out)
            (nl_abi_word_to_rc (,word-name args env 0) out)))))
    '((bf_n2_call_lisp_gc . "nelisp--gc-statistics")
-     (bf_n2_call_lisp_equal . "nelisp--equal-reference"))))
+     (bf_n2_call_lisp_equal . "nelisp--equal-reference")
+     ;; Doc 225 S3: `aset' on a char-table runs GNU's char_table_set in Lisp.
+     (bf_n2_call_lisp_char_table_aset . "nelisp--char-table-aset"))))
 
 (defun nelisp-standalone--n2-direct-arity-helper ()
   "Guard direct calls with the shared fixed-arity contract.
@@ -30524,6 +30591,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-table-parent" "set-char-table-parent"
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
+    ;; Doc 225 S3: GNU chartab.c slot vector access.
+    "nelisp--char-table-slots" "nelisp--char-table-set-slots"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"

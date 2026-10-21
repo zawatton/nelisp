@@ -214,10 +214,12 @@
       (let* ((value (list 'shared))
              (table (make-char-table 'srtc-three)))
         (aset table ?a value) (aset table #x4e00 'x)
-        (set-char-table-extra-slot table 0 'e0)
+        ;; Not `e0': the runtime printer escapes that symbol (an unrelated
+        ;; printer defect, reported separately).
+        (set-char-table-extra-slot table 0 'extra-zero)
         (let ((copy (copy-sequence table)))
           (aset copy ?a 'changed) (aset copy #x4e00 'y)
-          (set-char-table-extra-slot copy 0 'e1)
+          (set-char-table-extra-slot copy 0 'extra-one)
           (list (aref table ?a) (aref table #x4e00) (char-table-extra-slot table 0)
                 (eq (aref (copy-sequence table) ?a) value)
                 (equal (copy-sequence table) table)

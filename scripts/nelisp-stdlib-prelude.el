@@ -703,7 +703,8 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   (defun sequencep (x)
     "Return t if X is a sequence (= nil, cons, string, vector, or bool-vector)."
     (or (null x) (consp x) (stringp x) (vectorp x)
-        (and (fboundp 'bool-vector-p) (bool-vector-p x)))))
+        (and (fboundp 'bool-vector-p) (bool-vector-p x))
+        (and (fboundp 'char-table-p) (char-table-p x) t))))
 (unless (fboundp 'string-search)
   ;; The native scanner takes every ordinary case, multibyte included (a
   ;; multibyte haystack used to fall to the walk below: an allocation and a
@@ -5831,6 +5832,8 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
         (signal 'wrong-type-argument (list 'listp cur)))
       (nreverse acc)))
    ((stringp seq) (concat seq))
+   ((and (char-table-p seq) (fboundp 'nelisp--copy-char-table))
+    (nelisp--copy-char-table seq))
    ((and (char-table-p seq) (fboundp 'case-table--copy-char-table))
     (case-table--copy-char-table seq))
    ;; Records are sequences in host Emacs.  The standalone record length
@@ -13962,6 +13965,797 @@ and a set-initial `]'."
 \(same SPEC syntax as `skip-chars-forward', probed against Emacs 30.1\)."
     (nelisp--motion-skip-backward spec lim)))
 
+;; ---- Doc 225 S3: GNU 31.1 chartab.c on the runtime char-table --------------
+;;
+;; The runtime owns the char-table family (user decision, 2026-10-21; the
+;; library defers to it behind `nelisp-native-char-tables').  A char-table
+;; is the runtime's native box: subtype, default, parent and a cell buffer.
+;; Cell 0 holds GNU's slot vector [ASCII CONTENTS0 ... CONTENTS63]
+;; (lisp.h struct Lisp_Char_Table) and cells 1.. hold the extra slots.  A
+;; sub-char-table is a vector [nelisp--sub-char-table DEPTH MIN-CHAR c ...]
+;; with 16, 32 or 128 contents for DEPTH 1, 2 or 3 (chartab.c:30-53); no
+;; `aref', `char-table-range' or `map-char-table' ever returns one.
+;;
+;; Only the lookup (CHAR_TABLE_REF behind `aref' and `char-table-range')
+;; and slot access are native (AGENTS.md clause 1, char-table slot access).
+;; The rest of chartab.c follows here function for function; `aset' on a
+;; char-table calls `nelisp--char-table-aset'.  The public replacements
+;; are installed only in the standalone runtime: when gates load this file
+;; into host Emacs, host's own C functions keep answering.
+
+(defun nelisp--chartab-standalone-p ()
+  "Non-nil in the standalone runtime, whose char-table natives this completes."
+  (or (fboundp 'nl-write-file) (not (boundp 'emacs-version))))
+
+(defvar nelisp--chartab-native-make (symbol-function 'make-char-table)
+  "The native allocator behind `make-char-table'.")
+(defvar nelisp--chartab-native-range (symbol-function 'char-table-range)
+  "The native `char-table-range': the default, CHAR_TABLE_REF, or the
+value at a range's start.")
+(defvar nelisp--chartab-native-set-range (symbol-function 'set-char-table-range)
+  "The native `set-char-table-range', used here for the default slot only.")
+
+(defconst nelisp--chartab-size [64 16 32 128] "chartab.c:30 `chartab_size'.")
+(defconst nelisp--chartab-chars [65536 4096 128 1] "chartab.c:38 `chartab_chars'.")
+(defconst nelisp--chartab-bits [16 12 7 0] "chartab.c:46 `chartab_bits'.")
+
+(defun nelisp--sub-char-table-p (object)
+  "Non-nil if OBJECT is a sub-char-table (GNU SUB_CHAR_TABLE_P)."
+  (and (vectorp object) (> (length object) 18)
+       (eq (aref object 0) 'nelisp--sub-char-table)))
+
+(defun nelisp--make-sub-char-table (depth min-char defalt)
+  "chartab.c:138-146 `make_sub_char_table'."
+  (let ((table (make-vector (+ 3 (aref nelisp--chartab-size depth)) defalt)))
+    (aset table 0 'nelisp--sub-char-table)
+    (aset table 1 depth)
+    (aset table 2 min-char)
+    table))
+
+(defun nelisp--char-table-vector (table)
+  "TABLE's slot vector [ASCII CONTENTS0 ... CONTENTS63]."
+  (let ((slots (nelisp--char-table-slots table)))
+    (if (and (vectorp slots) (= (length slots) 65))
+        slots
+      ;; A table the allocator made without one: every slot is cell 0.
+      (nelisp--char-table-set-slots table (make-vector 65 slots)))))
+
+(defun nelisp--char-table-ascii (table)
+  "chartab.c:149-164 `char_table_ascii': the value for the `ascii' slot."
+  (let ((sub (aref (nelisp--char-table-vector table) 1)))
+    (if (not (nelisp--sub-char-table-p sub))
+        sub
+      (setq sub (aref sub 3))
+      (if (not (nelisp--sub-char-table-p sub))
+          sub
+        (aref sub 3)))))
+
+(defun nelisp--chartab-check (object)
+  "GNU CHECK_CHAR_TABLE."
+  (unless (char-table-p object)
+    (signal 'wrong-type-argument (list 'char-table-p object))))
+
+(defun nelisp--chartab-check-char (object)
+  "GNU CHECK_CHARACTER."
+  (unless (and (integerp object) (>= object 0) (<= object #x3fffff))
+    (signal 'wrong-type-argument (list 'characterp object))))
+
+(defun nelisp--sub-char-table-set (table c val)
+  "chartab.c:370-397 `sub_char_table_set'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (i (ash (- c min-char) (- (aref nelisp--chartab-bits depth)))))
+    (if (= depth 3)
+        (aset table (+ 3 i) val)
+      (let ((sub (aref table (+ 3 i))))
+        (unless (nelisp--sub-char-table-p sub)
+          (setq sub (nelisp--make-sub-char-table
+                     (1+ depth) (+ min-char (* i (aref nelisp--chartab-chars depth)))
+                     sub))
+          (aset table (+ 3 i) sub))
+        (nelisp--sub-char-table-set sub c val)))))
+
+(defun nelisp--char-table-set (table c val)
+  "chartab.c:399-421 `char_table_set', with lisp.h's CHAR_TABLE_SET
+ASCII path."
+  (let* ((slots (nelisp--char-table-vector table))
+         (ascii (aref slots 0)))
+    (if (and (< c 128) (nelisp--sub-char-table-p ascii))
+        (aset ascii (+ 3 c) val)
+      (let* ((i (ash c -16))
+             (sub (aref slots (1+ i))))
+        (unless (nelisp--sub-char-table-p sub)
+          (setq sub (nelisp--make-sub-char-table 1 (* i 65536) sub))
+          (aset slots (1+ i) sub))
+        (nelisp--sub-char-table-set sub c val)
+        (when (< c 128)
+          (aset slots 0 (nelisp--char-table-ascii table)))))))
+
+(defun nelisp--sub-char-table-set-range (table from to val)
+  "chartab.c:424-460 `sub_char_table_set_range'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (chars-in-block (aref nelisp--chartab-chars depth))
+         (lim (aref nelisp--chartab-size depth))
+         i c)
+    (when (< from min-char) (setq from min-char))
+    (setq i (ash (- from min-char) (- (aref nelisp--chartab-bits depth)))
+          c (+ min-char (* chars-in-block i)))
+    (while (and (< i lim) (<= c to))
+      (if (and (<= from c) (<= (+ c chars-in-block -1) to))
+          (aset table (+ 3 i) val)
+        (let ((sub (aref table (+ 3 i))))
+          (unless (nelisp--sub-char-table-p sub)
+            (setq sub (nelisp--make-sub-char-table (1+ depth) c sub))
+            (aset table (+ 3 i) sub))
+          (nelisp--sub-char-table-set-range sub from to val)))
+      (setq i (1+ i) c (+ c chars-in-block)))))
+
+(defun nelisp--char-table-set-range (table from to val)
+  "chartab.c:462-496 `char_table_set_range'."
+  (if (= from to)
+      (nelisp--char-table-set table from val)
+    (let* ((slots (nelisp--char-table-vector table))
+           (lim (ash to -16))
+           (i (ash from -16))
+           (c (* i 65536)))
+      (while (and (<= i lim) (<= c to))
+        (if (and (<= from c) (<= (+ c 65535) to))
+            (aset slots (1+ i) val)
+          (let ((sub (aref slots (1+ i))))
+            (unless (nelisp--sub-char-table-p sub)
+              (setq sub (nelisp--make-sub-char-table 1 (* i 65536) sub))
+              (aset slots (1+ i) sub))
+            (nelisp--sub-char-table-set-range sub from to val)))
+        (setq i (1+ i) c (+ c 65536)))
+      (when (< from 128)
+        (aset slots 0 (nelisp--char-table-ascii table))))))
+
+(defun nelisp--char-table-aset (table idx val)
+  "`aset' on a char-table: data.c Faset's CHECK_CHARACTER and CHAR_TABLE_SET.
+The native `aset' has already checked that IDX is a fixnum."
+  (nelisp--chartab-check-char idx)
+  (nelisp--char-table-set table idx val)
+  val)
+
+(defun nelisp--chartab-make-char-table (&rest args)
+  "Return a newly created char-table, with purpose PURPOSE.
+Each element is initialized to INIT, which defaults to nil.
+
+PURPOSE should be a symbol.  If it has a `char-table-extra-slots'
+property, the property's value should be an integer between 0 and 10
+that specifies how many extra slots the char-table has.  Otherwise,
+the char-table has no extra slot.
+
+\(fn PURPOSE &optional INIT)"
+  ;; chartab.c:103-136: INIT fills the default, `ascii', contents and extras.
+  (let ((n (length args)))
+    (unless (and (>= n 1) (<= n 2))
+      (signal 'wrong-number-of-arguments (list 'make-char-table n))))
+  (let* ((init (car (cdr args)))
+         (table (funcall nelisp--chartab-native-make (car args) init)))
+    (nelisp--char-table-set-slots table (make-vector 65 init))
+    table))
+
+(defun nelisp--chartab-char-table-range (char-table range)
+  "Return the value in CHAR-TABLE for a range of characters RANGE.
+RANGE should be nil (for the default value),
+a cons of character codes (for characters in the range), or a character code.
+If RANGE is a cons (FROM . TO), the function returns the value for FROM.
+
+\(fn CHAR-TABLE RANGE)"
+  ;; chartab.c:577-606; the lookups are native.
+  (nelisp--chartab-check char-table)
+  (cond ((null range) (funcall nelisp--chartab-native-range char-table nil))
+        ((and (integerp range) (>= range 0) (<= range #x3fffff))
+         (aref char-table range))
+        ((consp range)
+         (nelisp--chartab-check-char (car range))
+         (nelisp--chartab-check-char (cdr range))
+         (funcall nelisp--chartab-native-range char-table range))
+        (t (signal 'error (list (format-message
+                                 "Invalid RANGE argument to `char-table-range'"))))))
+
+(defun nelisp--chartab-set-char-table-range (char-table range value)
+  "Set the value in CHAR-TABLE for a range of characters RANGE to VALUE.
+RANGE should be t (for all characters), nil (for the default value),
+a cons of character codes (for characters in the range),
+or a character code.  Return VALUE.
+
+\(fn CHAR-TABLE RANGE VALUE)"
+  ;; chartab.c:608-641.
+  (nelisp--chartab-check char-table)
+  (cond ((eq range t)
+         (let ((slots (nelisp--char-table-vector char-table)) (i 1))
+           (aset slots 0 value)
+           (while (<= i 64) (aset slots i value) (setq i (1+ i)))))
+        ((null range)
+         (funcall nelisp--chartab-native-set-range char-table nil value))
+        ((and (integerp range) (>= range 0) (<= range #x3fffff))
+         (nelisp--char-table-set char-table range value))
+        ((consp range)
+         (nelisp--chartab-check-char (car range))
+         (nelisp--chartab-check-char (cdr range))
+         (nelisp--char-table-set-range char-table (car range) (cdr range) value))
+        (t (signal 'error (list (format-message
+                                 "Invalid RANGE argument to `set-char-table-range'")))))
+  value)
+
+(defun nelisp--chartab-call (function range val)
+  "Call FUNCTION as map_sub_char_table does: a character or the RANGE cons."
+  (if (eq (car range) (cdr range))
+      (funcall function (car range) val)
+    (funcall function range val)))
+
+(defun nelisp--map-sub-char-table (function table val range top)
+  "chartab.c:715-830 `map_sub_char_table'.  TABLE is TOP or a sub-table.
+RANGE is the one cons GNU reuses for every call."
+  (let ((from (car range)) (to (cdr range))
+        depth min-char max-char chars-in-block i c)
+    (if (nelisp--sub-char-table-p table)
+        (setq depth (aref table 1) min-char (aref table 2)
+              max-char (+ min-char (aref nelisp--chartab-chars (1- depth)) -1))
+      (setq depth 0 min-char 0 max-char #x3fffff))
+    (setq chars-in-block (aref nelisp--chartab-chars depth))
+    (when (< to max-char) (setq max-char to))
+    (setq i (if (<= from min-char) 0 (/ (- from min-char) chars-in-block))
+          c (+ min-char (* chars-in-block i)))
+    (while (<= c max-char)
+      (let ((this (if (= depth 0)
+                      (aref (nelisp--char-table-vector table) (1+ i))
+                    (aref table (+ 3 i))))
+            (nextc (+ c chars-in-block)))
+        (if (nelisp--sub-char-table-p this)
+            (progn
+              (when (>= to nextc) (setcdr range (1- nextc)))
+              (setq val (nelisp--map-sub-char-table function this val range top)))
+          (when (null this)
+            (setq this (funcall nelisp--chartab-native-range top nil)))
+          (unless (eq val this)
+            (let ((different-value t))
+              (when (null val)
+                (let ((parent (char-table-parent top)))
+                  (when parent
+                    ;; The value of FROM in PARENT, without PARENT's parent.
+                    (let ((temp (char-table-parent parent)))
+                      (set-char-table-parent parent nil)
+                      (setq val (aref parent from))
+                      (set-char-table-parent parent temp))
+                    (setcdr range (1- c))
+                    (setq val (nelisp--map-sub-char-table
+                               function parent val range parent))
+                    (when (eq val this) (setq different-value nil)))))
+              (when (and val different-value)
+                (setcdr range (1- c))
+                (nelisp--chartab-call function range val))
+              (setq val this from c)
+              (setcar range c))))
+        (setcdr range to))
+      (setq i (1+ i) c (+ c chars-in-block)))
+    val))
+
+(defun nelisp--chartab-map-char-table (function char-table)
+  "Call FUNCTION for each character in CHAR-TABLE that has non-nil value.
+FUNCTION is called with two arguments, KEY and VALUE.
+KEY is a character code or a cons of character codes specifying a
+range of characters that have the same value.
+VALUE is what (char-table-range CHAR-TABLE KEY) returns.
+
+\(fn FUNCTION CHAR-TABLE)"
+  ;; chartab.c:841-900 `map_char_table'.
+  (nelisp--chartab-check char-table)
+  (let* ((table char-table)
+         (range (cons 0 #x3fffff))
+         (val (let ((ascii (aref (nelisp--char-table-vector table) 0)))
+                (if (nelisp--sub-char-table-p ascii) (aref ascii 3) ascii))))
+    (setq val (nelisp--map-sub-char-table function table val range table))
+    (while (and (null val) (char-table-parent table))
+      (let* ((from (car range))
+             (parent (char-table-parent table))
+             (temp (char-table-parent parent)))
+        (set-char-table-parent parent nil)
+        (setq val (aref parent from))
+        (set-char-table-parent parent temp)
+        (setq val (nelisp--map-sub-char-table function parent val range parent)
+              table parent)))
+    (when val
+      (nelisp--chartab-call function range val)))
+  nil)
+
+(defun nelisp--optimize-sub-char-table (table test)
+  "chartab.c:643-673 `optimize_sub_char_table'."
+  (let* ((depth (aref table 1))
+         (elt (aref table 3))
+         (n (aref nelisp--chartab-size depth))
+         (i 1)
+         optimizable)
+    (when (nelisp--sub-char-table-p elt)
+      (setq elt (nelisp--optimize-sub-char-table elt test))
+      (aset table 3 elt))
+    (setq optimizable (not (nelisp--sub-char-table-p elt)))
+    (while (< i n)
+      (let ((this (aref table (+ 3 i))))
+        (when (nelisp--sub-char-table-p this)
+          (setq this (nelisp--optimize-sub-char-table this test))
+          (aset table (+ 3 i) this))
+        (when (and optimizable
+                   (cond ((null test) (not (equal this elt)))
+                         ((eq test 'eq) (not (eq this elt)))
+                         (t (not (funcall test this elt)))))
+          (setq optimizable nil)))
+      (setq i (1+ i)))
+    (if optimizable elt table)))
+
+(defun nelisp--chartab-optimize-char-table (char-table &optional test)
+  "Optimize CHAR-TABLE.
+TEST is the comparison function used to decide whether two entries are
+equivalent and can be merged.  It defaults to `equal'.
+
+\(fn CHAR-TABLE &optional TEST)"
+  ;; chartab.c:675-697.
+  (nelisp--chartab-check char-table)
+  (let ((slots (nelisp--char-table-vector char-table)) (i 1))
+    (while (<= i 64)
+      (let ((elt (aref slots i)))
+        (when (nelisp--sub-char-table-p elt)
+          (aset slots i (nelisp--optimize-sub-char-table elt test))))
+      (setq i (1+ i)))
+    (aset slots 0 (nelisp--char-table-ascii char-table)))
+  nil)
+
+(defun nelisp--char-table-extra-count (table)
+  "The number of extra slots TABLE was made with."
+  (let ((n 0))
+    ;; GNU bounds the property's count only by its fixnum check.
+    (while (and (< n 4096)
+                (condition-case nil
+                    (progn (char-table-extra-slot table n) t)
+                  (args-out-of-range nil)))
+      (setq n (1+ n)))
+    n))
+
+(defun nelisp--copy-sub-char-table (table)
+  "chartab.c:166-184 `copy_sub_char_table'."
+  (let* ((n (length table)) (copy (make-vector n nil)) (i 3))
+    (aset copy 0 'nelisp--sub-char-table)
+    (aset copy 1 (aref table 1))
+    (aset copy 2 (aref table 2))
+    (while (< i n)
+      (let ((val (aref table i)))
+        (aset copy i (if (nelisp--sub-char-table-p val)
+                         (nelisp--copy-sub-char-table val)
+                       val)))
+      (setq i (1+ i)))
+    copy))
+
+(defun nelisp--copy-char-table (table)
+  "chartab.c:186-208 `copy_char_table': the slots, a copy of every
+sub-char-table, and the extras; the values themselves are shared."
+  (let* ((purpose (char-table-subtype table))
+         (extras (nelisp--char-table-extra-count table))
+         (saved (get purpose 'char-table-extra-slots))
+         (copy (progn
+                 ;; Allocate with TABLE's own extra count even if the
+                 ;; property changed since TABLE was made.
+                 (put purpose 'char-table-extra-slots extras)
+                 (unwind-protect (funcall nelisp--chartab-native-make purpose nil)
+                   (put purpose 'char-table-extra-slots saved))))
+         (slots (nelisp--char-table-vector table))
+         (cslots (make-vector 65 nil))
+         (i 1))
+    (funcall nelisp--chartab-native-set-range copy nil
+             (funcall nelisp--chartab-native-range table nil))
+    (when (char-table-parent table)
+      (set-char-table-parent copy (char-table-parent table)))
+    (while (<= i 64)
+      (let ((val (aref slots i)))
+        (aset cslots i (if (nelisp--sub-char-table-p val)
+                           (nelisp--copy-sub-char-table val)
+                         val)))
+      (setq i (1+ i)))
+    (nelisp--char-table-set-slots copy cslots)
+    (aset cslots 0 (nelisp--char-table-ascii copy))
+    (setq i 0)
+    (while (< i extras)
+      (set-char-table-extra-slot copy i (char-table-extra-slot table i))
+      (setq i (1+ i)))
+    copy))
+
+(defun nelisp--char-table-equal (a b)
+  "fns.c:2985-2997: char-tables are equal when every slot is: default,
+parent, purpose, `ascii', contents and extras, sub-char-tables element
+by element."
+  (and (equal (funcall nelisp--chartab-native-range a nil)
+              (funcall nelisp--chartab-native-range b nil))
+       (equal (char-table-parent a) (char-table-parent b))
+       (eq (char-table-subtype a) (char-table-subtype b))
+       (let ((n (nelisp--char-table-extra-count a)))
+         (and (= n (nelisp--char-table-extra-count b))
+              (equal (nelisp--char-table-vector a) (nelisp--char-table-vector b))
+              (let ((i 0) (same t))
+                (while (and same (< i n))
+                  (setq same (equal (char-table-extra-slot a i)
+                                    (char-table-extra-slot b i))
+                        i (1+ i)))
+                same)))))
+
+(defun nelisp--chartab-install ()
+  "Install this section's chartab.c functions over the public names."
+  (fset 'make-char-table #'nelisp--chartab-make-char-table)
+  (fset 'char-table-range #'nelisp--chartab-char-table-range)
+  (fset 'set-char-table-range #'nelisp--chartab-set-char-table-range)
+  (fset 'map-char-table #'nelisp--chartab-map-char-table)
+  t)
+
+;; Not a native: the usual guard keeps host Emacs's own.
+(unless (fboundp 'optimize-char-table)
+  (defalias 'optimize-char-table #'nelisp--chartab-optimize-char-table))
+
+(defvar nelisp--chartab-installed
+  (and (nelisp--chartab-standalone-p) (nelisp--chartab-install))
+  "Non-nil once the chartab.c functions above answer the public names.")
+
+;; ---- Doc 225 S3: GNU 31.1 category.c ----------------------------------------
+;;
+;; A category table is a char-table of subtype `category-table' with two
+;; extra slots: a 95-slot vector of docstrings and the equal-hash that
+;; shares category sets (category.c:48-64, :422-434).  A category set is a
+;; 128-bit bool-vector.  The standard table is built on first use from
+;; GNU 31.1's own, generated by tools/nelisp-generate-unicode.el
+;; (init_category_once plus characters.el).  The buffer's category table
+;; is a buffer -> table map, as the syntax table is above.
+
+(defun nelisp--chartab-ref-simple (table idx c from-to defalt subtable)
+  "chartab.c:252-266 `char_table_ref_simple'; FROM-TO is (FROM . TO)."
+  (let ((val (if subtable
+                 (aref table (+ 3 idx))
+               (aref (nelisp--char-table-vector table) (1+ idx)))))
+    (cond ((nelisp--sub-char-table-p val)
+           (nelisp--sub-char-table-ref-and-range val c from-to defalt))
+          ((null val) defalt)
+          (t val))))
+
+(defun nelisp--sub-char-table-ref-and-range (table c from-to defalt)
+  "chartab.c:268-316 `sub_char_table_ref_and_range'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (chars (aref nelisp--chartab-chars depth))
+         (chartab-idx (ash (- c min-char) (- (aref nelisp--chartab-bits depth))))
+         (val (nelisp--chartab-ref-simple table chartab-idx c from-to defalt t))
+         (idx chartab-idx))
+    (catch 'done
+      (while (and (> idx 0) (< (car from-to) (+ min-char (* idx chars))))
+        (setq c (+ min-char (* idx chars) -1) idx (1- idx))
+        (unless (eq (nelisp--chartab-ref-simple table idx c from-to defalt t) val)
+          (setcar from-to (1+ c))
+          (throw 'done nil))))
+    (catch 'done
+      (while (and (< (setq c (* (1+ chartab-idx) chars))
+                     (aref nelisp--chartab-chars (1- depth)))
+                  (<= (setq c (+ c min-char)) (cdr from-to)))
+        (setq chartab-idx (1+ chartab-idx))
+        (unless (eq (nelisp--chartab-ref-simple table chartab-idx c from-to defalt t) val)
+          (setcdr from-to (1- c))
+          (throw 'done nil))))
+    val))
+
+(defun nelisp--char-table-ref-and-range (table c from-to)
+  "chartab.c:318-368 `char_table_ref_and_range': the value of C, nil
+answering the default but not the parent, and FROM-TO narrowed to a run
+around C with that value."
+  (let* ((defalt (funcall nelisp--chartab-native-range table nil))
+         (chartab-idx (ash c -16))
+         (idx chartab-idx)
+         val)
+    (when (< (car from-to) 0) (setcar from-to 0))
+    (when (< (cdr from-to) 0) (setcdr from-to #x3fffff))
+    (setq val (nelisp--chartab-ref-simple table chartab-idx c from-to defalt nil))
+    (catch 'done
+      (while (< (car from-to) (* idx 65536))
+        (setq c (1- (* idx 65536)) idx (1- idx))
+        (unless (eq (nelisp--chartab-ref-simple table idx c from-to defalt nil) val)
+          (setcar from-to (1+ c))
+          (throw 'done nil))))
+    (catch 'done
+      (while (>= (cdr from-to) (* (1+ chartab-idx) 65536))
+        (setq chartab-idx (1+ chartab-idx) c (* chartab-idx 65536))
+        (unless (eq (nelisp--chartab-ref-simple table chartab-idx c from-to defalt nil) val)
+          (setcdr from-to (1- c))
+          (throw 'done nil))))
+    val))
+
+;; init_category_once: two extra slots.
+(when (nelisp--chartab-standalone-p)
+  (put 'category-table 'char-table-extra-slots 2))
+
+(defun nelisp--category-check (object)
+  "GNU CHECK_CATEGORY: an ASCII printing character."
+  (unless (and (integerp object) (>= object #x20) (<= object #x7e))
+    (signal 'wrong-type-argument (list 'categoryp object))))
+
+(defun nelisp--category-set-p (object)
+  "GNU CATEGORY_SET_P: a 128-bit bool-vector."
+  (and (bool-vector-p object) (= (length object) 128)))
+
+(defun nelisp--category-docstrings (table)
+  "TABLE's docstring vector, GNU CATEGORY_DOCSTRING's extra slot 0."
+  (char-table-extra-slot table 0))
+
+(defvar nelisp--category-standard-table nil
+  "The standard category table, built from GNU's data on first use.")
+
+(defvar nelisp--category-buffer-tables (make-hash-table :test 'eq :weakness 'key)
+  "Buffer -> category table installed with `set-category-table'.")
+
+(defun nelisp--category-hash-get (table category-set)
+  "category.c:48-64 `hash_get_category_set': the shared set equal to
+CATEGORY-SET, recorded in TABLE's extra slot 1."
+  (let ((hash (char-table-extra-slot table 1)))
+    (unless hash
+      (setq hash (make-hash-table :test 'equal))
+      (set-char-table-extra-slot table 1 hash))
+    (or (gethash category-set hash)
+        (puthash category-set category-set hash))))
+
+(defun nelisp--category-empty-table ()
+  "category.c:422-434 `init_category_once''s table: no categories."
+  (let ((table (make-char-table 'category-table nil)))
+    (set-char-table-range table nil (make-bool-vector 128 nil))
+    (set-char-table-extra-slot table 0 (make-vector 95 nil))
+    table))
+
+(defun nelisp--category-build-standard ()
+  "Build GNU 31.1's standard category table from the generated data."
+  (let ((table (nelisp--category-empty-table)))
+    (when (boundp 'nelisp--unicode-category-runs)
+      (let ((docs (char-table-extra-slot table 0))
+            (sets (make-vector (length nelisp--unicode-category-sets) nil))
+            (runs nelisp--unicode-category-runs)
+            (i 0) (n 0))
+        (while (< i 95)
+          (aset docs i (aref nelisp--unicode-category-docstrings i))
+          (setq i (1+ i)))
+        (setq i 0)
+        (while (< i (length sets))
+          (aset sets i (nelisp--category-hash-get
+                        table (nelisp--category-make-category-set
+                               (aref nelisp--unicode-category-sets i))))
+          (setq i (1+ i)))
+        (setq i 0 n (length runs))
+        (while (< i n)
+          (nelisp--char-table-set-range table (aref runs i) (aref runs (1+ i))
+                                        (aref sets (aref runs (+ i 2))))
+          (setq i (+ i 3)))))
+    table))
+
+(defun nelisp--category-standard ()
+  (or nelisp--category-standard-table
+      (setq nelisp--category-standard-table (nelisp--category-build-standard))))
+
+(defun nelisp--category-current ()
+  (or (gethash (current-buffer) nelisp--category-buffer-tables)
+      (nelisp--category-standard)))
+
+(defun nelisp--category-check-table (table)
+  "category.c:175-182 `check_category_table'."
+  (if (null table)
+      (nelisp--category-current)
+    (unless (nelisp--category-category-table-p table)
+      (signal 'wrong-type-argument (list 'category-table-p table)))
+    table))
+
+(defun nelisp--category-make-category-set (categories)
+  "Return a newly created category-set which contains CATEGORIES.
+CATEGORIES is a string of category mnemonics.
+The value is a bool-vector which has t at the indices corresponding to
+those categories.
+
+\(fn CATEGORIES)"
+  ;; category.c:72-101.
+  (unless (stringp categories)
+    (signal 'wrong-type-argument (list 'stringp categories)))
+  (when (multibyte-string-p categories)
+    (signal 'error (list (format-message "Multibyte string in `make-category-set'"))))
+  (let ((set (make-bool-vector 128 nil)) (len (length categories)))
+    (while (>= (setq len (1- len)) 0)
+      (let ((category (aref categories len)))
+        (nelisp--category-check category)
+        (aset set category t)))
+    set))
+
+(defun nelisp--category-define-category (category docstring &optional table)
+  "Define CATEGORY as a category which is described by DOCSTRING.
+CATEGORY should be an ASCII printing character in the range ` ' to `~'.
+DOCSTRING is the documentation string of the category.  The first line
+should be a terse text (preferably less than 16 characters),
+and the rest lines should be the full description.
+The category is defined only in category table TABLE, which defaults to
+the current buffer's category table.
+
+\(fn CATEGORY DOCSTRING &optional TABLE)"
+  ;; category.c:105-124.
+  (nelisp--category-check category)
+  (unless (stringp docstring)
+    (signal 'wrong-type-argument (list 'stringp docstring)))
+  (setq table (nelisp--category-check-table table))
+  (let ((docs (nelisp--category-docstrings table)))
+    (when (aref docs (- category #x20))
+      (signal 'error (list (format-message "Category `%c' is already defined"
+                                           category))))
+    (aset docs (- category #x20) docstring))
+  nil)
+
+(defun nelisp--category-category-docstring (category &optional table)
+  "Return the documentation string of CATEGORY, as defined in TABLE.
+TABLE should be a category table and defaults to the current buffer's
+category table.
+
+\(fn CATEGORY &optional TABLE)"
+  (nelisp--category-check category)
+  (setq table (nelisp--category-check-table table))
+  (aref (nelisp--category-docstrings table) (- category #x20)))
+
+(defun nelisp--category-get-unused-category (&optional table)
+  "Return a category which is not yet defined in TABLE.
+If no category remains available, return nil.
+The optional argument TABLE specifies which category table to modify;
+it defaults to the current buffer's category table.
+
+\(fn &optional TABLE)"
+  (setq table (nelisp--category-check-table table))
+  (let ((docs (nelisp--category-docstrings table)) (i #x20) (found nil))
+    (while (and (not found) (<= i #x7e))
+      (if (aref docs (- i #x20)) (setq i (1+ i)) (setq found i)))
+    found))
+
+(defun nelisp--category-category-table-p (arg)
+  "Return t if ARG is a category table.
+
+\(fn ARG)"
+  (if (and (char-table-p arg) (eq (char-table-subtype arg) 'category-table)) t nil))
+
+(defun nelisp--category-category-table ()
+  "Return the current category table.
+This is the one specified by the current buffer."
+  (nelisp--category-current))
+
+(defun nelisp--category-standard-category-table ()
+  "Return the standard category table.
+This is the one used for new buffers."
+  (nelisp--category-standard))
+
+(defun nelisp--category-copy-table (table)
+  "category.c:203-230 `copy_category_entry' and `copy_category_table'."
+  (setq table (copy-sequence table))
+  (let ((defalt (char-table-range table nil)))
+    (when defalt
+      (set-char-table-range table nil (copy-sequence defalt))))
+  (set-char-table-extra-slot table 0 (copy-sequence (char-table-extra-slot table 0)))
+  (map-char-table
+   (lambda (range val)
+     (setq val (copy-sequence val))
+     (if (consp range)
+         (nelisp--char-table-set-range table (car range) (cdr range) val)
+       (nelisp--char-table-set table range val)))
+   table)
+  table)
+
+(defun nelisp--category-copy-category-table (&optional table)
+  "Construct a new category table and return it.
+It is a copy of the TABLE, which defaults to the standard category table.
+
+\(fn &optional TABLE)"
+  (if table
+      (nelisp--category-check-table table)
+    (setq table (nelisp--category-standard)))
+  (nelisp--category-copy-table table))
+
+(defun nelisp--category-make-category-table ()
+  "Construct a new and empty category table and return it."
+  ;; category.c:246-260: 64 empty sets in the contents, `ascii' left nil.
+  (let* ((table (make-char-table 'category-table nil))
+         (slots (nelisp--char-table-vector table))
+         (i 1))
+    (set-char-table-range table nil (make-bool-vector 128 nil))
+    (while (<= i 64)
+      (aset slots i (make-bool-vector 128 nil))
+      (setq i (1+ i)))
+    (set-char-table-extra-slot table 0 (make-vector 95 nil))
+    table))
+
+(defun nelisp--category-set-category-table (table)
+  "Specify TABLE as the category table for the current buffer.
+Return TABLE.
+
+\(fn TABLE)"
+  (setq table (nelisp--category-check-table table))
+  (puthash (current-buffer) table nelisp--category-buffer-tables)
+  table)
+
+(defun nelisp--category-char-category-set (char)
+  "Return the category set of CHAR.
+
+\(fn CHAR)"
+  (nelisp--chartab-check-char char)
+  (aref (nelisp--category-current) char))
+
+(defun nelisp--category-category-set-mnemonics (category-set)
+  "Return a string containing mnemonics of the categories in CATEGORY-SET.
+CATEGORY-SET is a bool-vector, and the categories \"in\" it are those
+that are indexes where t occurs in the bool-vector.
+The return value is a string containing those same categories.
+
+\(fn CATEGORY-SET)"
+  (unless (nelisp--category-set-p category-set)
+    (signal 'wrong-type-argument (list 'categorysetp category-set)))
+  (let ((i 32) (out nil))
+    (while (< i 127)
+      (when (aref category-set i) (setq out (cons i out)))
+      (setq i (1+ i)))
+    (concat (nreverse out))))
+
+(defun nelisp--category-modify-category-entry (character category &optional table reset)
+  "Modify the category set of CHARACTER by adding CATEGORY to it.
+The category is changed only for table TABLE, which defaults to
+the current buffer's category table.
+CHARACTER can be either a single character or a cons representing the
+lower and upper ends of an inclusive character range to modify.
+CATEGORY must be a category name (a character between ` ' and `~').
+If optional fourth argument RESET is non-nil,
+then delete CATEGORY from the category set instead of adding it.
+
+\(fn CHARACTER CATEGORY &optional TABLE RESET)"
+  ;; category.c:314-374.
+  (let (start end)
+    (if (integerp character)
+        (progn (nelisp--chartab-check-char character)
+               (setq start character end character))
+      (unless (consp character)
+        (signal 'wrong-type-argument (list 'consp character)))
+      (nelisp--chartab-check-char (car character))
+      (nelisp--chartab-check-char (cdr character))
+      (setq start (car character) end (cdr character)))
+    (nelisp--category-check category)
+    (setq table (nelisp--category-check-table table))
+    (unless (aref (nelisp--category-docstrings table) (- category #x20))
+      (signal 'error (list (format "Undefined category: %c" category))))
+    (while (<= start end)
+      (let* ((from-to (cons start end))
+             (category-set (nelisp--char-table-ref-and-range table start from-to)))
+        ;; GNU modifies when membership equals RESET's non-nilness.
+        (when (eq (and (aref category-set category) t) (and reset t))
+          (setq category-set (copy-sequence category-set))
+          (aset category-set category (null reset))
+          (setq category-set (nelisp--category-hash-get table category-set))
+          (nelisp--char-table-set-range table start (cdr from-to) category-set))
+        (setq start (1+ (cdr from-to))))))
+  nil)
+
+(defun nelisp--category-install ()
+  "Install this section's category.c functions over the public names."
+  (dolist (pair '((make-category-set . nelisp--category-make-category-set)
+                  (define-category . nelisp--category-define-category)
+                  (category-docstring . nelisp--category-category-docstring)
+                  (get-unused-category . nelisp--category-get-unused-category)
+                  (category-table-p . nelisp--category-category-table-p)
+                  (category-table . nelisp--category-category-table)
+                  (standard-category-table . nelisp--category-standard-category-table)
+                  (copy-category-table . nelisp--category-copy-category-table)
+                  (make-category-table . nelisp--category-make-category-table)
+                  (set-category-table . nelisp--category-set-category-table)
+                  (char-category-set . nelisp--category-char-category-set)
+                  (category-set-mnemonics . nelisp--category-category-set-mnemonics)
+                  (modify-category-entry . nelisp--category-modify-category-entry)))
+    (fset (car pair) (cdr pair)))
+  ;; The runtime now owns the whole char-table family: the library flips
+  ;; its own adapter off behind this one feature (notes-65's hand-over).
+  (provide 'nelisp-native-char-tables)
+  t)
+
+(defvar nelisp--category-installed
+  (and (nelisp--chartab-standalone-p) (nelisp--category-install))
+  "Non-nil once the category.c functions above answer the public names.")
+
 ;; ---- Doc 225 P1: syntax tables as GNU 31.1 char-tables -------------------
 ;;
 ;; GNU keeps a syntax table as a char-table of subtype `syntax-table' with no
@@ -18300,6 +19094,53 @@ This affects only `prin1'.")
        chunks (nelisp--prn-to-string cur escape depth)))
     (nelisp--prn-chunks-string chunks)))
 
+(defun nelisp--prn-chartab-elements (chunks values escape depth)
+  "Add VALUES to CHUNKS as print.c's `print_stack_push_vector' does, a
+sub-char-table in `#^^[...]' form."
+  (let* ((n (length values))
+         (lim (if print-length (if (< print-length n) print-length n) n))
+         (i 0))
+    (while (< i lim)
+      (when (> i 0) (nelisp--prn-chunks-add chunks " "))
+      (let ((value (aref values i)))
+        (if (nelisp--sub-char-table-p value)
+            (nelisp--prn-sub-char-table chunks value escape depth)
+          (nelisp--prn-chunks-add chunks (nelisp--prn-to-string value escape depth))))
+      (setq i (1+ i)))
+    (when (< lim n)
+      (when (> lim 0) (nelisp--prn-chunks-add chunks " "))
+      (nelisp--prn-chunks-add chunks "..."))))
+
+(defun nelisp--prn-sub-char-table (chunks table escape depth)
+  "print.c:2619-2629: `#^^[DEPTH MIN-CHAR' and the contents."
+  (nelisp--prn-chunks-add chunks (format "#^^[%d %d" (aref table 1) (aref table 2)))
+  (let* ((n (- (length table) 3)) (contents (make-vector n nil)) (i 0))
+    (while (< i n) (aset contents i (aref table (+ i 3))) (setq i (1+ i)))
+    (when (> n 0) (nelisp--prn-chunks-add chunks " "))
+    (nelisp--prn-chartab-elements chunks contents escape depth))
+  (nelisp--prn-chunks-add chunks "]"))
+
+(defun nelisp--prn-char-table (table escape &optional depth)
+  "print.c:2615-2618: `#^[' and every slot -- default, parent, purpose,
+`ascii', the 64 contents and the extra slots -- then `]'."
+  (let* ((chunks (cons nil nil))
+         (extras (nelisp--char-table-extra-count table))
+         (slots (nelisp--char-table-vector table))
+         (all (make-vector (+ 68 extras) nil))
+         (i 0))
+    (aset all 0 (char-table-range table nil))
+    (aset all 1 (char-table-parent table))
+    (aset all 2 (char-table-subtype table))
+    (while (< i 65) (aset all (+ i 3) (aref slots i)) (setq i (1+ i)))
+    (setq i 0)
+    (while (< i extras)
+      (aset all (+ i 68) (char-table-extra-slot table i))
+      (setq i (1+ i)))
+    (nelisp--prn-chunks-add chunks "#^[")
+    (nelisp--prn-chartab-elements chunks all escape (or depth 0))
+    (nelisp--prn-chunks-add chunks "]")
+    (nelisp--prn-chunks-string chunks)))
+
 (defun nelisp--prn-vector (vec escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((n (length vec)) (chunks (cons nil nil)))
@@ -18628,6 +19469,9 @@ projection per cell and one slot vector per function for this print call."
       "#<overlay in no buffer>"))
    ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
     (nelisp--prn-bool-vector obj))
+   ((and (fboundp 'nelisp--char-table-slots) (char-table-p obj)
+         (vectorp (nelisp--char-table-slots obj)))
+    (nelisp--prn-char-table obj escape (1+ depth)))
    ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth) cache))
    ((recordp obj) (nelisp--prn-record obj escape cache))
    ;; NOT (format "#<unprintable %S>" obj): `%S' re-enters this function on
@@ -23054,7 +23898,8 @@ signals an error rather than passing text through unexpanded."
   (defun arrayp (x)
     "Return t if X is an array (= a string, vector, or bool-vector)."
     (if (or (vectorp x) (stringp x)
-            (and (fboundp 'bool-vector-p) (bool-vector-p x)))
+            (and (fboundp 'bool-vector-p) (bool-vector-p x))
+            (and (fboundp 'char-table-p) (char-table-p x)))
         t nil)))
 
 ;; Idempotent capture rule (applies to every `nelisp--native-X' save below):
@@ -23232,6 +24077,8 @@ Hash tables compare only by identity; markers compare buffer and position."
     ;; Native tables use cons storage, but GNU does not compare contents.
     (and (not (hash-table-p a))
          (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+   ((and (char-table-p a) (char-table-p b) (fboundp 'nelisp--char-table-equal))
+    (nelisp--char-table-equal a b))
    ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
          (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))))
     (if (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
@@ -23692,6 +24539,7 @@ struct predicates ask about most.
 nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
+     ((char-table-p x) 'char-table)
      ((recordp x)
       (let ((ty (aref x 0)))
         (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))

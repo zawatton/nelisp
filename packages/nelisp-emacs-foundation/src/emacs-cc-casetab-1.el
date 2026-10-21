@@ -168,6 +168,11 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 (defvar case-table--standard nil "The standard downcase char-table.")
 (defvar case-table--initial-standard nil "The original standard table object.")
 (defvar case-table--unicode-initialized nil "Non-nil after Unicode data registration.")
+(defvar case-table--builtin-canon nil
+  "The canonicalize table of the standard case table as built from GNU
+31.1's Unicode data, before any change.  Its mapping is exactly the
+built-in fold the regexp matcher applies without a translate table
+\(`nlre--translate-char'), so a search through it needs no table.")
 (defvar case-table--current nil "The current buffer's downcase char-table.")
 (make-variable-buffer-local 'case-table--current)
 (defvar nelisp--case-table nil "Compatibility name for the installed case table.")
@@ -198,6 +203,8 @@ Unlike `set-char-table-range', this never accepts a range or default key."
             (setq character (1+ character)))))
       (case-table--put-extra-slot down 0 up)
       (case-table--ensure-extra-slots down)
+      (when case-table--unicode-initialized
+        (setq case-table--builtin-canon (case-table--get-extra-slot down 1)))
       (setq case-table--standard down case-table--initial-standard down)))
   case-table--standard)
 
@@ -214,6 +221,7 @@ alone.  An untouched bootstrap stays lazy until its first API call."
       (case-table--put-extra-slot table 1 nil)
       (case-table--put-extra-slot table 2 nil)
       (case-table--ensure-extra-slots table)
+      (setq case-table--builtin-canon (case-table--get-extra-slot table 1))
       (setq case-table--unicode-initialized t))))
 
 (defun standard-case-table ()

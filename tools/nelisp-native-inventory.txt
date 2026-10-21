@@ -196,15 +196,17 @@ nelisp--raw-aref	native-review	No classification row; review against Doc 211 §6
 nelisp--raw-aset	native-review	No classification row; review against Doc 211 §6.
 nelisp--char-table-vector-bridge-p	native-review	No classification row; review against Doc 211 §6.
 char-table-p	native-demotable	record-tag test once char-tables are records (`nelisp--char-table-vector-bridge-p` exists)
-make-char-table	native-demotable	GNU chartab.c algorithm in Lisp: 4-level vector trie built with make-vector (already in nelisp-emacs-lib src/emacs-char-table?)
+make-char-table	native-must-stay	Doc 225 S3: allocation of the char-table box (clause 1); the public `make-char-table' is the prelude's chartab.c wrapper (nelisp--chartab-make-char-table), which installs GNU's slot vector
 char-table-subtype	native-demotable	(aref ct 0)-style slot accessor once record-based
 char-table-parent	native-demotable	slot accessor
 set-char-table-parent	native-demotable	slot setter
 char-table-extra-slot	native-demotable	slot accessor
 set-char-table-extra-slot	native-demotable	slot setter
-char-table-range	native-demotable	trie lookup in Lisp (chartab.c char_table_ref_and_range)
-set-char-table-range	native-demotable	trie store in Lisp (chartab.c char_table_set_range)
-map-char-table	native-demotable	trie walk in Lisp (chartab.c map_char_table)
+char-table-range	native-demotable	Doc 225 S3: CHAR_TABLE_REF over GNU's slot vector and sub-char-tables (char-table slot access, clause 1); the public name is the prelude wrapper nelisp--chartab-char-table-range
+set-char-table-range	native-demotable	Doc 225 S3: only its default-slot store is used; char_table_set_range is prelude Lisp (nelisp--chartab-set-char-table-range)
+map-char-table	native-demotable	Doc 225 S3: unused; map_char_table is prelude Lisp (nelisp--chartab-map-char-table)
+nelisp--char-table-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot access (cell 0, GNU's ascii and contents vector); no Lisp form exists
+nelisp--char-table-set-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot store (cell 0); no Lisp form exists
 signal	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 error	native-review	No classification row; review against Doc 211 §6.
 equal	native-must-stay	Minimal native surface clause 2: evaluator builtin arity entry delegates behavior to Lisp nelisp--equal-reference; tagged atom leaf remains private

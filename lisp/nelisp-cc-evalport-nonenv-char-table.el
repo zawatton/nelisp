@@ -81,13 +81,12 @@
     ;; `char-table-range' on a (FROM . TO) cons: slot value, else default,
     ;; never the parent chain (verified against host Emacs).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; Doc 225 S3: the value at IDX through GNU's slot vector
+    ;; (`nl_ct2_contents_ref'), nil answering the default
+    ;; (chartab.c:252-368 char_table_ref_and_range at FROM).
     (defun nl_char_table_get_local_raw_w (arg idx _pad)
-      (let* ((box (ptr-read-u64 arg 8)) (eptr (ptr-read-u64 box 64))
-             (elen (ptr-read-u64 box 80)) (i (nl_ct_lower_end eptr elen idx))
-             (hit (and (< i elen) (<= (nl_ct_start eptr i) idx))))
-        (if (and hit (/= (nl_val_tag (ptr-read-u64 (nl_ct_val eptr i) 0)) 0))
-            (ptr-read-u64 (nl_ct_val eptr i) 0)
-          (ptr-read-u64 box 32))))
+      (let* ((box (ptr-read-u64 arg 8)) (value (nl_ct2_contents_ref box idx)))
+        (if (/= (nl_val_tag value) 0) value (ptr-read-u64 box 32))))
     (defun nl_char_table_get_local_raw (arg idx out)
       (nl_abi_word_to_rc (nl_char_table_get_local_raw_w arg idx 0) out))
     (defun nl_char_table_get_raw (arg idx out)
@@ -98,11 +97,10 @@
     ;; Doc 215 builtin word ABI: a storage slot as a value WORD (Int -> immediate, nil 3, t 7).
 
     ;; Effective lookup returning the value WORD (the table's own child, no clone).
+    ;; Doc 225 S3: GNU CHAR_TABLE_REF (chartab.c:225-249, lisp.h:2133-2155):
+    ;; the slot vector's value, then the default, then the parent chain.
     (defun nl_ct_get_box_w (box idx _pad)
-      (let* ((eptr (ptr-read-u64 box 64)) (elen (ptr-read-u64 box 80))
-             (i (nl_ct_lower_end eptr elen idx))
-             (hit (and (< i elen) (<= (nl_ct_start eptr i) idx)))
-             (value (if hit (ptr-read-u64 (nl_ct_val eptr i) 0) 3)))
+      (let* ((value (nl_ct2_contents_ref box idx)))
         (if (/= (nl_val_tag value) 0) value
           (let* ((parent (ptr-read-u64 box 88)) (default (ptr-read-u64 box 32)))
             (if (and (= (nl_val_tag default) 0) (/= parent 0))
@@ -208,30 +206,19 @@
         (if (= same 1)
             1
           (nl_ct_set_range2 box eptr n lo hi from to val))))
-    (defun nl_char_table_set_raw (arg idx val out)
-      (if (= (nelisp_ptr_read_u8 arg 0) 9)
-          (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
-            (seq (nl_ct_set_range (ptr-read-u64 arg 8) idx idx word)
-                 (nl_sexp_clone_into val out) 0)) 1))
+    (defun nl_char_table_set_raw (arg idx val out) 1)
     ;; Doc 215 builtin word ABI: set and answer VAL as a WORD (an immediate stays as it is).
+    ;; Doc 225 S3: char-tables store GNU's slot vector, which only the
+    ;; prelude's char_table_set writes; the interval rows are no longer
+    ;; storage, so the raw setters refuse instead of writing them.
     (defun nl_char_table_set_raw_w (arg idx val _pad)
-      ;; VAL is the caller's canonical WORD; legacy entries copy their view.
-      (if (= (nelisp_ptr_read_u8 arg 0) 9)
-          (seq (nl_ct_set_range (ptr-read-u64 arg 8) idx idx val) val)
-        (extern-call nl_abi_fail 1 0)))
-    (defun nl_char_table_set_range_raw (arg from to val out)
-      (if (= (nelisp_ptr_read_u8 arg 0) 9)
-          (let* ((word-slot (alloc-bytes 8 8)) (word (nl_val_clone_into val word-slot)))
-            (seq (nl_ct_set_range (ptr-read-u64 arg 8) from to word)
-                 (nl_sexp_clone_into val out) 0)) 1))
+      (extern-call nl_abi_fail 1 0))
+    (defun nl_char_table_set_range_raw (arg from to val out) 1)
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when
     ;; the legacy form answered nonzero.  NOTE: the legacy form answers rc 1 for a plain
     ;; miss WITHOUT a signal; callers that treat that as a miss must stay on `nl_char_table_set_range_raw'.
     (defun nl_char_table_set_range_raw_w (arg from to val _pad)
-      ;; VAL is the caller's canonical WORD; legacy entries copy their view.
-      (if (= (nelisp_ptr_read_u8 arg 0) 9)
-          (seq (nl_ct_set_range (ptr-read-u64 arg 8) from to val) val)
-        (extern-call nl_abi_fail 1 0)))))
-  "Interval-based CharTable get/set kernel.")
+      (extern-call nl_abi_fail 1 0))))
+  "CharTable get kernel over GNU's slot vector (Doc 225 S3).")
 (provide (quote nelisp-cc-evalport-nonenv-char-table))
 ;;; nelisp-cc-evalport-nonenv-char-table.el ends here

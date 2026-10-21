@@ -529,7 +529,68 @@ def check_chartab():
     return check_fixture("chartab", CHARTAB_FIXTURE, CHARTAB_EXPECTED,
                          native_char_table_feature)
 
+# ---------------------------------------------------------------- final
+
+FINAL = EVIDENCE / "final"
+
+
+def check_final():
+    """S2.1: the retained final-verification evidence for the current
+    binaries -- COMMON's 11 groups with 0 failures, the full standalone
+    checks, and the paired workload campaign against the base (no
+    regression beyond 1.03, a gain, 40 MCP tools in every session)."""
+    problems = []
+    for required in (DYN_BIN, STATIC_BIN, BASE_BIN):
+        if not Path(required).is_file():
+            return fail(f"missing {required}")
+    dyn, static = sha256(DYN_BIN), sha256(STATIC_BIN)
+    record_path = FINAL / "final.json"
+    if not record_path.is_file():
+        return fail(f"missing {record_path}; run the final verification first")
+    record = json.loads(record_path.read_text())
+    if record.get("dynamic_sha256") != dyn or record.get("static_sha256") != static:
+        problems.append("final evidence was recorded for other binaries")
+    for name, digest in record.get("files", {}).items():
+        path = ROOT / name
+        if not path.is_file() or sha256(path) != digest:
+            problems.append(f"evidence file changed or missing: {name}")
+    checks = (FINAL / "checks.log").read_text() if (FINAL / "checks.log").is_file() else ""
+    if "GATE-COUNT: 11 cases, 0 failures" not in checks:
+        problems.append("checks.sh did not report 11 groups with 0 failures")
+    standalone = ((FINAL / "standalone-checks.log").read_text()
+                  if (FINAL / "standalone-checks.log").is_file() else "")
+    count = re.search(r"GATE-COUNT: (\d+) cases, (\d+) failures", standalone)
+    if "STANDALONE-CHECKS PASS" not in standalone or not count or count.group(2) != "0":
+        problems.append("standalone-checks did not pass")
+    workloads_path = EVIDENCE / "workloads" / "workloads.json"
+    workloads = json.loads(workloads_path.read_text()) if workloads_path.is_file() else {}
+    if workloads.get("binary_sha256") != dyn:
+        problems.append("the workload campaign was run on another binary")
+    summary = workloads.get("summary", {})
+    ratios = {key: value.get("ratio_to_base") for key, value in summary.items()}
+    if set(ratios) != {"regex6000", "files", "mcp/initialize_s", "mcp/search_s"}:
+        problems.append(f"workload campaign incomplete: {sorted(ratios)}")
+    for key, value in summary.items():
+        if not value.get("ok"):
+            problems.append(f"{key}: a run failed (MCP needs 40 tools)")
+        if value.get("ratio_to_base") is None or value["ratio_to_base"] > 1.03:
+            problems.append(f"{key}: median paired ratio to base {value.get('ratio_to_base')} > 1.03")
+    if not any(r is not None and r < 0.97 for r in ratios.values()):
+        problems.append("no workload gains beyond the 3% spread")
+    for key, ratio in sorted(ratios.items()):
+        print(f"  {key}: median paired ratio to base {ratio}")
+    if problems:
+        for problem in problems:
+            print(f"  {problem}")
+        return fail(f"final: {len(problems)} problem(s)")
+    print(f"SYNTAX-RT final PASS: COMMON 11 groups 0 failures, standalone-checks "
+          f"{count.group(1)} cases 0 failures, workloads no regression and a gain")
+    return 0
+
+
 def main(argv):
+    if argv[1:2] == ["final"]:
+        return check_final()
     if argv[1:2] == ["workloads"] and len(argv) in (2, 3):
         return run_workloads(argv[2] if len(argv) == 3 else None)
     if argv[1:2] == ["semantics"]:

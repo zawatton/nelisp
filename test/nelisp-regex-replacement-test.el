@@ -59,7 +59,10 @@
                 nelisp--unicode-canonical-ranges
                 nelisp--unicode-equivalence-ranges
                 nelisp--unicode-syntax-ranges
-                nelisp--unicode-syntax-entries))))
+                nelisp--unicode-syntax-entries
+                nelisp--unicode-category-docstrings
+                nelisp--unicode-category-sets
+                nelisp--unicode-category-runs))))
     (should (equal (secure-hash 'sha256 payload)
                    nelisp--unicode-data-sha256)))
   (should (eq (nelisp-unicode-category ?A) 'Lu))
