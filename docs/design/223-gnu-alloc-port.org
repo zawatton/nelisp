@@ -208,6 +208,50 @@ interned names and 628K relocations. A restored image therefore has no hole
 runs. Collections, the index and the sweep touch only what was allocated
 after the restore.
 
+** Sixteen-byte cells and header-less cons WORDs (word-heap S2.1/S2.2)
+
+GNU's =struct Lisp_Cons= is 16 bytes (car, cdr), and a cons
+=Lisp_Object= is its address plus the =Lisp_Cons= tag; no other object
+stands between a reference and the cell.  NeLisp now matches both
+halves:
+
+- The refcount word is gone (16adbe722).  =nelisp_nlconsbox_clone= no
+  longer does an atomic add, the unlinked drop kernel is retired, and
+  =CONS_BLOCK_SIZE= is 2030 cells.
+- A cons WORD is the payload address | 2 (Doc 216's tag 010,
+  e39acbe88).  Legacy 32-byte views (tag 000) remain valid, and identity
+  is the payload address in both.  The producers (Fcons, the VM's
+  cons/list and argument lists, =nl_val_clone_into=) emit the direct
+  WORD.  Raw stores into a cell canonicalize through =nl_word_canon=
+  (458117db8).  =nl_cons_car_ptr= and =nl_cons_cdr_ptr= pass a direct
+  cons through: a transient view could not survive an eval that collects
+  (the sf-progn rule).  Consumers read through the semantic accessors.
+  The x86_64 and aarch64 emitters dispatch on the low bits.  Marking,
+  the live-only dump (pointer class 2 in the relocation table) and the
+  loader handle the class.
+- Moving compaction runs only while no cons block exists.  GNU never
+  moves conses, and cells in cons blocks hold edges the debug moving
+  path cannot rewrite.
+
+Retained arena bytes per cons dropped from 72 (base) to 16 on both
+populations (individual conses and one make-list).  The build-time image
+is 34.4 MB.  It still holds 47 cons views: 21 special-form definitions
+whose marker (13108) lives in the view's data word
+(=nl_apply_do_fset=, =nl_n3_special_object=), and 26 from legacy list
+producers.  Word-heap S2.1/S2.2 stay red until both are gone.
+
+** Planned: scanning callee-saved registers (codegen backlog)
+
+GNU's =mark_memory= scans the C stack after =flush_stack_call_func=
+has spilled the callee-saved registers (=__builtin_unwind_init= in
+lisp.h:4466, or =setjmp= into a stack buffer; =mark_c_stack= at
+alloc.c:5212, =flush_stack_call_func1= at alloc.c:5252).  So a Lisp_Object that lives only in a
+register at a collection is still found.  NeLisp's conservative scan
+covers only [rsp, stack top).  Native code may therefore keep a heap
+value in a callee-saved register across a call only after the collector
+spills those registers before it scans.  Until then, codegen keeps such
+values in stack slots.  This is planned after word-heap S6.2 and S5.
+
 * Expected effect and the remaining gap (S2)
 
 Doc 220's churn profiles (base 9d5f4a515, four-layout means, millions of
