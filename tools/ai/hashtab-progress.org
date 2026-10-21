@@ -1,0 +1,51 @@
+#+TITLE: Hash tables: GNU 31.1 struct Lisp_Hash_Table storage in the runtime
+
+# User decision 2026-10-21: fix the representation first, imitating GNU.
+#
+# The eqhash lane (eval/eqhash-20261021, 50% of 4) made lookups flat in N:
+# a string-key miss at N=8000 went from 414 to 78 us. Wall-clock own cost
+# against GNU is still far off:
+# - gethash hit: 7.1-11.5x;
+# - gethash miss: 12.3-17.4x;
+# - puthash: 302-358x.
+# Entries are still stored in conses, and capacity is managed in Lisp.
+#
+# GNU 31.1 fns.c struct Lisp_Hash_Table:
+# - key_and_value is one vector of pairs, plus the hash, next and index
+#   vectors;
+# - maybe_resize_hash_table grows the vectors in place;
+# - hash_lookup and hash_put walk the index and next chains with no
+#   allocation per entry;
+# - sweep_weak_table handles weak tables.
+#
+# Start from eqhash's identity hashing and fixture: eval/eqhash-20261021 and
+# its target/eqhash evidence. Its weak-table semantics (S1.2) depend on
+# gc-port's conservative-root work and stay so here.
+#
+# Base: eval/integ-20261021w (eval/core 7d2d49fa3 plus the word-heap line,
+# in final checks). Merge eqhash's branch first and resolve it on the word
+# heap.
+#
+# Bar: wall-clock own cost against GNU 31.1, as paired per-round ratios on
+# CPU 15 (COMMON.md Measurement).
+
+* S0 Plan
+** S0.1 docs/design/228-gnu-hash-table-port.org maps fns.c hash table storage, lookup, insertion, removal, growth and the weak sweep to native NeLisp structures, after merging eqhash onto this base
+cmd: python3 tools/ai/hashtab-check.py plan
+
+* S1 Port and semantics
+** S1.1 Tables store entries in GNU's vectors (key_and_value, hash, next, index), with no cons per entry (census) and native growth
+cmd: python3 tools/ai/hashtab-check.py layout
+** S1.2 eqhash's 56-case GNU fixture plus growth, maphash order, copy-hash-table, define-hash-table-test and every weakness kind matches on dynamic and static
+Weak cases that need gc-port stay failing until gc-port lands.
+cmd: python3 tools/ai/hashtab-check.py semantics
+
+* S2 Speed (wall-clock against GNU, paired ratios, CPU 15)
+** S2.1 Own cost of gethash (hit and miss) and puthash on eq and equal tables <= GNU's own cost
+cmd: python3 tools/ai/hashtab-check.py speed
+
+* S3 End to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
+cmd: python3 tools/ai/hashtab-check.py final
+** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
+pending
