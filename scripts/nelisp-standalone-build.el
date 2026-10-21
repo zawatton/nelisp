@@ -14890,46 +14890,46 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          1)
                       2))
                 rc))))))
-    (defun wf_bytecode_get (env slots sp)
-      ;; BYTE-GET over a rooted 32-byte frame (staged by the caller).
-      (wf_bytecode_get_box env (wf_bytecode_slot slots (- sp 2))
-                           (wf_bytecode_slot slots (- sp 1))
-                           (wf_bytecode_slot slots (- sp 2))))
-    (defun wf_bytecode_get_box (env symbol property out)
-      ;; Read the canonical standalone symbol-plist hash table directly.
-      ;; Emacs bytecode's BYTE-GET is a VM primitive, so it must ignore a
-      ;; later rebinding of the Lisp function cell for `get'.  OUT may be
-      ;; SYMBOL's slot; it is written last.
-      (let* ((mark (nl_root_mark env))
-             (table (nl_root_reserve env))
-             (hash-args (nl_root_reserve env))
-             (scratch (nl_root_reserve env))
-             (plist (nl_root_reserve env))
-             (plist-args (nl_root_reserve env))
-             (value (nl_root_reserve env)))
-        (seq
-         (if (or (= (sexp-tag symbol) 0) (= (sexp-tag symbol) 1)
-                 (= (sexp-tag symbol) 4) (= (sexp-tag symbol) 16))
-             (if (= (bf_dynamic_lookup env 'nelisp-stdlib--symbol-plists table) 0)
-                 (seq
-                  (wf_write_nil hash-args)
-                  (nelisp_cons_construct table hash-args scratch)
-                  (wf_bytecode_copy hash-args scratch)
-                  (nelisp_cons_construct symbol hash-args scratch)
-                  (wf_bytecode_copy hash-args scratch)
-                  (nl_ht_get hash-args plist)
-                  (wf_write_nil plist-args)
-                  (nelisp_cons_construct property plist-args scratch)
-                  (wf_bytecode_copy plist-args scratch)
-                  (nelisp_cons_construct plist plist-args scratch)
-                  (wf_bytecode_copy plist-args scratch)
-                  (bf_plist_get_eq plist-args value)
-                  (wf_bytecode_copy out value)
-                  (nl_root_release env mark) 0)
-               (seq (nl_stash_void_variable env 'nelisp-stdlib--symbol-plists)
-                    (nl_root_release env mark) 1))
-           (seq (bf_wrong_type_symbolp symbol)
-                (nl_root_release env mark) 1)))))
+    ;; GNU Bget is Fget (bytecode.c Bget, fns.c Fget), plist_get on the
+    ;; symbol's property list.  Here that list is SYM's value in
+    ;; `nelisp-stdlib--symbol-plists', looked up and walked on WORDs: no
+    ;; argument list and no Sexp slot.  The bytecode `get' must ignore a
+    ;; rebinding of the Lisp function `get', as GNU's opcode does.  SYM is a
+    ;; symbol WORD or view; the value WORD (nil when absent), or 0 with
+    ;; void-variable stashed when the table is unbound and STASH is 1 (0:
+    ;; nil, for a signal's condition lookup that must not clobber it).
+    (defun wf_bytecode_get_word (env sym prop stash)
+      (let* ((tbl (bf_dynamic_lookup_w env 'nelisp-stdlib--symbol-plists 0)))
+        (if (or (= tbl 0) (= tbl 2))
+            (if (= stash 1)
+                (seq (nl_stash_void_variable env 'nelisp-stdlib--symbol-plists) 0)
+              3)
+          (let* ((cur (wf_bytecode_plist_of tbl sym)) (value 3) (done 0) (cell 0) (next 0))
+            (seq
+             (while (if (= done 0) (wf_bytecode_w_consp cur) 0)
+               (seq
+                (setq cell (heap-read-u64 cur 8))
+                (setq next (heap-read-u64 cell 8))
+                (if (= (wf_bytecode_w_eqw (heap-read-u64 cell 0) prop) 1)
+                    (seq (setq done 1)
+                         (setq value (if (wf_bytecode_w_consp next)
+                                         (heap-read-u64 (heap-read-u64 next 8) 0) 3)))
+                  (setq cur (if (wf_bytecode_w_consp next)
+                                (heap-read-u64 (heap-read-u64 next 8) 8) 3)))))
+             value)))))
+    ;; TBL's value for the symbol SYM (nil when absent or TBL is no table),
+    ;; read as `nl_ht_get_synced_w' reads it, on WORDs: the bucket vector's
+    ;; own WORD, as `nl_fx_lookup_in' reads the VM's table.  An immediate
+    ;; (nil, t) is looked up through a view, as `wf_arg_ptr' gave one.
+    (defun wf_bytecode_plist_of (tbl sym)
+      (if (/= (nl_word_tag64 tbl) 7) 3
+        (let* ((key (if (= (logand sym 1) 1) (wf_word_view sym) sym)))
+          (seq
+           (nl_ht_identity_sync tbl)
+           (let* ((mode (nl_ht_test_mode tbl))
+                  (entry (nl_ht_find_table_h (nl_cons_cdr_word tbl) key mode
+                                             (nl_ht_hash_mode tbl mode))))
+             (if (= entry 0) 3 (nl_cons_cdr_word entry)))))))
     (defun wf_bytecode_switch (mem sp code-len scratch)
       ;; GNU byte-switch consumes KEY then TABLE.  A hit contains the absolute
       ;; byte offset to resume at; a miss falls through to the following
@@ -15288,15 +15288,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_bytecode_condition_matches (env symbol spec)
       ;; Ask the same symbol-plist table used by `get' for the signal's
       ;; condition hierarchy, then match symbols or a list of symbols.
-      (let* ((mark (nl_root_mark env))
-             (actual (nl_root_reserve env))
-             (prop (nl_root_reserve env))
-             (conditions (nl_root_reserve env))
+      (let* ((conditions (wf_bytecode_get_word env symbol 'error-conditions 0))
              (matched 0))
         (seq
-         (wf_bytecode_copy actual symbol)
-         (wf_bytecode_copy prop 'error-conditions)
-         (wf_bytecode_get_box env actual prop conditions)
          (if (= (sexp-tag spec) 0)
              (setq matched 0)
            (if (= (sexp-tag spec) 4)
@@ -15319,7 +15313,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (setq chain (heap-read-u64 (heap-read-u64 chain 8) 8))))
                       (setq patterns (heap-read-u64 (heap-sexp-payload patterns) 8)))))
                (if (= (sexp-tag spec) 1) (setq matched 1) 0)))
-         (nl_root_release env mark)
          matched))))
     (defun wf_bytecode_try_throw (env handlers current-bindings unwinds
                                       resume-dest resume-sp resume-bindings pool)
@@ -16488,7 +16481,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (seq (wf_bytecode_nreverse_string value value) 0)
                     (seq (bf_wrong_type_arrayp value) 1))))))))
        ((= base 166) (wf_bytecode_rem env slots sp))
-       ((= base 78) (wf_bytecode_get env slots sp))
        ((= base 56)
         (let* ((mark2 (nl_root_mark env))
                (alist (nl_root_reserve env))
@@ -17953,8 +17945,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (ptr-write-u8 name 0 45)
                                (if (= (wf_bytecode_call_named env mem sp 1 name 1) 0)
                                    0 (setq done 4))))))
+                     ((= base 78)
+                      (if (< sp 2)
+                          (seq (setq bad-op raw) (setq done 2))
+                        (let* ((sym (heap-read-u64 (+ mem (* (- sp 2) 8)) 0))
+                               (v (if (if (= (logand sym 1) 1) (or (= sym 3) (= sym 7))
+                                        (or (= (nl_val_tag sym) 4) (= (nl_val_tag sym) 16)))
+                                      (wf_bytecode_get_word env sym (heap-read-u64 (+ mem (* (- sp 1) 8)) 0) 1)
+                                    (seq (bf_wrong_type_symbolp (wf_word_view sym)) 0))))
+                          (if (= v 0) (setq done 4)
+                            (seq (ptr-write-u64 (+ mem (* (- sp 2) 8)) 0 v)
+                                 (setq sp (- sp 1)))))))
                      ((or (= base 155) (= base 157) (= base 93) (= base 94)
-                          (= base 166) (= base 78) (= base 56)
+                          (= base 166) (= base 56)
                           (and (>= base 85) (<= base 90)))
                       (if (< sp 2)
                           (seq (setq bad-op raw) (setq done 2))
