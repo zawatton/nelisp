@@ -14,7 +14,13 @@ on both linkages.
 
 s2.1  header-less cons.  Both cons slopes are at most 32 B, the cons cell is
       at most 24 B, and the dumped image of each linkage has no cons header
-      view (word-heap-census.py: cons-unrelocated-view allocations = 0).
+      view (word-heap-census.py: no cons header alias, no unrelocated cons
+      view).  Special-form definitions -- (builtin NAME) for a GNU special
+      form, held as a function cell in a tag-7 view carrying the marker
+      13108 -- are counted as special-form subr objects instead (GNU: subrs
+      with max_args UNEVALLED, Doc 223); their number must equal the number
+      of marked special forms and must not grow with the workload (boot
+      image vs an image dumped after a 4000-cons make-list).
 s2.2  refcount removed.  The s2.1 checks with a 24 B slope and a 16 B cell
       limit.  No count reader or writer stays linked: in each ELF,
       nelisp_nlconsbox_clone, nl_alloc_consbox and nl_alloc_consbox_init
@@ -27,6 +33,8 @@ s5.1  no object type allocates a 32 B header box.  The census of each
       revision: float <= 24 B, one-limb bignum <= 32 B, detached marker
       <= 40 B.  word-heap-numeric-parity.el prints the same lines on both
       linkages as on GNU Emacs.
+s5-subr  special forms are subr objects (GNU PVEC_SUBR, max_args UNEVALLED):
+      the image census counts no special-form tag-7 view.
 s6.2  precise roots are WORD slots.  The build census (NELISP_BOX_CENSUS)
       counts no nl_root_reserve site outside the call path.  The call path
       (CALL_PATH below) belongs to word-heap S6.3.
@@ -59,12 +67,14 @@ CAP = 8 << 30
 # word-heap S6.3 (callpath-perf): roots taken while a call is set up, run or
 # unwound -- funcall/apply, eval of a call form and its argument list,
 # specbind/unbind_to, function lookup, native frames and the whole byte-code
-# VM (wf_bytecode_*).  callpath-perf confirmed this set on 2026-10-21.
-# Everything else, including nl_n4_exit_debug_w, nl_n4_snapshot(_w) and
-# nl_n4_locals_w, is S6.2's.
+# VM (wf_bytecode_*).  callpath-perf confirmed this set on 2026-10-21, and
+# later took nl_n4_snapshot(_w) and nl_n4_locals_w with the N4 activation
+# record's WORD layout.  Everything else, including nl_n4_exit_debug_w,
+# is S6.2's.
 CALL_PATH = re.compile(
     r'^(nelisp_apply|nl_apply|bf_apply|nl_ali_|nl_funcall|nl_eic_|nl_n3_eval|'
     r'nl_n4_frame_eval|nl_n4_(apply|direct_apply|named_apply|push|finish)|'
+    r'nl_n4_snapshot|nl_n4_locals_w|'
     r'nl_eval_arg_list|nl_sb_|nelisp_env_lookup_function|m5_fx_|nl_fx_|'
     r'nl_native_frame|wf_bytecode_|bf_n2_call_lisp|bf_n2_direct_arity)')
 
@@ -124,6 +134,32 @@ def image_census(binary):
         return json.loads(out.read_text())['rows']
 
 
+def population_image_census(binary):
+    """Census of an image dumped after a retained 4000-cons make-list."""
+    import json, os
+    with tempfile.TemporaryDirectory() as tmp:
+        image = Path(tmp) / 'population.cold'
+        form = ('(progn (defvar whs--keep (make-list 4000 nil)) (garbage-collect) '
+                '(nelisp--arena-dump-image-stream %s))' % json.dumps(str(image)))
+        r = run([str(binary), '--eval', form], timeout=300)
+        if r.returncode or not image.is_file():
+            raise RuntimeError(f'population dump on {binary.name}: exit {r.returncode}')
+        c = run([sys.executable, str(CENSUS), str(image)], timeout=900)
+        if c.returncode:
+            raise RuntimeError(f'census of the population image: exit {c.returncode}')
+        return json.loads(c.stdout)['rows']
+
+
+def cons_views(rows):
+    """Cons header views in an image census: aliases plus unrelocated views."""
+    return (rows.get('cons', {}).get('header_aliases', 0) or 0) + \
+           (rows.get('cons-unrelocated-view', {}).get('allocations', 0) or 0)
+
+
+def special_forms(rows):
+    return rows.get('special-form-subr', {}).get('objects', 0) or 0
+
+
 def disasm_counts(binary, fn):
     """(lock-prefixed instructions, calls to nl_atomic_fetch_add) in FN, or None."""
     r = run(['objdump', '-d', '--no-show-raw-insn', f'--disassemble={fn}', str(binary)], timeout=300)
@@ -148,9 +184,16 @@ def check_s2(level, bins):
         for k, v in s.items():
             if v > limit:
                 problems.append(f'{name} {k} slope {v:g} B > {limit}')
-        views = image_census(b).get('cons-unrelocated-view', {}).get('allocations', 0)
+        rows = image_census(b)
+        views = cons_views(rows)
         if views:
             problems.append(f'{name} image holds {views} cons header views')
+        boot = special_forms(rows)
+        grown = special_forms(population_image_census(b))
+        facts.append(f'{name} special-form subrs {boot} (boot) / {grown} (after the population)')
+        if boot != grown or boot > 22:
+            problems.append(f'{name} special-form subr views {boot} -> {grown} (must be one per '
+                            f'special form and not grow)')
     cell, fallback, writes = cell_bytes()
     facts.append(f'cell {cell} B')
     if cell > cell_limit or any(x > cell_limit for x in fallback):
@@ -185,8 +228,10 @@ def check_s5(bins, gnu):
                 problems.append(f'{name} {kind} slope {v:g} B > {lim}')
         facts.append(f"{name} {', '.join(row)} B")
         rows = image_census(b)
+        # Special-form subr views are tracked by their own criterion (s5-subr).
         aliases = {k: r['header_aliases'] for k, r in rows.items()
-                   if r.get('objects') is not None and r.get('header_aliases')}
+                   if r.get('objects') is not None and r.get('header_aliases')
+                   and k != 'special-form-subr'}
         views = {k: rows[k]['allocations'] for k in IMMEDIATE_VIEWS + ('cons-unrelocated-view',)
                  if rows.get(k, {}).get('allocations')}
         if aliases:
@@ -206,6 +251,16 @@ def check_s5(bins, gnu):
         if diff:
             problems.append(f'{name} numeric parity: {len(diff)} differences, first {diff[0][:160]}')
     facts.append(f'parity cases {len(lines)}')
+    return problems, facts
+
+
+def check_s5_subr(bins):
+    problems, facts = [], []
+    for name, b in bins.items():
+        n = special_forms(image_census(b))
+        facts.append(f'{name} special-form tag-7 views {n}')
+        if n:
+            problems.append(f'{name} {n} special forms are tag-7 views, not subr objects')
     return problems, facts
 
 
@@ -239,7 +294,7 @@ def report(name, problems, facts):
 
 def controls(base):
     rc = 0
-    for what in ('s2.1', 's2.2', 's5.1', 's6.2'):
+    for what in ('s2.1', 's2.2', 's5.1', 's5-subr', 's6.2'):
         ok = control_one(what, base)
         print(f"{'PASS' if ok else 'FAIL'} control {what}: known-bad input rejected")
         rc |= 0 if ok else 1
@@ -253,6 +308,8 @@ def control_one(what, base):
         return any('slope' in p for p in probs)
     if what == 's5.1':
         return slope(Path(base).resolve(), OBJSIZE, 'float') > 24
+    if what == 's5-subr':
+        return special_forms(image_census(Path(base).resolve())) > 0
     with tempfile.TemporaryDirectory() as tmp:
         bad = Path(tmp) / 'bad.tsv'
         bad.write_text('u.o\tnl_sf_quote_w\tnl_root_reserve\t1\n'
@@ -265,7 +322,7 @@ def control_one(what, base):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    ap.add_argument('what', choices=['s2.1', 's2.2', 's5.1', 's6.2', 'controls'])
+    ap.add_argument('what', choices=['s2.1', 's2.2', 's5.1', 's5-subr', 's6.2', 'controls'])
     ap.add_argument('--dyn')
     ap.add_argument('--static')
     ap.add_argument('--control')
@@ -284,6 +341,8 @@ def main(argv):
     bins = {'dyn': Path(a.dyn).resolve(), 'static': Path(a.static).resolve()}
     if a.what == 's5.1':
         return report('S5.1', *check_s5(bins, a.gnu))
+    if a.what == 's5-subr':
+        return report('S5 special-form subrs', *check_s5_subr(bins))
     return report(a.what.upper(), *check_s2(a.what[1:], bins))
 
 
