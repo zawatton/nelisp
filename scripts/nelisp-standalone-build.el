@@ -2142,6 +2142,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
+                               (format "jump-tables=%s\0" nelisp-aot-compiler--x86-jump-tables-enabled)
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)))))
 
@@ -44856,7 +44857,13 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; was updated by name instead of by kind, so :raw is excluded as a
          ;; class -- any future :raw manifest entry needs the same explicit
          ;; reader-side binding and must not double up here either.
-         (helpers (delq nil
+         ;; Frozen manifest helpers supply the authenticated direct-only
+         ;; closure. Keep its decoder contract, like GCC -fno-jump-tables;
+         ;; the separately compiled applyfn/VM keeps the normal policy.
+         (helpers (let ((nelisp-aot-compiler--x86-jump-tables-enabled
+                         (and nelisp-aot-compiler--x86-jump-tables-enabled
+                              (nelisp-standalone--runtime-reload-enabled-p))))
+                    (delq nil
                         (mapcar (lambda (entry)
                                   (pcase-let ((`(,name ,kind ,_src) entry))
                                     (unless (or (memq kind '(:start :driver :raw))
@@ -44894,7 +44901,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                         (nelisp-standalone--reader-extra-unit-epoch
                                          entry '(nelisp_mirror_set_function_or_insert)))
                                        (t (nelisp-standalone--unit-for entry))))))
-                                nelisp-standalone--manifest)))
+                                nelisp-standalone--manifest))))
          ;; Full reader applyfn (arithmetic + HT + strings/format + file I/O).
          (applyfn (nelisp-standalone--cached-unit
                    "applyfn-reader.o" (nelisp-standalone--patch-autoload-lookups

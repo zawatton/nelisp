@@ -21409,6 +21409,10 @@ do, so only the materialized 0/1 disappears."
 See `nelisp-aot-compiler--emit-cond-jump'."
   (nelisp-aot-compiler--emit-cond-jump test buf false-lbl nil))
 
+(defvar nelisp-aot-compiler--x86-jump-tables-enabled t
+  "Non-nil permits raw x86 dense dispatch through relative jump tables.
+Bind nil for direct-control-flow consumers, like GCC -fno-jump-tables.")
+
 (defvar nelisp-aot-compiler--x86-inline-data-hook nil
   "Hook called with (BUFFER OFFSET SIZE) for each inline data span.
 Offsets are relative to BUFFER.  Profilers must exclude these proven data
@@ -21434,7 +21438,8 @@ bytes from instruction censuses.  Emission passes may use distinct buffers.")
 Only repeated reads of one GP local qualify: skipping their redundant
 reads cannot change effects or traps.  Require at least four distinct,
 contiguous signed32 keys; other shapes retain their existing lowering."
-  (when (and (eq nelisp-aot-compiler--arch 'x86_64)
+  (when (and nelisp-aot-compiler--x86-jump-tables-enabled
+             (eq nelisp-aot-compiler--arch 'x86_64)
              (not (nelisp-aot-compiler--lisp-values-p))
              (not (cl-some (lambda (p) (memq (cdr p) '(rax r10)))
                            nelisp-aot-compiler--promoted-slots)))
