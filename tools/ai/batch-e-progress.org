@@ -1,0 +1,86 @@
+#+TITLE: Batch E: D''' plus syntax-rt, GNU interpreted closures and runtime fixes
+
+# Objective (coordinator, 2026-10-22): batch E = D''' (9167b2736) + syntax-rt
+# (42f1e3900) + elc-load's GNU interpreted-closure reading (c730f1a55),
+# which activates notes-65's char-table flip.  Worktree
+# target/agent-worktrees/integ-20261022e, branch eval/integ-20261022e;
+# nothing is pushed.  Checks: tools/ai/batch-e-check.sh, on
+# target/integ/nelisp-{dyn,static} (BATCH_E_DYN / BATCH_E_STATIC override).
+# GNU 31.1 (/usr/local/bin/emacs) pins every fixture under test/fixtures/
+# batch-e-*.  (provide 'nelisp-elc-reader) stays reverted: notes-65 checks
+# the closure reader in its GUI image with the feature forced.
+
+* S1 Merge
+** S1.1 syntax-rt 42f1e3900 and elc-load c730f1a55 are merged into batch E
+cmd: git merge-base --is-ancestor 42f1e3900 HEAD && git merge-base --is-ancestor c730f1a55 HEAD
+** S1.2 One case-fold canon shortcut remains (the memoized reader), and nelisp-elc-reader is not provided
+cmd: bash tools/ai/batch-e-check.sh merged
+** S1.3 621386274's Unicode integrity test passes on the merged generator payload
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh integrity
+** S1.4 notes-65's interface: nelisp--syntax-standard-table is the standard syntax table on both linkages
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh interface
+** S1.5 elc-load's GNU interpreted-closure fixture matches GNU on both linkages
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-e-check.sh closures
+** S1.6 syntax-rt's GNU fixtures (47 semantics rows, char-table pin) match on both linkages of the merged build
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-e-check.sh syntax-rt
+
+* S2 Runtime fixes, each against a GNU 31.1 golden fixture
+** S2.1 kill-buffer releases the buffer's syntax table, and a buffer without set-syntax-table resolves through nelisp--buffer-defaults-syntax-table, under both defaults
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh fixture batch-e-syntax-buffer C.UTF-8
+** S2.2 with-category-table behaves as GNU international/mule.el
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh fixture batch-e-category-table C.UTF-8
+** S2.3 --cold-load-from NONEXISTENT is fatal (exit 1, message), as GNU's pdumper with --dump-file
+#+TIMEOUT: 120
+cmd: bash tools/ai/batch-e-check.sh coldload
+** S2.4 format-message and error-message-string follow text-quoting-style under C.UTF-8 (curve)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh fixture batch-e-quote-style C.UTF-8
+** S2.5 format-message and error-message-string follow text-quoting-style under LC_ALL=C (grave)
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh fixture batch-e-quote-style C
+** S2.6 with-syntax-table and with-temp-buffer honour their arguments in every configuration
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh fixture batch-e-eval-special C.UTF-8
+** S2.7 End to end: every S2 fixture and the cold-load check pass on both linkages in one run
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-e-check.sh all-fixtures
+
+* S3 Pipeline
+** S3.1 Both linkages build from HEAD
+cmd: bash tools/ai/batch-e-check.sh built
+** S3.2 COMMON: 11 groups, 0 failures (maphash-sparse is the known red)
+cmd: bash tools/ai/batch-e-check.sh log common
+** S3.3 MCP smoke: 40 tools
+cmd: bash tools/ai/batch-e-check.sh log mcp
+** S3.4 Crash sweep: no SIGSEGV over environment padding 0..191 and 0..2048 step 32, both linkages
+cmd: bash tools/ai/batch-e-check.sh log sweep
+** S3.5 casetab GNU fixtures: API 43 and behaviour 47 rows on both linkages
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh casetab
+** S3.6 fileio-2 passes on both linkages with notes-65's char-table-flip library bundle
+cmd: bash tools/ai/batch-e-check.sh log fileio
+** S3.7 AOT differential: 97/97 on both linkages
+cmd: bash tools/ai/batch-e-check.sh log aot
+** S3.8 ns-inventory: no unpinned collision beyond the parents' 1290
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-e-check.sh ns
+** S3.9 Windows smoke (gc-port's win-smoke.sh, from a snapshot of HEAD) passes
+cmd: bash tools/ai/batch-e-check.sh log win
+** S3.10 Paired timing against 9167b2736 on CPU 11 recorded for this build
+cmd: bash tools/ai/batch-e-check.sh log timing
+** S3.11 End to end: every pipeline result is newer than the binaries and passes
+cmd: bash tools/ai/batch-e-check.sh pipeline
+
+* S4 Library census
+** S4.1 notes-65's ccore census on a library image built on batch E (char-table flip active)
+pending
+** S4.2 notes-65's GUI image arm with nelisp-elc-reader forced: ddskk/evil .elc load as on GNU
+pending
+** S4.3 End to end: the batch E library image passes notes-65's census gates
+pending

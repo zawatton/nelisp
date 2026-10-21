@@ -1,0 +1,3 @@
+with-category-table => ((t "batch-e") t "space for indent
+This character counts as a space for indentation purposes." caught t 42)
+restores-in-original-buffer => (t t nil)

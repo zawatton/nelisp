@@ -1,0 +1,6 @@
+default-standard-table => (t "." "." "_" " ")
+default-standard-oracle => (t "." "." "_")
+default-emacs-lisp-table => (t "<" "'" "_" ">")
+own-table-wins-over-default => (t ".")
+kill-buffer-releases-table => (nil t)
+forget-buffer-reverts-to-default => t

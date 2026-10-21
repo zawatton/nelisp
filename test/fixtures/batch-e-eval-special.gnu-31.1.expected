@@ -1,0 +1,2 @@
+with-syntax-table-uses-table => ("." "w" t caught "w")
+with-temp-buffer => ((t "abc") nil t (caught nil))
