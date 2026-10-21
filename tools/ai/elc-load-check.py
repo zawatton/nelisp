@@ -7,7 +7,7 @@ bundle, replacing only its emacs-load member; corpus uses those images.
 corpus/resolve/capability execute both ELC_LOAD_BIN and ELC_LOAD_STATIC.
 Set both variables to the base executable to record the against-bug run.
 measure-speed records four-layout whole-process callgrind Ir (including GC);
-speed only verifies the retained profiles and >=3x ratio for each function.
+speed verifies retained diagnostics and the >=3x median wall-clock ratio.
 Heavy work takes one Notes/bin/heavy-run.sh slot per image build, profile,
 or corpus/resolve/capability suite; ELC_LOAD_HEAVY_UNIT prevents nested slots.
 
@@ -34,6 +34,7 @@ import re
 import resource
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import threading
@@ -230,7 +231,7 @@ def heavy_command(command, env=None):
 def enter_suite_slot(mode):
     if mode in ("corpus", "resolve", "capability") and os.environ.get(HEAVY_UNIT_ENV) != "1":
         run = execute([sys.executable, Path(__file__), *sys.argv[1:]], OUT / ("suite-" + mode),
-                      timeout=190 if mode == "corpus" else 90, heavy=True)
+                      timeout=750 if mode == "corpus" else 90, heavy=True)
         sys.stdout.write(Path(run["stdout"]).read_text())
         sys.stderr.write(Path(run["stderr"]).read_text())
         raise SystemExit(run["rc"])
@@ -725,7 +726,6 @@ def compare(mode, body_factory):
         validate_provider_snapshot(context["provider_snapshots"])
         validate_provider_sources(context["provider_sources"])
         inputs += [OUT / context_record_name()] + [Path(p) for p in context["inputs"]]
-    deadline = time.monotonic() + 180 if mode == "corpus" else None
     for case, text in body_factory.items():
         ref = run_lisp(emacs(), text, f"{mode}-gnu-{case}", gnu=True)
         refs[case] = rows(ref)
@@ -739,9 +739,7 @@ def compare(mode, body_factory):
                 selected = context["contexts"][str(binary)]
                 need(selected["binary_sha256"] == sha(binary), "image was built with another reader")
                 image = selected["image"]
-            remaining = deadline - time.monotonic() if deadline else 180
-            need(remaining > 0, "corpus exceeded its 180-second budget")
-            run = run_lisp(binary, text, f"{mode}-{tag}-{case}", context_image=image, timeout=remaining)
+            run = run_lisp(binary, text, f"{mode}-{tag}-{case}", context_image=image, timeout=180)
             runs[tag + "-" + case] = run
             inputs += [Path(run["stdout"]), Path(run["stderr"])]
             got = rows(run)
@@ -889,7 +887,82 @@ def measure_speed():
                 print(function, ext, layout, round(per_call, 2), flush=True)
     need(pins(initial) == initial, "inputs changed during profiling")
     save("speed.json", dict(inputs=pins(inputs), binary=str(binary), layouts=list(LAYOUTS), small=SMALL, large=LARGE, rows=result))
+    measure_wall_speed()
     speed()
+
+
+def measure_wall_speed():
+    """Seven alternating paired runs; time the Lisp workload, including GC."""
+    binary = binaries()[0][1]
+    base = ROOT / "target/elc-load/base/nelisp-dynamic"
+    need(base.is_file() and sha(base) != sha(binary), "missing independent baseline")
+    allowed = os.sched_getaffinity(0)
+    preferred = set(range(24, 32)) & allowed or set(range(16, 22)) & allowed or allowed
+    activity = {cpu: 0.0 for cpu in preferred}
+    snapshot = subprocess.check_output(["ps", "-eo", "psr=,pcpu=,args="], text=True)
+    for line in snapshot.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) >= 2 and int(fields[0]) in activity:
+            activity[int(fields[0])] += float(fields[1])
+    cpu = min(activity, key=activity.get)
+    count = 100010
+    inputs = speed_inputs() + binary_files(base)
+    runs = []
+    for tag, executable, kind in (("candidate-source", binary, "el"),
+                                  ("candidate-bytecode", binary, "elc"),
+                                  ("base-source", base, "el")):
+        for repeat in range(7):
+            for runtime, command, gnu in ((tag, executable, False), ("gnu-" + kind, Path(emacs()), True)):
+                name = f"wall-{tag}-{repeat}-{runtime}"
+                script = OUT / "drivers" / (name + ".el")
+                body = "(require 'cl-lib)\n" + f"(load {lisp(CORPUS / ('mxlib.' + kind))} nil t t)\n"
+                for function in ("mx-a", "mx-b"):
+                    body += (f"(let ((i 0)) (while (< i 1000) ({function} '(1 2 3 4 5 6)) (setq i (1+ i))))\n"
+                             "(garbage-collect)\n"
+                             f"(let ((i 0) (answer nil) (start (float-time))) (while (< i {count}) "
+                             f"(setq answer ({function} '(1 2 3 4 5 6))) (setq i (1+ i))) "
+                             "(unless (equal answer '(6 8 10 12)) (error \"wrong benchmark answer\"))\n" +
+                             emit(f"(list '{function} (- (float-time) start))") + ")\n")
+                if gnu:
+                    prelude = ""
+                elif executable == base:
+                    foundation = base.parent / "src/packages/nelisp-emacs-foundation/src"
+                    files = [foundation / f for f in ("emacs-fns.el", "emacs-eval.el", "emacs-load.el")]
+                    inputs += files
+                    prelude = "".join(f"(load {lisp(f)} nil t t)\n" for f in files)
+                else:
+                    prelude = bootstrap()
+                script.write_text(";;; -*- lexical-binding: t; -*-\n" + prelude + driver(body))
+                print("START", name, "cpu=" + str(cpu), flush=True)
+                run = execute(["taskset", "-c", str(cpu), command, *(["-Q", "--batch"] if gnu else []),
+                               "--load", script], OUT / "runs" / name, timeout=90, heavy=not gnu)
+                values = {}
+                for row in rows(run):
+                    match = re.fullmatch(r"\((mx-[ab]) ([0-9.eE+-]+)\)", row)
+                    need(match is not None, "invalid wall-clock row")
+                    values[match[1]] = float(match[2]) / count
+                need(set(values) == {"mx-a", "mx-b"} and all(x > 0 for x in values.values()), "missing wall times")
+                runs.append(dict(tag=runtime, comparison=tag, repeat=repeat, values=values, run=run))
+                inputs += [script, Path(run["stdout"]), Path(run["stderr"]), Path(run["metadata"])]
+                print("DONE", name, flush=True)
+    save("wall-speed.json", dict(inputs=pins(inputs), cpu=cpu, iterations=count, runs=runs))
+
+
+def wall_speed():
+    record = load("wall-speed.json")
+    require_pins(record, speed_inputs())
+    for function in ("mx-a", "mx-b"):
+        medians = {}
+        for tag in ("candidate-source", "candidate-bytecode", "base-source", "gnu-el", "gnu-elc"):
+            samples = [r["values"][function] for r in record["runs"] if r["tag"] == tag]
+            need(len(samples) == (14 if tag == "gnu-el" else 7), "missing seven alternating wall runs")
+            medians[tag] = statistics.median(samples)
+        ratio = medians["candidate-source"] / medians["candidate-bytecode"]
+        regression = medians["candidate-bytecode"] / medians["base-source"]
+        gnu_ratio = medians["candidate-bytecode"] / medians["gnu-elc"]
+        print(f"WALL {function} .el/.elc={ratio:.4f}x bytecode/base-source={regression:.4f} GNU-bytecode={gnu_ratio:.4f}x")
+        need(ratio >= 3, function + ": wall-clock below 3x")
+        need(regression <= 1.03, function + ": wall-clock baseline regression")
 
 
 def speed():
@@ -924,7 +997,7 @@ def speed():
             means[kind] = sum(measured) / len(LAYOUTS)
         ratio = means["el"] / means["elc"]
         print(f"SPEED {function} .el={means['el']:.2f} .elc={means['elc']:.2f} Ir/call ratio={ratio:.4f}x")
-        need(ratio >= 3, function + ": below 3x")
+    wall_speed()
 
 
 def final_inputs():

@@ -91,6 +91,11 @@ class EvidenceControls(unittest.TestCase):
                     rows.append(dict(function=function, kind=kind, layout=layout, samples=samples, ir_per_call=cost))
         record = dict(inputs=CHECK.pins(inputs), binary=str(CHECK.binaries()[0][1]), layouts=list(CHECK.LAYOUTS), rows=rows)
         CHECK.save("speed.json", record)
+        wall_runs = []
+        for tag, cost, count in (("candidate-source", 12000, 7), ("candidate-bytecode", elc_cost, 7),
+                                 ("base-source", 12000, 7), ("gnu-el", 1000, 14), ("gnu-elc", 500, 7)):
+            wall_runs += [dict(tag=tag, values={"mx-a": cost, "mx-b": cost}) for _ in range(count)]
+        CHECK.save("wall-speed.json", dict(inputs=CHECK.pins(CHECK.speed_inputs()), runs=wall_runs))
         return record
 
     def final_record(self):
