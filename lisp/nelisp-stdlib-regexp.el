@@ -65,7 +65,11 @@ and matching.  Nil selects the portable downcase fallback.")
 (defvar nlre--syntax-cache-installing nil)
 (defvar nlre--translate-cache (make-hash-table :test 'eq :weakness 'key)
   "Canon identity -> [table, lookup, ASCII page, ASCII-fold, public lookup,
-native table].  The last slot is the canon itself when the runtime owns it:
+native table, unibyte-fold].  ASCII-fold is non-nil when the canon maps
+0..127 as the built-in fold does, unibyte-fold when it translates a unibyte
+target as the built-in fold does (`nlre--unibyte-fold-agrees-p'); both feed
+`nlre--search-translate-table'.  The native
+table slot is the canon itself when the runtime owns it:
 `nlre--fold-char' then translates a character as GNU's `char_table_translate'
 does (character.h:592), with one table read.
 Case-table helpers invalidate the canon identity when changing mappings.
@@ -85,9 +89,6 @@ is folded back into that opcode by the byte optimizer.")
   "`nelisp-casetab--epoch' when `nlre--translate-memo' was read.")
 (defvar nlre--translate-memo nil
   "The memoized result of `nlre--read-translate-table'.")
-(defvar nlre--ascii-regexp nil)
-(defvar nlre--ascii-regexp-copy nil)
-(defvar nlre--ascii-regexp-p nil)
 (defvar nlre--compiled-cache-hits 0
   "Number of compiled regexp cache hits.")
 (defvar nlre--compiled-cache-misses 0
@@ -251,7 +252,7 @@ needs no table.  GNU likewise trusts a translate table's identity
                                     nelisp-casetab--native-range)))))
             (when lookup
               (let* ((native (and (nlre--native-case-table-p canon) canon))
-                     (entry (vector canon lookup nil t public-lookup native)))
+                     (entry (vector canon lookup nil t public-lookup native t)))
                 ;; GNU's CHAR_TABLE_REF has a direct ASCII page.  Materialize
                 ;; that page once for a library representation whose public
                 ;; dispatch is expensive; actual native tables retain their
@@ -266,44 +267,73 @@ needs no table.  GNU likewise trusts a translate table's identity
                                                    (+ character 32) character))))
                         (aset entry 3 nil)))
                     (setq character (1+ character)))
+                  (unless (nlre--unibyte-fold-agrees-p canon lookup ascii)
+                    (aset entry 6 nil))
                   (unless native (aset entry 2 ascii)))
                 (puthash canon entry nlre--translate-cache)
                 entry))))))))
 
-(defun nlre--ascii-search-string-p (text)
-  "Non-nil if TEXT is a multibyte string of ASCII characters only.
-Its character and byte counts are equal exactly then, and both are O(1),
-so the test neither copies nor scans TEXT and costs the same at any
-length.  A unibyte string would need a content scan (raw bytes 128-255
-are not ASCII), so it is not proven and keeps its translation, which GNU
-applies to every character anyway."
-  (and (multibyte-string-p text) (= (length text) (string-bytes text))))
+(defun nlre--unibyte-fold-agrees-p (canon lookup page)
+  "Non-nil when CANON translates a unibyte target as the built-in fold does.
+LOOKUP reads CANON and PAGE holds its values for the codes 0..255; the
+caller checks ASCII (slot 3).  For a unibyte target GNU's matcher
+\(regex-emacs.c) translates a byte 128..255 in only two places: anychar
+translates the character of that code and compares the result with
+newline (RE_STRING_CHAR_AND_LENGTH), and bcmp_translate translates the
+byte's raw-byte character (GET_CHAR_AFTER, RE_CHAR_TO_MULTIBYTE); the
+exactn and charset arms leave raw bytes alone (CHAR_BYTE8_P).  So only
+newline membership matters in 128..255: the library canon keeps MICRO SIGN
+181 where GNU and the built-in fold give 956, and neither is newline."
+  (let ((code 128) (agree t))
+    (while (and agree (< code 256))
+      (setq agree (eq (eql (aref page code) 10)
+                      (eql (nlre--translate-char code nil) 10))
+            code (1+ code)))
+    (setq code #x3fff80)
+    (while (and agree (<= code #x3fffff))
+      (setq agree (eql (or (funcall lookup canon code) code)
+                       (nlre--translate-char code nil))
+            code (1+ code)))
+    agree))
+
+(defun nlre--ascii-search-string-p (text table)
+  "Non-nil if matching TEXT translates only characters TABLE folds as built in.
+GNU's matcher (regex-emacs.c) translates the target character by character.
+A multibyte TEXT qualifies when every character is ASCII: its character and
+byte counts are equal exactly then, and both are O(1).  A unibyte TEXT
+needs no scan.  Its bytes 128..255 are raw bytes, which the exactn and
+charset arms never translate (CHAR_BYTE8_P after RE_CHAR_TO_MULTIBYTE),
+but anychar translates a byte as the character of that code and
+bcmp_translate translates its raw-byte character, so TABLE must agree with
+the built-in fold there (slot 6, `nlre--unibyte-fold-agrees-p')."
+  (if (multibyte-string-p text)
+      (= (length text) (string-bytes text))
+    (aref table 6)))
 
 (defun nlre--ascii-search-regexp-p (regexp)
-  "Prove REGEXP cannot introduce non-ASCII members; retain a mutation-safe key."
-  (if (and (eq regexp nlre--ascii-regexp)
-           (equal regexp nlre--ascii-regexp-copy))
-      nlre--ascii-regexp-p
-    (setq nlre--ascii-regexp regexp
-          nlre--ascii-regexp-copy (copy-sequence regexp)
-          nlre--ascii-regexp-p
-          ;; Classes and escapes can introduce non-ASCII members even
-          ;; when their spelling is ASCII.  Keep their general translation.
-          (and (not (string-search "[" regexp))
-               (not (string-search "\\" regexp))
-               (let ((view (if (multibyte-string-p regexp) regexp
-                             (string-as-multibyte regexp))))
-                 (= (length view) (string-bytes view)))))))
+  "Non-nil if REGEXP translates only ASCII characters when compiled.
+regex_compile (regex-emacs.c) passes through TRANSLATE a literal
+\(normal_char), each ASCII range member (SETUP_ASCII_RANGE) and each class
+member below 0x80; a unibyte pattern's bytes 128..255 are raw bytes that
+it stores untranslated (normal_char, SETUP_UNIBYTE_RANGE).  So only a
+multibyte pattern with a non-ASCII character can compile differently
+under two tables that agree on ASCII."
+  (or (not (multibyte-string-p regexp))
+      (= (length regexp) (string-bytes regexp))))
 
 (defun nlre--search-translate-table (regexp text)
-  "Get translation once; reuse byte fast paths only on a proven ASCII domain."
+  "The case translation for searching TEXT with REGEXP, nil for the built-in fold.
+GNU compiles and matches through the buffer's canon (search.c:405-410).
+When the canon folds ASCII as built in, REGEXP translates only ASCII
+\(`nlre--ascii-search-regexp-p') and TEXT presents only characters the
+canon folds as built in (`nlre--ascii-search-string-p'), every TRANSLATE
+the search performs equals the built-in fold, so the search runs as one
+under the built-in fold and keeps the fast plans the table path cannot
+use.  This holds for any owner's canon, modified or not."
   (let ((table (nlre--current-translate-table)))
     (if (and table (aref table 3) (null search-spaces-regexp)
-             (if (and (eq regexp nlre--ascii-regexp)
-                      (equal regexp nlre--ascii-regexp-copy))
-                 nlre--ascii-regexp-p
-               (nlre--ascii-search-regexp-p regexp))
-             (nlre--ascii-search-string-p text))
+             (nlre--ascii-search-string-p text table)
+             (nlre--ascii-search-regexp-p regexp))
         nil
       table)))
 
