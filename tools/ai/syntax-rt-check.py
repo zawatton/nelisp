@@ -136,9 +136,125 @@ def check_plan():
     return 0
 
 
+# ---------------------------------------------------------------- speed
+
+SPEED_PROBE = r""";; -*- lexical-binding: t; -*-
+;; Own cost: the call minus a same-shape trivial subr call, both inline in a
+;; dotimes loop (ten copies per iteration).  Same file for GNU and NeLisp.
+(defmacro rt-loop (n form)
+  `(let ((t0 (float-time)))
+     (dotimes (_ ,n) ,form ,form ,form ,form ,form ,form ,form ,form ,form ,form)
+     (- (float-time) t0)))
+(defvar rt-n (string-to-number (or (getenv "RT_N") "1000")))
+(defmacro rt-own (label scale op base)
+  `(let ((n (max 1 (/ (* rt-n ,scale) 100))) xs)
+     (rt-loop 20 ,op) (rt-loop 20 ,base)
+     (dotimes (_ 7)
+       (let* ((a (rt-loop n ,op)) (b (rt-loop n ,base)))
+         (push (/ (* 1e6 (- a b)) (* 10 n)) xs)
+         (push (/ (* 1e6 a) (* 10 n)) xs)
+         (push (/ (* 1e6 b) (* 10 n)) xs)))
+     (setq xs (nreverse xs))
+     (let (own call base)
+       (while xs
+         (push (pop xs) own) (push (pop xs) call) (push (pop xs) base))
+       (setq own (sort own #'<) call (sort call #'<) base (sort base #'<))
+       (princ (format "RT %s own=%.4f call=%.4f base=%.4f\n" ,label
+                      (nth 3 own) (nth 3 call) (nth 3 base))))))
+"""
+
+SPEED_CASES = {
+    "char-syntax": [
+        ("char-syntax-a", 100, "(char-syntax 97)", "(integerp 97)"),
+        ("char-syntax-paren", 100, "(char-syntax 40)", "(integerp 40)"),
+    ],
+    "string-match": [
+        ("string-match-plain", 20, '(string-match "alpha" "alpha")', '(eq "alpha" "alpha")'),
+        ("string-match-syntax", 20, '(string-match "\\\\sw+" "alpha")', '(eq "\\\\sw+" "alpha")'),
+    ],
+}
+# Calls per sample: GNU is fast, so it gets more iterations for resolution.
+SPEED_N = {"gnu": 20000, "nelisp": 200}
+
+
+def write_speed_probe(kind):
+    directory = EVIDENCE / "speed"
+    directory.mkdir(parents=True, exist_ok=True)
+    probe = directory / f"{kind}.el"
+    body = SPEED_PROBE + "".join(
+        f'(rt-own "{label}" {scale} {op} {base})\n'
+        for label, scale, op, base in SPEED_CASES[kind])
+    probe.write_text(body)
+    return probe
+
+
+def run_limited(command, env=None, timeout=900):
+    shell = "ulimit -v %d; exec \"$@\"" % MEMORY_LIMIT_KB
+    return subprocess.run(["bash", "-c", shell, "run", *command], capture_output=True,
+                          text=True, env=env, timeout=timeout, cwd=ROOT)
+
+
+def speed_run(runtime, binary, probe):
+    env = dict(os.environ, RT_N=str(SPEED_N[runtime]))
+    command = (["taskset", "-c", CPUS, str(binary), "--load", str(probe)]
+               if runtime == "nelisp"
+               else ["taskset", "-c", CPUS, GNU_BIN, "-Q", "--batch", "-l", str(probe)])
+    result = run_limited(command, env)
+    rows = {}
+    for line in result.stdout.splitlines() + result.stderr.splitlines():
+        match = re.match(r"RT (\S+) own=(\S+) call=(\S+) base=(\S+)", line)
+        if match:
+            rows[match.group(1)] = {k: float(v) for k, v in
+                                    zip(("own", "call", "base"), match.groups()[1:])}
+    return result.returncode, rows
+
+
+def check_speed(kind, binary=None):
+    if kind not in SPEED_CASES:
+        return fail(f"unknown speed case {kind}")
+    binary = Path(binary or DYN_BIN)
+    if not binary.is_file():
+        return fail(f"missing binary {binary}")
+    probe = write_speed_probe(kind)
+    labels = [case[0] for case in SPEED_CASES[kind]]
+    samples = {"nelisp": {l: [] for l in labels}, "gnu": {l: [] for l in labels}}
+    for _ in range(7):
+        for runtime in ("nelisp", "gnu"):
+            code, rows = speed_run(runtime, binary, probe)
+            if code != 0 or set(rows) != set(labels):
+                return fail(f"speed {kind}: {runtime} run failed (exit {code}, rows {sorted(rows)})")
+            for label in labels:
+                samples[runtime][label].append(rows[label])
+    record = {"kind": kind, "binary": str(binary), "binary_sha256": sha256(binary),
+              "gnu": GNU_BIN, "cpu": CPUS, "runs": 7, "cases": {}}
+    passed = True
+    for label in labels:
+        summary = {}
+        for runtime in ("nelisp", "gnu"):
+            for field in ("own", "call", "base"):
+                summary[f"{runtime}_{field}"] = statistics.median(
+                    row[field] for row in samples[runtime][label])
+        summary["ok"] = summary["nelisp_own"] <= summary["gnu_own"]
+        passed &= summary["ok"]
+        record["cases"][label] = dict(summary, samples=samples["nelisp"][label],
+                                      gnu_samples=samples["gnu"][label])
+        print(f"  {label}: own NeLisp {summary['nelisp_own']:.4f} us vs GNU "
+              f"{summary['gnu_own']:.4f} us (call {summary['nelisp_call']:.3f} vs "
+              f"{summary['gnu_call']:.4f}, base {summary['nelisp_base']:.3f} vs "
+              f"{summary['gnu_base']:.4f}) {'PASS' if summary['ok'] else 'FAIL'}")
+    record["passed"] = passed
+    (EVIDENCE / "speed" / f"{kind}.json").write_text(json.dumps(record, indent=1) + "\n")
+    if passed:
+        print(f"SYNTAX-RT speed {kind} PASS")
+        return 0
+    return fail(f"speed {kind}: NeLisp own cost above GNU's (median of 7 alternating runs)")
+
+
 def main(argv):
     if argv[1:2] == ["plan"]:
         return check_plan()
+    if argv[1:2] == ["speed"] and len(argv) in (3, 4):
+        return check_speed(argv[2], argv[3] if len(argv) == 4 else None)
     print(__doc__.strip())
     return 2
 

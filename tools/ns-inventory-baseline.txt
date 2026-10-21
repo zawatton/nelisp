@@ -1764,3 +1764,10 @@ pinned-collision ns-collision-divergent	file-name-nondirectory	lisp/nelisp-stdli
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	c0cf8ac830a8
 pinned-collision ns-collision-divergent	string-equal	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	244c8723adb9
 pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	23425a8d9d04
+# Doc 225 P1 (2026-10-21): the prelude defines GNU syntax.c's
+# string-to-syntax, syntax-class-to-char and matching-paren on native
+# syntax char-tables.  The package copies are (unless (fboundp ...))
+# fallbacks, inert wherever the prelude loads first.
+pinned-collision ns-collision-divergent	matching-paren	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	c3def36c6882
+pinned-collision ns-collision-divergent	string-to-syntax	packages/nelisp-emacs-core/src/emacs-syntax-table.el scripts/nelisp-stdlib-prelude.el	ba327ca575b8
+pinned-collision ns-collision-divergent	syntax-class-to-char	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	61a8be9fc58e
