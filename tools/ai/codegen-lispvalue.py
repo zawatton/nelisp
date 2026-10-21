@@ -137,7 +137,8 @@ def write_generator(work):
     meta = os.path.join(work, "meta.json")
     form = (
         "(let* ((cases nelisp-aot-differential-lisp-value-cases)"
-        "       (entries (nelisp-aot-differential-lisp-value-entries t)))"
+        "       (entries (nelisp-aot-differential-lisp-value-entries t))"
+        "       (names (mapcar #'car entries)))"
         "  (with-temp-file \"%s\""
         "    (insert \";; -*- lexical-binding: t -*-\\n\""
         "            \"(require 'nelisp-aot-differential-cases)\\n\""
@@ -146,8 +147,8 @@ def write_generator(work):
         "            \" #'codegen-lv-cases)\\n\"))"
         "  (with-temp-file \"%s\""
         "    (insert \"[\" (mapconcat (lambda (c)"
-        "      (format \"[%%S, %%S, %%d]\" (format \"%%s\" (nth 0 c)) (symbol-name (nth 1 c))"
-        "              (length (nth 3 c)))) cases \", \") \"]\")))"
+        "      (format \"[%%S, %%S, %%d, %%S]\" (format \"%%s\" (nth 0 c)) (symbol-name (nth 1 c))"
+        "              (length (nth 3 c)) (pop names))) cases \", \") \"]\")))"
     ) % (gen, meta)
     r = sh("taskset -c 0-7 emacs --batch -Q -L lisp -L src -L scripts "
            "--eval '(setq load-prefer-newer t)' -l nelisp-aot-differential-cases "
@@ -155,11 +156,8 @@ def write_generator(work):
     if r.returncode != 0 or not os.path.exists(meta):
         sys.exit("generator dump failed: " + r.stderr[-400:])
     stages = json.load(open(meta))
-    names = re.findall(r'\("([a-z0-9-]+)" "\(defun ', open(gen).read())
-    if len(names) != len(stages):
-        sys.exit("case list mismatch: %d names, %d entries" % (len(names), len(stages)))
     return [{"name": n, "stage": s, "kind": k, "args": a}
-            for n, (s, k, a) in zip(names, stages)]
+            for s, k, a, n in stages]
 
 
 def shell_quote(s):

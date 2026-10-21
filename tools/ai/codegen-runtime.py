@@ -586,6 +586,9 @@ def study():
             dynamic[n] = json.loads(path.read_text())
     valid_dynamic = [n for n, row in dynamic.items() if row.get("results_agree") and
                      row.get("source_sha256") == c["source_sha256"] and
+                     all((OUT / (n + "." + variant)).is_file() and
+                         row["variants"].get(variant, {}).get("sha256") == sha(OUT / (n + "." + variant))
+                         for variant in ("nl", "gcc")) and
                      all(v["ir_per_call"] > 0 for v in row["variants"].values())]
     all_profiled = (measured is not None
                     and re.fullmatch(r"[0-9a-f]{64}", measured.get("binary_sha256", ""))
