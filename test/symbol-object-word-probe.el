@@ -28,6 +28,14 @@
     (put s 'p 1)
     s))
 
+(defun sowc-norm (result name)
+  "RESULT printed, with the fresh symbol's NAME replaced: the two runs use two symbols."
+  (let ((str (format "%S" result)) (start 0))
+    (while (string-match (regexp-quote name) str start)
+      (setq str (replace-match "<S>" t t str)
+            start (+ (match-beginning 0) 3)))
+    str))
+
 (defmacro sowc-case (label &rest body)
   "Run BODY twice on a fresh symbol: with X its view, then with X its object WORD.
 The results (or errors) must be equal; BODY must not mention the other one."
@@ -36,9 +44,11 @@ The results (or errors) must be equal; BODY must not mention the other one."
           (run (lambda (use-object)
                  (let* ((s (sowc-fresh sowc-n))
                         (x (if use-object (nelisp--debug-switch 44 s) s)))
-                   (condition-case err
-                       (list 'ok (progn ,@body) (symbol-value s) (get s 'q))
-                     (error (list 'error (car err))))))))
+                   (sowc-norm
+                    (condition-case err
+                        (list 'ok (progn ,@body) (symbol-value s) (get s 'q))
+                      (error (list 'error (car err))))
+                    (symbol-name s))))))
      (setq sowc-checks (1+ sowc-checks))
      (let ((view (funcall run nil)) (object (funcall run t)))
        (unless (equal view object)
@@ -122,6 +132,29 @@ The results (or errors) must be equal; BODY must not mention the other one."
                             (symbol-name x) (length (symbol-name x))))
 (sowc-case sort (mapcar #'symbol-name (sort (list x (intern "sowc-aaa")) #'string<)))
 (sowc-case concat (concat "<" (symbol-name x) ">"))
+
+;;; bytecode, non-local exits, buffer-local variables, watchers, types
+(sowc-case bytecode-varref (funcall (make-byte-code 0 "\10\207" (vector x) 1)))
+(sowc-case bytecode-call (funcall (make-byte-code 0 "\300\301\302\"\207" (vector x 1 nil) 3)))
+(sowc-case catch-throw (list (catch x (throw s 5)) (catch s (throw x 6))))
+(sowc-case signal (progn (put x 'error-conditions (list x 'error))
+                         (put x 'error-message "sowc error")
+                         (list (condition-case e (signal x '(1)) (error (car e)))
+                               (condition-case e (signal s '(2)) (error (car e)))
+                               (condition-case e (error "boom") (error (car e))))))
+(sowc-case buffer-local (with-temp-buffer
+                          (set (make-local-variable x) 5)
+                          (list (symbol-value s) (local-variable-p s) (local-variable-p x)
+                                (buffer-local-value x (current-buffer)))))
+(sowc-case watcher (let ((log nil))
+                     (add-variable-watcher x (lambda (sym new op where) (push (list new op) log)))
+                     (set x 31) (set s 32)
+                     (list (nreverse log) (and (get-variable-watchers x) t))))
+(sowc-case type-of (list (type-of x) (cl-typep x 'symbol) (symbolp x) (sequencep x)))
+(sowc-case lists (list (remq x (list 'a s 'b)) (delete x (list 'a s)) (remove x (list s))
+                       (assoc x (list (cons s 1))) (delq s (list x 'z)) (length (list x s))))
+(sowc-case intern-soft-obj (list (eq (intern-soft x) s) (eq (intern-soft s) x)))
+(sowc-case unintern (let ((name (symbol-name s))) (list (eq (intern-soft name) s) (and (unintern x obarray) t) (intern-soft name))))
 
 ;;; survival of a collection
 (sowc-case gc (let ((kept (list x (vector x) (cons x x))))

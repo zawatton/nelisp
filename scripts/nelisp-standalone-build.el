@@ -14732,8 +14732,11 @@ eval applyfn.")
       (let* ((tag (heap-sexp-tag-word key_ptr)))
         (if (or (= tag 2) (= tag 16))
             (logand (heap-sexp-payload key_ptr) 2147483647)
+          ;; Doc 226 D9 stage 3: an interned symbol hashes by its name, which a
+          ;; view and an object WORD of one symbol share (the payload of a view
+          ;; is its name length, of an object its address).
           (if (= tag 4)
-              (logand (heap-sexp-payload key_ptr) 2147483647)
+              (nl_ht_str_hash key_ptr)
             (if (or (= tag 5) (= tag 14))
                 (nl_ht_str_hash key_ptr)
               (if (or (= tag 6) (= tag 15))
