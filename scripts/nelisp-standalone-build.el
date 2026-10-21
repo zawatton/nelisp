@@ -46854,7 +46854,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
                (if (= (sexp-tag func_slot) 4)
                    (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
-                                   tail_ptr env func_slot head_ptr 0)
+                                   tail_ptr env func_slot head_ptr form_ptr)
                  (if (= (nl_cons_is_macro func_slot) 1)
                      (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
                    (nl_eic_eval_args_w tail_ptr env func_slot
@@ -46863,9 +46863,11 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; chain (indirect_function, data.c:2550) before any argument is
     ;; evaluated, so an argument that redefines a later link does not change
     ;; this call.  FUNC_SLOT holds the first link, a symbol; on 1 it holds
-    ;; the final definition.  A special form or macro at the end, or a chain
-    ;; an internal writer made cyclic, keeps the first link and its existing
-    ;; handling.  0: the chain ends unbound.
+    ;; the final definition, on 3 the final macro (GNU eval_sub tests for a
+    ;; macro only after indirect_function, so an alias of a macro expands,
+    ;; whenever the target became one).  A special form at the end, or a
+    ;; chain an internal writer made cyclic, keeps the first link and its
+    ;; existing handling.  0: the chain ends unbound.
     (defun nl_eic_resolve_alias_w (func_slot env)
       (let* ((alias-slot (nl_root_reserve env)) (w 0) (hops 0) (status 2))
         (seq
@@ -46882,18 +46884,22 @@ tails run against a private box), and the (rc, OUT) adapter F."
                        0
                      (setq status 1))))))
          (if (= status 0) 0
-           (seq
-            (if (or (>= hops 65536)
-                    (= (logior (logxor (sexp-tag func_slot) 7)
-                               (logxor (heap-sexp-data func_slot) 13108)) 0)
-                    (= (nl_cons_is_macro func_slot) 1))
-                (wf_copy32 func_slot alias-slot) 0)
-            1)))))
-    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name _pad)
+           (if (and (< hops 65536) (= (nl_cons_is_macro func_slot) 1)) 3
+             (seq
+              (if (or (>= hops 65536)
+                      (= (logior (logxor (sexp-tag func_slot) 7)
+                                 (logxor (heap-sexp-data func_slot) 13108)) 0))
+                  (wf_copy32 func_slot alias-slot) 0)
+              1))))))
+    ;; FORM_PTR is the whole call form, for a macro the alias chain reaches.
+    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name form_ptr)
       (if (= w 2)
-          (if (= (nl_eic_resolve_alias_w func_slot env) 0)
-              (nl_abi_fail (nl_cons_stash_void_function env call_name) 0)
-            (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name))
+          (let* ((resolved (nl_eic_resolve_alias_w func_slot env)))
+            (if (= resolved 0)
+                (nl_abi_fail (nl_cons_stash_void_function env call_name) 0)
+              (if (= resolved 3)
+                  (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
+                (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
