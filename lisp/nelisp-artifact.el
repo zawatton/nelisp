@@ -1931,6 +1931,8 @@ by hand.  Recorded here and reported in the manifest instead.")
                       (plist-get unit :symbols))
           :relocs (plist-get unit :relocs)
           :extern-symbols (plist-get unit :extern-symbols)
+          ;; Doc 229 S4.2: the quoted constants, printed, read once at load.
+          :constants (plist-get unit :constants)
           :compile-report compile-report
           :defuns (mapcar #'nelisp-artifact--native-defun-entry
                           (plist-get unit :defuns)))))
@@ -2412,6 +2414,8 @@ ABI, and NATIVE metadata (object hash, symbols, arch) is recorded."
                          :text-size (plist-get native :text-size)
                          :relocs (plist-get native :relocs)
                          :extern-symbols (plist-get native :extern-symbols)
+                         ;; Doc 229 S4.2: what a harness must create.
+                         :constants (plist-get native :constants)
                          :compile-report (plist-get native :compile-report)
                          :defuns (plist-get native :defuns))))
    (when (eq kind 'neln)
@@ -3862,6 +3866,15 @@ native object, or SYMBOL is not one of its native functions."
         (error "%s has no embedded native object" artifact-path))
       (unless (member symbol symbols)
         (error "native symbol %s not in artifact (have %S)" symbol symbols))
+      (if (plist-get native :extern-symbols)
+          ;; Doc 229: an object that calls the runtime -- the generic
+          ;; function behind a fixnum fast path, the allocator that boxes a
+          ;; result -- cannot link against the two-line integer driver.  The
+          ;; general harness provides those entry points, as the native
+          ;; call ladder already routes such a defun.  GNU basis: native
+          ;; code for (* x x) calls Ftimes through the unit's function
+          ;; table (comp.c), so it is never an extern-free leaf there either.
+          (nelisp-artifact-native-exec-general artifact-path symbol args)
       (let* ((dir (nelisp-artifact--make-temp-directory "neln-exec"))
              (obj (expand-file-name "mod.o" dir))
              (obj2 (expand-file-name "mod-c.o" dir))
@@ -3894,7 +3907,7 @@ native object, or SYMBOL is not one of its native functions."
                 (apply #'call-process exe nil t nil
                        (mapcar #'number-to-string args))
                 (string-to-number (string-trim (buffer-string)))))
-          (delete-directory dir t))))))
+          (delete-directory dir t)))))))
 
 (defun nelisp-artifact--native-exec-cache-root ()
   "Return the native exec cache root directory."
@@ -4350,6 +4363,12 @@ implementation."
         nil
       (seq-remove
        (lambda (name)
+         (or
+          ;; Doc 229 S4.2: the harness defines the scratch accessor for
+          ;; an artifact with string constants (it refuses other ones).
+          (and (equal name "nl_vector_slot_ptr")
+               (let ((c (plist-get native :constants)))
+                 (and c (listp c))))
          (member name '("nl_alloc_symbol"
                         "nl_alloc_str"
                         "nl_alloc_mut_str"
@@ -4366,7 +4385,7 @@ implementation."
                         ;; a delegated call to a variable carries this.
                         "nl_sexp_clone_into"
                         "nelisp_aot_builtin_call1"
-                        "nelisp_aot_builtin_calln")))
+                        "nelisp_aot_builtin_calln"))))
        externs))))
 
 (defun nelisp-artifact--native-trampoline-frame-bytes (meta)
@@ -4441,8 +4460,54 @@ implementation."
                  ".size call_target, .-call_target")))
     (mapconcat #'identity lines "\n")))
 
-(defun nelisp-artifact--native-driver-c (csym meta &optional args)
-  "Return the C harness source for CSYM using META."
+(defun nelisp-artifact--native-driver-c (csym meta &optional args constants)
+  "Return the C harness source for CSYM using META.
+CONSTANTS are the artifact's printed quoted constants (Doc 229 S4.2); the
+harness builds the string ones in the scratch elements the code reads."
+  (nelisp-artifact--native-driver-c-constants
+   (nelisp-artifact--native-driver-c-base csym meta args)
+   (mapcar (lambda (c) (car (read-from-string c))) constants)))
+
+(defun nelisp-artifact--native-driver-c-constants (source constants)
+  "Return C SOURCE extended with the string CONSTANTS as scratch elements."
+  (if (null constants)
+      source
+    (let* ((k (length constants))
+           (c-string (lambda (str)
+                       (concat "\""
+                               (mapconcat (lambda (b) (format "\\%03o" b))
+                                          (string-to-list (encode-coding-string str 'utf-8 t))
+                                          "")
+                               "\"")))
+           (decl (concat
+                  (format "static NelnSexp neln_consts[%d];\n" k)
+                  "NelnSexp *nl_vector_slot_ptr(NelnSexp *vec, int64_t idx) {\n"
+                  "  (void)vec;\n"
+                  (format "  if (idx >= 16 && idx < %d) return &neln_consts[idx - 16];\n" (+ 16 k))
+                  "  fprintf(stderr, \"neln: scratch element %ld unsupported\\n\", (long)idx);\n"
+                  "  exit(97);\n"
+                  "}\n\n"))
+           (init (let ((i -1))
+                   (mapconcat (lambda (str)
+                                (setq i (1+ i))
+                                (format "  neln_write_str(&neln_consts[%d], %s);\n  neln_register_slot(&neln_consts[%d]);\n"
+                                        i (funcall c-string str) i))
+                              constants "")))
+           (reset-head "static void neln_reset_slots(void) {\n")
+           (reset-tail "    neln_register_slot(&neln_callback_slots[i]);\n  }\n}\n"))
+      (unless (and (= (cl-count-if (lambda (_) t) (split-string source (regexp-quote reset-head) t)) 2)
+                   (string-search reset-tail source))
+        (error "nelisp-artifact: harness layout changed; cannot place constants"))
+      (replace-regexp-in-string
+       (regexp-quote reset-tail)
+       (lambda (_) (concat "    neln_register_slot(&neln_callback_slots[i]);\n  }\n" init "}\n"))
+       (replace-regexp-in-string (regexp-quote reset-head)
+                                 (lambda (_) (concat decl reset-head))
+                                 source t t)
+       t t))))
+
+(defun nelisp-artifact--native-driver-c-base (csym meta &optional args)
+  "Return the C harness source for CSYM using META, without constants."
   (let* ((arity (or (plist-get meta :arity) 0))
          (arg-kinds (or (mapcar (lambda (arg)
                                   (cond
@@ -5033,7 +5098,12 @@ implementation."
             (with-temp-file asrc
               (insert (nelisp-artifact--native-trampoline-asm csym meta) "\n"))
             (with-temp-file csrc
-              (insert (nelisp-artifact--native-driver-c csym meta args)))
+              (insert (nelisp-artifact--native-driver-c
+                       csym meta args
+                       (plist-get (plist-get (nelisp-artifact-read-manifest
+                                              artifact-path)
+                                             :native)
+                                  :constants))))
             (unless (eq 0 (nelisp-artifact--call-process-quiet
                            cc build-log "-O2" "-c" "-o"
                            (expand-file-name "tramp.o" dir) asrc))
@@ -5124,6 +5194,18 @@ This links the embedded object against a generated C/asm harness that
 provides the `nl_alloc_symbol', `nelisp_aot_builtin_call1', and minimal
 `nelisp_aot_builtin_calln' runtime shims plus a boundary-populating
 trampoline, then returns the decoded integer or string result."
+  (let ((constants (plist-get (plist-get (nelisp-artifact-read-manifest artifact-path)
+                                         :native)
+                              :constants)))
+    ;; Doc 229 S4.2: quoted constants are created by the in-process loader
+    ;; and handed over in the scratch vector.  The C harness builds string
+    ;; constants itself; any other constant needs the in-process loader,
+    ;; so such an artifact falls back as the native call ladder does.
+    (when (and constants (listp constants)
+               (not (cl-every (lambda (c) (stringp (car (read-from-string c))))
+                              constants)))
+      (error "nelisp-artifact: %s holds quoted constants; native exec needs the in-process loader"
+             symbol)))
   (let ((helper (nelisp-artifact--standalone-host-helper-native-exec-general
                  artifact-path symbol args)))
     (if helper
