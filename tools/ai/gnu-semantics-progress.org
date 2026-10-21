@@ -1,0 +1,22 @@
+#+TITLE: GNU 31.1 semantic parity fixes
+#+NOTE: 2026-10-22: eight defined criteria; baseline 1aa530d09. Each item compares GNU-generated fixtures with both linkages and records a failing baseline control in target/gnu-semantics/.
+#+NOTE: Checkpoint 2026-10-22: coordinator corrected item 5 after the initial stop. GNU 31.1 aborts source load with the same error symbol/message/data when eager expansion signals (macroexp.el:947-950; lread.c:2151). Match that behavior; no fallback is required. Evidence: target/gnu-semantics/blocker/direct-load.stderr (exit 255). The blocker is resolved. Eight criteria remain defined; partial buffer/error/shadow/variable/printer/syntax changes are preserved and unbuilt at restart. Continue with eager-load implementation, focused fixtures, both builds, then final verification and CPU-15 paired measurements. No thresholds changed.
+
+* S1 GNU semantics and end-to-end verification
+** S1.1 save-current-buffer restores live buffers on normal and non-local exit
+cmd: bash tools/ai/gnu-semantics-check.sh buffer
+** S1.2 error uses format-message under C and C.UTF-8 locales
+cmd: bash tools/ai/gnu-semantics-check.sh error
+** S1.3 Bound internal--text-quoting-flag adds no compatibility shadow
+cmd: bash tools/ai/gnu-semantics-check.sh shadow
+** S1.4 Special-variable declarations and bindings match GNU
+#+TIMEOUT: 300
+cmd: bash tools/ai/gnu-semantics-check.sh variables
+** S1.5 Source load eagerly macroexpands and aborts with GNU's error on expansion failure
+cmd: bash tools/ai/gnu-semantics-check.sh load
+** S1.6 Bool-vector and floating-point printing match GNU
+cmd: bash tools/ai/gnu-semantics-check.sh printer
+** S1.7 Syntax skipping and backward-prefix-chars match GNU
+cmd: bash tools/ai/gnu-semantics-check.sh syntax
+** S1.8 Both linkages pass final checks, standalone checks, MCP and paired regression measurements
+cmd: bash tools/ai/gnu-semantics-check.sh final

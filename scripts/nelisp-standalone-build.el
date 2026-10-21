@@ -8197,7 +8197,8 @@ argument (reachability + in-arena bounds checks).")
                             (let* ((arg (wf_arg_ptr args 0)))
                                    (let ((sb (alloc-bytes 32 8))) (seq (m5_make_builder sb 16 1)
                                         (if (= (ptr-read-u64 arg 0) 3)
-                                            (m5_push_float sb arg)
+                                            (m5_push_float_format sb arg
+                                             (nl_env_lookup_val_w 'float-output-format env 0))
                                           (if (= (ptr-read-u64 arg 0) 13)
                                               (m5_push_bignum sb arg)
                                             (m5_push_dec sb (ptr-read-u64 arg 8))))
@@ -17164,11 +17165,56 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= ef 2047)
              (if (= (logand bits (- (shl 1 52) 1)) 0)
                  (seq (mut-str-push-byte ms 49) (mut-str-push-byte ms 46) (mut-str-push-byte ms 48) (mut-str-push-byte ms 101) (mut-str-push-byte ms 43) (mut-str-push-byte ms 73) (mut-str-push-byte ms 78) (mut-str-push-byte ms 70))
-               (seq (mut-str-push-byte ms 48) (mut-str-push-byte ms 46) (mut-str-push-byte ms 48) (mut-str-push-byte ms 101) (mut-str-push-byte ms 43) (mut-str-push-byte ms 78) (mut-str-push-byte ms 97) (mut-str-push-byte ms 78)))
+               ;; GNU print.c float_to_string prints the 51 payload bits;
+               ;; the IEEE quiet-NaN bit is not part of that integer.
+               (seq (m5_push_udec ms (logand bits 2251799813685247))
+                    (mut-str-push-byte ms 46) (mut-str-push-byte ms 48)
+                    (mut-str-push-byte ms 101) (mut-str-push-byte ms 43)
+                    (mut-str-push-byte ms 78) (mut-str-push-byte ms 97)
+                    (mut-str-push-byte ms 78)))
            (if (= mag 0)
                (seq (mut-str-push-byte ms 48) (mut-str-push-byte ms 46) (mut-str-push-byte ms 48))
              (let* ((qslot (alloc-bytes 8 8)) (w (nl_shortest mag qslot)) (q (ptr-read-u64 qslot 0)))
                (m5_emit_sig ms w q)))))))
+    ;; GNU print.c float_to_string: only %.{0..15}{e,f,g} is accepted,
+    ;; with omitted precision allowed and zero accepted only for f.
+    ;; A negative result means use the shortest round-trip spelling.
+    (defun m5_float_precision (fmt i n width)
+      (if (>= i n) -2
+        (let* ((c (m5_byte_at fmt i)))
+          (if (and (>= c 48) (<= c 57))
+              (let* ((next (+ (* (if (< width 0) 0 width) 10) (- c 48))))
+                (if (> next 15) -2 (m5_float_precision fmt (+ i 1) n next)))
+            (if (and (= (+ i 1) n)
+                     (or (= c 101) (= c 102) (= c 103))
+                     (or (/= width 0) (= c 102)))
+                (if (< width 0) 6 width)
+              -2)))))
+    (defun m5_float_has_point (ms i n)
+      (if (>= i n) 0
+        (let* ((c (m5_byte_at ms i)))
+          (if (or (= c 46) (= c 101)) 1
+            (m5_float_has_point ms (+ i 1) n)))))
+    (defun m5_push_float_format (ms vptr fmt)
+      (if (or (< fmt 8) (= (logand fmt 1) 1))
+          (m5_push_float ms vptr)
+        (let* ((tag (ptr-read-u64 fmt 0)))
+          (if (= (m5_string_tag_p tag) 0) (m5_push_float ms vptr)
+            (let* ((n (m5_strlen fmt))
+                   (prec (if (and (>= n 3) (= (m5_byte_at fmt 0) 37)
+                                  (= (m5_byte_at fmt 1) 46))
+                             (m5_float_precision fmt 2 n -1) -2))
+                   (bits (sexp-float-unwrap vptr)))
+              (if (or (< prec 0) (= (logand (sar bits 52) 2047) 2047))
+                  (m5_push_float ms vptr)
+                (let* ((start (m5_strlen ms)) (buf (alloc-bytes 512 1))
+                       (scratch (alloc-bytes 32 8)))
+                  (seq
+                   (m5_fmt_float_body ms bits (m5_byte_at fmt (- n 1)) prec buf scratch)
+                   (if (and (/= prec 0)
+                            (= (m5_float_has_point ms start (m5_strlen ms)) 0))
+                       (seq (mut-str-push-byte ms 46) (mut-str-push-byte ms 48))
+                     1)))))))))
     (defun m5_push_exp (ms e upcase)       ; "e±NN" / "E±NN"
       (seq (mut-str-push-byte ms (if (= upcase 1) 69 101))
            (if (< e 0) (mut-str-push-byte ms 45) (mut-str-push-byte ms 43))
@@ -22390,17 +22436,26 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (nl_abi_word_to_rc (bf_set_declared_default_w env sym val 0) out))
     (defun nl_n3_declared_default_raw_w (env sym val _pad)
   ;; Successful callers have validated a heap symbol; preserve its identity.
-  (if (= (seq (wf_dirty)
-              (nelisp_env_setv_mirror_lazy env sym val (+ env 64))) 0)
-      (nl_word_clone sym) 0))
+  ;; GNU defvar updates the oldest dynamic binding's saved value, rather
+  ;; than the currently visible value, when its top-level value is void.
+  (let* ((binding (nl_sb_toplevel_binding env sym)))
+    (if (= (seq (wf_dirty)
+                (if (= binding 0)
+                    (nelisp_env_setv_mirror_lazy env sym val (+ env 64))
+                  (seq (nl_vector_set_slot (ptr-read-u64 binding 8) 1 val) 0))) 0)
+        (nl_word_clone sym) 0)))
     (defun nl_n3_declared_default_raw (env sym val out)
   (nl_abi_word_to_rc (nl_n3_declared_default_raw_w env sym val 0) out))
     (defun bf_defvar_init_mode (env sym scratch)
       ;; A void current dynamic binding takes precedence over the global
-      ;; default.  Otherwise only an uninitialized global default is filled.
+      ;; default. Otherwise inspect the oldest saved dynamic value, as GNU
+      ;; eval.c:defvar/default_toplevel_binding do with the specpdl stack.
       ;; 0: skip, 1: global default, 2: current dynamic value.
       (if (= (bf_dynamic_lookup env sym scratch) 0)
-          (if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)
+          (let* ((binding (nl_sb_toplevel_binding env sym)))
+            (if (= binding 0)
+                (if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)
+              (if (= (symbol-eq (vector-ref-ptr binding 1) (+ env 64)) 1) 1 0)))
         2))
     (defun bf_set_defvar_value_w (env sym val _pad mode)
       (if (= mode 1) (bf_set_declared_default_w env sym val 0)
@@ -44583,6 +44638,32 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_sb_mirror_only_p (env name)
       (if (= (nl_sb_worker_p env) 1) 0
         (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) name))))
+    ;; GNU eval.c:default_toplevel_binding scans specpdl oldest first.
+    ;; Shallow records are newest first within a frame; inspect their tail
+    ;; first, then walk frames from outermost to innermost. Borrow the saved
+    ;; [NAME VALUE] vector so defvar can initialize its eventual restore value.
+    (defun nl_sb_toplevel_in_list (names sym)
+      (if (= (nl_val_tag names) 7)
+          (let* ((older (nl_sb_toplevel_in_list (nl_cons_cdr_word names) sym)))
+            (if (/= older 0) older
+              (let* ((binding (nl_cons_car_word names)))
+                (if (= (nl_val_tag binding) 8)
+                    (if (= (extern-call nelisp_symbol_key_equal
+                                         (nl_vector_slot_word binding 0) sym) 1)
+                        binding 0)
+                  0))))
+        0))
+    (defun nl_sb_toplevel_walk (backing depth i sym)
+      (if (>= i depth) 0
+        (let* ((frame (nl_vector_slot_word backing i))
+               (binding (nl_sb_toplevel_in_list
+                          (nelisp_frame_slot_raw_word frame 1) sym)))
+          (if (/= binding 0) binding
+            (nl_sb_toplevel_walk backing depth (+ i 1) sym)))))
+    (defun nl_sb_toplevel_binding (env sym)
+      (let* ((frames (+ env 32)))
+        (nl_sb_toplevel_walk (nl_record_slot_word frames 0)
+          (sar (nelisp_frame_slot_raw_word frames 1) 2) 0 sym)))
     ;; Restore every shallow binding of the top frame of FRAMES (env+32),
     ;; called by `nelisp_frame_pop' before the frame is dropped.
     ;; Every frame pop passes here, so the common no-binding case reads raw

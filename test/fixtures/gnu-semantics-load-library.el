@@ -1,0 +1,15 @@
+;;; gnu-semantics-load-library.el --- Eager expansion input -*- lexical-binding: t; -*-
+(defmacro gs-load-macro (x) `(list 'old ,x))
+(defun gs-load-before (x) (gs-load-macro x))
+(defmacro gs-load-macro (x) `(list 'new ,x))
+(defun gs-load-after (x) (gs-load-macro x))
+(progn
+  (defmacro gs-load-progn (x) `(list 'progn-old ,x))
+  (defun gs-load-progn-before (x) (gs-load-progn x))
+  (defmacro gs-load-progn (x) `(list 'progn-new ,x)))
+(defvar gs-load-fallback-count 0)
+(defmacro gs-load-fallback ()
+  (setq gs-load-fallback-count (1+ gs-load-fallback-count))
+  (if (= gs-load-fallback-count 1) (signal 'error '("fixture expansion"))
+    '(quote fallback)))
+(defun gs-load-deferred () (gs-load-fallback))

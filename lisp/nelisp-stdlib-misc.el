@@ -239,12 +239,9 @@ obarray returned by `obarray-make' for supported iteration."
 ;; Migrating `error' too lets us delete `bi_format' + the format
 ;; helpers (FormatSpec / pad_field / fmt_int_with_sign /
 ;; fmt_float_default) wholesale from Rust.
-(defun error (&rest args)
-  (let ((msg (cond
-              ((null args) "")
-              ((stringp (car args)) (apply (function format) args))
-              (t (prin1-to-string (car args))))))
-    (signal 'error (list msg))))
+(defun error (string &rest args)
+  "Signal an error with a message made by `format-message'."
+  (signal 'error (list (apply #'format-message string args))))
 
 ;; Rust-min batch 6i (2026-05-06): `princ' migrated from Rust to
 ;; elisp.  The previous `bi_princ' was just a stringp / Display
