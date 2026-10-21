@@ -35,7 +35,7 @@
 ;; Fresh names by `intern', across lengths and encodings.
 (let ((names (list "seoc-a" "s" "seoc-with space" "seoc-\\escaped" "seoc-日本語"
                    "seoc-ünï" (make-string 100 ?x) (concat "seoc-" (make-string 300 ?y))
-                   "seoc-1" "seoc-2" "seoc-+" "seoc-:keyword-like" ":seoc-keyword")))
+                   "seoc-1" "seoc-2" "seoc-+" "seoc-:keyword-like")))
   (dolist (name names)
     (let ((sym (intern name)))
       (seoc-check (eql (seoc-state sym) 1) (format "intern %S has its object with a name" name))
@@ -48,6 +48,12 @@
       (seoc-check (null (symbol-function sym)) (format "%S has a nil function" name))
       (seoc-check (condition-case nil (progn (symbol-value sym) nil) (void-variable t))
                   (format "symbol-value of %S signals void-variable" name)))))
+
+;; A keyword is its own constant value, as in GNU's `intern' (lread.c).
+(let ((sym (intern ":seoc-keyword")))
+  (seoc-check (eql (seoc-state sym) 1) "a keyword has its object")
+  (seoc-check (and (boundp sym) (eq (symbol-value sym) sym)) "a keyword is bound to itself")
+  (seoc-check (keywordp sym) "and is a keyword"))
 
 ;; The empty name.
 (let ((sym (intern "")))

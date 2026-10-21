@@ -46735,7 +46735,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (if (= (nl_n3_special_object sym) 1) 1
             (if (or (= (sexp-tag sym) 4) (= (sexp-tag sym) 16))
                 (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
-                  (if (= entry 0) (nl_n3_special_name sym)
+                  ;; Doc 226 D9: a symbol has its entry from the moment it is
+                  ;; read, before any definition; its function cell then
+                  ;; holds the unbound marker, which defines nothing.
+                  (if (if (= entry 0) 1
+                        (= (wf_bytecode_w_unbound_p env (nl_ent_w entry 1)) 1))
+                      (nl_n3_special_name sym)
                     (bf_special_form_p_walk (nl_ent_ptr entry 1) env (+ depth 1))))
               0)))))))
 
