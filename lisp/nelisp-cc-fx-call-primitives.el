@@ -121,14 +121,16 @@
     ;; hash lookup per call.  A `funcall' call site keeps the last covered
     ;; closure it called and that closure's record in its cache vector's
     ;; slots 3 and 4, so a site that keeps calling one closure skips the
-    ;; lookup.  A record retired from the table has its code slot cleared
-    ;; (`nelisp--fx-retire'), which the cached copy checks, and the arity
-    ;; is checked at every call.  CACHE 0: no site cache (a worker, or a
+    ;; lookup.  A record retired from the table is marked in its slot 7
+    ;; (`nelisp--fx-retire'), which the cached copy checks (its code stays:
+    ;; a call already running it must go on), and the arity is checked at
+    ;; every call.  CACHE 0: no site cache (a worker, or a
     ;; call with no cache vector).
     (defun m5_fx_funcall_site (cache fn stk sp argc resw env ws)
       (if (if (= cache 0) 0 (= (nl_vector_slot_word cache 3) fn))
           (let* ((rec (nl_vector_slot_word cache 4)))
-            (if (if (= (nl_val_tag (nl_vector_slot_word rec 0)) 8)
+            (if (if (if (>= (nl_vector_length rec) 8)
+                        (= (nl_vector_slot_word rec 7) 3) 0)
                     (>= (m5_fx_arity_code rec argc) 0) 0)
                 (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
                                   env 0 resw 0)
@@ -150,7 +152,7 @@
     ;; The record before the closure, so a reader that sees the closure
     ;; sees its record (the site kind's order, `m5_fx_site_kind').
     (defun m5_fx_funcall_site_fill (cache fn rec)
-      (if (< (nl_vector_length cache) 5) 0
+      (if (if (< (nl_vector_length cache) 5) 1 (< (nl_vector_length rec) 8)) 0
         (seq (wf_dirty)
              (ptr-write-u64 (+ (nl_word_payload cache) 40) 0 rec)
              (ptr-write-u64 (+ (nl_word_payload cache) 32) 0 fn)))))

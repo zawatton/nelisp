@@ -26738,7 +26738,7 @@ Defining it as a function compiles them again.")
               (puthash body (if c
                                 (prog1 (vector (car c) (cdr c) (nth 1 shape)
                                                nelisp--fx-next-index name
-                                               (nth 2 shape) (nth 3 shape))
+                                               (nth 2 shape) (nth 3 shape) nil)
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table)))))))))
@@ -27186,17 +27186,21 @@ are skipped.")
 ;; for every definition, these two included.
 (defun nelisp--fx-retire (body)
   "Remove BODY's entry from `nelisp--fx-table'.
-A compiled record leaves with its code slot cleared: a `funcall' call
+A compiled record leaves marked retired (its slot 7): a `funcall' call
 site that cached it (`m5_fx_funcall_site') checks that slot, so retired
-code never runs again from a cache."
+code never starts again from a cache.  Its code slot stays: the record's
+own activations, and any caller that already holds the record, still run it
+(GNU's function object keeps its code for as long as anything refers to
+it)."
   (let ((rec (gethash body nelisp--fx-table)))
-    (when (vectorp rec) (aset rec 0 nil))
+    (when (and (vectorp rec) (> (length rec) 7)) (aset rec 7 t))
     (remhash body nelisp--fx-table)))
 
 (defun nelisp--fx-table-put (body rec)
-  "Install REC as BODY's entry, retiring a compiled record it replaces."
+  "Install REC as BODY's entry, marking a compiled record it replaces retired."
   (let ((old (gethash body nelisp--fx-table)))
-    (when (and (vectorp old) (not (eq old rec))) (aset old 0 nil)))
+    (when (and (vectorp old) (not (eq old rec)) (> (length old) 7))
+      (aset old 7 t)))
   (puthash body rec nelisp--fx-table))
 
 (when (and (fboundp 'nl-afset)
