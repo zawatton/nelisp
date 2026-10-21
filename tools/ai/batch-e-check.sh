@@ -37,10 +37,10 @@ capped() { (ulimit -v 8388608; exec "$@"); }
 
 # run_fixture BIN FIXTURE LOCALE OUTFILE ERRFILE -> exit status
 run_nelisp() {
-  env LC_ALL="$3" capped timeout 300 "$1" -l "$2" > "$4" 2> "$5"
+  capped env LC_ALL="$3" timeout 300 "$1" -l "$2" > "$4" 2> "$5"
 }
 run_gnu() {
-  env LC_ALL="$2" LANG= LANGUAGE= capped timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> /dev/null
+  capped env LC_ALL="$2" LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> /dev/null
 }
 
 expected_for() {
@@ -141,6 +141,7 @@ EOF
     python3 tools/ai/elc-interpreted-check.py fixture > "$OUT/closures.log" 2>&1 || fail "closure fixture ($(tail -1 "$OUT/closures.log"))"
     say "PASS closures ($(tail -1 "$OUT/closures.log"))" ;;
   syntax-rt)
+    mkdir -p target/syntax-rt   # syntax-rt-check.py writes its evidence there
     for m in semantics chartab; do
       SYNTAX_RT_DYN=$DYN SYNTAX_RT_STATIC=$ST SYNTAX_RT_CPU=0-7 python3 tools/ai/syntax-rt-check.py $m \
         > "$OUT/syntax-rt-$m.log" 2>&1 || fail "syntax-rt $m ($(tail -1 "$OUT/syntax-rt-$m.log"))"

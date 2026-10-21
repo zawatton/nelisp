@@ -1781,3 +1781,8 @@ pinned-collision ns-collision-divergent	syntax-class-to-char	packages/nelisp-ema
 # prelude's arrayp and sequencep now answer t for char-tables (GNU), its
 # and optimize-char-table is chartab.c's (the foundation's is a no-op stub).
 pinned-collision ns-collision-divergent	optimize-char-table	packages/nelisp-emacs-foundation/src/emacs-cc-chartab-1.el scripts/nelisp-stdlib-prelude.el	deeff09d6702
+# Batch E (2026-10-22): the prelude defines doc.c's text-quoting-style,
+# variable and function, with internal--text-quoting-flag set from the
+# locale.  The package copy is an (unless (fboundp ...)) fallback, inert
+# wherever the prelude loads first.
+pinned-collision ns-collision	text-quoting-style	packages/nelisp-emacs-foundation/src/emacs-cc-doc-1.el scripts/nelisp-stdlib-prelude.el
