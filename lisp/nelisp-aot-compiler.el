@@ -3053,6 +3053,9 @@ macros do not leak into the host Emacs session."
 (defvar nelisp-aot-compiler--special-vars nil
   "Top-level special variables declared in the current Doc 129 compile unit.")
 
+(defvar nelisp-aot-compiler--current-defun-name nil
+  "Source function whose body is being parsed, for variable diagnostics.")
+
 (defun nelisp-aot-compiler--top-level-defun-names (sexp)
   "Return top-level defun names in SEXP."
   (let (names)
@@ -9755,6 +9758,15 @@ functions `((NAME . ARITY) ...)'."
                   :class (or (plist-get info :class) 'gp)
                   :repr (or (plist-get info :repr) 'unknown)
                   :root-p (plist-get info :root-p)))
+        ;; GNU bytecomp.el's `byte-compile-free-vars-warn' checks boundp
+        ;; and compile-unit declarations after lexical lookup misses.
+        ;; Native runtime helpers cannot safely defer an unknown variable
+        ;; through their synthetic boundary slots, so make it an error.
+        (unless (or (boundp sexp)
+                    (memq sexp nelisp-aot-compiler--special-vars))
+          (signal 'nelisp-aot-compiler-error
+                  (list :free-symbol sexp
+                        :function nelisp-aot-compiler--current-defun-name)))
         (if (and nelisp-aot-compiler--allow-external-user-calls
                  (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out)
                  (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
@@ -12510,7 +12522,8 @@ Returns one of:
                                body parse-fenv)
                             body))
              (body-ir (let ((nelisp-aot-compiler--next-rt-let-slot
-                             rt-slot-cell))
+                             rt-slot-cell)
+                           (nelisp-aot-compiler--current-defun-name name))
                         (nelisp-aot-compiler--parse-value
                          return-body env parse-fenv defuns)))
              ;; The parser maps both Lisp booleans and integer 0/1 to
