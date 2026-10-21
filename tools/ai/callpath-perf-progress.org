@@ -53,16 +53,18 @@ cmd: python3 tools/ai/callpath-perf-check.py arity
 
 #+NOTE: 2026-10-21 step 1a (Doc 221 M02/M23, adapted from GNU lisp.h:786-822, eval.c:3153, bytecode.c:640,803): direct symbol cells. Four-layout mean Ir, GC included, dynamic, against base02: funcall interp/VM/byte 17,553/13,947/2,297 (19,735/15,535/2,866); builtin interp/VM/byte 13,909/3,710/1,322 (15,306/4,819/1,817). Caps 10,230/5,115/1,035 and 3,630/1,816/237 remain unmet. The verify build (NELISP_SYMCELL_VERIFY=1: every cell answer is compared with the hashed walk, exit 97 on a difference) passes the focused semantics and the entry check. Residual on the generic path: nelisp_mirror_lookup_entry_valid_key (291 Ir per interpreter call) and the out-of-line accessor calls in the cell read (~250 Ir per bytecode varref). Evidence: target/callpath-perf/{study,floors}-queued/s1a-dynamic, target/cpo/s1a{,-verify}.
 
-** S2.1 Interpreter funcall four-layout mean Ir <= 10x GNU (GNU 1,023 -> cap 10,230)
-cmd: python3 tools/ai/callpath-perf-check.py funcall interp 10230
-** S2.2 VM funcall four-layout mean Ir <= 5x GNU (GNU 1,023 -> cap 5,115)
-cmd: python3 tools/ai/callpath-perf-check.py funcall vm 5115
-** S2.3 Bytecode funcall four-layout mean Ir <= 5x GNU (GNU 207 -> cap 1,035)
-cmd: python3 tools/ai/callpath-perf-check.py funcall byte 1035
-** S2.4 No regression against the session-3a bars on every mode: builtin floors, let and while, and dynamic boot/files/regex
-cmd: python3 tools/ai/callpath-perf-check.py noregress
-** S2.5 Builtin call floors within the same caps: interpreter <= 10x GNU, VM and bytecode <= 5x GNU, four-layout mean Ir
-cmd: python3 tools/ai/callpath-perf-check.py builtin
+#+NOTE: 2026-10-21 16:30 acceptance switched to wall-clock by the user ("実時間での GNU 比較に切り替えて"; COMMON.md Measurement). Rewritten one for one, multipliers kept: S2.1 interp funcall 10x, S2.2 VM funcall 5x, S2.3 bytecode funcall 5x GNU 31.1 (were four-layout mean Ir caps 10,230/5,115/1,035); S2.4 is now a wall-clock regression guard against base02 (median ratio <= 1.03 for builtin/let/while in every mode and linkage and for dynamic boot/files/regex; was the session-3a Ir bars); S2.5 builtin floors 10x/5x/5x GNU in wall-clock (was four-layout mean Ir). Harness: tools/ai/callpath-perf-wall.py, the pinned Ir fixtures, own cost = (op loop - empty while loop)/N in one process, 7 alternating rounds (candidate, GNU, base02) pinned to CPUs 28-31 under the 8 GiB cap, GC included. Ir stays a diagnostic only.
+
+** S2.1 Interpreter funcall wall-clock own cost <= 10x GNU 31.1 (median of 7 alternating pinned rounds)
+cmd: python3 tools/ai/callpath-perf-check.py wallfuncall interp 10
+** S2.2 VM funcall wall-clock own cost <= 5x GNU 31.1 (GNU's VM row is its interpreter)
+cmd: python3 tools/ai/callpath-perf-check.py wallfuncall vm 5
+** S2.3 Bytecode funcall wall-clock own cost <= 5x GNU 31.1
+cmd: python3 tools/ai/callpath-perf-check.py wallfuncall byte 5
+** S2.4 No wall-clock regression against base02 on every mode and linkage: builtin floors, let and while, and dynamic boot/files/regex, each median ratio <= 1.03
+cmd: python3 tools/ai/callpath-perf-check.py wallnoregress
+** S2.5 Builtin call floors wall-clock within the same caps: interpreter <= 10x GNU, VM and bytecode <= 5x GNU, both linkages
+cmd: python3 tools/ai/callpath-perf-check.py wallbuiltin
 #+NOTE: 2026-10-21 run B reference: capped Valgrind preflight passes after moving TMPDIR into target/tmp. Serialized queued GNU 31.1 campaigns completed 36 study and 48 floor intervals, all three modes/four layouts, with authenticated original fixture/source/bytecode pins. Fresh GNU funcall means interp/VM/byte = 1022.567/1023.300/207.410 Ir; fixed S2.1-S2.3 caps remain 10230/5115/1035. GNU builtin means = 363.050/363.100/47.457 Ir, giving S2.5 caps = 3630.500/1815.500/237.283. Evidence: target/callpath-perf/{study-queued,floors-queued}/gnu-capped/{campaign,perf}.json; checker authenticates the pinned profiles rather than these rounded summaries. No NeLisp result is claimed yet.
 
 #+NOTE: 2026-10-21 focused host checks: GNU-mode check-parens passes all five changed Elisp files. Official nl-parens reports two existing shadow-corpus diagnostics on both base and candidate. Existing fixed-arity ERT runs three tests with two passes and one unchanged base/candidate failure (void-function nelisp--clear-string-bytes under GNU 31.1); the new complete GNU contract sweep covers the explicit metadata instead.

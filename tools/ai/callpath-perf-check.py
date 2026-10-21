@@ -479,11 +479,99 @@ def check_final():
     print("final PASS")
 
 
+WALL = ROOT / "target/callpath-perf/wall"
+BASE_BINARIES = {"dynamic": ROOT / "target/callpath-perf/base/nelisp",
+                 "static": ROOT / "target/callpath-perf/base/nelisp-static"}
+WALL_OPS = {"funcall": "pcf-funcall", "builtin": "pcf-builtin", "let": "pcf-let", "while": "pcf-while"}
+
+
+def wall(tag, kind="floors"):
+    """A wall-clock report (COMMON.md Measurement): 7 alternating pinned rounds of
+    candidate, GNU 31.1 and the base02 binary of the same linkage, all runs pinned."""
+    report = read(WALL / tag / (kind + ".json"))
+    need(report["protocol"] == ("wall-7-alternating-v1" if kind == "floors" else "wall-7-alternating-procs-v1")
+         and report["rounds"] == 7, "unqualified wall-clock protocol")
+    for pin in report["engines"].values():
+        auth(pin)
+    auth(report["producer"])
+    linkage = "static" if tag.endswith("-static") else "dynamic"
+    need(report["engines"]["base"]["sha256"] == sha(BASE_BINARIES[linkage]), "wall baseline is not base02 " + linkage)
+    need(report["engines"]["candidate"]["sha256"] != report["engines"]["base"]["sha256"], "candidate is the base binary")
+    if kind == "floors":
+        need(Path(report["engines"]["gnu"]["path"]).name == "emacs", "GNU reference is not emacs")
+        for pins in report["fixtures"].values():
+            for pin in pins:
+                auth(pin)
+        rows = {(r["engine"], r["suite"], r["mode"], r["round"]) for r in report["runs"]}
+        need(len(rows) == len(report["runs"]) == 3 * 2 * 3 * 7, "incomplete wall campaign")
+        need(report["medians_us"] == wall_medians(report["runs"]), "wall medians differ from the runs")
+    if tag.startswith("result-"):
+        need(report["source"] == source_identity(), "wall candidate source is stale")
+    return report
+
+
+def wall_medians(runs):
+    table = {}
+    for row in runs:
+        for op, value in row["own_s"].items():
+            table.setdefault(row["engine"], {}).setdefault(row["mode"], {}).setdefault(op, []).append(value)
+    return {e: {m: {op: statistics.median(v) * 1e6 for op, v in ops.items()} for m, ops in modes.items()}
+            for e, modes in table.items()}
+
+
+def check_wallfuncall(mode, factor, tag="result-dynamic"):
+    mode = {"interp": "interpreter", "byte": "bytecode"}.get(mode, mode)
+    need(factor == GNU_FACTORS[mode], "factor must equal the ledger multiplier")
+    med = wall(tag)["medians_us"]
+    value, gnu, base = (med[e][mode]["pcf-funcall"] for e in ("candidate", "gnu", "base"))
+    print(f"wall {tag}/{mode} funcall {value:.4f}us GNU={gnu:.4f}us ratio={value / gnu:.2f} "
+          f"cap={factor}x base={base:.4f}us")
+    need(value <= factor * gnu, "wall-clock funcall cap not reached")
+
+
+def check_wallbuiltin(prefix="result"):
+    failures = []
+    for linkage in LINKAGES:
+        med = wall(prefix + "-" + linkage)["medians_us"]
+        for mode in MODES:
+            value, gnu = med["candidate"][mode]["pcf-builtin"], med["gnu"][mode]["pcf-builtin"]
+            print(f"wall {linkage}/{mode} builtin {value:.4f}us GNU={gnu:.4f}us ratio={value / gnu:.2f} "
+                  f"cap={GNU_FACTORS[mode]}x")
+            if value > GNU_FACTORS[mode] * gnu:
+                failures.append(f"{linkage}/{mode} {value / gnu:.2f}x")
+    need(not failures, "wall-clock builtin caps not reached: " + "; ".join(failures))
+
+
+def check_wallnoregress(prefix="result"):
+    failures, checked = [], 0
+    for linkage in LINKAGES:
+        med = wall(prefix + "-" + linkage)["medians_us"]
+        for mode in MODES:
+            for op in ("builtin", "let", "while"):
+                c, b, g = (med[e][mode][WALL_OPS[op]] for e in ("candidate", "base", "gnu"))
+                checked += 1
+                print(f"wall {linkage}/{mode}/{op} cand/base={c / b:.3f} cand/GNU={c / g:.2f}")
+                if c > 1.03 * b:
+                    failures.append(f"{linkage}/{mode}/{op} {c / b:.3f}")
+    procs = wall(prefix + "-dynamic", "procs")["medians_s"]
+    for mode in ("boot", "files", "regex"):
+        c, b = procs["candidate"][mode], procs["base"][mode]
+        checked += 1
+        print(f"wall dynamic/{mode} cand/base={c / b:.3f}")
+        if c > 1.03 * b:
+            failures.append(f"dynamic/{mode} {c / b:.3f}")
+    print(f"wallnoregress checked={checked} failures={len(failures)}")
+    need(not failures, "; ".join(failures))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="check", required=True)
-    for name in ("portplan", "arity", "noregress", "final"):
+    for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress"):
         sub.add_parser(name)
+    p = sub.add_parser("wallfuncall")
+    p.add_argument("mode", choices=("interp", "vm", "byte"))
+    p.add_argument("factor", type=float)
     p = sub.add_parser("focused")
     p.add_argument("--tag", default="result", help="focused receipt tag; current-source checks remain mandatory")
     p = sub.add_parser("funcall")
@@ -498,7 +586,13 @@ def main():
     p.add_argument("--linkage", choices=LINKAGES, action="append", help="intermediate coverage; default checks both linkages")
     args = parser.parse_args()
     try:
-        if args.check == "funcall":
+        if args.check == "wallfuncall":
+            check_wallfuncall(args.mode, args.factor)
+        elif args.check == "wallbuiltin":
+            check_wallbuiltin()
+        elif args.check == "wallnoregress":
+            check_wallnoregress()
+        elif args.check == "funcall":
             check_funcall(args.mode, args.cap, result_tag=args.result_tag, baseline_tag=args.baseline_tag)
         elif args.check == "builtin":
             need(args.linkage is None or len(args.linkage) == len(set(args.linkage)), "duplicate builtin linkages")
