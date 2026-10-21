@@ -42663,10 +42663,18 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (defun nl_n3_special_bit (name) ,bits)
       (defun nl_n3_special_install (name object env)
         (seq
-         ;; Function publication can replace a macro implementation without
-         ;; moving either its call form or its special object.  Invalidate
-         ;; cached expansions before publishing the changed function cell.
-         (atomic-fetch-add (data-addr nl_mxcache_epoch) 1)
+         ;; Replacing special implementations or symbol links can change
+         ;; cached special call sites.  Inspect direct cells conservatively;
+         ;; ordinary closure publication leaves the macro cache untouched.
+         (if (or (= (nl_n3_special_object object) 1)
+                 (= (sexp-tag object) 4) (= (sexp-tag object) 16)
+                 (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+                   (if (= entry 0) 0
+                     (let* ((old (record-slot-ref-ptr entry 1)))
+                       (or (= (nl_n3_special_object old) 1)
+                           (= (sexp-tag old) 4) (= (sexp-tag old) 16))))))
+             (atomic-fetch-add (data-addr nl_mxcache_epoch) 1)
+           0)
          (let* ((bit (nl_n3_special_bit name)))
           (if (= bit 0) 0
             (seq
