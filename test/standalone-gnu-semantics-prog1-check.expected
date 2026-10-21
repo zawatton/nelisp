@@ -1,0 +1,4 @@
+(side-effects 19 21)
+(nil-first nil 22)
+(nested 42)
+PROG1-VM-PASS

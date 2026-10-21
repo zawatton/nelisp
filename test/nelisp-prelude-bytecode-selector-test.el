@@ -62,6 +62,21 @@
     (should (= (nth 1 result) 0))
     (should (equal (nth 4 row) "opcode-32-not-explicitly-verified"))))
 
+(ert-deftest nelisp-prelude-bytecode-vendor-transfer-preserves-unicode-and-raw-bytes ()
+  (let* ((source (concat ";;; -*- lexical-binding: t; coding: utf-8 -*-\n"
+                         "(defun nelisp--bytecode-unicode-roundtrip (flag)\n"
+                         "  \"Unicode documentation: λ …\"\n"
+                         "  (if flag '[… \"λ\" \"\\377\"] 'other))\n"))
+         (entry (car (nelisp-prelude-bytecode-vendor-compile-functions
+                      source "unicode-roundtrip.el" nil)))
+         (value (funcall (nth 1 entry) t)))
+    (should (eq (aref value 0) '…))
+    (should (equal (aref value 1) "λ"))
+    (should (multibyte-string-p (aref value 1)))
+    (should (equal (string-to-list (aref value 2)) '(255)))
+    (should-not (multibyte-string-p (aref value 2)))
+    (should (string-prefix-p "Unicode documentation: λ …" (nth 2 entry)))))
+
 (ert-run-tests-batch-and-exit)
 
 ;;; nelisp-prelude-bytecode-selector-test.el ends here

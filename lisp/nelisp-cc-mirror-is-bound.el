@@ -10,7 +10,7 @@
 
 ;; Doc 111 §111.E Group A helper #4 — `mirror_is_bound'.  AOT
 ;; composition of #1 (`mirror_lookup_entry') + §111.B
-;; `record-slot-ref-ptr' (slot 0) + §101.C `symbol-eq' against the
+;; `record-slot-ref-ptr' (slot 0) + private symbol identity against the
 ;; caller-supplied unbound-marker.  Replaces the
 ;; `Env::mirror_is_bound' Rust impl at
 ;; `build-tool/src/eval/env_mirror.rs::mirror_is_bound'.
@@ -30,7 +30,7 @@
 
 (defconst nelisp-cc-mirror-is-bound--source
   '(defun nelisp_mirror_is_bound (mirror-ptr sym-ptr unbound-ptr)
-     ;; Compose §111.E #1 + slot-0-ptr + symbol-eq.
+     ;; Compose §111.E #1 + slot-0-ptr + private marker identity.
      ;;
      ;; R11a CSE-hoist: bind the entry pointer once via `let' (= let-rt
      ;; frame slot) and reuse for both the existence check and the
@@ -39,7 +39,7 @@
      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
        (if (= entry 0)
            0
-         (if (= (symbol-eq
+         (if (= (extern-call nl_uninterned_symbol_equal
                  (record-slot-ref-ptr entry 0)
                  unbound-ptr)
                 1)
@@ -51,9 +51,8 @@
 named entry exists in the mirror AND its value cell does not hold
 the caller-supplied unbound-marker sentinel; else 0.
 
-`symbol-eq' returns 0 for tag-mismatched inputs (= the value cell
-holds a non-Symbol like `Sexp::Int' / `Sexp::Cons' / etc.), so this
-helper correctly classifies any non-Symbol value cell as bound.
+The private marker comparison uses its uninterned identity, so an ordinary
+symbol with the same name remains a bound value.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist — single entry lookup,
 reused in the miss test and the slot-0 unbound-marker comparison.")

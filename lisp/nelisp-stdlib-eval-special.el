@@ -234,43 +234,46 @@ Reserved for future nemacs layer parity."
     "NeLisp has no buffer-local; equivalent to `setq'."
     (cons 'setq pairs)))
 
-(defmacro defvar (name &rest args)
-  "Define NAME as a global variable, set initial VALUE if unbound.
+;; GNU declarations are special forms. A source reload must retain their
+;; special objects so GNU macroexp.el also leaves declarations unexpanded.
+(unless (special-form-p 'defvar)
+  (defmacro defvar (name &rest args)
+    "Define NAME as a global variable, set initial VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
 declared, NOT bound — matching Emacs `defvar' so that a later
 `(defvar NAME VALUE)' still initializes it.  Distinguishing the
 zero-value form requires `&rest' (arity), not `&optional' (which cannot
 tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
-  (if args
-      (list 'progn
-            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-            (list 'if (list 'boundp (list 'quote name)) nil
-                  (list 'set (list 'quote name) (car args)))
-            (list 'quote name))
-    (list 'funcall '(quote (builtin nelisp--declare-local-special))
-          (list 'quote name))))
+    (if args
+        (list 'progn
+              (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+              (list 'if (list 'boundp (list 'quote name)) nil
+                    (list 'set (list 'quote name) (car args)))
+              (list 'quote name))
+      (list 'funcall '(quote (builtin nelisp--declare-local-special))
+            (list 'quote name)))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
-(defmacro defconst (name value &optional _docstring)
-  "Define NAME as a constant whose initial value is VALUE.
+(unless (special-form-p 'defconst)
+  (defmacro defconst (name value &optional _docstring)
+    "Define NAME as a constant whose initial value is VALUE.
 DOCSTRING is currently ignored.  Returns NAME.
 
 Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
 set via the `nelisp--env-globals-set-constant' env_shim primitive
 (= Doc 86 §86.3.a surface; routes through the elisp env mirror's
 slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
-  (list 'progn
-        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-        (list 'set (list 'quote name) value)
-        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
-        (list 'quote name)))
+    (list 'progn
+          (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+          (list 'set (list 'quote name) value)
+          (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+          (list 'quote name))))
 
-;; Reloading this source replaces the bootstrap macro identities. Keep the
-;; standalone's native-declaration dispatch attached to these new definitions;
-;; otherwise macroexpand starts emitting the bootstrap fallback again.
+;; A host without special declaration objects uses the bootstrap fallbacks.
+;; Keep their identities available to the bootstrap macroexpander on reload.
 (when (boundp 'nelisp--native-declaration-macros)
   (setq nelisp--native-declaration-macros
         (list (symbol-function 'defvar) (symbol-function 'defconst))))
@@ -285,36 +288,24 @@ slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
 
 ;;;; --- iteration --------------------------------------------------------
 
+;; GNU subr.el:390-407; hand-built before the backquote provider.
 (defmacro dolist (spec &rest body)
-  "(dolist (VAR LIST [RESULT]) BODY...) — iterate VAR over LIST.
-Bindings:  --nl-dolist-list = LIST cursor."
-  (let* ((var (car spec))
-         (list-form (car (cdr spec)))
-         (result-form (car (cdr (cdr spec)))))
-    ;; (let* ((--nl-dolist-list LIST-FORM) (VAR nil))
-    ;;   (while --nl-dolist-list
-    ;;     (setq VAR (car --nl-dolist-list))
-    ;;     BODY...
-    ;;     (setq --nl-dolist-list (cdr --nl-dolist-list)))
-    ;;   RESULT-FORM)
-    (cons 'let*
-          (cons (cons (cons '--nl-dolist-list (cons list-form nil))
-                      (cons (cons var (cons nil nil)) nil))
-                (cons (cons 'while
-                            (cons '--nl-dolist-list
-                                  (cons (cons 'setq
-                                              (cons var
-                                                    (cons (cons 'car
-                                                                (cons '--nl-dolist-list nil))
-                                                          nil)))
-                                        (append body
-                                                (cons (cons 'setq
-                                                            (cons '--nl-dolist-list
-                                                                  (cons (cons 'cdr
-                                                                              (cons '--nl-dolist-list nil))
-                                                                        nil)))
-                                                      nil)))))
-                      (cons result-form nil))))))
+  "Evaluate BODY with a fresh VAR binding for each element of LIST.
+Evaluate RESULT outside VAR's iteration binding, as GNU Emacs 31.1 does."
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (unless (<= 2 (length spec) 3)
+    (signal 'wrong-number-of-arguments (list '(2 . 3) (length spec))))
+  (let ((tail (make-symbol "tail")))
+    (cons 'let
+          (cons (list (list tail (nth 1 spec)))
+                (cons
+                 (list 'while tail
+                       (cons 'let
+                             (cons (list (list (car spec) (list 'car tail)))
+                                   (append body
+                                           (list (list 'setq tail (list 'cdr tail)))))))
+                 (cdr (cdr spec)))))))
 
 (defmacro dotimes (spec &rest body)
   "(dotimes (VAR COUNT [RESULT]) BODY...) — iterate VAR from 0 to COUNT-1."

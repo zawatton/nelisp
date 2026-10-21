@@ -428,7 +428,7 @@ host-build API; it is not a NeLisp runtime evaluation path."
          (child-process nil)
          (child-code
           (format
-           "(let ((source %S) (elc %S) (result %S) (dirs '%S))\n  (unless (equal emacs-version \"31.1\") (error \"expected GNU Emacs 31.1, got %%s\" emacs-version))\n  (require 'bytecomp)\n  (require 'cl-lib)\n  (setq load-path (append load-path dirs))\n  (let ((byte-compile-dest-file-function (lambda (_file) elc)))\n    (unless (byte-compile-file source) (error \"GNU file compilation failed: %%s\" source)))\n  (let ((entries nil))\n    (cl-labels ((collect (form)\n                  (cond\n                   ((and (eq (car-safe form) 'defalias)\n                         (eq (car-safe (nth 1 form)) 'quote)\n                         (symbolp (cadr (nth 1 form)))\n                         (byte-code-function-p (nth 2 form)))\n                    (push (cons (cadr (nth 1 form)) (nth 2 form)) entries))\n                   ((memq (car-safe form) '(progn eval-and-compile eval-when-compile))\n                    (mapc #'collect (cdr form)))\n                   ((eq (car-safe form) 'if) (mapc #'collect (cddr form)))\n                   ((memq (car-safe form) '(let let*)) (mapc #'collect (cddr form))))))\n      (with-temp-buffer\n        (insert-file-contents elc)\n        (goto-char (point-min))\n        (let ((read-eval nil))\n          (condition-case nil\n              (while t (collect (read (current-buffer))))\n            (end-of-file nil)))))\n    (let ((print-length nil) (print-level nil) (print-escape-newlines t))\n      (with-temp-file result (prin1 (nreverse entries) (current-buffer)))))\n  0)"
+           "(let ((source %S) (elc %S) (result %S) (dirs '%S))\n  (unless (equal emacs-version \"31.1\") (error \"expected GNU Emacs 31.1, got %%s\" emacs-version))\n  (require 'bytecomp)\n  (require 'cl-lib)\n  (setq load-path (append load-path dirs))\n  (let ((byte-compile-dest-file-function (lambda (_file) elc)))\n    (unless (byte-compile-file source) (error \"GNU file compilation failed: %%s\" source)))\n  (let ((entries nil))\n    (cl-labels ((collect (form)\n                  (cond\n                   ((and (eq (car-safe form) 'defalias)\n                         (eq (car-safe (nth 1 form)) 'quote)\n                         (symbolp (cadr (nth 1 form)))\n                         (byte-code-function-p (nth 2 form)))\n                    (push (cons (cadr (nth 1 form)) (nth 2 form)) entries))\n                   ((memq (car-safe form) '(progn eval-and-compile eval-when-compile))\n                    (mapc #'collect (cdr form)))\n                   ((eq (car-safe form) 'if) (mapc #'collect (cddr form)))\n                   ((memq (car-safe form) '(let let*)) (mapc #'collect (cddr form))))))\n      (with-temp-buffer\n        (insert-file-contents elc)\n        (goto-char (point-min))\n        (let ((read-eval nil))\n          (condition-case nil\n              (while t (collect (read (current-buffer))))\n            (end-of-file nil)))))\n    (let ((print-length nil) (print-level nil) (print-escape-newlines t)\n          (print-escape-control-characters t) (print-escape-nonascii t)\n          (print-escape-multibyte t) (coding-system-for-write 'utf-8-unix))\n      (with-temp-file result (prin1 (nreverse entries) (current-buffer)))))\n  0)"
            source-path elc-file result-file dirs))
          (buffer (generate-new-buffer " *prelude GNU compile*"))
          (functions nil))
@@ -460,7 +460,10 @@ host-build API; it is not a NeLisp runtime evaluation path."
                        (substring (buffer-string) 0
                                   (min 2400 (buffer-size)))))))
           (with-temp-buffer
-            (insert-file-contents result-file)
+            ;; The transfer text escapes bytecode bytes, but Unicode symbol
+            ;; names must be decoded rather than turned into eight-bit chars.
+            (let ((coding-system-for-read 'utf-8-unix))
+              (insert-file-contents result-file))
             (let ((read-eval nil))
               (setq functions (read (current-buffer)))))
           (unless (and (listp functions)

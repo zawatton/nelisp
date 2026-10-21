@@ -53,7 +53,7 @@
     (defun nl_env_lookup_val_done_w (w env _pad _pad1)
       (if (= (logand w 1) 1) w
         (if (< w 8) w
-          (if (= (symbol-eq w (+ env 64)) 1) 2 w))))
+          (if (= (extern-call nl_uninterned_symbol_equal w (+ env 64)) 1) 2 w))))
     ;; An entry can exist solely for its function cell.  Its value is still
     ;; unbound; never expose that internal marker as a successful lookup.
     ;; Consume the lookup result as a helper argument so it cannot be lost
@@ -62,7 +62,9 @@
     (defun nl_env_lookup_val_done (rc env out _pad)
       ;; OUT already contains the physical value. Check the unbound marker
       ;; in that view and leave all 32 bytes intact; there is no WORD result.
-      (if (= rc 0) (if (= (symbol-eq out (+ env 64)) 1) 1 0) 1)))
+      (if (= rc 0)
+          (if (= (extern-call nl_uninterned_symbol_equal out (+ env 64)) 1) 1 0)
+        1)))
   "Doc 135 Stage 135.C AOT source for simple env-leaf ctx-accessors.
 
 One public entry and a lookup-result helper in a `(seq DEFUN ...)' manifest.

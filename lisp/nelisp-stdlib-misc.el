@@ -239,12 +239,9 @@ obarray returned by `obarray-make' for supported iteration."
 ;; Migrating `error' too lets us delete `bi_format' + the format
 ;; helpers (FormatSpec / pad_field / fmt_int_with_sign /
 ;; fmt_float_default) wholesale from Rust.
-(defun error (&rest args)
-  (let ((msg (cond
-              ((null args) "")
-              ((stringp (car args)) (apply (function format) args))
-              (t (prin1-to-string (car args))))))
-    (signal 'error (list msg))))
+(defun error (string &rest args)
+  "Signal an error with a message made by `format-message'."
+  (signal 'error (list (apply #'format-message string args))))
 
 ;; Rust-min batch 6i (2026-05-06): `princ' migrated from Rust to
 ;; elisp.  The previous `bi_princ' was just a stringp / Display
@@ -546,6 +543,19 @@ top-level form reachable until the end of the load.")
           (setq done t)))))
     pos))
 
+(defun nelisp--load-eager-expand-eval (form macroexpand)
+  "Expand and evaluate one source FORM as GNU readevalloop does.
+The genuine `internal-macroexpand-for-load' owns expansion errors."
+  (if (not macroexpand)
+      (eval form)
+    (setq form (funcall macroexpand form nil))
+    (if (eq (car-safe form) 'progn)
+        (let ((result nil))
+          (dolist (subform (cdr form))
+            (setq result (nelisp--load-eager-expand-eval subform macroexpand)))
+          result)
+      (eval (funcall macroexpand form t)))))
+
 (defun nelisp--load-eval-source-incremental (source)
   "Read and eval SOURCE top-level forms one at a time.
 Return the value of the last form.  This deliberately avoids
@@ -554,14 +564,19 @@ overflow the standalone arena on upstream-sized package files."
   (let ((pos 0)
         (len (length source))
         (last nil)
-        (count 0))
+        (count 0)
+        (macroexpand (and (fboundp 'internal-macroexpand-for-load)
+                          (not (and load-file-name
+                                    (string-suffix-p ".elc" load-file-name)))
+                          'internal-macroexpand-for-load))
+        (macroexp--dynvars (and (boundp 'macroexp--dynvars) macroexp--dynvars)))
     (while (progn
              (setq pos (nelisp--load-skip-space-and-comments source pos))
              (< pos len))
       (let ((res (read-from-string source pos)))
         (when (or (not (consp res)) (<= (cdr res) pos))
           (signal 'end-of-file (list "load reader made no progress" pos)))
-        (setq last (eval (car res)))
+        (setq last (nelisp--load-eager-expand-eval (car res) macroexpand))
         (setq pos (cdr res))
         (setq count (+ count 1))
         (when (and load-garbage-collect-interval
@@ -2531,6 +2546,13 @@ plain variable (it goes through `setq')."
         (nelisp--setf-1 (list (if (eq first ?a) 'car 'cdr)
                               (list inner-accessor arg))
                         val)))
+     ;; GNU gv.el:108-120 supports an accessor whose setter is defined later.
+     ((consp place)
+      (unless (featurep 'gv)
+        (let ((nelisp-gv-original-setf (symbol-function 'setf)))
+          (unwind-protect (require 'gv)
+            (fset 'setf nelisp-gv-original-setf))))
+      (gv-get place (lambda (_getter setter) (funcall setter val))))
      (t
       (signal 'error
               (list "setf: unsupported place"

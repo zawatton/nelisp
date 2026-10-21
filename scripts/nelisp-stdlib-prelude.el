@@ -821,38 +821,24 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
     (list 'prog1 (list 'car place)
 	  (list 'setf place (list 'cdr place)))))
 
+;; GNU subr.el:390-407; hand-built before the backquote provider.
 (defmacro dolist (spec &rest body)
-  "(dolist (VAR LIST [RESULT]) BODY...) — iterate VAR over LIST.\nBindings:  --nl-dolist-list = LIST cursor."
-  (let*
-      ((var (car spec)) (list-form (car (cdr spec)))
-       (result-form (car (cdr (cdr spec)))))
-    (cons 'let*
-	  (cons
-	   (cons (cons '--nl-dolist-list (cons list-form nil))
-		 (cons (cons var (cons nil nil)) nil))
-	   (cons
-	    (cons 'while
-		  (cons '--nl-dolist-list
-			(cons
-			 (cons 'setq
-			       (cons var
-				     (cons
-				      (cons 'car
-					    (cons '--nl-dolist-list
-						  nil))
-				      nil)))
-			 (append body
-				 (cons
-				  (cons 'setq
-					(cons '--nl-dolist-list
-					      (cons
-					       (cons 'cdr
-						     (cons
-						      '--nl-dolist-list
-						      nil))
-					       nil)))
-				  nil)))))
-	    (cons result-form nil))))))
+  "Evaluate BODY with a fresh VAR binding for each element of LIST.
+Evaluate RESULT outside VAR's iteration binding, as GNU Emacs 31.1 does."
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (unless (<= 2 (length spec) 3)
+    (signal 'wrong-number-of-arguments (list '(2 . 3) (length spec))))
+  (let ((tail (make-symbol "tail")))
+    (cons 'let
+          (cons (list (list tail (nth 1 spec)))
+                (cons
+                 (list 'while tail
+                       (cons 'let
+                             (cons (list (list (car spec) (list 'car tail)))
+                                   (append body
+                                           (list (list 'setq tail (list 'cdr tail)))))))
+                 (cdr (cdr spec)))))))
 
 (defmacro dotimes (spec &rest body)
   "(dotimes (VAR COUNT [RESULT]) BODY...) - iterate VAR from 0 below COUNT.
@@ -3452,11 +3438,12 @@ but not in `format'.  It should be one of these symbols:
               and like `grave' otherwise.  This is the default.
 Read the effective style with the function `text-quoting-style'.")
 
-(defvar internal--text-quoting-flag nil
+(unless (boundp 'internal--text-quoting-flag)
+ (defvar internal--text-quoting-flag nil
   "If nil, a nil `text-quoting-style' is treated as `grave'.
 GNU's emacs.c main sets it at startup when the locale's character set is
 UTF-8 (using_utf8).  Here the prelude and every cold boot set it with
-`nelisp--using-utf8-p'.")
+`nelisp--using-utf8-p'."))
 
 (defvar nelisp--text-quoting-owned (not (fboundp 'text-quoting-style))
   "Non-nil when this runtime defines `text-quoting-style' and so sets
@@ -5642,6 +5629,11 @@ quotes in OBJECTS are preserved.
                              "Format specifier doesn’t match argument type"
                            "Format specifier doesn't match argument type")))
          (signal (car err) (cdr err)))))))
+;; GNU subr.el:error delegates message quoting to format-message.
+(defun error (string &rest args)
+  "Signal an error with a message made by `format-message'."
+  (signal 'error (list (apply #'format-message string args))))
+
 ;; CASE-FOLD was accepted and ignored -- the parameter was even named
 ;; `_case-fold' to say so -- so `(assoc-string "ABC" (list "abc") t)'
 ;; answered nil where Emacs answers "abc".  A caller that asked for a
@@ -11042,7 +11034,13 @@ other gv-using libraries load/run on the bare reader."
    ;; GNU gv.el (loaded on demand, e.g. by nadvice's `add-function') owns
    ;; every place this table does not know: `gv-get' hands its setter a
    ;; copyable expression for PLACE, exactly as GNU's own `setf' does.
-   ((and (consp place) (fboundp 'gv-get))
+   ((consp place)
+    ;; GNU setf autoloads gv even when an accessor is not defined yet.
+    ;; Keep the existing struct-place adapter, as nadvice's substrate does.
+    (unless (featurep 'gv)
+      (let ((nelisp-gv-original-setf (symbol-function 'setf)))
+        (unwind-protect (require 'gv)
+          (fset 'setf nelisp-gv-original-setf))))
     (gv-get place (lambda (_getter setter) (funcall setter val))))
    (t
     (signal 'error
@@ -15311,6 +15309,116 @@ If POS is outside the buffer's accessible portion, return nil."
         (if (consp st) st
           (aref (or st (syntax-table)) (char-after pos)))))))
 
+(defun nelisp--syntax-entry-at (table text pos)
+  "Raw syntax entry at POS in TEXT, using TABLE and syntax properties.
+GNU syntax.c:410-428 selects a property table, a descriptor cons, or the
+buffer table; syntax.h:98-121 then reads that entry without losing flags."
+  (let ((prop (and parse-sexp-lookup-properties
+                   (if (fboundp 'get-char-property)
+                       (get-char-property pos 'syntax-table)
+                     (get-text-property pos 'syntax-table)))))
+    (cond ((consp prop) prop)
+          ((and prop (nelisp--syntax-native-table-p prop))
+           (aref prop (aref text (1- pos))))
+          (t (aref table (aref text (1- pos)))))))
+
+(defun nelisp--skip-syntaxes (forward syntax limit)
+  "GNU syntax.c:2107-2265 `skip_syntaxes', adapted to character positions.
+The runtime buffer string replaces GNU's gap-buffer byte cursors.  The
+256-entry class map, argument order, bounds, and signed result follow GNU."
+  (unless (stringp syntax)
+    (signal 'wrong-type-argument (list 'stringp syntax)))
+  (let* ((buf nelisp--current-buffer)
+         (lo (nelisp-point-min buf)) (hi (nelisp-point-max buf))
+         (start (nelisp-point buf)))
+    (cond ((null limit) (setq limit (if forward hi lo)))
+          ((markerp limit)
+           (setq limit (or (marker-position limit)
+                           (signal 'error '("Marker does not point anywhere")))))
+          ((not (integerp limit))
+           (signal 'wrong-type-argument (list 'integer-or-marker-p limit))))
+    ;; buffer.c:147-154 saturates bignums before the bounds clamp.  Clamping
+    ;; directly gives the same accessible position for every integer here.
+    (setq limit (max lo (min hi limit)))
+    (if (if forward (>= start limit) (<= start limit))
+        0
+      (let* ((fastmap (make-vector 256 0))
+             (n (length syntax)) (i 0) (negate nil)
+             (text (nelisp-buffer-string buf))
+             (table (nelisp--syntax-current-table))
+             (pos start) (step (if forward 1 -1)))
+        (when (and (> n 0) (= (logand (aref syntax 0) 255) ?^))
+          (setq negate t i 1))
+        (while (< i n)
+          ;; GNU's string_make_unibyte/copy_text keeps each character's
+          ;; low byte (fns.c:1341, insdel.c:624), even above U+00FF.
+          (let* ((char (logand (aref syntax i) 255))
+                 (code (or (cdr (assq char nelisp--syntax-spec-codes)) 255)))
+            (aset fastmap code 1))
+          (setq i (1+ i)))
+        (when negate
+          (setq i 0)
+          (while (< i 256)
+            (aset fastmap i (logxor (aref fastmap i) 1))
+            (setq i (1+ i))))
+        (while (and (if forward (< pos limit) (> pos limit))
+                    (let* ((at (if forward pos (1- pos)))
+                           (entry (if parse-sexp-lookup-properties
+                                      (nelisp--syntax-entry-at table text at)
+                                    (aref table (aref text (1- at)))))
+                           (code (if (consp entry) (logand (car entry) 255) 0)))
+                      (/= (aref fastmap code) 0)))
+          (setq pos (+ pos step)))
+        (nelisp-goto-char pos buf)
+        (- pos start)))))
+
+(unless (fboundp 'skip-syntax-forward)
+  (defun skip-syntax-forward (syntax &optional lim)
+    "Move forward across chars in syntax classes SYNTAX, stopping at LIM.
+If SYNTAX starts with ^, skip classes absent from the rest of SYNTAX.
+Return the distance traveled, either zero or positive."
+    (nelisp--skip-syntaxes t syntax lim)))
+
+(unless (fboundp 'skip-syntax-backward)
+  (defun skip-syntax-backward (syntax &optional lim)
+    "Move backward across chars in syntax classes SYNTAX, stopping at LIM.
+If SYNTAX starts with ^, skip classes absent from the rest of SYNTAX.
+Return the distance traveled, either zero or negative."
+    (nelisp--skip-syntaxes nil syntax lim)))
+
+(defun nelisp--syntax-char-quoted-p (table text pos beg)
+  "GNU syntax.c:534-556 `char_quoted': escape parity before POS.
+Stop at accessible beginning BEG, consulting syntax properties at each char."
+  (let ((quoted nil) (scan pos) (scanning t))
+    (while (and scanning (> scan beg))
+      (setq scan (1- scan))
+      (let* ((entry (nelisp--syntax-entry-at table text scan))
+             (code (if (consp entry) (logand (car entry) 255) 0)))
+        (if (memq code '(9 10))
+            (setq quoted (not quoted))
+          (setq scanning nil))))
+    quoted))
+
+(unless (fboundp 'backward-prefix-chars)
+  (defun backward-prefix-chars ()
+    "Move backward across expression prefix chars and chars with flag p.
+Quoted chars stop the scan.  Return nil."
+    ;; GNU syntax.c:3091-3133: test char_quoted before Squote/prefix flag,
+    ;; retain the last accepted position, and never cross BEGV.
+    (let* ((buf nelisp--current-buffer) (beg (nelisp-point-min buf))
+           (opoint (nelisp-point buf)) (pos (1- opoint))
+           (text (nelisp-buffer-string buf))
+           (table (nelisp--syntax-current-table)))
+      (while (and (>= pos beg)
+                  (not (nelisp--syntax-char-quoted-p table text pos beg))
+                  (let* ((entry (nelisp--syntax-entry-at table text pos))
+                         (code (if (consp entry) (car entry) 0)))
+                    (or (= (logand code 255) 6)
+                        (/= (logand code #x100000) 0))))
+        (setq opoint pos pos (1- pos)))
+      (nelisp-goto-char opoint buf)
+      nil)))
+
 (unless (fboundp 'with-syntax-table)
   (defmacro with-syntax-table (table &rest body)
     "Evaluate BODY with syntax table of current buffer set to TABLE.
@@ -19155,6 +19263,10 @@ SS15) for why the extra `string-search'-based pass this used to run is
 gone rather than merely made faster."
   (number-to-string x))
 
+(unless (boundp 'float-output-format)
+  (defvar float-output-format nil
+    "Format descriptor for printing floats, or nil for round-trip notation."))
+
 (defun nelisp--prn-reader-macro-abbrev (lst escape &optional memo)
   (when (and (consp lst) (symbolp (car lst))
              (consp (cdr lst)) (null (cdr (cdr lst))))
@@ -19321,10 +19433,33 @@ sub-char-table in `#^^[...]' form."
     (nreverse bytes)))
 
 (defun nelisp--prn-bool-vector (bv)
-  (concat "#&" (number-to-string (length bv)) "\""
-          (nelisp--prn-string-escaped
-           (apply #'unibyte-string (nelisp--prn-bool-vector-bytes bv)))
-          "\""))
+  "Print BV as GNU print.c print_bool_vector does, even for `princ'."
+  (let* ((bytes (nelisp--prn-bool-vector-bytes bv))
+         (n (length bytes))
+         (limit (if (and (integerp print-length) (>= print-length 0)
+                         (< print-length n)) print-length n))
+         (chunks (cons nil nil)) (i 0))
+    (nelisp--prn-chunks-add chunks
+                            (concat "#&" (number-to-string (length bv)) "\""))
+    (while (< i limit)
+      (let* ((c (car bytes))
+             (next (and (< (1+ i) limit) (car (cdr bytes)))))
+        (nelisp--prn-chunks-add
+         chunks
+         (cond ((and print-escape-newlines (= c 10)) "\\n")
+               ((and print-escape-newlines (= c 12)) "\\f")
+               ((or (> c 127)
+                    (and print-escape-control-characters
+                         (nelisp--prn-control-char-p c)))
+                (nelisp--prn-octal-escape
+                 c (nelisp--prn-octal-digit-count
+                    c (and next (>= next 48) (<= next 55)))))
+               ((or (= c 34) (= c 92)) (concat "\\" (char-to-string c)))
+               (t (char-to-string c)))))
+      (setq bytes (cdr bytes) i (1+ i)))
+    (when (< limit n) (nelisp--prn-chunks-add chunks " ..."))
+    (nelisp--prn-chunks-add chunks "\"")
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-record (rec escape &optional memo)
   (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
@@ -25019,7 +25154,7 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
     (if (or (null s) (eq s t))
         (nelisp--native-princ object)
       (nelisp--emit-to-stream
-       (if (stringp object) object (nelisp--native-format "%s" object)) s)))
+       (nelisp--prn-to-string object nil) s)))
   object)
 
 (defun prin1 (object &optional stream overrides)
@@ -27114,7 +27249,24 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                  (assq symbol nelisp--special-form-arities))
       (signal 'wrong-type-argument (list 'special-form-p symbol)))
     (setcar (cddr object) implementation)
+    ;; Publish the changed implementation through the function-cell path,
+    ;; retaining the special object shared by aliases.
+    (fset symbol object)
     nil))
+
+;; GNU editfns.c:Fsave_current_buffer records an unwind action before
+;; evaluating BODY.  The special-object dispatcher already owns evaluation;
+;; keep its implementation in Lisp, using the same unwind structure.
+(defmacro nelisp--save-current-buffer (&rest body)
+  (let ((saved (make-symbol "saved-buffer")))
+    ;; This fixed unwind frame needs no general backquote traversal.  Emit
+    ;; the evaluator's conditional directly, including its implicit nil arm.
+    (list 'let (list (list saved '(current-buffer)))
+          (list 'unwind-protect (cons 'progn body)
+                (list 'if (list 'buffer-live-p saved)
+                      (list 'set-buffer saved))))))
+(nelisp--set-special-form-implementation
+ 'save-current-buffer (symbol-function 'nelisp--save-current-buffer))
 
 ;;;; Evaluator activation records (N4b, native policy clause 2).
 ;; The private operation returns copied Lisp data plus generation handles.
@@ -27595,7 +27747,13 @@ template. When, unless and prog2 are lowered directly by the VM compiler.")
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
-  (let ((out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
+  (let ((macroexpand-all-environment
+         ;; `cl-labels' expands the compiler's local helpers before COMP
+         ;; reaches its explicit macroexpand-all call.  Protect the same
+         ;; reader heads there so a user macro cannot rewrite EMIT itself.
+         (append nelisp--fx-native-macro-environment
+                 macroexpand-all-environment))
+        (out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
         (depth 0) (maxdepth 0) (lexlets nil)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
@@ -27608,7 +27766,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
              (when (> depth maxdepth) (setq maxdepth depth)))
-           (dolist (x items) (push x out) (setq pc (1+ pc))))
+           ;; GNU bytecomp.el's byte-compile-out retains one instruction
+           ;; per output entry; assembly flattens it only after emission.
+           (push items out)
+           (setq pc (+ pc (length items))))
          (label () (setq nlab (1+ nlab)) nlab)
          (place (l) (push (cons l pc) labels))
          ;; One `emit' for the opcode and its placeholder target, so the
@@ -27662,6 +27823,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (jump 8 end) (place skip)
                    (if (eq op 'unless) (body (cddr x)) (emit 1 nil))
                    (place end)))
+                ;; GNU eval.c:458-468 keeps FIRST and discards later values.
+                ((eq op 'prog1)
+                 (if (null (cdr x)) (unsupported x)
+                   (comp (cadr x))
+                   (dolist (a (cddr x)) (comp a) (emit 11))))
                 ((eq op 'prog2)
                  (if (null (cddr x)) (emit 1 nil)
                    (comp (cadr x)) (emit 11) (comp (nth 2 x))
@@ -27733,8 +27899,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
         ;; allocates; it is never executed.
-        (push (+ maxdepth 2) out)
-        (let ((code (vconcat (nreverse out))))
+        (push (list (+ maxdepth 2)) out)
+        (let ((code (apply #'vconcat (nreverse out))))
           (dolist (p patches)
             (aset code (car p) (cdr (assq (cdr p) labels))))
           (when lexlets
