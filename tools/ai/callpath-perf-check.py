@@ -486,14 +486,19 @@ def check_final():
 
 
 WALL = ROOT / "target/callpath-perf/wall"
-BASE_BINARIES = {"dynamic": ROOT / "target/callpath-perf/base/nelisp",
-                 "static": ROOT / "target/callpath-perf/base/nelisp-static"}
+# S2.4 guards against regressions from this lane's own changes, so the wall
+# campaigns' base is the lane's actual base, W (eval/integ-20261021w
+# 702ccc8d7; these are copies of its target/integ binaries, built from
+# cd8bf92b2, which differs only in a tools file).  base02 was the base until
+# 2026-10-22; W's own regression against base02 is gc-port's criterion.
+BASE_BINARIES = {"dynamic": ROOT / "target/callpath-perf/base-w/nelisp",
+                 "static": ROOT / "target/callpath-perf/base-w/nelisp-static"}
 WALL_OPS = {"funcall": "pcf-funcall", "builtin": "pcf-builtin", "let": "pcf-let", "while": "pcf-while"}
 
 
 def wall(tag, kind="floors"):
     """A wall-clock report (COMMON.md Measurement): 7 alternating pinned rounds of
-    candidate, GNU 31.1 and the base02 binary of the same linkage, all runs pinned."""
+    candidate, GNU 31.1 and the W base binary of the same linkage, all runs pinned."""
     report = read(WALL / tag / (kind + ".json"))
     need(report["protocol"] == ("wall-7-alternating-v1" if kind == "floors" else "wall-7-alternating-procs-v1")
          and report["rounds"] == 7, "unqualified wall-clock protocol")
@@ -501,7 +506,7 @@ def wall(tag, kind="floors"):
         auth(pin)
     auth(report["producer"])
     linkage = "static" if tag.endswith("-static") else "dynamic"
-    need(report["engines"]["base"]["sha256"] == sha(BASE_BINARIES[linkage]), "wall baseline is not base02 " + linkage)
+    need(report["engines"]["base"]["sha256"] == sha(BASE_BINARIES[linkage]), "wall baseline is not the W base " + linkage)
     need(report["engines"]["candidate"]["sha256"] != report["engines"]["base"]["sha256"], "candidate is the base binary")
     if kind == "floors":
         # /usr/local/bin/emacs resolves to its versioned executable.

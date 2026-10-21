@@ -71,7 +71,8 @@ cmd: python3 tools/ai/callpath-perf-check.py wallfuncall interp 10
 cmd: python3 tools/ai/callpath-perf-check.py wallfuncall vm 5
 ** S2.3 Bytecode funcall wall-clock own cost <= 5x GNU 31.1
 cmd: python3 tools/ai/callpath-perf-check.py wallfuncall byte 5
-** S2.4 No wall-clock regression against base02 on every mode and linkage: builtin floors, let and while, and dynamic boot/files/regex, each median ratio <= 1.03
+** S2.4 No wall-clock regression against W (the lane's base, eval/integ-20261021w 702ccc8d7) on every mode and linkage: builtin floors, let and while, and dynamic boot/files/regex, each median ratio <= 1.03
+#+NOTE: 2026-10-22 base moved from base02 to W on main's instruction: S2.4 guards against regressions from this lane's own changes, and the lane's actual base is W. W's own regression against base02 (bytecode while 1.042, VM while 1.023 on f21) goes to gc-port, which owns the word-heap line, as a failing criterion in its ledger. The W binaries are copies of integ-20261021w/target/integ/nelisp-{dyn,static} (built from cd8bf92b2, runtime-identical to 702ccc8d7; sha256 38c01511fd798d3b..., 4ebc75a7cd65dfb7...) at target/callpath-perf/base-w/; the checker's BASE_BINARIES points there, so every wall campaign now runs W as its base.
 cmd: python3 tools/ai/callpath-perf-check.py wallnoregress
 ** S2.5 Builtin call floors wall-clock within the same caps: interpreter <= 10x GNU, VM and bytecode <= 5x GNU, both linkages
 cmd: python3 tools/ai/callpath-perf-check.py wallbuiltin
