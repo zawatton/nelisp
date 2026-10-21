@@ -14,13 +14,13 @@ adaptation, not a per-entry allocation.
 | src/lisp.h:2602 | hash | native vector of immediate hash words |
 | src/lisp.h:2609 | key_and_value | native vector, key at 2i, value at 2i+1 |
 | src/lisp.h:2619 | next | native vector of collision/free-list indices |
-| src/fns.c:4956 | maybe_resize_hash_table | native reserve and rehash; 0->6, small x4, large x2 |
-| src/fns.c:5087 | hash_find_with_hash (hash_lookup) | native bucket/next walk, identity first |
-| src/fns.c:5132 | hash_put | take next_free, fill pair and hash, link bucket |
-| src/fns.c:5161 | hash_remove_from_table | unlink bucket, clear pair, prepend free list |
+| src/fns.c:4956 | maybe_resize_hash_table | =nl_ht_maybe_resize=/=nl_ht_reserve=; 0->6, small x4, large x2 |
+| src/fns.c:5087 | hash_find_with_hash (hash_lookup) | =nl_ht_find_index=; bucket/next walk, identity first |
+| src/fns.c:5132 | hash_put | =nl_ht_hash_put=; take next_free, fill pair/hash, link bucket |
+| src/fns.c:5161 | hash_remove_from_table | =nl_ht_remove_index=; unlink, clear pair, prepend free list |
 | src/fns.c:5201 | hash_clear | clear only nonempty tables, retaining the empty-table free chain |
 | src/fns.c:4916 | copy_hash_table | copy all four vectors, reset callback mutation guard |
-| src/fns.c:5251 | sweep_weak_table | fixed point and unlink using same vector chains |
+| src/fns.c:5251 | sweep_weak_table | =nl_gc_weak_visit=; fixed point and unlink using the vector chains |
 | src/fns.c:4780-4820 | hashfn_eq/hashfn_eql | retained eqhash identity hash and relocation stamps |
 
 * Metadata contract

@@ -423,7 +423,7 @@ def main():
     p.add_argument("--variant", choices=VARIANTS, default="dynamic")
     p.add_argument("--layout", choices=LAYOUTS, type=int, default=0)
     p.add_argument("--calls", type=int, default=10000)
-    p.add_argument("--cpu", type=int, default=24)
+    p.add_argument("--cpu", type=int, default=14)
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--kind", choices=(*KINDS, "chartable"))
     p.add_argument("--operation", dest="op", choices=("hit", "miss", "put"))
