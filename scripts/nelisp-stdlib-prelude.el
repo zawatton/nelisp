@@ -23164,8 +23164,10 @@ Hash tables compare only by identity; markers compare buffer and position."
 
 ;; A5: native `substring' returned garbage for vectors.  Slice vectors in
 ;; elisp via `aref'/`aset'; defer strings to the (correct) native path.
-(unless (fboundp 'nelisp--native-substring) (fset 'nelisp--native-substring (symbol-function 'substring)))
-(defun substring (seq &optional from to)
+;; `substring' is the native subr (GNU Fsubstring); it calls this function for the
+;; calls it does not decide itself: vectors, a missing or nil FROM, negative
+;; indices, wide characters and every error.
+(defun nelisp--substring-slow (seq &optional from to)
   "Return the SEQ slice [FROM, TO); vector support added (Doc 22 A5).
 FROM is OPTIONAL in Emacs -- (substring \"abc\") is \"abc\" -- and requiring
 it here turned that call into a `wrong-number-of-arguments'.  Both indices
@@ -23219,7 +23221,6 @@ computed from it."
 ;; / "%05d" pass through literally).  The underlying conversion (s S d x X o c
 ;; e f g %) is correct, so we delegate each directive's value to native format
 ;; and add the field-width/justify/zero-pad/precision layer in elisp.
-(unless (fboundp 'nelisp--native-format) (fset 'nelisp--native-format (symbol-function 'format)))
 
 (defun nelisp--digit-char-p (ch) (and (>= ch 48) (<= ch 57)))
 
@@ -23305,7 +23306,9 @@ NUL.  Emacs signals for every one of those."
 (unless (fboundp 'nelisp--format-simple)
   (defun nelisp--format-simple (_template _args) nil))
 
-(defun format (template &rest args)
+;; `format' is the native subr (GNU Fformat); it calls this function for the calls the
+;; native layer declines (width, precision, flags, %S, floats, errors).
+(defun nelisp--format-slow (template &rest args)
   "Format TEMPLATE with ARGS honoring %[flags][width][.prec]conv (Doc 22 A7).
 Plain directives with matching arguments take the native fast path
 `nelisp--format-simple'; everything else goes through `nelisp--format-full',
@@ -23314,8 +23317,7 @@ precision (.N) are applied in elisp, %f/%F honor their .PRECISION via
 `nelisp--fmt-float' (Doc 159 §3), %S uses `prin1-to-string' and the remaining
 conversions are delegated to native `format', which lacks only the
 field-width layer."
-  (or (nelisp--format-simple template args)
-      (nelisp--format-full template args)))
+  (nelisp--format-full template args))
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."

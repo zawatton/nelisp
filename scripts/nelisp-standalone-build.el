@@ -9827,40 +9827,44 @@ argument (reachability + in-arena bounds checks).")
                (m5_make_repeated_string (heap-read-u64 (wf_arg_ptr args 0) 8) cp (- 1 multi)))
            (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
        (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
-    ((:lit "concat")           :word . (let* ((why (m5_concat_first_bad_kind args)))
-                                   (if (= why 0)
-                                       (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
-                                           (let ((sb (alloc-bytes 32 8)))
-                                             (seq (m5_count_builder sb all-unibyte)
-                                                  (m5_concat_walk sb args)
-                                                  (m5_builder_allocate_string sb all-unibyte)
-                                                  (m5_concat_walk sb args)
-                                                  ;; GNU fns.c:951-1021: copy intervals only when a
-                                                  ;; source string has them (header+16, lisp.h:4035).
-                                                  (let* ((res (nl_g4arm_finish_string_w sb (- 1 all-unibyte))))
-                                                    (if (= res 0) 0
-                                                      (let* ((cur args) (found 0))
-                                                        (seq (while (and (= found 0) (= (nl_val_tag cur) 7))
-                                                               (let* ((w (nl_cons_car_word cur)))
-                                                                 (seq (if (= (logand w 7) 4)
-                                                                          (if (/= (ptr-read-u64 (- w 4) 16) 0) (setq found 1) 0)
-                                                                        0)
-                                                                      (setq cur (nl_cons_cdr_word cur)))))
-                                                             (if (= found 0) res
-                                                               (wf_string_props_finish_w res args env 0)))))))))
-                                     (let* ((bad (m5_concat_first_bad_ptr args)))
-                                       (if (= why 1)
-                                           (nl_abi_fail (bf_wrong_type_sequencep bad) 0)
-                                         (if (= why 2)
-                                             (nl_abi_fail (bf_wrong_type_listp bad) 0)
-                                           (nl_abi_fail (bf_wrong_type_characterp bad) 0)))))))
+    ((:lit "concat")           :word . (let* ((fast (wf_concat_strings_w args env)))
+                                   (if (/= fast 0) fast
+                                     (let* ((why (m5_concat_first_bad_kind args)))
+                                               (if (= why 0)
+                                                   (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
+                                                       (let ((sb (alloc-bytes 32 8)))
+                                                         (seq (m5_count_builder sb all-unibyte)
+                                                              (m5_concat_walk sb args)
+                                                              (m5_builder_allocate_string sb all-unibyte)
+                                                              (m5_concat_walk sb args)
+                                                              ;; GNU fns.c:951-1021: copy intervals only when a
+                                                              ;; source string has them (header+16, lisp.h:4035).
+                                                              (let* ((res (nl_g4arm_finish_string_w sb (- 1 all-unibyte))))
+                                                                (if (= res 0) 0
+                                                                  (let* ((cur args) (found 0))
+                                                                    (seq (while (and (= found 0) (= (nl_val_tag cur) 7))
+                                                                           (let* ((w (nl_cons_car_word cur)))
+                                                                             (seq (if (= (logand w 7) 4)
+                                                                                      (if (/= (ptr-read-u64 (- w 4) 16) 0) (setq found 1) 0)
+                                                                                    0)
+                                                                                  (setq cur (nl_cons_cdr_word cur)))))
+                                                                         (if (= found 0) res
+                                                                           (wf_string_props_finish_w res args env 0)))))))))
+                                                 (let* ((bad (m5_concat_first_bad_ptr args)))
+                                                   (if (= why 1)
+                                                       (nl_abi_fail (bf_wrong_type_sequencep bad) 0)
+                                                     (if (= why 2)
+                                                         (nl_abi_fail (bf_wrong_type_listp bad) 0)
+                                                       (nl_abi_fail (bf_wrong_type_characterp bad) 0)))))))))
     ;; An out-of-range FROM/TO was clamped by the byte walk and came back as a
     ;; shorter slice: (substring "abc" 0 9) answered "abc" and
     ;; (substring "abc" 2 1) answered "".  Emacs signals both, and a caller
     ;; slicing with a computed index had no way to learn the index was wrong.
     ;; (substring '(1) 32 'foo) named the INDEX as out of range.  Emacs looks
     ;; at the sequence first: a list is not an array, whatever the indices say.
-    ((:lit "substring")        :word . (let* ((res (if (= (bf_arrayp_raw (wf_arg_ptr args 0)) 0)
+    ((:lit "substring")        :word . (let* ((fast (wf_substring_fast_w args env)))
+                                   (if (/= fast 0) fast (wf_string_slow_w args env 0))))
+    ((:lit "nelisp--native-substring") :word . (let* ((res (if (= (bf_arrayp_raw (wf_arg_ptr args 0)) 0)
                                                     (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 123666628244065 0 0 6) 0)
                                                   (if (= (sexp-tag (wf_arg_ptr args 1)) 2)
                                                     ;; TO is read as an integer and never checked, so a non-integer answered a
@@ -9975,7 +9979,11 @@ argument (reachability + in-arena bounds checks).")
                                            (if (= (ptr-read-u64 (- w 4) 16) 0) res
                                              (wf_string_props_finish_w res args env 1))
                                          res)))))
-    ((:lit "format")           :word . (let* ((fmt (wf_arg_ptr args 0))
+    ((:lit "format")           :word . (let* ((r (if (= (nl_val_tag args) 7)
+                                              (bf_format_simple_w (wf_arg_ptr args 0) (nl_cons_cdr_ptr args) 0)
+                                            3)))
+                                   (if (/= r 3) r (wf_string_slow_w args env 1))))
+    ((:lit "nelisp--native-format") :word . (let* ((fmt (wf_arg_ptr args 0))
                                         (all-unibyte (m5_concat_all_unibyte_p args)))
                                      (let ((sb (alloc-bytes 32 8)))
                                        (seq (m5_count_builder sb all-unibyte)
@@ -15098,6 +15106,102 @@ eval applyfn.")
                      (seq (nl_root_release env mark) (if (= rc 0) 0 result)))
                  (seq (nl_root_release env mark)
                       (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))))
+    ;; GNU fns.c concat_to_string: one pass sums the character and byte counts of
+    ;; the string arguments, the result is allocated once at its final size, a
+    ;; second pass copies each span (memcpy between strings of the same kind).
+    ;; Answers the result WORD, or 0 when an argument is not a canonical string
+    ;; (a list or vector of characters, nil), or a unibyte string with raw bytes
+    ;; would join multibyte text: the full arm then decides, as before.
+    (defun wf_concat_strings_w (args env)
+      (let* ((cur args) (nchars 0) (nbytes 0) (multi 0) (props 0) (ok 1))
+        (seq
+         (while (and (= ok 1) (= (nl_val_tag cur) 7))
+           (let* ((w (nl_cons_car_word cur)))
+             (if (= (logand w 7) 4)
+                 (let* ((h (- w 4)) (size (ptr-read-u64 h 0)) (sb (ptr-read-u64 h 8)))
+                   (seq (setq nchars (+ nchars size))
+                        (if (< sb 0) (setq nbytes (+ nbytes size))
+                          (seq (setq nbytes (+ nbytes sb)) (setq multi 1)))
+                        (if (/= (ptr-read-u64 h 16) 0) (setq props 1) 0)
+                        (setq cur (nl_cons_cdr_word cur))))
+               (setq ok 0))))
+         ;; Unibyte text joins multibyte text byte for byte only while it is ASCII.
+         (if (= ok 0) 0
+           (seq
+            (if (= multi 1)
+                (let* ((cur2 args))
+                  (while (and (= ok 1) (= (nl_val_tag cur2) 7))
+                    (let* ((h (- (nl_cons_car_word cur2) 4)))
+                      (seq (if (< (ptr-read-u64 h 8) 0)
+                               (let* ((data (ptr-read-u64 h 24)) (n (ptr-read-u64 h 0)) (i 0))
+                                 (while (and (= ok 1) (< i n))
+                                   (if (< (ptr-read-u8 data i) 128) (setq i (+ i 1)) (setq ok 0))))
+                             0)
+                           (setq cur2 (nl_cons_cdr_word cur2)))))) 0)
+            (if (= ok 0) 0
+              (let* ((word (nl_string_new 0 nbytes (- 1 multi))))
+                (if (= word 0) 0
+                  (let* ((dst (ptr-read-u64 (- word 4) 24)) (off 0) (cur3 args))
+                    (seq
+                     (if (= multi 1)
+                         (seq (ptr-write-u64 (- word 4) 0 nchars) (ptr-write-u64 (- word 4) 8 nbytes))
+                       0)
+                     (while (= (nl_val_tag cur3) 7)
+                       (let* ((h (- (nl_cons_car_word cur3) 4))
+                              (count (if (< (ptr-read-u64 h 8) 0) (ptr-read-u64 h 0) (ptr-read-u64 h 8))))
+                         (seq (nl_string_copy_bytes (ptr-read-u64 h 24) (+ dst off) count)
+                              (setq off (+ off count))
+                              (setq cur3 (nl_cons_cdr_word cur3)))))
+                     (if (= props 0) word
+                       (wf_string_props_finish_w word args env 0))))))))))))
+    ;; GNU Fsubstring (fns.c:1577-1668) for the common call: a string, fixnum
+    ;; indices inside it, and text whose characters are its bytes (unibyte, or
+    ;; multibyte ASCII). One allocation, one copy, then copy_text_properties
+    ;; only for a source that has intervals. Any other call answers 0 and takes
+    ;; the full path (negative or missing indices, wide characters, errors).
+    (defun wf_substring_fast_w (args env)
+      (let* ((w (wf_arg_word args 0)) (fw (wf_arg_word args 1)))
+        (if (= (logand w 7) 4)
+            ;; A fixnum FROM means a second argument exists, so the third can be read.
+            (if (= (logand fw 3) 1)
+                (let* ((tw (wf_arg_word args 2))
+                       (h (- w 4)) (nchars (ptr-read-u64 h 0)) (sb (ptr-read-u64 h 8))
+                       (from (sar fw 2))
+                       (to (if (or (= tw 0) (= tw 3)) nchars
+                             (if (= (logand tw 3) 1) (sar tw 2) -1))))
+                  (if (< from 0) 0
+                    (if (< to from) 0
+                      (if (> to nchars) 0
+                        (if (if (>= sb 0) (/= sb nchars) 0) 0
+                          (let* ((res (nl_string_new (+ (ptr-read-u64 h 24) from) (- to from)
+                                                     (if (< sb 0) 1 0))))
+                            (if (= res 0) 0
+                              (if (= (ptr-read-u64 h 16) 0) res
+                                (wf_string_props_finish_w res args env 1)))))))))
+              0)
+          0)))
+    ;; Delegate a string primitive's call to its Lisp slow layer with the same
+    ;; arguments (the wf_append_slow_w pattern). KIND 0 is nelisp--substring-slow
+    ;; (vectors, nil or negative indices, errors); KIND 1 is nelisp--format-slow
+    ;; (width, precision, flags and every conversion the native layer declines).
+    (defun wf_string_slow_w (args env kind)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126)
+             (ptr-write-u64 (+ buf 8) 0 (if (= kind 0) 7956016061204297075 8299417650110558054))
+             (ptr-write-u64 (+ buf 16) 0 (if (= kind 0) 131320444562791 7827308))
+             (nl_alloc_symbol buf (if (= kind 0) 22 19) sym_slot)
+             (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+               (if (and (/= function-word 0) (/= function-word 2))
+                   (nl_apply_function_w function-word args env 0)
+                 ;; The prelude defines its Lisp layer late: until then the full native
+                 ;; arm (the former public subr) answers, as it did before this front.
+                 (seq (ptr-write-u64 (+ buf 8) 0 (if (= kind 0) 8299401247563473262 7362652525070410094))
+                      (ptr-write-u64 (+ buf 16) 0 (if (= kind 0) 7453010373645656693 499850769007))
+                      (nl_alloc_symbol buf (if (= kind 0) 24 21) sym_slot)
+                      (let* ((native-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+                        (if (and (/= native-word 0) (/= native-word 2))
+                            (nl_apply_function_w native-word args env 0)
+                          (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0)))))))))
     (defun wf_append_w (args env _pad)
   (if (= (nl_val_tag args) 0) 3
     (if (= (nl_val_tag (nl_cons_cdr_word args)) 0) (nl_cons_car_word args)
@@ -28136,7 +28240,7 @@ families.")
     "char-table-parent" "set-char-table-parent"
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
-    "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "setcar" "setcdr" "load"
+    "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--native-substring" "nelisp--native-format" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
     "syscall-direct" "atomic-fetch-add" "garbage-collect"
@@ -29022,13 +29126,13 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--syscall-read-file nelisp--syscall-readdir-names nelisp-socket-accept
       provide rdf signal string-to-number truncate)
     ((1 . 3)
-      nelisp--env-globals-op nelisp--read-all-from-string-native require substring)
+      nelisp--env-globals-op nelisp--native-substring nelisp--read-all-from-string-native require substring)
     ((1 . 5)
       load)
     ((1 . 7)
       nelisp-portable-syscall)
     ((1 . many)
-      / < <= = > >= apply error format funcall nelisp-process-call-process
+      / < <= = > >= apply error format funcall nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-connect SOCKET
@@ -34049,7 +34153,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--fx-run" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
-    "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--equal-leaf" "nelisp--build-digest"
+    "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--native-substring" "nelisp--native-format" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--pool-root-coverage" "nelisp--arena-swizzle-verify"
