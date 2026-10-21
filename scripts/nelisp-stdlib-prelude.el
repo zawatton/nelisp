@@ -27377,7 +27377,16 @@ Unlike `set-char-table-range', this never accepts a range or default key."
       (emacs-char-table-extra-slot table slot)
     (funcall nelisp-casetab--native-extra table slot)))
 
+;; GNU's searches read the buffer's case_canon_table slot, which only
+;; `set-case-table' and `set-standard-case-table' change.  The regexp
+;; matcher memoizes its canon read per buffer and this counter, so every
+;; change it could observe bumps it: those two functions and every
+;; extra-slot write below.
+(defvar nelisp-casetab--epoch 0
+  "Count of case-table changes a case-folding search can observe.")
+
 (defun nelisp-casetab--put-extra-slot (table slot value)
+  (setq nelisp-casetab--epoch (1+ nelisp-casetab--epoch))
   (if (nelisp-casetab--sparse-table-p table)
       (emacs-char-table-set-extra-slot table slot value)
     (funcall nelisp-casetab--native-set-extra table slot value)))
@@ -27471,6 +27480,11 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 (defvar nelisp-casetab--standard nil "The standard downcase char-table.")
 (defvar nelisp-casetab--initial-standard nil "The original standard table object.")
 (defvar nelisp-casetab--unicode-initialized nil "Non-nil after Unicode data registration.")
+(defvar nelisp-casetab--builtin-canon nil
+  "The canonicalize table of the standard case table as built from GNU
+31.1's Unicode data, before any change.  Its mapping is exactly the
+built-in fold the regexp matcher applies without a translate table
+\(`nlre--translate-char'), so a search through it needs no table.")
 (defvar nelisp-casetab--current nil "The current buffer's downcase char-table.")
 (make-variable-buffer-local 'nelisp-casetab--current)
 (defvar nelisp--case-table nil "Compatibility name for the installed case table.")
@@ -27501,6 +27515,9 @@ Unlike `set-char-table-range', this never accepts a range or default key."
             (setq character (1+ character)))))
       (nelisp-casetab--put-extra-slot down 0 up)
       (nelisp-casetab--ensure-extra-slots down)
+      (when nelisp-casetab--unicode-initialized
+        (setq nelisp-casetab--builtin-canon
+              (nelisp-casetab--get-extra-slot down 1)))
       (setq nelisp-casetab--standard down nelisp-casetab--initial-standard down)))
   nelisp-casetab--standard)
 
@@ -27517,6 +27534,8 @@ alone.  An untouched bootstrap stays lazy until its first API call."
       (nelisp-casetab--put-extra-slot table 1 nil)
       (nelisp-casetab--put-extra-slot table 2 nil)
       (nelisp-casetab--ensure-extra-slots table)
+      (setq nelisp-casetab--builtin-canon
+            (nelisp-casetab--get-extra-slot table 1))
       (setq nelisp-casetab--unicode-initialized t))))
 
 (defun standard-case-table ()
@@ -27536,6 +27555,7 @@ TABLE is a `case-table' char-table with upcase, canonicalization and
 equivalence tables in extra slots 0, 1 and 2.  Missing tables are derived."
   (nelisp-casetab--check-table table)
   (nelisp-casetab--ensure-extra-slots table)
+  (setq nelisp-casetab--epoch (1+ nelisp-casetab--epoch))
   (puthash (current-buffer) table nelisp-casetab--buffer-tables)
   (make-local-variable 'nelisp-casetab--current)
   (make-local-variable 'nelisp--case-table)
@@ -27546,6 +27566,7 @@ equivalence tables in extra slots 0, 1 and 2.  Missing tables are derived."
   "Select TABLE as the standard case table used by newly created buffers."
   (nelisp-casetab--check-table table)
   (nelisp-casetab--ensure-extra-slots table)
+  (setq nelisp-casetab--epoch (1+ nelisp-casetab--epoch))
   (let ((old (standard-case-table)))
     ;; GNU stores four case-table fields at buffer creation.  Materialize
     ;; untouched buffers before changing Lisp defaults to preserve that rule.
@@ -27598,6 +27619,12 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
         (nelisp-casetab--put-extra-slot copy slot extra)
         (setq slot (1+ slot)))
       copy)))
+
+;; The `set-case-table' that bumps the epoch.  A case-table package that
+;; redefines it without the epoch turns the matcher's memo off.
+(defvar nelisp-casetab--epoch-owner nil
+  "The epoch-aware `set-case-table' function object.")
+(setq nelisp-casetab--epoch-owner (symbol-function 'set-case-table))
 
 (provide 'emacs-cc-casetab-1)
 ;;; emacs-cc-casetab-1.el ends here

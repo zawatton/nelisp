@@ -1764,3 +1764,9 @@ pinned-collision ns-collision-divergent	file-name-nondirectory	lisp/nelisp-stdli
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	c0cf8ac830a8
 pinned-collision ns-collision-divergent	string-equal	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	244c8723adb9
 pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	23425a8d9d04
+# Batch D''' (2026-10-22): the case-fold canon shortcut and the epoch that
+# lets the regexp matcher memoize its canon read are defined in the casetab
+# source and mirrored in the prelude's generated block.
+pinned-collision ns-collision	nelisp-casetab--builtin-canon	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-casetab--epoch	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-casetab--epoch-owner	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
