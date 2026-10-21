@@ -212,6 +212,59 @@
 (symfix-case symbol-name-types (list (symbol-name nil) (symbol-name t) (symbol-name :symfix-kw)
                                      (condition-case e (symbol-name 3) (error e))))
 
+;;; Uninterned symbols (Doc 226 D9: direct objects, GNU alloc.c Fmake_symbol)
+(defvar symfix-u-name "symfix-u")
+(symfix-case u-identity
+  (let* ((a (make-symbol "symfix-u")) (b (make-symbol "symfix-u")) (l (list a a b)))
+    (list (eq a a) (eq a b) (eq (car l) (cadr l)) (eq (car l) (nth 2 l)) (equal a b)
+          (symbolp a) (eq (bare-symbol a) a) (eq (intern-soft "symfix-u") a) (memq a l) (length (memq b l)))))
+(symfix-case u-name
+  (let ((a (make-symbol symfix-u-name)))
+    (list (symbol-name a) (eq (symbol-name a) symfix-u-name) (eq (symbol-name a) (symbol-name a))
+          (string= a "symfix-u") (format "%s|%S" a a) (prin1-to-string a)
+          (string-to-list (symbol-name a)) (length (symbol-name a)))))
+(symfix-case u-cells
+  (let ((a (make-symbol "symfix-uc")))
+    (list (boundp a) (fboundp a) (symbol-plist a)
+          (condition-case e (symbol-value a) (error (car e)))
+          (progn (set a 7) (symbol-value a)) (boundp a)
+          (progn (fset a #'+) (funcall a 1 2)) (fboundp a)
+          (progn (put a 'k 1) (put a 'j 2) (list (get a 'k) (symbol-plist a)))
+          (progn (makunbound a) (boundp a)) (progn (fmakunbound a) (fboundp a)))))
+(symfix-case u-lexical
+  (let ((g (make-symbol "x")) (h (make-symbol "x")))
+    (list (eval `(let ((,g 1) (,h 2)) (list ,g ,h)) t)
+          (eval `(let* ((,g 10) (,h (+ ,g 1))) (setq ,g (* ,h 2)) (list ,g ,h)) t)
+          (funcall (funcall (eval `(lambda (,g) (lambda () ,g)) t) 'captured))
+          (eval `(let ((,g 3)) (funcall (lambda () (setq ,g (1+ ,g)))) ,g) t))))
+(symfix-case u-special
+  (let ((g (make-symbol "symfix-us")))
+    (eval `(defvar ,g 'global) t)
+    (list (symbol-value g) (special-variable-p g)
+          (eval `(let ((,g 'bound)) (list ,g (symbol-value ',g))) t)
+          (symbol-value g))))
+(symfix-case u-hash
+  (let* ((a (make-symbol "k")) (b (make-symbol "k")) (h (make-hash-table :test 'eq)))
+    (puthash a 1 h) (puthash b 2 h)
+    (list (gethash a h) (gethash b h) (gethash (intern "k") h) (hash-table-count h)
+          (let ((e (make-hash-table :test 'equal))) (puthash a 1 e) (gethash b e)))))
+(symfix-case u-read
+  (let* ((one (read "#:symfix-r")) (two (read "#:symfix-r"))
+         (shared (read "(#1=#:symfix-s #1# #:symfix-s)")))
+    (list (symbolp one) (symbol-name one) (eq one two) (eq one (intern-soft "symfix-r"))
+          (eq (car shared) (cadr shared)) (eq (car shared) (nth 2 shared)))))
+(symfix-case u-alias
+  (let ((a (make-symbol "symfix-ua")))
+    (defvaralias a 'symfix-a)
+    (list (eq (indirect-variable a) 'symfix-a) (= (symbol-value a) symfix-a))))
+(symfix-case u-gc
+  (let ((syms nil))
+    (dotimes (i 2000) (let ((s (make-symbol (format "symfix-g%d" i)))) (set s i) (push s syms)))
+    (garbage-collect)
+    (let ((ok 0))
+      (dolist (s syms) (when (and (= (symbol-value s) (string-to-number (substring (symbol-name s) 8)))) (setq ok (1+ ok))))
+      (list ok (length syms)))))
+
 ;;; FORWARDED (GNU DEFVAR_INT max-lisp-eval-depth, DEFVAR_BOOL print-escape-newlines)
 (symfix-case fwd-int-let
   (let ((old max-lisp-eval-depth))

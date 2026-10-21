@@ -57,7 +57,7 @@
     ;; `word == 7' decides the exact same predicate as
     ;; `(sexp-tag (materialised)) == 1' for every value it can hold.
     (defun nelisp_mirror_is_constant_slot_word (entry-ptr)
-      (nl_record_slot_word entry-ptr 3))
+      (nl_ent_w entry-ptr 3))
     (defun nelisp_mirror_is_constant_check (entry-ptr _mirror-ptr _sym-ptr _pad)
       (if (= entry-ptr 0)
           0

@@ -378,6 +378,20 @@ times the globals probe on CPU 13 and commits with the numbers.
   =internal--define-uninitialized-variable= and
   =internal-make-var-non-special=; the registry hash stays for Lisp
   readers.  =obarray=, global =mapatoms= and global =unintern= as D6.
+- Step 5.1 (D9 preparation, no layout change): every reader and writer of a
+  symbol object's D1 slots goes through the entry API (=nl_ent_p=,
+  =nl_ent_n=, =nl_ent_w=, =nl_ent_set=, =nl_ent_ptr=): an in-line fast
+  path for the function, the plist and a PLAINVAL value of a GNU-layout
+  object, and two out-of-line slow paths (=nl_ent_w_slow=,
+  =nl_ent_set_slow=) for the rest, including GNU's
+  store_symval_forwarding conversion that steps 2-3 had copied into three
+  callers.  The slow paths are inline boundaries: the F1 prelink closure
+  bounds its function count (304), its text and its root evidence
+  (nodes), and copies of them in every caller cost edges in all three.
+  The units that call the API in that closure import the arena for the
+  inliner (=sf-env-set-value2-epoch.o=, =sf-mirror-is-const.o=).
+  Unreferenced legacy units (the alias stage: =nelisp_mirror_alias_install=
+  and its helpers) keep their record accessors; nothing calls them.
 - Not reached in this lane:
   - S1.1 header-less symbol WORDs.  A symbol WORD is still a 32-byte view
     copied per occurrence; making it the object needs the GC to trace and

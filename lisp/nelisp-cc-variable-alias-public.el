@@ -18,13 +18,14 @@
                    (setq done 1))
             (if (= entry 0)
                 (seq (setq result current) (setq done 1))
-              (if (or (/= (nl_val_tag entry) 12)
-                      (/= (nl_sp_eq_lit (nl_record_type_word entry) 12
-                                       7290602597431212403 2037544046) 1))
+              (if (and (= (nl_so_p entry) 0)
+                       (or (/= (nl_val_tag entry) 12)
+                           (/= (nl_sp_eq_lit (nl_record_type_word entry) 12
+                                            7290602597431212403 2037544046) 1)))
                   (seq (nelisp_env_makunbound_alias_signal_malformed name 0) (setq done 1))
-              (if (<= (record-slot-count entry) 4)
+              (if (<= (nl_ent_n entry) 4)
                   (seq (setq result current) (setq done 1))
-              (let ((target (nl_record_slot_word entry 4)))
+              (let ((target (nl_ent_w entry 4)))
                 (if (= (nl_val_tag target) 0)
                     (seq (setq result current) (setq done 1))
                   (if (and (/= (nl_val_tag target) 4) (/= (nl_val_tag target) 16))
@@ -60,8 +61,8 @@
                      (= (heap-read-u64 (data-addr nl_root_pin_control) 8) mirror))
           6
         (if (or (= validated 1)
-              (and (= (nl_val_tag entry) 12) (> (record-slot-count entry) 4)))
-          (let ((target (nl_record_slot_word entry 4)))
+              (and (= (nl_ent_p entry) 1) (> (nl_ent_n entry) 4)))
+          (let ((target (nl_ent_w entry 4)))
             (if (or (= (nl_val_tag target) 4) (= (nl_val_tag target) 16))
                 ;; TARGET is the symbol WORD owned by the live mirror entry.
                 ;; No allocation/safepoint occurs before the owned lookup.
@@ -76,7 +77,7 @@
                                     (if (= frames 0) 0
                                       (nelisp_frame_stack_find_kind frames target 1 0)))))
                         (if (= cell 0)
-                            (if (= terminal 0) 2 (nl_record_slot_word terminal 0))
+                            (if (= terminal 0) 2 (nl_ent_w terminal 0))
                           (nl_cell_get_value_w cell 0)))
                     6))
               6))
@@ -96,7 +97,7 @@
       ;; 1=let-bound source, 2=buffer-local source, 0=ordinary variable.
       (let* ((frames (+ env 32)) (entry (nelisp_mirror_lookup_entry env name))
              (depth (nl_word_payload (nl_record_slot_word frames 1))) (kind 0))
-        (if (and (/= entry 0) (> (record-slot-count entry) 5)
+        (if (and (/= entry 0) (> (nl_ent_n entry) 5)
                  (= (nelisp_env_entry_slot_tag entry 5) 8))
             (setq kind 2)
           (if (/= (nelisp_frame_stack_find_kind frames name 1 0) 0) (setq kind 1)
@@ -146,7 +147,7 @@
           (seq (bf_wrong_type_symbolp (wf_word_view name)) 0)
       (if (= (nl_thread_mirror_mutation_guard env name) 1) 0
         (let ((old (nl_pa_entry env name)))
-          (if (> (record-slot-count old) 5) old
+          (if (> (nl_ent_n old) 5) old
             (let ((entry (alloc-bytes 32 8)) (scratch (alloc-bytes 32 8)) (i 0))
               (seq
                (record-make (nl_record_type_word old) 9 entry)
@@ -198,8 +199,8 @@
                           (setq saved (+ roots 128))) 0)
                  (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1)
                          (= (bf_keyword_raw base-name) 1))
-                     (seq (record-slot-set base-entry 0 base)
-                          (record-slot-set base-entry 3 7)) 0)
+                     (seq (nl_ent_set base-entry 0 base)
+                          (nl_ent_set base-entry 3 7)) 0)
                  (if (and (/= saved 0) (/= saved 2)
                           (= (bf_dynamic_lookup_w env terminal 0) 2))
                      (seq
@@ -220,9 +221,9 @@
                                            base-name alias) 0) 0
                    (seq (setq alias-entry (nl_pa_entry env alias))
                         (wf_dirty)
-                        (record-slot-set alias-entry 4 base-name)
-                        (if (> (record-slot-count alias-entry) 5)
-                            (record-slot-set alias-entry 5 3) 0)
+                        (nl_ent_set alias-entry 4 base-name)
+                        (if (> (nl_ent_n alias-entry) 5)
+                            (nl_ent_set alias-entry 5 3) 0)
                         (bf_declare_special env alias)
                         (bf_declare_special env base-name)
                         ;; The result outlives the wrapper's temporary roots.
@@ -239,15 +240,15 @@
             (while (= (nl_val_tag chain) 7)
               (let* ((pair (nl_cons_car_word chain)) (key (nl_cons_car_word pair))
                      (entry (nl_cons_cdr_word pair)))
-                (if (and (> (record-slot-count entry) 4)
-                         (/= (nl_val_tag (nl_record_slot_word entry 4)) 0))
+                (if (and (> (nl_ent_n entry) 4)
+                         (/= (nl_val_tag (nl_ent_w entry 4)) 0))
                     (let ((name (if (= (nl_val_tag key) 16) key
                                   (bf_intern_w key 0))))
                       (if (= entry (nelisp_mirror_lookup_entry env name))
                           (setq result
                                 (nelisp_cons_construct_w
                                  (nelisp_cons_construct_w name
-                                  (nl_pa_public_name (nl_record_slot_word entry 4) 0) 0)
+                                  (nl_pa_public_name (nl_ent_w entry 4) 0) 0)
                                  result 0)) 0)) 0))
               (setq chain (nl_cons_cdr_word chain))))
           (setq i (+ i 1)))
@@ -258,7 +259,7 @@
           (let* ((entry (nelisp_mirror_lookup_entry env canonical))
                  (cell (nelisp_frame_stack_find_kind (+ env 32) canonical 1 0))
                  (old (if (/= cell 0) (nl_cell_get_value_w cell 0)
-                        (if (= entry 0) 2 (nl_record_slot_word entry 0))))
+                        (if (= entry 0) 2 (nl_ent_w entry 0))))
                  (void (if (= old 2) 1 (wf_bytecode_w_unbound_p env old))))
             (if (= (sexp-name-eq op "variable-default-boundp") 1)
                 (if (= void 1) 3 7)
@@ -333,8 +334,8 @@
                                   (= (nelisp_env_alias_slot_candidate entry 0) 0))))
                 (if (= (nl_thread_mirror_mutation_guard env name) 1) 0
                   (seq (if (/= entry 0)
-                           (seq (wf_dirty) (record-slot-set entry 4 3)
-                                (record-slot-set entry 0 (+ env 64))
+                           (seq (wf_dirty) (nl_ent_set entry 4 3)
+                                (nl_ent_set entry 0 (+ env 64))
                                 (if (= was-alias 1) (bf_fx_special_bump env) 0)) 0)
                        name)))
             (let ((canonical (if (or (= (nl_val_tag name) 4) (= (nl_val_tag name) 16))

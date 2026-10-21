@@ -80,7 +80,7 @@
     (defun nelisp_env_entry_slot_tag (rec k)
       ;; Keep this small tagged-slot accessor eligible for the general source
       ;; inliner.  Nil metadata is the common case, so classify it first.
-      (let* ((w (nl_record_slot_word rec k)))
+      (let* ((w (nl_ent_w rec k)))
         (if (= w 3) 0
           (if (= (logand w 1) 0)
               (sexp-tag w)
@@ -89,9 +89,9 @@
     (defun nelisp_env_alias_slot_candidate (entry-ptr _pad)
       ;; Allocation-free classification for ordinary value reads/writes.
       ;; 0=real alias, 1=malformed, 3=nonalias or legacy four-slot entry.
-      (if (/= (sexp-tag entry-ptr) 12)
+      (if (= (nl_ent_p entry-ptr) 0)
           1
-        (if (<= (record-slot-count entry-ptr) 4)
+        (if (<= (nl_ent_n entry-ptr) 4)
             3
           (let ((tg (nelisp_env_entry_slot_tag entry-ptr 4)))
             (if (= tg 0) 3
@@ -104,9 +104,9 @@
       ;; alias, authenticate record tags against fixed names before invoking
       ;; the shared borrowed resolver. No Sexp clone escapes this helper.
       (ptr-write-u64 result-address-ptr 0 name-ptr)
-      (if (/= (sexp-tag entry-ptr) 12)
+      (if (= (nl_ent_p entry-ptr) 0)
           1
-        (if (<= (record-slot-count entry-ptr) 4)
+        (if (<= (nl_ent_n entry-ptr) 4)
             3
           (let ((target-tag (nelisp_env_entry_slot_tag entry-ptr 4)))
             (if (= target-tag 0)
@@ -122,8 +122,9 @@
                       (if (and (= (nl_val_tag table) 12)
                                (= (nl_sp_eq_lit (nl_record_type_word table) 15
                                                8314040931539181926 28548142445374824) 1)
-                               (= (nl_sp_eq_lit (nl_record_type_word entry-ptr) 12
-                                               7290602597431212403 2037544046) 1))
+                               (or (= (nl_so_p entry-ptr) 1)
+                                   (= (nl_sp_eq_lit (nl_record_type_word entry-ptr) 12
+                                                   7290602597431212403 2037544046) 1)))
                           (let ((terminal (extern-call nl_pa_terminal
                                            mirror-ptr entry-ptr name-ptr 0)))
                             (if (= terminal 0)
@@ -144,9 +145,9 @@
                    (entry (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
               ;; Only a Vector slot 5 is a redirect; test its WORD first so
               ;; the usual nil slot is not boxed just to be rejected.
-              (if (and (/= entry 0) (> (record-slot-count entry) 5)
+              (if (and (/= entry 0) (> (nl_ent_n entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 8))
-                  (let ((redirect (record-slot-ref-ptr entry 5)))
+                  (let ((redirect (nl_ent_w entry 5)))
                     (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
                         (let ((buffer (if (= frames-ptr 0)
                                           ;; Mirror-only callers (notably
@@ -183,9 +184,9 @@
         (if (= entry 0) 2
           (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
           (if (and (= candidate 3)
-                   (if (> (record-slot-count entry) 5)
+                   (if (> (nl_ent_n entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
-              (nl_record_slot_word entry 0)
+              (nl_ent_w entry 0)
             (let ((fast (extern-call nl_pa_alias_read_w mirror-ptr frames-ptr entry
                                      (= candidate 0))))
             (if (/= fast 6) fast
@@ -200,7 +201,7 @@
                     (if (= cell 0)
                         (let ((terminal (extern-call nelisp_mirror_lookup_entry
                                                      mirror-ptr canonical)))
-                          (if (= terminal 0) 2 (nl_record_slot_word terminal 0)))
+                          (if (= terminal 0) 2 (nl_ent_w terminal 0)))
                       (extern-call nl_cell_get_value_w cell 0)))
                 (nl_abi_miss status 0))))))))))
 
@@ -218,9 +219,9 @@
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0) 1
           (if (and (= (nelisp_env_alias_slot_candidate entry 0) 3)
-                   (if (> (record-slot-count entry) 5)
+                   (if (> (nl_ent_n entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
-              (and (record-slot-ref entry 0 out-ptr) 0)
+              (seq (extern-call nl_sexp_clone_into (nl_ent_w entry 0) out-ptr) 0)
           (let ((address (alloc-bytes 8 8)) (status 1))
             (setq status (nelisp_env_variable_canonicalize
                           mirror-ptr frames-ptr entry name-ptr address 0))
@@ -232,7 +233,9 @@
                   (if (= cell 0)
                       (let ((terminal (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
                         (if (= terminal 0) (setq status 1)
-                          (setq status (and (record-slot-ref terminal 0 out-ptr) 0))))
+                          (setq status (seq (extern-call nl_sexp_clone_into
+                                                         (nl_ent_w terminal 0) out-ptr)
+                                            0))))
                     (setq status (extern-call nl_cell_get_value cell out-ptr)))) 0)
             (dealloc-bytes address 8 8) status)))))
 
@@ -262,7 +265,7 @@
     (defun nelisp_env_lookup_value_w (mirror-ptr frames-ptr name-ptr _pad)
       (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
              (local-p (if (= entry 0) 0
-                        (if (> (record-slot-count entry) 5)
+                        (if (> (nl_ent_n entry) 5)
                             (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
              ;; Lexical cells shadow locals. A default dynamic binding does
              ;; not shadow an existing local cell in another buffer.

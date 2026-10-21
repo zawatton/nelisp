@@ -1633,10 +1633,15 @@ standalone units can call each other."
   "Operators an inlined body may use besides calls to `_'-named functions.")
 
 (defconst nelisp-standalone--inline-boundaries
-  '(nl_apply_function nl_apply_function_w)
-  "Authenticated evaluator entries whose calls must survive inlining.
-The F1 source/binary proof binds these entries as evaluator terminals.
-Inlining them into a caller would erase that ownership boundary.")
+  '(nl_apply_function nl_apply_function_w
+    ;; Doc 226 D9: the symbol entry API's slow paths.
+    nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp)
+  "Calls that must survive inlining.
+Authenticated evaluator entries: the F1 source/binary proof binds them as
+evaluator terminals, and inlining one into a caller would erase that
+ownership boundary.  Slow paths kept out of line: copied into every caller
+they would grow the F1 prelink closure, whose function count, text and
+root evidence are bounded.")
 
 (defvar nelisp-standalone--inline-max-nodes
   (string-to-number (or (getenv "NELISP_INLINE_MAX_NODES") "80"))
@@ -1712,6 +1717,11 @@ position and under `data-addr'."
     ("lookup-fn.o" "arena.o")
     ("sf-frame-bind.o" "arena.o")
     ("sf-env-lookup-value.o" "arena.o")
+    ;; Doc 226 D9: the entry API (nl_ent_*) in line in the F1 closure.
+    ("sf-env-set-value2.o" "arena.o")
+    ("sf-env-set-value2-epoch.o" "arena.o")
+    ("sf-mirror-setval.o" "arena.o")
+    ("sf-mirror-is-const.o" "arena.o")
     ("frame-pop-epoch.o" "arena.o")
     ("frame-push-epoch.o" "arena.o")
     ("sf-let-setup.o" "arena.o")
@@ -4175,6 +4185,187 @@ WORD (Doc 216 S2.2 removed the refcount word).")
       (heap-read-u64 (+ (+ (nl_word_payload sexp-ptr) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
       (heap-read-u64 (+ (+ (nl_word_payload sexp-ptr) 16) (* idx 8)) 0))
+    ;; ---- Doc 226 D9: symbol objects in GNU's layout ----
+    ;; A symbol object is a class-110 WORD whose header kind (bits 0-5) is
+    ;; 4 (interned) or 16 (uninterned), GNU's struct Lisp_Symbol
+    ;; (lisp.h:786): flags at +0 (redirect in bits 8-9, trapped_write
+    ;; 10-11, interned 12-13, declared_special 14, the FORWARDED type
+    ;; 16-17; bits 24 and up belong to the collector), name +8, val +16,
+    ;; function +24, plist +32, next +40.
+    ;; The entry API below keeps D1's slot numbers for the readers written
+    ;; against the nine-slot record.  Each accessor is an in-line fast path
+    ;; (one body form, `let*', pure operators and `_' calls, for the
+    ;; general inliner) plus one out-of-line slow path, so the F1 prelink
+    ;; closure gains two functions and its callers one call edge each.
+    (defun nl_so_p (w)
+      (if (= (logand w 7) 6)
+          (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+            (if (= k 4) 1 (if (= k 16) 1 0)))
+        0))
+    (defun nl_ent_p (w)
+      (let* ((tg (sexp-tag w)))
+        (if (= tg 12) 1
+          (if (= (logand w 7) 6) (if (= tg 4) 1 (if (= tg 16) 1 0)) 0))))
+    (defun nl_ent_n (w)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (k (logand h 63)))
+            (if (= k 4) 9 (if (= k 16) 9 (sar h 8))))
+        (sar (heap-read-u64 (nl_word_payload w) 0) 8)))
+    ;; In line: a symbol object's function, plist and PLAINVAL or FORWARDED
+    ;; value.  A symbol object answers D1's other slots from GNU's fields:
+    ;; 0 the value (LOCALIZED: the default kept in the blv; VARALIAS: nil,
+    ;; an alias has no value of its own, data.c:1619), 3 t when
+    ;; trapped_write is NOWRITE, 4 the VARALIAS target, 5 the LOCALIZED
+    ;; redirect vector, 6 the bit fields as a fixnum (declared_special =
+    ;; 64), 7 the FORWARDED type, 8 the name.  The LOCALIZED blv is a
+    ;; two-slot vector [REDIRECT DEFAULT].
+    (defun nl_ent_w (w k)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (kind (logand h 63)))
+            (if (if (if (= kind 4) 1 (= kind 16))
+                    (if (= k 0) (let* ((r (logand (sar h 8) 3))) (or (= r 0) (= r 3)))
+                      (< k 3))
+                  0)
+                (heap-read-u64 (+ (- w 6) (+ 16 (* k 8))) 0)
+              (nl_ent_w_slow w k)))
+        (nl_ent_w_slow w k)))
+    (defun nl_ent_w_slow (w k)
+      (if (= (nl_so_p w) 0) (nl_record_slot_word w k)
+        (let* ((b (- w 6)) (h (heap-read-u64 b 0)) (r (logand (sar h 8) 3)))
+          (if (< k 3)
+              (if (= k 0)
+                  (if (= r 1) 3
+                    (if (= r 2) (nl_vector_slot_word (heap-read-u64 b 16) 1)
+                      (heap-read-u64 b 16)))
+                (heap-read-u64 (+ b (+ 16 (* k 8))) 0))
+            (if (= k 3) (if (= (logand (sar h 10) 3) 1) 7 3)
+              (if (= k 4) (if (= r 1) (heap-read-u64 b 16) 3)
+                (if (= k 5) (if (= r 2) (nl_vector_slot_word (heap-read-u64 b 16) 0) 3)
+                  (if (= k 6) (nl_imm_int (if (= (logand (sar h 14) 1) 1) 64 0))
+                    (if (= k 7) (if (= r 3) (nl_imm_int (logand (sar h 16) 3)) 3)
+                      (let* ((nm (heap-read-u64 b 8))) (if (= nm 0) 3 nm)))))))))))
+    ;; Store into a symbol object's flags word, keeping the collector's bits.
+    (defun nl_so_flags_set (b mask bits)
+      (ptr-write-u64 b 0 (logior (logand (heap-read-u64 b 0) (- -1 mask)) bits)))
+    ;; In line: a symbol object's function, plist and PLAINVAL value.  VAL is
+    ;; a WORD or a Sexp slot pointer, as for `nl_record_set_slot', and WORD
+    ;; stores go through the `nl_val_clone_into' keystone.  Answers 1 after
+    ;; the store, 0 after a stashed signal.
+    (defun nl_ent_set (w k val)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (kind (logand h 63)))
+            (if (if (if (= kind 4) 1 (= kind 16))
+                    (if (= k 0) (= (logand (sar h 8) 3) 0) (< k 3))
+                  0)
+                (seq (nl_val_clone_into val (+ (- w 6) (+ 16 (* k 8)))) 1)
+              (nl_ent_set_slow w k val)))
+        (nl_ent_set_slow w k val)))
+    ;; The slow store converts a FORWARDED value as GNU store_symval_forwarding
+    ;; (data.c:1470) does -- a boolean variable stores t or nil, an integer
+    ;; variable refuses a non-integer (`nl_sym_signal_wta_integerp') -- except
+    ;; the unbound marker, which an unbinding restores as it was bound.
+    (defun nl_ent_set_slow (w k val)
+      (let* ((so (nl_so_p w))
+             (fwd (if (= k 0)
+                      (if (= so 1)
+                          (let* ((h (heap-read-u64 (- w 6) 0)))
+                            (if (= (logand (sar h 8) 3) 3) (logand (sar h 16) 3) 0))
+                        (if (< (sar (heap-read-u64 (nl_word_payload w) 0) 8) 9) 0
+                          (let* ((d (nl_record_slot_word w 7)))
+                            (if (= (logand d 3) 1) (sar d 2) 0))))
+                    0))
+             (v (if (= fwd 0) val
+                  (if (if (= (logand val 7) 0)
+                          (if (= (heap-read-u8 val 0) 4)
+                              (if (= (heap-read-u64 val 24) 22)
+                                  (let* ((p (heap-read-u64 val 16)))
+                                    (if (= (heap-read-u64 p 0) 3255381746650998126)
+                                        (if (= (heap-read-u64 p 8) 3270860680036773493)
+                                            (= (logand (heap-read-u64 p 16) 281474976710655)
+                                               125779919921517)
+                                          0)
+                                      0))
+                                0)
+                            0)
+                        0)
+                      val
+                    (if (= fwd 2) (if (= (nl_val_tag val) 0) 3 7)
+                      (if (= (logand val 3) 1) val
+                        (if (= (logand val 1) 0)
+                            (if (= (nl_val_tag val) 2) val
+                              (if (= (nl_val_tag val) 13) val 0))
+                          0)))))))
+        (if (= v 0) (nl_sym_signal_wta_integerp val)
+          (if (= so 0)
+              (seq (extern-call nl_record_set_slot (nl_word_payload w) k v) 1)
+            (let* ((b (- w 6)) (h (heap-read-u64 b 0)) (r (logand (sar h 8) 3)))
+              (seq
+               (if (< k 3)
+                   (if (= k 0)
+                       (if (= r 1) 0
+                         (if (= r 2)
+                             (extern-call nl_vector_set_slot
+                                          (nl_word_payload (heap-read-u64 b 16)) 1 v)
+                           (extern-call nl_val_clone_into v (+ b 16))))
+                     (extern-call nl_val_clone_into v (+ b (+ 16 (* k 8)))))
+                 (if (= k 3)
+                     (nl_so_flags_set b 3072 (if (= (nl_val_tag v) 0) 0 1024))
+                   (if (= k 4)
+                       (if (= (nl_val_tag v) 0)
+                           (if (= r 1) (seq (ptr-write-u64 b 16 3) (nl_so_flags_set b 768 0)) 0)
+                         (seq (extern-call nl_val_clone_into v (+ b 16))
+                              (nl_so_flags_set b 768 256)))
+                     (if (= k 5)
+                         (if (= (nl_val_tag v) 8)
+                             (if (= r 2) 0
+                               (let* ((blv (extern-call nl_alloc_vector 2)))
+                                 (seq (ptr-write-u64 blv 0 (+ (* 2 256) 8))
+                                      (ptr-write-u64 blv 8 3)
+                                      (ptr-write-u64 blv 16 3)
+                                      (extern-call nl_val_clone_into v (+ blv 8))
+                                      (if (= r 1) 0
+                                        (ptr-write-u64 blv 16 (heap-read-u64 b 16)))
+                                      (ptr-write-u64 b 16 (+ blv 6))
+                                      (nl_so_flags_set b 768 512))))
+                           (if (= r 2)
+                               (seq (ptr-write-u64 b 16 (nl_vector_slot_word (heap-read-u64 b 16) 1))
+                                    (nl_so_flags_set b 768
+                                                     (if (= (logand (sar h 16) 3) 0) 0 768)))
+                             0))
+                       (if (= k 6)
+                           (nl_so_flags_set b 16384
+                                            (if (= (logand (if (= (logand v 3) 1) (sar v 2) 0) 64) 0)
+                                                0 16384))
+                         (if (= k 7)
+                             (if (= (logand v 3) 1)
+                                 (nl_so_flags_set b 197376
+                                                  (+ 768 (* (logand (sar v 2) 3) 65536)))
+                               (if (= r 3) (nl_so_flags_set b 197376 0) 0))
+                           (extern-call nl_val_clone_into v (+ b 8))))))))
+               1))))))
+    ;; GNU's (wrong-type-argument integerp VAL), stashed as a signal (the
+    ;; tag at 268435480, the data at 268435512, the flag and the mutation
+    ;; epoch); answers 0, the slow store's "signalled".
+    (defun nl_sym_signal_wta_integerp (val)
+      (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
+             (tail (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 bytes 0 8751669898145395319)
+             (ptr-write-u64 bytes 8 7887324063363589488)
+             (ptr-write-u64 bytes 16 7630437)
+             (nl_alloc_symbol bytes 19 268435480)
+             (ptr-write-u64 bytes 0 8102650174351109737)
+             (nl_alloc_symbol bytes 8 pred)
+             (nelisp_cons_construct val 3 tail)
+             (nelisp_cons_construct pred tail 268435512)
+             (ptr-write-u64 268435472 0 1)
+             (atomic-fetch-add 268435544 1)
+             0)))
+    ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
+    ;; a pointer WORD passes through, an immediate gets a fresh view.
+    (defun nl_ent_ptr (w k)
+      (let ((word (nl_ent_w w k)))
+        (if (= (logand word 1) 0) word
+          (extern-call nl_val_load word (alloc-bytes 32 8)))))
     ;; The fixed-size record's former capacity field retains its type WORD.
     ;; Public slot indexes and the inline type view stay unchanged.
     (defun nl_record_type_word (record)
@@ -12682,7 +12873,7 @@ leave symbols unresolved at link time."
               (let* ((entry (nelisp_mirror_lookup_entry rootslot qsym)))
                 (if (= entry 0)
                     3
-                  (nl_record_slot_word entry 0))))))))
+                  (nl_ent_w entry 0))))))))
 ))
     ;; The rest of the flat-arena in-memory swizzle machinery, moved from
     ;; `nelisp-standalone--applyfn-core-helpers': it calls `nl_gc_mark_block'/
@@ -17436,9 +17627,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   ;; is identical to nl_sb_plain_entry_p after ENTRY != 0.
                   (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
                     (if (and (= candidate 3)
-                             (if (> (record-slot-count entry) 5)
+                             (if (> (nl_ent_n entry) 5)
                                  (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
-                        (nl_record_slot_word entry 0)
+                        (nl_ent_w entry 0)
                       (let ((alias (nl_pa_alias_read_w env (+ env 32) entry
                                                       (= candidate 0))))
                         (if (or (= alias 2) (= alias 6)) 0 alias)))))))
@@ -17714,7 +17905,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
                 (if (= entry 0) 1
                   (if (= (nl_sb_plain_entry_p entry) 0) 1
-                    (let* ((saved (nl_record_slot_word entry 0)))
+                    (let* ((saved (nl_ent_w entry 0)))
                       (seq
                        (nelisp_cons_construct (wf_bytecode_w_cons name saved tmp) unwinds unwinds)
                        (wf_dirty)
@@ -17785,7 +17976,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= entry 0) 0
               ;; The sole caller checks the raw alias/redirect slots after
               ;; lookup. Retain its record-kind requirement here.
-              (if (= (sexp-tag entry) 12) entry 0))))))
+              (if (= (nl_ent_p entry) 1) entry 0))))))
 
 
     ;; GNU bytecode.c:856-867: the dispatch loop polls quit (and GC) once
@@ -17876,8 +18067,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                (setq last-entry-data
                                                      (logand last-entry -8))
                                                (setq last-slots
-                                                     (record-slot-count
-                                                      last-entry))
+                                                     (nl_ent_n last-entry))
                                                (if (< last-slots 4)
                                                    (setq go 0)
                                                  (if
@@ -17901,12 +18091,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (setq go 0)
                                           (if
                                               (if (> last-slots 4)
-                                                  (/= (heap-read-u64 last-entry-data 48) 3)
+                                                  (/= (nl_ent_w last-entry 4) 3)
                                                 0)
                                               (setq go 0)
                                             (if
                                                 (if (> last-slots 5)
-                                                  (/= (heap-read-u64 last-entry-data 56) 3)
+                                                  (/= (nl_ent_w last-entry 5) 3)
                                                 0)
                                                 (setq go 0)
                                               (seq
@@ -24171,7 +24361,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (let* ((table (alloc-bytes 32 8)))
                    (seq (nl_alloc_symbol bytes 25 name) (nl_ht_make table)
                         (if (= (nl_env_set_value env name table) 0) table 0))))
-             (record-slot-ref-ptr entry 0))))))
+             (nl_ent_w entry 0))))))
     (defun bf_declare_special (env name)
       (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16))
           (let* ((table (bf_special_registry env 1)) (value (alloc-bytes 32 8)))
@@ -24188,10 +24378,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; declared_special.  The registry hash table stays for Lisp readers.
     (defun nl_sym_set_special (env name on)
       (let* ((obj (nl_pa_entry env name)))
-        (if (or (= obj 0) (< (record-slot-count obj) 9)) 0
-          (let* ((w (nl_record_slot_word obj 6))
+        (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
+          (let* ((w (nl_ent_w obj 6))
                  (bits (if (= (logand w 3) 1) (sar w 2) 0)))
-            (seq (record-slot-set obj 6
+            (seq (nl_ent_set obj 6
                                   (nl_imm_int (if (= on 1) (logior bits 64)
                                                 (logand bits -65))))
                  1)))))
@@ -24208,7 +24398,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
            (if (= entry 0) 0
              (seq
-              (record-slot-ref entry 0 val)
+              (nl_sexp_clone_into (nl_ent_ptr entry 0) val)
               (if (= (heap-sexp-tag-word val) 8)
                   (let* ((w (nl_vector_slot_word val 0)))
                     (if (= (nl_val_tag w) 2)
@@ -24222,11 +24412,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_declared_special_p (mirror name)
       (let* ((obj (nelisp_mirror_lookup_entry mirror name)))
         (if (= obj 0) 0
-          (if (< (record-slot-count obj) 9)
+          (if (< (nl_ent_n obj) 9)
               (let* ((table (bf_special_registry mirror 0)))
                 (if (= table 0) 0
                   (if (= (nl_ht_find_in table name) 0) 0 1)))
-            (let* ((w (nl_record_slot_word obj 6)))
+            (let* ((w (nl_ent_w obj 6)))
               (if (= (logand w 3) 1)
                   (if (= (logand (sar w 2) 64) 0) 0 1)
                 0))))))
@@ -24295,7 +24485,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
   ;; 2 is an unbound miss; 0 preserves an existing nonlocal exit.
   (let* ((entry (nelisp_mirror_lookup_entry env name))
          (local-p (if (= entry 0) 0
-                    (if (> (record-slot-count entry) 5)
+                    (if (> (nl_ent_n entry) 5)
                         (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
          (cell (if (= local-p 1) 0
                  (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
@@ -24711,10 +24901,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
 
     (defun nl_n3_set_dynamic_raw (env sym val)
       (let* ((entry (nelisp_mirror_lookup_entry env sym)))
-      (if (if (= entry 0) 0 (= (nl_val_tag (nl_record_slot_word entry 3)) 1))
+      (if (if (= entry 0) 0 (= (nl_val_tag (nl_ent_w entry 3)) 1))
           (bf_setting_constant sym)
         (let* ((local-p (if (= entry 0) 0
-                          (if (> (record-slot-count entry) 5)
+                          (if (> (nl_ent_n entry) 5)
                               (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                (cell (if (= local-p 1) 0
                        (nelisp_frame_stack_find_kind (+ env 32) sym 1 0))))
@@ -24907,14 +25097,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; make-local-variable turns SYMBOL_FORWARDED into a blv whose fwd is
     ;; the old forwarding), so slot 5 is tested before the descriptor.
     (defun nl_sym_redirect (obj)
-      (if (< (record-slot-count obj) 9) 4
+      (if (< (nl_ent_n obj) 9) 4
         (let ((a (nelisp_env_alias_slot_candidate obj 0)))
           (if (= a 0) 1
             (if (/= a 3) 4
               (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
                 (if (= t5 8) 2
                   (if (/= t5 0) 4
-                    (if (/= (nl_record_slot_word obj 7) 3) 3 0)))))))))
+                    (if (/= (nl_ent_w obj 7) 3) 3 0)))))))))
     ;; 1 when ENV reads and writes symbol objects directly: not a Doc 199
     ;; worker and not inside the legacy root-pin capture (the conditions
     ;; under which `nl_sb_bind' binds deeply).
@@ -24936,11 +25126,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (= obj 0) (setq result 2)
                (let ((r (nl_sym_redirect obj)))
                  (if (or (= r 0) (= r 3))
-                     (let ((v (nl_record_slot_word obj 0)))
+                     (let ((v (nl_ent_w obj 0)))
                        (setq result (if (= (wf_bytecode_w_unbound_p env v) 1) 2 v)))
                    (if (and (= r 1) (< hops 100))
                        (seq (setq obj (nelisp_mirror_lookup_entry_owned
-                                       env (nl_record_slot_word obj 4)))
+                                       env (nl_ent_w obj 4)))
                             (setq hops (+ hops 1)))
                      (setq result (bf_dynamic_lookup_w env sym 0)))))))
            result))))
@@ -24949,7 +25139,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; VAL may be a WORD or a 32-byte view (`wf_bytecode_w_view').  Answers
     ;; the value to store, or 0 after stashing wrong-type-argument.
     (defun nl_sym_fwd_value (obj val)
-      (let ((kind (sar (nl_record_slot_word obj 7) 2)))
+      (let ((kind (sar (nl_ent_w obj 7) 2)))
         (if (= kind 2) (if (= (nl_val_tag val) 0) 3 7)
           (if (= kind 1)
               (if (= (logand val 3) 1) val
@@ -24972,22 +25162,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq
            (while (= result -1)
              (if (= obj 0) (setq result 1)
-               (if (= (nl_val_tag (nl_record_slot_word obj 3)) 1) (setq result 1)
+               (if (= (nl_val_tag (nl_ent_w obj 3)) 1) (setq result 1)
                  (let ((r (nl_sym_redirect obj)))
                    (if (and (= r 1) (< hops 100))
                        (seq (setq obj (nelisp_mirror_lookup_entry_owned
-                                       env (nl_record_slot_word obj 4)))
+                                       env (nl_ent_w obj 4)))
                             (setq hops (+ hops 1)))
                      (if (= r 0)
                          (seq (if (= (logand val 1) 0) (wf_dirty) 0)
-                              (record-slot-set obj 0 val) (setq result 0))
+                              (nl_ent_set obj 0 val) (setq result 0))
                        (if (= r 3)
                            (if (= (wf_bytecode_w_unbound_p env val) 1)
                                (setq result 1)
                              (let ((v (nl_sym_fwd_value obj val)))
                                (if (= v 0) (setq result 2)
                                  (seq (if (= (logand v 1) 0) (wf_dirty) 0)
-                                      (record-slot-set obj 0 v) (setq result 0)))))
+                                      (nl_ent_set obj 0 v) (setq result 0)))))
                          (setq result 1))))))))
            result))))
     ;; Doc 226 D5: GNU's forwarded built-ins (DEFVAR_INT max-lisp-eval-depth,
@@ -25000,12 +25190,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((name (alloc-bytes 32 8)))
         (seq (nl_alloc_symbol bytes n name)
              (let* ((obj (nl_pa_entry env name)))
-               (if (or (= obj 0) (< (record-slot-count obj) 9)) 0
-                 (seq (record-slot-set obj 7 (nl_imm_int kind))
+               (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
+                 (seq (nl_ent_set obj 7 (nl_imm_int kind))
                       (if (= kind 2)
-                          (let ((v (nl_record_slot_word obj 0)))
+                          (let ((v (nl_ent_w obj 0)))
                             (if (= (wf_bytecode_w_unbound_p env v) 1) 0
-                              (record-slot-set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
+                              (nl_ent_set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
                         0)
                       1))))))
     (defun nl_sym_fwd_init (env)
@@ -31297,8 +31487,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                        0
                      (if (= (symbol-eq (record-slot-ref-ptr old-alias-entry 0) unbound-ptr) 1)
                          0
-                       (if (= (symbol-eq (record-slot-ref-ptr base-entry 0) unbound-ptr) 1)
-                           (record-slot-set base-entry 0
+                       (if (= (symbol-eq (nl_ent_ptr base-entry 0) unbound-ptr) 1)
+                           (nl_ent_set base-entry 0
                                             (nl_record_slot_word old-alias-entry 0))
                          0))) (extern-call nl_env_build_scratch unbound-ptr unbound-ptr scratch) (extern-call nelisp_mirror_bucket_prepend
                                 mirror-ptr alias-sym-ptr base-entry scratch) (nl_word_clone base-sym-ptr)))))) 0)))
@@ -45120,7 +45310,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (if (= operation 3)
              (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) roots)))
                (if (= entry 0) 0
-                 (if (> (record-slot-count entry) 5)
+                 (if (> (nl_ent_n entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
          (nl_sexp_clone_into 268435480 tag-save)
@@ -45616,7 +45806,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (defun nl_n3_special_cell_w (name_ptr args_ptr env_ptr _pad)
         (let* ((entry (nelisp_mirror_lookup_entry (+ env_ptr 0) name_ptr)))
           (if (= entry 0) (nl_n3_special_unchecked_w name_ptr args_ptr env_ptr 0)
-            (let* ((fn (record-slot-ref-ptr entry 1)))
+            (let* ((fn (nl_ent_ptr entry 1)))
               (if (= (nl_n3_special_object fn) 1)
                   (nl_n3_special_call_w fn args_ptr env_ptr 0)
                 2)))))
@@ -45644,7 +45834,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
             (if (or (= (sexp-tag sym) 4) (= (sexp-tag sym) 16))
                 (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
                   (if (= entry 0) (nl_n3_special_name sym)
-                    (bf_special_form_p_walk (record-slot-ref-ptr entry 1) env (+ depth 1))))
+                    (bf_special_form_p_walk (nl_ent_ptr entry 1) env (+ depth 1))))
               0)))))))
 
 ;; Every evaluated cons with a symbol head ran `nl_apply_special''s whole
@@ -46486,7 +46676,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (if (or (= (sexp-name-eq op "get-value") 1) (= (sexp-name-eq op "get-function") 1))
         (let* ((entry (nelisp_mirror_lookup_entry env sym)))
           (if (= entry 0) (seq (nl_apply_stash_wta env op) 0)
-            (nl_record_slot_word entry (if (= (sexp-name-eq op "get-value") 1) 0 1))))
+            (nl_ent_w entry (if (= (sexp-name-eq op "get-value") 1) 0 1))))
       (if (= (sexp-name-eq op "is-bound") 1)
           (if (= (nelisp_mirror_is_bound env sym unbound) 0) 3 7)
         (if (= (sexp-name-eq op "is-fbound") 1)
@@ -47918,7 +48108,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                (if (= entry 0) 0 (+ (nl_word_payload entry) 6)))
              ;; Six-slot metadata can acquire a local redirect after setup.
              (ptr-write-u64 state 56
-               (if (and (/= entry 0) (> (record-slot-count entry) 5)) 1 0))))
+               (if (and (/= entry 0) (> (nl_ent_n entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
          (nl_root_release env mark) 0)))
     (defun nl_frame_stack_limit (env _pad)
@@ -48348,7 +48538,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_sb_plain_entry_p (entry)
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
-          (if (> (record-slot-count entry) 5)
+          (if (> (nl_ent_n entry) 5)
               (if (= (nelisp_env_entry_slot_tag entry 5) 0) 1 0)
             1))))
     ;; NAME and VALUE may be scratch views a lookup reuses, so they are
@@ -48387,7 +48577,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (seq
          (nl_vector_set_slot box 0 sym)
          (nl_vector_set_slot box 1 (if (= entry 0) (+ env 64)
-                                     (nl_record_slot_word entry 0)))
+                                     (nl_ent_w entry 0)))
          (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
          (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)
          ;; The depth and the frame's name list are read as raw WORDs: the
@@ -48439,39 +48629,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (nelisp_env_setv_mirror_lazy (+ env 0) sym
               (if (= (logand val 1) 1) (nl_val_load val (alloc-bytes 32 8)) val)
               (+ env 64))
-          ;; Doc 226 D5: a forwarded variable stores the value as GNU's
-          ;; store_symval_forwarding (data.c:1470) does: a boolfwd stores t
-          ;; or nil, an intfwd refuses a non-integer (1 after the signal);
-          ;; an unbound saved value is restored as it was bound.  Inline,
-          ;; with helpers already in the F1 prelink closure (capped at 296).
-          (if (if (< (record-slot-count entry) 9) 0
-                (if (= (nl_record_slot_word entry 7) 3) 0
-                  (if (= (nl_val_tag val) 4)
-                      (if (= (symbol-eq val (+ env 64)) 1) 0 1)
-                    1)))
-              (if (= (sar (nl_record_slot_word entry 7) 2) 2)
-                  (seq (record-slot-set entry 0 (if (= (nl_val_tag val) 0) 3 7)) 0)
-                (if (if (= (logand val 3) 1) 1
-                      (if (= (logand val 1) 0)
-                          (if (= (nl_val_tag val) 2) 1 (= (nl_val_tag val) 13))
-                        0))
-                    (seq (record-slot-set entry 0 val) 0)
-                  ;; (wrong-type-argument integerp VAL), stashed with the
-                  ;; constructors the closure already holds.
-                  (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
-                         (tail (alloc-bytes 32 8)))
-                    (seq (ptr-write-u64 bytes 0 8751669898145395319)
-                         (ptr-write-u64 bytes 8 7887324063363589488)
-                         (ptr-write-u64 bytes 16 7630437)
-                         (nl_alloc_symbol bytes 19 268435480)
-                         (ptr-write-u64 bytes 0 8102650174351109737)
-                         (nl_alloc_symbol bytes 8 pred)
-                         (nelisp_cons_construct val 3 tail)
-                         (nelisp_cons_construct pred tail 268435512)
-                         (ptr-write-u64 268435472 0 1)
-                         (atomic-fetch-add 268435544 1)
-                         1))))
-            (seq (record-slot-set entry 0 val) 0)))))
+          ;; Doc 226 D5/D9: the store converts or refuses a FORWARDED value
+          ;; as GNU store_symval_forwarding does (data.c:1470); 1 after the
+          ;; stashed signal.
+          (if (= (nl_ent_set entry 0 val) 1) 0 1))))
     ;; NAMES is the frame's name list as a WORD (pointer or immediate nil);
     ;; walking it by WORD keeps the nil terminator and a saved immediate
     ;; value from being boxed on every restore.
@@ -48494,27 +48655,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              ;; enough to inline (the F1 prelink closure is capped at 296).
              (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
                (if (if (= entry 0) 0
-                     (if (< (record-slot-count entry) 9) 0
-                       (if (/= (sar (nl_record_slot_word entry 7) 2) 1) 0
+                     (if (< (nl_ent_n entry) 9) 0
+                       (if (/= (sar (nl_ent_w entry 7) 2) 1) 0
                          (if (= (logand value 3) 1) 0
                            (if (= (logand value 1) 1) 1
                              (if (= (nl_val_tag value) 2) 0
                                (if (= (nl_val_tag value) 13) 0 1)))))))
-                   ;; (wrong-type-argument integerp VALUE), stashed with the
-                   ;; constructors the closure already holds.
-                   (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
-                          (tail (alloc-bytes 32 8)))
-                     (seq (ptr-write-u64 bytes 0 8751669898145395319)
-                          (ptr-write-u64 bytes 8 7887324063363589488)
-                          (ptr-write-u64 bytes 16 7630437)
-                          (nl_alloc_symbol bytes 19 268435480)
-                          (ptr-write-u64 bytes 0 8102650174351109737)
-                          (nl_alloc_symbol bytes 8 pred)
-                          (nelisp_cons_construct value 3 tail)
-                          (nelisp_cons_construct pred tail 268435512)
-                          (ptr-write-u64 268435472 0 1)
-                          (atomic-fetch-add 268435544 1)
-                          0))
+                   ;; (wrong-type-argument integerp VALUE).
+                   (nl_sym_signal_wta_integerp value)
                  (nl_n4_bind_declared_1 env frames copies
                    (if (= (logand value 1) 1) value
                      (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))))

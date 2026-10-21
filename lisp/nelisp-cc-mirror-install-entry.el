@@ -65,10 +65,10 @@
       (if (= entry-ptr 0)
           0
         (and
-         (record-slot-set entry-ptr 0 value-ptr)
+         (nl_ent_set entry-ptr 0 value-ptr)
          (record-slot-set entry-ptr 1 function-ptr)
          (record-slot-set entry-ptr 2 plist-ptr)
-         (record-slot-set entry-ptr 3 constant-ptr))))
+         (nl_ent_set entry-ptr 3 constant-ptr))))
     (defun nelisp_mirror_install_entry
         (mirror-ptr sym-ptr value-ptr function-ptr plist-ptr constant-ptr)
       ;; mirror-ptr:   *const Sexp pointing at the env-mirror Record.
