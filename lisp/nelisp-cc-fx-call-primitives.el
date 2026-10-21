@@ -114,19 +114,46 @@
     ;; definition while it runs (0: no symbol lookup, the call declines).
     ;; The VM's closure call needs no scratch (`m5_fx_call_words').
     (defun m5_fx_primitive_funcall (fn stk sp argc resw env ws)
-      (let* ((tag (nl_word_tag64 fn)))
-        (if (or (= tag 4) (= tag 16))
-            (let* ((def (if (= ws 0) 2
-                          (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0))))
-              (if (= def 2) -3
-                (seq (ptr-write-u64 ws 0 def)
-                     (m5_fx_primitive def stk sp argc resw env ws))))
-          (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
-            (if (/= st -3) st
-              (let* ((rec (m5_fx_covered fn argc env 0)))
-                (if (= rec 0) -3
-                  (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
-                                    env 0 resw 0)))))))))
+      (m5_fx_funcall_site 0 fn stk sp argc resw env ws))
+    ;; GNU's function object carries its own code (Ffuncall, funcall_lambda,
+    ;; exec_byte_code on the object's bytecode, eval.c:3185-3215, 3350);
+    ;; a closure's VM record lives in `nelisp--fx-table' under its body, a
+    ;; hash lookup per call.  A `funcall' call site keeps the last covered
+    ;; closure it called and that closure's record in its cache vector's
+    ;; slots 3 and 4, so a site that keeps calling one closure skips the
+    ;; lookup.  A record retired from the table has its code slot cleared
+    ;; (`nelisp--fx-retire'), which the cached copy checks, and the arity
+    ;; is checked at every call.  CACHE 0: no site cache (a worker, or a
+    ;; call with no cache vector).
+    (defun m5_fx_funcall_site (cache fn stk sp argc resw env ws)
+      (if (if (= cache 0) 0 (= (nl_vector_slot_word cache 3) fn))
+          (let* ((rec (nl_vector_slot_word cache 4)))
+            (if (if (= (nl_val_tag (nl_vector_slot_word rec 0)) 8)
+                    (>= (m5_fx_arity_code rec argc) 0) 0)
+                (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
+                                  env 0 resw 0)
+              (m5_fx_funcall_site 0 fn stk sp argc resw env ws)))
+        (let* ((tag (nl_word_tag64 fn)))
+          (if (or (= tag 4) (= tag 16))
+              (let* ((def (if (= ws 0) 2
+                            (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0))))
+                (if (= def 2) -3
+                  (seq (ptr-write-u64 ws 0 def)
+                       (m5_fx_primitive def stk sp argc resw env ws))))
+            (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
+              (if (/= st -3) st
+                (let* ((rec (m5_fx_covered fn argc env 0)))
+                  (if (= rec 0) -3
+                    (seq (if (= cache 0) 0 (m5_fx_funcall_site_fill cache fn rec))
+                         (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
+                                           env 0 resw 0))))))))))
+    ;; The record before the closure, so a reader that sees the closure
+    ;; sees its record (the site kind's order, `m5_fx_site_kind').
+    (defun m5_fx_funcall_site_fill (cache fn rec)
+      (if (< (nl_vector_length cache) 5) 0
+        (seq (wf_dirty)
+             (ptr-write-u64 (+ (nl_word_payload cache) 40) 0 rec)
+             (ptr-write-u64 (+ (nl_word_payload cache) 32) 0 fn)))))
   "Direct WORD transport for resolved existing VM primitives.")
 
 (provide 'nelisp-cc-fx-call-primitives)

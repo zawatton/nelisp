@@ -20650,7 +20650,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (let* ((kind (m5_fx_site_kind cache fn argc env))
                   (direct (if (= kind 0) -3
                             (if (> kind 20) (m5_fx_globals_run kind stk sp argc resw env oslot)
-                              (m5_fx_primitive_run kind stk sp argc resw env xw))))
+                              (if (= kind 13)
+                                  ;; `funcall' with the site's callee cache.
+                                  (m5_fx_funcall_site
+                                   (if (= cache 0) 0 (if (= (nl_sb_worker_p env) 1) 0 cache))
+                                   (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)
+                                   stk sp (- argc 1) resw env xw)
+                                (m5_fx_primitive_run kind stk sp argc resw env xw)))))
                   (rec (if (= direct -3) (m5_fx_covered fn argc env 0) 0))
                   (st (if (/= direct -3) direct
                         (if (= rec 0) -3

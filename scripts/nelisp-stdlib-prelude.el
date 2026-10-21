@@ -27179,8 +27179,26 @@ are skipped.")
         (let ((fn (and (fboundp w) (symbol-function w))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
-            (remhash (nthcdr 3 fn) nelisp--fx-table)
+            (nelisp--fx-retire (nthcdr 3 fn))
             (nelisp--fx-defer w)))))))
+
+;; Defined after `nelisp--fx-check-macro': the `nl-afset' wrapper above calls it
+;; for every definition, these two included.
+(defun nelisp--fx-retire (body)
+  "Remove BODY's entry from `nelisp--fx-table'.
+A compiled record leaves with its code slot cleared: a `funcall' call
+site that cached it (`m5_fx_funcall_site') checks that slot, so retired
+code never runs again from a cache."
+  (let ((rec (gethash body nelisp--fx-table)))
+    (when (vectorp rec) (aset rec 0 nil))
+    (remhash body nelisp--fx-table)))
+
+(defun nelisp--fx-table-put (body rec)
+  "Install REC as BODY's entry, retiring a compiled record it replaces."
+  (let ((old (gethash body nelisp--fx-table)))
+    (when (and (vectorp old) (not (eq old rec))) (aset old 0 nil)))
+  (puthash body rec nelisp--fx-table))
+
 (when (and (fboundp 'nl-afset)
            (not (fboundp 'nelisp--fx-plain-fset)))
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
