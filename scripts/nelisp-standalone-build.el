@@ -19549,10 +19549,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; FN's record, any arity.  The cheap shape tests come first: most
     ;; functions reaching here are builtins, (builtin NAME), whose second
     ;; element is a symbol, not the captured environment (t).
+    ;; With the VM switched off (NELISP_FX_DISABLE, `nl_fx_disabled') no
+    ;; closure is covered: answer before the shape and name checks, which
+    ;; `nl_fx_lookup' would only discard.
     (defun m5_fx_covered_rec (fn env scratch _pad)
       (if (/= (heap-sexp-tag-word fn) 7) 0
         (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
-          (m5_fx_closure_rec (nl_cons_car_word fn) (nl_cons_cdr_word fn) env scratch))))
+          (if (= (nl_fx_disabled) 1) 0
+            (m5_fx_closure_rec (nl_cons_car_word fn) (nl_cons_cdr_word fn) env scratch)))))
     ;; FN = (HEAD . C1) read as WORDs (Doc 215): the cells' own child
     ;; pointers, durable, so nothing is materialised and no later lookup can
     ;; clobber them.  A closure is (closure (t) ARGS . BODY).

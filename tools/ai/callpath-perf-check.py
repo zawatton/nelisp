@@ -619,8 +619,30 @@ def s63_result_build():
     return auth(floors["engines"]["candidate"]) and floors["engines"]["candidate"]["sha256"]
 
 
+LEDGER = ROOT / "tools/ai/callpath-perf-progress.org"
+# The S4 allowlist may only shrink (coordinator, 2026-10-21): these are its
+# totals when it was frozen; a larger sum fails, and an entry that has to be
+# added is a defect to report.
+S63_ALLOWLIST_MAX = {"roots": None, "materialisers": None}
+
+
+def s63_allowlist():
+    """{(defun, kind): count} from the ledger's "#+NOTE: S4-ALLOWLIST" lines:
+    DEFUN KIND=COUNT lane=LANE reason: TEXT, KIND roots or materialisers."""
+    allowed = {}
+    for line in LEDGER.read_text().splitlines():
+        m = re.match(r"#\+NOTE: S4-ALLOWLIST (\S+) (roots|materialisers)=(\d+) lane=(\S+) reason: \S", line)
+        if line.startswith("#+NOTE: S4-ALLOWLIST"):
+            need(m is not None, "malformed allowlist entry: " + line[:120])
+            key = (m.group(1), m.group(2))
+            need(key not in allowed, "duplicate allowlist entry: " + line[:120])
+            allowed[key] = int(m.group(3))
+    return allowed
+
+
 def check_s63census(kind):
-    """S4.1/S4.2: box-census debt on the call path (SCOPE in callpath-perf-s63.py)."""
+    """S4.1/S4.2: box-census debt on the call path (SCOPE in callpath-perf-s63.py)
+    beyond the ledger's allowlist of sites that wait for other lanes."""
     tool = s63_tool()
     report = read(S63 / "census.json")
     need(report["source"] == source_identity() and report["stage_source"] == report["source"],
@@ -631,12 +653,19 @@ def check_s63census(kind):
     need(report["scope"] == tool.SCOPE.pattern, "the census scope differs from the checker's")
     counts = tool.census_counts(auth(report["census"]))
     need(counts["units"] >= 100 and counts["scope_defuns"] >= 200, "the census does not cover the call path")
-    top = sorted(counts["per_defun"].items(),
-                 key=lambda kv: -sum(n for i, n in kv[1].items() if (i in tool.ROOTS) == (kind == "roots")))
-    print(f"s63census {kind}={counts[kind]} over {counts['scope_defuns']} call-path defuns; most: " +
-          ", ".join(f"{fn}={sum(n for i, n in row.items() if (i in tool.ROOTS) == (kind == 'roots'))}"
-                    for fn, row in top[:5]))
-    need(counts[kind] == 0, f"{counts[kind]} {kind} sites remain on the call path")
+    allowed = s63_allowlist()
+    budget = sum(n for (fn, k), n in allowed.items() if k == kind)
+    if S63_ALLOWLIST_MAX[kind] is not None:
+        need(budget <= S63_ALLOWLIST_MAX[kind], f"the {kind} allowlist grew: {budget} > {S63_ALLOWLIST_MAX[kind]}")
+    excess = {}
+    for fn, row in counts["per_defun"].items():
+        n = sum(v for i, v in row.items() if (i in tool.ROOTS) == (kind == "roots"))
+        if n > allowed.get((fn, kind), 0):
+            excess[fn] = n - allowed.get((fn, kind), 0)
+    left = sum(excess.values())
+    print(f"s63census {kind}={counts[kind]} over {counts['scope_defuns']} call-path defuns; allowlisted {budget}; "
+          f"beyond it {left}; most: " + ", ".join(f"{fn}={n}" for fn, n in sorted(excess.items(), key=lambda kv: -kv[1])[:5]))
+    need(left == 0, f"{left} {kind} sites remain on the call path beyond the allowlist")
     print(f"s63census {kind} PASS")
 
 
