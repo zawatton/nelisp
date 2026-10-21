@@ -18852,6 +18852,11 @@ through the next unit separator.  Only file streams use the byte count."
       (when (< i n) (setq i (1+ i))))
     i))
 
+;; This runtime's reader handles what GNU .elc files need: lazy `#@N'
+;; docstrings, `#s(...)' records and hash tables.  The library tests this
+;; feature before it prefers ".elc" in `load-suffixes'.
+(provide 'nelisp-elc-reader)
+
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
     (while go
