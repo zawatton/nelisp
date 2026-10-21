@@ -94,6 +94,7 @@ Doc 224 kernels compile byte-identically before and after.
 | =NILP (x)=                                               | =raw-bool=: =x == 0=; =raw-i64=: false (a fixnum is never nil; the form still runs for its effects); =sexp-ptr=: =(sexp-tag x) == Nil=, which Doc 224 CG5 fuses into the immediate test and one tag-byte compare |
 | =make_fixnum=                                            | box a =raw-i64=: =sexp-int-make= into a fresh slot                                                                                                                                                     |
 | =cond ? Qt : Qnil=                                       | box a =raw-bool=: store the value as the slot's tag word                                                                                                                                               |
+| =EQ (x, y)=, a word compare (=BASE_EQ=, lisp.h:395)      | the dispatcher's =eq=, which compares tags and payloads: two slots can hold the same object, so a word compare would answer nil for equal fixnums or symbols in different slots.  Correct once nil and t are the nil and t objects (=lv-eq-nil=, =lv-eq-t-var=) |
 | =FIXNUMP= on both operands, else =Fplus=                 | an Int tag test on each Sexp operand, the machine operation, else the runtime's own function through the dispatcher                                                                                    |
 
 A node with no recorded representation is a Sexp in artifact code: every
@@ -184,10 +185,16 @@ The coordinator's named controls are all in it: the aref-nil =if=
 - A byte-identity control for the gate: the five Doc 224 kernels compile to
   the same executable with 1042eedbc's compiler and with this one.
 - Host ERT for the compiler, codegen, artifact and native-load files: the
-  same failures as with 1042eedbc's compiler (17, all pre-existing in this
-  harness), plus one pin updated on purpose
-  (=nelisp-artifact/raw-bool-return-metadata-is-source-proven= recorded the
-  "known gap" of case 5 as expected metadata).
+  same 17 failures as with 1042eedbc's compiler (all pre-existing in this
+  harness).  Changed on purpose, each recording the old behaviour as
+  expected: =nelisp-artifact/raw-bool-return-metadata-is-source-proven=
+  (the "known gap" of case 5 as metadata), =nelisp-artifact/gate-6-4-neln-
+  bundles-native-and-runs= (=(* x x)= as an extern-free leaf; now its
+  externs must all be bridged), =nelisp-aot-compiler/e2e-native-exec-neln-
+  artifact-in-process= (now runs a type test, a genuine leaf); and
+  =nelisp-artifact-native-exec= hands an object that calls the runtime to
+  the general harness, as the native call ladder does (an arithmetic defun
+  through the ladder answers 81 for 9, the harness built once and cached).
 - At the end: one rebuild, =validate.sh= (standalone checks, fx corpus and
   spike, the AOT differential with every stage) and the final verification
   groups.
@@ -212,6 +219,9 @@ The coordinator's named controls are all in it: the aref-nil =if=
   remainder (=(mod -7.5 3)= gives -1; the interpreter and GNU give 1.5).  The
   compiler hands the operation to the runtime's function as GNU does; the
   AOT dispatcher's =mod= is the difference.  Not in the corpus.
+- *=apply=* compiles to =nelisp_aot_apply=, which is not in the loader's
+  bridge, so an artifact calling =apply= is refused -- the same class as the
+  quoted list was.  Not in the corpus; a loader-bridge item.
 - *Overflow.*  The fixnum path does not check =FIXNUM_OVERFLOW_P=; a
   product past the fixnum range wraps instead of becoming a bignum.
 - *Signals.*  A Lisp error signalled inside a native defun (a wrong type for

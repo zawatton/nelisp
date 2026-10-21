@@ -300,44 +300,14 @@ target.
 
 * Blocked
 
-- Pre-existing, found by the CG5 tag cases added to the AOT differential
-  corpus, failing identically with the 9d5f4a515 compiler and binary (so
-  not CG5's): in the Lisp-to-AOT path nil and t reach a predicate as the
-  dialect's raw words 0 and 1 rather than the nil/t objects, so
-  =(let ((x nil)) (if (null x) ...))= segfaults reading address 0 and
-  =(let ((x t)) (symbolp x))= answers nil (it sees an Int); and a cons
-  value, =(list 1 2)= or ='(1 2)=, compiles to an artifact
-  =nelisp-native-load= refuses.  The corpus keeps the seven value types
-  that pass (fixnum, vector element, string, symbol, vector, nested
-  vector, float) and documents the three it leaves out.  Owner: the
-  Lisp-to-AOT representation tracking ("Representation joins" in
-  nelisp-aot-compiler.el) and the loader.
-
-  The root cause is wider than the predicates: the Lisp-to-AOT path (the
-  native artifacts of Lisp source, =nelisp-artifact-compile-file= with
-  ='neln=; the standalone's default execution is the byte-code VM) has no
-  Lisp notion of nil.  =nil=/=t= literals and comparison results are raw
-  0/1, raw values box as fixnums at the dispatcher boundary, and an =if=
-  on a Sexp value tests the pointer word against 0.  Control probes, each
-  a body in the corpus wrapper, interpreter answer against native answer,
-  identical with the 9d5f4a515 compiler and binary:
-
-  | body                                                                  | interpreter | native   |
-  |-----------------------------------------------------------------------+-------------+----------|
-  | =(if (aref (vector nil 1) 0) (setq acc 1) (setq acc 2))=              | 2           | 1        |
-  | =(let ((x (aref (vector nil 1) 0))) (if (null x) ...1 ...2))=         | 1           | 2        |
-  | =(let ((x (aref (vector t 1) 0))) (if (symbolp x) ...1 ...2))=        | 1           | 2        |
-  | =(let ((x nil)) (setq acc (length (list x x))))=                      | 2           | segfault |
-  | =(let ((x nil)) (if x ...1 ...2))=                                    | 2           | 2        |
-  | =(let ((x (< 1 2))) (if (symbolp x) ...1 ...2))=                      | 1           | 2        |
-  | =(let ((x 0)) (if (null x) ...1 ...2))=                               | 2           | segfault |
-
-  With nil and fixnum 0 sharing the raw word 0 no local change to the
-  predicates is right for both, so the fix is a representation change:
-  Lisp values as object words (nil 3, t 7, tagged fixnums) everywhere in
-  the artifact path, raw words only for arithmetic and branch flags, a
-  not-nil test for =if= on object words, no fixnum boxing of booleans,
-  gated so the runtime's dialect units keep nil = 0 and the != 0 test.
+- Resolved by Doc 229 (d31ce29e8 values and truth, 965352353 quoted
+  constants, 16caa337d numbers, 2b3d0674f value words): the pre-existing
+  defects the CG5 tag cases exposed -- nil and t reaching predicates as
+  raw 0/1, truth tests on the pointer word, a cons constant the loader
+  refused -- were one representation defect of the Lisp-to-AOT path.  The
+  probes are controls in =nelisp-aot-differential-lisp-value-cases= (each
+  fails with the 9d5f4a515 compiler and passes now), and nil, t and the
+  cons are back in the CG5 tag values.
 
 - list-walk: 2 Ir per element of representation (above).  Owner: the
   object representation, not the compiler.
