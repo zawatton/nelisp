@@ -212,4 +212,15 @@
 
 (provide 'nelisp-r9-reader-bytecode-label-test)
 
+
+(ert-deftest nelisp-reader-elc-hash-table-constant ()
+  "A GNU #s jump table occupies one compiled-function constant slot."
+  (let* ((source "#[0 \"\\300\\207\" [#s(hash-table test eq data (t 7 nil 11))] 1]")
+         (function (nelisp-r9-reader-bytecode-label-test--read source))
+         (table (funcall function)))
+    (should (= (length (aref function 2)) 1))
+    (should (hash-table-p table))
+    (should (= (gethash t table) 7))
+    (should (= (gethash nil table) 11))))
+
 ;;; nelisp-r9-reader-bytecode-label-test.el ends here

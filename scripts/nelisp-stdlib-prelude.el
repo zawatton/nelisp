@@ -19425,9 +19425,40 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                                    (substring s start end)))))
              (cons (if (= start end) symbol
                      (nelisp--rd-position-symbol symbol start)) end)))
-          ((and nelisp--rd-positioning (< (+ i 2) n)
+          ;; GNU lread.c:3155-3211 and RE_record construct #s records;
+          ;; hash-table data is paired into the existing table constructor.
+          ((and (< (+ i 2) n)
                 (= (aref s (1+ i)) 115) (= (aref s (+ i 2)) 40))
-           (let ((nelisp--rd-positioning nil)) (read-from-string s i n)))
+           (let* ((nelisp--rd-positioning nil)
+                  (r (nelisp--rd-one s (+ i 2) n))
+                  (fields (car r)))
+             (unless (consp fields)
+               (signal 'invalid-read-syntax (list "#s")))
+             (cons
+              (if (eq (car fields) 'hash-table)
+                  (let* ((properties (cdr fields))
+                         (data (plist-get properties 'data))
+                         (parameters nil)
+                         (count (progn
+                                  (unless (or (null data) (consp data))
+                                    (error "Hash table data is not a list"))
+                                  (length data))))
+                    (unless (= (logand count 1) 0)
+                      (error "Hash table data length is odd"))
+                    (dolist (key '(test weakness purecopy))
+                      (let ((value (plist-get properties key)))
+                        (when value
+                          (setq parameters
+                                (cons (intern (concat ":" (symbol-name key)))
+                                      (cons value parameters))))))
+                    (let ((table (apply #'make-hash-table
+                                        (append parameters (list :size (/ count 2))))))
+                      (while data
+                        (puthash (car data) (cadr data) table)
+                        (setq data (cddr data)))
+                      table))
+                (apply #'record fields))
+              (cdr r))))
           ((and (< (1+ i) n) (= (aref s (1+ i)) 39))
            (let ((r (nelisp--rd-one s (+ i 2) n)))
              (cons (list 'function (car r)) (cdr r))))
