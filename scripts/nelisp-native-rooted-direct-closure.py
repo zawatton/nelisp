@@ -11,7 +11,13 @@ from elftools.elf.elffile import ELFFile
 
 MAX_FUNCTIONS = 128
 MAX_FUNCTION_BYTES = 65536
-MAX_TOTAL_BYTES = 512 * 1024
+# 640 KiB: the F1 closure measures 530,615 B on Win64 (296 functions,
+# call-path merge 915e1a17a plus the Schannel arity fix), 538,922 B at the
+# symbols-lane tip, and 450,361 B (295) / 441,058 B (300) on Linux; the
+# largest helper is nl_native_frame_v2 (50,690 B Win64, 47,664 B Linux).
+# The growth is GNU structures added on purpose: symbol cells, cons blocks
+# and the typed-block registry, and the WORD-frame call path.
+MAX_TOTAL_BYTES = 640 * 1024
 
 
 def bounded_read(path, limit):

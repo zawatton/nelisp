@@ -2548,7 +2548,12 @@ WORD (Doc 216 S2.2 removed the refcount word).")
         (marks nelisp-standalone--cons-marks-offset)
         (next nelisp-standalone--cons-next-offset)
         (ty nelisp-standalone--gc-block-type-offset)
-        (dead nelisp-standalone--cons-dead-word))
+        (dead nelisp-standalone--cons-dead-word)
+        ;; VirtualFree releases a reservation only whole, from its base, so
+        ;; Windows maps an aligned group with `nl_os_alloc_aligned_group'
+        ;; instead of trimming a POSIX mapping (see that function).
+        (win (memq (nelisp-standalone-arena-rewrite-target)
+                   '(windows-x86_64 windows-aarch64))))
     ;; The link and the block ordinal (NEXT+8) sit below the type word; the
     ;; dump's rank table holds a cell index in 16 bits.
     (unless (and (= cell 16) (= n 2030) (<= (+ next 16) ty) (< n 65535))
@@ -2614,17 +2619,12 @@ WORD (Doc 216 S2.2 removed the refcount word).")
         (if (if (>= (* (+ (heap-read-u64 st 64) 1) 2) (heap-read-u64 st 56))
                 (= (nl_typed_registry_grow st) 0) 0)
             0
-          (let ((raw (nl_os_alloc_chunk 1048576)))
-            (if (= raw 0) 0
-              (let* ((g (logand (+ raw 524287) -524288))
-                     (k 15))
-                (seq
-                 (if (> g raw) (nl_os_free_chunk raw (- g raw)) 0)
-                 (if (< (+ g 524288) (+ raw 1048576))
-                     (nl_os_free_chunk (+ g 524288) (- (+ raw 1048576) (+ g 524288)))
-                   0)
-                 (nl_os_commit_range g 0 524288)
-                 (nl_typed_registry_put (heap-read-u64 st 48) (heap-read-u64 st 56) g 0)
+          ,(if win
+               `(let ((g (nl_os_alloc_aligned_group 524288)))
+                  (if (= g 0) 0
+                    (let* ((k 15))
+                      (seq
+                       (nl_typed_registry_put (heap-read-u64 st 48) (heap-read-u64 st 56) g 0)
                  (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
                  (if (if (= (heap-read-u64 st 96) 0) 1 (< g (heap-read-u64 st 96)))
                      (ptr-write-u64 st 96 g) 0)
@@ -2636,7 +2636,30 @@ WORD (Doc 216 S2.2 removed the refcount word).")
                           (ptr-write-u64 b ,ty 0)
                           (ptr-write-u64 st 72 b)))
                    (setq k (- k 1)))
-                 1))))))
+                       1))))
+             `(let ((raw (nl_os_alloc_chunk 1048576)))
+                (if (= raw 0) 0
+                  (let* ((g (logand (+ raw 524287) -524288))
+                         (k 15))
+                    (seq
+                     (if (> g raw) (nl_os_free_chunk raw (- g raw)) 0)
+                     (if (< (+ g 524288) (+ raw 1048576))
+                         (nl_os_free_chunk (+ g 524288) (- (+ raw 1048576) (+ g 524288)))
+                       0)
+                     (nl_os_commit_range g 0 524288)
+                     (nl_typed_registry_put (heap-read-u64 st 48) (heap-read-u64 st 56) g 0)
+                 (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
+                 (if (if (= (heap-read-u64 st 96) 0) 1 (< g (heap-read-u64 st 96)))
+                     (ptr-write-u64 st 96 g) 0)
+                 (if (> (+ g 524288) (heap-read-u64 st 104))
+                     (ptr-write-u64 st 104 (+ g 524288)) 0)
+                 (while (>= k 0)
+                   (let ((b (+ g (* k 32768))))
+                     (seq (ptr-write-u64 b 0 (heap-read-u64 st 72))
+                          (ptr-write-u64 b ,ty 0)
+                          (ptr-write-u64 st 72 b)))
+                   (setq k (- k 1)))
+                     1)))))))
       ;; lisp_align_malloc (alloc.c:1060): one 32 KiB block of TYPE, or 0.
       (defun nl_ablock_alloc (st type)
         (if (if (= (heap-read-u64 st 72) 0) (= (nl_ablock_new_group st) 0) 0) 0
@@ -4523,6 +4546,23 @@ arm64 Linux has no legacy x86 numbering)."
           (if (= (extern-call VirtualAlloc base 4096 4096 4) 0)
               (seq (extern-call VirtualFree base 0 32768) 0)
             base))))
+    ;; Doc 223: one typed-block group of SIZE bytes aligned to SIZE, for
+    ;; `nl_ablock_new_group' (GNU lisp_align_malloc, alloc.c:1060-1100).
+    ;; VirtualFree releases a reservation only whole, from its base
+    ;; (MEM_RELEASE, size 0), so the POSIX trim of the unaligned head and
+    ;; tail has no equivalent here: the trim released the whole mapping
+    ;; and the group's first write faulted.  As lisp_align_malloc does
+    ;; without aligned_alloc -- it keeps the whole malloc block and uses
+    ;; its aligned part -- reserve twice SIZE, keep the whole reservation
+    ;; and commit only the aligned group: address space is spent, memory
+    ;; is not.  Answers the group, or 0 with the reservation released.
+    (defun nl_os_alloc_aligned_group (size)
+      (let* ((raw (extern-call VirtualAlloc 0 (* size 2) 8192 4)))
+        (if (= raw 0) 0
+          (let* ((g (logand (+ raw (- size 1)) (- 0 size))))
+            (if (= (extern-call VirtualAlloc g size 4096 4) 0)
+                (seq (extern-call VirtualFree raw 0 32768) 0)
+              g)))))
     (defun nl_os_free_chunk (base _size)
       (extern-call VirtualFree base 0 32768))  ; MEM_RELEASE=0x8000; size must be 0
     (defun nl_os_discard_free_pages (_base _size) 0)
@@ -4818,9 +4858,11 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
                           (when try-alloc-form
-                            (list (cl-find-if
-                                   (lambda (form) (eq (cadr form) 'nl_os_reserve_chunk))
-                                   chunk-forms)))
+                            (cl-remove-if-not
+                             (lambda (form)
+                               (memq (cadr form)
+                                     '(nl_os_reserve_chunk nl_os_alloc_aligned_group)))
+                             chunk-forms))
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)

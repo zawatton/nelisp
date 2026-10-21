@@ -26,11 +26,6 @@ policies remain unchanged. All boundary bytes and relocations are verified."
              '(<= 1 (length (alist-get 'records closure)) 304))
             ((equal node '(<= 15 (length functions) 192))
              '(<= 15 (length functions) 304))
-            ;; The prover bounds the F1 closure's text at 640 KiB (Win64
-            ;; measures 530,615 B, Linux 441,058 B); the rooted protocol's
-            ;; own closure keeps 524,288 B.
-            ((equal node '(<= (alist-get 'total_bytes closure) 524288))
-             '(<= (alist-get 'total_bytes closure) 655360))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")
