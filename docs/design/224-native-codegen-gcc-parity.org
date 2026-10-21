@@ -416,3 +416,22 @@ After CG5 the frame-slot and push/pop columns of boot are concentrated in
 =nl_seq2=, =nl_hdr_bt= and =nl_hdr_mark= (prologues and parameter
 spills) and in the GC loops that call them, which CG3 cannot promote
 because of those calls: the CG7 target.
+
+* CG9 Code placement (S5.1)
+
+Adapt GCC -O2's =.p2align 4= at function entries and rotated loop heads.
+The assembler emits Intel multi-byte NOPs deterministically from its byte
+position. Both compiler passes therefore see the same padding. Internal
+artifact entries align separately. The static linker preserves 16-byte
+x86 text-unit starts, and the direct compiler asks the ELF writer for a
+16-byte text origin; otherwise its 120-byte header shifts every label by
+8 bytes. PE import thunks use 16-byte strides and matching predicted VAs.
+
+The GCC reference is generated from the bytecode.c loop shape and retained
+at =target/codegen/alignment/gcc-reference.s=. GNU's Lisp_Object handling
+is unchanged. This mechanism changes padding and layout displacements,
+with identical decoded instruction graphs for all five S1 kernels.
+
+=codegen-alignment.py check= checks the final linked function and hot-loop
+addresses and the paired wall-clock floors evidence. Alignment does not
+waive the original strict GCC wall-clock criteria.

@@ -116,3 +116,48 @@ cmd: python3 tools/ai/codegen-check.py lispvalue overflow
 cmd: python3 tools/ai/codegen-check.py lispvalue signal
 ** S4.6 End to end: a fresh build of the tip passes validate.sh with every S3 and S4 stage in the AOT differential, and the five kernels compile byte-identically to 1042eedbc's compiler
 cmd: python3 tools/ai/codegen-check.py lispvalue-e2e 1 loader 2 apply const unit word overflow signal
+
+* S5 Runtime code quality: GCC -O2 mechanisms
+# Wall-clock is the acceptance metric; dynamic Ir and static categories
+# diagnose the missing mechanism. Sources are pinned fixtures.
+** S5.1 Function and hot-loop entries survive final linking on 16-byte boundaries; placement probes improve without semantic changes
+cmd: python3 tools/ai/codegen-alignment.py check
+#+NOTE: 2026-10-22 adapted GCC -O2 .p2align 4 (reference target/codegen/alignment/gcc-reference.s, generated from the bytecode.c loop shape). e9e8f52db had 2,995 unaligned text symbols out of 3,216 and 15 unaligned hot backward targets out of 16; the fresh dynamic build has zero of either. Function, internal entry, loop head, ELF origin, link-unit and PE thunk placement are covered. New tests fail on the original placement; 241 assembler/linker/ELF/alignment ERT cases pass. Focused compiler/artifact ERT: 807 cases, the exact original 17 unexpected and 4 skips, no new failures. The two lane-introduced compiler warnings are fixed.
+#+NOTE: 2026-10-22 CPU 9, seven paired rounds after correcting the standalone kernel ELF origin: candidate/base ratios byte-scan 1.00271, list-walk 1.00146, fixnum-loop 1.00088, class-table 0.96931, vector-sum 0.99742; candidate/GCC-GNU ratios 1.00365, 2.03492, 0.99981, 1.00201, 1.00017. The original strict GCC caps remain. Placement stability is a separate measured requirement: seven paired floors rounds, no regression (>1.03) and a range width below 0.06 (tighter than the observed +/-4% band); a failure remains a FAIL, never a tolerance added to S1.
+#+NOTE: 2026-10-22 all five kernels have identical decoded instruction graphs after excluding NOP padding and canonicalizing layout-dependent branch/RIP displacements (target/codegen/alignment/identity.json). No arithmetic, memory-access or control-flow operation changed. S3.5/S4.6 keep byte identity; their reference will move to the first alignment commit, explicitly, once the relay supplies its hash.
+#+NOTE: 2026-10-22 the seven-round process-wall floors run did NOT establish stability: builtin candidate/base 1.01419, candidate/GNU 45.02028; funcall candidate/base 1.04305, candidate/GNU 70.17207; let candidate/base 0.95754, candidate/GNU 31.26634; while candidate/base 1.06435, candidate/GNU 8.57891. All four observed ratio ranges exceed 0.06; S5.1 remains FAIL. Clock changes and subtracting separate startup runs still dominate some rounds; no speed threshold was relaxed. The paired records and frequencies are retained in target/codegen/alignment/placement.json. GCC reference exec_byte_code is itself 0 modulo 16 in /usr/local/bin/emacs.
+** S5.2 GCC -O2 transliterations, dynamic Ir per call, and excess-instruction attribution cover the ten named runtime hot functions
+cmd: python3 tools/ai/codegen-runtime.py study
+** S5.3 nl_root_frame: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nl_root_frame
+** S5.4 nl_alloc_bytes: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nl_alloc_bytes
+** S5.5 nelisp_fnv1a_step4: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nelisp_fnv1a_step4
+** S5.6 nelisp_symbol_key_equal: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nelisp_symbol_key_equal
+** S5.7 nelisp_mirror_lookup_entry: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nelisp_mirror_lookup_entry
+** S5.8 nelisp_eval_call_w: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nelisp_eval_call_w
+** S5.9 nl_gc_sweep_merge_range: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nl_gc_sweep_merge_range
+** S5.10 nl_bytes_byte_at: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall nl_bytes_byte_at
+** S5.11 wf_bytecode_execute_frame: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall wf_bytecode_execute_frame
+** S5.12 wf_bytecode_w_fast_run: paired wall time per call <= 1.5 x the GCC -O2 transliteration
+#+TIMEOUT: 600
+cmd: python3 tools/ai/codegen-runtime.py wall wf_bytecode_w_fast_run
+** S5.13 End to end: bytecode while and funcall workloads run no slower than the base (paired median <= 1.03), with GNU ratios reported and every differential case unchanged
+cmd: python3 tools/ai/codegen-runtime.py endtoend
+#+NOTE: 2026-10-22 S5 adds 13 measured criteria (35 total). All remain failing until their actual commands establish the contract. The proposed 1.5 x GCC budget uses wall time, following COMMON's authoritative metric; Ir is diagnostic. S4.0's &rest loop is x1.99 the interpreter and remains low priority because no production path executes these artifacts. The native replay guard S4.0b stays in force.

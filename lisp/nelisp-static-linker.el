@@ -362,7 +362,11 @@ ACC and BYTES are unibyte-strings or vectors; BYTES may be nil."
 
 (defun nelisp-link--unit-section-alignment (section-name machine)
   "Return the required start alignment for SECTION-NAME on MACHINE."
-  (if (and (eq section-name 'text) (eq machine 'aarch64)) 4 1))
+  (if (eq section-name 'text)
+      (cond ((eq machine 'aarch64) 4)
+            ((memq machine '(x86_64 62)) 16)
+            (t 1))
+    1))
 
 (defun nelisp-link--padding-bytes (n)
   "Return N zero bytes for inter-unit padding."
@@ -395,8 +399,8 @@ time the unit was visited."
                        (> align 1))
               (let ((aligned (nelisp-link--align-up off align)))
                 (when (> aligned off)
-                  ;; AArch64 alignment gaps can be 1-3 bytes, so zero-fill is
-                  ;; the only exact padding that preserves entry alignment.
+                  ;; Units never fall through into each other.  Zero-fill
+                  ;; preserves exact offsets on both target architectures.
                   (setq acc (nelisp-link--bytes-append
                              acc (nelisp-link--padding-bytes (- aligned off))))
                   (setq off aligned))))
@@ -802,7 +806,9 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
 
 (defun nelisp-link--pe-thunk-size (machine)
   "Per-import thunk size in bytes for MACHINE (`x86_64' / `aarch64')."
-  (if (eq machine 'aarch64) 16 6))
+  ;; A thunk is a function entry too; preserve 16-byte x86 placement.
+  (ignore machine)
+  16)
 
 (defun nelisp-link--pe-arm64-thunk-words (thunk-va iat-va)
   "Return the 4 instruction words of an ARM64 IAT thunk at THUNK-VA.
@@ -848,7 +854,11 @@ function so direct call relocations can target them."
               (nelisp-pe--write-le32 cbuf w))
           (let ((disp (- iat-va (+ thunk-va 6))))
             (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x25))
-            (nelisp-pe--write-le32 cbuf disp)))
+            (nelisp-pe--write-le32 cbuf disp)
+            ;; The unconditional jump never executes the padding.
+            (nelisp-pe--write-bytes
+             cbuf (unibyte-string #x66 #x0f #x1f #x84 #x00
+                                  #x00 #x00 #x00 #x00 #x90))))
         (setq cursor (+ cursor size))))
     (nelisp-link-unit-make "pe-import-thunks.o"
                            (list (cons 'text (nelisp-pe--buffer-bytes cbuf)))
@@ -881,15 +891,18 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
                                     (list (nelisp-link--pe-empty-import-thunk-unit
                                            normalized-imports machine)))
                           units))
-         (predict-combined (nelisp-link-combine-sections predict-units))
+         (predict-combined (nelisp-link-combine-sections predict-units machine))
          (predict-rvas (nelisp-link--pe-section-rvas predict-combined
                                                      normalized-imports))
          (idata-info (and normalized-imports
                           (nelisp-pe--build-idata
                            (plist-get predict-rvas :idata-rva)
                            normalized-imports)))
-         (orig-combined (nelisp-link-combine-sections units))
-         (orig-text-size (nelisp-link--section-len orig-combined 'text))
+         (orig-combined (nelisp-link-combine-sections units machine))
+         (orig-text-size
+          (nelisp-link--align-up
+           (nelisp-link--section-len orig-combined 'text)
+           (nelisp-link--unit-section-alignment 'text machine)))
          (predict-layout (nelisp-link--pe-layout predict-combined
                                                  normalized-imports))
          (text-va (cdr (assq 'text predict-layout)))
@@ -899,9 +912,9 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
                                        normalized-imports text-va
                                        orig-text-size idata-info machine)))
                       units))
-         (combined (nelisp-link-combine-sections all-units))
+         (combined (nelisp-link-combine-sections all-units machine))
          (layout (nelisp-link--pe-layout combined normalized-imports))
-         (link-result (nelisp-link-units-2pass all-units layout))
+         (link-result (nelisp-link-units-2pass all-units layout machine))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
          (text (nelisp-link--bytes-or-empty bytes 'text))

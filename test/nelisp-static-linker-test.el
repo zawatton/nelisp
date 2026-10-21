@@ -1410,13 +1410,13 @@ the writer went on to emit, which is the whole point of sharing
             (should (= (nelisp-link-test--read-le16 bytes file-off) #x8664))
             (should (= (nelisp-link-test--read-le32 bytes (+ opt-off 16)) #x1000))
             ;; The original call targets the synthesized thunk appended at
-            ;; text offset 15, so rel32 from next-instruction offset 14 is 1.
-            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 10)) 1))
-            (should (equal (substring bytes (+ text-raw 15) (+ text-raw 17))
+            ;; text offset 16, so rel32 from next-instruction offset 14 is 2.
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 10)) 2))
+            (should (equal (substring bytes (+ text-raw 16) (+ text-raw 18))
                            (unibyte-string #xff #x25)))
             ;; Thunk: jmp qword ptr [rip + IAT], IAT is at RVA 0x2038.
-            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 17))
-                       #x1023))
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 18))
+                       #x1022))
             (should (string-prefix-p "ExitProcess"
                                      (substring bytes (+ hint-off 2)
                                                 (+ hint-off 14))))))

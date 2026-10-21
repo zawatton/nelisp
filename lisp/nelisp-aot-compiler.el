@@ -159,14 +159,14 @@
   "Default ELF64 ET_EXEC load base = 0x400000.
 Matches `nelisp-elf--minimal-vaddr-base'.")
 
-(defconst nelisp-aot-compiler--text-off #x78
+(defconst nelisp-aot-compiler--text-off #x80
   "File offset of the .text section in the single-PT_LOAD layout.
-Equals Ehdr(64) + Phdr(56) = 120 = 0x78.")
+Ehdr(64) + Phdr(56), rounded up to a 16-byte code boundary.")
 
 (defconst nelisp-aot-compiler--text-vaddr
   (+ nelisp-aot-compiler--vaddr-base
      nelisp-aot-compiler--text-off)
-  "Absolute virtual address of byte 0 of .text (= 0x400078).")
+  "Absolute virtual address of byte 0 of .text (= 0x400080).")
 
 (defconst nelisp-aot-compiler--arg-regs
   '(rdi rsi rdx rcx r8 r9)
@@ -362,7 +362,7 @@ SysV, as the loader's trampoline is."
        (eq nelisp-aot-compiler--abi 'sysv)))
 
 (defun nelisp-aot-compiler--emit-internal-entry-x86 (defun-ir buf)
-  "Emit DEFUN-IR's internal entry: the loader trampoline with the caller's boundary.
+  "Emit DEFUN-IR's internal entry using the caller's boundary.
 R10 holds the address of the caller's OUT slot; the caller's seventeen
 boundary slots follow it downwards in canonical order.  The entry builds
 the callee frame exactly as the trampoline does, fills each of its hidden
@@ -374,6 +374,7 @@ and jumps to the body entry."
          (rt (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (rt-rounded (if (zerop (logand rt 1)) rt (1+ rt)))
          (frame (+ (* 8 arity) (if (= 1 (logand arity 1)) 8 0) (* 8 rt-rounded))))
+    (nelisp-asm-x86_64-align buf 16)
     (nelisp-asm-x86_64-define-label buf (intern (format "%s$internal" name)))
     (nelisp-asm-x86_64--push-inline buf 'rbp)
     (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
@@ -578,6 +579,8 @@ slower and never a jump past the boundary fill."
              ,@(make-list (- fixed-count (length fixed)) nil)
              ,@(and rest-p `((nelisp-aot--as-sexp ,rest-var)))))
          env fenv defuns))))))
+
+(defvar nelisp-aot-compiler--object-hidden-boundary-symbols)
 
 (defun nelisp-aot-compiler--lisp-internal-call-disp (name fenv)
   "Return the rbp displacement of this frame's OUT slot for a call to NAME.
@@ -20894,6 +20897,8 @@ Layout:
          node buf
          (lambda ()
            (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
+           ;; Adapt GCC -O2 loop-head alignment to our fixed-width jumps.
+           (nelisp-asm-x86_64-align buf 16)
            (nelisp-asm-x86_64-define-label buf start-lbl)
            (dolist (form (nelisp-aot-compiler--ir-get node :body))
              (nelisp-aot-compiler--emit-effect form buf))
@@ -21382,6 +21387,9 @@ return reg, untouched by epilogue)."
       ;; helper's byte-emit body with REX + ModR/M folded to constants
       ;; (DST + SRC are quoted literals here).  Byte output unchanged
       ;; — verified by md5sum on spike-noop.o / fact-i64.o.
+      ;; GCC -O2 uses .p2align 4 for function entries.  Align before
+      ;; defining the label so calls skip the NOP padding.
+      (nelisp-asm-x86_64-align buf 16)
       (nelisp-asm-x86_64--define-label-inline buf name)
       ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
       (nelisp-asm-x86_64--push-inline buf 'rbp)
@@ -21816,6 +21824,7 @@ drift (= a Doc 92 emitter invariant violation)."
                                   :bind 'local :type 'object))
                     nil)))
            (sections (list :text text-bytes
+                           :text-alignment 16
                            :rodata (if have-rodata
                                        rodata-bytes
                                      (unibyte-string))

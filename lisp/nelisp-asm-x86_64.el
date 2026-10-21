@@ -1734,6 +1734,27 @@ SUBOP selects the operation: 0=ADD, 5=SUB, 7=CMP, 1=OR, 4=AND."
   "Emit `NOP' (= 0x90, 1 byte)."
   (nelisp-asm-x86_64--append-bytes buf (unibyte-string #x90)))
 
+(defun nelisp-asm-x86_64-align (buf alignment)
+  "Pad BUF to ALIGNMENT with Intel multi-byte NOPs, as GNU as does.
+The byte count depends only on the current buffer position, preserving
+pass-one/pass-two layout.  ALIGNMENT must be a positive power of two."
+  (unless (and (integerp alignment) (> alignment 0)
+               (= 0 (logand alignment (1- alignment))))
+    (error "Invalid code alignment: %S" alignment))
+  (let ((left (logand (- (nelisp-asm-x86_64-buffer-pos buf)) (1- alignment)))
+        ;; Intel SDM recommended 1..9-byte encodings, also used by GNU as.
+        (nops ["" "\x90" "\x66\x90" "\x0f\x1f\x00"
+               "\x0f\x1f\x40\x00" "\x0f\x1f\x44\x00\x00"
+               "\x66\x0f\x1f\x44\x00\x00"
+               "\x0f\x1f\x80\x00\x00\x00\x00"
+               "\x0f\x1f\x84\x00\x00\x00\x00\x00"
+               "\x66\x0f\x1f\x84\x00\x00\x00\x00\x00"]))
+    (while (> left 0)
+      (let ((n (min left 9)))
+        (nelisp-asm-x86_64--append-bytes
+         buf (encode-coding-string (aref nops n) 'no-conversion t))
+        (setq left (- left n))))))
+
 (defun nelisp-asm-x86_64-int3 (buf)
   "Emit `INT3' (= 0xCC, 1 byte trap/breakpoint)."
   (nelisp-asm-x86_64--append-bytes buf (unibyte-string #xCC)))
