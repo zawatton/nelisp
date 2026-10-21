@@ -27185,13 +27185,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; the struct pointer); a removed-and-reinterned name differs.
              ;; A plain (non-canonical) buffer keeps the name comparison.
              ((= ta 4)
-              (let* ((ba (heap-read-u64 a 16))
-                     (bb (heap-read-u64 b 16)))
-                (if (= ba bb) 1
-                  (let* ((lo (+ (heap-read-u64 268436288 0) 16777224))
-                         (hi (heap-read-u64 268436296 0)))
-                    (if (and (> ba lo) (< ba hi) (> bb lo) (< bb hi)) 0
-                      (symbol-eq a b))))))
+              ;; Doc 226 D9 stage 3: an operand that is an object WORD has no
+              ;; canonical buffer at +16 (that read lands in the object's
+              ;; cells); the identity of an object is its WORD.
+              (if (= (logior (logand a 7) (logand b 7)) 0)
+                  (let* ((ba (heap-read-u64 a 16))
+                         (bb (heap-read-u64 b 16)))
+                    (if (= ba bb) 1
+                      (let* ((lo (+ (heap-read-u64 268436288 0) 16777224))
+                             (hi (heap-read-u64 268436296 0)))
+                        (if (and (> ba lo) (< ba hi) (> bb lo) (< bb hi)) 0
+                          (symbol-eq a b)))))
+                (nl_symbol_word_eq a b)))
              ((= ta 0) 1)
              ((= ta 1) 1)
              ;; Doc 201 §6.17: strings are compared by IDENTITY, as in
