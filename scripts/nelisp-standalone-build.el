@@ -45082,19 +45082,22 @@ tails run against a private box), and the (rc, OUT) adapter F."
              (if (= (sexp-tag func_slot) 0)
                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
                (if (or (= (sexp-tag func_slot) 4) (= (sexp-tag func_slot) 16))
-                   (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
-                                   tail_ptr env func_slot head_ptr form_ptr)
+                   ;; GNU's resolved SUBR path does not dispatch the same
+                   ;; head as a special form twice. The caller already got
+                   ;; "not special" for HEAD_PTR; a canonical native cell
+                   ;; containing that same interned head can evaluate args.
+                   (if (and (= (sexp-tag func_slot) 4) (= (sexp-tag head_ptr) 4)
+                            (= (symbol-eq func_slot head_ptr) 1))
+                       (nl_eic_eval_args_w tail_ptr env func_slot
+                                           (nl_root_reserve env) head_ptr)
+                     (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
+                                     tail_ptr env func_slot head_ptr form_ptr))
                  (if (= (nl_cons_is_macro func_slot) 1)
                      (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
                    (nl_eic_eval_args_w tail_ptr env func_slot
                                        (nl_root_reserve env) head_ptr)))))))))
     (defun nl_eic_alias_w (w tail_ptr env func_slot call_name form_ptr)
       (if (= w 2)
-          ;; A canonical native primitive can be represented by its own
-          ;; interned name.  This is direct dispatch, not an alias chain.
-          (if (and (= (sexp-tag func_slot) 4) (= (sexp-tag call_name) 4)
-                   (= (symbol-eq func_slot call_name) 1))
-              (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
           ;; GNU eval.c:2634-2652 resolves symbol indirections before the
           ;; UNEVALLED check.  Reuse normal dispatch on the terminal cell.
           (let* ((checkpoint (nl_root_reserve env)) (power 1) (distance 0)
@@ -45124,7 +45127,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
                      ;; its existing named apply fallback in that case.
                      (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
                    (nl_eic_after_lookup_w lookup_w form_ptr call_name tail_ptr env
-                                          (nl_root_mark env) func_slot)))))))
+                                          (nl_root_mark env) func_slot))))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
