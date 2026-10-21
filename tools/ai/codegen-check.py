@@ -5,7 +5,7 @@ wall NAME     the gate (COMMON.md "Measurement", 2026-10-21 16:30): wall-clock
               ns per iteration of the NeLisp, gcc -O2 GNU-layout and gcc -O2
               NeLisp-layout builds (and, informational, NeLisp built by the
               9d5f4a515 compiler when target/codegen/base-src exists): the
-              median of 7 alternating runs pinned to one idle CPU, after a
+              median of 7 alternating runs pinned to the lane's CPU (9), after a
               warm-up, with the repeat count set so a gcc run takes at least
               0.5 s, the zero-iteration run subtracted.  Pass iff NeLisp <=
               gcc -O2 GNU-layout.
@@ -113,16 +113,9 @@ def measure(kernel):
 
 
 def idle_cpu():
-    """An idle CPU in 24-31 (COMMON.md): CODEGEN_CPU, else the least busy."""
-    if os.environ.get("CODEGEN_CPU"):
-        return os.environ["CODEGEN_CPU"]
-    load = {c: 0.0 for c in range(24, 32)}
-    out = subprocess.run(["ps", "-eo", "psr,pcpu"], capture_output=True, text=True).stdout
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) in load:
-            load[int(parts[0])] += float(parts[1])
-    return str(min(load, key=lambda c: (load[c], -c)))
+    """The codegen lane's measurement CPU (COMMON.md "Measurement": codegen 9;
+    heavy jobs stay on 0-7 and 16-23).  CODEGEN_CPU overrides it."""
+    return os.environ.get("CODEGEN_CPU", "9")
 
 
 def timed(exe, n, r, cpu):

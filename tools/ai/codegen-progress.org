@@ -20,7 +20,7 @@
 # Bar: for each kernel below, NeLisp's native code takes no more
 # wall-clock time per iteration than the same loop written in C and
 # compiled with gcc 14.2 -O2 (the median of 7 alternating runs, pinned to
-# an idle CPU, warmed up, each run at least about 0.5 s; the loop is
+# the lane's CPU 9, warmed up, each run at least about 0.5 s; the loop is
 # isolated by subtracting a zero-iteration run).  Callgrind Ir per
 # iteration (four layouts) stays the diagnostic for where time goes.
 #
