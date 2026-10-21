@@ -73,9 +73,10 @@ def kernel():
 def semantics():
     fixture = "tools/ai/strings-semantics.el"
     outputs = {}
-    for kind, command in [("gnu", [os.environ.get("GNU_EMACS", "emacs"), "-Q", "--batch"]),
-                          ("dynamic", [str(OUT / "dynamic/nelisp")]),
-                          ("static", [str(OUT / "static/nelisp")])]:
+    runtimes = [("gnu", [os.environ.get("GNU_EMACS", "emacs"), "-Q", "--batch"]),
+                ("dynamic", [str(OUT / "dynamic/nelisp")]),
+                ("static", [str(OUT / "static/nelisp")])]
+    for kind, command in runtimes:
         assert Path(command[0]).exists() or kind == "gnu", f"missing {kind} candidate"
         result = subprocess.run(command + ["--load", fixture], cwd=ROOT, capture_output=True, timeout=40)
         (OUT / f"{kind}-semantics.out").write_bytes(result.stdout)
@@ -86,7 +87,19 @@ def semantics():
         assert len(outputs[kind]) >= 10, f"{kind} incomplete fixture"
     assert outputs["dynamic"] == outputs["gnu"], "dynamic GNU fixture differs; see saved outputs"
     assert outputs["static"] == outputs["gnu"], "static GNU fixture differs; see saved outputs"
-    print(f"PASS semantics: {len(outputs['gnu'])} GNU cases on dynamic and static")
+    # Reuse the existing byte-mutation oracle: final checks exposed a
+    # multibyte symbol-name boundary regression absent from the short fixture.
+    matrix = {}
+    for kind, command in runtimes:
+        result = subprocess.run(command + ["--load", "test/standalone-unibyte-aset-check.el"],
+                                cwd=ROOT, capture_output=True, timeout=40)
+        (OUT / f"{kind}-unibyte-matrix.out").write_bytes(result.stdout)
+        (OUT / f"{kind}-unibyte-matrix.err").write_bytes(result.stderr)
+        assert result.returncode == 0 and not result.stderr, f"{kind} unibyte matrix failed"
+        matrix[kind] = result.stdout
+    assert matrix["dynamic"] == matrix["gnu"], "dynamic GNU unibyte/symbol-name matrix differs"
+    assert matrix["static"] == matrix["gnu"], "static GNU unibyte/symbol-name matrix differs"
+    print(f"PASS semantics: {len(outputs['gnu'])} GNU cases and existing unibyte matrix on dynamic/static")
 
 
 def root_layout(binary, symbols, n, mode):
@@ -233,6 +246,8 @@ def speed(workload):
     assert workload, "choose producers or pressure"
     report = json.loads((OUT / "timing" / f"{workload}.json").read_text())
     assert report["cpu"] == 14 and report["rounds"] == 7
+    assert set(report["verdicts"]) == ({"concat", "substring", "format"}
+                                       if workload == "producers" else {"pressure"}), "incomplete workload report"
     for role, path in [("candidate", OUT / "dynamic/nelisp"), ("base", OUT / "base/nelisp")]:
         assert report["identities"][role] == hashlib.sha256(path.read_bytes()).hexdigest(), "stale timing binary"
     for kind, row in report["verdicts"].items():

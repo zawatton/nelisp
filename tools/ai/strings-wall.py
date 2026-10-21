@@ -61,7 +61,16 @@ def run(role, command, kind, round_number, pressure=False, in_slot=False):
     stem.with_suffix(".out").write_bytes(result.stdout)
     stem.with_suffix(".err").write_bytes(result.stderr)
     assert result.returncode == 0, f"{kind}/{role} exit {result.returncode}; see {stem.name}"
-    assert not result.stderr, f"{kind}/{role} unexpected stderr"
+    # GNU 31.1 warns about this existing dynamic-binding corpus's missing
+    # file cookie. Retain the exact stderr; accept only that four-line warning.
+    warning = result.stderr.decode("utf-8", errors="replace").splitlines()
+    expected_warning = (role == "gnu" and pressure and len(warning) == 4
+                        and warning[0].startswith("Warning (files): Missing ‘lexical-binding’ cookie in ")
+                        and warning[0].endswith('/test/unibyte-alloc-pressure80.el".')
+                        and warning[1] == "You can add one with ‘M-x elisp-enable-lexical-binding RET’."
+                        and warning[2] == "See ‘(elisp)Selecting Lisp Dialect’ and ‘(elisp)Converting to Lexical Binding’"
+                        and warning[3] == "for more information.")
+    assert not result.stderr or expected_warning, f"{kind}/{role} unexpected stderr"
     if pressure:
         matches = re.findall(rb"^ABI-PRESSURE ([0-9]+ [0-9]+)$", result.stdout, re.M)
         assert len(matches) == 1, f"{role} incomplete pressure result"
@@ -71,7 +80,8 @@ def run(role, command, kind, round_number, pressure=False, in_slot=False):
         assert len(matches) == 1, f"{role} incomplete timing result"
         seconds, output = float(matches[0]), None
     row = dict(role=role, round=round_number, kind=kind, seconds=seconds,
-               process_seconds=elapsed, cpu=14, frequency_khz=frequency, output=output)
+               process_seconds=elapsed, cpu=14, frequency_khz=frequency, output=output,
+               expected_gnu_cookie_warning=expected_warning)
     print(f"{kind} round={round_number} role={role} wall={seconds:.6f}s", flush=True)
     return row
 

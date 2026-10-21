@@ -315,13 +315,24 @@ The allocation entry coalesces header allocation, sdata allocation and the
 pool lock into nl_string_new. It preserves the same GNU allocation steps
 without a second closed helper owner. The name-key predicate classifies
 canonical String WORDs directly and reads each legacy name tag once.
-The mirror constant flag remains exactly the existing Nil/T WORD invariant
-(documented in its provider); comparing that flag with WORD T avoids an
-unnecessary String-aware type classifier. Symbol layout and flag values
-are unchanged. Function, text, source-node and metadata bounds stay fixed.
+The mirror constant-flag decoder retains its existing tag classifier:
+legacy boxed booleans are still present on this base. The ABI globals
+oracle rejects the stronger canonical-WORD assumption in its provider
+comment. Symbol layout and flag values stay unchanged. Function, text, source-node and metadata bounds stay fixed.
 
 Cons-only borrowed car/cdr accessors guard the base's aligned Cons tag
 before reading the existing header and payload. They reject String/vector
 WORD tags directly, so a known Cons access does not invoke the generalized
 String classifier. This is a caller boundary adaptation, not a change to
 Cons layout, the collector driver or Lisp-visible entry points.
+
+* Explicit reader representation changes
+
+The reader's name-kind setter used to change only its legacy token view.
+A token now owns a canonical String header, so those writes cannot change
+its size_byte. The setter updates that fresh header's character count and
+size_byte, then refreshes the caller view before the canonical name edge
+is registered. This preserves GNU's multibyte ASCII symbol-name behavior
+for read and #: names. Ordinary ABI cloning still trusts the header and
+cannot undo clear-string through a stale view. The existing 43-row GNU
+unibyte/aset matrix now supplements the original 13-case fixture.

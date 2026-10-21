@@ -329,11 +329,22 @@
     (defun nelisp_reader_p_symbol_name_kind (source name)
       ;; Symbol names inherit the reader input's representation, including
       ;; multibyte ASCII. Set it before the canonical name is registered.
-      (if (or (= (heap-read-u8 source 0) 14) (= (heap-read-u8 source 0) 15))
-          (ptr-write-u8 name 0 14)
-        (seq (ptr-write-u8 name 0 5)
-             (ptr-write-u64 name 8
-               (logior (heap-read-u64 name 8) 4611686018427387904)))))
+      (let* ((tag (heap-sexp-tag-byte source))
+             (unibyte (if (or (= tag 14) (= tag 15)) 1 0))
+             (header (nl_string_view_header name)))
+        (if (/= header 0)
+            (let* ((bytes (nl_string_nbytes header)))
+              ;; This is an explicit representation change on a fresh
+              ;; token, not a stale ABI view changing its owner's flags.
+              (ptr-write-u64 header 0
+                             (if (= unibyte 1) bytes
+                               (nl_string_char_count (ptr-read-u64 header 24) bytes)))
+              (ptr-write-u64 header 8 (if (= unibyte 1) -1 bytes))
+              (nl_string_store_view (+ header 4) name) 1)
+          (if (= unibyte 1) (ptr-write-u8 name 0 14)
+            (seq (ptr-write-u8 name 0 5)
+                 (ptr-write-u64 name 8
+                                (logior (heap-read-u64 name 8) 4611686018427387904)))))))
 
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
       ;; The direct allocator also installs a stable name-Sexp edge for the
