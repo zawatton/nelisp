@@ -283,7 +283,61 @@ def check_speed(kind, binary=None):
     return fail(f"speed {kind}: NeLisp own cost above GNU's (median paired ratio of 7 rounds)")
 
 
+# ---------------------------------------------------------------- semantics
+
+FIXTURE = ROOT / "test/fixtures/syntax-rt-semantics.el"
+EXPECTED = ROOT / "test/fixtures/syntax-rt-semantics.gnu-31.1.expected"
+
+
+def run_fixture(runtime, binary=None):
+    command = (["taskset", "-c", CPUS, str(binary), "--load", str(FIXTURE)]
+               if runtime == "nelisp"
+               else [GNU_BIN, "-Q", "--batch", "-l", str(FIXTURE)])
+    result = subprocess.run(["bash", "-c", "ulimit -v %d; exec \"$@\"" % MEMORY_LIMIT_KB,
+                             "run", *command], capture_output=True, timeout=600, cwd=ROOT)
+    return result.returncode, result.stdout, result.stderr
+
+
+def check_semantics():
+    for required in (FIXTURE, EXPECTED, DYN_BIN, STATIC_BIN, BASE_BIN):
+        if not Path(required).is_file():
+            return fail(f"missing {required}")
+    expected = EXPECTED.read_bytes()
+    rows = expected.count(b"\n")
+    problems, record = [], {"fixture_sha256": sha256(FIXTURE),
+                            "expected_sha256": sha256(EXPECTED), "rows": rows}
+    code, out, err = run_fixture("gnu")
+    if code != 0 or out != expected:
+        problems.append("GNU 31.1 no longer produces the pinned output")
+    for name, binary in (("dynamic", DYN_BIN), ("static", STATIC_BIN)):
+        code, out, err = run_fixture("nelisp", binary)
+        record[name] = {"binary_sha256": sha256(binary), "exit": code,
+                        "stderr_bytes": len(err), "identical": out == expected}
+        if code != 0 or err or out != expected:
+            got = out.split(b"\n")
+            bad = [line.split(b" => ")[0].decode(errors="replace")
+                   for line, want in zip(got, expected.split(b"\n")) if line != want]
+            problems.append(f"{name}: exit {code}, stderr {len(err)} bytes, "
+                            f"differing rows {bad[:5]}")
+    # Negative control: the base binary must not pass.
+    code, out, err = run_fixture("nelisp", BASE_BIN)
+    record["base_control"] = {"binary_sha256": sha256(BASE_BIN), "exit": code,
+                              "identical": out == expected}
+    if code == 0 and out == expected:
+        problems.append("negative control: the base binary reproduces GNU's output")
+    (EVIDENCE / "semantics.json").write_text(json.dumps(record, indent=1) + "\n")
+    if problems:
+        for problem in problems:
+            print(f"  {problem}")
+        return fail(f"semantics: {len(problems)} problem(s)")
+    print(f"SYNTAX-RT semantics PASS: {rows} GNU 31.1 rows identical on dynamic and static; "
+          f"the base binary differs (exit {record['base_control']['exit']})")
+    return 0
+
+
 def main(argv):
+    if argv[1:2] == ["semantics"]:
+        return check_semantics()
     if argv[1:2] == ["plan"]:
         return check_plan()
     if argv[1:2] == ["speed"] and len(argv) in (3, 4):

@@ -27497,6 +27497,11 @@ Unlike `set-char-table-range', this never accepts a range or default key."
 (make-variable-buffer-local 'nelisp--case-table)
 (defvar case-table--buffer-tables (make-hash-table :test 'eq :weakness 'key)
   "Per-buffer case-table fields, mirroring GNU's buffer-owned downcase table.")
+(defvar case-table--builtin-canon nil
+  "The canonicalize table of the standard case table as built from GNU
+31.1's Unicode data, before any change.  Its mapping is exactly the
+built-in fold the regexp matcher applies without a translate table
+\(`nlre--translate-char'), so a search through it needs no table.")
 
 (defun case-table--ensure-standard-initialized ()
   "Initialize the shared standard table lazily, without case conversion."
@@ -27521,6 +27526,8 @@ Unlike `set-char-table-range', this never accepts a range or default key."
             (setq character (1+ character)))))
       (case-table--put-extra-slot down 0 up)
       (case-table--ensure-extra-slots down)
+      (when case-table--unicode-initialized
+        (setq case-table--builtin-canon (case-table--get-extra-slot down 1)))
       (setq case-table--standard down case-table--initial-standard down)))
   case-table--standard)
 
@@ -27537,7 +27544,25 @@ alone.  An untouched bootstrap stays lazy until its first API call."
       (case-table--put-extra-slot table 1 nil)
       (case-table--put-extra-slot table 2 nil)
       (case-table--ensure-extra-slots table)
+      (setq case-table--builtin-canon (case-table--get-extra-slot table 1))
       (setq case-table--unicode-initialized t))))
+
+(defun case-table--search-canon ()
+  "The current buffer's canonicalize table for a case-folding search.
+GNU string_match_1 reads BVAR (current_buffer, case_canon_table)
+\(search.c:405-410); the buffer's table is the per-buffer map's entry or
+the standard table.  An invalidated table is prepared first, as
+casefiddle.c does.  Return nil for `case-table--builtin-canon': the
+matcher's built-in fold is that same mapping, so it needs no table."
+  (let* ((table (or (gethash (current-buffer) case-table--buffer-tables)
+                    (case-table--ensure-standard-initialized)))
+         (canon (if (funcall case-table--native-p table)
+                    (funcall case-table--native-extra table 1)
+                  (case-table--get-extra-slot table 1))))
+    (unless canon
+      (set-case-table table)
+      (setq canon (case-table--get-extra-slot table 1)))
+    (if (eq canon case-table--builtin-canon) nil canon)))
 
 (defun standard-case-table ()
   "Return the standard case table."

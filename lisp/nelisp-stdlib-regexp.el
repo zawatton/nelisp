@@ -52,6 +52,10 @@ table, t when the provider's table is not a char-table (its `char-syntax'
 answers instead), or `none' before any `char-syntax' exists.")
 (defconst nlre--syntax-designators " .w_()'\"$\\/<>@!|"
   "GNU syntax.c:1084 `syntax_code_spec': the designator of each class code.")
+(defvar nlre--translate-native nil
+  "Non-nil while `nlre--translate-table' is a native char-table, whose
+characters `nlre--fold-char' translates as GNU's `char_table_translate'
+does (character.h:592): one table read and a character test.")
 (defvar nlre--translate-table nil
   "Canonical case translation table dynamically bound during compilation
 and matching.  Nil selects the portable downcase fallback.")
@@ -167,7 +171,18 @@ Capture that callable directly instead of autoloading the nadvice substrate."
                 (char-table-extra-slot case-table slot))))))
 
 (defun nlre--current-translate-table ()
-  (nlre--current-case-extra 1))
+  "The translate table of a case-folding search: GNU string_match_1 passes
+BVAR (current_buffer, case_canon_table) (search.c:405-410).  Nil when the
+built-in fold is that mapping (`case-table--search-canon')."
+  (if (fboundp 'case-table--search-canon)
+      (case-table--search-canon)
+    (nlre--current-case-extra 1)))
+
+(defun nlre--native-translate-p (table)
+  "Non-nil if TABLE is a native char-table (not the foundation adapter's)."
+  (if (boundp 'case-table--native-p)
+      (funcall case-table--native-p table)
+    (and (fboundp 'char-table-p) (char-table-p table))))
 
 (defun nlre--copy-key-value (value)
   (if (stringp value) (copy-sequence value) value))
@@ -1221,7 +1236,7 @@ branch choice cannot affect a later match or the last repeated capture."
             ;; both plans: a cached regexp may see a new table on any call.
          (portable (and fold (not literal) (not atom)
                  (or nlre--pattern-multibyte (nlre--ascii-text-p source))
-                 (let ((nlre--translate-table nil))
+                 (let ((nlre--translate-table nil) (nlre--translate-native nil))
                    (nlre--prefilter ast :portable)))))
     (vector ast ng plan pre
             (and prefix (vector :literal prefix fold
@@ -1272,7 +1287,13 @@ one, which would demote them to the interpreter)."
         (nlre--downcase-char (nlre--upcase-char c))))))
 
 (defun nlre--fold-char (c)
-  (if nlre--fold (nlre--translate-char c nlre--translate-table) c))
+  (if nlre--fold
+      (if nlre--translate-native
+          ;; GNU RE_TRANSLATE = char_table_translate (character.h:592).
+          (let ((v (aref nlre--translate-table c)))
+            (if (and (integerp v) (>= v 0)) v c))
+        (nlre--translate-char c nlre--translate-table))
+    c))
 
 (defun nlre--character-byte (c)
   "Return C's byte, or nil for a Unicode character without a byte."
@@ -2107,6 +2128,9 @@ of STRING.  Sets `nlre--match-data' as usual."
          (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
+         (nlre--translate-native (and nlre--translate-table
+                                      (nlre--native-translate-p
+                                       nlre--translate-table)))
          (compiled (nlre--compiled-pattern regexp))
          (n (length string))
          (i (or start 0))
@@ -2494,6 +2518,9 @@ The full STRING remains visible to anchors and boundary assertions."
          (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
+         (nlre--translate-native (and nlre--translate-table
+                                      (nlre--native-translate-p
+                                       nlre--translate-table)))
          (compiled (nlre--compiled-pattern regexp))
          (nlre--pattern-multibyte (aref compiled 5))
          (nlre--match-end-limit max-end)
@@ -2519,6 +2546,9 @@ The full STRING remains visible to anchors and boundary assertions."
          (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
+         (nlre--translate-native (and nlre--translate-table
+                                      (nlre--native-translate-p
+                                       nlre--translate-table)))
          (nlre--pattern-multibyte (aref compiled 5))
          (nlre--match-end-limit end)
          (nodes (nlre--seq-nodes (aref compiled 0)))
