@@ -1914,12 +1914,16 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
 (defconst nelisp-standalone--box-census-idioms
   '(nl_cons_car_ptr nl_cons_cdr_ptr record-slot-ref-ptr vector-ref-ptr
     nl_vector_slot_ptr nl_record_slot_ptr nl_sexp_clone_into nl_val_clone_into
-    wf_copy32 nl_root_reserve nl_sci_store_imm)
+    wf_copy32 nl_root_reserve nl_sci_store_imm
+    nl_root_reserve_checked wf_bytecode_w_roots wf_bytecode_call_root_frame
+    m5_fx_root_block)
   "Call heads counted by the box-migration census (see
 `nelisp-standalone--box-census-record').  `(alloc-bytes 32 8)' is counted
 separately as `alloc-bytes-32-8', and `*_clone_into' heads not listed here
 are counted under their own names. Conversion call heads use the shared
-complete Python walk, which also visits first binding initializers.")
+complete Python walk, which also visits first binding initializers.
+The last four reserve 32-byte Sexp root slots like `nl_root_reserve'
+(checked, or several at once); a WORD frame (`nl_root_frame') is not one.")
 
 (defun nelisp-standalone--box-dump-json (x)
   "X as a JSON-encodable value for the Doc 215 rewrite engine.
@@ -19725,14 +19729,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (if (/= s (+ first (* k 32))) (setq ok 0) 0))
                 (setq k (+ k 1))))
          (if (= ok 1) first 0))))
-    ;; One rooted vector owns the evaluated argument WORDs. It remains rooted
-    ;; through VM execution, fallback apply and lazy backtrace materialization.
+    ;; The evaluated argument WORDs live in one WORD frame on the root stack,
+    ;; as GNU's eval_sub evaluates into argvals (eval.c:2626, 2689) and
+    ;; apply_lambda into its SAFE_ALLOCA vector: no heap vector.  The frame
+    ;; stays rooted through VM execution, fallback apply and lazy backtrace
+    ;; materialization, until the caller releases its mark.  0 with
+    ;; `memory-full' stashed when the region is full.
     (defun m5_fx_arg_words (env n)
       (if (= n 0) 0
-        (let* ((root (nl_root_reserve_checked env)))
-          (if (= root 0) 0
-            (seq (vector-make n root)
-                 (+ (nl_word_payload root) 8))))))
+        (let* ((base (nl_root_frame env n)))
+          (if (= base 0) (seq (wf_bytecode_root_exhausted) 0) base))))
     ;; Evaluate forms once and publish each WORD before the next evaluation.
     (defun m5_fx_eval_forms (tail env base _pad)
       (let* ((cur tail) (k 0) (rc 0) (w 0))
@@ -20060,7 +20066,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= tbl 0) 0
         (seq
          (nl_ht_identity_sync tbl)
-         (let* ((data (nl_ht_data_slot tbl))
+         ;; The bucket vector's own WORD, which the lookup reads through
+         ;; WORD-aware accessors: `nl_ht_data_slot' materialised a fresh
+         ;; view box of it on every VM call of a covered closure.
+         (let* ((data (nl_cons_cdr_word tbl))
                 (mode (nl_ht_test_mode tbl))
                 (entry (nl_ht_find_table_h data body mode (nl_ht_hash_mode tbl mode))))
            ;; 1: BODY is not in the table yet (`m5_fx_rec_or_first').
@@ -47256,9 +47265,39 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_eval_args_w (tail_ptr env func_slot args_slot call_name)
       (let* ((w (m5_fx_interp_call_w func_slot tail_ptr env args_slot)))
         (if (= w 2)
-            (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0)
-                                 env func_slot args_slot call_name)
+            (let* ((p (nl_eic_primitive_w func_slot tail_ptr env args_slot call_name)))
+              (if (= p 2)
+                  (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0)
+                                       env func_slot args_slot call_name)
+                p))
           w)))
+    ;; GNU eval_sub evaluates a subr's arguments into argvals and calls the
+    ;; subr on them (eval.c:2626, 2685-2693).  A call of a WORD primitive --
+    ;; the set VM code calls directly, `m5_fx_primitive_named' -- evaluates
+    ;; its one or two arguments into a WORD frame and runs on those WORDs:
+    ;; no argument list, no OUT box.  2 when FN is no such builtin.  When
+    ;; the primitive declines (a type or an arity it leaves to the full
+    ;; builtin), the evaluated WORDs become the ordinary apply's argument
+    ;; list, so no argument is evaluated twice.  `funcall' keeps the
+    ;; ordinary path: its VM entry needs a Sexp scratch slot.
+    (defun nl_eic_primitive_w (fn tail env args_slot call_name)
+      (let* ((name (m5_fx_builtin_name fn 0))
+             (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
+        (if (if (< argc 1) 1 (if (> argc 2) 1 (sexp-name-eq name "funcall"))) 2
+          (let* ((base (nl_root_frame env (+ argc 1))))
+            (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
+              (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
+                (seq
+                 ;; The activation shows the evaluated arguments, as GNU's
+                 ;; set_backtrace_args (eval.c:2693).
+                 (m5_fx_frame_lazy env base argc 0)
+                 (let* ((st (m5_fx_primitive_named name base argc argc
+                                                   (+ base (* argc 8)) env 0)))
+                   (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
+                     (if (= st -3)
+                         (nl_eic_after_args_w (m5_fx_slot_list base argc)
+                                              env fn args_slot call_name)
+                       0))))))))))
     (defun nl_eic_after_args_w (args_w env func_slot args_slot call_name)
       (if (= args_w 0) 0
         (seq

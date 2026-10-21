@@ -21,14 +21,18 @@
           (let* ((fn (nl_record_slot_word entry 1)))
             (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
               (if (= (m5_fx_word_cons_p fn 0) 1) fn 0))))))
-    (defun m5_fx_primitive (fn stk sp argc resw env scratch)
-      (if (= (m5_fx_word_cons_p fn 0) 0) -3
+    ;; NAME's WORD when FN is (builtin NAME), else 0.
+    (defun m5_fx_builtin_name (fn _pad)
+      (if (= (m5_fx_word_cons_p fn 0) 0) 0
         (let* ((head (nl_cons_car_word fn)) (tail (nl_cons_cdr_word fn)))
-          (if (= (logand head 1) 1) -3
-            (if (= (sexp-name-eq head "builtin") 0) -3
-              (if (= (m5_fx_word_cons_p tail 0) 0) -3
-                (m5_fx_primitive_named (nl_cons_car_word tail)
-                                       stk sp argc resw env scratch)))))))
+          (if (= (logand head 1) 1) 0
+            (if (= (sexp-name-eq head "builtin") 0) 0
+              (if (= (m5_fx_word_cons_p tail 0) 0) 0
+                (nl_cons_car_word tail)))))))
+    (defun m5_fx_primitive (fn stk sp argc resw env scratch)
+      (let* ((name (m5_fx_builtin_name fn 0)))
+        (if (= name 0) -3
+          (m5_fx_primitive_named name stk sp argc resw env scratch))))
     (defun m5_fx_primitive_named (name stk sp argc resw env scratch)
       (let* ((a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3))
              (b (if (> argc 1) (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0) 3))

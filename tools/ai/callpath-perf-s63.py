@@ -43,7 +43,10 @@ SCOPE = re.compile(
     r"^(nelisp_apply|nl_apply|bf_apply|nl_ali_|nl_funcall|nl_eic_|nl_n3_eval|nl_n4_frame_eval|m5_fx_|nl_fx_"
     r"|nl_native_frame|wf_bytecode_|bf_n2_call_lisp|bf_n2_direct_arity"
     r"|nl_eval_arg_list|nl_sb_|nelisp_env_lookup_function|nl_n4_(apply|direct_apply|named_apply|push|finish))")
-ROOTS = ("nl_root_reserve",)
+# Every head that reserves 32-byte Sexp root slots (the build census counts
+# them all); a WORD frame, `nl_root_frame', is the replacement, not debt.
+ROOTS = ("nl_root_reserve", "nl_root_reserve_checked", "wf_bytecode_w_roots",
+         "wf_bytecode_call_root_frame", "m5_fx_root_block")
 MATERIALISERS = ("clone_into", "wf_copy32", "nl_cons_car_ptr", "nl_cons_cdr_ptr", "record-slot-ref-ptr",
                  "vector-ref-ptr", "nl_vector_slot_ptr", "nl_record_slot_ptr")
 OPS = ("pcf-funcall", "pcf-builtin", "pcf-apply")
