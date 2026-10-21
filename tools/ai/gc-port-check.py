@@ -327,8 +327,10 @@ def wall_verdict(med):
 
 
 def cmd_wall(kind):
-    """S2.1-S2.3 (COMMON Measurement): median wall-clock of 7 alternating runs,
-    GC included, against GNU 31.1 on the same Lisp workload."""
+    """S2.1-S2.3 (COMMON Measurement): median of 7 alternating runs of the
+    in-process time of the warmed-up churn (float-time around the second run
+    of the workload, three collections inside, startup outside), against
+    GNU 31.1 running the same Lisp."""
     import hashlib
     import json
     if wall_verdict({'candidate': 2.0, 'gnu': 1.0}):
@@ -340,12 +342,14 @@ def cmd_wall(kind):
     if not dyn.exists() or data['sha256']['candidate'] != hashlib.sha256(dyn.read_bytes()).hexdigest():
         return fail(f'wall {kind}: measured binary is not {dyn}')
     w = data['workloads'].get(kind)
+    if 'in-process' not in data.get('timing', ''):
+        return fail(f'wall {kind}: {WALL.relative_to(ROOT)} times whole processes, not the warmed-up workload')
     if not w or w['failures'] or data['rounds'] < 7:
         return fail(f'wall {kind}: incomplete or failing runs')
     med = w['median']
     line = (f"wall {kind}: NeLisp {med['candidate']:.3f}s vs GNU {med['gnu']:.3f}s "
             f"(x{med['candidate'] / med['gnu']:.2f}; base {med['base']:.3f}s), "
-            f"median of {data['rounds']}, GC included")
+            f"in-process median of {data['rounds']}, warmed up, GC included")
     if not wall_verdict(med):
         return fail(line)
     print('PASS ' + line)
