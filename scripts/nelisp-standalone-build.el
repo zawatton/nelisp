@@ -25002,16 +25002,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; a symbol without an object has never been declared.  Objects made
     ;; before the bit existed (short records) keep the registry lookup.
     (defun bf_declared_special_p (mirror name)
-      (let* ((obj (nelisp_mirror_lookup_entry mirror name)))
+      (let* ((obj (nelisp_mirror_lookup_entry_owned mirror name)))
         (if (= obj 0) 0
-          (if (< (nl_ent_n obj) 9)
-              (let* ((table (bf_special_registry mirror 0)))
-                (if (= table 0) 0
-                  (if (= (nl_ht_find_in table name) 0) 0 1)))
-            (let* ((w (nl_ent_w obj 6)))
-              (if (= (logand w 3) 1)
-                  (if (= (logand (sar w 2) 64) 0) 0 1)
-                0))))))
+          (if (= (nl_so_p obj) 1)
+              (if (= (logand (heap-read-u64 (- obj 6) 0) 16384) 0) 0 1)
+            (if (< (nl_ent_n obj) 9)
+                (let* ((table (bf_special_registry mirror 0)))
+                  (if (= table 0) 0
+                    (if (= (nl_ht_find_in table name) 0) 0 1)))
+              (let* ((w (nl_ent_w obj 6)))
+                (if (= (logand w 3) 1)
+                    (if (= (logand (sar w 2) 64) 0) 0 1)
+                  0)))))))
     (defun bf_declare_local_value_w (env name _pad)
   ;; NAME comes directly from the argument list as a canonical WORD.
   (let* ((rc (bf_declare_local_status env name)))
@@ -25689,14 +25691,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; make-local-variable turns SYMBOL_FORWARDED into a blv whose fwd is
     ;; the old forwarding), so slot 5 is tested before the descriptor.
     (defun nl_sym_redirect (obj)
-      (if (< (nl_ent_n obj) 9) 4
-        (let ((a (nelisp_env_alias_slot_candidate obj 0)))
-          (if (= a 0) 1
-            (if (/= a 3) 4
-              (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
-                (if (= t5 8) 2
-                  (if (/= t5 0) 4
-                    (if (/= (nl_ent_w obj 7) 3) 3 0)))))))))
+      ;; GNU reads sym->u.s.redirect (lisp.h:771); a symbol object keeps it in
+      ;; bits 8-9 of its flags word, in the 0 1 2 3 order of this answer.
+      (if (= (nl_so_p obj) 1)
+          (logand (sar (heap-read-u64 (- obj 6) 0) 8) 3)
+        (if (< (nl_ent_n obj) 9) 4
+          (let ((a (nelisp_env_alias_slot_candidate obj 0)))
+            (if (= a 0) 1
+              (if (/= a 3) 4
+                (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
+                  (if (= t5 8) 2
+                    (if (/= t5 0) 4
+                      (if (/= (nl_ent_w obj 7) 3) 3 0))))))))))
     ;; 1 when ENV reads and writes symbol objects directly: not a Doc 199
     ;; worker and not inside the legacy root-pin capture (the conditions
     ;; under which `nl_sb_bind' binds deeply).
@@ -25756,7 +25762,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq
            (while (= result -1)
              (if (= obj 0) (setq result 1)
-               (if (= (nl_val_tag (nl_ent_w obj 3)) 1) (setq result 1)
+               (if (if (= (nl_so_p obj) 1)
+                       (= (logand (sar (heap-read-u64 (- obj 6) 0) 10) 3) 1)
+                     (= (nl_val_tag (nl_ent_w obj 3)) 1))
+                   (setq result 1)
                  (let ((r (nl_sym_redirect obj)))
                    (if (and (= r 1) (< hops 100))
                        (seq (setq obj (nelisp_mirror_lookup_entry_owned
@@ -49192,7 +49201,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
                      (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
                      (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
-        (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+        (let* ((entry (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
           (if (= (nl_sb_plain_entry_p entry) 1) 1
             ;; Aliases bind their terminal name, never a source dynamic
             ;; cell. The caller has already searched source lexical cells.

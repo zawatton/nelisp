@@ -80,22 +80,34 @@
     (defun nelisp_env_entry_slot_tag (rec k)
       ;; Keep this small tagged-slot accessor eligible for the general source
       ;; inliner.  Nil metadata is the common case, so classify it first.
-      (let* ((w (nl_ent_w rec k)))
-        (if (= w 3) 0
-          (if (= (logand w 1) 0)
-              (sexp-tag w)
-            (if (= (logand w 3) 1) 2 1)))))
+      ;; A symbol object answers slots 4 and 5 from its redirect, as GNU
+      ;; switches on sym->u.s.redirect: an alias holds its target (a symbol)
+      ;; in the value cell, a LOCALIZED variable its redirect vector (8).
+      (if (if (= (nl_so_p rec) 1) (if (= k 4) 1 (= k 5)) 0)
+          (let* ((r (logand (sar (heap-read-u64 (- rec 6) 0) 8) 3)))
+            (if (= k 4)
+                (if (= r 1) (nl_val_tag (heap-read-u64 (- rec 6) 16)) 0)
+              (if (= r 2) 8 0)))
+        (let* ((w (nl_ent_w rec k)))
+          (if (= w 3) 0
+            (if (= (logand w 1) 0)
+                (sexp-tag w)
+              (if (= (logand w 3) 1) 2 1))))))
 
     (defun nelisp_env_alias_slot_candidate (entry-ptr _pad)
       ;; Allocation-free classification for ordinary value reads/writes.
       ;; 0=real alias, 1=malformed, 3=nonalias or legacy four-slot entry.
-      (if (= (nl_ent_p entry-ptr) 0)
-          1
-        (if (<= (nl_ent_n entry-ptr) 4)
-            3
-          (let ((tg (nelisp_env_entry_slot_tag entry-ptr 4)))
-            (if (= tg 0) 3
-              (if (or (= tg 4) (= tg 16)) 0 1))))))
+      ;; A symbol object is an alias exactly when its redirect says so
+      ;; (VARALIAS, data.c:1619), and then its target is a symbol.
+      (if (= (nl_so_p entry-ptr) 1)
+          (if (= (logand (sar (heap-read-u64 (- entry-ptr 6) 0) 8) 3) 1) 0 3)
+        (if (= (nl_ent_p entry-ptr) 0)
+            1
+          (if (<= (nl_ent_n entry-ptr) 4)
+              3
+            (let ((tg (nelisp_env_entry_slot_tag entry-ptr 4)))
+              (if (= tg 0) 3
+                (if (or (= tg 4) (= tg 16)) 0 1)))))))
 
     (defun nelisp_env_alias_canonicalize
         (mirror-ptr entry-ptr name-ptr result-address-ptr)
@@ -263,7 +275,7 @@
 
     ;; Doc 215 word ABI: the value WORD, 2 when not found, 0 on a signal.
     (defun nelisp_env_lookup_value_w (mirror-ptr frames-ptr name-ptr _pad)
-      (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+      (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr))
              (local-p (if (= entry 0) 0
                         (if (> (nl_ent_n entry) 5)
                             (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
