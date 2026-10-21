@@ -18,13 +18,15 @@
 
 ;; Load the source implementation directly so the tests do not depend on a
 ;; potentially stale compiled .elc.
-(let ((host-load (symbol-function 'load))
+(let ((host-locate-library (symbol-function 'locate-library))
+      (host-load (symbol-function 'load))
       (host-load-file (symbol-function 'load-file))
       (native-comp-enable-subr-trampolines nil))
   (let ((emacs-version 1))
     (funcall host-load-file emacs-load-test--source-file))
   (fset 'load host-load)
-  (fset 'load-file host-load-file))
+  (fset 'load-file host-load-file)
+  (fset 'locate-library host-locate-library))
 
 (defmacro emacs-load-test--with-fresh-native-cache (&rest body)
   "Run BODY with a fresh native artifact cache."
