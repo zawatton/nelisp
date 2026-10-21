@@ -89,3 +89,22 @@ cmd: python3 tools/ai/codegen-check.py lispvalue 2
 ** S3.5 End to end: a fresh build of the tip passes validate.sh with every Doc 229 stage in the AOT differential, and the dialect is untouched (the five kernels compile byte-identically to 1042eedbc's compiler)
 cmd: python3 tools/ai/codegen-check.py lispvalue-e2e
 #+NOTE: 2026-10-21 fresh dynamic build of 2b3d0674f: validate.sh 0 failing groups (standalone checks 75 cases 0 failures, fx corpus and spike, AOT differential 160 programs -- 97 earlier, nil/t/cons back in the CG5 tag programs, 60 Doc 229 -- all answering as the interpreter); the five kernels compile byte-identically to 1042eedbc's compiler.  Timing on CPU 9, 7 paired rounds, new/old compiler on one binary: predicate loop x0.48, when-loop x1.04, compare-loop x1.02, accumulator loop x1.06 (x5.92 before variables held value words).
+
+* S4 Artifact runtime gaps after Doc 229 (coordinator, 2026-10-21 22:40)
+# Next items in the AOT artifact path, in the coordinator's order; each lands
+# in its own commit with a differential control that fails before it and a
+# CPU 9 timing.  The dispatcher's float mod (gc-port S5) and keeping values
+# in registers across calls (gc-port) are routed elsewhere.
+** S4.1 funcall and apply: an artifact holding them loads and answers as the interpreter (the controls are refused on 9d5f4a515: nelisp_aot_funcall*/apply* unbridged)
+cmd: python3 tools/ai/codegen-check.py lispvalue apply
+#+NOTE: 2026-10-21 9 controls (funcall of a quoted symbol, of #'car, of a variable, with 2, 3 and 5 arguments; apply over a list, a spread (list ...), and leading arguments) are refused on 9d5f4a515 and answer as the interpreter now: reader providers for the six entries (GNU Ffuncall/Fapply, eval.c), the names appended to both bridge lists, arguments evaluated into variables before the call, and GNU's byte-optimize-funcall/-apply ported.  CPU 9, native/evaluator per call: constant designator x0.083 and x0.054, variable designator x2.43 (the provider's list building).
+** S4.2 Quoted constants are created once, when the artifact loads, so eq between two evaluations of the same quoted list is t, as with GNU's constant vector (the controls answer nil on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue const
+** S4.3 Values cross the loader/dispatcher boundary as value words: a fixnum, nil or t argument or result is passed as its immediate word, with no slot allocated for it (the controls allocate on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue word
+** S4.4 Fixnum overflow: an arithmetic result outside the fixnum range takes the runtime's function and becomes what the interpreter answers (the controls wrap on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue overflow
+** S4.5 Signals: an error signalled inside a native artifact reaches the caller with GNU's error symbol and data, and condition-case inside an artifact catches it (the controls differ on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue signal
+** S4.6 End to end: a fresh build of the tip passes validate.sh with every S3 and S4 stage in the AOT differential, and the five kernels compile byte-identically to 1042eedbc's compiler
+cmd: python3 tools/ai/codegen-check.py lispvalue-e2e 1 loader 2 apply const word overflow signal

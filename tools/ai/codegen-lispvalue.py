@@ -107,6 +107,17 @@ def sha_file(path):
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
+def corpus_digest(path=None):
+    """sha256 of the `nelisp-aot-differential-lisp-value-cases' form's text.
+Only the corpus itself, so enabling a stage in the regular differential
+(`nelisp-aot-differential-lisp-value-stages') does not stale a record."""
+    text = open(path or CASES_FILE, encoding="utf-8").read()
+    start = text.index("(defconst nelisp-aot-differential-lisp-value-cases")
+    end = text.index('"Doc 229 controls and guards', start)
+    end = text.index("\n", end)
+    return hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()
+
+
 def compiler_digest(root):
     h = hashlib.sha256()
     for rel in COMPILER_FILES:
@@ -164,7 +175,7 @@ def run(tag, root, binary):
     # Fingerprint the inputs before compiling: an edit during the run must
     # not be recorded as what was tested.
     digest_before = compiler_digest(root)
-    cases_before = sha_file(CASES_FILE)
+    cases_before = corpus_digest()
     cases = write_generator(work)
     diff = os.path.join(work, "diff")
     env = dict(os.environ, NELISP_DIFF_DIR=diff)
@@ -210,7 +221,7 @@ def run(tag, root, binary):
             pending = pending[len(rest):]
         else:
             pending = pending[size:]
-    if compiler_digest(root) != digest_before or sha_file(CASES_FILE) != cases_before:
+    if compiler_digest(root) != digest_before or corpus_digest() != cases_before:
         digest_before = "changed-during-run"
     rec = {"tag": tag, "root": root, "binary": binary, "binary_sha256": sha_file(binary),
            "compiler_digest": digest_before, "cases_sha256": cases_before,

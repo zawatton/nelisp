@@ -273,3 +273,46 @@ for every argument: it read any argument as a fixnum.
   cons back -- 0 failing groups.
 - The five Doc 224 kernels compile byte-identically with 1042eedbc's
   compiler and with the tip: the dialect is untouched.
+
+* After Doc 229: the S4 items
+
+The coordinator's next items in the artifact path, each with its own
+controls in the corpus and a CPU 9 timing (ledger stage S4).
+
+** S4.1 funcall and apply
+
+The compiler lowers =funcall= and =apply= to the Doc 129.7 entries
+=nelisp_aot_funcall1..3=, =nelisp_aot_funcalln=, =nelisp_aot_apply= and
+=nelisp_aot_applyn=.  Only the host runtime defined them, so the loader
+refused every artifact holding one.  The reader now has them
+(lisp/nelisp-cc-evalport-aot-apply.el): GNU's Ffuncall and Fapply (eval.c),
+handing the list (FN ARG...) to the evaluator's own funcall and apply, so a
+symbol, a builtin, a lambda or a closure is applied as the interpreter
+applies it.  The six names are appended to both bridge lists, and the
+loader's provenance is regenerated with
+scripts/nelisp-native-funcall-startup-regenerate.el.
+
+Two lowering defects showed once the artifacts loaded: an argument went
+over as written, so a literal arrived as a raw word, and a constant
+designator was written into the shared name slot before the arguments were
+evaluated, so (apply 'mod (list a 3)) applied =list=.  The function and the
+arguments are now evaluated in order into variables of their own and passed
+as Sexps.  Before that, GNU's byte optimizer is ported (byte-opt.el
+=byte-optimize-funcall=, =byte-optimize-apply=): (funcall 'F ...) is (F ...),
+and (apply F ... (list X ...)) is (funcall F ... X ...).
+
+Timing (CPU 9, 7 paired rounds, per call of a 100,000-iteration loop,
+native against the same defun in the evaluator, which is what ran while the
+loader refused the artifact):
+
+| defun  | loop body                     | native/evaluator | per call         |
+|--------+-------------------------------+------------------+------------------|
+| lvb-fc | =(funcall '+ s a)=            |           x0.083 | 7.8 ms / 81 ms   |
+| lvb-ap | =(apply '+ s (list a))=       |           x0.054 | 9.9 ms / 173 ms  |
+| lvb-fv | =(funcall f s 3)=, f a variable |         x2.432 | 195 ms / 80 ms   |
+
+A constant designator becomes a direct call.  A variable designator goes
+through the provider, which builds the argument list in ten fresh 32-byte
+slots and the result through OUT; that path is slower than the evaluator's
+own funcall, and values crossing the boundary as words (S4.3) is the item
+that removes most of its allocation.

@@ -27,8 +27,10 @@ lispvalue S   Doc 229 stage S (1, loader or 2): every control of the stage
               stage passes on this tree (target/codegen/lispvalue/cand.json),
               both runs made on the current corpus and the candidate run on
               the current compiler (tools/ai/codegen-lispvalue.py run).
-lispvalue-e2e target/codegen/lispvalue-e2e.json: a build of this tree passes
-              validate.sh with the Doc 229 stages in the AOT differential,
+lispvalue-e2e [STAGE...]
+              target/codegen/lispvalue-e2e.json: a build of this tree passes
+              validate.sh with the Doc 229 stages (default 1 loader 2, or
+              the STAGEs given) in the AOT differential,
               and the five kernels compile byte-identically to 1042eedbc's
               compiler (the dialect is untouched).
 
@@ -346,7 +348,10 @@ def cmd_lispvalue(stage):
         recs[tag] = json.loads(path.read_text())
     base, cand = recs["base"], recs["cand"]
     base_root = ROOT / "target/codegen/base-src"
-    cases_sha = sha256(ROOT / "scripts/nelisp-aot-differential-cases.el")
+    text = (ROOT / "scripts/nelisp-aot-differential-cases.el").read_text(encoding="utf-8")
+    start = text.index("(defconst nelisp-aot-differential-lisp-value-cases")
+    end = text.index("\n", text.index('"Doc 229 controls and guards', start))
+    cases_sha = hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()
     problems = []
     try:
         ref = subprocess.run(["git", "-C", str(ROOT), "show",
@@ -391,7 +396,7 @@ def cmd_lispvalue(stage):
     return 0 if not problems else 1
 
 
-def cmd_lispvalue_e2e():
+def cmd_lispvalue_e2e(required=None):
     path = ROOT / "target/codegen/lispvalue-e2e.json"
     if not path.exists():
         print("FAIL: target/codegen/lispvalue-e2e.json missing")
@@ -409,8 +414,10 @@ def cmd_lispvalue_e2e():
         if rec.get(key) != 0:
             print(f"{key} = {rec.get(key)}")
             ok = False
-    if rec.get("lisp_value_stages") != ["1", "loader", "2"]:
-        print(f"Doc 229 stages in the differential: {rec.get('lisp_value_stages')}")
+    need = required or ["1", "loader", "2"]
+    missing = [st for st in need if st not in (rec.get("lisp_value_stages") or [])]
+    if missing:
+        print(f"Doc 229 stages missing from the differential: {missing}")
         ok = False
     if rec.get("kernels_identical") is not True:
         print(f"kernel text differs: {rec.get('kernels_identical')}")
@@ -429,6 +436,8 @@ def main(argv):
         return cmd_wall(argv[2])
     if len(argv) == 3 and argv[1] == "lispvalue":
         return cmd_lispvalue(argv[2])
+    if len(argv) > 2 and argv[1] == "lispvalue-e2e":
+        return cmd_lispvalue_e2e(argv[2:])
     if len(argv) == 2 and argv[1] in ("measure", "plan", "endtoend", "final",
                                       "plan229", "lispvalue-e2e"):
         return {"measure": cmd_measure, "plan": cmd_plan,

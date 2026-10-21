@@ -58,8 +58,8 @@ cons constant loadable.")
 ;; STAGE says which step of Doc 229 makes the controls pass: 1 nil, t,
 ;; booleans, truth tests and variables, `loader' quoted list constants, 2
 ;; numbers (arithmetic and comparison on boxed numbers, float literals,
-;; floor, mod).  SOURCE may define, after the defun the case calls, a
-;; helper it calls.  The whole list runs through
+;; floor, mod), `apply' funcall and apply.  SOURCE may define, after the
+;; defun the case calls, a helper it calls.  The whole list runs through
 ;; tools/ai/codegen-lispvalue.py against both compilers.
 (defconst nelisp-aot-differential-lisp-value-cases
   '((1 control "(defun lv-if-param (a) (if a 1 2))" (nil t 0 "s"))
@@ -121,10 +121,23 @@ cons constant loadable.")
     (2 guard "(defun lv-rem-neg (a) (% a 3))" (-7 7))
     (2 control "(defun lv-float-lit-add (a) (+ a 0.5))" (1 2.25))
     (2 control "(defun lv-float-lit-list (a) (list 1.5 -0.25 a))" (0))
-    (2 control "(defun lv-float-lit-cmp (a) (if (< a 2.5) 1 2))" (2 3)))
+    (2 control "(defun lv-float-lit-cmp (a) (if (< a 2.5) 1 2))" (2 3))
+    ;; funcall and apply (GNU Ffuncall, Fapply): refused on 9d5f4a515, the
+    ;; nelisp_aot_funcall*/apply* entries being unbridged.
+    (apply control "(defun lv-funcall-sym (a) (funcall 'car a))" ((5 6)))
+    (apply control "(defun lv-funcall-fn (a) (funcall #'car a))" ((5 6)))
+    (apply control "(defun lv-funcall-arg (a) (funcall a 41))" (1+ 1-))
+    (apply control "(defun lv-funcall-2 (a) (funcall '+ a 1))" (41 1.5))
+    (apply control "(defun lv-funcall-3 (a) (funcall 'list a 1 2))" (0))
+    (apply control "(defun lv-funcall-n (a) (funcall 'list a 1 2 3 4))" (0))
+    (apply control "(defun lv-apply-list (a) (apply '+ a))" ((1 2 3) (1.5 2)))
+    ;; Not -7.5: GNU's optimizer makes this (mod a 3), and the AOT
+    ;; dispatcher's float mod is a known runtime defect (gc-port S5).
+    (apply control "(defun lv-apply-spread (a) (apply 'mod (list a 3)))" (-7 7))
+    (apply control "(defun lv-apply-n (a) (apply 'list 1 a (list 2 3)))" (9)))
   "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
 
-(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2)
+(defvar nelisp-aot-differential-lisp-value-stages '(1 loader 2 apply)
   "Doc 229 stages whose cases join the regular differential corpus.
 A stage is added once its implementation lands, so the regular run keeps
 measuring only what is supposed to pass.")

@@ -35306,7 +35306,10 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2" "nl_native_poll_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2")
+   ;; Doc 229: funcall and apply providers (nelisp-cc-evalport-aot-apply).
+   '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
@@ -41421,6 +41424,7 @@ correctly."
     ("env-leaves-frame.o"  nelisp-cc-evalport-env-leaves-frame   nelisp-cc-evalport-env-leaves-frame--source)
     ("aot-builtin-call1.o" nelisp-cc-evalport-aot-builtin-call1  nelisp-cc-evalport-aot-builtin-call1--source)
     ("aot-builtin-calln.o" nelisp-cc-evalport-aot-builtin-calln  nelisp-cc-evalport-aot-builtin-calln--source)
+    ("aot-apply.o"         nelisp-cc-evalport-aot-apply          nelisp-cc-evalport-aot-apply--source)
     ("sf-eval-is-truthy.o" nelisp-cc-eval-is-truthy              nelisp-cc-eval-is-truthy--source)
     ("sf-let-setup.o"      nelisp-cc-evalport-env-leaves-logic   nelisp-cc-evalport-env-leaves-logic--source)
     ("sf-env-set-value.o"  nelisp-cc-evalport-env-leaves-bind    nelisp-cc-evalport-env-leaves-bind--source)

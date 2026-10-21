@@ -1389,6 +1389,44 @@ Nil for an infinity, a NaN or a subnormal, which then keep the old path."
         (let ((bits (logior (ash e 52) frac)))
           (if neg (- bits (ash 1 63)) bits)))))))
 
+(defun nelisp-aot-compiler--lisp-optimize-call (sexp)
+  "Return SEXP rewritten as GNU's byte optimizer rewrites it, or nil.
+byte-opt.el: (funcall 'F ARGS...) and (funcall #'F ARGS...) become (F
+ARGS...); (apply F ... (list X ...)) becomes (funcall F ... X ...) and (apply
+F ... '(X ...)) (funcall F ... 'X ...).  F stays a call through funcall when
+it names a macro or a special form, which funcall would refuse."
+  (let ((fn (nth 1 sexp)))
+    (pcase (car sexp)
+      ('funcall
+       (when (and (consp fn) (memq (car fn) '(quote function))
+                  (symbolp (cadr fn)) (cadr fn)
+                  (not (special-form-p (cadr fn)))
+                  (not (macrop (cadr fn))))
+         (cons (cadr fn) (cddr sexp))))
+      ('apply
+       (when (> (length sexp) 2)
+         (let ((last (car (last sexp))))
+           (cond
+            ((eq (car-safe last) 'list)
+             `(funcall ,fn ,@(butlast (cddr sexp)) ,@(cdr last)))
+            ((and (eq (car-safe last) 'quote) (listp (cadr last)))
+             `(funcall ,fn ,@(butlast (cddr sexp))
+                       ,@(mapcar (lambda (x) (list 'quote x)) (cadr last))))
+            ((null last)
+             `(funcall ,fn ,@(butlast (cddr sexp)))))))))))
+
+(defun nelisp-aot-compiler--lisp-call-settled-p (sexp)
+  "Non-nil when `funcall'/`apply' SEXP already has its arguments in variables.
+The function is a variable or a constant designator and every argument is
+`(nelisp-aot--as-sexp VAR)'."
+  (let ((fn (nth 1 sexp)))
+    (and (or (symbolp fn)
+             (and (consp fn) (memq (car fn) '(quote function))))
+         (seq-every-p (lambda (a)
+                        (and (consp a) (eq (car a) 'nelisp-aot--as-sexp)
+                             (symbolp (cadr a))))
+                      (cddr sexp)))))
+
 (defun nelisp-aot-compiler--lisp-test (node)
   "Return NODE as a branch condition: its truth in Lisp mode, else NODE."
   (if (nelisp-aot-compiler--lisp-values-p)
@@ -11098,6 +11136,40 @@ functions `((NAME . ARITY) ...)'."
               fenv)))
     (nelisp-aot-compiler--parse-aot-builtinn-call
      sexp env fenv defuns))
+   ;; Doc 229: `funcall' and `apply' in native artifacts.  The Doc 129.7
+   ;; lowerings below hand the arguments over as written and write a
+   ;; constant designator into the shared name slot before evaluating them:
+   ;; a literal argument arrived as a raw word, and an argument that was
+   ;; itself a delegated call overwrote the designator -- (apply 'mod
+   ;; (list a 3)) applied `list'.  Evaluate the function and the arguments
+   ;; in order into variables of their own first, then call with each one
+   ;; a Sexp, as GNU's Ffuncall receives its arguments (eval.c).
+   ;; GNU's byte optimizer first (byte-opt.el `byte-optimize-funcall',
+   ;; `byte-optimize-apply'): (funcall 'F ...) is (F ...), and (apply F ...
+   ;; (list X ...)) is (funcall F ... X ...).
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp) (memq (car sexp) '(funcall apply))
+         (not (assq (car sexp) defuns))
+         (nelisp-aot-compiler--lisp-optimize-call sexp))
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--lisp-optimize-call sexp) env fenv defuns))
+   ((and (nelisp-aot-compiler--lisp-values-p)
+         (consp sexp) (memq (car sexp) '(funcall apply))
+         (>= (length sexp) 2)
+         (not (assq (car sexp) defuns))
+         (not (nelisp-aot-compiler--lisp-call-settled-p sexp)))
+    (let* ((fn (nth 1 sexp))
+           (constant-fn (and (consp fn) (memq (car fn) '(quote function))))
+           (fn-var (unless constant-fn (nelisp-aot-compiler--gensym "lisp-fn")))
+           (vars (mapcar (lambda (_) (nelisp-aot-compiler--gensym "lisp-arg"))
+                         (cddr sexp))))
+      (nelisp-aot-compiler--parse-value
+       `(let (,@(and fn-var `((,fn-var (nelisp-aot--user-init ,fn))))
+              ,@(cl-mapcar (lambda (v f) `(,v (nelisp-aot--user-init ,f)))
+                           vars (cddr sexp)))
+          (,(car sexp) ,(or fn-var fn)
+           ,@(mapcar (lambda (v) `(nelisp-aot--as-sexp ,v)) vars)))
+       env fenv defuns)))
    ;; Doc 129.7A — first higher-order dispatch surface.  This does not
    ;; build closures yet; it delegates an already-materialized function
    ;; designator/value plus one boxed Sexp argument to the runtime.

@@ -118,7 +118,12 @@ equality test and the port-count test both check it.")
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2" "nl_native_poll_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2")
+   ;; Doc 229: funcall and apply in an artifact (GNU Ffuncall / Fapply),
+   ;; provided by nelisp-cc-evalport-aot-apply.  Appended, so every earlier
+   ;; index stays where it was.
+   '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
+     "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
