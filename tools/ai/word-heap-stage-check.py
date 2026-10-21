@@ -57,13 +57,16 @@ CONSBOX_ALLOC = ROOT / 'lisp/nelisp-cc-nlconsbox-alloc.el'
 CAP = 8 << 30
 
 # word-heap S6.3 (callpath-perf): roots taken while a call is set up, run or
-# unwound -- funcall/apply, eval of a call form, native frames and the whole
-# byte-code VM (wf_bytecode_*, which callpath-perf owns).  Anything else is
-# S6.2's.  Provisional (2026-10-21) until callpath-perf confirms it.
+# unwound -- funcall/apply, eval of a call form and its argument list,
+# specbind/unbind_to, function lookup, native frames and the whole byte-code
+# VM (wf_bytecode_*).  callpath-perf confirmed this set on 2026-10-21.
+# Everything else, including nl_n4_exit_debug_w, nl_n4_snapshot(_w) and
+# nl_n4_locals_w, is S6.2's.
 CALL_PATH = re.compile(
     r'^(nelisp_apply|nl_apply|bf_apply|nl_ali_|nl_funcall|nl_eic_|nl_n3_eval|'
-    r'nl_n4_frame_eval|m5_fx_|nl_fx_|nl_native_frame|wf_bytecode_|'
-    r'bf_n2_call_lisp|bf_n2_direct_arity)')
+    r'nl_n4_frame_eval|nl_n4_(apply|direct_apply|named_apply|push|finish)|'
+    r'nl_eval_arg_list|nl_sb_|nelisp_env_lookup_function|m5_fx_|nl_fx_|'
+    r'nl_native_frame|wf_bytecode_|bf_n2_call_lisp|bf_n2_direct_arity)')
 
 IMMEDIATE_VIEWS = ('integer-view', 'nil-view', 't-view')
 
