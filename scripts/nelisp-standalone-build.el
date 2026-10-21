@@ -10415,7 +10415,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-load-split-verify") :word . (bf_arena_load_split_verify_w args 0))
     ((:lit "nelisp--arena-value-survival") :word . (bf_arena_value_survival_w args 0))
     ((:lit "garbage-collect") :word . (bf_garbage_collect_w func_ptr args env 0))
-    ((:lit "nelisp--debug-switch") :word . (bf_debug_switch_w args 0))
+    ((:lit "nelisp--debug-switch") :word . (bf_debug_switch_w args env))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
     ((:lit "nelisp--gc-diag") :word . (bf_debug_switch_w args 0))
     ((:lit "nelisp--arena-force-grow-smoke") :word . (bf_arena_force_grow_smoke_w 0))
@@ -11476,6 +11476,7 @@ leave symbols unresolved at link time."
     ;; still hold exactly that, with no collector bit set.
     ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
     ;; (nelisp--debug-switch 43 (SYM . OFFSET)): a stale view's mark, below.
+    ;; (nelisp--debug-switch 44 SYM): SYM's kind-4 object WORD, below.
     ;; Never print V's elements: no symbol consumer reads a direct symbol
     ;; WORD on this line.  Native allocation never collects, and every
     ;; object is stored where the vector reaches it before the next one.
@@ -11575,11 +11576,22 @@ leave symbols unresolved at link time."
                       (setq changed (+ changed 1)))
                     (setq i (+ i 1))))
              (+ (* changed 4) 1))))))
-    (defun nl_symbol_selftest_w (args)
+    ;; (nelisp--debug-switch 44 SYM): SYM's object as a Lisp value -- the
+    ;; kind-4 symbol object WORD (class 110) of an interned symbol, which no
+    ;; reader or intern answers yet (Doc 226 D9 stage 3) -- or SYM itself when
+    ;; it has no object (a symbol with no state, nil, t) or the call has no
+    ;; evaluator context.  The conformance check of every symbol consumer
+    ;; runs on this value before a producer is switched.
+    (defun nl_symobj_word (env sym)
+      (if (= env 0) sym
+        (let ((obj (nelisp_mirror_lookup_entry_owned (+ env 0) sym)))
+          (if (= obj 0) sym obj))))
+    (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
+          (if (= op 44) (nl_symobj_word env (wf_arg_word args 1))
           (if (= op 43)
               (let ((pair (wf_arg_word args 1)))
                 (nl_symview_selftest (nl_cons_car_word pair) (nl_word_int (nl_cons_cdr_word pair))))
@@ -11592,10 +11604,10 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))
-    (defun bf_debug_switch_w (args _pad)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
-          (nl_symbol_selftest_w args)
+             0)))))))
+    (defun bf_debug_switch_w (args env)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 44) 0)
+          (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
           (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
