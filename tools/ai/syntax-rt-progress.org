@@ -31,6 +31,7 @@
 
 * S0 Locate
 ** S0.1 docs/design/225-syntax-and-match-entry-gnu-parity.org splits the per-call time of char-syntax, a syntax-class string-match and a plain string-match into its owners, as wall-clock shares, and maps each one to the GNU mechanism to port
+#+NOTE: 2026-10-21: Measured on the base dynamic binary (sha256 f3321a74...) pinned to CPU 10, two runs of tools/ai/syntax-rt-split.el. char-syntax ?a 423 us: 80% an interpreted binary search of 376 Unicode ranges for the default class, which GNU never does (syntax.c:3678-3738 fills the standard char-table once); ?( 43 us: 80% the record/hash parent walk (GNU chartab.c:225, lisp.h:2133). \\sw+ 3,705 us: 40% per-character char-syntax calls (GNU regex-emacs.c:5195 reads SYNTAX (c) inline), 39% case folding. Plain "alpha" 436 us: 92% per-character translation through nlre--table-char (GNU char_table_translate, character.h:592) and 8% the translate-table fetch (GNU search.c:409, one buffer-slot read). GNU own costs: char-syntax about 0, string-match 0.14-0.20 us.
 cmd: python3 tools/ai/syntax-rt-check.py plan
 
 * S1 Port and semantics
