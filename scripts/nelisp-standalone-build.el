@@ -59,6 +59,7 @@
 (require 'nelisp-runtime-reload-telemetry)
 (require 'nelisp-vendor-source)
 (require 'nelisp-boot-image)
+(require 'nelisp-version)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -71,6 +72,37 @@
   (file-name-directory
    (directory-file-name (file-name-directory nelisp-standalone--this-file)))
   "Repo root (parent of scripts/).")
+
+(defvar nelisp-standalone--build-version nil
+  "Runtime identity captured once for the current reader build.")
+
+(defvar nelisp-standalone--build-source-revision nil
+  "Source revision captured beside the runtime version before compilation.")
+
+(defun nelisp-standalone--version ()
+  "Return the current build's captured runtime identity."
+  (or nelisp-standalone--build-version
+      (nelisp-build-version nelisp-standalone--repo-root)))
+
+(defun nelisp-standalone--version-target ()
+  "Return the CLI spelling of this build's target."
+  (pcase (nelisp-standalone-arena-rewrite-target)
+    ('windows-x86_64 "x86_64-windows")
+    ('windows-aarch64 "aarch64-windows")
+    ('linux-aarch64 "aarch64-linux")
+    ('macos-aarch64 "aarch64-macos")
+    (_ "x86_64-linux")))
+
+(defun nelisp-standalone--version-linkage ()
+  "Describe the linked executable, independently of runtime FFI support."
+  (if (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+           (nelisp-standalone--reader-dynamic-p)) "dynamic" "static"))
+
+(defun nelisp-standalone--version-line ()
+  "Return the complete build-captured CLI version line."
+  (format "NeLisp %s (%s, %s)\n" (nelisp-standalone--version)
+          (nelisp-standalone--version-target)
+          (nelisp-standalone--version-linkage)))
 
 (defconst nelisp-standalone--verified-bytecode-dialect-id
   (if (not (and (boundp 'emacs-version)
@@ -32096,7 +32128,7 @@ publishes the same providers before dumping."
 
 (defun nelisp-standalone--compat-metadata-src ()
   "Return verified dialect owners and genuine runtime version metadata."
-  (let ((version-forms nil) (parts nil)
+  (let ((parts nil)
         (inventory (with-temp-buffer
                      (set-buffer-multibyte nil)
                      (insert-file-contents-literally
@@ -32107,23 +32139,6 @@ publishes the same providers before dumping."
                    (concat "GNU Emacs 31.1; inventory-sha256="
                            (secure-hash 'sha256 inventory)))
       (error "Embedded inventory differs from build-verified GNU dialect"))
-    (with-temp-buffer
-      (insert-file-contents (expand-file-name "src/nelisp.el"
-                                            nelisp-standalone--repo-root))
-      (emacs-lisp-mode)
-      (check-parens)
-      (goto-char (point-min))
-      (condition-case nil
-          (while t
-            (let ((start (point)) (form (read (current-buffer))))
-              (when (and (eq (car-safe form) 'defconst)
-                         (eq (cadr form) 'nelisp-version))
-                (unless (stringp (nth 2 form))
-                  (error "Runtime version declaration is not a string"))
-                (push (buffer-substring-no-properties start (point)) version-forms))))
-        (end-of-file nil)))
-    (unless (= (length version-forms) 1)
-      (error "Expected exactly one genuine runtime version declaration"))
     (dolist (relative '("lisp/nelisp-bytecode-compiler-input-dialect.el"
                         "lisp/nelisp-stdlib-compat-metadata.el"))
       (let ((source (with-temp-buffer
@@ -32135,7 +32150,8 @@ publishes the same providers before dumping."
                       relative source) parts)))
     (concat (format "\n(defconst nelisp-bytecode-runtime-opcode-inventory %S)\n" inventory)
             (mapconcat #'identity (nreverse parts) "")
-            (car version-forms)
+            (format "\n(defconst nelisp-version %S)\n(setq nelisp--cli-version nelisp-version)\n"
+                    (nelisp-standalone--version))
             "\n(nelisp-stdlib-compat-metadata-install)\nt\n")))
 
 (defvar nelisp-standalone--native-cache-source-receipt nil
@@ -39208,6 +39224,8 @@ correctly."
                                        "--neln-selftest")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_version
+                                       "--version")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
                                        "--help")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_prompt
@@ -39305,8 +39323,10 @@ correctly."
 	      'nl_cli_eval_suffix
 	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
+      'nl_cli_version_text (nelisp-standalone--version-line))
+    ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help|--version] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --version                      Print runtime version and exit\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -39382,7 +39402,8 @@ correctly."
     (defun nl_cli_eval_command_p (ptr)
       (nl_cstr_eq_eval ptr))
     (defun nl_cli_help_command_p (ptr)
-      (nl_cstr_eq_help ptr))
+      ;; Both are early informational commands, including shifted argv.
+      (if (= (nl_cstr_eq_version ptr) 1) 1 (nl_cstr_eq_help ptr)))
     (defun nl_cli_command_p (ptr)
       (if (= (nl_cli_help_command_p ptr) 1)
           1
@@ -39484,6 +39505,22 @@ correctly."
           (if (= (nl_cstr_eq_bare_repl ptr) 1)
               1
             (nl_cstr_eq_bare_help ptr)))))
+    ;; GNU sort_args promotes --version ahead of actions. Scan options without
+    ;; inspecting their operands, and stop at the application-argument separator.
+    (defun nl_cli_version_option_p (sp0 argc idx)
+      (if (>= idx argc) 0
+        (let* ((arg (nl_argv_word sp0 idx)))
+          (cond
+           ((= (nl_cstr_eq_version arg) 1) 1)
+           ((= (nl_cstr_eq_source_separator arg) 1) 0)
+           ((or (= (nl_cli_ldir_flag_p arg) 1)
+                (= (nl_cstr_eq_eval arg) 1)
+                (= (nl_cstr_eq_load arg) 1)
+                (= (nl_cstr_eq_dash_l arg) 1)
+                (= (nl_cstr_eq_dash_f arg) 1)
+                (= (nl_cstr_eq_cold_load_from arg) 1))
+            (nl_cli_version_option_p sp0 argc (+ idx 2)))
+           (t (nl_cli_version_option_p sp0 argc (+ idx 1)))))))
     (defun nl_cli_argv_shifted_p (argc slot0 slot1)
       (if (> argc 1)
           (if (= slot1 0)
@@ -40406,6 +40443,15 @@ correctly."
             (path (nl_argv_word sp0 eff_idx))
             (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
             (arg3 (if (< (+ eff_idx 2) argc) (nl_argv_word sp0 (+ eff_idx 2)) 0))
+            ;; Like GNU emacs.c:2226-2284, answer before image/prelude I/O.
+            (_version
+             (if (= (nl_cli_version_option_p sp0 argc base_idx0) 1)
+                 (let* ((text (alloc-bytes
+                               ,(length (encode-coding-string
+                                         (nelisp-standalone--version-line) 'utf-8 t)) 1))
+                        (n (nl_cli_version_text text 0)))
+                   (seq (nl_os_write_stdout text n) (nl_os_exit_process 0)))
+               0))
             ;; Ordinary commands restore the executable's own companion.
             ;; Artifact/runtime-image commands own separate bootstrap paths;
             ;; --embedded intentionally retains its bare-native test context.
@@ -40483,6 +40529,11 @@ correctly."
             (dd_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "default-directory"))) 1))
             (dd_sym (alloc-bytes 32 8))
             (dd_value (alloc-bytes 32 8))
+            (version_sym_buf (alloc-bytes 32 1))
+            (version_sym (alloc-bytes 32 8))
+            (cli_version_sym_buf (alloc-bytes 32 1))
+            (cli_version_sym (alloc-bytes 32 8))
+            (version_value (alloc-bytes 32 8))
             ;; feat/standalone-agent-loadpath: `noninteractive' / `invocation-
             ;; name' / `invocation-directory', same shallow-`let*'-then-
             ;; `nl_env_set_value'-in-the-`seq'-body idiom as `default-
@@ -40611,6 +40662,13 @@ correctly."
         ;; getcwd(2) answers it here, with the trailing slash Emacs keeps.
         (nl_os_getcwd dd_value)
         (nl_env_set_value ctx dd_sym dd_value)
+        ,@(nelisp-standalone--byte-write-forms 'version_sym_buf "nelisp-version")
+        (nl_alloc_symbol version_sym_buf 14 version_sym)
+        ,@(nelisp-standalone--byte-write-forms 'cli_version_sym_buf "nelisp--cli-version")
+        (nl_alloc_symbol cli_version_sym_buf 19 cli_version_sym)
+        (sexp-write-str-lit version_value ,(nelisp-standalone--version))
+        (nl_env_set_value ctx version_sym version_value)
+        (nl_env_set_value ctx cli_version_sym version_value)
         ;; feat/standalone-agent-loadpath: this standalone CLI is always
         ;; batch (no TTY interaction loop other than `--repl''s own line
         ;; reader, which does not consult `noninteractive'), so `t'
@@ -45143,7 +45201,11 @@ bridge is deliberately callable only through a raw builtin descriptor."
   "Incrementally build the reader-path standalone binary; return its path.
 NELISP_STANDALONE_BUILD_TRACE opts into an appended JSONL phase trace.
 The trace parent directory must exist; tracing never skips a build stage."
-  (let ((nelisp-standalone--build-trace-path
+  (let ((nelisp-standalone--build-version
+         (nelisp-build-version nelisp-standalone--repo-root))
+        (nelisp-standalone--build-source-revision
+         (nelisp-build-source-revision nelisp-standalone--repo-root))
+        (nelisp-standalone--build-trace-path
          (let ((path (getenv "NELISP_STANDALONE_BUILD_TRACE")))
            (and path (not (string-empty-p path)) (expand-file-name path))))
         (nelisp-standalone--build-trace-unit nil)
@@ -45214,6 +45276,19 @@ The trace parent directory must exist; tracing never skips a build stage."
       (nelisp-standalone--build-cold-image out))
     (nelisp-standalone--build-trace-phase "artifact-runtime"
       (nelisp-standalone-build-artifact-runtime-cache))
+    (require 'json)
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-file (concat out ".version.json")
+        (insert (json-encode
+                 `((version . ,nelisp-standalone--build-version)
+                   (target . ,(nelisp-standalone--version-target))
+                   (linkage . ,(nelisp-standalone--version-linkage))
+                   (source_revision . ,nelisp-standalone--build-source-revision)
+                   (binary_sha256 . ,(with-temp-buffer
+                                       (set-buffer-multibyte nil)
+                                       (insert-file-contents-literally out)
+                                       (secure-hash 'sha256 (current-buffer)))))))
+        (insert "\n")))
     out))))
 
 (defun nelisp-standalone--cold-image-path (binary)

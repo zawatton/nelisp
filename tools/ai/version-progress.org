@@ -14,13 +14,16 @@
 * S1 Version identity
 ** S1.1 `--version` on dynamic and static
 Each prints exactly one line, `NeLisp <describe> (<target>, <linkage>)`, where <describe> equals `git describe --tags --long --always --dirty` of the build source. It exits 0 with empty stderr and loads no user files. A control shows VER_OLD fails this check.
+#+NOTE: 2026-10-21 GNU src/emacs.c:1501-1509 recognizes --version before Lisp startup; :2226-2284 prints its compiled PACKAGE_VERSION (declared :159) and exits. Adapt this early argv path to the required single-line NeLisp target/linkage format, without a reader builtin. Old 9d5f4a515 binary exits 2; five-process median 139.090 ms (target/version/baseline-timing.json). Adapt GNU sort_args (emacs.c:2748,2758,2804,2830) by scanning option positions, skipping operands and stopping at --. Version queries skip cold-image/prelude I/O. New dirty dynamic five-process median 2.268 ms versus old 139.090 ms (target/version/candidate-timing.json); old rc2 becomes rc0. This also removes cold-image startup from the next session's version-identification loop.
 cmd: python3 tools/ai/version-check.py cli
 ** S1.2 Runtime identity: at runtime `nelisp-version` and `nelisp--cli-version` are bound to the same <describe> string, and an artifact manifest written by the binary records :nelisp-version equal to it rather than "unknown"
+#+NOTE: GNU src/emacs.c:3605-3612 initializes emacs-version from the compiled emacs_version. Adopt a build-captured string for both NeLisp runtime variables; no new native entry.
 cmd: python3 tools/ai/version-check.py runtime
 ** S1.3 Provenance controls
 - A build with NELISP_VERSION=<override> reports the override.
 - A build from a tree with an uncommitted change reports a -dirty suffix.
 - A build outside git, from an exported tree, reports the override or "unknown-<sha>". If none is derivable it reports "unknown", never a stale value.
+#+NOTE: Build-time resolver rejects exported subtrees inside unrelated parent Git repositories; NELISP_SOURCE_REVISION supplies an optional known SHA for unknown-<sha>. Actual dirty, override and exported-source binaries are required by the checker, in addition to resolver controls.
 cmd: python3 tools/ai/version-check.py controls
 
 * S2 No regression and end to end
