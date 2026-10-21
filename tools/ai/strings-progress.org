@@ -44,6 +44,7 @@ cmd: python3 tools/ai/strings-check.py compaction
 The fixture covers multibyte and unibyte, aset on both, substring, concat, string text properties, make-string, string-to-multibyte, string-to-unibyte, string-as-unibyte, format and number-to-string.
 #+NOTE: 2026-10-22 first working port: build32 dynamic matches all 13 GNU cases, including explicit-GC alias identity, clear-string, text-property copy and error data. Kernel tests also cover direct canonical return, data-only pinning and uninitialized final sdata. Authenticated native closure is 296 functions / 520061 text bytes, under the unchanged caps. Static and COMMON verification remain to run.
 #+NOTE: 2026-10-22 build37: all 13 GNU oracle cases pass on Linux dynamic and static. The retained-root layout and compaction kernel pass; final dynamic MCP initializes and lists 40 tools. Full COMMON groups remain to run.
+#+NOTE: 2026-10-22 shared tag bridge: canonical type reads share the existing nl_val_tag owner; the allocation entry owns header/sdata/lock together. String-name and Cons-only borrowed accessors reject incompatible low tags before raw fields. Linux dynamic build41 passes the unchanged native proof at 295 functions / 486483 text B, including the 65536-node and metadata limits. The GNU String regression passes; the final static build and COMMON run follow. No native entry or threshold was added.
 cmd: python3 tools/ai/strings-check.py semantics
 
 * S2 Speed (wall-clock against GNU, paired ratios, CPU 14)
@@ -51,13 +52,16 @@ cmd: python3 tools/ai/strings-check.py semantics
 #+NOTE: 2026-10-22 CPU-14 checkpoint, N=2000, one alternating candidate/GNU/base round with same-arity subtraction: candidate/base concat 104.234x, substring 7.997x, format 8.536x. Candidate own ns/call 304416 / 90961 / 91284. This is not acceptance evidence: GNU concat subtraction was negative, and the seven-round campaign is still required. The port currently regresses; String-compatible name comparison and retained-heap accounting need investigation. The original S2 bars stay failing.
 #+NOTE: 2026-10-22 producer mechanism: ported GNU fns.c:934-967 same-kind span handling. The count pass adds source byte lengths without walking bytes; the fill pass copies directly into final sdata with the shared word-sized copier. Mixed-encoding promotion still uses the encoder. Public entry points and the 1x GNU own-cost bar are unchanged.
 #+NOTE: 2026-10-22 CPU-14 build37 checkpoint, N=100000, one paired concat round: own cost candidate 174929.919 ns/call, GNU 262.401 ns/call, base 1656.580 ns/call; candidate/GNU 666.650861x and candidate/base 105.597027x. This is not seven-round acceptance. The property-copy bridge installs an interpreted concat after any String property write, including bootstrap property writes; GNU fns.c:948-967 checks intervals inside its native copy loop. This port-side wrapper cost is unresolved, and the original 1x criterion remains failing. The campaign was paused before the next paired round to share the tag bridge and rebuild.
+#+NOTE: 2026-10-22 CPU-14 build41 first-pair checkpoint (N=100000; final seven-round campaign in flight): own ns/call candidate 156049.621, GNU 253.325, base 1435.828; candidate/GNU 616.006801x, candidate/base 108.682654x. This is a checkpoint, not S2.1 acceptance.
 cmd: python3 tools/ai/strings-check.py speed producers
 ** S2.2 The unibyte R=80 pressure workload gains against the base (median paired ratio < 1.0), with the GNU ratio reported
+#+NOTE: 2026-10-22 timing units: candidate/GNU/base share one heavy slot per paired pressure round, released between all seven rounds. Process timers and CPU-14 frequency samples start inside the granted slot; queue delay is excluded. Warmup, R=80, paired medians and the original <1.0 base bar stay unchanged.
 cmd: python3 tools/ai/strings-check.py speed pressure
 
 * S3 End to end
 ** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
 #+NOTE: 2026-10-22 Windows checkpoint: the unchanged frozen native proof rejects the port (297 helpers, 611112 text B; caps 296 and 524288 B). The pre-port Windows snapshot passes that proof at 291 helpers / 523835 B. This is a port-side build failure, not a pre-existing passing exception. The baseline then fails Wine cold-image path setup separately. Windows acceptance remains false; no limit or final checker has been weakened.
+#+NOTE: 2026-10-22 Wine environment blocker: even winepath for the pre-port executable exits 1 before Lisp runs: wineserver cannot create /run/user/1000/wine/server-25-67627 (read-only filesystem). A private uid-owned 0700 XDG_RUNTIME_DIR produces the same result. Evidence target/strings/wine-blocker.json. The 8 GiB limit and final Wine requirement are unchanged; smoke remains false.
 cmd: python3 tools/ai/strings-check.py final
 ** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
 pending

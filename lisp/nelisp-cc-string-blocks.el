@@ -246,60 +246,110 @@
           (seq (ptr-write-u64 st 8 (heap-read-u64 s 0))
                (ptr-write-u64 s 0 0) (ptr-write-u64 s 8 0)
                (ptr-write-u64 s 16 0) s))))
-    (defun nl_string_allocate_data (s nchars nbytes unibyte)
-      (let* ((st (data-addr nl_strings_state))
-             (needed (nl_string_sdata_size nbytes))
-             (b (heap-read-u64 st 24)) (data 0))
-        (if (> nbytes 1024)
-            (seq (setq b (nl_string_alloc_mapping (+ needed 16)))
-                 (if (= b 0) 0
-                   (if (= (nl_string_register_mapping b (+ b needed 16) 5) 0)
-                       (seq (nl_os_free_chunk b (+ needed 16)) (setq b 0))
-                   (seq (ptr-write-u64 b 0 (heap-read-u64 st 32))
-                        (ptr-write-u64 st 32 b)
-                        (setq data (+ b 16))))))
-          (seq
-           (if (or (= b 0) (> (+ (heap-read-u64 b 8) needed) (+ b 8192)))
-               (let* ((fresh (nl_string_alloc_mapping 8192)))
-                 (if (= fresh 0) (setq b 0)
-                   (if (= (nl_string_register_mapping fresh (+ fresh 8192) 4) 0)
-                       (seq (nl_os_free_chunk fresh 8192) (setq b 0))
-                   (seq (ptr-write-u64 fresh 0 0)
-                        (ptr-write-u64 fresh 8 (+ fresh 16))
-                        (if (= b 0) (ptr-write-u64 st 16 fresh)
-                          (ptr-write-u64 b 0 fresh))
-                        (setq b fresh) (ptr-write-u64 st 24 b))))) 0)
-           (if (/= b 0) (setq data (heap-read-u64 b 8)) 0)))
-        (if (= data 0) 0
-          (seq
-               (if (or (= (heap-read-u64 st 112) 0) (< b (heap-read-u64 st 112)))
-                   (ptr-write-u64 st 112 b) 0)
-               (let* ((end (if (> nbytes 1024) (+ b needed 16) (+ b 8192))))
-                 (if (> end (heap-read-u64 st 120)) (ptr-write-u64 st 120 end) 0))
-               (ptr-write-u64 data 0 s)
-               (ptr-write-u64 b 8 (+ data needed))
-               (ptr-write-u64 s 0 nchars)
-               (ptr-write-u64 s 8 (if (= unibyte 1) -1 nbytes))
-               (ptr-write-u64 s 24 (+ data 8))
-               (ptr-write-u8 (+ data 8) nbytes 0)
-               (ptr-write-u64 (data-addr nl_gc_stats) 0
-                              (+ (heap-read-u64 (data-addr nl_gc_stats) 0) (+ 32 needed)))
-               (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) (+ 32 needed)))
-               s))))
-    (defun nl_string_new_unlocked (bytes n unibyte)
-      (let* ((s (nl_string_allocate_header))
-             (chars (if (or (= unibyte 1) (= bytes 0)) n (nl_string_char_count bytes n))))
-        (if (= s 0) 0
-          (if (= (nl_string_allocate_data s chars n unibyte) 0) 0
-            (seq (if (= bytes 0) 0 (nl_string_copy_bytes bytes (heap-read-u64 s 24) n)) (+ s 4))))))
-    ;; GNU serializes Lisp allocation through its interpreter lock. NeLisp
-    ;; also has parallel evaluators, so serialize this shared pair of pools.
-    (defun nl_string_new (bytes n unibyte)
-      (let* ((lock (+ (data-addr nl_strings_state) 128)) (word 0))
-        (while (= (atomic-compare-exchange lock 0 1) 0) 0)
-        (setq word (nl_string_new_unlocked bytes n unibyte))
-        (atomic-compare-exchange lock 1 0)
-        word))
+    ;; One allocation entry owns header, sdata and the pool lock.
+(defun nl_string_new (bytes n unibyte)
+  (let* ((lock (+ (data-addr nl_strings_state) 128)) (word 0))
+    (while (= (atomic-compare-exchange lock 0 1) 0) 0)
+    (setq word
+	  (let*
+	      ((s (nl_string_allocate_header)) (nbytes n)
+	       (nchars
+		(if (or (= unibyte 1) (= bytes 0)) n
+		  (nl_string_char_count bytes n))))
+	    (if (= s 0) 0
+	      (let*
+		  ((allocated
+		    (let*
+			((st (data-addr nl_strings_state))
+			 (needed (nl_string_sdata_size nbytes))
+			 (b (heap-read-u64 st 24)) (data 0))
+		      (if (> nbytes 1024)
+			  (seq
+			   (setq b
+				 (nl_string_alloc_mapping
+				  (+ needed 16)))
+			   (if (= b 0) 0
+			     (if
+				 (=
+				  (nl_string_register_mapping b
+							      (+ b
+								 needed
+								 16)
+							      5)
+				  0)
+				 (seq
+				  (nl_os_free_chunk b (+ needed 16))
+				  (setq b 0))
+			       (seq
+				(ptr-write-u64 b 0
+					       (heap-read-u64 st 32))
+				(ptr-write-u64 st 32 b)
+				(setq data (+ b 16))))))
+			(seq
+			 (if
+			     (or (= b 0)
+				 (> (+ (heap-read-u64 b 8) needed)
+				    (+ b 8192)))
+			     (let*
+				 ((fresh
+				   (nl_string_alloc_mapping 8192)))
+			       (if (= fresh 0) (setq b 0)
+				 (if
+				     (=
+				      (nl_string_register_mapping
+				       fresh (+ fresh 8192) 4)
+				      0)
+				     (seq
+				      (nl_os_free_chunk fresh 8192)
+				      (setq b 0))
+				   (seq (ptr-write-u64 fresh 0 0)
+					(ptr-write-u64 fresh 8
+						       (+ fresh 16))
+					(if (= b 0)
+					    (ptr-write-u64 st 16 fresh)
+					  (ptr-write-u64 b 0 fresh))
+					(setq b fresh)
+					(ptr-write-u64 st 24 b)))))
+			   0)
+			 (if (/= b 0) (setq data (heap-read-u64 b 8))
+			   0)))
+		      (if (= data 0) 0
+			(seq
+			 (if
+			     (or (= (heap-read-u64 st 112) 0)
+				 (< b (heap-read-u64 st 112)))
+			     (ptr-write-u64 st 112 b)
+			   0)
+			 (let*
+			     ((end
+			       (if (> nbytes 1024) (+ b needed 16)
+				 (+ b 8192))))
+			   (if (> end (heap-read-u64 st 120))
+			       (ptr-write-u64 st 120 end)
+			     0))
+			 (ptr-write-u64 data 0 s)
+			 (ptr-write-u64 b 8 (+ data needed))
+			 (ptr-write-u64 s 0 nchars)
+			 (ptr-write-u64 s 8
+					(if (= unibyte 1) -1 nbytes))
+			 (ptr-write-u64 s 24 (+ data 8))
+			 (ptr-write-u8 (+ data 8) nbytes 0)
+			 (ptr-write-u64 (data-addr nl_gc_stats) 0
+					(+
+					 (heap-read-u64
+					  (data-addr nl_gc_stats) 0)
+					 (+ 32 needed)))
+			 (ptr-write-u64 st 88
+					(+ (heap-read-u64 st 88)
+					   (+ 32 needed)))
+			 s)))))
+		(if (= allocated 0) 0
+		  (seq
+		   (if (= bytes 0) 0
+		     (nl_string_copy_bytes bytes (heap-read-u64 s 24)
+					   n))
+		   (+ s 4)))))))
+    (atomic-compare-exchange lock 1 0) word))
     ;; Out slots are caller-owned ABI transport. They never allocate an
     ;; alias object. nl_val_clone_into recovers the canonical header WORD.
     (defun nl_string_store_view (word out)

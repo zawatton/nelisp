@@ -106,7 +106,9 @@ ordinary representation work does not require changing a machine emitter."
 
 (defun nelisp-heap-accessors--lower-string-tag (operand)
   "Use the canonical WORD tag accessor, including GNU strings."
-  (list 'nl_val_tag (nelisp-heap-accessors-lower operand)))
+  ;; Share the existing accessor instead of expanding its complete
+  ;; immediate/vector/String classification at every compatibility read.
+  (list 'extern-call 'nl_val_tag (nelisp-heap-accessors-lower operand)))
 
 (defun nelisp-heap-accessors--lower-string-name-eq (operand literal)
   "Keep allocation-free literal comparisons for GNU and legacy strings."
@@ -167,7 +169,7 @@ Every operand is retained exactly once; dotted data is preserved."
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
          ((and (eq (car source) 'defun)
-               (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nl_sexp_clone_into nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
+               (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nl_sexp_clone_into nl_cons_car_word nl_cons_cdr_word nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
                    (string-match-p
                 "\\`\\(?:nl_gc_\\|nelisp_env_\\|nelisp_mirror_\\|nelisp_frame_stack_\\|nl_bignum_\\|nl_native_\\|nl_intern_\\|nl_cell_\\|nl_lookup_fn_autoload\\|nl_symname_\\|nl_symbol_name_\\|nl_record_\\|nl_vector_\\|nl_frame_stack_\\|nl_root_\\|nl_hdr_\\|nl_chunk_\\|nl_alloc_\\|nl_freelist_\\|nl_word_\\|nl_vci_\\|nl_vl_\\|nl_sci_\\|nl_val_\\)"
                 (symbol-name (cadr source)))))
@@ -175,6 +177,8 @@ Every operand is retained exactly once; dotted data is preserved."
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
          ((eq (car source) 'sexp-tag)
+          (nelisp-heap-accessors--lower-string-tag (cadr source)))
+         ((memq (car source) '(nl_val_tag nl_word_tag64))
           (nelisp-heap-accessors--lower-string-tag (cadr source)))
          ((eq (car source) 'sexp-name-eq)
           (nelisp-heap-accessors--lower-string-name-eq (cadr source) (caddr source)))
@@ -209,13 +213,15 @@ Every operand is retained exactly once; dotted data is preserved."
           ;; accessors below. Preserve legacy views while accepting direct
           ;; vectorlike WORDs. The primitive helpers use storage loads, so
           ;; this lowering cannot recurse into itself.
-          (list (pcase (car field)
+          (if (memq (car field) '(heap-sexp-tag-byte heap-sexp-tag-word))
+              (nelisp-heap-accessors--lower-string-tag (cadr source))
+            (list (pcase (car field)
                   ('heap-sexp-tag-byte 'nl_val_tag)
                   ('heap-sexp-tag-word 'nl_word_tag64)
                   ('heap-sexp-payload 'nl_word_payload)
                   ('heap-sexp-data 'nl_word_data)
                   ('heap-sexp-length 'nl_word_length))
-                (nelisp-heap-accessors-lower (cadr source))))
+                (nelisp-heap-accessors-lower (cadr source)))))
          (entry
           (append (cdr entry) (nelisp-heap-accessors--lower-tail (cdr source))))
          (t

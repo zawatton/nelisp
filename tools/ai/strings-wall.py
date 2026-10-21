@@ -18,15 +18,15 @@ OUT = ROOT / "target/strings/timing"
 FREQUENCY = Path("/sys/devices/system/cpu/cpu14/cpufreq/scaling_cur_freq")
 
 
-def run(role, command, kind, round_number, pressure=False):
+def run(role, command, kind, round_number, pressure=False, in_slot=False):
     env = os.environ.copy()
     env.update(STRINGS_KIND=kind, STRINGS_N=os.environ.get("STRINGS_N", "100000"))
     fixture = "test/unibyte-alloc-pressure80.el" if pressure else "tools/ai/strings-timing.el"
     stem = OUT / f"{kind}-{round_number}-{role}"
     frequency = FREQUENCY.read_text().strip() if FREQUENCY.exists() else None
     invocation = ["taskset", "-c", "14", *command, "--load", fixture]
-    # One timed process is one heavy unit. Queue wait is outside the Lisp
-    # timer for primitives; pressure's timer starts inside the granted slot.
+    # Each paired round owns one heavy slot. Pressure's process timer
+    # starts inside that granted slot, so queue wait is never measured.
     if pressure:
         heavy = Path(os.environ.get("NOTES_ROOT", str(Path.home() / "Cowork/Notes"))) / "bin/heavy-run.sh"
         worker = (
@@ -39,7 +39,8 @@ def run(role, command, kind, round_number, pressure=False):
             "print(); print('STRINGS-PROCESS '+json.dumps(dict(seconds=elapsed,frequency_khz=f)),flush=True); "
             "sys.exit(p.returncode)"
         )
-        invocation = [str(heavy), sys.executable, "-c", worker, *invocation]
+        invocation = ([sys.executable, "-c", worker, *invocation] if in_slot else
+                      [str(heavy), sys.executable, "-c", worker, *invocation])
     started = time.monotonic()
     process = subprocess.Popen(invocation, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
@@ -79,10 +80,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workload", choices=["producers", "pressure"])
     parser.add_argument("--round", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--kind", choices=["concat", "substring", "format"], help=argparse.SUPPRESS)
+    parser.add_argument("--kind", choices=["concat", "substring", "format", "pressure"], help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if (ROOT / "target/strings/pause-timing").exists():
-        raise SystemExit("Timing paused before the next paired round")
     OUT.mkdir(parents=True, exist_ok=True)
     candidate = ROOT / "target/strings/dynamic/nelisp"
     base = ROOT / "target/strings/base/nelisp"
@@ -93,39 +92,36 @@ def main():
     assert identities["candidate"] != identities["base"], "candidate and base are the same binary"
     commands = {"candidate": [str(candidate)], "gnu": [gnu, "-Q", "--batch"], "base": [str(base)]}
     if args.round is not None:
-        assert args.workload == "producers" and args.kind
+        assert args.kind and (args.workload == "pressure") == (args.kind == "pressure")
         rows = []
         for role in ["candidate", "gnu", "base"]:
-            rows.append(run(role, commands[role], args.kind, args.round))
-            rows.append(run(role, commands[role], args.kind + "-control", args.round))
+            rows.append(run(role, commands[role], args.kind, args.round,
+                            pressure=args.kind == "pressure", in_slot=True))
+            if args.kind != "pressure":
+                rows.append(run(role, commands[role], args.kind + "-control", args.round))
         (OUT / f"{args.kind}-round-{args.round}.json").write_text(json.dumps(rows))
         return
     samples, verdicts = [], {}
     for kind in (["pressure"] if args.workload == "pressure" else ["concat", "substring", "format"]):
         pressure = kind == "pressure"
+        def paired_round(number):
+            print(f"start paired round {kind}/{number}", flush=True)
+            subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
+                            sys.executable, str(Path(__file__).resolve()), args.workload,
+                            "--round", str(number), "--kind", kind], cwd=ROOT, check=True)
+            return json.loads((OUT / f"{kind}-round-{number}.json").read_text())
         if pressure:
-            for role in commands:
-                run(role, commands[role], kind, -1, True)
+            paired_round(-1)
         # Primitive fixtures warm inside each process before the timer.
         ratios, base_ratios, own = [], [], []
         for round_number in range(7):
             times = {}
+            # Release between rounds; keep candidate/GNU/base close together.
+            rows = paired_round(round_number)
+            samples.extend(rows)
             if pressure:
-                for role in ["candidate", "gnu", "base"]:
-                    row = run(role, commands[role], kind, round_number, True)
-                    samples.append(row)
-                    times[role] = row["seconds"]
+                times = {row["role"]: row["seconds"] for row in rows}
             else:
-                # One paired round is one heavy measurement unit, released
-                # before queuing the next round. Keep its six runs together
-                # so queue delays cannot separate a call from its control.
-                print(f"start paired round {kind}/{round_number}", flush=True)
-                subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
-                                sys.executable, str(Path(__file__).resolve()), "producers",
-                                "--round", str(round_number), "--kind", kind],
-                               cwd=ROOT, check=True)
-                rows = json.loads((OUT / f"{kind}-round-{round_number}.json").read_text())
-                samples.extend(rows)
                 for role in ["candidate", "gnu", "base"]:
                     call, control = [r["seconds"] for r in rows if r["role"] == role]
                     times[role] = call - control

@@ -61,7 +61,7 @@
     (defun nelisp_mirror_is_constant_check (entry-ptr _mirror-ptr _sym-ptr _pad)
       (if (= entry-ptr 0)
           0
-        (if (= (nl_val_tag (nelisp_mirror_is_constant_slot_word entry-ptr)) 1) 1 0)))
+        (if (= (nelisp_mirror_is_constant_slot_word entry-ptr) 7) 1 0)))
 
     ;; Public entry: nelisp_mirror_is_constant(mirror-ptr, sym-ptr) → i64
     ;; Arity 2 (even): body-entry rsp ≡ 0.

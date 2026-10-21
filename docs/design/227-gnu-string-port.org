@@ -300,3 +300,28 @@ That mechanism has not yet been ported: Header.intervals is reserved and
 marked when populated, but the Lisp metadata engine still owns the side
 table. The CPU-14 build37 checkpoint exposes the resulting regression;
 this is an unmet S2.1 criterion, not an approved threshold revision.
+
+* Shared tag bridge
+
+The compatibility lowering calls the existing nl_val_tag owner explicitly
+for sexp-tag, heap-sexp-tag-byte/word and explicit WORD tag helpers. It
+keeps one implementation of the immediate/vector/String classifier rather
+than expanding the String-aware classifier into every caller. This changes
+no tag encoding or Lisp-visible entry, and leaves machine emitters intact.
+The unshared checkpoint exceeded Windows' frozen native text budget;
+the shared form must pass the same function/text/node/metadata bounds.
+
+The allocation entry coalesces header allocation, sdata allocation and the
+pool lock into nl_string_new. It preserves the same GNU allocation steps
+without a second closed helper owner. The name-key predicate classifies
+canonical String WORDs directly and reads each legacy name tag once.
+The mirror constant flag remains exactly the existing Nil/T WORD invariant
+(documented in its provider); comparing that flag with WORD T avoids an
+unnecessary String-aware type classifier. Symbol layout and flag values
+are unchanged. Function, text, source-node and metadata bounds stay fixed.
+
+Cons-only borrowed car/cdr accessors guard the base's aligned Cons tag
+before reading the existing header and payload. They reject String/vector
+WORD tags directly, so a known Cons access does not invoke the generalized
+String classifier. This is a caller boundary adaptation, not a change to
+Cons layout, the collector driver or Lisp-visible entry points.

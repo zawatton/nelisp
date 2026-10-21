@@ -74,11 +74,13 @@
           0
         (if (= (logand word 1) 1)
           0
-          (if (or (= (sexp-tag word) 4) (= (sexp-tag word) 16))
-              1
-            (if (= (sexp-tag word) 5)
-                1
-              (if (= (sexp-tag word) 14) 1 0))))))
+          ;; A canonical String is already a name. Other names retain
+          ;; their existing aligned Symbol/String-view representation.
+          (if (= (logand word 7) 4) 1
+            (if (= (logand word 7) 0)
+                (let* ((tag (heap-read-u8 word 0)))
+                  (if (or (= tag 4) (= tag 16) (= tag 5) (= tag 14)) 1 0))
+              0)))))
 
     (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
       ;; Walk bucket and pair NlConsBox words directly.  No accessor

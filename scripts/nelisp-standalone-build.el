@@ -3152,11 +3152,15 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; the *_ptr accessors.
     ;; Doc 215: ARG may itself be a WORD; an immediate is never a cons.
     (defun nl_cons_car_word (arg)
-      (if (= (logand arg 1) 1) 0
-        (if (= (heap-sexp-tag-word arg) 7) (heap-read-u64 (heap-sexp-payload arg) 0) 0)))
+      (if (and (/= arg 0) (= (logand arg 7) 0))
+          (if (= (heap-read-u8 arg 0) 7)
+              (heap-read-u64 (heap-read-u64 arg 8) 0) 0)
+        0))
     (defun nl_cons_cdr_word (arg)
-      (if (= (logand arg 1) 1) 0
-        (if (= (heap-sexp-tag-word arg) 7) (heap-read-u64 (heap-sexp-payload arg) 8) 0)))
+      (if (and (/= arg 0) (= (logand arg 7) 0))
+          (if (= (heap-read-u8 arg 0) 7)
+              (heap-read-u64 (heap-read-u64 arg 8) 8) 0)
+        0))
     ;; Doc 215 word-transport helpers used by tools/ai/box-apply.py.
     ;; (ptr-read-u64 VIEW 0) of a materialised view: the full tag word.
     (defun nl_word_tag64 (w) (nl_val_tag w))
