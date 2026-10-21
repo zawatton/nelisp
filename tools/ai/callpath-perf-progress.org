@@ -28,12 +28,20 @@
 #     let/while VM 2.95x / 1.08x; byte 4.08x / 4.43x
 #     dynamic boot/files/regex at or below baseline.
 
+#+NOTE: 2026-10-21 run A1: execute S1.1 and C1, measure fresh base and result with four layouts, preserve all S2 bars; C2/C3 and full final verification are explicitly deferred by target/codex/BRIEF.md. GNU mechanisms and measurements will be recorded with their criteria.
+
+#+NOTE: 2026-10-21 resumed after coordinator interruption under refreshed Memory and load rules: every REPL/test inherits ulimit -v 8388608; every heavy build/test/callgrind campaign acquires /tmp/notes-heavy.lock, with one worker per campaign. Interrupted campaigns are retained as incomplete evidence and will be rerun with fresh paths. Never raise the cap; investigate any memory-limit failure. No relay request had been submitted at interruption.
+
 * S1 Safety
 ** S1.1 Builtin arity: every reader builtin called with fewer arguments than its minimum, or more than its maximum, signals wrong-number-of-arguments instead of crashing, on dynamic and static
 GNU's funcall_subr checks arity (eval.c). A sweep covers all builtins, and a control shows the base build crashes on `(nelisp--string-search "a")`, exit 139.
 cmd: python3 tools/ai/callpath-perf-check.py arity
+#+NOTE: 2026-10-21 S1.1 adapts GNU eval.c:3254-3262,3307-3311 (range check before reading subr operands), and eval.c:2645-2649 (direct call names). Ranges cover reader and intercepted helpers with generated guards, no new natives. GNU eval.c:2803,2814-2828 and fns.c:115 also require apply min=1 and one-operand spread-list behavior; both rc and WORD call handlers now preserve that behavior, using GNU lisp.h:5844,5886 Brent-style cycle validation and the existing circular-list signal helper. Cost on all builtin floors will be measured against unchanged S2.4 bars.
+
+#+NOTE: 2026-10-21 measurement control: the original instrument-on handshake issued variable blank REPL inputs; following-GC conservative scans sometimes retained one extra 8 MiB opaque buffer, producing invalid differential baselines. An isolated queued-input fork keeps the identical study fixture, enables instrumentation at process start, asserts exactly three GC dumps, and measures dump 3 (body plus following GC). Four-layout serial pilot: 19792.940 Ir/call (19778.420-19803.610), all 12 independent intervals complete. Original raw data retained under target/callpath-perf; no threshold or GC implementation changed. Final baseline and C1/result use the same queued protocol.
 
 * S2 Call cost (milestones)
+#+NOTE: 2026-10-21 C1 adopts GNU eval.c:3365 borrowing of closure formals, adapted to NeLisp physical views: nil formals borrow a nonzero aligned nil argument view. A raw physical tag read avoids the prototype's redundant WORD decoder guards; all other cases retain the accessor. Locked savings prediction interp/VM/byte = 800/450/0 Ir per call; measured evidence follows. No native API added.
 ** S2.1 Interpreter funcall four-layout mean Ir <= 15,823
 19,648 - 0.75 x 5,100.
 cmd: python3 tools/ai/callpath-perf-check.py funcall interp 15823
@@ -45,6 +53,8 @@ cmd: python3 tools/ai/callpath-perf-check.py funcall vm 13568
 cmd: python3 tools/ai/callpath-perf-check.py funcall byte 2538
 ** S2.4 No regression against the session-3a bars on every mode: builtin floors, let and while, and dynamic boot/files/regex
 cmd: python3 tools/ai/callpath-perf-check.py noregress
+
+#+NOTE: 2026-10-21 focused host checks: GNU-mode check-parens passes all five changed Elisp files. Official nl-parens reports two existing shadow-corpus diagnostics on both base and candidate. Existing fixed-arity ERT runs three tests with two passes and one unchanged base/candidate failure (void-function nelisp--clear-string-bytes under GNU 31.1); the new complete GNU contract sweep covers the explicit metadata instead.
 
 * S3 End to end
 ** S3.1 Semantics and final verification

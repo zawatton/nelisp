@@ -905,6 +905,19 @@
          (boundp 'par-special-declaration)
          (let ((par-special-declaration nil)) (special-variable-p 'par-special-declaration))
          (boundp 'par-special-declaration)))
+ ;; Shared min/max guards reject absent arguments and excess optional slots.
+ (list (condition-case e (string-search "a") (wrong-number-of-arguments e))
+       (condition-case e (string-search "a" "a" nil nil)
+         (wrong-number-of-arguments e)))
+ ;; GNU allows a sole spread list, and validates it before function lookup.
+ (list (apply '(+ 1 2)) (apply '(list))
+       (condition-case e (apply 'list) (wrong-type-argument e))
+       (condition-case e (apply nil) (void-function e))
+       (condition-case e (apply '(list . 2)) (wrong-type-argument e))
+       (condition-case e (apply (cons 'list (vector 1))) (wrong-type-argument e)))
+ (let ((cycle (list 'list)))
+   (setcdr cycle cycle)
+   (condition-case e (apply cycle) (circular-list (car e))))
  ;; Shared fixed-arity guards run before primitive type checks or reads.
  (list (condition-case e (cons) (wrong-number-of-arguments e))
        (condition-case e (eq nil) (wrong-number-of-arguments e))

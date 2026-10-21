@@ -8382,7 +8382,8 @@ argument (reachability + in-arena bounds checks).")
 ;; Word VM entry: ARG0 an instruction vector, ARG1 its local count.
     ((:lit "nelisp--fx-run") :word
      . (m5_fx_run_w (wf_arg_ptr args 0) (wf_argval args 1) env 0 0 0 0 0))
-    ;; ARG2 is START or nil (absent args read as nil).  -2 answers t.
+    ;; The internal ABI requires explicit ARG2 = START or nil. -2 answers t.
+    ;; The public string-search wrapper supplies its optional START operand.
     ((:lit "nelisp--string-search-chars")
      :word . (let* ((r (m5_string_search_chars (wf_arg_ptr args 0) (wf_arg_ptr args 1)
                                          (wf_arg_ptr args 2))))
@@ -26184,6 +26185,14 @@ fixed-table shared-library entry point directly from elisp."
           (setq arm
                 `(let ((initrc (extern-call ,(plist-get sig :windows-initialize))))
                    (if (= initrc 0) ,arm (wf_write_int_w 0 initrc)))))
+        ;; GNU eval.c:3254-3262 checks before reading any operand. The outer
+        ;; nl-ffi-call contract protects the selector; the selected target
+        ;; has its own fixed contract, including that selector. Keep this
+        ;; outside float unwrapping and the optional Windows initializer.
+        (setq arm
+              `(let ((ffi_argc (m5_list_len args 0)))
+                 (if (= ffi_argc ,(1+ arity)) ,arm
+                   (nl_abi_fail (bf_wrong_number_of_args func_ptr ffi_argc) 0))))
         (setq chain
               `(if (= (sexp-name-eq nm ,sym) 1)
                    ,arm
@@ -26678,6 +26687,176 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       (expand-file-name "scripts/nelisp-stdlib-prelude.el" nelisp-standalone--repo-root))
      (buffer-string))))
 
+(defconst nelisp-standalone--builtin-arity-ranges
+  '(
+    ((0 . 0)
+      garbage-collect nelisp--alloc-check-report nelisp--arena-dump-copy-verify
+      nelisp--arena-dump-table-verify nelisp--arena-force-grow-smoke
+      nelisp--arena-image-root-verify nelisp--arena-load-relocate-verify
+      nelisp--arena-mark-reach-verify nelisp--arena-stats nelisp--arena-swizzle-verify
+      nelisp--arena-walk-verify nelisp--build-digest nelisp--char-table-vector-bridge-p
+      nelisp--env-capture-roots nelisp--gc-pressure nelisp--hash-table-make-raw
+      nelisp--intern-table-symbols nelisp--native-env nelisp--pool-root-coverage
+      nelisp--pop-frame nelisp--push-frame nelisp--size-census nelisp--target-arch-code
+      nelisp--target-os-code nelisp-process-async-ready-p nl-current-unix-time
+      nl-unix-time-usec)
+    ((0 . 1)
+      exit float-time nelisp--exit-process)
+    ((0 . many)
+      * + - append bool-vector concat fetch-bytecode list logand logior logxor
+      make-hash-table unibyte-string vector)
+    ((1 . 1)
+      1+ 1- atom bare-symbol bool-vector-p boundp byte-code-function-p car cdr
+      char-table-p char-table-parent char-table-subtype char-to-string consp cos fboundp
+      floatp fork-spawn hash-table-count integerp length listp lognot make-symbol
+      makunbound multibyte-string-p natnump nelisp--arena-boot-load-verify
+      nelisp--arena-dump-image-stream nelisp--arena-dump-image-to-file
+      nelisp--arena-load-image-from-file nelisp--arena-load-split-verify
+      nelisp--ascii-downcase nelisp--byte-code-wrap-test nelisp--cell-value
+      nelisp--clear-string-bytes nelisp--declare-local-special nelisp--eval-source-string
+      nelisp--intern-lookup nelisp--json-encode nelisp--native-runtime-contract-word
+      nelisp--native-runtime-symbol-addr nelisp--native-subr-arity
+      nelisp--native-subr-live-count nelisp--native-symbol-addr nelisp--record-expand
+      nelisp--push-captured nelisp--repr nelisp--set-use-elisp-apply nelisp--sha256
+      nelisp--symbol-global-cell-p nelisp--syscall-lstat-buf nelisp--syscall-readlink
+      nelisp--syscall-stat-buf nelisp--syscall-unshare nelisp--write-stderr-line
+      nelisp--write-stdout-bytes nelisp-process-close-stdin
+      nelisp-process-delete nelisp-process-exit-status nelisp-process-object-p
+      nelisp-process-pid nelisp-process-poll nelisp-process-status nelisp-process-wait
+      nelisp-socket-close nelisp-socket-connect-error nelisp-thread-atomic-read
+      nelisp-thread-gc-inhibit nelisp-thread-shared-alloc nl--int-token-p
+      nl--read-float-token nl--read-int nl-nanosleep nlistp not null number-to-string
+      numberp read-stdin-bytes recordp sin slen special-form-p string-as-multibyte
+      string-as-unibyte string-bytes string-make-multibyte string-make-unibyte
+      string-to-char string-to-multibyte string-to-unibyte stringp subrp sxhash-eq
+      symbol-function symbol-name symbol-value symbol-with-pos-p symbolp thread-spawn
+      unibyte-string-p vectorp zerop)
+    ((1 . 2)
+      butlast ceiling eval featurep floor intern intern-soft last make-char-table
+      nelisp--debug-switch nelisp--gc-diag
+      nelisp--syscall-read-file nelisp--syscall-readdir-names nelisp-socket-accept
+      provide rdf signal string-to-number truncate)
+    ((1 . 3)
+      nelisp--env-globals-op nelisp--read-all-from-string-native require substring)
+    ((1 . 5)
+      load)
+    ((1 . 7)
+      nelisp-portable-syscall)
+    ((1 . many)
+      / < <= = > >= apply error format funcall nelisp-process-call-process
+      nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
+    ((2 . 2)
+      % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot
+      char-table-range cons elt eq equal make-bool-vector make-vector map-char-table
+      mapcar maphash member memq mod nelisp--arena-value-survival nelisp--assoc-raw
+      nelisp--bind-local nelisp--equal-leaf nelisp--float-word-half nelisp--format-simple
+      nelisp--fx-run nelisp--native-pin-eq-slots nelisp--plist-get-eq
+      nelisp--plist-member-eq nelisp--raw-aref nelisp--sha256-bytes
+      nelisp--syscall-path nelisp--syscall-pivot-root nelisp--syscall-stat-field
+      nelisp--syscall-statx-buf nelisp-process-read-output nelisp-process-write
+      nelisp-socket-recv nelisp-socket-send nelisp-spin-until
+      nelisp-thread-atomic-add nelisp-thread-join
+      nl--nthcdr nl-write-file nth nthcdr ptr-read-bytes ptr-read-u32 ptr-read-u64
+      ptr-read-u8 ptr-write-bytes rassoc remhash set set-char-table-parent setcar setcdr
+      str-count-nl str-filter-prefix-lines str-kv-line str-line-start string-byte string<
+      string= wrf)
+    ((2 . 3)
+      assoc gethash make-string nelisp--readdir-scan-raw
+      nelisp-socket-connect nelisp-socket-listen plist-get)
+    ((3 . 3)
+      aset byte-code make-record nelisp--fmt-float nelisp--native-pin-copy
+      nelisp--native-unbox-reference nelisp--raw-aset nelisp--symbol-position-op
+      nelisp--string-search nelisp--string-search-chars
+      nelisp--syscall-path-int nelisp--syscall-path2 nelisp--syscall-utimes
+      nelisp-socket-poll ptr-write-u32 ptr-write-u64 ptr-write-u8 puthash
+      set-char-table-extra-slot set-char-table-range)
+    ((3 . 6)
+      nelisp--native-subr-create)
+    ((4 . 4)
+      nelisp--native-pin-copy-v2)
+    ((4 . many)
+      make-byte-code)
+    ((5 . 5)
+      nelisp--syscall-mount nelisp-thread-spawn)
+    ((7 . 7)
+      ptr-call syscall-direct)
+    ((8 . 8)
+      ptr-call-typed)
+    )
+  "Reader builtin min/max contracts, checked before any operand access.
+Public contracts follow GNU Emacs 31.1 `func-arity'; private contracts describe
+the existing reader implementations.  `many' has no finite upper bound.
+This is build-time metadata, not another native entry point.")
+
+(defun nelisp-standalone--builtin-arities ()
+  "Return (NAME MIN MAX) contracts and reject incomplete reader coverage."
+  (let (result)
+    (dolist (group nelisp-standalone--builtin-arity-ranges)
+      (let ((min (caar group)) (max (cdar group)))
+        (unless (and (integerp min) (>= min 0)
+                     (or (eq max 'many) (and (integerp max) (>= max min))))
+          (error "Invalid builtin arity range: %S" (car group)))
+        (dolist (name (cdr group))
+          (when (assoc (symbol-name name) result)
+            (error "Duplicate builtin arity: %s" name))
+          (push (list (symbol-name name) min max) result))))
+    (dolist (name nelisp-standalone--reader-builtins)
+      (unless (assoc name result) (error "Missing reader builtin arity: %s" name)))
+    (dolist (fixed (nelisp-standalone--builtin-fixed-arities))
+      (let ((range (assoc (car fixed) result)))
+        (if range
+            (unless (equal (cdr range) (list (cdr fixed) (cdr fixed)))
+              (error "Builtin fixed/range arity disagreement: %s" (car fixed)))
+          (push (list (car fixed) (cdr fixed) (cdr fixed)) result))))
+    (nreverse result)))
+
+(defun nelisp-standalone--builtin-arity-condition (contract argc)
+  "Generate the shared min/max predicate for CONTRACT and argument count ARGC."
+  (let ((min (nth 1 contract)) (max (nth 2 contract)))
+    (cond ((eq max 'many) (if (= min 0) 1 `(>= ,argc ,min)))
+          ((= min max) `(= ,argc ,min))
+          ((= min 0) `(<= ,argc ,max))
+          (t `(and (>= ,argc ,min) (<= ,argc ,max))))))
+
+(defun nelisp-standalone--guard-builtin-arities (table)
+  "Wrap every resolved TABLE arm in one shared generated arity check.
+GNU eval.c:3254-3262 validates min/max before reading any argument.  Adapt that
+mechanism to the reader's linked argument list and preselected dispatch arm,
+avoiding a second name lookup on healthy calls."
+  (let ((contracts (nelisp-standalone--builtin-arities)))
+    (mapcar
+     (lambda (entry)
+       (let* ((contract (assoc (cadr (car entry)) contracts))
+              (wordp (eq (cadr entry) :word))
+              (body (if wordp (cddr entry) (cdr entry))))
+         (unless contract (error "Missing dispatch builtin arity: %S" (car entry)))
+         (if (and (= (nth 1 contract) 0) (eq (nth 2 contract) 'many)) entry
+           (let ((guard
+                  `(let ((builtin_argc (m5_list_len args 0)))
+                     (if ,(nelisp-standalone--builtin-arity-condition contract 'builtin_argc)
+                         ,body
+                       ,(if wordp
+                            '(nl_abi_fail (bf_wrong_number_of_args func_ptr builtin_argc) 0)
+                          '(bf_wrong_number_of_args func_ptr builtin_argc))))))
+             (cons (car entry) (if wordp (cons :word guard) guard))))))
+     table)))
+
+(defun nelisp-standalone--intercepted-arity-helper ()
+  "Generate the small check for builtins intercepted before reader dispatch."
+  (let ((contracts (nelisp-standalone--builtin-arities)) table)
+    (dolist (name '("eval" "funcall" "apply" "provide" "symbol-function" "fset"
+                    "signal" "nelisp--syscall-read-file"
+                    "nelisp--env-globals-op" "nelisp--push-frame" "nelisp--pop-frame"
+                    "nelisp--bind-local" "nelisp--push-captured"
+                    "nelisp--set-use-elisp-apply"))
+      (let ((contract (assoc name contracts)))
+        (push (cons (list :lit name)
+                    `(let ((argc (m5_list_len args 0)))
+                       (if ,(nelisp-standalone--builtin-arity-condition contract 'argc)
+                           0 (bf_wrong_number_of_args func_ptr argc)))) table)))
+    `(defun bf_n2_intercepted_arity (func_ptr name_ptr args)
+       ,(nelisp-standalone--applyfn-build-dispatch (nreverse table) 0))))
+
 (defun nelisp-standalone--guard-fixed-arities (table contracts)
   "Guard reader TABLE entries covered by fixed-arity CONTRACTS."
   (mapcar
@@ -26735,17 +26914,19 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
      (bf_n2_call_lisp_equal . "nelisp--equal-reference"))))
 
 (defun nelisp-standalone--n2-direct-arity-helper ()
-  "Guard direct calls with the shared fixed-arity contract.
+  "Guard direct calls with the shared min/max arity contract.
 GNU eval reports the original call symbol; funcall/apply report the callable."
   (let* ((table
           (mapcar
            (lambda (entry)
              (cons (list :lit (car entry))
                    `(let ((argc (m5_list_len args 0)))
-                      (if (= argc ,(cdr entry)) 0
+                      (if ,(nelisp-standalone--builtin-arity-condition entry 'argc) 0
                         (bf_wrong_number_of_args
                          (if (= call_name 0) func call_name) argc)))))
-           (nelisp-standalone--builtin-fixed-arities)))
+           (seq-remove (lambda (entry) (and (= (nth 1 entry) 0)
+                                           (eq (nth 2 entry) 'many)))
+                       (nelisp-standalone--builtin-arities))))
          (check (nelisp-standalone--applyfn-build-dispatch table 0)))
     `(defun bf_n2_direct_arity (func args env call_name)
        (if (or (= (sexp-tag func) 4) (= (sexp-tag func) 16))
@@ -26772,7 +26953,8 @@ extern arms in dynamic builds."
          nelisp-standalone--applyfn-fa-file-helpers
          nelisp-standalone--applyfn-census-helpers
          (nelisp-standalone--n2-lisp-delegates)
-         (list (nelisp-standalone--n2-direct-arity-helper))
+         (list (nelisp-standalone--n2-direct-arity-helper)
+               (nelisp-standalone--intercepted-arity-helper))
         nelisp-standalone--applyfn-ht-helpers
         nelisp-standalone--applyfn-search-helpers
          nelisp-standalone--applyfn-bignum-helpers
@@ -26826,7 +27008,7 @@ extern arms in dynamic builds."
           (if (= abi_rc 0) out (nl_abi_fail abi_rc 0)))))
     (defun nl_reader_native_result_ref (src env marker args out)
       (nl_abi_word_to_rc (nl_reader_native_result_ref_w src env marker args 0) out))))
-   (nelisp-standalone--guard-fixed-arities
+   (nelisp-standalone--guard-builtin-arities
     (append (nelisp-standalone--applyfn-reader-table)
             (list
              (cons '(:u8 "nelisp--native-pin-copy")
@@ -26849,7 +27031,7 @@ extern arms in dynamic builds."
                    (cons :word '(nl_reader_native_result_ref_w
                      (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)
                      args 0)))))
-    (nelisp-standalone--builtin-fixed-arities))))
+    )))
 
 ;; ===================================================================
 ;; M7 file-I/O glue unit — the impls for the wrf/rdf/slen builtins
@@ -44295,9 +44477,20 @@ always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
           (nl_apply_stash_wta env args_list_ptr)
         (nl_apply_do_apply_marked
          arg0_ptr args_list_ptr env out (nl_root_mark env))))
+    ;; GNU eval.c:2803,2814-2828 accepts one operand: its list contains
+    ;; the function and arguments. Validate the spread list before lookup,
+    ;; including the offending dotted tail (fns.c:115 list_length).
+    (defun nl_apply_do_apply_single (spread env out)
+      (if (/= (nl_apply_single_list_valid spread) 0) 1
+        (if (= (sexp-tag spread) 0)
+            (nl_cons_stash_void_function env spread)
+          (nl_apply_do_funcall spread env out))))
     (defun nl_apply_do_apply (args_list_ptr env out)
-      (nl_apply_do_apply_arg0
-       (nl_apply_list_nth args_list_ptr 0) args_list_ptr env out)))
+      (if (and (= (sexp-tag args_list_ptr) 7)
+               (= (sexp-tag (nl_cons_cdr_word args_list_ptr)) 0))
+          (nl_apply_do_apply_single (nl_cons_car_ptr args_list_ptr) env out)
+        (nl_apply_do_apply_arg0
+         (nl_apply_list_nth args_list_ptr 0) args_list_ptr env out))))
   "Doc 152 Stage 3d rooted, rc-correct `apply' handler.
 
 The resolved function lives directly in a Stage-2 root slot through list
@@ -44784,8 +44977,33 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (seq (ptr-write-u64 (heap-read-u64 last 8) 8 tail)
               (nl_cons_car_word holder)))))))
 
+;; GNU lisp.h:5844,5886 uses Brent's cycle-aware list walk.  Validate
+;; only the new sole-spread operand, retaining the terminating dotted tail.
+(defun nl_apply_single_list_valid (spread)
+  (let* ((cur spread) (tortoise spread) (power 2) (remaining 2) (cycle 0))
+    (seq
+     (while (and (= cycle 0) (= (nl_val_tag cur) 7))
+       (seq (setq cur (nl_cons_cdr_word cur))
+            (setq remaining (- remaining 1))
+            (if (= remaining 0)
+                (seq (setq power (* power 2)) (setq remaining power)
+                     (setq tortoise cur))
+              (if (and (= (nl_val_tag cur) 7)
+                       (= (bf_plist_cons_identity_w cur tortoise) 1))
+                  (setq cycle 1) 0))))
+     (if (= cycle 1) (bf_signal_circular_list (wf_word_view cur))
+       (if (= (nl_val_tag cur) 0) 0
+         (bf_wrong_type_listp (wf_word_view cur)))))))
+
 (defun nl_apply_do_apply_w (args env _pad)
   (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
+    ;; GNU eval.c:2803,2814-2828: the sole operand is the spread list.
+    (if (= (nl_val_tag (nl_cons_cdr_word args)) 0)
+        (let* ((spread (nl_cons_car_word args)))
+          (if (/= (nl_apply_single_list_valid spread) 0) 0
+            (if (= (nl_val_tag spread) 0)
+                (nl_abi_fail (nl_cons_stash_void_function env (wf_word_view spread)) 0)
+              (nl_apply_do_funcall_w spread env 0))))
     (let* ((mark (nl_root_mark env)) (input (nl_root_reserve env))
            (function-root (nl_root_reserve env)) (prefix (nl_root_reserve env))
            (holder (nl_root_reserve env)) (spliced (nl_root_reserve env)))
@@ -44809,7 +45027,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                         (seq
                          (wf_word_store_out spliced joined)
                          (nl_n4_named_apply_w (wf_word_view name) function-root spliced env 0)))))))))
-         (seq (nl_root_release env mark) word))))))
+         (seq (nl_root_release env mark) word)))))))
 
 (defun nl_apply_do_funcall_w (args env _pad)
   (if (/= (nl_val_tag args) 7) (seq (nl_apply_stash_wta env args) 0)
@@ -49610,7 +49828,7 @@ Exits 0/1."
                   (nelisp-socket-send -1 "x")
                   (nelisp-socket-recv -1 1)
                   (nelisp-socket-close -1)
-                  (nelisp-socket-poll nil 0)
+                  (nelisp-socket-poll -1 nil 0)
                   (nelisp-socket-connect-error -1)))
          out stderr rc)
     (unwind-protect
