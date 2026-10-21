@@ -3866,7 +3866,9 @@ native object, or SYMBOL is not one of its native functions."
           ;; function behind a fixnum fast path, the allocator that boxes a
           ;; result -- cannot link against the two-line integer driver.  The
           ;; general harness provides those entry points, as the native
-          ;; call ladder already routes such a defun.
+          ;; call ladder already routes such a defun.  GNU basis: native
+          ;; code for (* x x) calls Ftimes through the unit's function
+          ;; table (comp.c), so it is never an extern-free leaf there either.
           (nelisp-artifact-native-exec-general artifact-path symbol args)
       (let* ((dir (nelisp-artifact--make-temp-directory "neln-exec"))
              (obj (expand-file-name "mod.o" dir))

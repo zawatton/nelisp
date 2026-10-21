@@ -96,11 +96,15 @@ x86_64 Linux."
             (should (eq (funcall repr "p5rb-symbolp") 'raw-bool))
             ;; Doc 229: a defun another defun calls returns its value as a
             ;; Sexp, which is what the caller reads -- the gap where the
-            ;; helper handed its caller a raw boolean word is closed.
+            ;; helper handed its caller a raw boolean word is closed.  GNU
+            ;; basis: every function returns a Lisp_Object (lisp.h), and the
+            ;; caller tests it with NILP (lisp.h:399), never as a raw 0/1.
             (should (eq (funcall repr "p5rb-helper") 'sexp-ptr))
             (should (eq (funcall repr "p5rb-helper-caller") 'sexp-ptr))
             ;; Doc 229: a type predicate is the raw tag test in value
-            ;; position too; the loader boxes the boolean result.
+            ;; position too; the loader boxes the boolean result as the t
+            ;; or nil object.  GNU basis: Fsymbolp returns Qt or Qnil
+            ;; (data.c:373), which this raw-bool record decodes to.
             (should (eq (funcall repr "p5rb-symbolp-direct") 'raw-bool))
             (should-not (eq (funcall repr "p5rb-int-branch") 'raw-bool))
             (should (eq (funcall repr "p5rb-int-zero") 'raw-i64))
