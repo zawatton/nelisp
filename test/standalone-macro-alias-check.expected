@@ -1,0 +1,1 @@
+MACRO-ALIAS ((expanded 1) (expanded 2) (late . 3) ((expanded 4) (expanded 5) (late . 4)) (expanded 5) 20 none from-block (expanded 6) (list 'expanded 7) (mac-alias 8) (cons 'late 9) (progn (list 'expanded 10) (cons 'late 11)) (redefined 12) t)

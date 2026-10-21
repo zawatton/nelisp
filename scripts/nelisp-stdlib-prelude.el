@@ -6743,6 +6743,14 @@ ENVIRONMENT is the macro environment alist threaded to `macroexpand-1'
           (if (eq next cur) (setq again nil) (setq cur next))))
       cur)))
 
+;; GNU eval.c eval_sub resolves the operator's function cell through
+;; indirect_function before it tests for a macro, and macroexpand follows
+;; the same chain.  The native evaluator does both (nl_eic_resolve_alias_w),
+;; also when the alias was defined before its target became a macro, and
+;; the VM compiler expands through `macroexpand-all'; a loader may therefore
+;; evaluate (defalias 'block 'cl-block) style aliases without rewriting.
+(provide 'nelisp-native-macro-alias)
+
 (defun nelisp--macroexpand-all-map (forms environment)
   "Apply `nelisp--macroexpand-all-walk' (threading ENVIRONMENT) to FORMS."
   (let ((out nil))

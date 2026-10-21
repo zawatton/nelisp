@@ -27,6 +27,7 @@
 (defun pcf-builtin-few () (condition-case e (car) (error e)))
 (defun pcf-builtin-many () (condition-case e (car 1 2) (error e)))
 (defun pcf-apply-bad () (condition-case e (apply #'car 1) (error e)))
+(defun pcf-nil-body () nil)
 (defun pcf-literals ()
   (let ((reader (lambda () [1 "literal"]))
         (events nil))
@@ -36,7 +37,10 @@
             (eq object (funcall reader))
             (let ((captured 23)) (funcall (lambda () captured)))
             (funcall (lambda () (push 'executed events) 31)) events
-            (let ((empty (lambda () nil)))
-              (condition-case e (funcall empty 1)
-                (wrong-number-of-arguments (list (car e) (nth 2 e)))))))))
+            (let ((empty (symbol-function 'pcf-nil-body)))
+              (list (funcall empty) (apply empty nil)
+                    (condition-case e (funcall empty 1)
+                      (wrong-number-of-arguments (list (car e) (nth 2 e))))
+                    (condition-case e (apply empty '(nil))
+                      (wrong-number-of-arguments (list (car e) (nth 2 e))))))))))
 

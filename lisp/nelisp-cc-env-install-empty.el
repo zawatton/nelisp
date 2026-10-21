@@ -132,12 +132,20 @@
      ;;   Step-8 scratch-overwrite leak is additionally eliminated.
      (let ((ht-slot (alloc-bytes 32 8))
            (buckets-slot (alloc-bytes 32 8))
-           (backing-slot (alloc-bytes 32 8)))
+           (backing-slot (alloc-bytes 32 8))
+           (cells-slot (alloc-bytes 32 8)))
        (and
-        ;; Step 1: allocate fresh fast-hash-table record (3 slots).
+        ;; Step 1: allocate fresh fast-hash-table record (4 slots; slot 3
+        ;; holds the symbol cells, Doc 221 M02).
         (record-make (vector-ref-ptr scratch-ptr 1)  ; ht type-tag sym
-                     3
+                     4
                      ht-slot)
+        ;; Step 1b: ht.slot 3 = the symbol-cell vector, indexed by the
+        ;; interned name header (`nl_symcell_entry'); grows by doubling.
+        (vector-make 4096 cells-slot)
+        (record-slot-set ht-slot
+                         3
+                         cells-slot)
         ;; Step 2: allocate the bucket Sexp::Vector.  The table never
         ;; resizes and every global variable or function reference walks
         ;; one bucket chain comparing names, so size it for a full GUI
