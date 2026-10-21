@@ -162,6 +162,12 @@
                       (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
                     (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
                 (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
+    ;; Doc 216 S5: the double of a float is read through this accessor only:
+    ;; from a legacy 32-byte view (tag at +0, bits at +8) or from a float
+    ;; object (kind word at +0, bits at +8) alike, the box address being
+    ;; W - (W & 6) for a 000 pointer and for a 110 WORD.
+    (defun nl_float_bits (w)
+      (heap-read-u64 (- w (logand w 6)) 8))
     (defun nl_val_clone_into (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)

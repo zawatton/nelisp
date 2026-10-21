@@ -10717,7 +10717,9 @@ leave symbols unresolved at link time."
                         1
                       (if (= (nl_word_data a) (nl_word_data b)) 1 0))
                   0)
-              (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
+              (if (= (nl_word_tag64 a) 3)
+                  (if (= (nl_float_bits a) (nl_float_bits b)) 1 0)
+                (if (= (nl_word_payload a) (nl_word_payload b)) 1 0))))
         0))
     ;; --- Doc 190 Phase A: Bignum (tag 13) numeric comparison -----------
     ;; Bignum-vs-Bignum and Bignum-vs-Int ONLY (the task's own scope);
@@ -26723,6 +26725,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; pointer at offset 16 is the real per-allocation identity.
              ((= ta 13)
               (if (= (nl_word_data a) (nl_word_data b)) 1 0))
+             ;; Doc 216 S5: a float compares by its bits here (recorded above),
+             ;; read through `nl_float_bits' whatever its representation.
+             ((= ta 3) (if (= (nl_float_bits a) (nl_float_bits b)) 1 0))
              (t (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
           0))))
     (defun bf_eq_w (args _pad)

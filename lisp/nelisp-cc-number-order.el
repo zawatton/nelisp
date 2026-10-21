@@ -18,7 +18,7 @@
       (let* ((tag (nl_val_tag integer)) (v (nl_word_payload integer))
              (negative (if (= tag 13) v (if (< v 0) 1 0)))
              (n (if (= tag 13) (heap-read-u64 integer 24) 2))
-             (bits (sexp-float-unwrap floatword))
+             (bits (nl_float_bits floatword))
              (exp (logand (shr bits 52) 2047))
              (fraction (logand bits 4503599627370495))
              (fnegative (logand (shr bits 63) 1))
@@ -67,9 +67,10 @@
         (cond
          ((= ta 3)
           (if (= tb 3)
-              (if (= (f64-lt (bits-to-f64 (sexp-float-unwrap a)) (bits-to-f64 (sexp-float-unwrap b))) 1) -1
-                (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap a)) (bits-to-f64 (sexp-float-unwrap b))) 1) 1
-                  (if (= (f64-le (bits-to-f64 (sexp-float-unwrap a)) (bits-to-f64 (sexp-float-unwrap b))) 1) 0 2)))
+              (let* ((fa (nl_float_bits a)) (fb (nl_float_bits b)))
+                (if (= (f64-lt (bits-to-f64 fa) (bits-to-f64 fb)) 1) -1
+                  (if (= (f64-gt (bits-to-f64 fa) (bits-to-f64 fb)) 1) 1
+                    (if (= (f64-le (bits-to-f64 fa) (bits-to-f64 fb)) 1) 0 2))))
             (let* ((r (nl_number_integer_float_order b a))) (if (= r 2) 2 (- 0 r)))))
          ((= tb 3) (nl_number_integer_float_order a b))
          ((= ta 13) (if (= tb 13) (nl_bignum_cmp_bignum a b) (nl_number_big_small_order a b)))
