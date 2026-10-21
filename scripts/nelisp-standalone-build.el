@@ -18472,63 +18472,134 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 buf 8 8007518212045697824)
          (ptr-write-u64 buf 16 33618033594492278)
          (nl_signal_error_literal buf 23))))
-    (defun wf_bytecode_inloop_func (env fw)
-      ;; The callee of a Bcall that takes the in-loop path (bytecode.c:735-750):
-      ;; a closure whose arglist is a fixnum template, named directly or through
-      ;; a symbol's function cell.  Answers the closure, or 0 for any other
-      ;; callee or a malformed one (the ordinary call signals for those), and
-      ;; while a JIT hook can observe the call.
-      (if (/= (logand (heap-read-u64 env 112) 4) 0) 0
-        (if (or (< fw 4096) (= (logand fw 1) 1) (= (logand fw 7) 2)) 0
-          (let* ((low (logand fw 7))
-                 (tag (if (= low 0) (heap-read-u8 fw 0)
-                        (if (= low 6) (logand (heap-read-u8 (- fw 6) 0) 63) 0)))
-                 (func (if (= tag 17) fw
-                         (if (= tag 4)
-                             (if (= low 0)
-                                 (let ((cell (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fw 0)))
-                                   (if (= cell 2) 0 cell))
-                               0)
-                           0))))
-            (if (< func 4096) 0
-              (if (/= (nl_val_tag func) 17) 0
-                (let* ((p (nl_word_payload func)))
-                  (if (< (sar (heap-read-u64 p 0) 8) 4) 0
-                    (let* ((tw (heap-read-u64 p 16)) (sw (heap-read-u64 p 40)))
-                      (if (or (/= (logand tw 3) 1) (/= (logand sw 3) 1)) 0
-                        (let* ((template (sar tw 2)) (stk (sar sw 2))
-                               (maxargs (/ template 256))
-                               (slots (+ maxargs (if (= (logand template 128) 0) 0 1))))
-                          (if (or (< template 0) (> maxargs 127) (< stk 0)
-                                  (> stk 131063) (> slots stk))
-                              0
-                            func))))))))))))
-    (defun wf_bytecode_frame_push (env cell mem fi argc func fw pcret)
-      ;; docall 721-748 and setup_frame 495-560.  The callee's frame takes the
-      ;; ARGC argument words at FI+1 of the frame at MEM, as setup_frame pushes
-      ;; *args; the caller's words stay where they are (GNU's backtrace entry
-      ;; reads them).  The new frame's address is left in CELL+8 and the
-      ;; callee's initial stack pointer answered; -1 after a signal, with the
-      ;; depth and the backtrace record restored.
-      (let* ((rec (heap-read-u64 (+ env 96) 0))
-             (rmax (nl_eval_depth_limit env rec)))
-        (if (>= rec rmax)
-            (seq (wf_bytecode_signal_nesting) -1)
-          (let* ((state (nl_n4_state env))
-                 (n4 (nl_n4_push_words env fw (+ mem (* (+ fi 1) 8)) argc))
-                 (template (sar (nl_record_slot_word func 0) 2))
-                 (mandatory (logand template 127))
-                 (rest (if (= (logand template 128) 0) 0 1))
-                 (maxargs (/ template 256))
-                 (stk (sar (nl_record_slot_word func 3) 2))
-                 (fp2 (seq (ptr-write-u64 (+ env 96) 0 (+ rec 1))
-                           (nl_root_frame env (+ stk 7)))))
-            (if (= fp2 0)
-                (seq (wf_bytecode_signal_overflow)
-                     (ptr-write-u64 (+ env 96) 0 rec)
-                     (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
-                     -1)
-              (if (or (< argc mandatory) (and (= rest 0) (> argc maxargs)))
+    (defun wf_bytecode_call_enter (env cell mem fi argc fw pcret)
+      ;; GNU bytecode.c:735-750 (docall) and 495-560 (setup_frame): the callee
+      ;; of a Bcall is a closure whose arglist is a fixnum template, named
+      ;; directly or through a symbol's function cell; its frame takes the
+      ;; ARGC argument words at FI+1 of the frame at MEM as setup_frame pushes
+      ;; *args (the caller's words stay: GNU's backtrace entry reads them), one
+      ;; level of `lisp_eval_depth' and one backtrace record are taken, as
+      ;; docall does for every call.  The new frame's address is left in
+      ;; CELL+8 and the callee's initial stack pointer answered (plus 65536
+      ;; when a &rest list was consed, which may have collected).  -2: not a
+      ;; callee of this kind, or a malformed one, or a JIT hook can observe
+      ;; the call (the ordinary call signals for the malformed); -1 after a
+      ;; signal, with the depth and the backtrace record restored.
+      (if (if (< fw 4096) 1
+            (if (= (logand fw 1) 1) 1
+              (if (/= (logand (heap-read-u64 env 112) 4) 0) 1
+                (if (= (logand fw 7) 0) 0 (/= (logand fw 7) 6)))))
+          -2
+        (let* ((flow0 (logand fw 7))
+               (tag (if (= flow0 0) (heap-read-u8 fw 0)
+                      (logand (heap-read-u8 (- fw 6) 0) 63)))
+               (func (if (= tag 17) fw
+                       (if (= tag 4)
+                           (if (= flow0 0)
+                               (let ((cl (nelisp_env_lookup_function_w
+                                          (+ env 0) (+ env 64) fw 0)))
+                                 (if (= cl 2) 0 cl))
+                             0)
+                         0))))
+          (if (if (< func 4096) 1
+                (if (= (logand func 1) 1) 1
+                  (if (= (logand func 7) 0) 0 (/= (logand func 7) 6))))
+              -2
+            (let* ((lowf (logand func 7))
+                   (ftag (if (= lowf 0) (heap-read-u8 func 0)
+                           (logand (heap-read-u8 (- func 6) 0) 63)))
+                   (p (if (= lowf 0) (heap-read-u64 func 8) (- func 6))))
+              (if (if (/= ftag 17) 1
+                    (< (sar (heap-read-u64 p 0) 8) 4))
+                  -2
+                (let* ((tw (heap-read-u64 p 16))
+                       (sw (heap-read-u64 p 40)))
+                  (if (if (/= (logand tw 3) 1) 1 (/= (logand sw 3) 1))
+                      -2
+                    (let* ((template (sar tw 2))
+                           (stk (sar sw 2))
+                           (maxargs (sar template 8))
+                           (rest (logand (sar template 7) 1))
+                           (slots (+ maxargs rest)))
+                      (if (if (/= (logand template -32768) 0) 1
+                            (if (< stk slots) 1 (> stk 131063)))
+                          -2
+                        (let* ((rec (heap-read-u64 (+ env 96) 0)))
+                          (if (if (< rec 100) 0
+                                (>= rec (nl_eval_depth_limit env rec)))
+                              (seq (wf_bytecode_signal_nesting) -1)
+                            (let* ((state0 (heap-read-u64 env 176))
+             (state (if (= state0 0) (nl_n4_state env) state0))
+             (n4d (heap-read-u64 state 0))
+             (n4 (if (>= n4d 32768) 0 1))
+             (maxargs (sar template 8))
+             (rest (logand (sar template 7) 1))
+             (nslots (+ stk 7))
+             (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+             (next (+ top (+ 32 (logand (+ (* nslots 8) 31) -32))))
+             (fp2 0))
+        (seq
+         ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
+         ;; read lazily from the caller's words.
+         (if (= n4 1)
+             (let* ((frame (+ state (+ 64 (* n4d 160))))
+                    (fd (heap-read-u64 env 40))
+                    (serial (+ (heap-read-u64 state 8) 1)))
+               (seq (ptr-write-u64 frame 0 fw)
+                    (ptr-write-u64 frame 8 3)
+                    (ptr-write-u64 frame 32 0)
+                    (ptr-write-u64 frame 40 0)
+                    (ptr-write-u64 frame 48 0)
+                    (ptr-write-u64 frame 56 0)
+                    (ptr-write-u64 frame 64 12)
+                    (ptr-write-u64 frame 72 fd)
+                    (ptr-write-u64 frame 96 (sar (heap-read-u64 fd 24) 2))
+                    (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
+                    (ptr-write-u64 frame 112 1)
+                    (ptr-write-u64 frame 120 0)
+                    (ptr-write-u64 frame 144 1)
+                    (ptr-write-u64 frame 152
+                                   (+ (* (+ mem (* (+ fi 1) 8)) 256) argc))
+                    (ptr-write-u64 state 8 serial)
+                    (ptr-write-u64 frame 128 serial)
+                    (ptr-write-u64 state 0 (+ n4d 1))))
+           0)
+         (ptr-write-u64 (+ env 96) 0 (+ rec 1))
+         ;; setup_frame's frame: the main thread's root stack takes it inline
+         ;; (the same stores as `nl_root_frame'); anything else goes through it.
+         ;; Every slot is a valid WORD before anything can allocate: the stack
+         ;; and the result nil, then the footer.
+         (if (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 1
+               (if (= top 0) 1
+                 (> next (+ (data-addr nl_rootstack_region) 4194304))))
+             (setq fp2 (nl_root_frame env nslots))
+           (seq
+            (ptr-write-u64 top 0 1464226381)
+            (ptr-write-u64 top 8 nslots)
+            (ptr-write-u64 top 16 0)
+            (ptr-write-u64 top 24 0)
+            (let* ((slot (+ top 32)) (end (+ top (+ 32 (* (+ stk 1) 8)))))
+              (while (< slot end)
+                (seq (ptr-write-u64 slot 0 3)
+                     (setq slot (+ slot 8)))))
+            (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+            (setq fp2 (+ top 32))))
+         (if (= fp2 0)
+             (seq (wf_bytecode_signal_overflow)
+                  (ptr-write-u64 (+ env 96) 0 rec)
+                  (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
+                  -1)
+           (let* ((foot (+ fp2 (* (+ stk 1) 8)))
+                  (fp p))
+             (seq
+              (ptr-write-u64 foot 0 (+ (shl mem 2) 1))
+              (ptr-write-u64 foot 8 (+ (shl (+ (* fi 2) n4) 2) 1))
+              (ptr-write-u64 foot 16 (+ (shl pcret 2) 1))
+              (ptr-write-u64 foot 24 (heap-read-u64 fp 24))
+              (ptr-write-u64 foot 32 (heap-read-u64 fp 32))
+              (ptr-write-u64 foot 40 3)
+              (if (if (< argc (logand template 127)) 1
+                    (if (= rest 0) (> argc maxargs) 0))
                   (seq (bf_wrong_number_of_args func argc)
                        (nl_root_release env (- fp2 32))
                        (ptr-write-u64 (+ env 96) 0 rec)
@@ -18536,14 +18607,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        -1)
                 (let* ((pushed (if (< maxargs argc) maxargs argc))
                        (src (+ mem (* (+ fi 1) 8)))
-                       (foot (+ fp2 (* (+ stk 1) 8)))
                        (i 0))
                   (seq
                    (while (< i pushed)
                      (seq (ptr-write-u64 (+ fp2 (* i 8)) 0 (heap-read-u64 (+ src (* i 8)) 0))
                           (setq i (+ i 1))))
-                   ;; More arguments than named slots: the &rest list, built
-                   ;; in its slot so every partial list stays rooted.
+                   ;; More arguments than named slots: the &rest list, built in
+                   ;; its slot so every partial list stays rooted.
                    (if (> argc maxargs)
                        (let* ((k (- argc 1)) (dst (+ fp2 (* maxargs 8))))
                          (while (>= k maxargs)
@@ -18552,39 +18622,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                             (heap-read-u64 dst 0)))
                                 (setq k (- k 1)))))
                      0)
-                   (ptr-write-u64 foot 0 (+ (shl mem 2) 1))
-                   (ptr-write-u64 foot 8 (+ (shl (+ (* fi 2) (if (= n4 0) 0 1)) 2) 1))
-                   (ptr-write-u64 foot 16 (+ (shl pcret 2) 1))
-                   (ptr-write-u64 foot 24 (nl_record_slot_word func 1))
-                   (ptr-write-u64 foot 32 (nl_record_slot_word func 2))
                    (ptr-write-u64 cell 8 fp2)
-                   (+ maxargs rest)))))))))
-    (defun wf_bytecode_frame_pop (env cell mem foot sp)
-      ;; Breturn in a frame the loop pushed (bytecode.c:892-923): TOP replaces
-      ;; the function and its arguments in the caller, which resumes at its
-      ;; saved pc; the depth and the backtrace record go back.  The caller's
-      ;; frame is left in CELL+8 and its pc and sp answered packed as the fast
-      ;; loop packs them; -1 when a debugger waits on this frame's exit (the
-      ;; full loop takes that).
-      (let* ((packed (sar (heap-read-u64 foot 8) 2))
-             (n4 (logand packed 1))
-             (state (heap-read-u64 env 176))
-             (n4depth (heap-read-u64 state 0)))
-        (if (if (= n4 1)
-                (/= (heap-read-u64 (nl_n4_record state (- n4depth 1)) 120) 0)
-              0)
-            -1
-          (let* ((fi (sar packed 1))
-                 (caller (sar (heap-read-u64 foot 0) 2))
-                 (pcr (sar (heap-read-u64 foot 16) 2))
-                 (val (heap-read-u64 (+ mem (* (- sp 1) 8)) 0)))
-            (seq
-             (nl_root_release env (- mem 32))
-             (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
-             (if (= n4 1) (ptr-write-u64 state 0 (- n4depth 1)) 0)
-             (ptr-write-u64 (+ caller (* fi 8)) 0 val)
-             (ptr-write-u64 cell 8 caller)
-             (+ (shl pcr 17) (+ fi 1)))))))
+                   (+ maxargs rest (if (> argc maxargs) 65536 0))))))))))))))))))))))
     (defun wf_bytecode_frame_aux (env foot state)
       ;; The frame's aux block: the Sexp-slot state that the handler, unwind
       ;; and binding helpers take as views, allocated when the frame first
@@ -18636,7 +18675,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           ((foot (+ mem (* (+ depth 1) 8)))
            (last-owner 0) (last-table 0) (last-table-data 0)
            (last-buckets 0) (last-count 0) (last-entry-data 0)
-           (last-slots 0) (last-index -1) (last-entry 0) (last-value 0)
+           (last-slots 0) (last-name -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
            (ref 0) (cmp 0) (branch 0) (failed 0) (back 256) (prev pc))
         (while (> go 0)
@@ -18665,10 +18704,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (if (< target length) (setq pc target)
                             (setq go 0))))
                      (if (and (>= raw 8) (< raw 14))
-                         (let* ((index (- raw 8)) (value 0))
+                         (let* ((index (- raw 8)) (value 0)
+                                (kname (if (< index nconst)
+                                           (heap-read-u64 (+ constants (* index 8)) 0)
+                                         0)))
                            (if (>= sp depth) (setq go 0)
                              (seq
-                              (if (/= index last-index)
+                              (if (/= kname last-name)
                                   (if (= env 0) (setq go 0)
                                     (if (>= index nconst) (setq go 0)
                                       (seq
@@ -18739,7 +18781,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                 0)
                                                 (setq go 0)
                                               (seq
-                                                  (setq last-index index)
+                                                  (setq last-name kname)
                                                   (setq last-value 0)))))))))))))))))
                                 0)
                               (if (> go 0)
@@ -18940,7 +18982,63 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                           0 value)
                                                          (setq sp (+ sp 1))
                                                          (setq pc (+ pc 1)))))))))))))
-                       (if (< raw 6)
+                       (if (= raw 135)
+                           ;; GNU bytecode.c:892-923 CASE (Breturn) in a frame this
+                           ;; loop pushed.  The entry frame, a frame with handlers,
+                           ;; unwinds or bindings, and a frame a debugger waits on
+                           ;; return through the full loop.
+                           (if (if (= (heap-read-u64 foot 16) 3) 1
+                                 (if (/= (heap-read-u64 foot 40) 3) 1 (<= sp 0)))
+                               (setq go 0)
+                             (let* ((packed (sar (heap-read-u64 foot 8) 2))
+                                    (n4 (logand packed 1))
+                                    (state (heap-read-u64 env 176)))
+                               (if (if (= n4 1)
+                                       (/= (heap-read-u64
+                                            (+ state (+ 64 (* (- (heap-read-u64 state 0) 1) 160)))
+                                            120)
+                                           0)
+                                     0)
+                                   (setq go 0)
+                                 (let* ((fi (sar packed 1))
+                                        (caller (sar (heap-read-u64 foot 0) 2))
+                                        (pcr (sar (heap-read-u64 foot 16) 2)))
+                                   (seq
+                                    (ptr-write-u64 (+ caller (* fi 8)) 0
+                                                   (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                                    (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                                        (ptr-write-u64 (data-addr nl_rootstack_top) 0 (- mem 32))
+                                      (nl_root_release env (- mem 32)))
+                                    (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
+                                    (if (= n4 1)
+                                        (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
+                                      0)
+                                    (ptr-write-u64 cell 16 1)
+                                    (ptr-write-u64 cell 8 caller)
+                                    (seq
+                       (let* ((fp2 (heap-read-u64 cell 8))
+                              (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
+                              (f2 (+ fp2 (* (+ d2 1) 8)))
+                              (cw (heap-read-u64 f2 24))
+                              (kw (heap-read-u64 f2 32))
+                              (ct (heap-read-u8 cw 0))
+                              (vp (if (= (logand kw 7) 0)
+                                      (heap-read-u64 kw 8)
+                                    (- kw (logand kw 6)))))
+                         (seq (setq mem fp2)
+                              (setq depth d2)
+                              (setq foot f2)
+                              (if (if (= ct 5) 1 (= ct 14))
+                                  (seq (setq data (heap-read-u64 cw 16))
+                                       (setq length (heap-read-u64 cw 24)))
+                                (seq (setq data (nl_bi_strptr cw))
+                                     (setq length (m5_strlen cw))))
+                              (setq constants (+ vp 8))
+                              (setq nconst (sar (heap-read-u64 vp 0) 8)))))
+                                    (setq pc pcr)
+                                    (setq prev pc)
+                                    (setq sp (+ fi 1)))))))
+                                                (if (< raw 6)
                            (seq
                             (if (or (>= sp depth) (<= sp raw)) (setq go 0)
                               (seq
@@ -19326,74 +19424,56 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                (if (= tag 0)
                                    (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
                                  (setq go 0)))))
-                                         (if (and (>= raw 32) (< raw 38))
+(if (and (>= raw 32) (< raw 38))
                                              ;; GNU bytecode.c:735-750 CASE (Bcall) docall: a closure with
                                              ;; a fixnum arglist template is entered in this loop
                                              ;; (setup_frame); any other callee goes through the ordinary
-                                             ;; call, which may move the varref cache's entry, so the cache
-                                             ;; is dropped.  A signal ends the run with -1.
+                                             ;; call, which may collect, so the varref cache is dropped.
+                                             ;; A signal ends the run with -1.
                                              (let* ((argc (- raw 32)))
                                                (if (< sp (+ argc 1)) (setq go 0)
                                                  (let* ((fi (- sp (+ argc 1)))
-                                                        (fw (heap-read-u64 (+ mem (* fi 8)) 0))
-                                                        (func (wf_bytecode_inloop_func env fw)))
-                                                   (if (/= func 0)
-                                                       (let* ((isp (wf_bytecode_frame_push env cell mem fi argc func fw (+ pc 1))))
-                                                         (if (< isp 0)
-                                                             (seq (setq failed 1) (setq go 0))
-                                                           (seq
-                                                            (seq (setq mem (heap-read-u64 cell 8)) (ptr-write-u64 cell 16 1))
-                                                            (seq
-                       (let* ((d2 (- (heap-read-u64 (- mem 24) 0) 7))
-                              (f2 (+ mem (* (+ d2 1) 8)))
-                              (cw (heap-read-u64 f2 24))
-                              (kw (heap-read-u64 f2 32)))
-                         (seq (setq depth d2)
-                              (setq foot f2)
-                              (setq data (nl_bi_strptr cw))
-                              (setq length (m5_strlen cw))
-                              (setq constants (+ (nl_word_payload kw) 8))
-                              (setq nconst (vector-len kw))))
-                       (setq last-index -1))
-                                                            (setq pc 0)
-                                                            (setq prev 0)
-                                                            (setq sp isp))))
-                                                     (let* ((rc (wf_bytecode_call env mem sp argc bx)))
+                                                        (isp (wf_bytecode_call_enter
+                                                              env cell mem fi argc
+                                                              (heap-read-u64 (+ mem (* fi 8)) 0)
+                                                              (+ pc 1))))
+                                                   (if (>= isp 0)
                                                        (seq
-                                                        (setq last-index -1)
-                                                        (if (= rc 0)
-                                                            (seq (setq sp (- sp argc))
-                                                                 (setq pc (+ pc 1)))
-                                                          (seq (setq failed 1) (setq go 0)))))))))
-                                           (if (= raw 135)
-                                               ;; GNU bytecode.c:892-923 CASE (Breturn) in a frame this
-                                               ;; loop pushed.  The entry frame, a frame with handlers,
-                                               ;; unwinds or bindings, and a frame a debugger waits on
-                                               ;; return through the full loop.
-                                               (if (or (= (heap-read-u64 foot 16) 3)
-                                                       (/= (heap-read-u64 foot 40) 3)
-                                                       (<= sp 0))
-                                                   (setq go 0)
-                                                 (let* ((r (wf_bytecode_frame_pop env cell mem foot sp)))
-                                                   (if (< r 0) (setq go 0)
-                                                     (seq
-                                                      (seq (setq mem (heap-read-u64 cell 8)) (ptr-write-u64 cell 16 1))
-                                                      (seq
-                       (let* ((d2 (- (heap-read-u64 (- mem 24) 0) 7))
-                              (f2 (+ mem (* (+ d2 1) 8)))
+                                                        (ptr-write-u64 cell 16 1)
+                                                        (seq
+                       (let* ((fp2 (heap-read-u64 cell 8))
+                              (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
+                              (f2 (+ fp2 (* (+ d2 1) 8)))
                               (cw (heap-read-u64 f2 24))
-                              (kw (heap-read-u64 f2 32)))
-                         (seq (setq depth d2)
+                              (kw (heap-read-u64 f2 32))
+                              (ct (heap-read-u8 cw 0))
+                              (vp (if (= (logand kw 7) 0)
+                                      (heap-read-u64 kw 8)
+                                    (- kw (logand kw 6)))))
+                         (seq (setq mem fp2)
+                              (setq depth d2)
                               (setq foot f2)
-                              (setq data (nl_bi_strptr cw))
-                              (setq length (m5_strlen cw))
-                              (setq constants (+ (nl_word_payload kw) 8))
-                              (setq nconst (vector-len kw))))
-                       (setq last-index -1))
-                                                      (setq pc (sar r 17))
-                                                      (setq prev pc)
-                                                      (setq sp (logand r 131071))))))
-                                             (seq (setq go 0))))))))))))))))))
+                              (if (if (= ct 5) 1 (= ct 14))
+                                  (seq (setq data (heap-read-u64 cw 16))
+                                       (setq length (heap-read-u64 cw 24)))
+                                (seq (setq data (nl_bi_strptr cw))
+                                     (setq length (m5_strlen cw))))
+                              (setq constants (+ vp 8))
+                              (setq nconst (sar (heap-read-u64 vp 0) 8)))))
+                                                        (if (>= isp 65536) (setq last-name -1) 0)
+                                                        (setq pc 0)
+                                                        (setq prev 0)
+                                                        (setq sp (logand isp 65535)))
+                                                     (if (= isp -2)
+                                                         (let* ((rc (wf_bytecode_call env mem sp argc bx)))
+                                                           (seq
+                                                            (setq last-name -1)
+                                                            (if (= rc 0)
+                                                                (seq (setq sp (- sp argc))
+                                                                     (setq pc (+ pc 1)))
+                                                              (seq (setq failed 1) (setq go 0)))))
+                                                       (seq (setq failed 1) (setq go 0)))))))
+                                           (seq (setq go 0))))))))))))))))))
         (seq (ptr-write-u64 cell 8 mem)
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
 
@@ -19816,21 +19896,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((= base 32)
                       ;; The same entry as the fast loop's (bytecode.c:735-750).
                       (let* ((fi (- sp (+ operand 1)))
-                             (fw (if (< fi 0) 0 (heap-read-u64 (+ mem (* fi 8)) 0)))
-                             (func (if (< fi 0) 0 (wf_bytecode_inloop_func env fw))))
-                        (if (/= func 0)
-                            (let* ((isp (wf_bytecode_frame_push env curfp mem fi operand func fw pc)))
-                              (if (< isp 0)
-                                  (setq done 4)
-                                (seq (setq reload (heap-read-u64 curfp 8))
-                                     (setq pc 0)
-                                     (setq sp isp))))
-                          (let* ((rc (wf_bytecode_call env mem sp operand bx)))
-                            (if (= rc 0)
-                                (setq sp (- sp operand))
-                              (if (= rc 2)
-                                  (seq (setq bad-op raw) (setq done 2))
-                                (setq done 4)))))))
+                             (isp (if (< fi 0) -2
+                                    (wf_bytecode_call_enter
+                                     env curfp mem fi operand
+                                     (heap-read-u64 (+ mem (* fi 8)) 0) pc))))
+                        (if (>= isp 0)
+                            (seq (setq reload (heap-read-u64 curfp 8))
+                                 (setq pc 0)
+                                 (setq sp (logand isp 65535)))
+                          (if (= isp -1)
+                              (setq done 4)
+                            (let* ((rc (wf_bytecode_call env mem sp operand bx)))
+                              (if (= rc 0)
+                                  (setq sp (- sp operand))
+                                (if (= rc 2)
+                                    (seq (setq bad-op raw) (setq done 2))
+                                  (setq done 4))))))))
                      ((and (or (= base 83) (= base 84) (= base 92) (= base 95)
                                (and (>= base 85) (<= base 90)))
                            (= (wf_bytecode_small_arithmetic mem sp base) 0))
