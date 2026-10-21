@@ -11,9 +11,12 @@ the three collections are inside it.
 
 Per workload (cons, string, vector) every engine first runs one discarded
 warm-up process, then 7 alternating rounds (base, candidate, GNU 31.1 -Q
---batch) are pinned with taskset to CPUS (default 8-11; pick an idle set of
-four with `ps -eo psr,pcpu`).  The JSON records every in-process time, the
-per-engine medians and the binaries' sha256.
+--batch) are pinned with taskset to CPUS (default 8, the gc-port lane's
+measurement CPU in COMMON "Measurement").  The JSON records every in-process time, the
+per-engine medians, the candidate/GNU and candidate/base ratios paired
+inside each round with their medians (the decision quantity in COMMON
+"Measurement"), scaling_cur_freq of the CPU before every run, and the
+binaries' sha256.
 """
 import hashlib
 import json
@@ -49,6 +52,15 @@ def workload(kind):
 '''
 
 
+def cpu_freq(cpus):
+    """scaling_cur_freq (kHz) of the first measurement CPU, or None."""
+    first = cpus.split(',')[0].split('-')[0]
+    try:
+        return int(Path(f'/sys/devices/system/cpu/cpu{first}/cpufreq/scaling_cur_freq').read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def run_once(argv, cpus):
     cmd = ['bash', '-c', 'ulimit -v 8388608; exec taskset -c "$0" "$@"', cpus] + argv
     proc = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, LC_ALL='C'))
@@ -58,7 +70,7 @@ def run_once(argv, cpus):
 
 
 def main(argv):
-    cpus = '8-11'
+    cpus = '8'
     if '--cpus' in argv:
         i = argv.index('--cpus')
         cpus = argv[i + 1]
@@ -86,18 +98,32 @@ def main(argv):
         for engine in engines:                     # warm-up process, discarded
             run_once(argv_for(engine), cpus)
         times = {e: [] for e in engines}
+        freqs = []
+        ratios = {'candidate/gnu': [], 'candidate/base': []}
         failures = 0
         for _ in range(ROUNDS):
+            round_t = {}
             for engine in engines:
+                freqs.append(cpu_freq(cpus))
                 t, ok = run_once(argv_for(engine), cpus)
                 if ok:
                     times[engine].append(t)
+                    round_t[engine] = t
                 else:
                     failures += 1
+            # COMMON "Measurement": decide on ratios paired inside a round.
+            if all(e in round_t for e in engines):
+                ratios['candidate/gnu'].append(round_t['candidate'] / round_t['gnu'])
+                ratios['candidate/base'].append(round_t['candidate'] / round_t['base'])
         med = {e: (statistics.median(v) if v else None) for e, v in times.items()}
-        result['workloads'][kind] = {'seconds': times, 'failures': failures, 'median': med}
-        print(f"{kind}: base {med['base']:.4f}s candidate {med['candidate']:.4f}s "
-              f"gnu {med['gnu']:.4f}s failures={failures}", flush=True)
+        rmed = {k: (statistics.median(v) if v else None) for k, v in ratios.items()}
+        result['workloads'][kind] = {'seconds': times, 'failures': failures, 'median': med,
+                                     'ratios': ratios, 'median_ratio': rmed,
+                                     'scaling_cur_freq_khz': freqs}
+        print(f"{kind}: candidate/gnu {rmed['candidate/gnu']:.2f} candidate/base "
+              f"{rmed['candidate/base']:.3f} (medians {med['candidate']:.4f}s / gnu "
+              f"{med['gnu']:.4f}s / base {med['base']:.4f}s; cpu8 {min(f for f in freqs if f)}-"
+              f"{max(f for f in freqs if f)} kHz) failures={failures}", flush=True)
     out.write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
     return 0
 

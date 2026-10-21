@@ -2861,6 +2861,222 @@ directory tracks the tree rather than accumulating every key ever built."
                     (setq o (+ o 1)))))
                (nl_os_free_chunk buf ,(* n 32))
                written)))))
+      ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
+      ;; Objects of a restored cold image are immortal.  GNU never sweeps
+      ;; its dump, keeps the dump's mark bits in a separate bitmap
+      ;; (pdumper_set_marked / pdumper_marked_p, cleared by
+      ;; pdumper_clear_marks from gc_sweep alloc.c:7114) and validates a dump
+      ;; pointer against the dump's own object-start table
+      ;; (pdumper_find_object_type).  The boot range [lo, hi) is chunk 0's
+      ;; data start up to the boot watermark; its objects are every block
+      ;; that is neither free nor inside a hole of the restored image (the
+      ;; hole map).  Holes are reused by later allocations, so the hole runs
+      ;; are still indexed and swept block by block; the rest of the range
+      ;; is not.  Built once per watermark, and only after a cold-image
+      ;; restore (the hole map exists); otherwise every walk is unchanged.
+      ;; BSS `nl_typed_alloc': +200 lo, +208 hi (0 = not built), +216 mark
+      ;; bitmap, +224 start bitmap, +232 bytes of each bitmap, +240 live
+      ;; bytes of the boot objects, +248/+256/+264 hole-run array, count and
+      ;; capacity (pairs of [start, end) in address order).
+      ;; Bit G covers the payload address lo + 8G.
+      ;; Append the hole run [A, B) to the run array (+248 base, +256 count,
+      ;; +264 capacity in entries), doubling it when full; 0 on failure.
+      (defun nl_boot_add_run (st a b)
+        (let* ((n (heap-read-u64 st 256)) (cap (heap-read-u64 st 264))
+               (ok 1))
+          (seq
+           (if (< n cap) 0
+             (let* ((ncap (if (= cap 0) 65536 (* cap 2)))
+                    (nbuf (nl_os_alloc_chunk (* ncap 16)))
+                    (old (heap-read-u64 st 248)) (i 0))
+               (if (= nbuf 0) (setq ok 0)
+                 (seq
+                  (nl_os_commit_range nbuf 0 (* ncap 16))
+                  (while (< i (* n 2))
+                    (seq (ptr-write-u64 nbuf (* i 8) (heap-read-u64 old (* i 8)))
+                         (setq i (+ i 1))))
+                  (if (= old 0) 0 (nl_os_free_chunk old (* cap 16)))
+                  (ptr-write-u64 st 248 nbuf)
+                  (ptr-write-u64 st 264 ncap)))))
+           (if (= ok 0) 0
+             (seq (ptr-write-u64 (heap-read-u64 st 248) (* n 16) a)
+                  (ptr-write-u64 (heap-read-u64 st 248) (+ (* n 16) 8) b)
+                  (ptr-write-u64 st 256 (+ n 1))
+                  1)))))
+      ;; 1 when the boot structures match the current watermark, building
+      ;; them on first use with one header walk of the boot range, which also
+      ;; records the image's hole runs (maximal runs of blocks whose header
+      ;; lies in a hole) so later walks never scan the hole map.
+      (defun nl_boot_build ()
+        (let* ((st (data-addr nl_typed_alloc))
+               (chunk0 (heap-read-u64 268436160 0))
+               (lo (heap-read-u64 (+ chunk0 24) 0))
+               (hi (heap-read-u64 268435664 0))
+               (hmap (heap-read-u64 (data-addr nl_boot_hole_map) 0)))
+          (if (if (= (heap-read-u64 st 208) hi) (= (heap-read-u64 st 200) lo) 0)
+              (if (= hi 0) 0 1)
+            (seq
+             (if (> (heap-read-u64 st 216) 0)
+                 (seq (nl_os_free_chunk (heap-read-u64 st 216) (heap-read-u64 st 232))
+                      (nl_os_free_chunk (heap-read-u64 st 224) (heap-read-u64 st 232)))
+               0)
+             (ptr-write-u64 st 200 0) (ptr-write-u64 st 208 0)
+             (ptr-write-u64 st 216 0) (ptr-write-u64 st 224 0)
+             (ptr-write-u64 st 256 0)
+             (if (if (= hmap 0) 1 (<= hi lo)) 0
+               (let* ((bytes (nl_align_up (+ (sar (- hi lo) 6) 16) 65536))
+                      (marks (nl_os_alloc_chunk bytes))
+                      (starts (if (= marks 0) 0 (nl_os_alloc_chunk bytes)))
+                      (hdr lo) (bt 0) (live 0) (ok 1) (g 0) (run 0) (hole 0))
+                 (if (= starts 0)
+                     (seq (if (= marks 0) 0 (nl_os_free_chunk marks bytes)) 0)
+                   (seq
+                    (nl_os_commit_range marks 0 bytes)
+                    (nl_os_commit_range starts 0 bytes)
+                    (while (if (= ok 1) (< hdr hi) 0)
+                      (seq
+                       (setq bt (nl_hdr_bt hdr))
+                       (if (= (nl_gc_bt_ok hdr bt hi) 0) (setq ok 0)
+                         (seq
+                          (setq hole (nl_boot_hole_p hdr))
+                          (if (= hole 1)
+                              (if (= run 0) (setq run hdr) 0)
+                            (seq
+                             (if (= run 0) 0
+                               (seq (setq ok (nl_boot_add_run st run hdr)) (setq run 0)))
+                             (if (= (nl_hdr_mark hdr) 2) 0
+                               (seq
+                                (setq g (sar (- (+ hdr 8) lo) 3))
+                                (ptr-write-u64 starts (* (sar g 6) 8)
+                                  (logior (heap-read-u64 starts (* (sar g 6) 8))
+                                          (shl 1 (logand g 63))))
+                                (setq live (+ live bt))))))
+                          (setq hdr (+ hdr bt))))))
+                    (if (if (= ok 1) (> run 0) 0)
+                        (setq ok (nl_boot_add_run st run hi)) 0)
+                    (if (= ok 0)
+                        (seq (nl_os_free_chunk marks bytes) (nl_os_free_chunk starts bytes) 0)
+                      (seq
+                       (ptr-write-u64 st 216 marks) (ptr-write-u64 st 224 starts)
+                       (ptr-write-u64 st 232 bytes) (ptr-write-u64 st 240 live)
+                       (ptr-write-u64 st 200 lo) (ptr-write-u64 st 208 hi)
+                       1))))))))))
+      ;; pdumper_find_object_type's role: 1 iff OBJ is a boot object start.
+      ;; Written with `let*' only and kept small so the unit inliner folds it
+      ;; into its callers: the marking path is inside the native compiler's
+      ;; F1 prelink closure, whose direct-helper bound (296) the cons port
+      ;; already reaches.
+      (defun nl_boot_start_p (obj)
+        (let* ((st (data-addr nl_typed_alloc))
+               (lo (heap-read-u64 st 200))
+               (g (sar (- obj lo) 3)))
+          (if (< obj lo) 0
+            (if (>= obj (heap-read-u64 st 208)) 0
+              (if (= (logand obj 7) 0)
+                  (logand (sar (heap-read-u64 (heap-read-u64 st 224) (* (sar g 6) 8))
+                               (logand g 63))
+                          1)
+                0)))))
+      ;; pdumper_set_marked on a boot object start: 1 = newly marked.
+      (defun nl_boot_mark (obj)
+        (let* ((st (data-addr nl_typed_alloc))
+               (g (sar (- obj (heap-read-u64 st 200)) 3))
+               (wa (+ (heap-read-u64 st 216) (* (sar g 6) 8)))
+               (bit (shl 1 (logand g 63)))
+               (m (heap-read-u64 wa 0)))
+          (if (= (logand m bit) 0) (seq (ptr-write-u64 wa 0 (logior m bit)) 1) 0)))
+      ;; pdumper_clear_marks.
+      (defun nl_boot_clear_marks ()
+        (let ((st (data-addr nl_typed_alloc)))
+          (if (= (heap-read-u64 st 216) 0) 0
+            (nl_alloc_zero_fill (heap-read-u64 st 216) 0 (heap-read-u64 st 232)))))
+      ;; Conservative owner inside the boot range: the boot object whose
+      ;; payload holds W, searched back at most 4 KiB of starts (GNU accepts
+      ;; only exact starts for dump objects).  0 = W is not in the boot range
+      ;; or lies in a hole (use the per-collection index); -1 = no owner.
+      (defun nl_boot_owner (w)
+        (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200)))
+          (if (< w lo) 0
+            (if (>= w (heap-read-u64 st 208)) 0
+              (if (= (nl_boot_hole_p w) 1) 0
+                (let* ((starts (heap-read-u64 st 224))
+                       (g (sar (- w lo) 3))
+                       (wi (sar g 6))
+                       (stop (if (< wi 8) 0 (- wi 8)))
+                       (word (logand (heap-read-u64 starts (* wi 8))
+                                     (if (= (logand g 63) 63) -1
+                                       (- (shl 1 (+ (logand g 63) 1)) 1))))
+                       (owner -1))
+                  (seq
+                   (while (if (< owner 0) (if (= word 0) (> wi stop) 0) 0)
+                     (seq (setq wi (- wi 1))
+                          (setq word (heap-read-u64 starts (* wi 8)))))
+                   (if (= word 0) -1
+                     (let* ((bitpos (let ((b 63))
+                                      (seq (while (= (logand (sar word b) 1) 0)
+                                             (setq b (- b 1)))
+                                           b)))
+                            (start (+ lo (* (+ (* wi 64) bitpos) 8))))
+                       (if (< w (+ (- start 8) (nl_hdr_bt (- start 8)))) start -1))))))))))
+      ;; nl_gc_index_fill for chunk 0 with boot structures: index only the
+      ;; recorded hole runs and [hi, end); boot starts answer from their own
+      ;; bitmap.  Runs are in address order, so one prefix cursor serves all.
+      (defun nl_gc_index_fill_boot (entry)
+        (let* ((st (data-addr nl_typed_alloc))
+               (start (heap-read-u64 entry 0))
+               (end (heap-read-u64 entry 8))
+               (bits (heap-read-u64 entry 16))
+               (prefix (+ bits (nl_gc_index_bytes start end)))
+               (prefix-bytes (* (/ (+ (- end start) 4095) 4096) 8))
+               (runs (heap-read-u64 st 248))
+               (nruns (heap-read-u64 st 256))
+               (hi (heap-read-u64 st 208))
+               (page 0) (previous 0) (ok 1) (r 0) (limit 0)
+               (hdr 0) (bt 0) (slot 0) (byte 0))
+          (seq
+           (while (if (= ok 1) (<= r nruns) 0)
+             (seq
+              (if (< r nruns)
+                  (seq (setq hdr (heap-read-u64 runs (* r 16)))
+                       (setq limit (heap-read-u64 runs (+ (* r 16) 8))))
+                (seq (setq hdr hi) (setq limit end)))
+              (setq r (+ r 1))
+              (while (if (= ok 1) (< hdr limit) 0)
+                (seq
+                 (setq bt (logand (heap-read-u64 hdr 0) 4294967288))
+                 (if (if (< bt 16) 1 (if (< limit (+ hdr bt)) 1 0))
+                     (setq ok 0)
+                   (seq
+                    (setq slot (/ (- (+ hdr 8) start) 8))
+                    (setq byte (+ bits (/ slot 8)))
+                    (while (if (< page prefix-bytes)
+                               (<= (+ start (* page 512)) (+ hdr 8)) 0)
+                      (seq (ptr-write-u64 prefix page previous)
+                           (setq page (+ page 8))))
+                    (setq previous (+ hdr 8))
+                    (ptr-write-u8 byte 0 (logior (heap-read-u8 byte 0)
+                                                 (shl 1 (logand slot 7))))
+                    (setq hdr (+ hdr bt))))))))
+           (while (if (= ok 1) (< page prefix-bytes) 0)
+             (seq (ptr-write-u64 prefix page previous) (setq page (+ page 8))))
+           ok)))
+      ;; Chunk 0 sweep with boot structures: the recorded hole runs and
+      ;; [hi, end) only (GNU never sweeps the dump); boot objects count as live.
+      (defun nl_gc_sweep_merge_chunk0_boot (chunk)
+        (let* ((st (data-addr nl_typed_alloc))
+               (runs (heap-read-u64 st 248))
+               (nruns (heap-read-u64 st 256))
+               (r 0))
+          (seq
+           (while (< r nruns)
+             (seq (nl_gc_sweep_merge_range (heap-read-u64 runs (* r 16))
+                                           (heap-read-u64 runs (+ (* r 16) 8)))
+                  (setq r (+ r 1))))
+           (nl_gc_sweep_merge_range (heap-read-u64 st 208) (nl_gc_chunk_end chunk))
+           (ptr-write-u64 (data-addr nl_gc_stats) 16
+                          (+ (heap-read-u64 (data-addr nl_gc_stats) 16)
+                             (heap-read-u64 st 240)))
+           0)))
       ;; mark_maybe_pointer (alloc.c:4854) for typed blocks: a conservative
       ;; word inside a live cell marks that cons like mark_object.  1 when W
       ;; lay in a cons block (handled), 0 to continue on the legacy path.
@@ -4961,6 +5177,8 @@ REPL-facing module it feeds."
              (count 0) (need 0) (ok 1) (minimum 0) (maximum 0))
         (seq
          (nl_gc_index_end)
+         ;; Doc 223: image objects use the boot structures, built once.
+         (nl_boot_build)
          (ptr-write-u64 ctx 32 0)
          (while (> chunk 0)
            (seq
@@ -5003,7 +5221,10 @@ REPL-facing module it feeds."
                  (ptr-write-u64 entry 0 (heap-read-u64 chunk 24))
                  (ptr-write-u64 entry 8 (nl_gc_chunk_end chunk))
                  (ptr-write-u64 entry 16 bits)
-                 (setq ok (nl_gc_index_fill entry))
+                 (setq ok (if (if (= chunk (heap-read-u64 268436160 0))
+                                  (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 208) 0) 0) 0)
+                              (nl_gc_index_fill_boot entry)
+                            (nl_gc_index_fill entry)))
                  (setq bits (+ bits
                                (+ (nl_gc_index_bytes
                                    (heap-read-u64 entry 0) (heap-read-u64 entry 8))
@@ -5022,6 +5243,9 @@ REPL-facing module it feeds."
         (if (= (logand (heap-read-u8 (heap-read-u64 entry 16) (/ slot 8))
                       (shl 1 (logand slot 7))) 0) 0 1)))
     (defun nl_gc_object_start_p (obj)
+      ;; Doc 223: image objects answer from the boot start bitmap
+      ;; (pdumper_find_object_type); the index covers the rest.
+      (if (= (nl_boot_start_p obj) 1) 1
       (if (= (logand obj 7) 0)
           (let ((ctx (data-addr nl_gc_start_index)))
             (if (= (heap-read-u64 ctx 16) 1)
@@ -5054,7 +5278,7 @@ REPL-facing module it feeds."
                                 (setq hdr (+ hdr bt))))))
                         (setq chunk 0)))))
                  found))))
-        0))
+        0)))
     ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
@@ -5066,6 +5290,9 @@ REPL-facing module it feeds."
       ;; (upgrade 4->1, return 1 = "recurse").  mark 1/2/3/5 -> already
       ;; recursed/free -> skip (return 0).  This DECOUPLES "alive" (pinned) from
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
+      ;; Doc 223: an image object takes its bit in the boot mark bitmap
+      ;; (pdumper_set_marked); its header is never written.
+      (if (= (nl_boot_start_p obj) 1) (nl_boot_mark obj)
       (if (= (nl_gc_object_start_p obj) 0) 0
         (let* ((hdr (- obj 8))
                (raw (heap-read-u64 hdr 0)))
@@ -5080,7 +5307,7 @@ REPL-facing module it feeds."
                 (if (if (= m 0) 1 (if (= m 4) 1 0))
                     (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
                   0))
-            0))))
+            0)))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; ELEMENT CAPACITY of the block whose object pointer is PTR: the payload
@@ -5977,9 +6204,16 @@ REPL-facing module it feeds."
     ;; BOOT is `nl_gc_is_boot' with its bounds and the hole map read once
     ;; per chunk.  A malformed header stops the walk where all three walks
     ;; stopped; the run before it is still linked, as the relink walk did.
+    ;; Doc 223: chunk 0 with boot structures sweeps only its hole runs and
+    ;; the range above the boot watermark (`nl_gc_sweep_merge_chunk0_boot').
     (defun nl_gc_sweep_merge_chunk (chunk)
-      (let* ((hdr (heap-read-u64 (+ chunk 24) 0))
-             (end (nl_gc_chunk_end chunk))
+      (if (if (= chunk (heap-read-u64 268436160 0))
+              (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 208) 0) 0) 0)
+          (nl_gc_sweep_merge_chunk0_boot chunk)
+        (nl_gc_sweep_merge_range (heap-read-u64 (+ chunk 24) 0) (nl_gc_chunk_end chunk))))
+    (defun nl_gc_sweep_merge_range (start limit)
+      (let* ((hdr start)
+             (end limit)
              (lo (heap-read-u64 (heap-read-u64 268436160 0) 0))
              (wm (heap-read-u64 268435664 0))
              (hmap (heap-read-u64 (data-addr nl_boot_hole_map) 0))
@@ -6061,8 +6295,10 @@ REPL-facing module it feeds."
        (nl_alloc_run_reset)
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (heap-read-u64 268436160 0))
-       ;; Doc 223: sweep_conses (alloc.c:6814) for cons-block cells.
+       ;; Doc 223: sweep_conses (alloc.c:6814) for cons-block cells, then
+       ;; pdumper_clear_marks (gc_sweep alloc.c:7114) for image objects.
        (nl_sweep_conses)
+       (nl_boot_clear_marks)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (heap-read-u64 268436160 0)
@@ -6247,6 +6483,11 @@ REPL-facing module it feeds."
                   (if (< w (+ (- owner 8) (nl_hdr_bt (- owner 8)))) owner 0)
                 0))))))
     (defun nl_gc_conserv_resolve (w)
+      (let ((b (nl_boot_owner w)))
+        (if (> b 0) b
+          (if (< b 0) 0
+            (nl_gc_conserv_resolve_heap w)))))
+    (defun nl_gc_conserv_resolve_heap (w)
       (let* ((state (data-addr nl_gc_conserv_state))
              (cached (heap-read-u64 state 56)))
         (if (and (> cached 0) (>= w cached)
@@ -6275,11 +6516,15 @@ REPL-facing module it feeds."
       (if (= (nl_gc_conserv_valid_p w) 0) 0
         (let* ((state (data-addr nl_gc_conserv_state))
                (hdr (- w 8))
-               (m (nl_hdr_mark hdr)))
+               ;; Doc 223: an image object pins through the boot mark bitmap
+               ;; (mark_maybe_pointer marks dump objects); 0 = newly pinned.
+               (m (if (= (nl_boot_start_p w) 1)
+                      (if (= (nl_boot_mark w) 1) 0 1)
+                    (nl_hdr_mark hdr))))
           (if (= m 0)
               (if (= (nl_gc_conserv_queue_push w) 0) 0
                 (seq
-                 (nl_hdr_set_mark hdr 4)
+                 (if (= (nl_boot_start_p w) 1) 0 (nl_hdr_set_mark hdr 4))
                  (ptr-write-u64 state 32
                                 (logior (heap-read-u64 state 32) 4))
                  (ptr-write-u64 state 48
@@ -6352,6 +6597,7 @@ REPL-facing module it feeds."
           (nl_gc_mark_reset_chunk chunk)
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
         (nl_cons_unmark_all)
+        (nl_boot_clear_marks)
         0))
     (defun nl_gc_conserv_rollback ()
       (let ((chunk (heap-read-u64 268436160 0)))
@@ -7402,8 +7648,9 @@ REPL-facing module it feeds."
         ;; precise traversal must still be allowed to upgrade mark4 to mark1.
         (nl_seq2
          (if (= (nl_gc_conserv_valid_p sp) 1)
-             (if (= (nl_hdr_mark (- sp 8)) 0)
-                 (nl_hdr_set_mark (- sp 8) 4) 0)
+             (if (= (nl_boot_start_p sp) 1) 0
+               (if (= (nl_hdr_mark (- sp 8)) 0)
+                   (nl_hdr_set_mark (- sp 8) 4) 0))
            0)
          (nl_gc_mark_slot sp))))
     (defun nl_gc_mark_recorded_env (env)
@@ -7663,7 +7910,8 @@ REPL-facing module it feeds."
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_gc_debt_rearm))
+                          (nl_seq2 (nl_seq2 (nl_sweep_conses)
+                                            (nl_seq2 (nl_boot_clear_marks) (nl_gc_debt_rearm)))
                                    (nl_gc_conserv_state_clear)))
                  (nl_seq2 (nl_gc_sweep)
                           (nl_gc_conserv_state_clear)))))))))
@@ -10102,7 +10350,7 @@ leave symbols unresolved at link time."
          0)))
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
-          (nl_cons_unmark_all)
+          (nl_seq2 (nl_cons_unmark_all) (nl_boot_clear_marks))
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
                                      reach total))))

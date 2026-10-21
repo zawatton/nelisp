@@ -49,7 +49,8 @@ def classify(engine, owner, source, line):
         if 'zero_fill' in owner:
             return 'zeroing'
         if owner.startswith(('nl_gc_index_prepare', 'nl_gc_index_fill',
-                             'nl_gc_index_bytes', 'nl_gc_index_end')):
+                             'nl_gc_index_bytes', 'nl_gc_index_end',
+                             'nl_boot_build', 'nl_boot_add_run', 'nl_boot_hole_map_build')):
             return 'index_prepare'
         if owner.startswith(('nl_gc_index_contains', 'nl_gc_index_test')):
             return 'mark'
@@ -63,7 +64,7 @@ def classify(engine, owner, source, line):
                              'nl_gc_chunk_contains', 'nl_gc_is_boot', 'nl_gc_symname_mark',
                              'nl_gc_typed_', 'nl_gc_conserv_', 'nl_gc_index_mark_',
                              'nl_gc_block_elem_cap', 'nl_typed_mark', 'nl_typed_find',
-                             'nl_live_', 'nl_cons_mark')):
+                             'nl_live_', 'nl_cons_mark', 'nl_boot_')):
             return 'mark'
         if owner.startswith(('nl_alloc_bytes_slow', 'nl_alloc_bytes_uncheck',
                              'nl_chunk_alloc_new', 'nl_os_alloc', 'nl_freelist_take',

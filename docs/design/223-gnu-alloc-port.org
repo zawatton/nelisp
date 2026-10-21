@@ -65,7 +65,7 @@ this stage (the blocking NeLisp layer is named). GNU source:
 | sweep_vectors, vector blocks, large vectors | alloc.c:3241 =sweep_vectors=, alloc.c:2845 =struct vector_block=, alloc.c:2969 =allocate_vector_from_block=, alloc.c:2826 =struct large_vector=, alloc.c:3353 =allocate_vectorlike= | Tag-110 backings up to =VBLOCK_BYTES_MAX= come from vector blocks with size-class free lists; larger ones stay headered general blocks (the large_vectors analogue) | adapted: the mark bit moves into the kind/length word (GNU's =ARRAY_MARK_FLAG=); vector blocks are 32 KiB ablocks rather than malloc'd 4 KiB blocks | Fits S4.1: the backing address is WORD - 6 |
 | mem_node tree, mem_find, live_*_p | alloc.c:4213 =mem_find=, alloc.c:4236 =mem_insert=, alloc.c:4440 =mem_delete=, alloc.c:4627 =live_cons_holding=, alloc.c:4664 =live_cons_p= | A persistent open-addressing registry keyed by 512 KiB ablocks group; each 32 KiB block records its type in its last word. =nl_live_cons_holding= ports GNU's checks: offset inside the cell array, index below =cons_block_index= in the current block, cell not dead | adapted: hash of aligned groups instead of a red-black tree of arbitrary malloc ranges, because NeLisp controls block alignment; lookup is O(1) and updated only when groups are mapped or unmapped | none |
 | mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
-| Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects keep their legacy headers, are never freed and are marked through their headers. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | adapted: header marks instead of a separate bitmap; the dump appends converted cells to the coalesced span so the loader is unchanged | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
+| Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects are never freed or swept, mark through a separate boot bitmap and are validated by a start bitmap built once per watermark. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | ported: the separate mark bitmap, its clearing in the sweep and the never-swept dump; adapted: the start table is a bitmap built by one header walk after restore, and the image's free blocks (hole runs) are still swept because the dump copies whole chunks | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
 | GC threshold | alloc.c:5704 =consing_threshold=, alloc.c:5732 =bump_consing_until_gc=, alloc.c:5769 =maybe_garbage_collect= | Block allocations charge =nl_gc_stats+0= exactly as general allocations do; sweeps add live cell bytes to =nl_gc_stats+16=; =nl_gc_debt_rearm= keeps =max(floor, live * pct)= | adapted: the existing debt trigger already has GNU's shape (threshold from live bytes times a percentage); its policy belongs to the gc-cadence lane | none |
 
 * Interaction with the word heap (Doc 216)
@@ -151,18 +151,38 @@ every heap object is a headered block inside the arena chunks:
 - The census, =nl_fa_slot= and =nl_fa_vectorlike_fields= dedup tag-110
   backings through =nl_gc_mark_block=.
 
-** Next increment: image objects as pdumper objects
+** Image objects as pdumper objects (step 2)
 
-After the cons port, cons churn at layout 0 spends 1567M Ir in GC and
-allocation; =nl_gc_sweep_merge_chunk= (359M), =nl_gc_index_prepare= (300M)
-and =nl_gc_coalesce_chunks= (92M) walk every header of the cold image
-(about 300 MB of arena, 45 MB of it live) on each collection. GNU never sweeps its dump and keeps dump marks in
-a separate bitmap (pdumper.c:5247-5272) cleared at the end of a collection.
-The port needs a boot mark bitmap, a persistent boot start bitmap built at
-load, and sweep/index walks that visit only non-boot ranges. The boot range
-is not one skippable span: the image's free blocks (most of its bytes) are
-reused by later allocations, so those hole ranges, from the hole map, must
-still be swept and indexed block by block.
+GNU never sweeps its dump: dump objects keep their mark bits in a separate
+bitmap (pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259
+=pdumper_set_marked_impl=), cleared by =pdumper_clear_marks= from =gc_sweep=
+(alloc.c:7114 =pdumper_clear_marks=), and a dump pointer is validated against
+the dump's object-start table (pdumper.c:5229 =pdumper_find_object_type_impl=).
+NeLisp's cold image is that dump (adapted):
+
+- =nl_boot_build= runs once per boot watermark, after a cold-image restore.
+  One header walk of [data start, watermark) records a start bit for every
+  image object, the live bytes, and the hole runs (maximal runs of blocks
+  inside the restored image's free blocks, which later allocations reuse).
+- Marking an image object sets its bit in the boot mark bitmap; its header
+  is never written. =nl_gc_object_start_p= answers image objects from the
+  start bitmap; the per-collection index covers only the hole runs and the
+  range above the watermark.
+- =nl_gc_sweep_merge_chunk= sweeps chunk 0 as the hole runs plus the range
+  above the watermark and adds the image's live bytes; image objects are
+  never swept. The boot mark bitmap is cleared after every sweep and on
+  every mark reset.
+- The conservative scan accepts an image object start or a pointer at most
+  4 KiB inside it (GNU accepts only exact starts for dump objects) and pins
+  it in the boot bitmap.
+- Without a restored image (the build-time dump run) nothing changes.
+
+The restored image is 289 MB of arena with 34.7 MB live in 582K blocks and
+254 MB free in 81K hole runs, because the dump copies whole chunks with the
+dumping run's garbage. GNU's dump holds live objects only, so it has no hole
+runs to sweep. Making the image compact like pdumper's object copy would
+remove the remaining per-collection hole walk; it needs a forwarding dump and
+is the next image step.
 
 * Expected effect and the remaining gap (S2)
 

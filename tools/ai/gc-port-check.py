@@ -322,8 +322,9 @@ def cmd_final():
 WALL = ROOT / 'target/gc-port/wall/final.json'
 
 
-def wall_verdict(med):
-    return med['candidate'] <= med['gnu']
+def wall_verdict(ratio):
+    """S2.1-S2.3 bar: the median paired candidate/GNU ratio is at most 1."""
+    return ratio <= 1.0
 
 
 def cmd_wall(kind):
@@ -333,7 +334,7 @@ def cmd_wall(kind):
     GNU 31.1 running the same Lisp."""
     import hashlib
     import json
-    if wall_verdict({'candidate': 2.0, 'gnu': 1.0}):
+    if wall_verdict(2.0):
         return fail('wall: negative control passed')
     if not WALL.exists():
         return fail(f'wall {kind}: no measurement at {WALL.relative_to(ROOT)}')
@@ -346,11 +347,14 @@ def cmd_wall(kind):
         return fail(f'wall {kind}: {WALL.relative_to(ROOT)} times whole processes, not the warmed-up workload')
     if not w or w['failures'] or data['rounds'] < 7:
         return fail(f'wall {kind}: incomplete or failing runs')
+    if not w.get('median_ratio') or not w.get('scaling_cur_freq_khz'):
+        return fail(f'wall {kind}: no paired ratios or CPU frequency record')
+    r = w['median_ratio']
     med = w['median']
-    line = (f"wall {kind}: NeLisp {med['candidate']:.3f}s vs GNU {med['gnu']:.3f}s "
-            f"(x{med['candidate'] / med['gnu']:.2f}; base {med['base']:.3f}s), "
-            f"in-process median of {data['rounds']}, warmed up, GC included")
-    if not wall_verdict(med):
+    line = (f"wall {kind}: NeLisp/GNU x{r['candidate/gnu']:.2f}, NeLisp/base "
+            f"x{r['candidate/base']:.3f} (medians of {data['rounds']} paired in-process "
+            f"ratios, warmed up, GC included; {med['candidate']:.4f}s vs GNU {med['gnu']:.4f}s)")
+    if not wall_verdict(r['candidate/gnu']):
         return fail(line)
     print('PASS ' + line)
     return 0
