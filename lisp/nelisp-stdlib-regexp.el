@@ -42,6 +42,17 @@ being recency-ordered (it is not; see `nlre--cache-touch').")
         ((fboundp 'syntax-table) 'syntax-table)))
 (defvar nlre--case-table-reader
   (and (fboundp 'current-case-table) 'current-case-table))
+(defvar nlre--syntax-table nil
+  "Syntax table of the match in progress, read once per match.
+GNU sets up gl_state's syntax table once per search
+\(`RE_SETUP_SYNTAX_TABLE_FOR_OBJECT', regex-emacs.c:3462) and each
+`syntaxspec' then reads `SYNTAX (c)' from it (regex-emacs.c:5195).
+`nlre-string-match' resets this to nil (the other entries bind it); the
+first syntax test stores the
+table, t when the provider's table is not a char-table (its `char-syntax'
+answers instead), or `none' before any `char-syntax' exists.")
+(defconst nlre--syntax-designators " .w_()'\"$\\/<>@!|"
+  "GNU syntax.c:1084 `syntax_code_spec': the designator of each class code.")
 (defvar nlre--translate-table nil
   "Canonical case translation descriptor bound during compilation
 and matching.  Nil selects the portable downcase fallback.")
@@ -1319,7 +1330,8 @@ branch choice cannot affect a later match or the last repeated capture."
                              (if (eq (car repeat) :plus) 1 0)))))))
 
 (defun nlre--compile-pattern (pat fold &optional spaces)
-  (let* ((nlre--pattern-multibyte (multibyte-string-p pat))
+  (let* ((nlre--syntax-table nil)
+         (nlre--pattern-multibyte (multibyte-string-p pat))
          (nlre--fold fold)
          (source (nlre--expand-search-spaces pat spaces))
          (ast (nlre--parse source)) (ng (1+ (min nlre--gcount 255)))
@@ -1431,22 +1443,60 @@ one, which would demote them to the interpreter)."
         (t (let ((d (nlre--downcase-char c))) (if (eq d c) (nlre--upcase-char c) d)))))
 
 (defun nlre--space-p (c) (or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12)))
+
+(defun nlre--provider-char-syntax (c)
+  "The provider's `char-syntax' for a table that is not a char-table.
+A separate function: GNU compiles `char-syntax' to opcode 122, which the
+standalone VM does not admit, and the predicates below stay byte-code."
+  (char-syntax c))
+
+(defun nlre--setup-syntax-table ()
+  "Read the current syntax table into `nlre--syntax-table' and return it."
+  (setq nlre--syntax-table
+        (if (not (fboundp 'char-syntax))
+            'none
+          (let ((table (and nlre--syntax-table-reader
+                            (funcall nlre--syntax-table-reader))))
+            (if (if (fboundp 'nelisp--syntax-table-object-p)
+                    (nelisp--syntax-table-object-p table)
+                  (char-table-p table))
+                table
+              t)))))
+
+;; Each predicate reads the class code from the raw descriptor, as GNU's
+;; SYNTAX (syntax.h:116-135): an entry that is not a cons is whitespace.
 ;; `_` is a symbol constituent, not a word constituent.
 (defun nlre--word-p (c)
-  (if (fboundp 'char-syntax) (eq (char-syntax c) ?w)
-    (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))
-        (and (>= c ?0) (<= c ?9)))))
+  (let ((table (or nlre--syntax-table (nlre--setup-syntax-table))))
+    (if (not (symbolp table))
+        (let ((entry (aref table c)))
+          (and (consp entry) (= (logand (car entry) 255) 2)))
+      (if (eq table t) (eq (nlre--provider-char-syntax c) ?w)
+        (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))
+            (and (>= c ?0) (<= c ?9)))))))
 
 (defun nlre--symbol-p (c)
-  (if (fboundp 'char-syntax)
-      (memq (char-syntax c) '(?w ?_))
-    (or (nlre--word-p c) (= c ?_))))
+  (let ((table (or nlre--syntax-table (nlre--setup-syntax-table))))
+    (if (not (symbolp table))
+        (let ((entry (aref table c)))
+          (and (consp entry) (memq (logand (car entry) 255) '(2 3)) t))
+      (if (eq table t) (memq (nlre--provider-char-syntax c) '(?w ?_))
+        (or (nlre--word-p c) (= c ?_))))))
 
 ;; Unknown syntax classes deliberately match nothing.
 (defun nlre--syntax-p (class c)
-  (if (fboundp 'char-syntax)
-      (eq (char-syntax c) (if (eq class ?-) 32 class))
-    (cond ((eq class ?w) (nlre--word-p c))
+  (let ((table (or nlre--syntax-table (nlre--setup-syntax-table))))
+    (if (not (symbolp table))
+        (let ((entry (aref table c)))
+          (eq (aref nlre--syntax-designators
+                    (if (consp entry) (logand (car entry) 255) 0))
+              (if (eq class ?-) 32 class)))
+      (if (eq table t) (eq (nlre--provider-char-syntax c) (if (eq class ?-) 32 class))
+        (nlre--syntax-p-fallback class c)))))
+
+(defun nlre--syntax-p-fallback (class c)
+  "ASCII approximation used only before `char-syntax' exists."
+  (cond ((eq class ?w) (nlre--word-p c))
         ((eq class ?_) (= c ?_))
         ((or (eq class ?-) (eq class 32)) (nlre--space-p c))
         ((eq class ?.) (and (> c 32) (< c 127)
@@ -1456,7 +1506,7 @@ one, which would demote them to the interpreter)."
         ((eq class ?\)) (memq c '(?\) ?\] ?})))
         ((eq class ?\") (= c ?\"))
         ((eq class ?\\) (= c ?\\))
-        (t nil))))
+        (t nil)))
 
 (defun nlre--set-in-ranges (ranges c)
   (let ((hit nil) (rs ranges))
@@ -1889,43 +1939,25 @@ one, which would demote them to the interpreter)."
              (min n nlre--match-end-limit)
            n)))
 
-(defconst nlre--standard-ascii-syntax ".........  .  .................. .\".ww_.()__._._wwwwwwwwww..___..wwwwwwwwwwwwwwwwwwwwwwwwww(\\)._.wwwwwwwwwwwwwwwwwwwwwwwwww(_).."
-  "GNU 31.1 standard syntax designators for ASCII, indexed by character.
-This is immutable default data, not a snapshot of any mutable syntax table.")
-(defconst nlre--syntax-entry-missing (make-symbol "nlre-syntax-entry-missing"))
-
-(defun nlre--host-char-syntax (character)
-  "Keep the host char-syntax bytecode outside the compiled matching loop."
-  (char-syntax character))
-
-(defun nlre--bootstrap-syntax-class (table character)
-  "Read bootstrap TABLE's live entries and inherited standard defaults.
-Adapt GNU lisp.h:2133-2155's ASCII lookup to the bootstrap record layout."
-  (let ((entry nlre--syntax-entry-missing) (cursor table))
-    (while (and cursor (eq entry nlre--syntax-entry-missing))
-      (setq entry (gethash character (aref cursor 1) nlre--syntax-entry-missing)
-            cursor (aref cursor 2)))
-    (if (eq entry nlre--syntax-entry-missing)
-        (if (< character 128) (aref nlre--standard-ascii-syntax character)
-          (funcall (symbol-function 'nelisp--syntax-default-class) character))
-      entry)))
-
 (defun nlre--syntax-run-plan-match (plan string start n caps)
   "Match PLAN using live syntax classes and fill CAPS on success.
-GNU regex-emacs.c:5175-5200 reads the current syntax class per character;
-its capture registers at :4593-4628 retain the final repeated iteration.
-The compiled plan contains only class designators, so direct table edits
-remain visible even when they do not invalidate the compiled cache."
+GNU regex-emacs.c:5175-5200 reads the current syntax class per character
+from the table set up for the search; its capture registers at
+:4593-4628 retain the final repeated iteration.  The compiled plan
+contains only class designators, so direct table edits remain visible even
+when they do not invalidate the compiled cache."
   (when (and (= start 0) (>= n (aref plan 3)))
-    (let* ((classes (aref plan 1)) (end 0)
-           (table (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader)))
-           (bootstrap (and (recordp table) (eq (aref table 0) 'nelisp--syntax-table))))
-      (while (and (< end n)
-                  (memq (if bootstrap
-                            (nlre--bootstrap-syntax-class table (aref string end))
-                          (nlre--host-char-syntax (aref string end)))
-                        classes))
-        (setq end (1+ end)))
+    (let ((classes (aref plan 1)) (end 0)
+          (table (or nlre--syntax-table (nlre--setup-syntax-table))))
+      (if (symbolp table)
+          (while (and (< end n) (memq (nlre--provider-char-syntax (aref string end)) classes))
+            (setq end (1+ end)))
+        (while (and (< end n)
+                    (memq (let ((entry (aref table (aref string end))))
+                            (aref nlre--syntax-designators
+                                  (if (consp entry) (logand (car entry) 255) 0)))
+                          classes))
+          (setq end (1+ end))))
       (when (= end n)
         (aset caps 0 (cons 0 n))
         (when (and (aref plan 2) (> n 0))
@@ -2209,6 +2241,9 @@ of STRING.  Sets `nlre--match-data' as usual."
              (fboundp 'nl-write-file))
     (nl-write-file nlre--string-match-counter-file
                    (format "%d" nlre--string-match-calls)))
+  ;; GNU sets up the search's syntax table per search; a reset is enough
+  ;; here, and unlike a dynamic binding it costs nothing on the plain path.
+  (setq nlre--syntax-table nil)
   (let* ((nlre--fold case-fold-search)
          (nlre--translate-table
           (and case-fold-search
@@ -2605,7 +2640,8 @@ non-regexp searcher, which converts the pattern before case translation."
   "Return the rightmost (START . CAPS) match in STRING.
 LOWER is the minimum candidate start and MAX-END bounds match consumption.
 The full STRING remains visible to anchors and boundary assertions."
-  (let* ((nlre--fold case-fold-search)
+  (let* ((nlre--syntax-table nil)
+         (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
                                       (nlre--search-translate-table regexp string)))
          (compiled (nlre--compiled-pattern regexp))
@@ -2629,7 +2665,8 @@ The full STRING remains visible to anchors and boundary assertions."
 
 (defun nlre--compiled-match-at-ending (compiled string start end)
   "Return capture vector when COMPILED matches STRING from START to END."
-  (let* ((nlre--fold case-fold-search)
+  (let* ((nlre--syntax-table nil)
+         (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
                                       (nlre--current-translate-table)))
          (nlre--pattern-multibyte (aref compiled 5))

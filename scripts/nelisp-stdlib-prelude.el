@@ -703,7 +703,8 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   (defun sequencep (x)
     "Return t if X is a sequence (= nil, cons, string, vector, or bool-vector)."
     (or (null x) (consp x) (stringp x) (vectorp x)
-        (and (fboundp 'bool-vector-p) (bool-vector-p x)))))
+        (and (fboundp 'bool-vector-p) (bool-vector-p x))
+        (and (fboundp 'char-table-p) (char-table-p x) t))))
 (unless (fboundp 'string-search)
   ;; The native scanner takes every ordinary case, multibyte included (a
   ;; multibyte haystack used to fall to the walk below: an allocation and a
@@ -4571,8 +4572,7 @@ the buffer string)."
      ((and (consp prop) (integerp (car prop))
            (< (logand (car prop) 65535) 13))
       (aref nelisp--syntax-code-classes (logand (car prop) 65535)))
-     ((and prop (not (consp prop)) (fboundp 'nelisp--syntax-table-p)
-           (nelisp--syntax-table-p prop))
+     ((and prop (not (consp prop)) (nelisp--syntax-table-object-p prop))
       (nelisp--syntax-lookup prop (aref text (1- pos))))
      (t (nelisp--syntax-lookup table (aref text (1- pos)))))))
 
@@ -4602,25 +4602,18 @@ like `nelisp--syntax-class-at'."
                           (get-text-property pos 'syntax-table))))))
     (cond
      ((and (consp prop) (integerp (car prop))) (logand (ash (car prop) -16) 255))
-     ((and prop (not (consp prop)) (fboundp 'nelisp--syntax-table-p)
-           (nelisp--syntax-table-p prop))
+     ((and prop (not (consp prop)) (nelisp--syntax-table-object-p prop))
       (nelisp--syntax-flags prop (aref text (1- pos))))
      (t (nelisp--syntax-flags table (aref text (1- pos)))))))
 
 (defun nelisp--syntax-flagged (table)
-  "Non-nil if a position may carry comment flags: TABLE or a parent has
-some, or `syntax-table' properties are consulted.  Scanners ask once per
+  "Non-nil if a position may carry comment flags.  Scanners ask once per
 call; when nil, only a `<' or `!' class can start a comment and only a
-`>' or `!' can end one, which spares a flag lookup per character."
-  (or parse-sexp-lookup-properties
-      ;; Another layer's table: assume flags, ask its `nelisp--syntax-flags'.
-      (not (nelisp--syntax-native-table-p table))
-      (let ((tbl table) (found nil))
-        (while (and (not found) (nelisp--syntax-native-table-p tbl))
-          (let ((h (gethash tbl nelisp--syntax-flag-store)))
-            (setq found (and h (> (hash-table-count h) 0))
-                  tbl (aref tbl 2))))
-        found)))
+`>' or `!' can end one, which spares a flag lookup per character.
+Flags live in each raw descriptor, as in GNU, and any entry of TABLE or
+its parents may carry them, so a table always answers non-nil.  GNU's
+scanners likewise read SYNTAX_WITH_FLAGS for every character."
+  (or parse-sexp-lookup-properties table t))
 
 (defun nelisp--syntax-comment-style (main other)
   "GNU comment style of a delimiter whose main char has flags MAIN."
@@ -5839,6 +5832,8 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
         (signal 'wrong-type-argument (list 'listp cur)))
       (nreverse acc)))
    ((stringp seq) (concat seq))
+   ((and (char-table-p seq) (fboundp 'nelisp--copy-char-table))
+    (nelisp--copy-char-table seq))
    ((and (char-table-p seq) (fboundp 'nelisp-casetab--copy-char-table))
     (nelisp-casetab--copy-char-table seq))
    ;; Records are sequences in host Emacs.  The standalone record length
@@ -13981,344 +13976,1225 @@ and a set-initial `]'."
 \(same SPEC syntax as `skip-chars-forward', probed against Emacs 30.1\)."
     (nelisp--motion-skip-backward spec lim)))
 
-;; ---- Doc 204 P3: syntax tables and char-syntax -------------------------
+;; ---- Doc 225 S3: GNU 31.1 chartab.c on the runtime char-table --------------
 ;;
-;; `make-syntax-table', `standard-syntax-table', `modify-syntax-entry',
-;; `char-syntax', `syntax-table', `set-syntax-table', and the
-;; `emacs-lisp-mode-syntax-table' value.  Per Doc 204 §3 P3 / §6.2 this
-;; implements exactly the ten classes this phase's consumers need --
-;; whitespace, word, symbol, open paren, close paren, string quote,
-;; escape, comment-start, comment-end, prefix -- and no more: Emacs's
-;; full class set (punctuation, char-quote, generic string/comment
-;; delimiters, two-char comment flags, `b'/`n' comment styles) is out of
-;; scope per §6.2 and is not built here.  `modify-syntax-entry' likewise
-;; parses only a descriptor's leading class character; any matching-char
-;; or flag characters after it are accepted (so real Emacs Lisp mode
-;; descriptors like "()" or "_ " do not error) but not stored, because
-;; nothing through P3 reads them back -- P4's scanner is the first
-;; consumer that would need matching-char data, and does not exist yet.
+;; The runtime owns the char-table family (user decision, 2026-10-21; the
+;; library defers to it behind `nelisp-native-char-tables').  A char-table
+;; is the runtime's native box: subtype, default, parent and a cell buffer.
+;; Cell 0 holds GNU's slot vector [ASCII CONTENTS0 ... CONTENTS63]
+;; (lisp.h struct Lisp_Char_Table) and cells 1.. hold the extra slots.  A
+;; sub-char-table is a vector [nelisp--sub-char-table DEPTH MIN-CHAR c ...]
+;; with 16, 32 or 128 contents for DEPTH 1, 2 or 3 (chartab.c:30-53); no
+;; `aref', `char-table-range' or `map-char-table' ever returns one.
 ;;
-;; Doc 204 §2 places syntax classes in `src/nelisp-syntax.el' as a
-;; language-core file, not a prelude bridge.  This phase stays in the
-;; prelude anyway: per Doc 204's own P3 instructions, the prelude is
-;; what the standalone image actually loads today, and the same
-;; `(unless (fboundp 'NAME) ...)' idiom as the P1/P2 blocks above is
-;; what keeps this file's own `char-syntax' et al. inert when this file
-;; is `load'ed under host Emacs (several gates do this, e.g. the
-;; `(load "scripts/nelisp-stdlib-prelude.el")' lines this Makefile
-;; already has) -- host's real `char-syntax' must keep answering there.
-;; A future phase may split this block out to `src/nelisp-syntax.el' per
-;; §2; noted here rather than done silently.
-;;
-;; Representation: `nelisp--syntax-table' is this file's own struct, not
-;; a real char-table.  `make-char-table'/`aref'/`aset' all work on this
-;; standalone (probed), but `copy-sequence' on a char-table signals
-;; `(wrong-type-argument sequencep ...)' there (probed) -- exactly what
-;; `make-syntax-table's "copy of TABLE" semantics would need -- so a
-;; char-table was dropped in favour of a hash-table keyed by character
-;; code plus an explicit PARENT link this file chases by hand, which
-;; gives the same "unset entries fall through to an inherited table"
-;; behaviour `make-syntax-table' needs without `copy-sequence' at all.
-;;
-;; Buffer association: `src/nelisp-buffer.el's `cl-defstruct
-;; nelisp-buffer' has no syntax-table slot, and this phase does not add
-;; one (Doc 204's instruction to keep P3 inside the prelude, and a
-;; struct-shape change is a bigger edit than this phase's scope) -- so
-;; the buffer -> table association is a side hash-table here, keyed
-;; `eq' on the buffer object, consulted by `syntax-table'/
-;; `set-syntax-table' the same way the P1 bridges above thread
-;; `nelisp--current-buffer' rather than the ported file's own ambient
-;; variable.
-;;
-;; Ambient default: probed against Emacs 30.1, a fresh `with-temp-buffer'
-;; starts `eq' to `(standard-syntax-table)', and real Emacs's `;'/`\''/
-;; `,'/'`'/`#' are ordinary symbol constituents there -- `emacs-lisp-mode'
-;; is what installs the comment/prefix classes P3's own acceptance
-;; values need.  This standalone's P3 acceptance script calls
-;; `char-syntax' with no `with-temp-buffer' and no mode call at all, on
-;; whatever buffer this image starts current in (measured: a real
-;; `*scratch*' buffer object, already current at top level) -- and per
-;; §3 P3's own "Ships" line ("under the Emacs Lisp table"), any buffer
-;; without its own `set-syntax-table' call resolves to
-;; `emacs-lisp-mode-syntax-table', not `standard-syntax-table'.  This
-;; runtime only ever reads/evaluates Emacs Lisp (Doc 204 §0/§1.1's
-;; `build()'/`lisp_plan()' call sites are the whole motivation for this
-;; document), so "the Emacs Lisp table" is this image's whole-program
-;; default rather than something a mode installs later.
-;; `standard-syntax-table' is still a distinct, non-Lisp-flavoured
-;; object for API completeness (real Emacs's own class assignments for
-;; the six chars it sets explicitly below), even though nothing in this
-;; tree resolves to it as a buffer's default.
+;; Only the lookup (CHAR_TABLE_REF behind `aref' and `char-table-range')
+;; and slot access are native (AGENTS.md clause 1, char-table slot access).
+;; The rest of chartab.c follows here function for function; `aset' on a
+;; char-table calls `nelisp--char-table-aset'.  The public replacements
+;; are installed only in the standalone runtime: when gates load this file
+;; into host Emacs, host's own C functions keep answering.
 
-(cl-defstruct nelisp--syntax-table
-  "P3's own syntax-table representation (not a char-table -- see the
-block comment above).  ENTRIES is a character-code -> class-char
-hash-table private to this instance; PARENT is another
-`nelisp--syntax-table' consulted when ENTRIES has no entry for a given
-character, or nil at the top of the chain.  Comment flags live in
-`nelisp--syntax-flag-store', not in a slot: the emacs-lib layer recognizes
-this record by its length of 3."
-  entries
-  parent)
+(defun nelisp--chartab-standalone-p ()
+  "Non-nil in the standalone runtime, whose char-table natives this completes."
+  (or (fboundp 'nl-write-file) (not (boundp 'emacs-version))))
 
-(defun nelisp--syntax-make-table (&optional parent)
-  "Fresh, empty `nelisp--syntax-table' with its own ENTRIES hash --
-never shared with any other table instance, so mutating one table via
-`modify-syntax-entry' cannot leak into another -- chained to PARENT."
-  (make-nelisp--syntax-table :entries (make-hash-table :test 'eq) :parent parent))
+(defvar nelisp--chartab-native-make (symbol-function 'make-char-table)
+  "The native allocator behind `make-char-table'.")
+(defvar nelisp--chartab-native-range (symbol-function 'char-table-range)
+  "The native `char-table-range': the default, CHAR_TABLE_REF, or the
+value at a range's start.")
+(defvar nelisp--chartab-native-set-range (symbol-function 'set-char-table-range)
+  "The native `set-char-table-range', used here for the default slot only.")
 
-(defconst nelisp--syntax-miss (make-symbol "nelisp--syntax-miss")
-  "Sentinel `gethash' default so a stored `nil' class (never produced by
-this file, but not disallowed) cannot be confused with a lookup miss.")
+(defconst nelisp--chartab-size [64 16 32 128] "chartab.c:30 `chartab_size'.")
+(defconst nelisp--chartab-chars [65536 4096 128 1] "chartab.c:38 `chartab_chars'.")
+(defconst nelisp--chartab-bits [16 12 7 0] "chartab.c:46 `chartab_bits'.")
 
-(defun nelisp--syntax-default-class (ch)
-  "Bottom-of-chain class for character CH when no table entry (own or
-inherited) covers it.  The generated Unicode provider contains GNU 31.1's
-standard syntax classes for every Unicode scalar.  The older bootstrap
-approximation remains available when loading this prelude without that
-module."
-  (if (fboundp 'nelisp-unicode-syntax)
-      (nelisp-unicode-syntax ch)
-    (cond
-     ((memq ch '(?\s ?\t ?\n ?\f ?\r)) ?\s)
-     ((or (and (>= ch ?0) (<= ch ?9))
-          (and (>= ch ?A) (<= ch ?Z))
-          (and (>= ch ?a) (<= ch ?z))
-          (>= ch 128))
-      ?w)
-     (t ?_))))
+(defun nelisp--sub-char-table-p (object)
+  "Non-nil if OBJECT is a sub-char-table (GNU SUB_CHAR_TABLE_P)."
+  (and (vectorp object) (> (length object) 18)
+       (eq (aref object 0) 'nelisp--sub-char-table)))
 
-(defun nelisp--syntax-lookup (table ch)
-  "Class char for character CH in TABLE, walking TABLE's PARENT chain
-on a miss and falling back to `nelisp--syntax-default-class' past the
-top of it."
-  ;; Every scanner calls this once per character.  The struct accessors
-  ;; cost about 25 us each interpreted and the catch/throw more: 230 us per
-  ;; lookup, 0.6 ms per character of `forward-sexp'.  A table is a record
-  ;; [tag ENTRIES PARENT]; read its slots directly.
-  (let ((tbl table) (hit nelisp--syntax-miss))
-    (while (and tbl (eq hit nelisp--syntax-miss))
-      (if (recordp tbl)
-          (setq hit (gethash ch (aref tbl 1) nelisp--syntax-miss)
-                tbl (aref tbl 2))
-        (setq hit (gethash ch (nelisp--syntax-table-entries tbl) nelisp--syntax-miss)
-              tbl (nelisp--syntax-table-parent tbl))))
-    (if (eq hit nelisp--syntax-miss) (nelisp--syntax-default-class ch) hit)))
+(defun nelisp--make-sub-char-table (depth min-char defalt)
+  "chartab.c:138-146 `make_sub_char_table'."
+  (let ((table (make-vector (+ 3 (aref nelisp--chartab-size depth)) defalt)))
+    (aset table 0 'nelisp--sub-char-table)
+    (aset table 1 depth)
+    (aset table 2 min-char)
+    table))
 
-(defun nelisp--syntax-put (table ch class)
-  "Set character CH's class in TABLE directly to CLASS (already a
-class-char, e.g. `?w'/`?_'/`?\\('/`?\\)'/`?\\\"'/`?\\\\'/`?<'/`?>'/`?\\''/
-`?\\s' -- not a raw `modify-syntax-entry' descriptor string; see
-`nelisp--syntax-parse-class' for that)."
-  (puthash ch class (nelisp--syntax-table-entries table)))
+(defun nelisp--char-table-vector (table)
+  "TABLE's slot vector [ASCII CONTENTS0 ... CONTENTS63]."
+  (let ((slots (nelisp--char-table-slots table)))
+    (if (and (vectorp slots) (= (length slots) 65))
+        slots
+      ;; A table the allocator made without one: every slot is cell 0.
+      (nelisp--char-table-set-slots table (make-vector 65 slots)))))
 
-;; Comment flags.  GNU keeps the `1234pbnc' flags of a syntax descriptor
-;; with its class; `scan-lists' and `scan-sexps' need flags 1-4, `b', `c'
-;; and `n' to see two-character comment delimiters such as C's `/*' and
-;; `*/' (CC Mode's `c-emacs-features' tests this at load).  The bits are
-;; GNU's own flag bits shifted down by 16, so a raw `syntax-table' text
-;; property code yields the same value with (ash CODE -16).
-(defconst nelisp--syntax-flag-bits
-  '((?1 . 1) (?2 . 2) (?3 . 4) (?4 . 8) (?p . 16) (?b . 32) (?n . 64) (?c . 128)))
+(defun nelisp--char-table-ascii (table)
+  "chartab.c:149-164 `char_table_ascii': the value for the `ascii' slot."
+  (let ((sub (aref (nelisp--char-table-vector table) 1)))
+    (if (not (nelisp--sub-char-table-p sub))
+        sub
+      (setq sub (aref sub 3))
+      (if (not (nelisp--sub-char-table-p sub))
+          sub
+        (aref sub 3)))))
 
-(defun nelisp--syntax-parse-flags (descriptor)
-  "Flag bits of DESCRIPTOR: its characters after the matching char."
-  (let ((i 2) (n (length descriptor)) (f 0))
+(defun nelisp--chartab-check (object)
+  "GNU CHECK_CHAR_TABLE."
+  (unless (char-table-p object)
+    (signal 'wrong-type-argument (list 'char-table-p object))))
+
+(defun nelisp--chartab-check-char (object)
+  "GNU CHECK_CHARACTER."
+  (unless (and (integerp object) (>= object 0) (<= object #x3fffff))
+    (signal 'wrong-type-argument (list 'characterp object))))
+
+(defun nelisp--sub-char-table-set (table c val)
+  "chartab.c:370-397 `sub_char_table_set'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (i (ash (- c min-char) (- (aref nelisp--chartab-bits depth)))))
+    (if (= depth 3)
+        (aset table (+ 3 i) val)
+      (let ((sub (aref table (+ 3 i))))
+        (unless (nelisp--sub-char-table-p sub)
+          (setq sub (nelisp--make-sub-char-table
+                     (1+ depth) (+ min-char (* i (aref nelisp--chartab-chars depth)))
+                     sub))
+          (aset table (+ 3 i) sub))
+        (nelisp--sub-char-table-set sub c val)))))
+
+(defun nelisp--char-table-set (table c val)
+  "chartab.c:399-421 `char_table_set', with lisp.h's CHAR_TABLE_SET
+ASCII path."
+  (let* ((slots (nelisp--char-table-vector table))
+         (ascii (aref slots 0)))
+    (if (and (< c 128) (nelisp--sub-char-table-p ascii))
+        (aset ascii (+ 3 c) val)
+      (let* ((i (ash c -16))
+             (sub (aref slots (1+ i))))
+        (unless (nelisp--sub-char-table-p sub)
+          (setq sub (nelisp--make-sub-char-table 1 (* i 65536) sub))
+          (aset slots (1+ i) sub))
+        (nelisp--sub-char-table-set sub c val)
+        (when (< c 128)
+          (aset slots 0 (nelisp--char-table-ascii table)))))))
+
+(defun nelisp--sub-char-table-set-range (table from to val)
+  "chartab.c:424-460 `sub_char_table_set_range'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (chars-in-block (aref nelisp--chartab-chars depth))
+         (lim (aref nelisp--chartab-size depth))
+         i c)
+    (when (< from min-char) (setq from min-char))
+    (setq i (ash (- from min-char) (- (aref nelisp--chartab-bits depth)))
+          c (+ min-char (* chars-in-block i)))
+    (while (and (< i lim) (<= c to))
+      (if (and (<= from c) (<= (+ c chars-in-block -1) to))
+          (aset table (+ 3 i) val)
+        (let ((sub (aref table (+ 3 i))))
+          (unless (nelisp--sub-char-table-p sub)
+            (setq sub (nelisp--make-sub-char-table (1+ depth) c sub))
+            (aset table (+ 3 i) sub))
+          (nelisp--sub-char-table-set-range sub from to val)))
+      (setq i (1+ i) c (+ c chars-in-block)))))
+
+(defun nelisp--char-table-set-range (table from to val)
+  "chartab.c:462-496 `char_table_set_range'."
+  (if (= from to)
+      (nelisp--char-table-set table from val)
+    (let* ((slots (nelisp--char-table-vector table))
+           (lim (ash to -16))
+           (i (ash from -16))
+           (c (* i 65536)))
+      (while (and (<= i lim) (<= c to))
+        (if (and (<= from c) (<= (+ c 65535) to))
+            (aset slots (1+ i) val)
+          (let ((sub (aref slots (1+ i))))
+            (unless (nelisp--sub-char-table-p sub)
+              (setq sub (nelisp--make-sub-char-table 1 (* i 65536) sub))
+              (aset slots (1+ i) sub))
+            (nelisp--sub-char-table-set-range sub from to val)))
+        (setq i (1+ i) c (+ c 65536)))
+      (when (< from 128)
+        (aset slots 0 (nelisp--char-table-ascii table))))))
+
+(defun nelisp--char-table-aset (table idx val)
+  "`aset' on a char-table: data.c Faset's CHECK_CHARACTER and CHAR_TABLE_SET.
+The native `aset' has already checked that IDX is a fixnum."
+  (nelisp--chartab-check-char idx)
+  (nelisp--char-table-set table idx val)
+  val)
+
+(defun nelisp--chartab-make-char-table (&rest args)
+  "Return a newly created char-table, with purpose PURPOSE.
+Each element is initialized to INIT, which defaults to nil.
+
+PURPOSE should be a symbol.  If it has a `char-table-extra-slots'
+property, the property's value should be an integer between 0 and 10
+that specifies how many extra slots the char-table has.  Otherwise,
+the char-table has no extra slot.
+
+\(fn PURPOSE &optional INIT)"
+  ;; chartab.c:103-136: INIT fills the default, `ascii', contents and extras.
+  (let ((n (length args)))
+    (unless (and (>= n 1) (<= n 2))
+      (signal 'wrong-number-of-arguments (list 'make-char-table n))))
+  (let* ((init (car (cdr args)))
+         (table (funcall nelisp--chartab-native-make (car args) init)))
+    (nelisp--char-table-set-slots table (make-vector 65 init))
+    table))
+
+(defun nelisp--chartab-char-table-range (char-table range)
+  "Return the value in CHAR-TABLE for a range of characters RANGE.
+RANGE should be nil (for the default value),
+a cons of character codes (for characters in the range), or a character code.
+If RANGE is a cons (FROM . TO), the function returns the value for FROM.
+
+\(fn CHAR-TABLE RANGE)"
+  ;; chartab.c:577-606; the lookups are native.
+  (nelisp--chartab-check char-table)
+  (cond ((null range) (funcall nelisp--chartab-native-range char-table nil))
+        ((and (integerp range) (>= range 0) (<= range #x3fffff))
+         (aref char-table range))
+        ((consp range)
+         (nelisp--chartab-check-char (car range))
+         (nelisp--chartab-check-char (cdr range))
+         (funcall nelisp--chartab-native-range char-table range))
+        (t (signal 'error (list (format-message
+                                 "Invalid RANGE argument to `char-table-range'"))))))
+
+(defun nelisp--chartab-set-char-table-range (char-table range value)
+  "Set the value in CHAR-TABLE for a range of characters RANGE to VALUE.
+RANGE should be t (for all characters), nil (for the default value),
+a cons of character codes (for characters in the range),
+or a character code.  Return VALUE.
+
+\(fn CHAR-TABLE RANGE VALUE)"
+  ;; chartab.c:608-641.
+  (nelisp--chartab-check char-table)
+  (cond ((eq range t)
+         (let ((slots (nelisp--char-table-vector char-table)) (i 1))
+           (aset slots 0 value)
+           (while (<= i 64) (aset slots i value) (setq i (1+ i)))))
+        ((null range)
+         (funcall nelisp--chartab-native-set-range char-table nil value))
+        ((and (integerp range) (>= range 0) (<= range #x3fffff))
+         (nelisp--char-table-set char-table range value))
+        ((consp range)
+         (nelisp--chartab-check-char (car range))
+         (nelisp--chartab-check-char (cdr range))
+         (nelisp--char-table-set-range char-table (car range) (cdr range) value))
+        (t (signal 'error (list (format-message
+                                 "Invalid RANGE argument to `set-char-table-range'")))))
+  value)
+
+(defun nelisp--chartab-call (function range val)
+  "Call FUNCTION as map_sub_char_table does: a character or the RANGE cons."
+  (if (eq (car range) (cdr range))
+      (funcall function (car range) val)
+    (funcall function range val)))
+
+(defun nelisp--map-sub-char-table (function table val range top)
+  "chartab.c:715-830 `map_sub_char_table'.  TABLE is TOP or a sub-table.
+RANGE is the one cons GNU reuses for every call."
+  (let ((from (car range)) (to (cdr range))
+        depth min-char max-char chars-in-block i c)
+    (if (nelisp--sub-char-table-p table)
+        (setq depth (aref table 1) min-char (aref table 2)
+              max-char (+ min-char (aref nelisp--chartab-chars (1- depth)) -1))
+      (setq depth 0 min-char 0 max-char #x3fffff))
+    (setq chars-in-block (aref nelisp--chartab-chars depth))
+    (when (< to max-char) (setq max-char to))
+    (setq i (if (<= from min-char) 0 (/ (- from min-char) chars-in-block))
+          c (+ min-char (* chars-in-block i)))
+    (while (<= c max-char)
+      (let ((this (if (= depth 0)
+                      (aref (nelisp--char-table-vector table) (1+ i))
+                    (aref table (+ 3 i))))
+            (nextc (+ c chars-in-block)))
+        (if (nelisp--sub-char-table-p this)
+            (progn
+              (when (>= to nextc) (setcdr range (1- nextc)))
+              (setq val (nelisp--map-sub-char-table function this val range top)))
+          (when (null this)
+            (setq this (funcall nelisp--chartab-native-range top nil)))
+          (unless (eq val this)
+            (let ((different-value t))
+              (when (null val)
+                (let ((parent (char-table-parent top)))
+                  (when parent
+                    ;; The value of FROM in PARENT, without PARENT's parent.
+                    (let ((temp (char-table-parent parent)))
+                      (set-char-table-parent parent nil)
+                      (setq val (aref parent from))
+                      (set-char-table-parent parent temp))
+                    (setcdr range (1- c))
+                    (setq val (nelisp--map-sub-char-table
+                               function parent val range parent))
+                    (when (eq val this) (setq different-value nil)))))
+              (when (and val different-value)
+                (setcdr range (1- c))
+                (nelisp--chartab-call function range val))
+              (setq val this from c)
+              (setcar range c))))
+        (setcdr range to))
+      (setq i (1+ i) c (+ c chars-in-block)))
+    val))
+
+(defun nelisp--chartab-map-char-table (function char-table)
+  "Call FUNCTION for each character in CHAR-TABLE that has non-nil value.
+FUNCTION is called with two arguments, KEY and VALUE.
+KEY is a character code or a cons of character codes specifying a
+range of characters that have the same value.
+VALUE is what (char-table-range CHAR-TABLE KEY) returns.
+
+\(fn FUNCTION CHAR-TABLE)"
+  ;; chartab.c:841-900 `map_char_table'.
+  (nelisp--chartab-check char-table)
+  (let* ((table char-table)
+         (range (cons 0 #x3fffff))
+         (val (let ((ascii (aref (nelisp--char-table-vector table) 0)))
+                (if (nelisp--sub-char-table-p ascii) (aref ascii 3) ascii))))
+    (setq val (nelisp--map-sub-char-table function table val range table))
+    (while (and (null val) (char-table-parent table))
+      (let* ((from (car range))
+             (parent (char-table-parent table))
+             (temp (char-table-parent parent)))
+        (set-char-table-parent parent nil)
+        (setq val (aref parent from))
+        (set-char-table-parent parent temp)
+        (setq val (nelisp--map-sub-char-table function parent val range parent)
+              table parent)))
+    (when val
+      (nelisp--chartab-call function range val)))
+  nil)
+
+(defun nelisp--optimize-sub-char-table (table test)
+  "chartab.c:643-673 `optimize_sub_char_table'."
+  (let* ((depth (aref table 1))
+         (elt (aref table 3))
+         (n (aref nelisp--chartab-size depth))
+         (i 1)
+         optimizable)
+    (when (nelisp--sub-char-table-p elt)
+      (setq elt (nelisp--optimize-sub-char-table elt test))
+      (aset table 3 elt))
+    (setq optimizable (not (nelisp--sub-char-table-p elt)))
     (while (< i n)
-      (setq f (logior f (or (cdr (assq (aref descriptor i) nelisp--syntax-flag-bits)) 0))
-            i (1+ i)))
-    f))
+      (let ((this (aref table (+ 3 i))))
+        (when (nelisp--sub-char-table-p this)
+          (setq this (nelisp--optimize-sub-char-table this test))
+          (aset table (+ 3 i) this))
+        (when (and optimizable
+                   (cond ((null test) (not (equal this elt)))
+                         ((eq test 'eq) (not (eq this elt)))
+                         (t (not (funcall test this elt)))))
+          (setq optimizable nil)))
+      (setq i (1+ i)))
+    (if optimizable elt table)))
 
-(defvar nelisp--syntax-flag-store (make-hash-table :test 'eq :weakness 'key)
-  "Syntax table -> (character -> flag bits) for this file's own tables.")
+(defun nelisp--chartab-optimize-char-table (char-table &optional test)
+  "Optimize CHAR-TABLE.
+TEST is the comparison function used to decide whether two entries are
+equivalent and can be merged.  It defaults to `equal'.
 
-(defun nelisp--syntax-native-table-p (table)
-  "Non-nil if TABLE is this file's own `nelisp--syntax-table' record."
-  (and (recordp table) (eq (aref table 0) 'nelisp--syntax-table)))
+\(fn CHAR-TABLE &optional TEST)"
+  ;; chartab.c:675-697.
+  (nelisp--chartab-check char-table)
+  (let ((slots (nelisp--char-table-vector char-table)) (i 1))
+    (while (<= i 64)
+      (let ((elt (aref slots i)))
+        (when (nelisp--sub-char-table-p elt)
+          (aset slots i (nelisp--optimize-sub-char-table elt test))))
+      (setq i (1+ i)))
+    (aset slots 0 (nelisp--char-table-ascii char-table)))
+  nil)
 
-(defun nelisp--syntax-flags (table ch)
-  "Flag bits of character CH in TABLE, walking its PARENT chain; 0 if none.
-Only this file's own tables carry flags here; a layer with its own
-syntax tables (emacs-lib's char-tables) replaces this function, as it
-replaces `nelisp--syntax-lookup'."
-  (let ((tbl table) (hit nil))
-    (while (and (null hit) (nelisp--syntax-native-table-p tbl))
-      (let ((h (gethash tbl nelisp--syntax-flag-store)))
-        (when h (setq hit (gethash ch h))))
-      (setq tbl (aref tbl 2)))
-    (or hit 0)))
+(defun nelisp--char-table-extra-count (table)
+  "The number of extra slots TABLE was made with."
+  (let ((n 0))
+    ;; GNU bounds the property's count only by its fixnum check.
+    (while (and (< n 4096)
+                (condition-case nil
+                    (progn (char-table-extra-slot table n) t)
+                  (args-out-of-range nil)))
+      (setq n (1+ n)))
+    n))
 
-(defun nelisp--syntax-set-flags (table ch flags)
-  "Give CH the flag bits FLAGS in TABLE, shadowing any PARENT flags."
-  (when (nelisp--syntax-native-table-p table)
-    (let ((h (gethash table nelisp--syntax-flag-store)))
-      (if (or (/= flags 0)
-              (/= (nelisp--syntax-flags (aref table 2) ch) 0))
-          (progn
-            (unless h
-              (setq h (make-hash-table :test 'eq))
-              (puthash table h nelisp--syntax-flag-store))
-            (puthash ch flags h))
-        (when h (remhash ch h))))))
+(defun nelisp--copy-sub-char-table (table)
+  "chartab.c:166-184 `copy_sub_char_table'."
+  (let* ((n (length table)) (copy (make-vector n nil)) (i 3))
+    (aset copy 0 'nelisp--sub-char-table)
+    (aset copy 1 (aref table 1))
+    (aset copy 2 (aref table 2))
+    (while (< i n)
+      (let ((val (aref table i)))
+        (aset copy i (if (nelisp--sub-char-table-p val)
+                         (nelisp--copy-sub-char-table val)
+                       val)))
+      (setq i (1+ i)))
+    copy))
 
-(defun nelisp--syntax-parse-class (descriptor)
-  "Leading class char of DESCRIPTOR, normalised the way `char-syntax'
-reports it back: probed against Emacs 30.1, both `-' and a literal
-space denote whitespace and both read back as `?\\s' (32); the other
-nine classes P3 supports report back exactly their own descriptor
-character (`w'/`_'/`('/`)'/`\"'/`\\'/`<'/`>'/`\\''), unchanged."
-  (nelisp--check-string descriptor)
-  (let ((c (aref descriptor 0)))
-    (if (memq c '(?\s ?-)) ?\s c)))
+(defun nelisp--copy-char-table (table)
+  "chartab.c:186-208 `copy_char_table': the slots, a copy of every
+sub-char-table, and the extras; the values themselves are shared."
+  (let* ((purpose (char-table-subtype table))
+         (extras (nelisp--char-table-extra-count table))
+         (saved (get purpose 'char-table-extra-slots))
+         (copy (progn
+                 ;; Allocate with TABLE's own extra count even if the
+                 ;; property changed since TABLE was made.
+                 (put purpose 'char-table-extra-slots extras)
+                 (unwind-protect (funcall nelisp--chartab-native-make purpose nil)
+                   (put purpose 'char-table-extra-slots saved))))
+         (slots (nelisp--char-table-vector table))
+         (cslots (make-vector 65 nil))
+         (i 1))
+    (funcall nelisp--chartab-native-set-range copy nil
+             (funcall nelisp--chartab-native-range table nil))
+    (when (char-table-parent table)
+      (set-char-table-parent copy (char-table-parent table)))
+    (while (<= i 64)
+      (let ((val (aref slots i)))
+        (aset cslots i (if (nelisp--sub-char-table-p val)
+                           (nelisp--copy-sub-char-table val)
+                         val)))
+      (setq i (1+ i)))
+    (nelisp--char-table-set-slots copy cslots)
+    (aset cslots 0 (nelisp--char-table-ascii copy))
+    (setq i 0)
+    (while (< i extras)
+      (set-char-table-extra-slot copy i (char-table-extra-slot table i))
+      (setq i (1+ i)))
+    copy))
+
+(defun nelisp--char-table-equal (a b)
+  "fns.c:2985-2997: char-tables are equal when every slot is: default,
+parent, purpose, `ascii', contents and extras, sub-char-tables element
+by element."
+  (and (equal (funcall nelisp--chartab-native-range a nil)
+              (funcall nelisp--chartab-native-range b nil))
+       (equal (char-table-parent a) (char-table-parent b))
+       (eq (char-table-subtype a) (char-table-subtype b))
+       (let ((n (nelisp--char-table-extra-count a)))
+         (and (= n (nelisp--char-table-extra-count b))
+              (equal (nelisp--char-table-vector a) (nelisp--char-table-vector b))
+              (let ((i 0) (same t))
+                (while (and same (< i n))
+                  (setq same (equal (char-table-extra-slot a i)
+                                    (char-table-extra-slot b i))
+                        i (1+ i)))
+                same)))))
+
+(defun nelisp--chartab-install ()
+  "Install this section's chartab.c functions over the public names."
+  (fset 'make-char-table #'nelisp--chartab-make-char-table)
+  (fset 'char-table-range #'nelisp--chartab-char-table-range)
+  (fset 'set-char-table-range #'nelisp--chartab-set-char-table-range)
+  (fset 'map-char-table #'nelisp--chartab-map-char-table)
+  t)
+
+;; Not a native: the usual guard keeps host Emacs's own.
+(unless (fboundp 'optimize-char-table)
+  (defalias 'optimize-char-table #'nelisp--chartab-optimize-char-table))
+
+(defvar nelisp--chartab-installed
+  (and (nelisp--chartab-standalone-p) (nelisp--chartab-install))
+  "Non-nil once the chartab.c functions above answer the public names.")
+
+;; ---- Doc 225 S3: GNU 31.1 category.c ----------------------------------------
+;;
+;; A category table is a char-table of subtype `category-table' with two
+;; extra slots: a 95-slot vector of docstrings and the equal-hash that
+;; shares category sets (category.c:48-64, :422-434).  A category set is a
+;; 128-bit bool-vector.  The standard table is built on first use from
+;; GNU 31.1's own, generated by tools/nelisp-generate-unicode.el
+;; (init_category_once plus characters.el).  The buffer's category table
+;; is a buffer -> table map, as the syntax table is above.
+
+(defun nelisp--chartab-ref-simple (table idx c from-to defalt subtable)
+  "chartab.c:252-266 `char_table_ref_simple'; FROM-TO is (FROM . TO)."
+  (let ((val (if subtable
+                 (aref table (+ 3 idx))
+               (aref (nelisp--char-table-vector table) (1+ idx)))))
+    (cond ((nelisp--sub-char-table-p val)
+           (nelisp--sub-char-table-ref-and-range val c from-to defalt))
+          ((null val) defalt)
+          (t val))))
+
+(defun nelisp--sub-char-table-ref-and-range (table c from-to defalt)
+  "chartab.c:268-316 `sub_char_table_ref_and_range'."
+  (let* ((depth (aref table 1))
+         (min-char (aref table 2))
+         (chars (aref nelisp--chartab-chars depth))
+         (chartab-idx (ash (- c min-char) (- (aref nelisp--chartab-bits depth))))
+         (val (nelisp--chartab-ref-simple table chartab-idx c from-to defalt t))
+         (idx chartab-idx))
+    (catch 'done
+      (while (and (> idx 0) (< (car from-to) (+ min-char (* idx chars))))
+        (setq c (+ min-char (* idx chars) -1) idx (1- idx))
+        (unless (eq (nelisp--chartab-ref-simple table idx c from-to defalt t) val)
+          (setcar from-to (1+ c))
+          (throw 'done nil))))
+    (catch 'done
+      (while (and (< (setq c (* (1+ chartab-idx) chars))
+                     (aref nelisp--chartab-chars (1- depth)))
+                  (<= (setq c (+ c min-char)) (cdr from-to)))
+        (setq chartab-idx (1+ chartab-idx))
+        (unless (eq (nelisp--chartab-ref-simple table chartab-idx c from-to defalt t) val)
+          (setcdr from-to (1- c))
+          (throw 'done nil))))
+    val))
+
+(defun nelisp--char-table-ref-and-range (table c from-to)
+  "chartab.c:318-368 `char_table_ref_and_range': the value of C, nil
+answering the default but not the parent, and FROM-TO narrowed to a run
+around C with that value."
+  (let* ((defalt (funcall nelisp--chartab-native-range table nil))
+         (chartab-idx (ash c -16))
+         (idx chartab-idx)
+         val)
+    (when (< (car from-to) 0) (setcar from-to 0))
+    (when (< (cdr from-to) 0) (setcdr from-to #x3fffff))
+    (setq val (nelisp--chartab-ref-simple table chartab-idx c from-to defalt nil))
+    (catch 'done
+      (while (< (car from-to) (* idx 65536))
+        (setq c (1- (* idx 65536)) idx (1- idx))
+        (unless (eq (nelisp--chartab-ref-simple table idx c from-to defalt nil) val)
+          (setcar from-to (1+ c))
+          (throw 'done nil))))
+    (catch 'done
+      (while (>= (cdr from-to) (* (1+ chartab-idx) 65536))
+        (setq chartab-idx (1+ chartab-idx) c (* chartab-idx 65536))
+        (unless (eq (nelisp--chartab-ref-simple table chartab-idx c from-to defalt nil) val)
+          (setcdr from-to (1- c))
+          (throw 'done nil))))
+    val))
+
+;; init_category_once: two extra slots.
+(when (nelisp--chartab-standalone-p)
+  (put 'category-table 'char-table-extra-slots 2))
+
+(defun nelisp--category-check (object)
+  "GNU CHECK_CATEGORY: an ASCII printing character."
+  (unless (and (integerp object) (>= object #x20) (<= object #x7e))
+    (signal 'wrong-type-argument (list 'categoryp object))))
+
+(defun nelisp--category-set-p (object)
+  "GNU CATEGORY_SET_P: a 128-bit bool-vector."
+  (and (bool-vector-p object) (= (length object) 128)))
+
+(defun nelisp--category-docstrings (table)
+  "TABLE's docstring vector, GNU CATEGORY_DOCSTRING's extra slot 0."
+  (char-table-extra-slot table 0))
+
+(defvar nelisp--category-standard-table nil
+  "The standard category table, built from GNU's data on first use.")
+
+(defvar nelisp--category-buffer-tables (make-hash-table :test 'eq :weakness 'key)
+  "Buffer -> category table installed with `set-category-table'.")
+
+(defun nelisp--category-hash-get (table category-set)
+  "category.c:48-64 `hash_get_category_set': the shared set equal to
+CATEGORY-SET, recorded in TABLE's extra slot 1."
+  (let ((hash (char-table-extra-slot table 1)))
+    (unless hash
+      (setq hash (make-hash-table :test 'equal))
+      (set-char-table-extra-slot table 1 hash))
+    (or (gethash category-set hash)
+        (puthash category-set category-set hash))))
+
+(defun nelisp--category-empty-table ()
+  "category.c:422-434 `init_category_once''s table: no categories."
+  (let ((table (make-char-table 'category-table nil)))
+    (set-char-table-range table nil (make-bool-vector 128 nil))
+    (set-char-table-extra-slot table 0 (make-vector 95 nil))
+    table))
+
+(defun nelisp--category-build-standard ()
+  "Build GNU 31.1's standard category table from the generated data."
+  (let ((table (nelisp--category-empty-table)))
+    (when (boundp 'nelisp--unicode-category-runs)
+      (let ((docs (char-table-extra-slot table 0))
+            (sets (make-vector (length nelisp--unicode-category-sets) nil))
+            (runs nelisp--unicode-category-runs)
+            (i 0) (n 0))
+        (while (< i 95)
+          (aset docs i (aref nelisp--unicode-category-docstrings i))
+          (setq i (1+ i)))
+        (setq i 0)
+        (while (< i (length sets))
+          (aset sets i (nelisp--category-hash-get
+                        table (nelisp--category-make-category-set
+                               (aref nelisp--unicode-category-sets i))))
+          (setq i (1+ i)))
+        (setq i 0 n (length runs))
+        (while (< i n)
+          (nelisp--char-table-set-range table (aref runs i) (aref runs (1+ i))
+                                        (aref sets (aref runs (+ i 2))))
+          (setq i (+ i 3)))))
+    table))
+
+(defun nelisp--category-standard ()
+  (or nelisp--category-standard-table
+      (setq nelisp--category-standard-table (nelisp--category-build-standard))))
+
+(defun nelisp--category-current ()
+  (or (gethash (current-buffer) nelisp--category-buffer-tables)
+      (nelisp--category-standard)))
+
+(defun nelisp--category-check-table (table)
+  "category.c:175-182 `check_category_table'."
+  (if (null table)
+      (nelisp--category-current)
+    (unless (nelisp--category-category-table-p table)
+      (signal 'wrong-type-argument (list 'category-table-p table)))
+    table))
+
+(defun nelisp--category-make-category-set (categories)
+  "Return a newly created category-set which contains CATEGORIES.
+CATEGORIES is a string of category mnemonics.
+The value is a bool-vector which has t at the indices corresponding to
+those categories.
+
+\(fn CATEGORIES)"
+  ;; category.c:72-101.
+  (unless (stringp categories)
+    (signal 'wrong-type-argument (list 'stringp categories)))
+  (when (multibyte-string-p categories)
+    (signal 'error (list (format-message "Multibyte string in `make-category-set'"))))
+  (let ((set (make-bool-vector 128 nil)) (len (length categories)))
+    (while (>= (setq len (1- len)) 0)
+      (let ((category (aref categories len)))
+        (nelisp--category-check category)
+        (aset set category t)))
+    set))
+
+(defun nelisp--category-define-category (category docstring &optional table)
+  "Define CATEGORY as a category which is described by DOCSTRING.
+CATEGORY should be an ASCII printing character in the range ` ' to `~'.
+DOCSTRING is the documentation string of the category.  The first line
+should be a terse text (preferably less than 16 characters),
+and the rest lines should be the full description.
+The category is defined only in category table TABLE, which defaults to
+the current buffer's category table.
+
+\(fn CATEGORY DOCSTRING &optional TABLE)"
+  ;; category.c:105-124.
+  (nelisp--category-check category)
+  (unless (stringp docstring)
+    (signal 'wrong-type-argument (list 'stringp docstring)))
+  (setq table (nelisp--category-check-table table))
+  (let ((docs (nelisp--category-docstrings table)))
+    (when (aref docs (- category #x20))
+      (signal 'error (list (format-message "Category `%c' is already defined"
+                                           category))))
+    (aset docs (- category #x20) docstring))
+  nil)
+
+(defun nelisp--category-category-docstring (category &optional table)
+  "Return the documentation string of CATEGORY, as defined in TABLE.
+TABLE should be a category table and defaults to the current buffer's
+category table.
+
+\(fn CATEGORY &optional TABLE)"
+  (nelisp--category-check category)
+  (setq table (nelisp--category-check-table table))
+  (aref (nelisp--category-docstrings table) (- category #x20)))
+
+(defun nelisp--category-get-unused-category (&optional table)
+  "Return a category which is not yet defined in TABLE.
+If no category remains available, return nil.
+The optional argument TABLE specifies which category table to modify;
+it defaults to the current buffer's category table.
+
+\(fn &optional TABLE)"
+  (setq table (nelisp--category-check-table table))
+  (let ((docs (nelisp--category-docstrings table)) (i #x20) (found nil))
+    (while (and (not found) (<= i #x7e))
+      (if (aref docs (- i #x20)) (setq i (1+ i)) (setq found i)))
+    found))
+
+(defun nelisp--category-category-table-p (arg)
+  "Return t if ARG is a category table.
+
+\(fn ARG)"
+  (if (and (char-table-p arg) (eq (char-table-subtype arg) 'category-table)) t nil))
+
+(defun nelisp--category-category-table ()
+  "Return the current category table.
+This is the one specified by the current buffer."
+  (nelisp--category-current))
+
+(defun nelisp--category-standard-category-table ()
+  "Return the standard category table.
+This is the one used for new buffers."
+  (nelisp--category-standard))
+
+(defun nelisp--category-copy-table (table)
+  "category.c:203-230 `copy_category_entry' and `copy_category_table'."
+  (setq table (copy-sequence table))
+  (let ((defalt (char-table-range table nil)))
+    (when defalt
+      (set-char-table-range table nil (copy-sequence defalt))))
+  (set-char-table-extra-slot table 0 (copy-sequence (char-table-extra-slot table 0)))
+  (map-char-table
+   (lambda (range val)
+     (setq val (copy-sequence val))
+     (if (consp range)
+         (nelisp--char-table-set-range table (car range) (cdr range) val)
+       (nelisp--char-table-set table range val)))
+   table)
+  table)
+
+(defun nelisp--category-copy-category-table (&optional table)
+  "Construct a new category table and return it.
+It is a copy of the TABLE, which defaults to the standard category table.
+
+\(fn &optional TABLE)"
+  (if table
+      (nelisp--category-check-table table)
+    (setq table (nelisp--category-standard)))
+  (nelisp--category-copy-table table))
+
+(defun nelisp--category-make-category-table ()
+  "Construct a new and empty category table and return it."
+  ;; category.c:246-260: 64 empty sets in the contents, `ascii' left nil.
+  (let* ((table (make-char-table 'category-table nil))
+         (slots (nelisp--char-table-vector table))
+         (i 1))
+    (set-char-table-range table nil (make-bool-vector 128 nil))
+    (while (<= i 64)
+      (aset slots i (make-bool-vector 128 nil))
+      (setq i (1+ i)))
+    (set-char-table-extra-slot table 0 (make-vector 95 nil))
+    table))
+
+(defun nelisp--category-set-category-table (table)
+  "Specify TABLE as the category table for the current buffer.
+Return TABLE.
+
+\(fn TABLE)"
+  (setq table (nelisp--category-check-table table))
+  (puthash (current-buffer) table nelisp--category-buffer-tables)
+  table)
+
+(defun nelisp--category-char-category-set (char)
+  "Return the category set of CHAR.
+
+\(fn CHAR)"
+  (nelisp--chartab-check-char char)
+  (aref (nelisp--category-current) char))
+
+(defun nelisp--category-category-set-mnemonics (category-set)
+  "Return a string containing mnemonics of the categories in CATEGORY-SET.
+CATEGORY-SET is a bool-vector, and the categories \"in\" it are those
+that are indexes where t occurs in the bool-vector.
+The return value is a string containing those same categories.
+
+\(fn CATEGORY-SET)"
+  (unless (nelisp--category-set-p category-set)
+    (signal 'wrong-type-argument (list 'categorysetp category-set)))
+  (let ((i 32) (out nil))
+    (while (< i 127)
+      (when (aref category-set i) (setq out (cons i out)))
+      (setq i (1+ i)))
+    (concat (nreverse out))))
+
+(defun nelisp--category-modify-category-entry (character category &optional table reset)
+  "Modify the category set of CHARACTER by adding CATEGORY to it.
+The category is changed only for table TABLE, which defaults to
+the current buffer's category table.
+CHARACTER can be either a single character or a cons representing the
+lower and upper ends of an inclusive character range to modify.
+CATEGORY must be a category name (a character between ` ' and `~').
+If optional fourth argument RESET is non-nil,
+then delete CATEGORY from the category set instead of adding it.
+
+\(fn CHARACTER CATEGORY &optional TABLE RESET)"
+  ;; category.c:314-374.
+  (let (start end)
+    (if (integerp character)
+        (progn (nelisp--chartab-check-char character)
+               (setq start character end character))
+      (unless (consp character)
+        (signal 'wrong-type-argument (list 'consp character)))
+      (nelisp--chartab-check-char (car character))
+      (nelisp--chartab-check-char (cdr character))
+      (setq start (car character) end (cdr character)))
+    (nelisp--category-check category)
+    (setq table (nelisp--category-check-table table))
+    (unless (aref (nelisp--category-docstrings table) (- category #x20))
+      (signal 'error (list (format "Undefined category: %c" category))))
+    (while (<= start end)
+      (let* ((from-to (cons start end))
+             (category-set (nelisp--char-table-ref-and-range table start from-to)))
+        ;; GNU modifies when membership equals RESET's non-nilness.
+        (when (eq (and (aref category-set category) t) (and reset t))
+          (setq category-set (copy-sequence category-set))
+          (aset category-set category (null reset))
+          (setq category-set (nelisp--category-hash-get table category-set))
+          (nelisp--char-table-set-range table start (cdr from-to) category-set))
+        (setq start (1+ (cdr from-to))))))
+  nil)
+
+(defun nelisp--category-install ()
+  "Install this section's category.c functions over the public names."
+  (dolist (pair '((make-category-set . nelisp--category-make-category-set)
+                  (define-category . nelisp--category-define-category)
+                  (category-docstring . nelisp--category-category-docstring)
+                  (get-unused-category . nelisp--category-get-unused-category)
+                  (category-table-p . nelisp--category-category-table-p)
+                  (category-table . nelisp--category-category-table)
+                  (standard-category-table . nelisp--category-standard-category-table)
+                  (copy-category-table . nelisp--category-copy-category-table)
+                  (make-category-table . nelisp--category-make-category-table)
+                  (set-category-table . nelisp--category-set-category-table)
+                  (char-category-set . nelisp--category-char-category-set)
+                  (category-set-mnemonics . nelisp--category-category-set-mnemonics)
+                  (modify-category-entry . nelisp--category-modify-category-entry)))
+    (fset (car pair) (cdr pair)))
+  ;; The runtime now owns the whole char-table family: the library flips
+  ;; its own adapter off behind this one feature (notes-65's hand-over).
+  (provide 'nelisp-native-char-tables)
+  t)
+
+(defvar nelisp--category-installed
+  (and (nelisp--chartab-standalone-p) (nelisp--category-install))
+  "Non-nil once the category.c functions above answer the public names.")
+
+;; ---- Doc 225 P1: syntax tables as GNU 31.1 char-tables -------------------
+;;
+;; GNU keeps a syntax table as a char-table of subtype `syntax-table' with no
+;; extra slots (syntax.c:3672).  Its entries are raw descriptors
+;; (CODE . MATCH): the class in bits 0-15 and the flags 1234pbnc in bits
+;; 16-23 (`string-to-syntax', syntax.c:1151-1214).  `char-syntax' is one
+;; CHAR_TABLE_REF on the current buffer's table and a `syntax_code_spec'
+;; lookup (syntax.h:107-135, syntax.c:1098-1117).  The standard table holds
+;; an explicit entry for every character from 0 to MAX_CHAR, filled once
+;; (syntax.c:3659-3738 and characters.el), so no lookup ever computes a
+;; class; inheritance is the char-table parent chain (chartab.c:225).
+;;
+;; This section reproduces that structure on the native char-table type.
+;; The standard table is rebuilt from the generated copy of GNU 31.1's
+;; table, `nelisp--unicode-syntax-entries' (tools/nelisp-generate-unicode.el).
+;;
+;; Adapted, not ported:
+;; - GNU's per-buffer `syntax_table' slot is the buffer -> table map
+;;   `nelisp--syntax-buffer-tables': the `nelisp-buffer' struct has no slot
+;;   for it, and buffer state belongs to the buffer layer.
+;; - A buffer without `set-syntax-table' resolves to
+;;   `emacs-lisp-mode-syntax-table' (Doc 204 P3's ambient default).  GNU's
+;;   comes from the buffer's major mode, which the bare runtime lacks.
+;; - The optional foundation adapter (emacs-char-table.el) replaces the
+;;   public char-table function cells when it loads.  The table operations
+;;   here call the native primitives captured below, as the case-table
+;;   code does, so tables made here stay native char-tables.
+;;
+;; Every public name keeps the `(unless (fboundp ...))' guard: when this
+;; file is loaded into host Emacs, host's own C functions must answer.
+
+(defvar nelisp--syntax-native-make (symbol-function 'make-char-table)
+  "The native `make-char-table', captured before any adapter loads.")
+(defvar nelisp--syntax-native-char-table-p (symbol-function 'char-table-p)
+  "The native `char-table-p', captured before any adapter loads.")
+(defvar nelisp--syntax-native-subtype (symbol-function 'char-table-subtype)
+  "The native `char-table-subtype', captured before any adapter loads.")
+(defvar nelisp--syntax-native-set-range (symbol-function 'set-char-table-range)
+  "The native `set-char-table-range', captured before any adapter loads.")
+(defvar nelisp--syntax-native-parent (symbol-function 'char-table-parent)
+  "The native `char-table-parent', captured before any adapter loads.")
+(defvar nelisp--syntax-native-set-parent (symbol-function 'set-char-table-parent)
+  "The native `set-char-table-parent', captured before any adapter loads.")
+
+;; GNU syntax.c:3672: syntax tables have no extra slots.
+(unless (get 'syntax-table 'char-table-extra-slots)
+  (put 'syntax-table 'char-table-extra-slots 0))
+
+(defconst nelisp--syntax-spec-codes
+  '((?\s . 0) (?- . 0) (?. . 1) (?w . 2) (?W . 2) (?_ . 3) (?\( . 4)
+    (?\) . 5) (?' . 6) (?\" . 7) (?$ . 8) (?\\ . 9) (?/ . 10) (?< . 11)
+    (?> . 12) (?@ . 13) (?! . 14) (?| . 15))
+  "GNU syntax.c:1063-1081 `syntax_spec_code': designator -> class code.
+Code 13 is `Sinherit'.  `nelisp--syntax-code-classes' is the inverse,
+GNU's `syntax_code_spec' (syntax.c:1084).")
+
+(defconst nelisp--syntax-flag-shifts
+  '((?1 . 16) (?2 . 17) (?3 . 18) (?4 . 19) (?p . 20) (?b . 21) (?n . 22)
+    (?c . 23))
+  "GNU syntax.c:1178-1205: the bit each descriptor flag sets.")
+
+(defconst nelisp--syntax-code-objects
+  (let ((objects (make-vector 16 nil)) (code 0))
+    (while (< code 16)
+      (aset objects code (list code))
+      (setq code (1+ code)))
+    objects)
+  "GNU syntax.c:3667-3669 `Vsyntax_code_object': the shared (CODE) entries
+that `string-to-syntax' returns for a class without a matching character
+or flags.")
+
+(defun nelisp--syntax-table-object-p (object)
+  "Non-nil if OBJECT is a syntax table: a char-table of subtype
+`syntax-table' (GNU syntax.c:984-994).  The foundation adapter's own
+char-tables count when it is loaded."
+  (or (and (funcall nelisp--syntax-native-char-table-p object)
+           (eq (funcall nelisp--syntax-native-subtype object) 'syntax-table))
+      (and (fboundp 'emacs-char-table-p) (emacs-char-table-p object)
+           (eq (emacs-char-table-subtype object) 'syntax-table))))
+
+(defun nelisp--syntax-check-table (object)
+  "GNU syntax.c:996-1000 `check_syntax_table'."
+  (unless (nelisp--syntax-table-object-p object)
+    (signal 'wrong-type-argument (list 'syntax-table-p object))))
+
+(defun nelisp--syntax-check-character (object)
+  "GNU CHECK_CHARACTER."
+  (unless (and (integerp object) (>= object 0) (<= object #x3fffff))
+    (signal 'wrong-type-argument (list 'characterp object))))
+
+(defun nelisp--syntax-init-once (table)
+  "Install GNU's C-level standard entries (syntax.c:3678-3738) in TABLE.
+Used only when the generated GNU table is unavailable."
+  (let ((punct (aref nelisp--syntax-code-objects 1))
+        (space (aref nelisp--syntax-code-objects 0))
+        (word (aref nelisp--syntax-code-objects 2))
+        (symbol (aref nelisp--syntax-code-objects 3))
+        (c 0))
+    (funcall nelisp--syntax-native-set-range table '(0 . 31) punct)
+    (aset table 127 punct)
+    (dolist (c '(?\s ?\t ?\n ?\r ?\f)) (aset table c space))
+    (funcall nelisp--syntax-native-set-range table '(?a . ?z) word)
+    (funcall nelisp--syntax-native-set-range table '(?A . ?Z) word)
+    (funcall nelisp--syntax-native-set-range table '(?0 . ?9) word)
+    (aset table ?$ word)
+    (aset table ?% word)
+    (aset table ?\( (cons 4 ?\)))
+    (aset table ?\) (cons 5 ?\())
+    (aset table ?\[ (cons 4 ?\]))
+    (aset table ?\] (cons 5 ?\[))
+    (aset table ?{ (cons 4 ?}))
+    (aset table ?} (cons 5 ?{))
+    (aset table ?\" (cons 7 nil))
+    (aset table ?\\ (cons 9 nil))
+    (while (< c 10)
+      (aset table (aref "_-+*/&|<>=" c) symbol)
+      (setq c (1+ c)))
+    (setq c 0)
+    (while (< c 12)
+      (aset table (aref ".,;:?!#@~^'`" c) punct)
+      (setq c (1+ c)))
+    (funcall nelisp--syntax-native-set-range table '(#x80 . #x3fffff) word)
+    table))
 
 (defun nelisp--syntax-build-standard-table ()
-  "Build the table Doc 204 P3 calls `standard-syntax-table': explicit
-entries only for the four class/char pairs true regardless of mode --
-both paren shapes and the two quote-like classes (probed against real
-Emacs's own standard table).  Word/whitespace/symbol are not set here;
-they resolve through `nelisp--syntax-default-class' at the bottom of
-the lookup chain, which already answers them correctly."
-  (let ((tbl (nelisp--syntax-make-table)))
-    (nelisp--syntax-put tbl ?\( ?\()
-    (nelisp--syntax-put tbl ?\) ?\))
-    (nelisp--syntax-put tbl ?\[ ?\()
-    (nelisp--syntax-put tbl ?\] ?\))
-    (nelisp--syntax-put tbl ?\" ?\")
-    (nelisp--syntax-put tbl ?\\ ?\\)
-    tbl))
+  "Build GNU 31.1's standard syntax table: a native char-table whose default
+and initial entries are whitespace (syntax.c:3676), then one
+`set-char-table-range' per run of the generated GNU table."
+  (let ((table (funcall nelisp--syntax-native-make 'syntax-table
+                        (aref nelisp--syntax-code-objects 0))))
+    (if (not (boundp 'nelisp--unicode-syntax-entries))
+        (nelisp--syntax-init-once table)
+      (let* ((runs nelisp--unicode-syntax-entries)
+             (n (length runs)) (i 0))
+        (while (< i n)
+          (let ((code (aref runs (+ i 2))))
+            (funcall nelisp--syntax-native-set-range table
+                     (cons (aref runs i) (aref runs (1+ i)))
+                     (if (aref runs (+ i 4))
+                         (aref nelisp--syntax-code-objects code)
+                       (cons code (aref runs (+ i 3))))))
+          (setq i (+ i 5)))))
+    table))
 
-;; Built directly off the internal struct API, never the public
-;; `make-syntax-table'/`standard-syntax-table' bridges below: those are
-;; `unless (fboundp ...)'-guarded and therefore ARE host Emacs's real
-;; functions when this file loads under host Emacs, and calling host's
-;; real `make-syntax-table' on one of this file's own
-;; `nelisp--syntax-table' structs would be a type mismatch, not a no-op.
-;;
-;; Seeded to nil here, not to `(nelisp--syntax-build-standard-table)'
-;; directly: that call allocates a `cl-defstruct' record via
-;; `nelisp--make-record', which is defined much further down this file
-;; (same ordering constraint the `nelisp--current-buffer' `defvar'
-;; documents for the `*scratch*' seed) -- a first attempt built this
-;; eagerly right here and got a live `void-function: (nelisp--make-
-;; record)' on every invocation.  The real value is seeded below,
-;; search for \"Doc 204 P3 table seed\".
+;; Seeded below, after the buffer seeds; search for "Doc 204 P3 table seed".
 (defvar nelisp--syntax-standard-table nil
-  "The table `standard-syntax-table' (below) returns -- a single shared
-instance, matching real Emacs where repeated calls are `eq'.")
+  "The table `standard-syntax-table' returns -- a single shared instance,
+matching GNU where repeated calls are `eq'.")
+
+(defun nelisp--syntax-make-table (&optional parent)
+  "Fresh, empty native syntax char-table whose parent is PARENT."
+  (let ((table (funcall nelisp--syntax-native-make 'syntax-table nil)))
+    (when parent (funcall nelisp--syntax-native-set-parent table parent))
+    table))
+
+(defun nelisp--syntax-lookup (table ch)
+  "Class designator of character CH in TABLE: GNU's
+`syntax_code_spec[SYNTAX (c)]' (syntax.h:116-135), where an entry that is
+not a cons means whitespace.  `aref' does the parent chain."
+  (let ((entry (aref table ch)))
+    (aref nelisp--syntax-code-classes
+          (if (consp entry) (logand (car entry) 255) 0))))
+
+(defun nelisp--syntax-flags (table ch)
+  "Flag bits of character CH in TABLE: GNU's descriptor bits 16-23
+shifted down by 16, so a raw `syntax-table' property code yields the same
+value with (ash CODE -16)."
+  (let ((entry (aref table ch)))
+    (if (consp entry) (logand (ash (car entry) -16) 255) 0)))
+
+(defun nelisp--syntax-native-table-p (table)
+  "Non-nil if TABLE is a native syntax char-table."
+  (and (funcall nelisp--syntax-native-char-table-p table)
+       (eq (funcall nelisp--syntax-native-subtype table) 'syntax-table)))
+
+(defun nelisp--syntax-class-code (class)
+  "Class code of the designator CLASS (a character such as ?w)."
+  (or (cdr (assq class nelisp--syntax-spec-codes)) 0))
+
+(defun nelisp--syntax-put (table ch class)
+  "Give character CH in TABLE the shared entry of designator CLASS."
+  (aset table ch (aref nelisp--syntax-code-objects
+                       (nelisp--syntax-class-code class))))
+
+(defun nelisp--syntax-parse-class (descriptor)
+  "Class designator of the descriptor string DESCRIPTOR, normalised the
+way `char-syntax' reports it (`-' and space both read back as space)."
+  (let ((entry (string-to-syntax descriptor)))
+    (aref nelisp--syntax-code-classes
+          (if (consp entry) (logand (car entry) 255) 0))))
+
+(defun nelisp--syntax-default-class (ch)
+  "Class designator of character CH in GNU's standard syntax table."
+  (nelisp--syntax-lookup nelisp--syntax-standard-table ch))
 
 (defun nelisp--syntax-build-emacs-lisp-table ()
-  "Doc 204 P3's Emacs Lisp table: `nelisp--syntax-standard-table' as
-PARENT (so parens/string/escape/word/whitespace/symbol inherit
-unchanged) plus the overrides `emacs-lisp-mode' installs that this
-phase's consumers need -- probed against Emacs 30.1
-\(`with-temp-buffer' + `emacs-lisp-mode', `char-syntax' on each\):
-`;' comment-start, newline comment-end, and the four reader-prefix
-characters `\\'' / `\\`' / `,' / `#' all read back as prefix."
-  (let ((tbl (nelisp--syntax-make-table nelisp--syntax-standard-table)))
-    (nelisp--syntax-put tbl ?\; ?<)
-    (nelisp--syntax-put tbl ?\n ?>)
-    (nelisp--syntax-put tbl ?\' ?\')
-    (nelisp--syntax-put tbl ?\` ?\')
-    (nelisp--syntax-put tbl ?\, ?\')
-    (nelisp--syntax-put tbl ?# ?\')
-    tbl))
+  "Doc 204 P3's Emacs Lisp table: the standard table as parent plus the
+overrides `emacs-lisp-mode' installs that this runtime's consumers need --
+`;' comment start, newline comment end, and the four reader prefixes."
+  (let ((table (nelisp--syntax-make-table nelisp--syntax-standard-table)))
+    (aset table ?\; (aref nelisp--syntax-code-objects 11))
+    (aset table ?\n (aref nelisp--syntax-code-objects 12))
+    (aset table ?\' (aref nelisp--syntax-code-objects 6))
+    (aset table ?\` (aref nelisp--syntax-code-objects 6))
+    (aset table ?\, (aref nelisp--syntax-code-objects 6))
+    (aset table ?# (aref nelisp--syntax-code-objects 6))
+    table))
 
 (defvar nelisp--syntax-buffer-tables (make-hash-table :test 'eq)
-  "Buffer object (`eq') -> `nelisp--syntax-table' installed on it via
+  "Buffer object (`eq') -> syntax table installed on it via
 `set-syntax-table'.  A buffer absent from this table has not had
 `set-syntax-table' called on it and resolves to the ambient default
-(see `nelisp--syntax-current-table').")
+\(see `nelisp--syntax-current-table').")
 
 (defun nelisp--syntax-current-table ()
-  "The active syntax table for `nelisp--current-buffer': its own table
-if `set-syntax-table' has been called on it, else
-`emacs-lisp-mode-syntax-table' -- this image's ambient default; see the
-\"Ambient default\" paragraph in the block comment above this section."
+  "The active syntax table for `nelisp--current-buffer': its own table if
+`set-syntax-table' has been called on it, else
+`emacs-lisp-mode-syntax-table', this image's ambient default."
   (or (gethash nelisp--current-buffer nelisp--syntax-buffer-tables)
       emacs-lisp-mode-syntax-table))
 
-;; Same ordering constraint as `nelisp--syntax-standard-table' just
-;; above: seeded to nil here (guarded so host Emacs's own real, already-
-;; bound value is never touched) and given its real value below, after
-;; `nelisp--make-record' is defined -- search for "Doc 204 P3 table
-;; seed".
+;; Seeded below with the standard table's child; search for "Doc 204 P3
+;; table seed".  Guarded so host Emacs's own value is never touched.
 (unless (boundp 'emacs-lisp-mode-syntax-table)
   (defvar emacs-lisp-mode-syntax-table nil
-    "Doc 204 P3's Emacs Lisp syntax table (see the block comment above);
-this image's ambient default active table, not merely a value
-`emacs-lisp-mode' would install (P5, not built yet)."))
+    "Doc 204 P3's Emacs Lisp syntax table: this image's ambient default
+active table."))
+
+(unless (fboundp 'string-to-syntax)
+  (defun string-to-syntax (string)
+    "Convert a syntax descriptor STRING into a raw syntax descriptor.
+STRING should be a string of the form allowed as argument of
+`modify-syntax-entry'.  The return value is a raw syntax descriptor: a
+cons cell (CODE . MATCHING-CHAR) which can be used, for example, as
+the value of a `syntax-table' text property."
+    ;; GNU syntax.c:1151-1214.
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let* ((n (length string))
+           (first (if (> n 0) (aref string 0) 0))
+           (code (and (< first 128)
+                      (cdr (assq first nelisp--syntax-spec-codes)))))
+      (unless code
+        ;; GNU reports the first byte of the string's text.
+        (error "Invalid syntax description letter: %c"
+               (cond ((< first #x80) first)
+                     ((< first #x800) (logior #xc0 (ash first -6)))
+                     ((< first #x10000) (logior #xe0 (ash first -12)))
+                     ((< first #x200000) (logior #xf0 (ash first -18)))
+                     ((>= first #x3fff80) (- first #x3fff00))
+                     (t #xf8))))
+      (if (= code 13)
+          nil
+        (let ((match (and (> n 1) (/= (aref string 1) ?\s) (aref string 1)))
+              (i 2))
+          (while (< i n)
+            (let ((shift (cdr (assq (aref string i) nelisp--syntax-flag-shifts))))
+              (when shift (setq code (logior code (ash 1 shift)))))
+            (setq i (1+ i)))
+          (if (and (< code 16) (null match))
+              (aref nelisp--syntax-code-objects code)
+            (cons code match)))))))
+
+(unless (fboundp 'syntax-class-to-char)
+  (defun syntax-class-to-char (syntax)
+    "Return the syntax char of CLASS, described by an integer.
+For example, if SYNTAX is word constituent (the integer 2), the
+character `w' (119) is returned."
+    ;; GNU syntax.c:1119-1134.
+    (unless (integerp syntax)
+      (signal 'wrong-type-argument (list 'fixnump syntax)))
+    (when (or (< syntax 0) (>= syntax 16))
+      (signal 'args-out-of-range (list 15 syntax)))
+    (aref nelisp--syntax-code-classes syntax)))
+
+(unless (fboundp 'syntax-table-p)
+  (defun syntax-table-p (object)
+    "Return t if OBJECT is a syntax table.
+Currently, any char-table counts as a syntax table."
+    (if (nelisp--syntax-table-object-p object) t nil)))
 
 (unless (fboundp 'standard-syntax-table)
   (defun standard-syntax-table ()
+    "Return the standard syntax table.
+This is the one used for new buffers."
     nelisp--syntax-standard-table))
 
 (unless (fboundp 'make-syntax-table)
-  (defun make-syntax-table (&optional table)
-    "New, initially empty syntax table chained to TABLE (or
-`standard-syntax-table' if omitted) as its PARENT, matching Emacs's own
-`make-syntax-table' signature."
-    (nelisp--syntax-make-table (or table nelisp--syntax-standard-table))))
+  (defun make-syntax-table (&optional oldtable)
+    "Return a new syntax table.
+Create a syntax table that inherits from OLDTABLE (if non-nil) or
+from `standard-syntax-table' otherwise."
+    ;; GNU subr.el:6547-6553, on the native constructor (see above).
+    (nelisp--syntax-make-table (or oldtable nelisp--syntax-standard-table))))
 
 (unless (fboundp 'syntax-table)
   (defun syntax-table ()
+    "Return the current syntax table.
+This is the one specified by the current buffer."
     (nelisp--syntax-current-table)))
 
-;; Mirrors GNU Emacs 31.1 src/syntax.c:Fcopy_syntax_table's own contract
-;; (a fresh copy of TABLE's entries, defaulting to the standard table,
-;; with the copy's PARENT set to TABLE's own parent or, when TABLE had
-;; none, `standard-syntax-table' itself -- "copied syntax tables should
-;; all have parents"), adapted to this substrate's own `nelisp--syntax-
-;; table' cl-struct representation (a private ENTRIES hash-table plus a
-;; PARENT link, not a real char-table -- see the block comment further
-;; up this section) rather than staged from the real char-table-based
-;; primitive.  Needed for real: `woman.el''s own top-level
-;; `woman-syntax-table' defvar is `(let ((tab (copy-syntax-table
-;; (standard-syntax-table)))) ...)'.
 (unless (fboundp 'copy-syntax-table)
   (defun copy-syntax-table (&optional table)
     "Construct a new syntax table and return it.
-It is a copy of the TABLE, which defaults to the standard syntax table.
-
-(fn &optional TABLE)"
-    (setq table (or table (standard-syntax-table)))
-    (let ((copy (make-nelisp--syntax-table
-                 :entries (copy-hash-table (nelisp--syntax-table-entries table))
-                 :parent (or (nelisp--syntax-table-parent table) (standard-syntax-table))))
-          (flags (gethash table nelisp--syntax-flag-store)))
-      (when flags (puthash copy (copy-hash-table flags) nelisp--syntax-flag-store))
-      copy)))
+It is a copy of the TABLE, which defaults to the standard syntax table."
+    ;; GNU syntax.c:1019-1043: copy, drop the default, and give a
+    ;; parentless copy the standard table as parent.
+    (if table (nelisp--syntax-check-table table)
+      (setq table nelisp--syntax-standard-table))
+    (if (not (funcall nelisp--syntax-native-char-table-p table))
+        ;; A foundation adapter table: its own copy and public setters.
+        (let ((copy (emacs-char-table-copy table)))
+          (set-char-table-range copy nil nil)
+          (unless (char-table-parent copy)
+            (set-char-table-parent copy nelisp--syntax-standard-table))
+          copy)
+      (let ((copy (copy-sequence table)))
+        (funcall nelisp--syntax-native-set-range copy nil nil)
+        (unless (funcall nelisp--syntax-native-parent copy)
+          (funcall nelisp--syntax-native-set-parent
+                   copy nelisp--syntax-standard-table))
+        copy))))
 
 (unless (fboundp 'set-syntax-table)
   (defun set-syntax-table (table)
-    "Install TABLE as `nelisp--current-buffer's syntax table.  Returns
-TABLE, matching Emacs."
+    "Select a new syntax table for the current buffer.
+One argument, a syntax table."
+    ;; GNU syntax.c:1045-1057.
+    (nelisp--syntax-check-table table)
     (puthash nelisp--current-buffer table nelisp--syntax-buffer-tables)
     table))
 
 (unless (fboundp 'modify-syntax-entry)
-  (defun modify-syntax-entry (char-or-range descriptor &optional table)
-    "Set CHAR-OR-RANGE's class in TABLE (default: the current buffer's
-active table) from DESCRIPTOR's leading class character.  CHAR-OR-RANGE
-is a single character or a (FROM . TO) inclusive range, matching
-Emacs.  The matching char is accepted but not stored; the flags are
-(`nelisp--syntax-set-flags').  Returns nil, matching Emacs (probed)."
-    (let ((tbl (or table (nelisp--syntax-current-table)))
-          (class (nelisp--syntax-parse-class descriptor))
-          (flags (nelisp--syntax-parse-flags descriptor)))
-      (if (consp char-or-range)
-          (let ((c (car char-or-range)) (hi (cdr char-or-range)))
-            (while (<= c hi)
-              (nelisp--syntax-put tbl c class)
-              (nelisp--syntax-set-flags tbl c flags)
-              (setq c (1+ c))))
-        (nelisp--syntax-put tbl char-or-range class)
-        (nelisp--syntax-set-flags tbl char-or-range flags))
-      nil)))
+  (defun modify-syntax-entry (char newentry &optional syntax-table)
+    "Set syntax for character CHAR according to string NEWENTRY.
+The syntax is changed only for table SYNTAX-TABLE, which defaults to
+the current buffer's syntax table.
+CHAR may be a cons (MIN . MAX), in which case, syntaxes of all characters
+in the range MIN to MAX are changed."
+    ;; GNU syntax.c:1229-1262.  The regexp cache is cleared by the matcher's
+    ;; wrapper around this function (`nlre--install-syntax-cache-hook').
+    (if (consp char)
+        (progn (nelisp--syntax-check-character (car char))
+               (nelisp--syntax-check-character (cdr char)))
+      (nelisp--syntax-check-character char))
+    (if (null syntax-table)
+        (setq syntax-table (nelisp--syntax-current-table))
+      (nelisp--syntax-check-table syntax-table))
+    (let ((entry (string-to-syntax newentry)))
+      (if (consp char)
+          (if (funcall nelisp--syntax-native-char-table-p syntax-table)
+              (funcall nelisp--syntax-native-set-range syntax-table char entry)
+            (set-char-table-range syntax-table char entry))
+        (aset syntax-table char entry)))
+    nil))
 
 (unless (fboundp 'char-syntax)
   (defun char-syntax (character)
-    (nelisp--check-integer character)
-    (nelisp--syntax-lookup (nelisp--syntax-current-table) character)))
+    "Return the syntax code of CHARACTER, described by a character.
+For example, if CHARACTER is a word constituent, the
+character `w' (119) is returned."
+    ;; GNU syntax.c:1098-1117: CHECK_CHARACTER, the buffer's table, one
+    ;; CHAR_TABLE_REF and `syntax_code_spec'.
+    (unless (and (integerp character) (>= character 0) (<= character #x3fffff))
+      (signal 'wrong-type-argument (list 'characterp character)))
+    (when (and (> character 127) (< character 256)
+               (not (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+      (setq character (+ character #x3fff00)))
+    (let ((entry (aref (or (gethash nelisp--current-buffer
+                                    nelisp--syntax-buffer-tables)
+                           emacs-lisp-mode-syntax-table)
+                       character)))
+      (aref nelisp--syntax-code-classes
+            (if (consp entry) (logand (car entry) 255) 0)))))
+
+(unless (fboundp 'matching-paren)
+  (defun matching-paren (character)
+    "Return the matching parenthesis of CHARACTER, or nil if none."
+    ;; GNU syntax.c:1136-1149.
+    (nelisp--syntax-check-character character)
+    (let* ((entry (aref (nelisp--syntax-current-table) character))
+           (code (if (consp entry) (logand (car entry) 255) 0)))
+      (and (memq code '(4 5)) (cdr entry)))))
+
+(unless (fboundp 'syntax-class)
+  (defun syntax-class (syntax)
+    "Return the code for the syntax class described by SYNTAX.
+
+SYNTAX should be a raw syntax descriptor; the return value is a
+integer that encodes the corresponding syntax class.  See Info
+node `(elisp)Syntax Table Internals' for a list of codes.
+
+If SYNTAX is nil, return nil."
+    (and syntax (logand (car syntax) 65535))))
+
+(unless (fboundp 'syntax-after)
+  (defun syntax-after (pos)
+    "Return the raw syntax descriptor for the char after POS.
+If POS is outside the buffer's accessible portion, return nil."
+    ;; GNU subr.el:6555-6563.  The bare runtime has text properties but no
+    ;; overlays, so `get-text-property' stands in for `get-char-property'.
+    (unless (or (< pos (point-min)) (>= pos (point-max)))
+      (let ((st (if parse-sexp-lookup-properties
+                    (if (fboundp 'get-char-property)
+                        (get-char-property pos 'syntax-table)
+                      (get-text-property pos 'syntax-table)))))
+        (if (consp st) st
+          (aref (or st (syntax-table)) (char-after pos)))))))
+
+(unless (fboundp 'with-syntax-table)
+  (defmacro with-syntax-table (table &rest body)
+    "Evaluate BODY with syntax table of current buffer set to TABLE.
+The syntax table of the current buffer is saved, BODY is evaluated, and the
+saved table is restored, even in case of an abnormal exit.
+Value is what BODY returns."
+    ;; GNU subr.el:6529-6545.  Adapted: the restore runs in
+    ;; `with-current-buffer' because the bare runtime's `save-current-buffer'
+    ;; special form signals (void-function nil); the effect is the same.
+    (let ((old-table (make-symbol "table"))
+          (old-buffer (make-symbol "buffer")))
+      `(let ((,old-table (syntax-table))
+             (,old-buffer (current-buffer)))
+         (unwind-protect
+             (progn
+               (set-syntax-table ,table)
+               ,@body)
+           (with-current-buffer ,old-buffer
+             (set-syntax-table ,old-table)))))))
 
 ;; ---- Doc 204 P4: parse-partial-sexp and the sexp scanner ---------------
 ;;
@@ -17801,10 +18677,9 @@ DEFINITION for `make prelude-toplevel-check' -- see that tool's own
 Commentary for why a bare call at the prelude's top level is treated
 as a likely mistake.")
 
-;; Doc 204 P3 table seed.  Must run after `nelisp--make-record' (just
-;; above) is defined, for the same reason as the `*scratch*'/
-;; `*Messages*' seed immediately above it: `nelisp--syntax-build-
-;; standard-table'/`-emacs-lisp-table' allocate `cl-defstruct' records.
+;; Doc 204 P3 table seed.  The tables are native char-tables since Doc 225
+;; P1 and no longer need `nelisp--make-record'; the seed stays here, after
+;; the buffer seeds, so the load order other blocks document is unchanged.
 ;; `setq', not `defvar', for `nelisp--syntax-standard-table' -- it was
 ;; already `defvar'd (to nil) at its declaration point, further up this
 ;; file, where `standard-syntax-table' et al. need it to already be a
@@ -18230,6 +19105,53 @@ This affects only `prin1'.")
        chunks (nelisp--prn-to-string cur escape depth)))
     (nelisp--prn-chunks-string chunks)))
 
+(defun nelisp--prn-chartab-elements (chunks values escape depth)
+  "Add VALUES to CHUNKS as print.c's `print_stack_push_vector' does, a
+sub-char-table in `#^^[...]' form."
+  (let* ((n (length values))
+         (lim (if print-length (if (< print-length n) print-length n) n))
+         (i 0))
+    (while (< i lim)
+      (when (> i 0) (nelisp--prn-chunks-add chunks " "))
+      (let ((value (aref values i)))
+        (if (nelisp--sub-char-table-p value)
+            (nelisp--prn-sub-char-table chunks value escape depth)
+          (nelisp--prn-chunks-add chunks (nelisp--prn-to-string value escape depth))))
+      (setq i (1+ i)))
+    (when (< lim n)
+      (when (> lim 0) (nelisp--prn-chunks-add chunks " "))
+      (nelisp--prn-chunks-add chunks "..."))))
+
+(defun nelisp--prn-sub-char-table (chunks table escape depth)
+  "print.c:2619-2629: `#^^[DEPTH MIN-CHAR' and the contents."
+  (nelisp--prn-chunks-add chunks (format "#^^[%d %d" (aref table 1) (aref table 2)))
+  (let* ((n (- (length table) 3)) (contents (make-vector n nil)) (i 0))
+    (while (< i n) (aset contents i (aref table (+ i 3))) (setq i (1+ i)))
+    (when (> n 0) (nelisp--prn-chunks-add chunks " "))
+    (nelisp--prn-chartab-elements chunks contents escape depth))
+  (nelisp--prn-chunks-add chunks "]"))
+
+(defun nelisp--prn-char-table (table escape &optional depth)
+  "print.c:2615-2618: `#^[' and every slot -- default, parent, purpose,
+`ascii', the 64 contents and the extra slots -- then `]'."
+  (let* ((chunks (cons nil nil))
+         (extras (nelisp--char-table-extra-count table))
+         (slots (nelisp--char-table-vector table))
+         (all (make-vector (+ 68 extras) nil))
+         (i 0))
+    (aset all 0 (char-table-range table nil))
+    (aset all 1 (char-table-parent table))
+    (aset all 2 (char-table-subtype table))
+    (while (< i 65) (aset all (+ i 3) (aref slots i)) (setq i (1+ i)))
+    (setq i 0)
+    (while (< i extras)
+      (aset all (+ i 68) (char-table-extra-slot table i))
+      (setq i (1+ i)))
+    (nelisp--prn-chunks-add chunks "#^[")
+    (nelisp--prn-chartab-elements chunks all escape (or depth 0))
+    (nelisp--prn-chunks-add chunks "]")
+    (nelisp--prn-chunks-string chunks)))
+
 (defun nelisp--prn-vector (vec escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((n (length vec)) (chunks (cons nil nil)))
@@ -18558,6 +19480,9 @@ projection per cell and one slot vector per function for this print call."
       "#<overlay in no buffer>"))
    ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
     (nelisp--prn-bool-vector obj))
+   ((and (fboundp 'nelisp--char-table-slots) (char-table-p obj)
+         (vectorp (nelisp--char-table-slots obj)))
+    (nelisp--prn-char-table obj escape (1+ depth)))
    ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth) cache))
    ((recordp obj) (nelisp--prn-record obj escape cache))
    ;; NOT (format "#<unprintable %S>" obj): `%S' re-enters this function on
@@ -23029,7 +23954,8 @@ signals an error rather than passing text through unexpanded."
   (defun arrayp (x)
     "Return t if X is an array (= a string, vector, or bool-vector)."
     (if (or (vectorp x) (stringp x)
-            (and (fboundp 'bool-vector-p) (bool-vector-p x)))
+            (and (fboundp 'bool-vector-p) (bool-vector-p x))
+            (and (fboundp 'char-table-p) (char-table-p x)))
         t nil)))
 
 ;; Idempotent capture rule (applies to every `nelisp--native-X' save below):
@@ -23207,6 +24133,8 @@ Hash tables compare only by identity; markers compare buffer and position."
     ;; Native tables use cons storage, but GNU does not compare contents.
     (and (not (hash-table-p a))
          (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+   ((and (char-table-p a) (char-table-p b) (fboundp 'nelisp--char-table-equal))
+    (nelisp--char-table-equal a b))
    ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
          (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))))
     (if (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
@@ -23667,6 +24595,7 @@ struct predicates ask about most.
 nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
+     ((char-table-p x) 'char-table)
      ((recordp x)
       (let ((ty (aref x 0)))
         (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))

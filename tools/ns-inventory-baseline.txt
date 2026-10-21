@@ -1293,7 +1293,7 @@ pinned-collision ns-collision	prog2	lisp/nelisp-stdlib-eval-special.el scripts/n
 pinned-collision ns-collision	push	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	reverse	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	c6b515d43a7b
-pinned-collision ns-collision-divergent	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	cbe42a12e245
+pinned-collision ns-collision-divergent	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	2a196e42ac02
 pinned-collision ns-collision	set-buffer-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	setq-default	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	setq-local	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
@@ -1314,7 +1314,7 @@ pinned-collision ns-collision-divergent	add-to-list	lisp/nelisp-build-host.el sc
 pinned-collision ns-collision-divergent	alist-get	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	7f1faf26747a
 pinned-collision ns-collision-divergent	append	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	59792917d61d
 pinned-collision ns-collision-divergent	nelisp--append-collect	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	6c2a38cade77
-pinned-collision ns-collision-divergent	arrayp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	de9241743eea
+pinned-collision ns-collision-divergent	arrayp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	ca90adb5122e
 pinned-collision ns-collision-divergent	assoc	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el	6d83ff02a454
 pinned-collision ns-collision-divergent	butlast	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	7d0524ad6c34
 pinned-collision ns-collision-divergent	byte-compile-file	scripts/nelisp-stdlib-prelude.el src/nelisp-bytecode.el	fd60f8468dac
@@ -1770,3 +1770,14 @@ pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-s
 pinned-collision ns-collision	nelisp-casetab--builtin-canon	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-casetab--epoch	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-casetab--epoch-owner	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+# Doc 225 P1 (2026-10-21): the prelude defines GNU syntax.c's
+# string-to-syntax, syntax-class-to-char and matching-paren on native
+# syntax char-tables.  The package copies are (unless (fboundp ...))
+# fallbacks, inert wherever the prelude loads first.
+pinned-collision ns-collision-divergent	matching-paren	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	c3def36c6882
+pinned-collision ns-collision-divergent	string-to-syntax	packages/nelisp-emacs-core/src/emacs-syntax-table.el scripts/nelisp-stdlib-prelude.el	ba327ca575b8
+pinned-collision ns-collision-divergent	syntax-class-to-char	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	61a8be9fc58e
+# Doc 225 S3 (2026-10-21): the runtime owns the char-table family.  The
+# prelude's arrayp and sequencep now answer t for char-tables (GNU), its
+# and optimize-char-table is chartab.c's (the foundation's is a no-op stub).
+pinned-collision ns-collision-divergent	optimize-char-table	packages/nelisp-emacs-foundation/src/emacs-cc-chartab-1.el scripts/nelisp-stdlib-prelude.el	deeff09d6702

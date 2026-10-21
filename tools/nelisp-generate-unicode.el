@@ -68,6 +68,66 @@
         (setq start (car row) end (nth 1 row) value (nth 2 row))))
     (nreverse (cons (list start end value) ranges))))
 
+;; Doc 225 P1: GNU's standard syntax table itself, not only its classes.
+;; `init_syntax_once' (syntax.c:3659-3738) and characters.el leave every
+;; character from 0 to MAX_CHAR with an explicit raw descriptor; the
+;; runtime rebuilds the same char-table from these runs once, so a lookup
+;; never computes a class.
+(defun nelisp-generate-unicode--collect-syntax-entries ()
+  "Collect GNU's standard syntax table as raw descriptor runs.
+Each run is FROM TO CODE MATCH SHARED for the descriptor (CODE . MATCH).
+SHARED is t when the descriptor is GNU's shared code object for CODE
+\(`Vsyntax_code_object', syntax.c:3667-3669) and nil when it is a cons of
+its own, as `init_syntax_once' makes for the string and escape classes."
+  (let (rows)
+    (map-char-table
+     (lambda (range descriptor)
+       (let* ((lo (if (consp range) (car range) range))
+              (hi (if (consp range) (cdr range) range))
+              (code (car descriptor))
+              (shared (and (null (cdr descriptor)) (< code 16) (/= code 13)
+                           (eq descriptor
+                               (string-to-syntax
+                                (string (aref " .w_()'\"$\\/<>@!|" code))))
+                           t)))
+         (push (list lo hi code (cdr descriptor) shared) rows)))
+     (standard-syntax-table))
+    (setq rows (nreverse rows))
+    ;; The runs must tile 0..MAX_CHAR: the runtime installs nothing else.
+    (let ((next 0))
+      (dolist (row rows)
+        (unless (= (car row) next)
+          (error "Standard syntax runs leave a gap at %d" next))
+        (setq next (1+ (nth 1 row))))
+      (unless (= next (1+ (max-char)))
+        (error "Standard syntax runs stop at %d" next)))
+    rows))
+
+;; Doc 225 S3: GNU's standard category table (category.c's
+;; init_category_once plus characters.el).  Runs of non-empty category sets
+;; refer to a table of distinct sets by their mnemonics; the runtime builds
+;; the table once, sharing equal sets as category.c's hash does.
+(defun nelisp-generate-unicode--collect-categories ()
+  "Return (DOCSTRINGS SETS RUNS) for GNU's standard category table."
+  (let* ((table (standard-category-table))
+         (docstrings (copy-sequence (char-table-extra-slot table 0)))
+         (index (make-hash-table :test 'equal))
+         (sets nil) (runs nil))
+    (map-char-table
+     (lambda (range set)
+       (let ((mnemonics (category-set-mnemonics set)))
+         (unless (equal mnemonics "")
+           (let ((i (gethash mnemonics index)))
+             (unless i
+               (setq i (hash-table-count index))
+               (puthash mnemonics i index)
+               (push mnemonics sets))
+             (push (list (if (consp range) (car range) range)
+                         (if (consp range) (cdr range) range) i)
+                   runs)))))
+     table)
+    (list docstrings (apply #'vector (nreverse sets)) (nreverse runs))))
+
 (defun nelisp-generate-unicode--collect ()
   "Collect category, case, and syntax facts from the running GNU Emacs."
   (unless (string-prefix-p "31.1" emacs-version)
@@ -140,7 +200,12 @@
      (nelisp-generate-unicode--flat-vector
       (nelisp-generate-unicode--compress-mappings (nreverse equivalence)))
      (nelisp-generate-unicode--flat-vector
-      (nelisp-generate-unicode--collect-syntax)))))
+      (nelisp-generate-unicode--collect-syntax))
+     (nelisp-generate-unicode--flat-vector
+      (nelisp-generate-unicode--collect-syntax-entries))
+     (let ((categories (nelisp-generate-unicode--collect-categories)))
+       (list (nth 0 categories) (nth 1 categories)
+             (nelisp-generate-unicode--flat-vector (nth 2 categories)))))))
 
 (defconst nelisp-generate-unicode--runtime
   "
@@ -273,7 +338,9 @@ ACTION is `upper', `lower', or `title'; title preserves noninitial case.\"
   "Generate the private Unicode module at OUTPUT."
   (let* ((output (or output (expand-file-name "lisp/nelisp-stdlib-unicode.el"
                                                nelisp-generate-unicode--root)))
-         (data (nelisp-generate-unicode--collect))
+         ;; The last datum is the category triple; splice it in.
+         (data (let ((all (nelisp-generate-unicode--collect)))
+                 (append (butlast all) (car (last all)))))
          (payload (prin1-to-string data))
          (hash (secure-hash 'sha256 payload))
          (names '(nelisp--unicode-category-ranges
@@ -285,7 +352,11 @@ ACTION is `upper', `lower', or `title'; title preserves noninitial case.\"
                   nelisp--unicode-full-titlecase
                   nelisp--unicode-canonical-ranges
                   nelisp--unicode-equivalence-ranges
-                  nelisp--unicode-syntax-ranges)))
+                  nelisp--unicode-syntax-ranges
+                  nelisp--unicode-syntax-entries
+                  nelisp--unicode-category-docstrings
+                  nelisp--unicode-category-sets
+                  nelisp--unicode-category-runs)))
     (with-temp-file output
       (insert ";;; nelisp-stdlib-unicode.el --- Generated GNU Unicode facts -*- lexical-binding: t; -*-\n\n")
       (insert ";; Generated by tools/nelisp-generate-unicode.el on GNU Emacs "

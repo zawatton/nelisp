@@ -1,0 +1,271 @@
+#+TITLE: Doc 225 — Syntax lookups and the string-match entry path: GNU 31.1 parity
+#+STATUS: IN PROGRESS
+#+LEDGER: tools/ai/syntax-rt-progress.org
+
+* §0 Goal
+
+Make =char-syntax=, a syntax-class =string-match= and a plain =string-match=
+as fast as GNU Emacs 31.1 in wall-clock time by reproducing GNU's
+structure: syntax tables that are char-tables holding raw syntax
+descriptors, a standard table populated once instead of computed per
+lookup, a per-character syntax test that reads the table directly, and a
+string-match entry that reads the case-canonical table once and translates
+each character with one char-table read.  Speed comes from removing work
+the GNU structure never does; no new native function is added (AGENTS.md,
+minimal native surface).
+
+* §1 Measured owners (S0.1)
+
+Setup: base dynamic binary =../integ-20261021d/target/integ/nelisp-dyn=
+(sha256 f3321a74b492a3385da0ec34392b9a219525a0627fe237415f0580c34a5e6788,
+source bdc34c979), pinned with =taskset -c 10= (this lane's measurement
+CPU), warmed up, inline forms in a =dotimes= with five copies per iteration, the
+empty form slot (1.4 us) subtracted, median of three samples per row.  The
+probe is =tools/ai/syntax-rt-split.el=; its two runs are
+=target/syntax-rt/s0/split-base-1.txt= and =split-base-2.txt=.  The values
+below are the means of the two runs.  Each owner was isolated by timing the
+internal function that implements it with the same arguments (bisection),
+then subtracting the nested owner already measured.  Shares are of the
+operation's total; rows agree to within the run-to-run spread (about 5%).
+
+GNU references are =file:line= in =/home/madblack-21/Downloads/emacs-31.1/src/=;
+the Token column is text that occurs on or within three lines of that line
+(the checker verifies it).
+
+** char-syntax ?a: 423 us per call (GNU 0.2 us in the brief's probe; own cost about 0)
+
+| Owner | us/call | Share | GNU mechanism | Ref | Token | Port |
+|-------+---------+-------+---------------+-----+-------+------|
+| Default class by an interpreted binary search of 376 Unicode ranges (=nelisp--unicode-range-value=) | 340 | 80% | The standard table is a char-table filled once at startup (=init_syntax_once=, then characters.el); a lookup never computes a class | syntax.c:3735 | char_table_set_range (Vstandard_syntax_table, 0x80, MAX_CHAR, temp) | ported: P1 |
+| Default-class wrappers (=nelisp--syntax-default-class=, =nelisp-unicode-syntax=) | 31 | 7% | none: the entry is read from the table | syntax.h:107 | SYNTAX_ENTRY (int c) | ported: P1 |
+| Parent-chain walk over struct records with one hash table per level | 10 | 2% | =char_table_ref= falls back to the default and then the parent inside one native lookup | chartab.c:225 | char_table_ref (Lisp_Object table, int c) | ported: P1 |
+| Entry: interpreted call, =nelisp--check-integer=, buffer-to-table hash lookup | 42 | 10% | =Fchar_syntax=: CHECK_CHARACTER, the buffer's syntax-table slot, =syntax_code_spec[SYNTAX (c)]= | syntax.c:1116 | syntax_code_spec[SYNTAX (char_int)] | adapted: P1, call floor remains (§4) |
+
+** char-syntax ?(: 43 us per call
+
+| Owner | us/call | Share | GNU mechanism | Ref | Token | Port |
+|-------+---------+-------+---------------+-----+-------+------|
+| Parent-chain walk: miss in the Emacs Lisp table, hit in the standard table, each a struct record plus a hash table | 34 | 80% | =CHAR_TABLE_REF_ASCII= reads the ASCII sub-char-table, then the default, then the parent | lisp.h:2133 | CHAR_TABLE_REF_ASCII (Lisp_Object ct, ptrdiff_t idx) | ported: P1 |
+| Entry: call, check, buffer-to-table lookup | 9 | 20% | =Fchar_syntax= entry | syntax.c:1113 | CHECK_CHARACTER (character) | adapted: P1 |
+
+** string-match "\\sw+" "alpha": 3,705 us per call with case-fold-search t, 2,274 us with nil (GNU 0.6 us; own cost 0.20 us)
+
+| Owner | us/call | Share | GNU mechanism | Ref | Token | Port |
+|-------+---------+-------+---------------+-----+-------+------|
+| Per-character syntax test through the public =char-syntax= (=nlre--syntax-p=, 300 us x 5 characters) | 1,499 | 40% | =syntaxspec= reads =SYNTAX (c)= inline, one char-table read per character, the table set up once per search | regex-emacs.c:5195 | SYNTAX (c) != (enum syntaxcode) mcnt | ported: P2 |
+| Case folding inside the generic matcher (difference between fold t and nil) | 1,431 | 39% | Exact characters are translated when the pattern is compiled; each subject character costs one =RE_TRANSLATE= | regex-emacs.c:1196 | define RE_TRANSLATE(TBL, C) char_table_translate (TBL, C) | ported: P3 |
+| Generic AST matcher control flow (no plan applies to an unanchored =\sw+=) | 713 | 19% | =re_match_2_internal= executes a compiled byte program | regex-emacs.c:4072 | re_match_2_internal (struct re_pattern_buffer *bufp, | not ported (§3) |
+| Translate-table fetch through =nlre--current-case-extra= | 35 | 1% | =string_match_1= passes =BVAR (current_buffer, case_canon_table)= | search.c:409 | ? BVAR (current_buffer, case_canon_table) | ported: P3 |
+| Syntax-dependent cache hit (=nlre--compiled-pattern=) | 27 | 1% | =compile_pattern= compares the syntax table by identity | search.c:222 | BASE_EQ (cp->syntax_table, Qt) | kept (regex-syncache) |
+
+** string-match "alpha" "alpha": 436 us per call with case-fold-search t, 38 us with nil (GNU 0.3 us; own cost 0.14 us)
+
+| Owner | us/call | Share | GNU mechanism | Ref | Token | Port |
+|-------+---------+-------+---------------+-----+-------+------|
+| Literal plan under a translate table: every needle and subject character goes through =nlre--table-char='s dispatch chain (25 us each; the native =aref= inside costs 1.5 us) | 403 | 92% | One =char_table_translate=: =CHAR_TABLE_REF= and a CHARACTERP test | character.h:592 | char_table_translate (Lisp_Object obj, int ch) | ported: P3 |
+| Translate-table fetch (=nlre--current-translate-table=: current case table, extra-slot dispatch, invalidation check) | 35 | 8% | One buffer-slot read | search.c:409 | ? BVAR (current_buffer, case_canon_table) | ported: P3 |
+| Cache hit, =string-match= wrapper and match data | 7 | 2% | =compile_pattern= MRU list, =string_match_1= | search.c:199 | compile_pattern (Lisp_Object pattern, struct re_registers *regp, | kept |
+
+With case-fold-search nil the same call costs 38 us: the wrapper 12 us
+(30%), the cache hit 7 us (19%), the literal search 5 us (14%) and the
+rest of =nlre-string-match='s body 14 us (37%).  "[a-z]+" costs 1,926 us
+with folding and 126 us without, so folding is 93% of that call too.
+The anvil regex workload's pattern =\`\(.*\)\(\.el\)\'= costs 756-900 us
+with folding and 40-48 us without: there a translate table also disables
+the greedy-suffix plan and the prefilter, and the generic matcher runs.
+
+* §2 The GNU mechanisms
+
+- *Entry.*  syntax.h:107 =SYNTAX_ENTRY= is =CHAR_TABLE_REF= on
+  =BVAR (current_buffer, syntax_table)=; syntax.h:116-135 take the class
+  from the entry's car with =& 0xff=, a non-cons entry meaning
+  whitespace.  syntax.c:1098-1117 =Fchar_syntax= adds only
+  CHECK_CHARACTER and =syntax_code_spec[]= (syntax.c:1084).
+- *Tables.*  A syntax table is a char-table of subtype =syntax-table=
+  with no extra slots (syntax.c:3672).  Entries are raw descriptors
+  =(CODE . MATCH)=: class in bits 0-15, flags 1234pbnc in bits 16-23
+  (=Fstring_to_syntax=, syntax.c:1151).  Entries without a matching
+  character or flags are shared conses (=Vsyntax_code_object=,
+  syntax.c:3667-3669).  =make-syntax-table= (subr.el:6547) makes an empty
+  char-table whose parent is the standard table; =copy-syntax-table=
+  (syntax.c:1019) copies, clears the default and gives the copy a parent.
+- *Lookup.*  chartab.c:225 =char_table_ref= reads the ASCII sub-table or
+  =contents[CHARTAB_IDX]= and descends sub-char-tables, then the default,
+  then the parent; lisp.h:2133-2155 inline the ASCII case.  Every
+  character has an entry in the standard table: control characters are
+  punctuation, letters and digits word, =0x80..MAX_CHAR= word
+  (syntax.c:3678-3738), and characters.el refines Unicode.  394 runs result.
+- *Regexp cache.*  search.c:199-262 =compile_pattern= walks an MRU list
+  and compares pattern text, translate table, posix flag, whitespace
+  regexp and, for syntax-dependent programs, the syntax table by identity
+  (search.c:222).  syntax.c:1229-1262 =modify-syntax-entry= calls
+  =clear_regexp_cache= (search.c:160), which drops every syntax-dependent
+  entry.
+- *Per-character test.*  regex-emacs.c:5175-5200 =syntaxspec= fetches the
+  character and compares =SYNTAX (c)=; the syntax table is set up once per
+  search (=RE_SETUP_SYNTAX_TABLE_FOR_OBJECT=, regex-emacs.c:3462).
+- *Case folding.*  search.c:370-440 =string_match_1= passes
+  =BVAR (current_buffer, case_canon_table)= as the translate table when
+  =case-fold-search= is non-nil (search.c:405-410).  Each character is
+  translated by =RE_TRANSLATE= = =char_table_translate= (character.h:592):
+  one =CHAR_TABLE_REF= and a CHARACTERP test.
+
+* §3 Port plan, in order of wall-clock payoff
+
+** P1 Syntax tables become char-tables (ported)
+
+=scripts/nelisp-stdlib-prelude.el= replaces the =nelisp--syntax-table=
+record (an entries hash table plus a parent link) with native char-tables
+of subtype =syntax-table= holding GNU raw descriptors.  The standard table
+is built once from a generated copy of GNU 31.1's 394 standard-table runs
+(=nelisp--unicode-syntax-entries=, produced by
+=tools/nelisp-generate-unicode.el= beside the existing class ranges), with
+GNU's shared code objects and its whitespace default.  =char-syntax= reads
+the current buffer's table with one =aref= and maps the code through
+=syntax_code_spec=.  =string-to-syntax=, =syntax-class-to-char=,
+=syntax-table-p=, =matching-paren=, =syntax-after=, =syntax-class=,
+=with-syntax-table= and =copy-syntax-table= follow GNU (C functions as
+Lisp, subr.el functions verbatim).  =modify-syntax-entry= stores
+=string-to-syntax='s result, so flags live in the descriptor and the side
+flag store goes away.  The scanner helpers (=nelisp--syntax-lookup=,
+=nelisp--syntax-flags=) become one =aref= on the same entry.
+
+Adapted: GNU's per-buffer =syntax_table= slot stays the existing
+buffer-to-table map, because the =nelisp-buffer= struct has no slot for it
+and buffer state belongs to the buffer-native lane.  The ambient default
+for a buffer without =set-syntax-table= stays the Emacs Lisp table (Doc
+204 P3); GNU's comes from the major mode, which the bare runtime does not
+have.  The fixture pins GNU under explicit tables.
+
+Adapted: the native char-table kernel stores sorted run-length intervals
+and finds one by binary search (=lisp/nelisp-cc-evalport-nonenv-char-table.el=),
+not GNU's sub-char-tables.  A read from the interpreter costs 1.35-1.39 us
+in total, mostly the call itself.  Porting the layout changes the GC's
+char-table marking (=nl_gc_mark_char_table_slots=), which the gc-port lane
+owns, so it is left as is.
+
+The foundation adapter (=packages/nelisp-emacs-foundation/src/emacs-char-table.el=)
+replaces the public char-table function cells and =nelisp--syntax-lookup=
+when it loads.  Like casetab (c592d7b31), the syntax code keeps the
+original native primitives and dispatches on them, and the adapter's
+syntax hooks accept native tables.
+
+** P2 Per-character syntax test (ported)
+
+=lisp/nelisp-stdlib-regexp.el= reads the current syntax table once per
+match and tests each character with =(aref table c)= and the entry's car,
+as regex-emacs.c:5195 does, instead of calling =char-syntax= (which
+re-fetches the table and re-checks its argument).  The bootstrap record
+reader =nlre--bootstrap-syntax-class= and its ASCII string go away.
+
+** P3 string-match entry and case folding (ported)
+
+The entry reads the current case-canonical table once per call, through
+the native extra-slot read, as =string_match_1= reads the buffer slot.
+Each character is translated as =char_table_translate= does: one =aref= on
+a native char-table and a character test.  Only a non-native table (the
+foundation adapter's) takes the old dispatch.
+
+** Not ported
+
+- GNU's compiled regexp program and =re_match_2_internal= (regex-emacs.c):
+  the AST matcher and its plans stay.  Porting the engine is larger than
+  this lane's entry-path scope.
+- GNU's sub-char-table layout: see P1.
+
+* §4 What remains, and which layer blocks it
+
+GNU's own costs, measured with the checker's harness (call minus a
+same-shape trivial subr call, median of five in-process samples): about
+0 us for =char-syntax= (within ±0.02 us of =(characterp 97)=), 0.14 us for
+=(string-match "alpha" "alpha")= and 0.20 us for =(string-match "\\sw+"
+"alpha")=.
+
+In the base runtime one interpreted call of a one-argument =defun= costs
+1.0-3.5 us, a call of a GNU byte-compiled function in the standalone VM
+2.9 us, and a trivial subr call about 0.8 us.  A small function measured
+4.0 us interpreted and 11.3 us as VM byte-code (the same function
+byte-compiled by GNU 31.1 and installed with =make-byte-code=).  After P1-P3 =char-syntax= is still a
+Lisp function (AGENTS.md forbids a native for speed), so its own cost is
+at least one interpreted call plus its forms.  Reaching GNU's own cost
+needs Lisp compiled to native code (the codegen lane) and a cheaper call
+path (the callpath lane).  The S1.2 and S1.3 results record the measured
+own costs against GNU's.
+
+Final measurements (S3c builds, paired ratios over 7 rounds on CPU 10):
+
+| Operation | GNU own | base own | final own | to base |
+|-----------+---------+----------+-----------+---------|
+| (char-syntax ?a) | 0.0072 us | 384.0 us | 12.25 us | 0.032 |
+| (char-syntax ?\() | 0.0029 us | 39.4 us | 12.74 us | 0.322 |
+| (string-match "alpha" "alpha") | 0.133 us | 403.4 us | 83.5 us | 0.207 |
+| (string-match "\\sw+" "alpha") | 0.194 us | 2,436 us | 220.8 us | 0.091 |
+
+The decomposition of the remaining =char-syntax= cost: an interpreted
+one-argument call adds 0.15 us over =(integerp 97)=, but every native
+operation it performs costs about 1 us through the interpreter's builtin
+call path -- =aref= 0.97 us whether on a vector or on a char-table, so
+the char-table lookup itself is free; =consp= 0.95 us -- and the
+buffer-to-table =gethash= 2.5 us.  Those layers belong to the callpath
+lane (builtin calls), the codegen lane (compiling the Lisp) and the
+hash-table lane (=gethash=).
+
+* §5 Char-table ownership (S3)
+
+The user decided on 2026-10-21, through the coordinator, that the runtime
+owns GNU chartab.c with its sub-char-table structure and that the library
+defers the whole family to it (notes-65's hand-over inventory).
+
+** Structure (ported)
+
+GNU's char-table is a vectorlike [defalt parent purpose ascii
+contents[64] extras...] (lisp.h struct Lisp_Char_Table); a sub-char-table
+holds DEPTH, MIN-CHAR and 16, 32 or 128 contents (chartab.c:30-53).  The
+runtime keeps its native box -- subtype, default, parent and a 32-byte
+cell buffer the collector already marks and compacts -- and stores GNU's
+[ascii contents...] as a 65-slot vector in cell 0, the extra slots in
+cells 1...  A sub-char-table is a vector [nelisp--sub-char-table DEPTH
+MIN-CHAR contents...] reached only through those slots.  No collector or
+allocator code changes.
+
+** Native, under AGENTS.md clause 1 (char-table slot access)
+
+- CHAR_TABLE_REF (chartab.c:210-249, lisp.h:2133-2155) behind =aref= and
+  =char-table-range= of a character: the ASCII slot, else
+  contents[c >> 16] and the sub-tables, then the default, then the parent.
+- =nelisp--char-table-slots= and =nelisp--char-table-set-slots= (cell 0).
+- The allocator behind =make-char-table= (cells 1.. take the extra
+  count from the subtype property); =length= answers MAX_CHAR + 1
+  (fns.c:148).
+- =aset= on a char-table calls the prelude's =nelisp--char-table-aset=.
+
+** Prelude Lisp, function for function
+
+=make-char-table= (INIT fills default, ascii, contents and extras),
+=char_table_set= and =sub_char_table_set= with GNU's sub-table creation,
+=char_table_set_range= and =sub_char_table_set_range=,
+=set-char-table-range= (t, nil, a character, a cons), =char-table-range=,
+=map_char_table= and =map_sub_char_table= (one reused range cons, the
+parent walk with the parent's own parent cleared), =optimize-char-table=,
+=copy_char_table= behind =copy-sequence=, element-wise =equal=
+(fns.c:2985), printing =#^[...]= and =#^^[DEPTH MIN-CHAR ...]=
+(print.c:2615-2629), =type-of= =char-table=, =arrayp= and =sequencep=.
+category.c follows the same way: =make-category-set=, =define-category=,
+=category-docstring=, =get-unused-category=, =category-table-p=,
+=category-table=, =standard-category-table=, =copy-category-table=,
+=make-category-table=, =set-category-table=, =char-category-set=,
+=category-set-mnemonics= and =modify-category-entry= with
+=char_table_ref_and_range= runs and the equal-hash that shares category
+sets.  The standard category table is built on first use from GNU 31.1's
+own (19,229 runs over 199 distinct sets), generated by
+tools/nelisp-generate-unicode.el.  The runtime then provides the feature
+=nelisp-native-char-tables=, the library's single switch.
+
+** Verification
+
+test/fixtures/syntax-rt-chartab.el pins 63 GNU 31.1 rows; printed forms
+after specific histories pin the sub-table structure itself.  Two
+fixture rows avoid unrelated runtime printer defects: category sets are
+compared by their bits (the runtime prints bool-vectors as spaces, GNU
+as raw bytes), and one extra-slot value is not the symbol =e0= (the
+runtime prints it as =\e0=).

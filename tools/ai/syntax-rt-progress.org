@@ -1,0 +1,74 @@
+#+TITLE: Syntax lookups and string-match entry: GNU 31.1 real-time parity
+
+# Found by the coordinator (2026-10-21, 16:15), measuring wall-clock instead
+# of Ir. Setup: taskset -c 28-31, warmed up, interpreted probe lambdas.
+# Probes are in target/syntax-rt/probes/.
+#
+#                               GNU 31.1   NeLisp 9d5f4   batch C
+#   (char-syntax ?a)              0.2 us       360 us       362 us
+#   (string-match "\\sw+" "alpha") 0.6 us     2,493 us     2,232 us
+#   string-match, plain pattern   0.3 us     64-190 us     208 us
+#   interpreted call (rt-id i)    0.51 us      9.1 us
+#
+# The string-match cost does not depend on the string's length (60, 600 and
+# 6000 characters cost the same): it is a fixed per-call overhead. A syntax
+# class pattern pays about one char-syntax-sized lookup per character.
+# GNU's references:
+# - syntax.h SYNTAX_ENTRY/SYNTAX: CHAR_TABLE_REF on the buffer's syntax
+#   table, then the class from the entry's car;
+# - chartab.c char_table_ref: O(1) through sub-char-tables;
+# - search.c compile_pattern: a cache hit compares the pattern, the
+#   translate table, posix and multibyte, and the syntax table by identity
+#   (search.c:222).
+#
+# Base: eval/integ-20261021d at bdc34c979 (9d5f4 plus version,
+# free-symbol, regex-syncache and casetab).
+#
+# Bar (the user's): an operation's own cost, that is the call minus a
+# same-shape trivial subr call, is at most GNU's own cost. It is measured
+# in wall-clock: the median of 7 alternating runs on idle pinned CPUs.
+# Instruction counts may be reported as well, but they do not decide.
+
+* S0 Locate
+** S0.1 docs/design/225-syntax-and-match-entry-gnu-parity.org splits the per-call time of char-syntax, a syntax-class string-match and a plain string-match into its owners, as wall-clock shares, and maps each one to the GNU mechanism to port
+#+NOTE: 2026-10-21: Measured on the base dynamic binary (sha256 f3321a74...) pinned to CPU 10, two runs of tools/ai/syntax-rt-split.el. char-syntax ?a 423 us: 80% an interpreted binary search of 376 Unicode ranges for the default class, which GNU never does (syntax.c:3678-3738 fills the standard char-table once); ?( 43 us: 80% the record/hash parent walk (GNU chartab.c:225, lisp.h:2133). \\sw+ 3,705 us: 40% per-character char-syntax calls (GNU regex-emacs.c:5195 reads SYNTAX (c) inline), 39% case folding. Plain "alpha" 436 us: 92% per-character translation through nlre--table-char (GNU char_table_translate, character.h:592) and 8% the translate-table fetch (GNU search.c:409, one buffer-slot read). GNU own costs: char-syntax about 0, string-match 0.14-0.20 us.
+cmd: python3 tools/ai/syntax-rt-check.py plan
+
+* S1 Port and semantics
+** S1.1 Syntax lookups follow GNU's structure, and a GNU 31.1 oracle fixture matches on dynamic and static
+#+NOTE: 2026-10-21 P1 (ported): syntax tables are native char-tables of subtype syntax-table holding GNU raw descriptors (CODE . MATCH), flags in bits 16-23 (GNU syntax.c:1151-1214, :3667-3672). The standard table is rebuilt once from a generated copy of GNU 31.1's 394 runs (nelisp--unicode-syntax-entries; GNU syntax.c:3659-3738 plus characters.el), so char-syntax is one aref and syntax_code_spec (GNU syntax.h:107-135, syntax.c:1098-1117). Added GNU's string-to-syntax, syntax-class-to-char, syntax-table-p, matching-paren, syntax-after, syntax-class and with-syntax-table. Adapted: the buffer's syntax-table slot stays the buffer-to-table map; with-syntax-table restores through with-current-buffer because the bare runtime's save-current-buffer special form signals (void-function nil) (pre-existing, evaluator); the native char-table kernel keeps its interval layout (sub-char-tables would change GC marking, gc-port).
+The fixture covers char-syntax, syntax-after, modify-syntax-entry, inheritance from the standard syntax table, string-to-syntax, syntax-class-to-char, with-syntax-table and \sw \s- \s_ \b \< \> in string-match and re-search-forward.
+#+NOTE: 2026-10-21: test/fixtures/syntax-rt-semantics.el pins 47 GNU 31.1 rows (syntax-rt-semantics.gnu-31.1.expected): char-syntax over 76 characters, raw entries and errors, string-to-syntax classes/matching/flags/sharing/errors, syntax-class-to-char, syntax-class, syntax-table-p, make/copy-syntax-table and inheritance, modify-syntax-entry values/ranges/flags/errors, matching-paren, with-syntax-table restore on normal and non-local exit, syntax-after with and without syntax-table properties, \\sw \\s- \\s_ \\s. \\s( \\Sw \\b \\B \\< \\> \\_< \\_> in string-match under standard, folded and modified tables and after table edits, and re-search-forward in a buffer. The P3 dynamic build matches byte for byte; the base binary aborts at modify-syntax-entry.
+cmd: python3 tools/ai/syntax-rt-check.py semantics
+** S1.2 char-syntax own cost <= GNU's own cost (wall-clock)
+#+NOTE: 2026-10-21 P1: char-syntax own cost (call minus (integerp 97), median of 7 alternating runs on CPU 10) went from 374.9 us (?a) and 39.0 us (?() on the base to 12.8 us for both; GNU 0.008 and 0.002 us. The remaining cost is the interpreted call and about a dozen interpreted forms (call path and codegen lanes); a trivial subr call costs 1.8 us in the same loop.
+#+NOTE: 2026-10-21 final (S3c, CPU 10, paired ratios over 7 rounds): own cost ?a 12.25 us (base 384.0, GNU 0.0072), ?( 12.74 us (base 39.4, GNU 0.0029): 31x and 3.1x below the base, 1,656x and 4,370x GNU. GNU's own cost is one CHAR_TABLE_REF in C. Here an interpreted one-argument call adds only 0.15 us, but each native operation char-syntax performs costs about 1 us through the interpreter's builtin call path (aref 0.97 us, on a vector or a char-table alike; consp 0.95 us) and the buffer-to-table gethash 2.5 us. Reaching GNU needs Lisp compiled to native code (codegen lane) and a cheaper builtin call path (callpath lane); the criterion stays failing (COMMON rule 5).
+cmd: python3 tools/ai/syntax-rt-check.py speed char-syntax
+** S1.3 string-match own cost <= GNU's own cost for a plain and a syntax-class pattern on a short string (wall-clock)
+#+NOTE: 2026-10-21 P2 (ported): the matcher reads the current syntax table once per match and tests each character's raw descriptor directly, as GNU regex-emacs.c:5175-5200 tests SYNTAX (c) after one RE_SETUP_SYNTAX_TABLE_FOR_OBJECT (:3462), instead of calling char-syntax per character; a provider whose table is not a char-table still answers through its char-syntax. Paired ratios on CPU 10 (7 rounds): (string-match "\\sw+" "alpha") own cost 243 us against the base's 5,042 us in a loaded run (ratio to base 0.099); GNU 0.20 us.
+#+NOTE: 2026-10-21 P3 (ported): the entry reads the current buffer's canonicalize table once, as GNU string_match_1 reads BVAR (current_buffer, case_canon_table) (search.c:405-410), through case-table--search-canon instead of four dispatch layers, and translates a character as GNU char_table_translate does (character.h:592): one aref on a native table. When the table is the pristine standard one, whose mapping equals the matcher's built-in fold for all 1,114,112 Unicode scalars (tools/ai/syntax-rt-canon-scan.el: 0 mismatches), the search uses the built-in fold and its plans; GNU likewise trusts a translate table's identity for its compiled-pattern cache (search.c:220). This undoes batch D's fold regression (regex6000's pattern 68 us in batch C, 1,103 us in batch D). Paired ratios, 7 rounds on CPU 10: plain own cost 89.6 us (base 433.1, ratio 0.206), \\sw+ 213.6 us (base 2,426, ratio 0.088); GNU 0.13 and 0.20 us.
+#+NOTE: 2026-10-21 final (S3c, CPU 10, paired ratios over 7 rounds): own cost plain 83.5 us (base 403.4, GNU 0.133; ratio to base 0.207), \\sw+ 220.8 us (base 2,436, GNU 0.194; 0.091). What remains is the matcher itself: the AST matcher in VM byte-code and interpreted Lisp, not GNU's compiled pattern and re_match_2_internal (regex-emacs.c), at about 1 us per native operation. Same blocking layers as S1.2; the criterion stays failing.
+#+NOTE: 2026-10-22 batch E: casetab renamed its private helpers to nelisp-casetab--.  The case-fold canon read is batch D'''s memoized nlre--current-translate-table (c49761e3e): per buffer and nelisp-casetab--epoch, nil (the built-in fold) for nelisp-casetab--builtin-canon, a native canon translated with one aref through descriptor slot 5.  It replaces case-table--search-canon and the nlre--translate-native binding; string-match resets nlre--syntax-table with setq instead of binding it.  The canon scan on D''' found 0 of 1,114,112 mismatches.
+cmd: python3 tools/ai/syntax-rt-check.py speed string-match
+
+* S2 End to end
+** S2.1 Real workloads gain in wall-clock against the base, with no regression
+The workloads are the anvil MCP smoke (40 tools; initialize plus memory-search latency) and the regex6000 and files workloads. Verification: COMMON.md 11 groups with 0 failures, standalone-checks, dynamic and static.
+#+NOTE: 2026-10-21 final verification on the S3c dynamic/static builds (source 14cf9bb3d plus the two standalone wrappers): target/final-verify/checks.sh gave 11 groups with 0 failures; test/perf/standalone-checks.sh 80 cases with 0 failures (maphash-sparse known-red), including the two new fixture checks, which fail on the base. Workloads, paired ratios to the integration-D base over 7 rounds on CPU 10: regex6000 0.145 (1.02 s against 7.05 s; GNU 0.069 s, so 14.5x GNU), files 0.428 (0.81 s against 1.88 s; GNU 0.117 s, 6.8x GNU), anvil MCP initialize 0.918, warm memory-search 0.521 (25 ms against 48 ms); 40 tools in every session. The first memory-search of a session opens the database and varies by seconds on both binaries, so the warm second search is the timed one. target/syntax-rt/final/final.json binds the binaries and logs.
+cmd: python3 tools/ai/syntax-rt-check.py final
+
+* S3 Char-table ownership
+# Added 2026-10-21 by the coordinator (user decision): the runtime owns
+# GNU chartab.c with its sub-char-table structure -- make-char-table,
+# char-table-p, aref/aset on char-tables, char-table-range,
+# set-char-table-range, map-char-table, extra slots, parent, subtype and
+# optimize-char-table -- and the library (notes-65) defers the whole
+# family to it.  notes-65's census: the library image owns char-tables
+# today, prints a runtime char-table as #<unprintable> and its
+# char-table-p rejects one (casetab's batch D fails ccore 372/374).
+** S3.1 The runtime char-table family matches a GNU 31.1 oracle fixture on dynamic and static
+#+NOTE: 2026-10-21 plan (lane-sized; recorded before implementation). Kernel, native under AGENTS.md clause 1 (char-table slot access): GNU chartab.c's structure inside the existing tag-9 box, so no GC code changes -- the 32-byte cell buffer the collector already marks and compacts holds ascii + contents[64] + extras (65+n cells, n from char-table-extra-slots); sub-char-tables are vectors [nelisp--sub-char-table DEPTH MIN-CHAR contents...] reached through those cells; the interval rows stay empty. Natives: make-char-table (GNU fills defalt, ascii, contents and extras with INIT), char_table_ref with the ASCII fast path (aref, char-table-range of a character), char_table_set with sub-table creation (aset), cell and extra-slot access, type-of char-table. Prelude Lisp, function for function: set-char-table-range (char_table_set_range, sub_char_table_set_range), char-table-range of a cons (char_table_ref_and_range), map-char-table (map_sub_char_table with GNU's reused range cons and parent walk), optimize-char-table, copy-sequence (copy_char_table), equal (element-wise, as fns.c:2985), printing #^[...] / #^^[...] (print.c:2615-2629), the parent cycle error, and category.c with GNU 31.1's standard category table generated like the syntax entries. Then (provide 'nelisp-native-char-tables). Size: about 200 lines of build DSL and 600 of Lisp plus generated data. test/fixtures/syntax-rt-chartab.el pins 63 GNU rows; the P3 binary differs on 35 of them. Bool-vector printing (GNU #&N with raw bytes) differs in the runtime printer; the fixture compares category sets by their bits instead.
+#+NOTE: 2026-10-21 S3.1 (ported): GNU chartab.c's structure on the runtime box -- cell 0 holds the 65-slot [ascii contents...] vector, cells 1.. the extras, sub-char-tables are vectors [nelisp--sub-char-table DEPTH MIN-CHAR ...] reached through those slots, so the collector's existing cell marking and compaction cover every edge (no GC change). Native (clause 1): CHAR_TABLE_REF behind aref and char-table-range of a character (chartab.c:210-249, lisp.h:2133-2155), the cell-0 accessors nelisp--char-table-slots/-set-slots, the allocator, length MAX_CHAR+1 (fns.c:148); aset calls the prelude's char_table_set. Prelude Lisp, function for function: make-char-table, char_table_set/sub_char_table_set, char_table_set_range, set-char-table-range, map_char_table (reused range cons, parent walk), optimize-char-table, copy_char_table, element-wise equal (fns.c:2985), #^[...]/#^^[...] printing (print.c:2615-2629), type-of/arrayp/sequencep, and category.c with GNU 31.1's standard category table (19,229 runs, 199 sets) generated beside the syntax entries; then (provide 'nelisp-native-char-tables). Dynamic and static match all 63 GNU rows; the base binary does not. char-syntax own cost is unchanged by the new lookup (paired ratio to P3 1.002). Two fixture rows avoid unrelated printer defects (bool-vectors print as spaces; the symbol e0 prints as \\e0).
+cmd: python3 tools/ai/syntax-rt-check.py chartab
+** S3.2 On a library image whose char-table family defers to the runtime, notes-65's ccore stays 374/374 and the char-table probes match GNU
+pending
