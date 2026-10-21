@@ -604,7 +604,11 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
   "Return driver BSS size including roots, loader state and catch head."
   (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96
      ;; Doc 223: `nl_typed_alloc', the GNU typed-block allocator state.
-     512 16
+     512
+     ;; `nl_exit_values': a pending nonlocal exit's tag and value WORDs.
+     16
+     ;; `nl_cold_chunk0_domain'.
+     16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -947,6 +951,11 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_typed_alloc"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96)
+                              :section 'bss :bind 'global :type 'object))
+    ;; A pending nonlocal exit's tag and value WORDs (GNU's handler val), see
+    ;; `nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el.
+    (list (nelisp-link-symbol "nl_exit_values"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -9072,19 +9081,18 @@ argument (reachability + in-arena bounds checks).")
                (if (= pushed 1) (nl_gc_ctx_pop) 0)
                (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) w)))
         (defun nelisp_eval_call_stash_excessive_lisp_nesting (_env rec_max)
-          (let* ((tag_buf (alloc-bytes 24 1)))
+          (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag_buf (alloc-bytes 24 1)))
             (seq
              ;; "excessive-lisp-nesting"; Emacs raises this condition family
              ;; for native eval/binding recursion exhaustion.
              (ptr-write-u64 tag_buf 0 8532477908489566309)
              (ptr-write-u64 (+ tag_buf 8) 0 7939125359116299621)
              (ptr-write-u64 (+ tag_buf 16) 0 113723913302885)
-             (nl_alloc_symbol tag_buf 22 268435480)
+             (nl_alloc_symbol tag_buf 22 sig-tag)
              ;; Signal data is the singleton list (limit+1), as in GNU.
              ;; Both the symbol and result slot are the existing exit roots.
-             (nelisp_cons_construct (+ (* (+ rec_max 1) 4) 1) 3 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nelisp_cons_construct (+ (* (+ rec_max 1) 4) 1) 3 sig-val)
+             (nl_exit_signal_w sig-tag sig-val)
              1)))
         ;; `nl_env_pop_frame' moved in from `nelisp-cc-evalport-env-leaves-
         ;; simple' (Doc 135 Stage 135.C): `nelisp_eval_call_root_done' below
@@ -10039,8 +10047,9 @@ nelisp--syscall) ...)' JIT-era alias in `nelisp-jit-strategy.el', which
 called deleted-Rust `nl-jit-call-syscall' and which the standalone reader
 never loads -- fell through the unmatched-builtin default that used to
 `nl_os_write_stderr' the bare name and return rc=1 WITHOUT going through the
-signal/unwind protocol (flag@268435472 / TAG@268435480 / VAL@268435512, the
-same stash `bf_signal'/`bf_error'/`nl_cons_stash_void_function' use).  The
+signal/unwind protocol (the pending exit: kind flag@268435472, TAG and VAL
+WORDs in `nl_exit_values', recorded through `nl_exit_signal_w' as
+`bf_signal'/`bf_error'/`nl_cons_stash_void_function' do).  The
 top-level driver then reported \"nelisp: form aborted without signal\" and
 `condition-case' never ran: uncatchable by construction, not by any handler
 bug.  Stashing a real signal here instead of printing makes every call that
@@ -10071,7 +10080,9 @@ by name pending that follow-up; this paragraph is the record of why."
   (let ((tagbuf (make-symbol "unsup-tagbuf"))
         (dataname (make-symbol "unsup-dataname"))
         (nilslot (make-symbol "unsup-nilslot")))
-    `(let* ((,tagbuf (alloc-bytes 32 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (,tagbuf (alloc-bytes 32 1))
             (,dataname (alloc-bytes 32 8))
             (,nilslot (alloc-bytes 32 8)))
        (seq
@@ -10081,13 +10092,12 @@ by name pending that follow-up; this paragraph is the record of why."
          ,tagbuf
          ,(length (encode-coding-string
                    nelisp-standalone--unsupported-primitive-tag 'utf-8 t))
-         268435480)
+         sig-tag)
         (nl_alloc_symbol (heap-read-u64 name_ptr 16) (heap-read-u64 name_ptr 24)
                           ,dataname)
         (wf_write_nil ,nilslot)
-        (nelisp_cons_construct ,dataname ,nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct ,dataname ,nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 ;;; Static symbol ids (Doc 221 M03/M17; GNU lisp.h DEFSYM/lispsym and the
@@ -10382,7 +10392,9 @@ leave symbols unresolved at link time."
                 (if (= (logand d 1) 1) 0 (wf_numeric_has_marker d)))))
         0))
     (defun wf_numeric_detached_marker ()
-      (let* ((buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
         (seq
          ;; GNU's exact error data, without the marker object.
@@ -10394,10 +10406,9 @@ leave symbols unresolved at link time."
                   (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 builtin word ABI: the one way to answer "failed".  RC is the
     ;; value of the call that stashed the signal (ignored); 0 is returned.
@@ -10415,7 +10426,9 @@ leave symbols unresolved at link time."
           (seq (nl_abi_stash_unstashed) 0)
         0))
     (defun nl_abi_stash_unstashed ()
-      (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 (+ buf 0) 0 2322292198855173486)
@@ -10429,10 +10442,9 @@ leave symbols unresolved at link time."
          (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_value_w (word _pad check)
@@ -12214,17 +12226,16 @@ leave symbols unresolved at link time."
     ;; use (this file's existing `bf_signal_overflow_error'/`bf_wrong_
     ;; type_named' precedent for hand-packed literal symbol bytes).
     (defun bf_signal_bignum_division_unsupported ()
-      (let* ((sbuf (alloc-bytes 40 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 40 1)))
         (seq
          (ptr-write-u64 sbuf 0 7074434230661178734)
          (ptr-write-u64 (+ sbuf 8) 0 7594244819798353769)
          (ptr-write-u64 (+ sbuf 16) 0 8443526301179144566)
          (ptr-write-u64 (+ sbuf 24) 0 8390891584458421102)
          (ptr-write-u64 (+ sbuf 32) 0 25701)
-         (nl_alloc_symbol sbuf 34 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 34 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; TRUE (1) iff D_PTR is a supported small-fixnum divisor for the two
     ;; functions below: its Sexp tag is Int (2, never Bignum/Float) AND
@@ -12487,7 +12498,9 @@ leave symbols unresolved at link time."
     ;; argument is not a number -- not `numberp'.  Same shape as
     ;; `bf_wrong_type_listp'; the 18-byte predicate name needs three writes.
     (defun bf_wrong_type_named (offender cbuf-w0 cbuf-w1 cbuf-w2 clen)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 24 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -12496,27 +12509,25 @@ leave symbols unresolved at link time."
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 cbuf-w0)
          (ptr-write-u64 (+ cbuf 8) 0 cbuf-w1)
          (ptr-write-u64 (+ cbuf 16) 0 cbuf-w2)
          (nl_alloc_symbol cbuf clen expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_arith_error ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 8243044619624477281)
          (ptr-write-u64 (+ sbuf 8) 0 7499634)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 11 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 11 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 187: fixnum overflow at the native `+'/`-'/`*' dispatch (wf_sum/
     ;; wf_prod/wf_subtail/wf_diff below) signals `overflow-error' the same
@@ -12527,26 +12538,24 @@ leave symbols unresolved at link time."
     ;; stash (matching `(signal 'overflow-error nil)'), raise the THROW
     ;; flag, and bump the mutation epoch.
     (defun bf_signal_overflow_error ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 8606216600190023279)
          (ptr-write-u64 (+ sbuf 8) 0 125822987035949)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 14 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 14 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_signal_memory_full ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 7362674498223301997)
          (ptr-write-u64 (+ sbuf 8) 0 7105653)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 11 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 11 sig-tag)
+         (nl_exit_signal_w sig-tag 3)
          1)))
     ;; Doc 215 word-transport helpers (lane M2).  A WORD is a fixnum
     ;; (n<<2)|1, nil 3, t 7, or a pointer WORD: a legacy physical view or
@@ -12594,7 +12603,9 @@ leave symbols unresolved at link time."
               (wf_word_view a)))
         0))
     (defun bf_wrong_type_number_or_marker (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 24 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -12603,16 +12614,15 @@ leave symbols unresolved at link time."
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 8011185091930584430)   ; "number-o"
          (ptr-write-u64 (+ cbuf 8) 0 8243112831976549746) ; "r-marker"
          (ptr-write-u64 (+ cbuf 16) 0 28717)          ; "-p"
          (nl_alloc_symbol cbuf 18 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     )
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
@@ -15336,13 +15346,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; `memory-full' is the ordinary condition for a frame that cannot fit
       ;; in the registered root region. The caller releases partial reserves
       ;; before entering here, so symbol construction has normal root space.
-      (let* ((sbuf (alloc-bytes 16 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 16 1)))
         (seq (ptr-write-u64 sbuf 0 7362674498223301997)
              (ptr-write-u64 (+ sbuf 8) 0 7105653)
-             (nl_alloc_symbol sbuf 11 268435480)
-             (wf_write_nil 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nl_alloc_symbol sbuf 11 sig-tag)
+             (nl_exit_signal_w sig-tag 3)
              1)))
     (defun wf_bytecode_error (env opcode offset out)
       (let* ((buf (alloc-bytes 56 1))
@@ -16212,7 +16221,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
                          (event (+ roots 416)) (payload (+ roots 448))
                          (saved-tag (+ roots 480)) (saved-value (+ roots 512))
-                         (saved-kind 0) (cleanup-rc 0) (rc 2)
+                         (saved-kind 0) (saved-tag-w 0) (saved-value-w 0) (cleanup-rc 0) (rc 2)
                          (direct 0) (event-count 0) (binding-count 0)
                          (entry 0) (address 0) (hash 0))
                     (seq
@@ -16437,16 +16446,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (seq
                                         (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_word event)))
                                         (setq saved-kind (heap-read-u64 268435472 0))
-                                        (wf_bytecode_copy saved-tag 268435480)
-                                        (wf_bytecode_copy saved-value 268435512)
+                                        ;; The pending exit's WORDs, rooted in the pinned
+                                        ;; slots while the cleanup runs (GNU's unbind_to
+                                        ;; under unwind_to_catch keeps them in the catch).
+                                        (setq saved-tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+                                        (setq saved-value-w (heap-read-u64 (data-addr nl_exit_values) 8))
+                                        (wf_bytecode_copy saved-tag (if (= saved-tag-w 0) 3 saved-tag-w))
+                                        (wf_bytecode_copy saved-value (if (= saved-value-w 0) 3 saved-value-w))
                                         (ptr-write-u64 268435472 0 0)
                                         ;; Payloads are Lisp wrappers, so the
                                         ;; sole native boundary stays APPLY;
                                         ;; forms evaluation belongs to Lisp.
                                         (setq cleanup-rc (wf_bytecode_call_gateway env payload roots 1 0 scratch))
                                         (if (= cleanup-rc 0)
-                                            (seq (wf_bytecode_copy 268435480 saved-tag)
-                                                 (wf_bytecode_copy 268435512 saved-value)
+                                            (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) saved-tag-w)
+                                                          (= (heap-read-u64 (data-addr nl_exit_values) 8) saved-value-w))
+                                                     0
+                                                   (seq (nl_val_clone_into saved-tag (data-addr nl_exit_values))
+                                                        (nl_val_clone_into saved-value (+ (data-addr nl_exit_values) 8))))
                                                  (ptr-write-u64 268435472 0 saved-kind))
                                           (setq rc 1)))
                                      (seq
@@ -16524,8 +16541,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (let* ((kind (heap-read-u64 268435472 0)))
                     (if (or (= kind 1) (= kind 2))
                         (seq
-                         (wf_bytecode_copy result-slot 268435480)
-                         (wf_bytecode_copy value-slot 268435512)
+                         (wf_bytecode_copy result-slot (nl_exit_tag_w))
+                         (wf_bytecode_copy value-slot (nl_exit_val_w))
                          (wf_write_int status-slot kind)
                          1)
                       2))
@@ -16690,17 +16707,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (result (nl_root_reserve env))
              (cursor (nl_root_reserve env))
              (nil-slot (nl_root_reserve env))
-             (saved-tag (nl_root_reserve env))
-             (saved-value (nl_root_reserve env))
              (function-cell (nl_root_reserve env))
              (form (nl_root_reserve env))
              (saved-flag (heap-read-u64 268435472 0))
+             ;; The pending exit's two WORDs, rooted for the cleanup.
+             (saved (nl_exit_save env))
              (lookup-rc 1)
              (is-function 0)
              (rc 0))
+        (if (= saved 0)
+            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
         (seq
-         (wf_bytecode_copy saved-tag 268435480)
-         (wf_bytecode_copy saved-value 268435512)
          (wf_write_nil args)
          (wf_write_nil nil-slot)
          (wf_write_nil lookup-args)
@@ -16740,12 +16757,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; A normally returning cleanup preserves the pending exit.  An
          ;; exit raised by the cleanup remains in the shared stash and wins.
          (if (= rc 0)
-             (seq (wf_bytecode_copy 268435480 saved-tag)
-                  (wf_bytecode_copy 268435512 saved-value)
+             (seq (nl_exit_restore saved)
                   (ptr-write-u64 268435472 0 saved-flag))
            0)
          (nl_root_release env mark)
-         rc)))
+         rc))))
     (defun wf_bytecode_legacy (env mem sp opcode argc)
       ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
       ;; The rooted registry precedes user code; never use a public cell.
@@ -16981,9 +16997,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (c5 (nl_cons_cdr_word c4))
                   (dest (wf_bytecode_w_int (nl_cons_car_word c1))))
              (if (if (>= dest 0)
-                     (if (= (heap-read-u64 268435480 0) 0)
+                     (if (= (nl_val_tag (nl_exit_tag_w)) 0)
                          0
-                       (wf_bytecode_w_eqv 268435480 (heap-read-u64 (heap-sexp-payload cursor) 0)))
+                       (wf_bytecode_w_eqv (nl_exit_tag_w) (heap-read-u64 (heap-sexp-payload cursor) 0)))
                    0)
                  (seq
                   (setq destination dest)
@@ -17035,7 +17051,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (< encoded 0)
                  (seq
                   (wf_bytecode_w_load spec-slot (heap-read-u64 (heap-sexp-payload cursor) 0))
-                  (if (if (= (wf_bytecode_condition_matches env 268435480 spec-slot) 1)
+                  (if (if (= (wf_bytecode_condition_matches env (nl_exit_tag_w) spec-slot) 1)
                           (= (heap-read-u64 268435472 0) 1) 0)
                       (seq (setq destination (- (- encoded) 1))
                            (setq saved-sp (wf_bytecode_w_int (nl_cons_car_word c2)))
@@ -17057,7 +17073,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (wf_write_int resume-sp saved-sp)
                    (wf_write_int resume-bindings new-bindings)
                    ;; Bind the full condition object (SIGNAL . DATA).
-                   (nelisp_cons_construct 268435480 268435512 error-object)
+                   (nl_exit_condition_into error-object)
                    (wf_bytecode_w_store mem saved-sp error-object)
                    0)
                 (seq (wf_write_int resume-dest -2)
@@ -17082,7 +17098,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                  resume-dest resume-sp
                                                  resume-bindings pool))
                     (if (= caught 1)
-                        (wf_bytecode_w_store mem (sexp-int-unwrap resume-sp) 268435512) 0))
+                        (wf_bytecode_w_store mem (sexp-int-unwrap resume-sp) (nl_exit_val_w)) 0))
              (if (= kind 1)
                  (wf_bytecode_try_signal env mem handlers bindings unwinds
                                          resume-dest resume-sp resume-bindings pool)
@@ -17120,7 +17136,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq (wf_write_nil out) 0)
             (bf_wrong_type_listp value)))))
     (defun wf_bytecode_circular_list (env value)
-      (let* ((name (alloc-bytes 16 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (name (alloc-bytes 16 1))
              (mark (nl_root_mark env))
              (nil-slot (nl_root_reserve env))
              (args (nl_root_reserve env)))
@@ -17131,12 +17149,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; is only the signal data list. Keeping the whole condition object
          ;; in VAL leaves TAG stale, so an enclosing condition-case cannot
          ;; match this error.
-         (nl_alloc_symbol name 13 268435480)
+         (nl_alloc_symbol name 13 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct value nil-slot args)
-         (wf_bytecode_copy 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (wf_bytecode_copy sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          (nl_root_release env mark)
          1)))
     (defun wf_bytecode_nreverse_list (env value out)
@@ -22747,7 +22764,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_invalid_byte_code_object (out)
       (nl_abi_word_to_rc (bf_invalid_byte_code_object_w 0) out))
     (defun bf_invalid_byte_code_object_w (_pad)
-      (let* ((bytes (alloc-bytes 24 1)) (message (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (bytes (alloc-bytes 24 1)) (message (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8)) (args (alloc-bytes 32 8)))
         (seq (ptr-write-u64 bytes 0 2334106421097295433)
              (ptr-write-u64 (+ bytes 8) 0 7237112172834486626)
@@ -22757,10 +22776,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (nelisp_cons_construct message nil-slot args)
              (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          (nl_abi_fail 1 0))))
     (defun bf_make_byte_code_w (args _pad)
       (let* ((count (bf_byte_code_arg_count args 0))
@@ -22993,7 +23011,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; this one guards it.  Verified against host Emacs: `(make-char-table)'
     ;; signals exactly `(wrong-number-of-arguments make-char-table 0)'.
     (defun bf_wrong_number_of_args_make_char_table ()
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (zero (alloc-bytes 32 8))
@@ -23004,16 +23024,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445) ; "mber-of-"
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137) ; "argument"
          (ptr-write-u64 (+ wbuf 24) 0 115) ; "s"
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 7018969065883132269) ; "make-cha"
          (ptr-write-u64 (+ fbuf 8) 0 28548142445374834) ; "r-table"
          (nl_alloc_symbol fbuf 15 fsym)
          (wf_write_int zero 0)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct zero nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Match Emacs's prevention of parent cycles.  The sparse map walker
     ;; follows parent boxes directly, so keep this invariant at mutation time.
@@ -23215,7 +23234,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the predicate name against host Emacs: `(char-table-parent 5)' signals
     ;; `(wrong-type-argument char-table-p 5)').
     (defun bf_wrong_type_char_table_p (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -23224,15 +23245,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319) ; "wrong-ty"
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488) ; "pe-argum"
          (ptr-write-u64 (+ wbuf 16) 0 7630437) ; "ent"
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7089075026999208035) ; "char-tab"
          (ptr-write-u64 (+ cbuf 8) 0 1882023276) ; "le-p"
          (nl_alloc_symbol cbuf 12 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
     ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
@@ -23922,13 +23942,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; arms sit past the baked-19 cutoff) still call it, now cross-unit.
     ;; Doc 215 word ABI: `signal' only stashes and answers 0.
     (defun bf_signal_w (args _pad)
-      (let* ((sym (wf_arg_ptr args 0))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
-         (nl_alloc_symbol (heap-read-u64 sym 16) (heap-read-u64 sym 24) 268435480)
-         (bf_sig_copy32 268435512 data)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol (heap-read-u64 sym 16) (heap-read-u64 sym 24) sig-tag)
+         (bf_sig_copy32 sig-val data)
+         (nl_exit_signal_w sig-tag sig-val)
          0)))
     (defun bf_signal (args out)
       (nl_abi_word_to_rc (bf_signal_w args 0) out))
@@ -23947,12 +23968,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_error_w (args _pad)
     (nl_abi_fail (seq
 
-      (let* ((ebuf (alloc-bytes 8 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (ebuf (alloc-bytes 8 1))
              (fmt (nl_cons_car_ptr args))
              (tg (sexp-tag fmt)))
         (seq
          (ptr-write-u64 ebuf 0 491496043109)              ; "error" packed LE
-         (nl_alloc_symbol ebuf 5 268435480)               ; TAG slot <- Symbol "error"
+         (nl_alloc_symbol ebuf 5 sig-tag)               ; TAG slot <- Symbol "error"
          (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
              (let* ((ms (alloc-bytes 32 8))
                     (msg (alloc-bytes 32 8))
@@ -23961,27 +23984,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (m5_fmt_loop ms fmt 0 (m5_strlen fmt) (nl_cons_cdr_word args))
                     (mut-str-finalize ms msg)
                     (wf_write_nil nil-slot)
-                    (nelisp_cons_construct msg nil-slot 268435512)))
-           (bf_sig_copy32 268435512 args))
-         (ptr-write-u64 268435472 0 1)                    ; raise flag
-         (atomic-fetch-add 268435544 1)
+                    (nelisp_cons_construct msg nil-slot sig-val)))
+           (bf_sig_copy32 sig-val args))
+         (nl_exit_signal_w sig-tag sig-val)
          1))
     ) 0))
     (defun bf_error (args out)
       (nl_abi_word_to_rc (bf_error_w args 0) out))
     (defun bf_raw_byte_unrepresentable ()
-      (let* ((sbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 32 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 8227355735268025710)
          (ptr-write-u64 (+ sbuf 8) 0 3271148769041545057)
          (ptr-write-u64 (+ sbuf 16) 0 8315178114073390709)
          (ptr-write-u64 (+ sbuf 24) 0 28548142445391461)
-         (nl_alloc_symbol sbuf 31 268435480)
+         (nl_alloc_symbol sbuf 31 sig-tag)
          (wf_write_nil nil-slot)
-         (bf_sig_copy32 268435512 nil-slot)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (bf_sig_copy32 sig-val nil-slot)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_cannot_convert_unibyte_w (index _pad)
@@ -24072,7 +24095,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (bf_error_w head 0)))
     ) 0))
     (defun bf_wrong_type_consp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24081,19 +24106,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319) ; "wrong-ty"
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488) ; "pe-argum"
          (ptr-write-u64 (+ wbuf 16) 0 7630437) ; "ent"
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 482972954467) ; "consp"
          (nl_alloc_symbol cbuf 5 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Same shape as `bf_wrong_type_consp', for the two predicates `length'
     ;; needs to name.
     (defun bf_wrong_type_listp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24102,17 +24128,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 482990057836) ; "listp"
          (nl_alloc_symbol cbuf 5 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_sequencep (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24121,22 +24148,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7305804402566194547) ; "sequence"
          (ptr-write-u64 (+ cbuf 8) 0 112)           ; "p"
          (nl_alloc_symbol cbuf 9 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; (args-out-of-range ARRAY INDEX), the error Emacs raises for an index
     ;; outside a sequence.  `bf_aref' answered nil instead, so a read past
     ;; the end was indistinguishable from a slot that genuinely held nil,
     ;; and a `condition-case' on `args-out-of-range' never fired.
     (defun bf_wrong_type_stringp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24145,17 +24173,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 31638921304765555)  ; "stringp"
          (nl_alloc_symbol cbuf 7 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_arrayp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24164,14 +24193,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 123666628244065)
          (nl_alloc_symbol cbuf 6 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; bf_wrong_type_named, bf_arith_error, bf_wrong_type_int_or_marker,
     ;; bf_first_non_integer and bf_wrong_type_number_or_marker moved to
@@ -24190,31 +24218,33 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Emacs refuses it up front rather than storing a definition nothing
     ;; can call.
     (defun bf_cyclic_function (offender)
-      (let* ((sbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 32 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 7362650270261803363)
          (ptr-write-u64 (+ sbuf 8) 0 3273676477859851893)
          (ptr-write-u64 (+ sbuf 16) 0 8386658473162862185)
          (ptr-write-u64 (+ sbuf 24) 0 7237481)
-         (nl_alloc_symbol sbuf 27 268435480)
+         (nl_alloc_symbol sbuf 27 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_setting_constant (offender)
-      (let* ((sbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 3271705053512361331)
          (ptr-write-u64 (+ sbuf 8) 0 8389750308618530659)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 16 268435480)
+         (nl_alloc_symbol sbuf 16 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_numberp (offender)
       (bf_wrong_type_named offender 31650977160197486 0 0 7))
@@ -24234,7 +24264,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; dereferencing an argument slot.  Keep the condition data in the same
     ;; shape as the other standalone errors: (FUNCTION ARGCOUNT).
     (defun bf_wrong_number_of_args_bool_vector (argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (count (alloc-bytes 32 8))
@@ -24245,19 +24277,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 8029744607739470189)
          (ptr-write-u64 (+ fbuf 8) 0 8245937412991495532)
          (nl_alloc_symbol fbuf 16 fsym)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_number_of_args_bool_vector_p (argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (count (alloc-bytes 32 8))
@@ -24268,16 +24301,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 7162260719867490146)
          (ptr-write-u64 (+ fbuf 8) 0 481798811508)
          (nl_alloc_symbol fbuf 13 fsym)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; ONE walk, in argument order: each byte is type-checked and then
     ;; range-checked before the next is looked at, because Emacs reports
@@ -24296,7 +24328,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (wf_word_view a)))
         0))
     (defun bf_args_out_of_range_byte (offender)
-      (let* ((sbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1))
              (lo (alloc-bytes 32 8))
              (hi (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24306,15 +24340,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 sbuf 0 8391735721675158113)
          (ptr-write-u64 (+ sbuf 8) 0 7453001576360603437)
          (ptr-write-u64 (+ sbuf 16) 0 101)
-         (nl_alloc_symbol sbuf 17 268435480)
+         (nl_alloc_symbol sbuf 17 sig-tag)
          (wf_write_int lo 0)
          (wf_write_int hi 255)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct hi nil-slot t2)
          (nelisp_cons_construct lo t2 t1)
-         (nelisp_cons_construct offender t1 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender t1 sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Measured on Emacs 30.1, and POSITION-dependent rather than
     ;; type-dependent: the FIRST argument names `integer-or-marker-p'
@@ -24370,7 +24403,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (bf_wrong_type_number_or_marker nn)))
           (bf_wrong_type_int_or_marker (nl_cons_car_word args)))))
     (defun bf_wrong_type_symbolp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24379,14 +24414,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 31644423040104819) ; "symbolp"
          (nl_alloc_symbol cbuf 7 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; `substring' names THREE things in its error data -- the sequence, FROM
     ;; and TO -- where `aref' names two, and TO is reported as it was passed
@@ -24476,7 +24510,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1
           (if (= tg 15) 1 (if (= tg 8) 1 (if (= tg 10) 1 0))))))))
     (defun bf_wrong_type_hash_table (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24485,18 +24521,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7089075026832613736)   ; "hash-tab"
          (ptr-write-u64 (+ cbuf 8) 0 1882023276)      ; "le-p"
          (nl_alloc_symbol cbuf 12 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_args_out_of_range3 (arr a b)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8))
              (t3 (alloc-bytes 32 8))
              (t2 (alloc-bytes 32 8)))
@@ -24504,28 +24541,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8391735721675158113)   ; "args-out"
          (ptr-write-u64 (+ wbuf 8) 0 7453001576360603437) ; "-of-rang"
          (ptr-write-u64 (+ wbuf 16) 0 101)            ; "e"
-         (nl_alloc_symbol wbuf 17 268435480)
+         (nl_alloc_symbol wbuf 17 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct b nil-slot t3)
          (nelisp_cons_construct a t3 t2)
-         (nelisp_cons_construct arr t2 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct arr t2 sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_args_out_of_range (arr idx-box)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8))
              (tail (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 wbuf 0 8391735721675158113)  ; "args-out"
          (ptr-write-u64 (+ wbuf 8) 0 7453001576360603437) ; "-of-rang"
          (ptr-write-u64 (+ wbuf 16) 0 101)           ; "e"
-         (nl_alloc_symbol wbuf 17 268435480)
+         (nl_alloc_symbol wbuf 17 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct idx-box nil-slot tail)
-         (nelisp_cons_construct arr tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct arr tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; length, with the type checks Emacs makes.  `m5_length' answered a
     ;; number for anything: an improper list got the count of its cons cells
@@ -24982,7 +25019,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((nl_abi_w (bf_require_search_w feature dirs 0)))
         (if (= nl_abi_w 3) 0 (seq (nl_abi_word_to_rc nl_abi_w out) 1))))
     (defun bf_require_file_missing (requested)
-      (let* ((buf (alloc-bytes 16 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 16 1))
              (message-bytes (alloc-bytes 24 1))
              (reason-bytes (alloc-bytes 32 1))
              (message (alloc-bytes 32 8))
@@ -24994,7 +25033,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq
          (ptr-write-u64 buf 0 8316298228658891110) ; "file-mis"
          (ptr-write-u32 (+ buf 8) 0 1735289203)    ; "sing"
-         (nl_alloc_symbol buf 12 268435480)
+         (nl_alloc_symbol buf 12 sig-tag)
          ;; GNU Emacs condition data is a proper three-element list.  The old
          ;; dotted `(file-missing . FEATURE)' made `error-message-string'
          ;; replace the useful load failure with `(wrong-type-argument listp
@@ -25014,29 +25053,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil nil-slot)
          (nelisp_cons_construct name nil-slot name-tail)
          (nelisp_cons_construct reason name-tail reason-tail)
-         (nelisp_cons_construct message reason-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct message reason-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_read_syntax_error (what)
       ;; Raised when the reader could not read a form and had not reached the
       ;; end of the input.  Before this the two were one return code, so the
       ;; loops below stopped on both and reported success on both.
-      (let* ((buf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 buf 0 3270855143590358633)  ; "invalid-"
          (ptr-write-u64 (+ buf 8) 0 7960520455148889458) ; "read-syn"
          (ptr-write-u64 (+ buf 16) 0 7889268)       ; "tax"
-         (nl_alloc_symbol buf 19 268435480)
+         (nl_alloc_symbol buf 19 sig-tag)
          ;; Condition data is always a proper list.  Stashing WHAT directly
          ;; made `(error-message-string e)' treat a source string as a cons
          ;; and replace the useful reader error with `(wrong-type-argument
          ;; listp WHAT)'.
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct what nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct what nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_require_file_readable_p (file)
       (let* ((cpath (nl_bi_make_cpath file))
@@ -26409,15 +26448,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_wrong_type_plistp (offender)
       (bf_wrong_type_named offender 123645454806128 0 0 6))
     (defun bf_signal_circular_list (plist)
-      (let* ((tagbuf (alloc-bytes 16 1)) (nil-slot (alloc-bytes 32 8)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tagbuf (alloc-bytes 16 1)) (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 tagbuf 0 8241988044500134243)
          (ptr-write-u64 (+ tagbuf 8) 0 500152495149)
-         (nl_alloc_symbol tagbuf 13 268435480)
+         (nl_alloc_symbol tagbuf 13 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct plist nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1) 1)))
+         (nelisp_cons_construct plist nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val) 1)))
     (defun bf_plist_member_walk_w (cur key _pad orig)
       (let* ((c cur) (slow cur) (tick 0) (stop 0) (result 0) (sig 0))
         (seq
@@ -26571,10 +26609,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((tag (alloc-bytes 32 8)))
         (seq
          (nl_bf_err_arity_write_wna_sym tag)
-         (if (= (symbol-eq tag 268435480) 1)
+         (if (= (symbol-eq tag (nl_exit_tag_w)) 1)
              (let* ((name (bf_subr_arity_name body env)))
                (if (= (sexp-tag name) 4)
-                   (cons-set-car 268435512 name)
+                   (cons-set-car (nl_exit_val_w) name)
                  ;; The binder has not entered the body. Its activation still
                  ;; identifies the actual closure, including anonymous calls.
                  ;; GNU reports that closure, rather than the symbol lambda.
@@ -26592,12 +26630,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  op)))
                          (if (and (> function 4096) (= (logand function 1) 0)
                                   (= (nl_val_tag function) 7))
-                             (cons-set-car 268435512 function) 0))
+                             (cons-set-car (nl_exit_val_w) function) 0))
                      0))))
            0)
          1)))
     (defun bf_wrong_number_of_args (name argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (count (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
              (data-tail (alloc-bytes 32 8))
@@ -26618,13 +26658,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct reported data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct reported data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_number_of_args_list_access (name argc)
       (let* ((bytes (alloc-bytes 8 1)) (symbol (alloc-bytes 32 8)))
@@ -27268,7 +27307,9 @@ reaches this arm for a signature that names `:double'."
          (fn-name "ptr-call-typed")
          (fn-words (nelisp-standalone--name-words fn-name))
          (fn-len (length (encode-coding-string fn-name 'utf-8 t))))
-    `(let* ((tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
             (nbuf (alloc-bytes ,(* 8 (length fn-words)) 1))
             (namesym (alloc-bytes 32 8))
             (nilslot (alloc-bytes 32 8)))
@@ -27278,7 +27319,7 @@ reaches this arm for a signature that names `:double'."
               (push `(ptr-write-u64 tbuf ,(* w 8) ,word) forms)
               (setq w (1+ w)))
             (nreverse forms))
-        (nl_alloc_symbol tbuf ,tag-len 268435480)
+        (nl_alloc_symbol tbuf ,tag-len sig-tag)
         ,@(let ((w 0) (forms nil))
             (dolist (word fn-words)
               (push `(ptr-write-u64 nbuf ,(* w 8) ,word) forms)
@@ -27286,9 +27327,8 @@ reaches this arm for a signature that names `:double'."
             (nreverse forms))
         (nl_alloc_symbol nbuf ,fn-len namesym)
         (wf_write_nil nilslot)
-        (nelisp_cons_construct namesym nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct namesym nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 (defun nelisp-standalone--applyfn-ptr-call-typed-arms ()
@@ -27354,7 +27394,9 @@ into that constant unconditionally is what broke every aarch64 build."
                                (if (if (or (= tg 0) (= tg 1)) 1
                                      (if (= tg 4) 1 (if (= tg 16) 1 0)))
                                    (nl_g4arm_copy_w 0 (if (= tg 0) 3 (if (= tg 1) 7 sym)))
-                                 (let* ((wbuf (alloc-bytes 24 1))
+                                 (let* ((sig-tag (alloc-bytes 32 8))
+                                        (sig-val (alloc-bytes 32 8))
+                                        (wbuf (alloc-bytes 24 1))
                                         (cbuf1 (alloc-bytes 8 1))
                                         (cbuf2 (alloc-bytes 24 1))
                                         (symbolp-name (alloc-bytes 32 8))
@@ -27367,7 +27409,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                     (ptr-write-u64 wbuf 0 8751669898145395319)
                                     (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
                                     (ptr-write-u64 (+ wbuf 16) 0 7630437)
-                                    (nl_alloc_symbol wbuf 19 268435480)
+                                    (nl_alloc_symbol wbuf 19 sig-tag)
                                     (ptr-write-u64 cbuf1 0 31644423040104819)
                                     (nl_alloc_symbol cbuf1 7 symbolp-name)
                                     (ptr-write-u64 cbuf2 0 #x772d6c6f626d7973)
@@ -27378,9 +27420,8 @@ into that constant unconditionally is what broke every aarch64 build."
                                     (nelisp_cons_construct symbol-with-pos-name nil-slot pred-tail)
                                     (nelisp_cons_construct symbolp-name pred-tail predicate)
                                     (nelisp_cons_construct sym nil-slot data-tail)
-                                    (nelisp_cons_construct predicate data-tail 268435512)
-                                    (ptr-write-u64 268435472 0 1)
-                                    (atomic-fetch-add 268435544 1)
+                                    (nelisp_cons_construct predicate data-tail sig-val)
+                                    (nl_exit_signal_w sig-tag sig-val)
                                     1) 0)))))
     ;; Doc 190 Phase A: `integerp'/`numberp' accept tag 13 (Bignum) too --
     ;; this is what makes `type-of' (an elisp `cond' over `integerp' et al,
@@ -28304,7 +28345,9 @@ the same symbol)."
          (fn-name "nl-ffi-call")
          (fn-words (nelisp-standalone--name-words fn-name))
          (fn-len (length (encode-coding-string fn-name 'utf-8 t))))
-    `(let* ((tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
             (nbuf (alloc-bytes ,(* 8 (length fn-words)) 1))
             (namesym (alloc-bytes 32 8))
             (nilslot (alloc-bytes 32 8)))
@@ -28314,7 +28357,7 @@ the same symbol)."
               (push `(ptr-write-u64 tbuf ,(* w 8) ,word) forms)
               (setq w (1+ w)))
             (nreverse forms))
-        (nl_alloc_symbol tbuf ,tag-len 268435480)
+        (nl_alloc_symbol tbuf ,tag-len sig-tag)
         ,@(let ((w 0) (forms nil))
             (dolist (word fn-words)
               (push `(ptr-write-u64 nbuf ,(* w 8) ,word) forms)
@@ -28322,9 +28365,8 @@ the same symbol)."
             (nreverse forms))
         (nl_alloc_symbol nbuf ,fn-len namesym)
         (wf_write_nil nilslot)
-        (nelisp_cons_construct namesym nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct namesym nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 (defun nelisp-standalone--applyfn-extern-arms-unsupported ()
@@ -30975,15 +31017,12 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                   (heap-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
               (nl_ct_no_catch env tag_slot val_slot)
           (seq
-           (wf_copy32 268435480 tag_slot)
-           (wf_copy32 268435512 val_slot)
-           ;; Flag value 2 = `throw' (vs 1 = signal/error).  The shared M6
-           ;; stash is used by BOTH throw and signal; using a distinct value
-           ;; lets `condition-case' trap ONLY signals (flag==1) and `catch'
-           ;; trap ONLY throws (flag==2), so a `throw' no longer matches an
-           ;; `error'/`t' condition-case handler.
-           (ptr-write-u64 268435472 0 2)
-           (atomic-fetch-add 268435544 1)
+           ;; GNU Fthrow (eval.c:1464-1478).  Kind 2 = `throw' (vs 1 =
+           ;; signal/error): the one pending exit serves BOTH throw and
+           ;; signal; the distinct kind lets `condition-case' trap ONLY
+           ;; signals and `catch' trap ONLY throws, so a `throw' never
+           ;; matches an `error'/`t' condition-case handler.
+           (nl_exit_raise_w 2 tag_slot val_slot)
            1))
         1))
     (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
@@ -31077,7 +31116,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; rather than decoding the copied box into an immediate. No safepoint
     ;; lies between this copy and the return.
     (defun nl_ct_caught_word (box _pad)
-      (seq (wf_copy32 box 268435512)
+      (seq (wf_copy32 box (nl_exit_val_w))
            (ptr-write-u64 268435472 0 0)
            (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
            box))
@@ -31085,7 +31124,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
     (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
       (if (= (heap-read-u64 268435472 0) 2)
-          (nl_ct_catch_on_match_w (nl_ct_tag_eq 268435480 tag_slot) 0 0 0)
+          (nl_ct_catch_on_match_w (nl_ct_tag_eq (nl_exit_tag_w) tag_slot) 0 0 0)
         0))
     ;; The body list's cdr is taken AFTER the body form's own eval, not before:
     ;; a one-form body ends in Nil, `nl_cons_cdr_ptr' materialises an unrooted
@@ -36326,8 +36365,8 @@ u64/i64 has no Lisp printed representation of its own here)."
   "Return error-diagnostic defun forms (Doc 152 DEFECT-2 + REPL visibility;
 Doc 180 Phase 1 form-location).
 `nl_eval_source_print_error' writes a short diagnostic for the top-level M6
-stash (FLAG @268435472, TAG @268435480, VAL @268435512 -- see the catch/throw
-unit's comment block for the stash contract) to stderr.  Uncaught throws
+exit (FLAG @268435472, TAG and VAL WORDs in `nl_exit_values' -- see
+`nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el for the contract) to stderr.  Uncaught throws
 report the condition class `no-catch' instead of using the catch tag as the
 error class.  Doc 180 Phase 1 adds five trailing parameters -- FILE_PTR,
 FILE_LEN (the source name: a real --load path, or a static \"<eval>\"/
@@ -36390,10 +36429,10 @@ no-catch tail above, not this defensive path."
                                           "nelisp: uncaught error: " 'utf-8 t)))
            ,@(nelisp-standalone--eval-source-location-prefix-forms)
            (mut-str-make-empty ,tag-ms 32)
-           (m5_prin1 ,tag-ms 268435480)
+           (m5_prin1 ,tag-ms (nl_exit_tag_w))
            (mut-str-finalize ,tag-ms ,tag-repr)
            (mut-str-make-empty ,val-ms 32)
-           (m5_prin1 ,val-ms 268435512)
+           (m5_prin1 ,val-ms (nl_exit_val_w))
            (mut-str-finalize ,val-ms ,val-repr)
            (if (= (heap-read-u64 268435472 0) 2)
                (seq
@@ -39932,17 +39971,18 @@ banner comment just above for the raw-memory boundary, and
       ;; Unmapped Winsock values retain their real magnitude rather than being
       ;; flattened to an incorrect POSIX errno.
       `(defun nl_socket_signal_error (errno)
-         (let* ((tagbuf (alloc-bytes 24 1))
+         (let* ((sig-tag (alloc-bytes 32 8))
+                (sig-val (alloc-bytes 32 8))
+                (tagbuf (alloc-bytes 24 1))
                 (nilslot (alloc-bytes 32 8))
                 (data (alloc-bytes 32 8)))
            (seq
             ,@(nelisp-standalone--byte-write-forms 'tagbuf "nelisp-socket-error")
-            (nl_alloc_symbol tagbuf 19 268435480)
+            (nl_alloc_symbol tagbuf 19 sig-tag)
             (wf_write_nil nilslot)
             (wf_cons_int errno nilslot data)
-            (bf_sig_copy32 268435512 data)
-            (ptr-write-u64 268435472 0 1)
-            (atomic-fetch-add 268435544 1)
+            (bf_sig_copy32 sig-val data)
+            (nl_exit_signal_w sig-tag sig-val)
             1)))
       ;; nl_socket_bool_arg: read optional arg N of ARGS as a strict 0/1
       ;; boolean -- 0 when the arg is absent (arity backward-compat, Doc 194
@@ -40652,17 +40692,18 @@ belongs to the caller, just as `nelisp-tls-connect' does not open it."
               'buf "Microsoft Unified Security Protocol Provider")
            buf)))
      `(defun nl_tls_signal_error (status)
-        (let* ((tagbuf (alloc-bytes 16 1))
+        (let* ((sig-tag (alloc-bytes 32 8))
+               (sig-val (alloc-bytes 32 8))
+               (tagbuf (alloc-bytes 16 1))
                (nilslot (alloc-bytes 32 8))
                (data (alloc-bytes 32 8)))
           (seq
            ,@(nelisp-standalone--byte-write-forms 'tagbuf "nelisp-tls-error")
-           (nl_alloc_symbol tagbuf 16 268435480)
+           (nl_alloc_symbol tagbuf 16 sig-tag)
            (wf_write_nil nilslot)
            (wf_cons_int status nilslot data)
-           (bf_sig_copy32 268435512 data)
-           (ptr-write-u64 268435472 0 1)
-           (atomic-fetch-add 268435544 1)
+           (bf_sig_copy32 sig-val data)
+           (nl_exit_signal_w sig-tag sig-val)
            1)))
      ;; SecBuffer and SecBufferDesc constructors.  Every field is written
      ;; explicitly; the four-byte hole before each Win64 pointer is zeroed by
@@ -43291,16 +43332,15 @@ correctly."
     (defun nl_cli_read_cap_hit_p (n)
       (>= n ,nelisp-standalone--reader-read-cap))
     (defun nl_cli_stash_source_too_large (what)
-      (let* ((tag-buf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 24 1)))
         (seq
          ,@(nelisp-standalone--byte-write-forms 'tag-buf "nelisp-file-too-large")
          (nl_alloc_symbol
           tag-buf
           ,(length (encode-coding-string "nelisp-file-too-large" 'utf-8 t))
-          268435480)
-         (bf_sig_copy32 268435512 what)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+          sig-tag)
+         (bf_sig_copy32 sig-val what)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
     (defun nl_cli_load_source (path_ptr fbuf src)
       (let* ((n (nl_os_read_file_cpath
@@ -45008,11 +45048,11 @@ correctly."
             (if (= (heap-read-u64 268435472 0) 1)
                 (if (= (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
                     (seq (nl_cce_clear err_out) w)
-                  (seq (nelisp_cons_construct 268435480 268435512 err_out)
+                  (seq (nl_exit_condition_into err_out)
                        0))
               (seq (nl_cce_clear err_out) w))
           (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nelisp_cons_construct 268435480 268435512 err_out)
+              (seq (nl_exit_condition_into err_out)
                    0)
             ;; Preserve a non-signal abort without inventing an error.
             (seq (nl_cce_clear err_out) 0)))))
@@ -45023,10 +45063,10 @@ correctly."
             (if (and (= (heap-read-u64 268435472 0) 1)
                      (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                      (/= (nl_thread_registry_find env) 0))
-                (seq (nelisp_cons_construct 268435480 268435512 err_out) 1)
+                (seq (nl_exit_condition_into err_out) 1)
               (seq (nl_cce_clear err_out) 0))
           (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nelisp_cons_construct 268435480 268435512 err_out) rc)
+              (seq (nl_exit_condition_into err_out) rc)
             (seq (nl_cce_clear err_out) rc))))))
   "WAVE-2 condition-case-trapping nelisp_eval_call_with_err (PATCH 1): on a
 signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
@@ -45377,6 +45417,10 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (where (nl_root_reserve env))
              (tag-save (nl_root_reserve env)) (val-save (nl_root_reserve env))
              (flag (heap-read-u64 268435472 0))
+             ;; The pending exit's WORDs: unchanged after the watcher, they
+             ;; need no restore (the exit fields kept them alive).
+             (tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+             (val-w (heap-read-u64 (data-addr nl_exit_values) 8))
              ;; Raw pending-binding links hold only pointers to live roots.
              ;; Header +24 is per EvalCtx, separate from lean unwind +16.
              (state (nl_n4_state env)) (pending (alloc-bytes 16 8))
@@ -45393,8 +45437,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (if (> (record-slot-count entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
-         (nl_sexp_clone_into 268435480 tag-save)
-         (nl_sexp_clone_into 268435512 val-save)
+         (wf_copy32 tag-save (if (= tag-w 0) 3 tag-w))
+         (wf_copy32 val-save (if (= val-w 0) 3 val-w))
          (ptr-write-u64 268435472 0 0)
          (ptr-write-u64 buf 0 7021161792682421605) ; emacs-pa
          (ptr-write-u64 (+ buf 8) 0 8316298228994959730) ; rity-mis
@@ -45431,8 +45475,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (setq rc (nl_apply_function fn args env result)) 0)
          (if (= operation 2) (ptr-write-u64 state 24 (heap-read-u64 pending 0)) 0)
          (if (= rc 0)
-             (seq (nl_sexp_clone_into tag-save 268435480)
-                  (nl_sexp_clone_into val-save 268435512)
+             (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) tag-w)
+                           (= (heap-read-u64 (data-addr nl_exit_values) 8) val-w))
+                      0
+                    (seq (nl_val_clone_into tag-save (data-addr nl_exit_values))
+                         (nl_val_clone_into val-save (+ (data-addr nl_exit_values) 8))))
                   (ptr-write-u64 268435472 0 flag)) 0)
          (nl_root_release env mark)
          rc)))
@@ -46208,29 +46255,10 @@ match a special-form name tested in FORM."
         (nl_env_stash_write_name_sym name_sym_slot)
         (nl_env_set_value env name_sym_slot signal_slot)
         ;; Formal-binding errors used to write only nelisp--last-signal-data
-        ;; in the Env.  Top-level standalone reporting reads the M6 arena
-        ;; stash, so mirror the same (TAG . VAL) signal there as well.
-        ;; Doc 215: an immediate WORD is written straight into the stash.
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand tag_w 7) 0)
-            (extern-call nl_sexp_clone_into tag_w 268435480)
-          (seq
-           (ptr-write-u64 268435480 0 (heap-read-u64 tag_w 0))
-           (ptr-write-u64 (+ 268435480 8) 0 (heap-read-u64 (+ tag_w 8) 0))
-           (ptr-write-u64 (+ 268435480 16) 0 (heap-read-u64 (+ tag_w 16) 0))
-           (ptr-write-u64 (+ 268435480 24) 0 (heap-read-u64 (+ tag_w 24) 0))))
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand val_w 7) 0)
-            (extern-call nl_sexp_clone_into val_w 268435512)
-          (seq
-           (ptr-write-u64 268435512 0 (heap-read-u64 val_w 0))
-           (ptr-write-u64 (+ 268435512 8) 0 (heap-read-u64 (+ val_w 8) 0))
-           (ptr-write-u64 (+ 268435512 16) 0 (heap-read-u64 (+ val_w 16) 0))
-           (ptr-write-u64 (+ 268435512 24) 0 (heap-read-u64 (+ val_w 24) 0))))
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        ;; in the Env.  Top-level standalone reporting reads the pending
+        ;; exit, so record the same (TAG . VAL) signal there as well; the
+        ;; cell's car and cdr are WORDs already.
+        (nl_exit_signal_w tag_w val_w)
         1)))
   "M6-visible replacement for env-leaves-bind `nl_env_stash_signal'.")
 
@@ -46381,7 +46409,7 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
             (ptr-write-u64 bytes 8 31084746153094773)
             (nl_alloc_symbol bytes 15 name)
             (bf_wrong_number_of_args name argc)
-            (cons-make-with-clone 268435480 268435512 signal_slot)
+            (nl_exit_condition_into signal_slot)
             (nl_env_stash_signal env signal_slot)
             1)))))
   "Validate symbol-function's fast-path arity/type and return nil on misses.")
@@ -46743,7 +46771,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (ptr-write-u64 bytes 0 7362660191469140339)
          (ptr-write-u64 bytes 8 31084746153094773)
          (bf_wrong_number_of_args (nl_alloc_symbol_w bytes 15 0) count)
-         (cons-make-with-clone 268435480 268435512 signal-slot)
+         (nl_exit_condition_into signal-slot)
          (nl_env_stash_signal env signal-slot) 0)))))
 
 (defun nl_n3_globals_mode_w (args env _pad)
@@ -47381,11 +47409,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                       (seq (wf_copy32 result (+ base (* (- status 512) 32)))
                            (setq word result)))
                   (if (and (>= exit 0) (= status (+ 1024 exit)))
-                      (seq
-                       (wf_copy32 268435480 (+ base (* (+ exit 1) 32)))
-                       (wf_copy32 268435512 (+ base (* (+ exit 2) 32)))
-                       (ptr-write-u64 268435472 0 (heap-read-u64 (+ base (* exit 32)) 8))
-                       (atomic-fetch-add 268435544 1))
+                      (nl_exit_raise_w (heap-read-u64 (+ base (* exit 32)) 8)
+                                       (+ base (* (+ exit 1) 32))
+                                       (+ base (* (+ exit 2) 32)))
                     (if (and (>= status 256) (< status (+ 256 count)))
                         (bf_wrong_type_listp (+ base (* (- status 256) 32)))
                       (nl_apply_stash_invalid_function env func)))))

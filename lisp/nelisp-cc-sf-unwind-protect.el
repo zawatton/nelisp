@@ -116,55 +116,56 @@
        cdr body-rc env vslot 0))
 
     ;; After evaluating a cleanup while the body already has a non-local exit:
-    ;; cleanup-rc=0 restores the body FLAG/TAG/VAL and continues the cleanup
-    ;; walk; cleanup-rc!=0 keeps the cleanup's freshly stashed exit, so cleanup
-    ;; throws/errors override the protected body's exit.
-    ;; Arity 8 (even): cleanup-rc, flag-save, tag-save, val-save, cdr, body-rc,
+    ;; cleanup-rc=0 restores the body's exit (its kind FLAG-SAVE and the two
+    ;; WORDs in FRAME) and continues the cleanup walk; cleanup-rc!=0 keeps
+    ;; the cleanup's freshly raised exit, so cleanup throws/errors override
+    ;; the protected body's exit.  MARK releases FRAME either way.
+    ;; Arity 8 (even): cleanup-rc, flag-save, frame, mark, cdr, body-rc,
     ;; env, vslot.
     (defun nl_sf_uw_cleanup_after_body_exit
-        (cleanup-rc flag-save tag-save val-save cdr body-rc env vslot)
+        (cleanup-rc flag-save frame mark cdr body-rc env vslot)
       (if (= cleanup-rc 0)
           (seq
-           (nl_sexp_clone_into tag-save 268435480)
-           (nl_sexp_clone_into val-save 268435512)
+           (extern-call nl_exit_restore frame)
            (ptr-write-u64 268435472 0 flag-save)
-           (dealloc-bytes tag-save 32 8)
-           (dealloc-bytes val-save 32 8)
+           (extern-call nl_root_release env mark)
            (nl_sf_uw_cleanup cdr body-rc env vslot 0 0))
         (seq
-         (dealloc-bytes tag-save 32 8)
-         (dealloc-bytes val-save 32 8)
+         (extern-call nl_root_release env mark)
          cleanup-rc)))
 
     ;; Evaluate cleanup for an already non-locally exiting body.  The caller
-    ;; saved the body stash before this call; cleanup_after_body_exit restores
-    ;; it only when cleanup returns normally.
-    ;; Arity 8 (even): flag-save, tag-save, val-save, car, cdr, body-rc, env,
+    ;; saved the body's exit before this call; cleanup_after_body_exit
+    ;; restores it only when cleanup returns normally.
+    ;; Arity 8 (even): flag-save, frame, mark, car, cdr, body-rc, env,
     ;; vslot.
     (defun nl_sf_uw_do_cleanup_body_exit
-        (flag-save tag-save val-save car cdr body-rc env vslot)
+        (flag-save frame mark car cdr body-rc env vslot)
       (let* ((scratch (alloc-bytes 32 8)))
         (nl_sf_uw_cleanup_after_body_exit
          (extern-call nelisp_eval_call car env scratch)
-         flag-save tag-save val-save cdr body-rc env vslot)))
+         flag-save frame mark cdr body-rc env vslot)))
 
     ;; car = nl_cons_car_ptr(cleanup) already fetched as first arg.
     ;; If body was normal, evaluate cleanup through nelisp_eval_call so
-    ;; cleanup errors propagate.  If body already non-locally exited, save its
-    ;; stash before cleanup and restore it only when cleanup completes normally.
+    ;; cleanup errors propagate.  If body already non-locally exited, keep its
+    ;; exit across the cleanup, as GNU's catch holds it while unbind_to runs
+    ;; the cleanup (eval.c:1432, 1445-1454): `nl_exit_save' roots the two
+    ;; WORDs in a WORD frame, restored only when the cleanup completes
+    ;; normally.
     ;; Arity 6 (even): car, cdr, body-rc, env, vslot, _pad6.
     (defun nl_sf_uw_do_cleanup (car cdr body-rc env vslot _pad6)
       (if (= body-rc 0)
           (let* ((scratch (alloc-bytes 32 8)))
             (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env vslot))
         (let* ((flag-save (heap-read-u64 268435472 0))
-               (tag-save (alloc-bytes 32 8))
-               (val-save (alloc-bytes 32 8)))
-          (seq
-           (nl_sexp_clone_into 268435480 tag-save)
-           (nl_sexp_clone_into 268435512 val-save)
-           (nl_sf_uw_do_cleanup_body_exit
-            flag-save tag-save val-save car cdr body-rc env vslot)))))
+               (mark (extern-call nl_root_mark env))
+               (frame (extern-call nl_exit_save env)))
+          (if (= frame 0)
+              (seq (extern-call nl_root_release env mark)
+                   (extern-call wf_bytecode_root_exhausted))
+            (nl_sf_uw_do_cleanup_body_exit
+             flag-save frame mark car cdr body-rc env vslot)))))
 
     ;; cdr = nl_cons_cdr_ptr(cleanup) already fetched as first arg.
     ;; Get car(cleanup) (extern-call FIRST ✓) and delegate to do_cleanup.

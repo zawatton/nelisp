@@ -323,19 +323,21 @@ non-local-exit behaviour are covered by the standalone reader smoke."
           (add (defun-form 'nl_thread_registry_add
                            nelisp-cc-rootstack--source)))
       (should (tree-member-p
-               '(if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+               '(if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                     0
                   (nl_thread_mirror_mutation_guard_registered
-                   (nl_thread_registry_find mirror-ptr) name-ptr))
+                   (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                     (nl_thread_registry_find mirror-ptr))
+                   name-ptr))
                guard))
       (should (tree-member-p '(nl_thread_mirror_condition_init) add))
       (should (tree-member-p
                '(extern-call nelisp_cons_construct
-                             name-ptr nil-slot 268435512)
+                             name-ptr nil-slot sig-val)
                signal))
-      (should (tree-member-p '(ptr-write-u64 268435472 0 1) signal))
+      (should (tree-member-p '(nl_exit_signal_w sig-tag sig-val) signal))
       (should (tree-member-p '(extern-call nl_alloc_symbol
-                                           tag-buf 29 268435480)
+                                           tag-buf 29 sig-tag)
                              signal)))
 
     ;; Every public mirror mutation entry point guards before its hit/miss
@@ -1493,54 +1495,51 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                      (tree-member-p needle (cdr tree)))))))
     (let ((forms nelisp-cc-sf-unwind-protect--source))
       (should (tree-member-p
-               '(defun nl_sf_uw_do_cleanup (car cdr body-rc env out _pad6)
-                  (if (= body-rc 0)
-                      (let* ((scratch (alloc-bytes 32 8)))
-                        (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env out))
-                    (let* ((flag-save (ptr-read-u64 268435472 0))
-                           (tag-save (alloc-bytes 32 8))
-                           (val-save (alloc-bytes 32 8)))
-                      (seq
-                       (nl_sexp_clone_into 268435480 tag-save)
-                       (nl_sexp_clone_into 268435512 val-save)
+               '(defun nl_sf_uw_do_cleanup (car cdr body-rc env vslot _pad6)
+                 (if (= body-rc 0)
+                     (let* ((scratch (alloc-bytes 32 8)))
+                       (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env vslot))
+                   (let* ((flag-save (heap-read-u64 268435472 0))
+                          (mark (extern-call nl_root_mark env))
+                          (frame (extern-call nl_exit_save env)))
+                     (if (= frame 0)
+                         (seq (extern-call nl_root_release env mark)
+                              (extern-call wf_bytecode_root_exhausted))
                        (nl_sf_uw_do_cleanup_body_exit
-                        flag-save tag-save val-save car cdr body-rc env out)))))
+                        flag-save frame mark car cdr body-rc env vslot)))))
                forms))
       (should (tree-member-p
-               '(defun nl_sf_uw_do_cleanup_preserve (scratch car cdr body-rc env out)
-                  (nl_sf_uw_cleanup_evaled
-                   (extern-call nelisp_eval_call car env scratch)
-                   cdr body-rc env out 0))
+               '(defun nl_sf_uw_do_cleanup_preserve (scratch car cdr body-rc env vslot)
+                 (nl_sf_uw_cleanup_evaled
+                  (extern-call nelisp_eval_call car env scratch)
+                  cdr body-rc env vslot 0))
                forms))
       (should (tree-member-p
-               '(defun nl_sf_uw_cleanup_evaled (cleanup-rc cdr body-rc env out _pad6)
-                  (if (= cleanup-rc 0)
-                      (nl_sf_uw_cleanup cdr body-rc env out 0 0)
-                    cleanup-rc))
+               '(defun nl_sf_uw_cleanup_evaled (cleanup-rc cdr body-rc env vslot _pad6)
+                 (if (= cleanup-rc 0)
+                     (nl_sf_uw_cleanup cdr body-rc env vslot 0 0)
+                   cleanup-rc))
                forms))
       (should (tree-member-p
                '(defun nl_sf_uw_cleanup_after_body_exit
-                    (cleanup-rc flag-save tag-save val-save cdr body-rc env out)
-                  (if (= cleanup-rc 0)
-                      (seq
-                       (nl_sexp_clone_into tag-save 268435480)
-                       (nl_sexp_clone_into val-save 268435512)
-                       (ptr-write-u64 268435472 0 flag-save)
-                       (dealloc-bytes tag-save 32 8)
-                       (dealloc-bytes val-save 32 8)
-                       (nl_sf_uw_cleanup cdr body-rc env out 0 0))
-                    (seq
-                     (dealloc-bytes tag-save 32 8)
-                     (dealloc-bytes val-save 32 8)
-                     cleanup-rc)))
+                 (cleanup-rc flag-save frame mark cdr body-rc env vslot)
+                 (if (= cleanup-rc 0)
+                   (seq
+                    (extern-call nl_exit_restore frame)
+                    (ptr-write-u64 268435472 0 flag-save)
+                    (extern-call nl_root_release env mark)
+                    (nl_sf_uw_cleanup cdr body-rc env vslot 0 0))
+                 (seq
+                  (extern-call nl_root_release env mark)
+                  cleanup-rc)))
                forms))
       (should (tree-member-p
                '(defun nl_sf_uw_do_cleanup_body_exit
-                    (flag-save tag-save val-save car cdr body-rc env out)
-                  (let* ((scratch (alloc-bytes 32 8)))
-                    (nl_sf_uw_cleanup_after_body_exit
-                     (extern-call nelisp_eval_call car env scratch)
-                     flag-save tag-save val-save cdr body-rc env out)))
+                 (flag-save frame mark car cdr body-rc env vslot)
+                 (let* ((scratch (alloc-bytes 32 8)))
+                 (nl_sf_uw_cleanup_after_body_exit
+                  (extern-call nelisp_eval_call car env scratch)
+                  flag-save frame mark cdr body-rc env vslot)))
                forms)))))
 
 (ert-deftest nelisp-standalone-target-reader-boundary-reclaim-is-conservative ()
