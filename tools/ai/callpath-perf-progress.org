@@ -91,3 +91,16 @@ cmd: python3 tools/ai/callpath-perf-check.py wallbuiltin
 ** S3.1 Semantics and final verification
 The callfloor semantic corpus and the eight S4.2 capture cases match GNU 31.1. The env-capture regression check passes. COMMON.md gives 11 groups with 0 failures, the standalone checks pass, and the anvil MCP smoke shows 40 tools, on fresh dynamic and static builds of HEAD.
 cmd: python3 tools/ai/callpath-perf-check.py final
+
+* S4 Word-heap S6.3: WORD roots and a stack argv on the call path
+#+NOTE: 2026-10-21 added for the coordinator's word-heap S6.3 item (criteria 8 -> 12). Base: batch W (eval/integ-20261021w 702ccc8d7, merged as e6092672f). The call path is SCOPE in tools/ai/callpath-perf-s63.py: gc-port's CALL_PATH boundary (word-heap-stage-check.py on eval/gc-port-20261021 at 9d22b894b) with every wf_bytecode_* function, plus eval_sub's argument list (nl_eval_arg_list), specbind/unbind_to (nl_sb_), the function-cell read (nelisp_env_lookup_function) and the Ffuncall entry and record_in_backtrace activations (nl_n4_apply/direct_apply/named_apply/push/finish). gc-port owns root sites outside it (S6.2). GNU funcall_subr, funcall_lambda and exec_byte_code keep arguments in a stack argv and register no roots (funcall_subr eval.c:3254, funcall_lambda eval.c:3350, exec_byte_code bytecode.c:481). The bar stays the S2 wall-clock caps.
+#+NOTE: 2026-10-21 baseline on the merged tree (build w1, census of 114 units): 372 call-path defuns hold 154 nl_root_reserve sites (61 of them in wf_bytecode_*) and 106 materialisers. Allocation probe on s3a (pre-merge), NeLisp/GNU per call: interpreter funcall 4/0, car 4/0, apply 25/2; VM 1/0, 0/0, 12/2; bytecode 0/0, 0/0, 1/0.
+#+NOTE: 2026-10-21 the merge changed the source, so every source-bound S1-S3 receipt is stale until the next result build is measured. tools/ai/callpath-perf-wall.py is pinned by the wall reports: changing it reddens S2 until the next campaign.
+** S4.1 No nl_root_reserve site on the call path in the box census of the current source's wall-clock result build
+cmd: python3 tools/ai/callpath-perf-check.py s63census roots
+** S4.2 No clone_into, wf_copy32 or *_ptr materialiser on the call path in the same census
+cmd: python3 tools/ai/callpath-perf-check.py s63census materialisers
+** S4.3 Allocations per call of funcall, car and apply (the wall-clock floors fixture over its empty loop) at most GNU 31.1's objects per call, in the interpreter, the VM and bytecode
+cmd: python3 tools/ai/callpath-perf-check.py s63alloc
+** S4.4 End to end: on the same build, the final verification (S3.1) and the wall-clock regression guard (S2.4) pass
+cmd: python3 tools/ai/callpath-perf-check.py s63e2e
