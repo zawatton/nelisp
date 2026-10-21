@@ -20,6 +20,17 @@ endtoend      target/codegen/endtoend.json (codegen-e2e.py wall) records
               running faster in wall-clock than the base binary (median
               ratio below 1.0), bound to the candidate binary by sha256.
 final         target/codegen/final.json records the final verification.
+plan229       Doc 229 exists and maps the native value convention to GNU's.
+lispvalue S   Doc 229 stage S (1, loader or 2): every control of the stage
+              fails with the 9d5f4a515 compiler, loader and binary
+              (target/codegen/lispvalue/base.json) and every case of the
+              stage passes on this tree (target/codegen/lispvalue/cand.json),
+              both runs made on the current corpus and the candidate run on
+              the current compiler (tools/ai/codegen-lispvalue.py run).
+lispvalue-e2e target/codegen/lispvalue-e2e.json: a build of this tree passes
+              validate.sh with the Doc 229 stages in the AOT differential,
+              and the five kernels compile byte-identically to 1042eedbc's
+              compiler (the dialect is untouched).
 
 Kernel sources live in test/perf/codegen-kernels/.  Build products and
 callgrind outputs go to target/codegen/kernels/.  Set CODEGEN_EMACS to pick
@@ -295,14 +306,134 @@ def cmd_final():
     return 0 if ok else 1
 
 
+LV_FILES = ["lisp/nelisp-aot-compiler.el", "lisp/nelisp-artifact.el",
+            "lisp/nelisp-native-load.el", "test/nelisp-aot-differential-driver.el"]
+DOC229 = ROOT / "docs/design/229-native-lisp-values-gnu-object-words.org"
+
+
+def lv_digest(root):
+    h = hashlib.sha256()
+    for rel in LV_FILES:
+        h.update(rel.encode())
+        h.update(sha256(Path(root) / rel).encode())
+    return h.hexdigest()
+
+
+def cmd_plan229():
+    if not DOC229.exists():
+        print(f"FAIL: {DOC229.relative_to(ROOT)} missing")
+        return 1
+    text = DOC229.read_text()
+    want = ["NILP", "Lisp_Object", "raw-bool", "raw-i64", "sexp-ptr", "lisp.h:",
+            "bytecode.c:", "comp.c:", "data.c:", "d_reloc", "nelisp_cons_construct",
+            "return-repr", "runtime-entry-params", "control", "guard"]
+    missing = [w for w in want if w not in text]
+    if missing:
+        print("FAIL: Doc 229 lacks " + ", ".join(missing))
+        return 1
+    print("PASS: Doc 229 maps the native value convention to GNU's")
+    return 0
+
+
+def cmd_lispvalue(stage):
+    """S3.2-S3.4: the Doc 229 corpus for STAGE, base controls and candidate."""
+    recs = {}
+    for tag in ("base", "cand"):
+        path = ROOT / f"target/codegen/lispvalue/{tag}.json"
+        if not path.exists():
+            print(f"FAIL: {path.relative_to(ROOT)} missing")
+            return 1
+        recs[tag] = json.loads(path.read_text())
+    base, cand = recs["base"], recs["cand"]
+    base_root = ROOT / "target/codegen/base-src"
+    cases_sha = sha256(ROOT / "scripts/nelisp-aot-differential-cases.el")
+    problems = []
+    try:
+        ref = subprocess.run(["git", "-C", str(ROOT), "show",
+                              "9d5f4a515:lisp/nelisp-aot-compiler.el"],
+                             capture_output=True, check=True).stdout
+        if hashlib.sha256(ref).hexdigest() != sha256(base_root / "lisp/nelisp-aot-compiler.el"):
+            problems.append("base-src is not 9d5f4a515")
+    except subprocess.CalledProcessError:
+        problems.append("cannot read 9d5f4a515")
+    if Path(base["root"]) != base_root.resolve() or base["compiler_digest"] != lv_digest(base_root):
+        problems.append("base run not on base-src")
+    if Path(cand["root"]) != ROOT.resolve() or cand["compiler_digest"] != lv_digest(ROOT):
+        problems.append("candidate run stale: compiler or loader changed since")
+    if base["cases_sha256"] != cases_sha or cand["cases_sha256"] != cases_sha:
+        problems.append("corpus changed since a run")
+    by_name = {c["name"]: c for c in cand["cases"]}
+    mine = [c for c in base["cases"] if str(c["stage"]) == stage]
+    if not mine:
+        problems.append(f"no cases for stage {stage}")
+    controls_ok = guards_ok = cand_ok = 0
+    for c in mine:
+        got = by_name.get(c["name"], {}).get("status")
+        if c["kind"] == "control":
+            if c["status"] in ("pass", "not-native"):
+                problems.append(f"{c['name']} does not fail on the base ({c['status']})")
+            else:
+                controls_ok += 1
+        elif c["status"] != "pass":
+            problems.append(f"guard {c['name']} fails on the base ({c['status']})")
+        else:
+            guards_ok += 1
+        if got == "pass":
+            cand_ok += 1
+        else:
+            problems.append(f"{c['name']} on the candidate: {got}")
+    n_controls = sum(1 for c in mine if c["kind"] == "control")
+    print(f"stage {stage}: {controls_ok}/{n_controls} controls fail on 9d5f4a515, "
+          f"{guards_ok} guards pass there, {cand_ok}/{len(mine)} cases pass on the candidate")
+    for p in problems[:12]:
+        print("  " + p)
+    print("PASS" if not problems else "FAIL")
+    return 0 if not problems else 1
+
+
+def cmd_lispvalue_e2e():
+    path = ROOT / "target/codegen/lispvalue-e2e.json"
+    if not path.exists():
+        print("FAIL: target/codegen/lispvalue-e2e.json missing")
+        return 1
+    rec = json.loads(path.read_text())
+    ok = True
+    binary = Path(rec.get("binary", ""))
+    if not binary.exists() or sha256(binary) != rec.get("binary_sha256"):
+        print("binary missing or changed since validation")
+        ok = False
+    if rec.get("tree_digest") != lv_digest(ROOT):
+        print("compiler or loader changed since validation")
+        ok = False
+    for key in ("validate_failing_groups", "standalone_checks_failures"):
+        if rec.get(key) != 0:
+            print(f"{key} = {rec.get(key)}")
+            ok = False
+    if rec.get("lisp_value_stages") != ["1", "loader", "2"]:
+        print(f"Doc 229 stages in the differential: {rec.get('lisp_value_stages')}")
+        ok = False
+    if rec.get("kernels_identical") is not True:
+        print(f"kernel text differs: {rec.get('kernels_identical')}")
+        ok = False
+    print(json.dumps({k: rec.get(k) for k in (
+        "validate_failing_groups", "standalone_checks_failures", "lisp_value_stages",
+        "kernels_identical")}))
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "kernel":
         return cmd_kernel(argv[2])
     if len(argv) == 3 and argv[1] == "wall":
         return cmd_wall(argv[2])
-    if len(argv) == 2 and argv[1] in ("measure", "plan", "endtoend", "final"):
+    if len(argv) == 3 and argv[1] == "lispvalue":
+        return cmd_lispvalue(argv[2])
+    if len(argv) == 2 and argv[1] in ("measure", "plan", "endtoend", "final",
+                                      "plan229", "lispvalue-e2e"):
         return {"measure": cmd_measure, "plan": cmd_plan,
-                "endtoend": cmd_endtoend, "final": cmd_final}[argv[1]]()
+                "endtoend": cmd_endtoend, "final": cmd_final,
+                "plan229": cmd_plan229, "lispvalue-e2e": cmd_lispvalue_e2e}[argv[1]]()
     raise SystemExit(__doc__)
 
 

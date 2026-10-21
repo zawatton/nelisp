@@ -1,0 +1,222 @@
+#+TITLE: Doc 229 -- Lisp values in native artifacts follow GNU's Lisp_Object rules
+#+STATUS: PLANNED
+#+DATE: 2026-10-21
+#+LANE: codegen (eval/codegen-20261021), implementer Claude Opus 5.5
+
+* Problem
+
+Native artifacts (=.neln=) compiled from Lisp source --
+=nelisp-artifact-compile-file= with =nelisp-aot-compiler--runtime-entry-params=
+bound, the path nemacs's artifact cache and the AOT differential use --
+disagreed with the interpreter wherever a truth value, a boolean, a
+variable holding a call result, or a non-fixnum number was involved.  The
+defects are older than this lane: the 9d5f4a515 compiler, loader and binary
+give the same answers (see "Controls").  Their causes:
+
+1. =--preprocess-source= rewrote every =nil= to 0 for the Phase 47 dialect,
+   and the parser folded =t= to 1, so in Lisp code the literals were raw
+   machine words instead of the nil and t objects.  An unbound =let=
+   variable started as 0.
+2. Comparisons, the raw tag-predicate forms and =not= yielded raw 0/1 typed
+   =raw-i64=.  The dispatcher boundary (=--aot-dispatcher-arg-form=) boxed
+   them as the fixnums 0 and 1, and a defun that returned one returned 0 or
+   1.
+3. =if=, =while=, =cond=, =when= and =unless= tested the machine word
+   against 0.  A Lisp value in this ABI is the address of a 32-byte Sexp
+   slot and is never 0, so nil read as true.
+4. =and= and =or= unwrapped their arms as fixnums for that zero test
+   (=--ir-as-raw-i64=): nil, t and the fixnum 0 all read as false, and the
+   value of =(and a b)= was a raw word.
+5. A defun's result representation was recorded only for a proven boolean.
+   For everything else the loader guessed by magnitude: a word below 4096
+   was an integer and anything else a slot address, so a fixnum of 4096 or
+   more was dereferenced as an address, and an =if= returning a fixnum on
+   one arm and a Sexp on the other answered with a pointer's bits.  A
+   boolean helper called by another defun handed its caller a raw word the
+   caller then read as a slot.
+6. The raw =symbolp= test left out t (its own Sexp tag), and the raw
+   predicate table listed =float=, a conversion in Lisp, where =floatp= is
+   meant.  =(null 0)= read address 0.
+7. =let= stored a call result as the address of the dispatcher's shared
+   =out= slot, which the next delegated call overwrites: =(let ((x (car a))
+   (y (cdr a))) (list x y))= answered =(2 2)= for =(1 . 2)=.  =setq= already
+   copied the value out.
+8. A =while= converted a variable to a Sexp before the loop only when the
+   body left it boxed; a Sexp variable the body set to a fixnum read as a
+   fixnum after zero iterations.
+9. A quoted list constant compiled to =cons-make-with-clone=, which calls
+   =nl_alloc_consbox= and =nl_val_clone_into=.  Neither is in the loader's
+   bridge, so the loader refused the artifact.
+10. Arithmetic and comparisons unwrapped a Sexp operand as a fixnum without
+    looking at its tag (=sexp-int-unwrap=): =(+ a 1)= with a = 1.5 added the
+    float's bit pattern.  A float literal was truncated to an integer,
+    =floor=, =truncate= and =round= returned their argument unchanged,
+    =mod= was the truncating remainder, and a zero divisor reached =idiv=.
+
+* GNU's rules
+
+- A Lisp value is one word, =Lisp_Object=.  nil is one distinguished word
+  (Qnil is zero, lisp.h:1995), and every truth test is =NILP=:
+  =BASE_EQ (x, Qnil)= (lisp.h:395, 399).  The byte-code interpreter branches
+  on it (=Bgotoifnil=, bytecode.c:649); native code emits it with =emit_NILP=
+  (comp.c:1763) and branches with =emit_cond_jump= (comp.c:1081).
+- A comparison yields Qt or Qnil: =Blss= takes a fixnum fast path when both
+  operands are fixnums and calls =arithcompare= otherwise (bytecode.c:1278).
+  When the result only feeds a branch, native code keeps just the compare
+  and the jump.
+- Arithmetic takes the fixnum fast path when =FIXNUMP= holds for both
+  operands and calls the generic function otherwise: =Bplus= falls back to
+  =Fplus= (bytecode.c:1331), the native =add1=/=sub1= helpers to =1+=/=1-=
+  (comp.c:3684 =define_add1_sub1=).  =mod= is floored (data.c =Fmod=).
+- nil and t are symbols: =Fsymbolp= is =SYMBOLP= (data.c:373, lisp.h:1076).
+- A variable holds a =Lisp_Object=; binding one copies the word, and no
+  later call changes it.
+- A quoted constant is created once, when the compilation unit loads, from
+  the printed constants stored in the =.eln= (=d_reloc=, comp.c:479), and
+  code refers to that object.
+
+* The NeLisp mapping
+
+Everything below applies only with =nelisp-aot-compiler--runtime-entry-params=
+non-nil: native artifacts of Lisp source.  The runtime's dialect units --
+the reader sources, the build's units, the bytecode JIT's leaves -- keep nil
+as 0 and the =!= 0= test, which their loops are written against; the five
+Doc 224 kernels compile byte-identically before and after.
+
+** Representations
+
+| GNU                                                      | NeLisp native artifact code                                                                                                                                                                            |
+|----------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| a =Lisp_Object= word                                     | =sexp-ptr=: the address of a 32-byte Sexp slot.  The only form that crosses a boundary: dispatcher arguments and results, extern arguments, returns, elements, variables.                                   |
+| a word known to be a fixnum (comp.el's type propagation) | =raw-i64=: the unboxed integer                                                                                                                                                                         |
+| a word known to be Qt or Qnil                            | =raw-bool= (new): 0 for nil, 1 for t -- the same numbers as the Sexp tags Nil and T                                                                                                                     |
+| =NILP (x)=                                               | =raw-bool=: =x == 0=; =raw-i64=: false (a fixnum is never nil; the form still runs for its effects); =sexp-ptr=: =(sexp-tag x) == Nil=, which Doc 224 CG5 fuses into the immediate test and one tag-byte compare |
+| =make_fixnum=                                            | box a =raw-i64=: =sexp-int-make= into a fresh slot                                                                                                                                                     |
+| =cond ? Qt : Qnil=                                       | box a =raw-bool=: store the value as the slot's tag word                                                                                                                                               |
+| =FIXNUMP= on both operands, else =Fplus=                 | an Int tag test on each Sexp operand, the machine operation, else the runtime's own function through the dispatcher                                                                                    |
+
+A node with no recorded representation is a Sexp in artifact code: every
+Lisp-level producer that is not arithmetic, a comparison, a predicate or a
+literal returns through the dispatcher's =out= slot.  A form whose arms
+disagree is =mixed= until a consumer converts it.
+
+** Rules
+
+1. *Literals.*  =nil= and =t= parse to =raw-bool= constants:
+   =--preprocess-source= keeps =nil= (and starts an unbound =let= variable
+   at nil), and the parser takes both before integer folding and before the
+   free-symbol lookup.  A float literal is a Float box written in place (tag
+   3, its IEEE bits at offset 8).
+2. *Producers.*  Comparisons, the type predicates and =not=/=null= yield
+   =raw-bool=.
+3. *Conversion on demand.*  A consumer asks for what it needs -- a Lisp
+   value, a truth value or a fixnum -- and the conversion is pushed into the
+   arms of =if=, =cond=, =let= and =progn=, so a form whose value is dropped
+   pays nothing.
+4. *Truth.*  =if=, =while=, =cond=, =and=, =or=, =not=, =null=, =when= and
+   =unless= test by representation as in the table.  =and= and =or= yield
+   the value of the arm that stopped them, as Lisp does: outside a test
+   position they are =if= forms, =or= over a temporary; in a test position
+   they keep the short-circuit jumps over their arms' truth.
+5. *=while=* yields nil.  The loop head is reached from the entry and from
+   the end of the body, so a variable boxed on either path is boxed on both:
+   before the loop and, when the body leaves it raw, at the end of the body.
+6. *Variables* hold a fixnum raw or anything else as a Sexp, like a GNU
+   =Lisp_Object= slot: a boolean or a value whose arms disagree is boxed
+   when stored, so the existing representation joins only meet =raw-i64= and
+   =sexp-ptr=.  A user =let= binding of a value that is the =out= slot is
+   copied to a slot of its own (=nl_sexp_clone_into=), as =setq= already did;
+   compiler-made bindings, which consume their value at once, are not
+   copied.  (The preprocessor marks the user bindings.)
+7. *Predicates* follow the argument's representation: on a =raw-i64= the
+   answer is known (=integerp=, =numberp=, =atom= true; the rest false); on
+   a =raw-bool=, =null=/=not=/=listp= are =x == 0= and =symbolp=, =atom= are
+   true; on a Sexp they read the tag once -- one compare for a single tag, a
+   bit test of the tag set for several, the way GCC lowers a dense switch.
+   =symbolp= accepts the tags Nil, T and Symbol; =floatp= replaces =float=;
+   =integerp= and =numberp= accept the bignum tag.
+8. *Returns.*  Every artifact defun records its =:return-repr= -- =raw-i64=,
+   =raw-bool=, or =sexp-ptr= after boxing tails that disagree -- so the
+   loader decodes by contract.  A defun another defun of the unit calls
+   returns a Sexp, which is what the caller reads.  The magnitude guard
+   stays only for artifacts written before the record existed.
+9. *Quoted list constants* are built through the runtime's own constructor
+   =nelisp_cons_construct= (in the bridge; the reader builds every cons with
+   it) instead of =nl_alloc_consbox= and =nl_val_clone_into=.
+10. *Numbers.*  =+ - * / mod logior logand logxor= and the comparisons take
+    the fixnum path when every Sexp operand's tag is Int, and call the
+    runtime's own function otherwise; operands that are both =raw-i64= keep
+    the plain machine operation.  =/= and =mod= take the fast path only for
+    a nonzero divisor, and the fast =mod= is floored.  =floor=, =truncate=
+    and =round= of a non-fixnum call the runtime.  The result of a mixed
+    operation is a Lisp value: the fast arm's fixnum is boxed when a
+    consumer needs a Sexp.
+
+* Controls
+
+The corpus is =nelisp-aot-differential-lisp-value-cases= in
+scripts/nelisp-aot-differential-cases.el: each entry is a source (one defun,
+or a defun and the helper it calls), the arguments it is called with, a
+stage (1 values and truth, =loader=, 2 numbers) and a kind.  A =control=
+fails with the 9d5f4a515 compiler, loader and binary -- a wrong answer, a
+crash, or a refused artifact; a =guard= already passes there and has to keep
+passing.  tools/ai/codegen-lispvalue.py runs the corpus against both trees
+and =codegen-check.py lispvalue STAGE= checks that every control of the
+stage fails on the base and every case of the stage passes on the
+candidate.  Implemented stages join the regular AOT differential through
+=nelisp-aot-differential-lisp-value-stages=, and the CG5 tag programs have
+their nil, t and cons values back.
+
+The coordinator's named controls are all in it: the aref-nil =if=
+(=lv-aref-nil-if=, =lv-aref-arg-if=), =null= and =length= on nil
+(=lv-null-aref-nil=, =lv-length-nil=), =(null 0)= (=lv-null-zero=) and
+=(symbolp (< 1 2))= (=lv-cmp-let-symbolp=), and the cons-valued artifact
+(=lv-quoted-list-memq=, =lv-list-const=, =lv-list-12=).
+
+* Validation
+
+- The corpus as above, per stage.
+- A byte-identity control for the gate: the five Doc 224 kernels compile to
+  the same executable with 1042eedbc's compiler and with this one.
+- Host ERT for the compiler, codegen, artifact and native-load files: the
+  same failures as with 1042eedbc's compiler (17, all pre-existing in this
+  harness), plus one pin updated on purpose
+  (=nelisp-artifact/raw-bool-return-metadata-is-source-proven= recorded the
+  "known gap" of case 5 as expected metadata).
+- At the end: one rebuild, =validate.sh= (standalone checks, fx corpus and
+  spike, the AOT differential with every stage) and the final verification
+  groups.
+- Timing: artifact micro-benchmarks called through =nelisp-native-load-call=,
+  old compiler against new on the same binary, paired per-round ratios on
+  CPU 9.  Reported, not gated: the base answers wrongly, so "no slower than
+  the base" is not the contract.
+
+* Not covered, and why
+
+- *Constant identity.*  GNU builds a quoted constant once, at load time, so
+  =eq= between two evaluations of the same quoted list is t there and nil
+  here.  Blocking layer: the loader's call frame carries no per-artifact
+  constant vector.
+- *Boxing allocates.*  A boxed fixnum, boolean or float, and the copy of a
+  =let=-bound call result, take a 32-byte =nl_alloc_bytes= slot; GNU's
+  fixnums, nil and t are immediate words.  The runtime has immediate words,
+  but the loader's =nelisp-native-load-unbox= and the AOT dispatcher read
+  every value as a slot address.  Blocking layer: the artifact value ABI of
+  the loader and =nelisp_aot_builtin_calln=.
+- *=mod= of a float through the dispatcher* answers the truncating integer
+  remainder (=(mod -7.5 3)= gives -1; the interpreter and GNU give 1.5).  The
+  compiler hands the operation to the runtime's function as GNU does; the
+  AOT dispatcher's =mod= is the difference.  Not in the corpus.
+- *Overflow.*  The fixnum path does not check =FIXNUM_OVERFLOW_P=; a
+  product past the fixnum range wraps instead of becoming a bignum.
+- *Signals.*  A Lisp error signalled inside a native defun (a wrong type for
+  =+=, a zero divisor) leaves the defun through the runtime; =condition-case=
+  in artifact code has only its normal path (Doc 129.8F).
+- The bytecode JIT's leaves (nelisp-bytecode-jit) parse without
+  =runtime-entry-params= and keep the dialect rules.
+- nemacs's =.neln= cache is keyed by path, not by compiler: artifacts written
+  before this change keep their old code until they are rebuilt.
+
+* Results
+
+Pending the final runs.

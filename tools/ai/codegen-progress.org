@@ -65,3 +65,21 @@ cmd: python3 tools/ai/codegen-check.py endtoend
 ** S2.2 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools, on fresh dynamic and static builds
 cmd: python3 tools/ai/codegen-check.py final
 #+NOTE: 2026-10-21 fresh dynamic and static builds of 4ce5b14bf: target/final-verify/checks.sh 11 groups, 0 failures (maphash-sparse known-red), test/perf/standalone-checks.sh rc 0 on the dynamic build, anvil MCP smoke 40 tools.
+
+* S3 Lisp values in native artifacts: GNU's Lisp_Object rules (Doc 229)
+# Coordinator, 2026-10-21 after val-final2: nil and t reaching predicates as
+# raw 0/1, truth tests on the pointer word, and the loader refusing a
+# cons-valued artifact are correctness defects of the native compiler and
+# loader, in this lane.  Fix them as GNU semantics require, design first,
+# with controls that fail on 9d5f4a515 and pass after the fix; gate the
+# change on the Lisp-to-AOT path so the runtime's dialect keeps raw words.
+** S3.1 docs/design/229-native-lisp-values-gnu-object-words.org: the native value convention mapped to GNU's (Lisp_Object words, NILP, Qt/Qnil, the FIXNUMP fast path, d_reloc constants), the controls and the gate
+cmd: python3 tools/ai/codegen-check.py plan229
+** S3.2 Values and truth: nil and t are the nil and t objects, every truth test is NILP on the value, comparisons and predicates yield t or nil, variables keep their values, results are decoded by recorded representation (every stage-1 control fails on 9d5f4a515 and every stage-1 case passes)
+cmd: python3 tools/ai/codegen-check.py lispvalue 1
+** S3.3 A native artifact holding a quoted list constant loads and answers as the interpreter does (the controls are refused on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue loader
+** S3.4 Numbers: arithmetic and comparison take the fixnum path only for fixnums and the runtime's own function otherwise; float literals, floor and mod answer as in GNU (every stage-2 control fails on 9d5f4a515)
+cmd: python3 tools/ai/codegen-check.py lispvalue 2
+** S3.5 End to end: a fresh build of the tip passes validate.sh with every Doc 229 stage in the AOT differential, and the dialect is untouched (the five kernels compile byte-identically to 1042eedbc's compiler)
+cmd: python3 tools/ai/codegen-check.py lispvalue-e2e

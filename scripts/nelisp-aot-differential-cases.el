@@ -55,6 +55,95 @@ to nil reads address 0 and (symbolp x) with x bound to t sees an Int;
 and a cons value, (list 1 2) or '(1 2), compiles to an artifact the
 native loader refuses.")
 
+;; Doc 229: Lisp values in native artifacts follow GNU's Lisp_Object
+;; rules.  Each entry is (STAGE KIND SOURCE ARGS).  KIND `control' marks a
+;; program the 9d5f4a515 compiler gets wrong (a wrong answer, a crash or
+;; a refused artifact), `guard' one it already gets right and must keep.
+;; STAGE says which step of Doc 229 makes the controls pass: 1 nil, t,
+;; booleans, truth tests and variables, `loader' quoted list constants, 2
+;; numbers (arithmetic and comparison on boxed numbers, float literals,
+;; floor, mod).  SOURCE may define, after the defun the case calls, a
+;; helper it calls.  The whole list runs through
+;; tools/ai/codegen-lispvalue.py against both compilers.
+(defconst nelisp-aot-differential-lisp-value-cases
+  '((1 control "(defun lv-if-param (a) (if a 1 2))" (nil t 0 "s"))
+    (1 control "(defun lv-when-param (a) (when a 5))" (nil 1))
+    (1 control "(defun lv-unless-param (a) (unless a 5))" (nil 1))
+    (1 control "(defun lv-cond-null (a) (cond ((null a) 1) (a 2) (t 3)))" (nil 1))
+    (1 control "(defun lv-cond-value (a) (cond ((consp a) (car a)) (t a)))" ((nil) (1) nil 2))
+    (1 control "(defun lv-and-value (a) (and a (< 0 1)))" (nil 1))
+    (1 control "(defun lv-or-value (a) (or a 7))" (nil 3 t))
+    (1 control "(defun lv-or-test (a) (if (or (null a) (eq a 3)) 1 2))" (nil 3 4))
+    (1 control "(defun lv-cmp-return (a) (< a 3))" (0 5))
+    (1 control "(defun lv-cmp-let-symbolp (a) (let ((x (< a 2))) (if (symbolp x) 1 2)))" (1 5))
+    (1 control "(defun lv-cmp-in-list (a) (list (< a 2) (> a 2)))" (1 5))
+    (1 control "(defun lv-eq-nil (a) (eq a nil))" (nil 0 t))
+    (1 control "(defun lv-eq-t-var (a) (let ((x t)) (if (eq a x) 1 2)))" (t nil))
+    (1 control "(defun lv-car-if (a) (if (car a) 1 2))" ((nil) (1)))
+    (1 control "(defun lv-aref-nil-if (a) (if (aref (vector nil 1) a) 1 2))" (0 1))
+    (1 control "(defun lv-aref-arg-if (a) (if (aref a 0) 1 2))" ([nil] [t] [0]))
+    (1 control "(defun lv-null-aref-nil (a) (let ((x (aref (vector nil 1) a))) (if (null x) 1 2)))" (0 1))
+    (1 control "(defun lv-length-nil (a) (let ((x nil)) (length (list x x a))))" (0))
+    (1 control "(defun lv-null-zero (a) (let ((x 0)) (if (null x) 1 2)))" (0))
+    (1 control "(defun lv-symbolp-t-elt (a) (let ((x (aref (vector t 1) a))) (if (symbolp x) 1 2)))" (0 1))
+    (1 control "(defun lv-symbolp-t-test (a) (if (symbolp a) 1 2))" (nil t foo 0))
+    (1 control "(defun lv-vector-bools (a) (vector nil t (< a 1)))" (0 5))
+    (1 control "(defun lv-while-value (a) (let ((i 0)) (while (< i a) (setq i (+ i 1)))))" (0 3))
+    (1 control "(defun lv-setq-nil (a) (let ((x 5)) (when (< a 1) (setq x nil)) x))" (0 3))
+    (1 control "(defun lv-big-return (a) (+ (length a) 5000))" ("ab"))
+    (1 guard "(defun lv-big-raw-return (a) (* a 1000))" (5))
+    (1 control "(defun lv-mixed-if-value (a) (if (< a 1) 5000 a))" (0 3))
+    (1 control "(defun lv-let-alias (a) (let ((x (car a)) (y (cdr a))) (list x y)))" ((1 . 2)))
+    (1 control "(defun lv-let-alias2 (a) (let ((x (car a))) (length a) x))" ((5 6 7)))
+    (1 control "(defun lv-let-star-alias (a) (let* ((x (car a)) (y (cdr a))) (list x y)))" ((1 . 2)))
+    (1 control "(defun lv-loop-join (a) (let ((x (aref a 0)) (i 0)) (while (< i (aref a 1)) (setq x 5) (setq i (+ i 1))) x))" ([7 0] [7 2]))
+    (1 control "(defun lv-if-join (a) (let ((x (aref a 0))) (if (< (aref a 1) 1) (setq x 5)) x))" ([7 0] [7 2]))
+    (1 control "(defun lv-loop-bool (a) (let ((x 0) (i 0)) (while (< i a) (setq x (< i 1)) (setq i (+ i 1))) x))" (0 1 3))
+    (1 control "(defun lv-helper-caller (a) (lv-helper a)) (defun lv-helper (a) (if (null a) t nil))" (nil 1))
+    (1 guard "(defun lv-let-literals (a) (let ((x 'foo) (y \"b\")) (list x y a)))" (0))
+    (1 guard "(defun lv-nil-return (a) nil)" (0))
+    (1 guard "(defun lv-t-return (a) t)" (0))
+    (1 guard "(defun lv-not-param (a) (not a))" (nil t 0))
+    (1 guard "(defun lv-null-param-if (a) (if (null a) 1 2))" (nil t 0))
+    (1 guard "(defun lv-symbolp-param (a) (symbolp a))" (nil t foo 0))
+    (1 guard "(defun lv-consp-test (a) (if (consp a) (car a) 0))" ((5) 3 nil))
+    (loader control "(defun lv-quoted-list-memq (a) (if (memq a '(1 2)) 1 2))" (1 3))
+    (loader control "(defun lv-list-const (a) (list a '(1 \"two\" (3 . 4)) \"five\"))" (0 1))
+    (loader control "(defun lv-list-12 (a) (let ((x (list 1 2))) (if (consp x) (car x) 0)))" (0))
+    (2 control "(defun lv-plus-float (a) (+ a 1))" (1 1.5))
+    (2 control "(defun lv-plus-aref-float (a) (+ (aref a 0) 1))" ([1] [1.5]))
+    (2 control "(defun lv-lss-float (a) (< a 2))" (1 1.5))
+    (2 control "(defun lv-loop-float (a) (let ((s 0) (i 0)) (while (< i 3) (setq s (+ s a)) (setq i (+ i 1))) s))" (1 0.5))
+    (2 control "(defun lv-mul-float (a) (* a 2))" (1.25 3))
+    (2 control "(defun lv-sub-float (a) (- 10 a))" (2.5 3))
+    (2 control "(defun lv-div-float (a) (/ a 2))" (-7 7 7.0))
+    (2 control "(defun lv-abs-float (a) (abs a))" (-1.5 -2 3))
+    (2 control "(defun lv-min-mixed (a) (min a 2))" (1.5 3 2))
+    (2 control "(defun lv-floor-float (a) (floor a))" (1.5 -1.5 2))
+    (2 control "(defun lv-mod-neg (a) (mod a 3))" (-7 7))
+    (2 control "(defun lv-mod-raw (a) (let ((x -7)) (mod x a)))" (3 -3))
+    (2 guard "(defun lv-rem-neg (a) (% a 3))" (-7 7))
+    (2 control "(defun lv-float-lit-add (a) (+ a 0.5))" (1 2.25))
+    (2 control "(defun lv-float-lit-list (a) (list 1.5 -0.25 a))" (0))
+    (2 control "(defun lv-float-lit-cmp (a) (if (< a 2.5) 1 2))" (2 3)))
+  "Doc 229 controls and guards: (STAGE KIND SOURCE ARGS).")
+
+(defvar nelisp-aot-differential-lisp-value-stages nil
+  "Doc 229 stages whose cases join the regular differential corpus.
+A stage is added once its implementation lands, so the regular run keeps
+measuring only what is supposed to pass.")
+
+(defun nelisp-aot-differential-lisp-value-entries (&optional stages)
+  "Return (NAME SOURCE ARGS) for the Doc 229 cases of STAGES (all if t)."
+  (let ((out nil))
+    (dolist (c nelisp-aot-differential-lisp-value-cases)
+      (when (or (eq stages t) (member (nth 0 c) stages))
+        (let ((source (nth 2 c)))
+          (push (list (symbol-name (nth 1 (car (read-from-string source))))
+                      source (nth 3 c))
+                out))))
+    (nreverse out)))
+
 (defun nelisp-aot-differential--wrap (name body)
   "Return the source of defun NAME whose frame holds BODY."
   (format (concat "(defun %s (n)\n"
@@ -127,6 +216,9 @@ the arm that did NOT run is only wrong on one of the two calls."
                                (cadr bound) (cadr a)))
                       '(0 3))
                 cases))))
+    (dolist (entry (nelisp-aot-differential-lisp-value-entries
+                    nelisp-aot-differential-lisp-value-stages))
+      (push entry cases))
     (nreverse cases)))
 
 (defun nelisp-aot-differential-build (dir)

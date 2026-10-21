@@ -38,7 +38,12 @@ run inside the arena rather than making the population smaller.")
 
 (defun nelisp-aot-differential--interpreted (source name arg)
   "Define SOURCE in the interpreter and call NAME with ARG."
-  (eval (car (read-from-string source)) t)
+  ;; Every form, so a case can define a helper next to the defun it calls.
+  (let ((pos 0) (read nil))
+    (while (setq read (condition-case nil (read-from-string source pos)
+                        (end-of-file nil)))
+      (eval (car read) t)
+      (setq pos (cdr read))))
   (funcall (intern name) arg))
 
 (defun nelisp-aot-differential--native (name args)
