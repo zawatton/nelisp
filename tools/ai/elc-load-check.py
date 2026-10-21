@@ -8,6 +8,8 @@ corpus/resolve/capability execute both ELC_LOAD_BIN and ELC_LOAD_STATIC.
 Set both variables to the base executable to record the against-bug run.
 measure-speed records four-layout whole-process callgrind Ir (including GC);
 speed only verifies the retained profiles and >=3x ratio for each function.
+Heavy work takes one Notes/bin/heavy-run.sh slot per image build, profile,
+or corpus/resolve/capability suite; ELC_LOAD_HEAVY_UNIT prevents nested slots.
 
 Paths: ELC_LOAD_EVIDENCE defaults to target/elc-load/evidence;
 ELC_LOAD_NOTES65 is the scratchpad containing elc/, otherwise read the ledger
@@ -43,6 +45,7 @@ CORPUS = OUT / "corpus"
 LAYOUTS = (0, 700, 1400, 2100)
 SMALL, LARGE = 10, 2010
 ADDRESS_SPACE_CAP = 8 * 1024**3
+HEAVY_UNIT_ENV = "ELC_LOAD_HEAVY_UNIT"
 VENDOR = {
     "vendor/emacs-lisp/emacs-lisp/ring.el": "2f66173b2e84e4b033d0ebccfd612d64470a58d61e8709996eeade0a77ee6a32",
     "vendor/emacs-lisp/emacs-lisp/text-property-search.el": "5f15fbbee8d66de226da059fe7338c52a1a5642d0973b6cac229d7c947848470",
@@ -111,7 +114,8 @@ def binary_files(binary):
 def own_files():
     return [Path(__file__), ROOT / "test/elc-load-fixture.el",
             ROOT / "test/fixtures/elc-load-fixture.elc-data", ROOT / "test/standalone-elc-load-check.el",
-            ROOT / "test/standalone-elc-load-check.expected", ROOT / "scripts/nelisp-stdlib-prelude.el"]
+            ROOT / "test/standalone-elc-load-check.expected", ROOT / "scripts/nelisp-stdlib-prelude.el",
+            heavy_runner()]
 
 
 def source_root():
@@ -193,9 +197,34 @@ class MeasuredProcess(subprocess.Popen):
         return pid, status
 
 
-def execute(command, stem, *, timeout=180, env=None):
+def heavy_runner():
+    for parent in ROOT.parents:
+        runner = parent / "bin/heavy-run.sh"
+        if runner.is_file():
+            return runner
+    raise ValueError("cannot locate Notes/bin/heavy-run.sh")
+
+
+def heavy_command(command, env=None):
+    environment = dict(os.environ if env is None else env)
+    command = [str(value) for value in command]
+    if environment.get(HEAVY_UNIT_ENV) != "1":
+        command.insert(0, str(heavy_runner()))
+        environment[HEAVY_UNIT_ENV] = "1"
+    return command, environment
+
+
+def enter_suite_slot(mode):
+    if mode in ("corpus", "resolve", "capability") and os.environ.get(HEAVY_UNIT_ENV) != "1":
+        command, environment = heavy_command([sys.executable, Path(__file__), *sys.argv[1:]])
+        os.execve(command[0], command, environment)
+
+
+def execute(command, stem, *, timeout=180, env=None, heavy=False):
     stem.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    if heavy:
+        command, env = heavy_command(command, env)
     def child_limit():
         soft, hard = resource.getrlimit(resource.RLIMIT_AS)
         caps = [ADDRESS_SPACE_CAP] + [v for v in (soft, hard) if v != resource.RLIM_INFINITY]
@@ -481,7 +510,7 @@ def build_context():
                    C_CORE_IMAGE_BUNDLE=str(bundle), C_CORE_IMAGE_BUILD_TIMEOUT="180",
                    TMPDIR=str(local))
         print("CONTEXT START", tag, binary, "loader=" + sha(loader), "cap=8GiB timeout=180", flush=True)
-        run = execute(["bash", copied, "build"], directory / "build-image", timeout=190, env=env)
+        run = execute(["bash", copied, "build"], directory / "build-image", timeout=190, env=env, heavy=True)
         need(run["rc"] == 0, "canonical context image failed: " + run["stderr"])
         image = Path(Path(run["stdout"]).read_text().strip())
         need(image.is_file() and image.is_relative_to(directory), "context image escaped local cache")
@@ -750,7 +779,7 @@ def measure_speed():
                     run = execute(["valgrind", "--tool=callgrind", "--error-exitcode=97",
                                    "--callgrind-out-file=" + str(profile), "--log-file=" + str(valgrind_log),
                                    *options, binary, "--load", script],
-                                  OUT / "runs" / name, timeout=900, env=env)
+                                  OUT / "runs" / name, timeout=900, env=env, heavy=True)
                     need(run["rc"] == 0 and Path(run["stdout"]).read_text().strip() == f"ELC-SPEED {count}", "speed run failed: " + name)
                     need(not Path(run["stderr"]).stat().st_size, "unexpected runtime stderr: " + name)
                     total = ir(profile)
@@ -940,6 +969,7 @@ def main():
         parser.add_argument("--" + name + "-metadata")
     parser.add_argument("--common-dir")
     args = parser.parse_args()
+    enter_suite_slot(args.mode)
     if args.mode == "record-final":
         record_final(args)
     else:

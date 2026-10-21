@@ -336,6 +336,33 @@ class EvidenceControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "omits required input identities"):
             self.invoke(CHECK.final)
 
+    def test_heavy_wrapper_argv_and_environment(self):
+        runner = self.out / "heavy-run.sh"
+        with patch.object(CHECK, "heavy_runner", return_value=runner):
+            command, environment = CHECK.heavy_command([Path("binary"), "arg with spaces"], {"KEEP": "value"})
+        self.assertEqual(command, [str(runner), "binary", "arg with spaces"])
+        self.assertEqual(environment, {"KEEP": "value", CHECK.HEAVY_UNIT_ENV: "1"})
+
+    def test_heavy_suite_enters_once_without_nesting(self):
+        runner = self.out / "heavy-run.sh"
+        with patch.dict(os.environ, {CHECK.HEAVY_UNIT_ENV: ""}), \
+             patch.object(sys, "argv", [str(CHECK.__file__), "resolve"]), \
+             patch.object(CHECK, "heavy_runner", return_value=runner) as locate, \
+             patch.object(os, "execve", side_effect=RuntimeError("intercepted exec")) as reexec:
+            CHECK.enter_suite_slot("prepare")
+            reexec.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "intercepted exec"):
+                CHECK.enter_suite_slot("resolve")
+            command = reexec.call_args.args[1]
+            environment = reexec.call_args.args[2]
+            self.assertEqual(command, [str(runner), sys.executable, str(CHECK.__file__), "resolve"])
+            with patch.dict(os.environ, environment, clear=True):
+                CHECK.enter_suite_slot("resolve")
+                nested, _ = CHECK.heavy_command(["child"], environment)
+            self.assertEqual(nested, ["child"])
+            self.assertEqual(reexec.call_count, 1)
+            self.assertEqual(locate.call_count, 1)
+
     def test_child_address_space_limit_and_memory_record(self):
         run = CHECK.execute([sys.executable, "-c",
                              "import resource; print(resource.getrlimit(resource.RLIMIT_AS)[0])"],
