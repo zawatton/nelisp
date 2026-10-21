@@ -380,28 +380,25 @@
                        (ptr-write-u32 slot 12
                                        (if (= neg 1) 4293918720 2146435072))
                        1))
-                ;; agent-host census ("void-variable 0.0e+NaN"): the reader
-                ;; lexer (lisp/nelisp-cc-reader-lexer.el,
-                ;; `nelisp_reader_exp_special_suffix_p') now classifies an
-                ;; `e+INF'/`e+NaN' token as Float instead of Sym, so this
-                ;; entry point must actually be able to parse one -- same
-                ;; canonical bit pattern shape as `nlf_t91_write_inf' just
-                ;; above (mantissa/exponent DIGITS before `e+INF'/`e+NaN' are
-                ;; not otherwise significant to Emacs's OWN NaN spelling
-                ;; either: only the leading sign and the INF/NaN choice are
-                ;; read back -- a host's own payload-carrying NaN print
-                ;; shape, e.g. the `-0.0e+NaN' `(/ 0.0 0.0)' already prints
-                ;; as, is not reproduced bit-for-bit here, which is not
-                ;; observable through `=' since no NaN ever compares equal
-                ;; to another, bit-identical or not).  High word 0x7FF80000/
-                ;; 0xFFF80000 = a quiet NaN, sign per NEG.
-                (defun nlf_t91_write_nan (slot neg)
+                ;; GNU lread.c string_to_number keeps the leading integer
+                ;; in the NaN payload.  Only its low 51 bits survive the
+                ;; IEEE mantissa fields, independently of decimal digits.
+                (defun nlf_t91_nan_payload (bp i end payload)
+                  (if (>= i end) payload
+                    (let ((c (nelisp_ptr_read_u8 bp i)))
+                      (if (= (nl_stf_is_digit c) 1)
+                          (nlf_t91_nan_payload
+                           bp (+ i 1) end
+                           (logand (+ (* payload 10) (- c 48)) 2251799813685247))
+                        payload))))
+                (defun nlf_t91_write_nan (slot neg payload)
                   (seq (ptr-write-u64 slot 0 3)
                        (ptr-write-u64 (+ slot 16) 0 0)
                        (ptr-write-u64 (+ slot 24) 0 0)
-                       (ptr-write-u32 slot 8 0)
+                       (ptr-write-u32 slot 8 (logand payload 4294967295))
                        (ptr-write-u32 slot 12
-                                       (if (= neg 1) 4294443008 2146959360))
+                                       (+ (if (= neg 1) 4294443008 2146959360)
+                                          (sar payload 32)))
                        1))
                 ;; Validate BP[START..END) is a bare Emacs float MANTISSA:
                 ;; digits, with at most one `.', and at least one digit
@@ -523,7 +520,11 @@
                            (special (nlf_stf_exp_special_kind bytes_ptr start len)))
                       (cond
                        ((= special 1) (nlf_t91_write_inf slot neg))
-                       ((= special 2) (nlf_t91_write_nan slot neg))
+                       ((= special 2)
+                        (nlf_t91_write_nan slot neg
+                         (nlf_t91_nan_payload bytes_ptr start (- len 5)
+                          (if (= (nl_stf_is_digit (nelisp_ptr_read_u8 bytes_ptr start)) 1)
+                              0 2251799813685247))))
                        (t
                         (let* ((mem (alloc-bytes 32768 8))
                                (meta (+ mem 24576)))

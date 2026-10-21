@@ -55,17 +55,25 @@
                  0.0e+NaN -0.0e+NaN 1.0e+NaN 17.0e+NaN
                  1.0e-4 1.0e-5 1.0e14 1.0e15 1.234567890123456e15
                  1.0000000000000002 0.3333333333333333 99.99
+                 9.999999999999999e14 9.999999999999999e15
+                 9.999999999999999e-5 1.2345678901234567e-5
                  5.0e-324 2.2250738585072014e-308 1.7976931348623157e308))
   (dolist (operation '(prin1 princ format number))
     (gnu-printer-emit 'float-default value operation)))
+
+(dolist (token '("-17.5e+NaN" "4294967297.0e+NaN"
+                 "2251799813685247.0e+NaN" "2251799813685248.0e+NaN"
+                 "18446744073709551617.0e+NaN"))
+  (dolist (operation '(prin1 princ format number))
+    (gnu-printer-emit (list 'nan-payload token) (read token) operation)))
 
 (dolist (descriptor '(nil 17 "%.0f" "%.1f" "%.2e" "%.3g" "%.15g"
                      "%.f" "%.e" "%.g" "%.00f" "%.0e" "%.0g" "%.16g"
                      "%g" "%10.2f" "%.2E" "%.2fX" "%.999999999999g"))
   (let ((float-output-format descriptor))
     (dolist (value '(1.0 1.5e-7 1.25 1e21 -0.0 1.0e+INF 17.0e+NaN))
-      (dolist (operation '(prin1 princ format))
+      (dolist (operation '(prin1 princ format number))
         (gnu-printer-emit (list 'float-format descriptor) value operation)))))
 
 (princ "GNU-SEMANTICS-PRINTER-PASS\n")
-nil
+(kill-emacs 0)

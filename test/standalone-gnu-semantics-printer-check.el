@@ -4,3 +4,4 @@
 (load (expand-file-name "fixtures/gnu-semantics-printer.el"
                         (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
+nil

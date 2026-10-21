@@ -543,6 +543,20 @@ top-level form reachable until the end of the load.")
           (setq done t)))))
     pos))
 
+(defun nelisp--load-eager-expand-eval (form)
+  "Expand and evaluate one source FORM as GNU readevalloop does.
+The genuine `internal-macroexpand-for-load' owns expansion errors."
+  (if (or (not (fboundp 'internal-macroexpand-for-load))
+          (and load-file-name (string-suffix-p ".elc" load-file-name)))
+      (eval form)
+    (setq form (internal-macroexpand-for-load form nil))
+    (if (eq (car-safe form) 'progn)
+        (let ((result nil))
+          (dolist (subform (cdr form))
+            (setq result (nelisp--load-eager-expand-eval subform)))
+          result)
+      (eval (internal-macroexpand-for-load form t)))))
+
 (defun nelisp--load-eval-source-incremental (source)
   "Read and eval SOURCE top-level forms one at a time.
 Return the value of the last form.  This deliberately avoids
@@ -551,14 +565,15 @@ overflow the standalone arena on upstream-sized package files."
   (let ((pos 0)
         (len (length source))
         (last nil)
-        (count 0))
+        (count 0)
+        (macroexp--dynvars (and (boundp 'macroexp--dynvars) macroexp--dynvars)))
     (while (progn
              (setq pos (nelisp--load-skip-space-and-comments source pos))
              (< pos len))
       (let ((res (read-from-string source pos)))
         (when (or (not (consp res)) (<= (cdr res) pos))
           (signal 'end-of-file (list "load reader made no progress" pos)))
-        (setq last (eval (car res)))
+        (setq last (nelisp--load-eager-expand-eval (car res)))
         (setq pos (cdr res))
         (setq count (+ count 1))
         (when (and load-garbage-collect-interval

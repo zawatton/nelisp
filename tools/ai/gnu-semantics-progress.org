@@ -4,19 +4,26 @@
 
 * S1 GNU semantics and end-to-end verification
 ** S1.1 save-current-buffer restores live buffers on normal and non-local exit
+#+NOTE: Adapt GNU editfns.c:843-853 unwind/progn structure in Lisp behind the existing special object (no new native). Nine GNU rows cover value, nested/aliased forms, point retention, killed buffer and signal/throw. Base red: target/gnu-semantics/negative/buffer.C.UTF-8.out; first dynamic candidate matches all nine.
 cmd: bash tools/ai/gnu-semantics-check.sh buffer
 ** S1.2 error uses format-message under C and C.UTF-8 locales
+#+NOTE: Port GNU subr.el:519-537 in canonical source and prelude. Sixteen GNU rows per locale cover curve/grave/straight/default styles and quote-bearing arguments. Base red in both locales under target/gnu-semantics/negative/; first dynamic candidate matches both pins.
 cmd: bash tools/ai/gnu-semantics-check.sh error
 ** S1.3 Bound internal--text-quoting-flag adds no compatibility shadow
+#+NOTE: Guard the declaration with boundp. Scoped GNU fixture observes zero defvar executions on an already bound variable, preserving its value; baseline source+baseline binary observes one. This restores the symbol's zero-shadow contribution at 9167b2736. Full emacs-compat has a pre-existing 1602 vs 270 ratchet failure; its baseline is unchanged. Evidence: target/gnu-semantics/variables/shadow.*.
 cmd: bash tools/ai/gnu-semantics-check.sh shadow
 ** S1.4 Special-variable declarations and bindings match GNU
+#+NOTE: Adapt GNU eval.c:747 default_toplevel_binding and :917-940 defvar to the oldest saved shallow binding, and retain special-form cells when reloading the canonical declarations. The original seven GNU rows pass the first dynamic candidate. Eager loading then exposed private unbound-marker/name confusion: adapt GNU data.c:1653-1656 and eval.c:935 BASE_EQ(Qunbound) using an existing uninterned-symbol identity and ten marker-only predicates. No generic eq/memq/intern/unintern, allocator or GC change. Corpus expanded to twelve GNU rows; eight criteria remain defined. Original six-test Python suite is retained without changing assertions.
 #+TIMEOUT: 300
 cmd: bash tools/ai/gnu-semantics-check.sh variables
 ** S1.5 Source load eagerly macroexpands and aborts with GNU's error on expansion failure
+#+NOTE: Port GNU lread.c:2135-2153 and :2185-2190 evaluator structure; call the genuine Lisp macroexp.el internal-macroexpand-for-load. Adapt :2222 per-file macroexp--dynvars binding through existing declared-variable binder. New environment-restoration row is red on the first eager candidate (nil vs GNU t). Native additions are internal evaluator glue only; no reader-builtin or :lit entry is added. Canonical Lisp loader retains the same reference structure.
 cmd: bash tools/ai/gnu-semantics-check.sh load
 ** S1.6 Bool-vector and floating-point printing match GNU
+#+NOTE: Adapt GNU print.c:1187-1286 (float descriptor/decimal point), :1653-1695 (bool-vector bytes/escapes/print-length), :357 (octal) and lread.c:4522-4538,4575-4578 (NaN payload). Reuse existing native representation access/formatting; no new native entry. GNU-generated corpus now has 887 cases plus completion marker; denominator remains eight. Updated baseline is red, first dynamic candidate matches all cases.
 cmd: bash tools/ai/gnu-semantics-check.sh printer
 ** S1.7 Syntax skipping and backward-prefix-chars match GNU
+#+NOTE: Adapt GNU syntax.c:2107-2265 skip_syntaxes, :3091-3133 backward-prefix-chars, :534-556 quoting and :410-428 property selection in Lisp using the current buffer table. Thirty-four GNU rows match the source-loaded port and first dynamic candidate; final fixture is red on base. Evidence: target/gnu-semantics/syntax/.
 cmd: bash tools/ai/gnu-semantics-check.sh syntax
 ** S1.8 Both linkages pass final checks, standalone checks, MCP and paired regression measurements
 cmd: bash tools/ai/gnu-semantics-check.sh final

@@ -27,7 +27,7 @@
      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
        (if (= entry 0)
            0
-         (if (= (symbol-eq
+         (if (= (extern-call nl_uninterned_symbol_equal
                  (record-slot-ref-ptr entry 1)
                  unbound-ptr)
                 1)
@@ -36,7 +36,7 @@
   "AOT source for Doc 111 §111.E #5 `mirror_is_fbound'.
 
 `fboundp' equivalent against the elisp env mirror.  Slot 1 variant
-of #4 `mirror_is_bound'; same `symbol-eq' tag-mismatch semantics.
+of #4 `mirror_is_bound'; the same private-marker identity semantics.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist — single entry lookup
 shared across miss test and slot-1 unbound-marker check.")

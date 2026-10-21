@@ -53,7 +53,8 @@
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0)
             2
-          (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
+          (if (= (extern-call nl_uninterned_symbol_equal
+                               (record-slot-ref-ptr entry 1) unbound-ptr) 1)
               2
             (nl_record_slot_word entry 1)))))
     ;; The (rc, OUT) form has its own body (rc 1 on a miss): it is on every
@@ -65,7 +66,8 @@
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0)
             1
-          (if (= (symbol-eq (record-slot-ref-ptr entry 1) unbound-ptr) 1)
+          (if (= (extern-call nl_uninterned_symbol_equal
+                               (record-slot-ref-ptr entry 1) unbound-ptr) 1)
               1
             (nl_abi_word_to_rc (nl_record_slot_word entry 1) out-ptr))))))
   "AOT source for Wave a-2 `Env::lookup_function' body.

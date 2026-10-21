@@ -5,3 +5,4 @@
                     ("\\=`literal\\='") ("percent %% %S" foo)))
       (prin1 (list style (condition-case e (apply #'error args) (error e))))
       (terpri))))
+(kill-emacs 0)

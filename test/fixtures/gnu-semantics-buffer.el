@@ -45,3 +45,4 @@
     (set-buffer original)
     (when (buffer-live-p a) (kill-buffer a))
     (when (buffer-live-p b) (kill-buffer b))))
+(kill-emacs 0)

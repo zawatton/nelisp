@@ -1,0 +1,7 @@
+(load-error (error "Eager macro-expansion failure: (error \"fixture expansion\")"))
+(gs-load-before (old 5))
+(gs-load-after (new 6))
+(gs-load-progn-before (progn-old 7))
+(gs-load-deferred (void-function gs-load-deferred))
+(fallback-count 1)
+(abort nil expansion-environment-restored t)

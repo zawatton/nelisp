@@ -16001,7 +16001,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
            base))))
     (defun wf_bytecode_w_unbound_p (env w)
       (if (= (logand w 1) 1) 0
-        (if (= (ptr-read-u64 w 0) 4) (symbol-eq w (+ env 64)) 0)))
+        (if (= (ptr-read-u64 w 0) 16)
+            (nl_uninterned_symbol_equal w (+ env 64)) 0)))
     (defun wf_bytecode_w_varref (env name dst tmp)
       ;; Dynamic value of symbol word NAME into word DST, or 1 with
       ;; void-variable stashed.  A plain variable outside a worker is
@@ -17178,7 +17179,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (m5_emit_sig ms w q)))))))
     ;; GNU print.c float_to_string: only %.{0..15}{e,f,g} is accepted,
     ;; with omitted precision allowed and zero accepted only for f.
-    ;; A negative result means use the shortest round-trip spelling.
+    ;; 16 denotes omitted precision: printf uses zero, but unlike %.0f
+    ;; GNU still repairs an integer result with .0. Negative means invalid.
     (defun m5_float_precision (fmt i n width)
       (if (>= i n) -2
         (let* ((c (m5_byte_at fmt i)))
@@ -17188,7 +17190,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (and (= (+ i 1) n)
                      (or (= c 101) (= c 102) (= c 103))
                      (or (/= width 0) (= c 102)))
-                (if (< width 0) 6 width)
+                (if (< width 0) 16 width)
               -2)))))
     (defun m5_float_has_point (ms i n)
       (if (>= i n) 0
@@ -17210,7 +17212,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (let* ((start (m5_strlen ms)) (buf (alloc-bytes 512 1))
                        (scratch (alloc-bytes 32 8)))
                   (seq
-                   (m5_fmt_float_body ms bits (m5_byte_at fmt (- n 1)) prec buf scratch)
+                   (m5_fmt_float_body ms bits (m5_byte_at fmt (- n 1))
+                                      (if (= prec 16) 0 prec) buf scratch)
                    (if (and (/= prec 0)
                             (= (m5_float_has_point ms start (m5_strlen ms)) 0))
                        (seq (mut-str-push-byte ms 46) (mut-str-push-byte ms 48))
@@ -22455,7 +22458,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((binding (nl_sb_toplevel_binding env sym)))
             (if (= binding 0)
                 (if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)
-              (if (= (symbol-eq (vector-ref-ptr binding 1) (+ env 64)) 1) 1 0)))
+              (if (= (nl_uninterned_symbol_equal
+                      (vector-ref-ptr binding 1) (+ env 64)) 1) 1 0)))
         2))
     (defun bf_set_defvar_value_w (env sym val _pad mode)
       (if (= mode 1) (bf_set_declared_default_w env sym val 0)
@@ -22641,13 +22645,93 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 0)
               (nl_root_release env mark)
               status))))))
-    (defun nl_driver_eval_with_recorded_roots (result env out pool src cursor bsym)
+    (defun nl_load_bind_macroexp_dynvars (env)
+      ;; GNU readevalloop specbinds this once per source file. Expansion
+      ;; records top-level declarations here, including bodyless defvars.
+      (let* ((buf (alloc-bytes 24 8)) (sym (alloc-bytes 32 8))
+             (value (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 8104339058788098413)
+         (ptr-write-u64 buf 8 8241999009919806765)
+         (ptr-write-u64 buf 16 115)
+         (if (= (nl_intern_lookup buf 17 sym) 0) 0
+           (if (= (bf_dynamic_lookup env sym value) 0)
+               (bf_bind_frame_declared env (+ env 32) sym value) 0)))))
+    ;; GNU lread.c:readevalloop_eager_expand_eval. This is evaluator glue,
+    ;; not a new Lisp native: macro expansion remains the genuine Lisp
+    ;; internal-macroexpand-for-load, including its error/abort behavior.
+    (defun nl_load_eager_eval_w (form env _pad)
+      (let* ((mark (nl_root_mark env))
+             (roots (nl_root_reserve_checked env))
+             (i 1) (valid (if (= roots 0) 0 1)) (answer 0))
+        (seq
+         (while (and (= valid 1) (< i 8))
+           (let* ((slot (nl_root_reserve_checked env)))
+             (if (= slot (+ roots (* i 32))) (setq i (+ i 1))
+               (setq valid 0))))
+         (if (= valid 0) 0
+           (let* ((original roots) (name (+ roots 32))
+                  (function (+ roots 64)) (arguments (+ roots 96))
+                  (expanded (+ roots 128)) (tail (+ roots 160))
+                  (value (+ roots 192)) (filename (+ roots 224))
+                  (buf (alloc-bytes 32 8)) (enabled 1))
+             (seq
+              (wf_copy32 original form)
+              ;; Do not eagerly expand compiled files (GNU lread.c:2185).
+              (bf_load_file_name_symbol name)
+              (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) name filename) 0)
+                  (if (= (sexp-tag filename) 5)
+                      (let* ((n (m5_strlen filename)) (p (nl_bi_strptr filename)))
+                        (if (and (>= n 4) (= (ptr-read-u8 p (- n 4)) 46)
+                                 (= (ptr-read-u8 p (- n 3)) 101)
+                                 (= (ptr-read-u8 p (- n 2)) 108)
+                                 (= (ptr-read-u8 p (- n 1)) 99))
+                            (setq enabled 0) 0)) 0) 0)
+              ;; internal-macroexpand-for-load, interned only if available.
+              (ptr-write-u64 buf 0 7809644666444607081)
+              (ptr-write-u64 buf 8 8675462794283412781)
+              (ptr-write-u64 buf 16 8245921787883184496)
+              (ptr-write-u64 buf 24 431131421741)
+              (if (= (nl_intern_lookup buf 29 name) 0) (setq enabled 0)
+                (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name function) 0)
+                    (if (= (bf_fboundp_cell_p function) 1) 0 (setq enabled 0))
+                  (setq enabled 0)))
+              (if (= enabled 0)
+                  (setq answer (nelisp_eval_call_w original env 0))
+                (seq
+                 (nelisp_cons_construct original (nelisp_cons_construct_w 3 3 0) arguments)
+                 (let* ((word (nl_n4_named_apply_w name function arguments env 0)))
+                   (if (= word 0) 0
+                     (seq
+                      (wf_word_store_out expanded word)
+                      (if (and (= (sexp-tag expanded) 7)
+                               (= (nl_sp_eq_progn (nl_cons_car_ptr expanded)) 1))
+                          (seq
+                           (wf_word_store_out tail (nl_cons_cdr_word expanded))
+                           (setq answer 3)
+                           (while (and (/= answer 0) (= (sexp-tag tail) 7))
+                             (seq
+                              (setq answer (nl_load_eager_eval_w (nl_cons_car_ptr tail) env 0))
+                              (wf_word_store_out value answer)
+                              (wf_word_store_out tail (nl_cons_cdr_word tail)))))
+                        (seq
+                         (wf_word_store_out arguments
+                           (nelisp_cons_construct_w word (nelisp_cons_construct_w 7 3 0) 0))
+                         (let* ((full (nl_n4_named_apply_w name function arguments env 0)))
+                           (if (= full 0) 0
+                             (seq (wf_word_store_out expanded full)
+                                  (setq answer (nelisp_eval_call_w expanded env 0)))))))))))))))
+         (nl_root_release env mark)
+         answer)))
+    (defun nl_driver_eval_with_recorded_roots (result env out pool src cursor bsym eager)
       ;; Capture nesting before publishing this frame: nested `load' calls
       ;; must leave queued JIT work for the successful outer form boundary.
       (let* ((depth-before (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
              (pushed (nl_gc_ctx_push env result out pool src cursor bsym)))
         (seq (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-             (let* ((rc (nelisp_eval_call result env out)))
+             (let* ((rc (if (= eager 1)
+                            (nl_abi_word_to_rc (nl_load_eager_eval_w result env 0) out)
+                          (nelisp_eval_call result env out))))
                (let* ((drain-rc
                        (if (and (= rc 0) (= depth-before 0) (= pushed 1))
                            (nl_driver_safe_boundary_drain env)
@@ -22662,6 +22746,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; top-level form when none exists, which dropped the declaration at
       ;; the form boundary.  Keep one boundary frame for the whole file.
       (nelisp_frame_scope_push (+ env 32))
+      (nl_load_bind_macroexp_dynvars env)
       (while (= more 1)
         (seq
          ;; perf/macroexpansion-cache ROOT-CAUSE FIX #3: evict any cache row
@@ -22686,7 +22771,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= prc 1)
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym)))
+                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym 1)))
                   ;; GC trigger must compare TOTAL allocated bytes across all
                   ;; chunks (268436184 = chunk-bytes-reserved running counter),
                   ;; not the chunk-0 bump offset (268435456) — after Doc 140's
@@ -22731,7 +22816,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (if (= prc 1)
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym)))
+                (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym 0)))
                   (if (= rc 0)
                       ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
                       ;; not the chunk-0 bump offset (268435456).  See the note
@@ -28516,9 +28601,11 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                         base-entry-hit)))  (let* ((old-alias-entry
                         (extern-call nelisp_mirror_lookup_entry mirror-ptr alias-sym-ptr)))  (seq (if (= old-alias-entry 0)
                        0
-                     (if (= (symbol-eq (record-slot-ref-ptr old-alias-entry 0) unbound-ptr) 1)
+                     (if (= (nl_uninterned_symbol_equal
+                             (record-slot-ref-ptr old-alias-entry 0) unbound-ptr) 1)
                          0
-                       (if (= (symbol-eq (record-slot-ref-ptr base-entry 0) unbound-ptr) 1)
+                       (if (= (nl_uninterned_symbol_equal
+                               (record-slot-ref-ptr base-entry 0) unbound-ptr) 1)
                            (record-slot-set base-entry 0
                                             (nl_record_slot_word old-alias-entry 0))
                          0))) (extern-call nl_env_build_scratch unbound-ptr unbound-ptr scratch) (extern-call nelisp_mirror_bucket_prepend
@@ -33269,7 +33356,9 @@ no-catch tail above, not this defensive path."
        ;; frame for the whole source so a bodyless `(defvar SYM)' persists
        ;; across top-level forms like GNU's per-file interpreter
        ;; environment.  See `bf_load_eval_loop'.
-       (if (= report_errors 1) (nelisp_frame_scope_push (+ ctx 32)) 0)
+       ;; Mode 4 is a source file load; mode 1 is an explicit eval.
+       (if (or (= report_errors 1) (= report_errors 4)) (nelisp_frame_scope_push (+ ctx 32)) 0)
+       (if (= report_errors 4) (nl_load_bind_macroexp_dynvars ctx) 0)
        (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
        (let* ((more 1)
               ;; Doc 180 Phase 1: FORM_INDEX is 1-based and counts every
@@ -33355,7 +33444,8 @@ no-catch tail above, not this defensive path."
                        ;; "(- (ptr-read-u64 268435464 0) 1)" exit-code check
                        ;; reports failure.
                        (let* ((form_rc (nl_driver_eval_with_recorded_roots
-                                        result ctx out pool src cursor builtin_sym)))
+                                        result ctx out pool src cursor builtin_sym
+                                        (if (= report_errors 4) 1 0))))
                          (if (= form_rc 0)
                              0
                            ;; M6 stash flag @268435472: 0 = "nothing in
@@ -33391,10 +33481,10 @@ no-catch tail above, not this defensive path."
                                      ;; marker -- it only makes the previously
                                      ;; silent case visible on stderr.
                                      (nl_eval_source_print_bare_abort form_rc file_ptr file_len form_index this_start line_no)
-                                   (if (= report_errors 1)
+                                   (if (or (= report_errors 1) (= report_errors 4))
                                        (nl_eval_source_report_bare_abort form_rc file_ptr file_len form_index this_start line_no)
                                      (nl_eval_source_print_bare_abort form_rc file_ptr file_len form_index this_start line_no))))
-                             (if (= report_errors 1)
+                             (if (or (= report_errors 1) (= report_errors 4))
                                  (nl_eval_source_report_error file_ptr file_len form_index this_start line_no)
                                (if (= report_errors 3)
                                    (nl_eval_source_report_error file_ptr file_len form_index this_start line_no)
@@ -33438,7 +33528,7 @@ no-catch tail above, not this defensive path."
                    (setq prev_start this_start)
                    (nl_eval_source_reader_error src report_errors file_ptr file_len form_index this_start line_no)
                    (setq more 0))))))))
-       (if (= report_errors 1) (nl_env_pop_frame ctx) 0)
+       (if (or (= report_errors 1) (= report_errors 4)) (nl_env_pop_frame ctx) 0)
        0))
     ;; A reader failure that is not clean EOF used to be indistinguishable
     ;; from EOF in `nl_eval_source_all''s loop -- see the comment at its own
@@ -33457,7 +33547,7 @@ no-catch tail above, not this defensive path."
        (if (= (ptr-read-u64 268435472 0) 0)
            (bf_read_syntax_error src)
          0)
-       (if (= report_errors 1)
+       (if (or (= report_errors 1) (= report_errors 4))
            (nl_eval_source_report_error file_ptr file_len form_index form_start line_no)
          (if (= report_errors 3)
              (nl_eval_source_report_error file_ptr file_len form_index form_start line_no)
@@ -40636,7 +40726,7 @@ correctly."
                     0
                   (wf_write_nil lfn_old))
                 (nl_env_set_value ctx lfn_sym lfn_path)
-                (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                (nl_eval_source_all src cursor result pool out ctx builtin_sym 4
                                      file_ptr (nl_cstr_len file_ptr))
                 (nl_env_set_value ctx lfn_sym lfn_old)
                 (nl_root_release ctx lfn_mark)))
@@ -41395,7 +41485,7 @@ correctly."
                              0
                            (wf_write_nil lfn_old))
                          (nl_env_set_value ctx lfn_sym lfn_path)
-                         (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                         (nl_eval_source_all src cursor result pool out ctx builtin_sym 4
                                               arg2 (nl_cstr_len arg2))
                          (nl_env_set_value ctx lfn_sym lfn_old)
                          (nl_root_release ctx lfn_mark)))

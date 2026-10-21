@@ -2407,6 +2407,25 @@
             (string-match "A" "λ")
             (aref (char-table-extra-slot table 1) ?A)))))
 
+;; GNU 31.1 semantic ports: message quoting, printer policy and ordinary
+;; values whose printed name resembles the private unbound marker.
+(let ((text-quoting-style 'curve))
+  (condition-case err (error "`name': %s" "`value'") (error err)))
+(let ((float-output-format "%.2f")
+      (print-escape-control-characters t))
+  (list (number-to-string 1.25) (prin1-to-string (bool-vector t nil t))))
+(let ((cell 'nelisp--unbound-marker)) (symbol-name cell))
+(with-temp-buffer
+  (insert "abc  def")
+  (goto-char 1)
+  (list (skip-syntax-forward "w") (skip-syntax-forward "^w")
+        (point) (skip-syntax-backward " ") (point)))
+(let ((original (current-buffer)) (other (generate-new-buffer " *gs-parity*")))
+  (unwind-protect
+      (list (catch 'done (save-current-buffer (set-buffer other) (throw 'done 7)))
+            (eq original (current-buffer)))
+    (kill-buffer other)))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

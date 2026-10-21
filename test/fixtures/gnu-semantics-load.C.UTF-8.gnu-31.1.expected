@@ -4,3 +4,4 @@
 (gs-load-progn-before (progn-old 7))
 (gs-load-deferred (void-function gs-load-deferred))
 (fallback-count 1)
+(abort nil expansion-environment-restored t)

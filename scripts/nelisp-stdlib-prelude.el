@@ -25160,7 +25160,7 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
             (list stream)))
   (let ((s (or stream standard-output)))
     (if (or (null s) (eq s t))
-        (nelisp--native-princ (nelisp--prn-to-string object nil))
+        (nelisp--native-princ object)
       (nelisp--emit-to-stream
        (nelisp--prn-to-string object nil) s)))
   object)
@@ -25173,7 +25173,7 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
             (list stream)))
   (let ((s (or stream standard-output)))
     (if (or (null s) (eq s t))
-        (nelisp--native-princ (prin1-to-string object))
+        (nelisp--native-prin1 object)
       (nelisp--emit-to-stream (prin1-to-string object) s)))
   object)
 

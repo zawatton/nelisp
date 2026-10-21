@@ -13,3 +13,4 @@
   (if (= gs-load-fallback-count 1) (signal 'error '("fixture expansion"))
     '(quote fallback)))
 (defun gs-load-deferred () (gs-load-fallback))
+(setq gs-load-after-failure-reached t)
