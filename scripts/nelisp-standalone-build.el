@@ -30593,7 +30593,9 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; `delete-directory' and `delete-file'.  All three answered
                     ;; -ENOSYS on this target, and `make-directory' silently
                     ;; created nothing (v1.2.0 parity gap 4).
-                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"))
+                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"
+                    ;; Same-volume rename(82), including atomic replacement.
+                    "MoveFileExW"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW"))
         ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
         ;; listening, readiness and connect-status operations implemented by
@@ -35627,8 +35629,9 @@ boundary (Doc 151 Phase B):
              (if (= e 80) (- 0 17)
                (if (= e 2) (- 0 2)
                  (if (= e 3) (- 0 2)
-                   (if (= e 145) (- 0 39)
-                     (- 0 13))))))))
+                   (if (= e 17) (- 0 18)
+                     (if (= e 145) (- 0 39)
+                       (- 0 13)))))))))
        (defun nl_os_win_mkdir (cpath)
          (let* ((wpath (nl_win_utf8_wcs_dup cpath))
                 (ok (extern-call CreateDirectoryW wpath 0)))
@@ -35647,7 +35650,17 @@ boundary (Doc 151 Phase B):
        (defun nl_os_syscall_path_int (nr cpath iarg)
          (if (= nr 21) (nl_os_win_access cpath)
            (if (= nr 83) (nl_os_win_mkdir cpath) (- 0 38))))
-       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
+       (defun nl_os_syscall_path2 (nr c1 c2)
+         (if (= nr 82)
+             ;; Adapt GNU fileio.c Frename_file's same-volume fast path and
+             ;; w32.c sys_rename_replace's UTF-16 replacement semantics.
+             ;; MOVEFILE_REPLACE_EXISTING=1; never COPY_ALLOWED=2: artifact
+             ;; staging files live beside their destination for atomic rename.
+             (let* ((old (nl_win_utf8_wcs_dup c1))
+                    (new (nl_win_utf8_wcs_dup c2))
+                    (ok (extern-call MoveFileExW old new 1)))
+               (if (= ok 0) (nl_os_win_errno) 0))
+           (- 0 38)))
        ;; stat(2) shim.  `GetFileAttributesExW' (not
        ;; `GetFileInformationByHandleEx') because it needs no open handle,
        ;; so a directory, a locked file and a read-protected one all answer
