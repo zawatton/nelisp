@@ -52,17 +52,16 @@
     ;; The unbound test reads the slot's own WORD, as GNU tests the symbol's
     ;; function cell in place (lisp.h SYMBOL_FUNCTION): `record-slot-ref-ptr'
     ;; materialised a view of it on every call dispatch.
+    ;; (Inline: a helper function would grow the F1 prelink closure.)
     (defun nelisp_env_lookup_function_w (mirror-ptr unbound-ptr name-ptr _pad)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0)
             2
           (let ((w (nl_record_slot_word entry 1)))
-            (if (= (nelisp_env_unbound_word_p w unbound-ptr) 1) 2 w)))))
-    ;; 1 when W, a function-cell WORD, is the unbound marker UNBOUND-PTR.
-    (defun nelisp_env_unbound_word_p (w unbound-ptr)
-      (if (= (logand w 1) 1) 0
-        (if (or (= (nl_val_tag w) 4) (= (nl_val_tag w) 16))
-            (symbol-eq w unbound-ptr) 0)))
+            (if (if (= (logand w 1) 1) 0
+                  (if (or (= (nl_val_tag w) 4) (= (nl_val_tag w) 16))
+                      (= (symbol-eq w unbound-ptr) 1) 0))
+                2 w)))))
     ;; The (rc, OUT) form has its own body (rc 1 on a miss): it is on every
     ;; call dispatch.  It stores the slot WORD into OUT directly
     ;; (nl_abi_word_to_rc: an immediate or a 32-byte copy, 0), without the
@@ -73,7 +72,9 @@
         (if (= entry 0)
             1
           (let ((w (nl_record_slot_word entry 1)))
-            (if (= (nelisp_env_unbound_word_p w unbound-ptr) 1)
+            (if (if (= (logand w 1) 1) 0
+                  (if (or (= (nl_val_tag w) 4) (= (nl_val_tag w) 16))
+                      (= (symbol-eq w unbound-ptr) 1) 0))
                 1
               (nl_abi_word_to_rc w out-ptr)))))))
   "AOT source for Wave a-2 `Env::lookup_function' body.
