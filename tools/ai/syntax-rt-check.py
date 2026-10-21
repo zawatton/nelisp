@@ -209,45 +209,78 @@ def speed_run(runtime, binary, probe):
     return result.returncode, rows
 
 
+def cpu_freq():
+    """The timing CPU's current clock in kHz (COMMON.md: record with every run)."""
+    path = Path(f"/sys/devices/system/cpu/cpu{CPUS}/cpufreq/scaling_cur_freq")
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def paired_ratio(numerator, denominator):
+    """NUMERATOR/DENOMINATOR for one round; a non-positive denominator (an
+    own cost below the clock's resolution) makes any positive numerator
+    infinitely slower and a non-positive one equal."""
+    if denominator > 0:
+        return numerator / denominator
+    return float("inf") if numerator > 0 else 1.0
+
+
 def check_speed(kind, binary=None):
     if kind not in SPEED_CASES:
         return fail(f"unknown speed case {kind}")
     binary = Path(binary or DYN_BIN)
-    if not binary.is_file():
-        return fail(f"missing binary {binary}")
+    for required in (binary, BASE_BIN):
+        if not required.is_file():
+            return fail(f"missing binary {required}")
     probe = write_speed_probe(kind)
     labels = [case[0] for case in SPEED_CASES[kind]]
-    samples = {"nelisp": {l: [] for l in labels}, "gnu": {l: [] for l in labels}}
+    rounds = []
+    # Paired ratios (COMMON.md): candidate, GNU and base close together in
+    # each round; the decision is the median of the per-round ratios.
     for _ in range(7):
-        for runtime in ("nelisp", "gnu"):
-            code, rows = speed_run(runtime, binary, probe)
+        entry = {}
+        for name, runtime, exe in (("candidate", "nelisp", binary), ("gnu", "gnu", None),
+                                   ("base", "nelisp", BASE_BIN)):
+            freq = cpu_freq()
+            code, rows = speed_run(runtime, exe, probe)
             if code != 0 or set(rows) != set(labels):
-                return fail(f"speed {kind}: {runtime} run failed (exit {code}, rows {sorted(rows)})")
-            for label in labels:
-                samples[runtime][label].append(rows[label])
+                return fail(f"speed {kind}: {name} run failed (exit {code}, rows {sorted(rows)})")
+            entry[name] = {"freq_khz": freq, "rows": rows}
+        rounds.append(entry)
     record = {"kind": kind, "binary": str(binary), "binary_sha256": sha256(binary),
-              "gnu": GNU_BIN, "cpu": CPUS, "runs": 7, "cases": {}}
+              "base": str(BASE_BIN), "base_sha256": sha256(BASE_BIN), "gnu": GNU_BIN,
+              "cpu": CPUS, "rounds": rounds, "cases": {}}
     passed = True
     for label in labels:
-        summary = {}
-        for runtime in ("nelisp", "gnu"):
+        to_gnu = [paired_ratio(r["candidate"]["rows"][label]["own"], r["gnu"]["rows"][label]["own"])
+                  for r in rounds]
+        to_base = [paired_ratio(r["candidate"]["rows"][label]["own"], r["base"]["rows"][label]["own"])
+                   for r in rounds]
+        summary = {"ratio_to_gnu": statistics.median(to_gnu),
+                   "ratio_to_base": statistics.median(to_base)}
+        for name in ("candidate", "gnu", "base"):
             for field in ("own", "call", "base"):
-                summary[f"{runtime}_{field}"] = statistics.median(
-                    row[field] for row in samples[runtime][label])
-        summary["ok"] = summary["nelisp_own"] <= summary["gnu_own"]
+                summary[f"{name}_{field}"] = statistics.median(
+                    r[name]["rows"][label][field] for r in rounds)
+        summary["ok"] = summary["ratio_to_gnu"] <= 1.0
         passed &= summary["ok"]
-        record["cases"][label] = dict(summary, samples=samples["nelisp"][label],
-                                      gnu_samples=samples["gnu"][label])
-        print(f"  {label}: own NeLisp {summary['nelisp_own']:.4f} us vs GNU "
-              f"{summary['gnu_own']:.4f} us (call {summary['nelisp_call']:.3f} vs "
-              f"{summary['gnu_call']:.4f}, base {summary['nelisp_base']:.3f} vs "
-              f"{summary['gnu_base']:.4f}) {'PASS' if summary['ok'] else 'FAIL'}")
+        record["cases"][label] = summary
+        print(f"  {label}: own {summary['candidate_own']:.4f} us, GNU {summary['gnu_own']:.4f} us, "
+              f"base {summary['base_own']:.4f} us; median paired ratio to GNU "
+              f"{summary['ratio_to_gnu']:.4g}, to base {summary['ratio_to_base']:.4f} "
+              f"{'PASS' if summary['ok'] else 'FAIL'}")
+    freqs = [r[n]["freq_khz"] for r in rounds for n in ("candidate", "gnu", "base")
+             if r[n]["freq_khz"]]
+    if freqs:
+        print(f"  CPU {CPUS} scaling_cur_freq {min(freqs)}-{max(freqs)} kHz over {len(freqs)} runs")
     record["passed"] = passed
     (EVIDENCE / "speed" / f"{kind}.json").write_text(json.dumps(record, indent=1) + "\n")
     if passed:
         print(f"SYNTAX-RT speed {kind} PASS")
         return 0
-    return fail(f"speed {kind}: NeLisp own cost above GNU's (median of 7 alternating runs)")
+    return fail(f"speed {kind}: NeLisp own cost above GNU's (median paired ratio of 7 rounds)")
 
 
 def main(argv):

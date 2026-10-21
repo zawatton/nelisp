@@ -43,6 +43,7 @@ cmd: python3 tools/ai/syntax-rt-check.py semantics
 #+NOTE: 2026-10-21 P1: char-syntax own cost (call minus (integerp 97), median of 7 alternating runs on CPU 10) went from 374.9 us (?a) and 39.0 us (?() on the base to 12.8 us for both; GNU 0.008 and 0.002 us. The remaining cost is the interpreted call and about a dozen interpreted forms (call path and codegen lanes); a trivial subr call costs 1.8 us in the same loop.
 cmd: python3 tools/ai/syntax-rt-check.py speed char-syntax
 ** S1.3 string-match own cost <= GNU's own cost for a plain and a syntax-class pattern on a short string (wall-clock)
+#+NOTE: 2026-10-21 P2 (ported): the matcher reads the current syntax table once per match and tests each character's raw descriptor directly, as GNU regex-emacs.c:5175-5200 tests SYNTAX (c) after one RE_SETUP_SYNTAX_TABLE_FOR_OBJECT (:3462), instead of calling char-syntax per character; a provider whose table is not a char-table still answers through its char-syntax. Paired ratios on CPU 10 (7 rounds): (string-match "\\sw+" "alpha") own cost 243 us against the base's 5,042 us in a loaded run (ratio to base 0.099); GNU 0.20 us.
 cmd: python3 tools/ai/syntax-rt-check.py speed string-match
 
 * S2 End to end
