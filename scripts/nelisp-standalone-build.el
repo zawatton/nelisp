@@ -28212,6 +28212,9 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       * + - append bool-vector concat fetch-bytecode list logand logior logxor
       make-hash-table unibyte-string vector)
     ((1 . 1)
+      ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
+      ;; (nelisp-tls-protocol CONTEXT).
+      nelisp-tls-close nelisp-tls-protocol
       1+ 1- atom bare-symbol bool-vector-p boundp byte-code-function-p car cdr
       char-table-p char-table-parent char-table-subtype char-to-string consp cos fboundp
       floatp fork-spawn hash-table-count integerp length listp lognot make-symbol
@@ -28252,6 +28255,10 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       / < <= = > >= apply error format funcall nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
+      ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-connect SOCKET
+      ;; SERVER-NAME), (nelisp-tls-send CONTEXT STRING) and
+      ;; (nelisp-tls-recv CONTEXT MAX-BYTES).
+      nelisp-tls-connect nelisp-tls-send nelisp-tls-recv
       % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot
       char-table-range cons elt eq equal make-bool-vector make-vector map-char-table
       mapcar maphash member memq mod nelisp--arena-value-survival nelisp--assoc-raw
