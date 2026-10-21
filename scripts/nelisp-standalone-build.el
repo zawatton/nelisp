@@ -4469,6 +4469,16 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     (defun nl_root_word (env)
       (let* ((s (nl_root_frame env 1)))
         (if (= s 0) (alloc-bytes 8 8) s)))
+    (defun nl_root_words (env n)
+      ;; Doc 216 S6.2: N nil WORD slots for the caller's dynamic extent,
+      ;; released with the caller's `nl_root_release' mark -- one
+      ;; `nl_root_frame'.  On a full root stack, unrooted nil-filled scratch,
+      ;; like `nl_root_word' and `nl_root_reserve''s legacy fallback.
+      (let* ((s (nl_root_frame env n)))
+        (if (= s 0) (nl_root_words_scratch n) s)))
+    (defun nl_root_words_scratch (n)
+      (let* ((s (alloc-bytes (* n 8) 8)) (i 0))
+        (seq (while (< i n) (seq (ptr-write-u64 s (* i 8) 3) (setq i (+ i 1)))) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
     ;; cons view without metadata becomes its direct WORD (payload | 2);
     ;; anything else is returned unchanged.  Inlinable (no let).
@@ -10452,14 +10462,15 @@ leave symbols unresolved at link time."
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_copy_w (args env _pad)
   (if (= (nl_val_tag args) 7)
-      (let* ((holder_root (nl_root_reserve env))
+      ;; Doc 216 S6.2: the converted operand is one WORD root while the tail
+      ;; is copied.
+      (let* ((slot (nl_root_word env))
              (word (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 1)))
         (if (= word 0) 0
-          (let* ((holder (nelisp_cons_construct_w word 3 0)))
-            (seq (wf_word_store_out holder_root holder)
-                 (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
-                   (if (= tail_word 0) 0
-                     (nelisp_cons_construct_w (nl_cons_car_word holder_root) tail_word 0)))))))
+          (seq (ptr-write-u64 slot 0 word)
+               (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
+                 (if (= tail_word 0) 0
+                   (nelisp_cons_construct_w (heap-read-u64 slot 0) tail_word 0))))))
     args))
     (defun wf_numeric_marker_copy (args env out)
       (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
@@ -10472,23 +10483,18 @@ leave symbols unresolved at link time."
     ;; Doc 215 builtin word ABI: wf_numeric_marker_compare_w returns the result WORD (0 = signal stashed); wf_numeric_marker_compare keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_compare_w (args env mode _pad)
   (if (= (wf_cdr_has_more args) 1)
-      (let* ((mark (nl_root_mark env))
-             (a (nl_root_reserve env)) (b (nl_root_reserve env))
-             (rest (nl_cons_cdr_word args))
-             (rc (wf_numeric_marker_value_word (nl_cons_car_word args) a 0))
-             (w 0))
-        (if (= rc 0)
-            (setq rc (wf_numeric_marker_value_word (nl_cons_car_word rest) b 0)) 0)
-        (if (= rc 0)
-            (setq w
-                  (if (= (wf_num_pairp a b) 0)
-                      (nl_abi_fail (bf_wrong_type_number_or_marker
-                                    (if (= (wf_num_tag_ok (sexp-tag a)) 0) a b)) 0)
-                    (if (= (wf_numeric_marker_relation a b mode) 1)
-                        (if (= mode 5) 3 (wf_numeric_marker_compare_w rest env mode 0))
-                      (if (= mode 5) 7 3))))
-          (setq w (nl_abi_fail rc 0)))
-        (nl_root_release env mark) w)
+      ;; Doc 216 S6.2: the two operands are WORDs (an argument or a marker's
+      ;; position), reachable from ARGS; nothing here can collect.
+      (let* ((rest (nl_cons_cdr_word args))
+             (a (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 0))
+             (b (if (= a 0) 0 (wf_numeric_marker_value_word_w (nl_cons_car_word rest) 0 0))))
+        (if (or (= a 0) (= b 0)) (nl_abi_fail 1 0)
+          (if (= (wf_num_pairp a b) 0)
+              (nl_abi_fail (bf_wrong_type_number_or_marker
+                            (wf_word_view (if (= (wf_num_tag_ok (nl_val_tag a)) 0) a b))) 0)
+            (if (= (wf_numeric_marker_relation a b mode) 1)
+                (if (= mode 5) 3 (wf_numeric_marker_compare_w rest env mode 0))
+              (if (= mode 5) 7 3)))))
     7))
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
@@ -10825,18 +10831,13 @@ leave symbols unresolved at link time."
     (defun bf_env_capture_roots_w (_pad)
       (let* ((env (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
         (if (= env 0) 3
-          (let* ((mark (nl_root_mark env)) (snapshot (nl_root_reserve env)))
-            (seq
-             (nl_frame_stack_snapshot env snapshot)
-             (let* ((word (nelisp_cons_construct_w (nl_word_clone env)
-                    (nelisp_cons_construct_w (+ (nl_word_payload snapshot) 6)
-                     (nelisp_cons_construct_w (nl_word_clone (+ env 64))
-                      (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
-                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0)))
-               ;; The release and the result must stay inside this let*:
-               ;; a free `word' compiles silently as a dynamic variable
-               ;; lookup through uninitialized hidden boundary slots.
-               (seq (nl_root_release env mark) word)))))))
+          ;; Doc 216 S6.2: the snapshot is a WORD (a compact record); the
+          ;; list below is built before anything can collect.
+          (nelisp_cons_construct_w (nl_word_clone env)
+           (nelisp_cons_construct_w (nl_frame_stack_snapshot_w env 0)
+            (nelisp_cons_construct_w (nl_word_clone (+ env 64))
+             (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
+              (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
     (defun bf_env_capture_roots (out)
   (nl_abi_word_to_rc (bf_env_capture_roots_w 0) out))
     ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
@@ -13755,13 +13756,14 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; Doc 215 builtin word ABI: bf_garbage_collect_snapshot_w returns the result WORD (0 = signal stashed).
     (defun bf_garbage_collect_snapshot_w (env _pad)
   (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
-         (args-root (nl_root_reserve env)) (scratch-root (nl_root_reserve env)) (i 0))
+         (args-root (nl_root_word env)) (i 0))
     (seq
      (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
      (ptr-write-u64 state 0 1)
      (nl_gc_collect_from_recorded_roots 0)
      (nl_gc_explicit_rearm)
-     (nl_gc_typed_interns scratch-root)
+     ;; The census walk's symbol view is scratch, made after the collection.
+     (nl_gc_typed_interns (alloc-bytes 32 8))
      (ptr-write-u64 state 0 (if (= (heap-read-u64 state 0) 3) 3 0))
      (if (= (heap-read-u64 state 0) 3)
          (seq (if (= (heap-read-u64 state 8) 0) 0
@@ -13771,17 +13773,18 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
        (let* ((snapshot-word (nl_w_vector_make 6 0))
               (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
          (seq
-          ;; The argument cons roots the vector's actual WORD header.
-          (wf_word_store_out args-root args-word)
+          ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
+          ;; vector's actual WORD header.
+          (ptr-write-u64 args-root 0 args-word)
           (setq i 0)
           (while (< i 6)
-            (vector-slot-set (nl_cons_car_word args-root) i
+            (vector-slot-set (nl_cons_car_word args-word) i
                              (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
             (setq i (+ i 1)))
           (if (= (heap-read-u64 state 8) 0) 0
             (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
           (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
-          (let* ((word (bf_n2_call_lisp_gc_w args-root env 0)))
+          (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
             (seq (nl_root_release env mark) word))))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
@@ -15047,37 +15050,32 @@ eval applyfn.")
             (seq (nelisp_cons_construct (nl_cons_car_word p) acc c)
                  (wf_mapcar_reverse_copy (nl_cons_cdr_ptr p) c)))
         acc))
-    (defun wf_mapcar_step (rest_slot acc_slot fn_slot env)
-      (if (= (heap-sexp-tag-word rest_slot) 7)
-          (let* ((elt (nl_cons_car_word rest_slot))
-                 (nxt 0)
-                 (mark (nl_root_mark env))
-                 (elt_slot (nl_root_reserve env))
-                 (nil_slot (nl_root_reserve env))
-                 (arglist_slot (nl_root_reserve env))
-                 (result_slot (nl_root_reserve env)))
-            (seq
-             (wf_word_store_out elt_slot elt)
-             (wf_write_nil nil_slot)
-             (nelisp_cons_construct (if (= (logand elt 1) 1) elt elt_slot) 3 arglist_slot)
-             (let* ((word (nl_apply_function_w fn_slot arglist_slot env 0)))
-               (if (/= word 0)
-                   (let* ((new_acc acc_slot))
-                     (seq
-                      ;; Keep the callback's original immediate; the root
-                      ;; view protects heap payloads while their owned copy
-                      ;; is made. Macro-generated defaults use this path.
-                      (wf_word_store_out result_slot word)
-                      (nelisp_cons_construct
-                       (if (= (logand word 1) 1) word result_slot) acc_slot new_acc)
-                      0
-                      (wf_word_store_out rest_slot (nl_cons_cdr_word rest_slot))
-                      (nl_root_release env mark)
-                      (wf_mapcar_step rest_slot acc_slot fn_slot env)))
-                 (seq (nl_root_release env mark) 1)))))
-        (if (= (heap-sexp-tag-word rest_slot) 0)
-            0
-          (bf_wrong_type_listp rest_slot))))
+    (defun wf_mapcar_step (roots env)
+      ;; Doc 216 S6.2: ROOTS is one frame of four WORD slots -- the callable
+      ;; (+0), the rest of the list (+8), the reversed accumulator (+16) and
+      ;; the current one-argument call list (+24).  One iteration conses the
+      ;; call list and the accumulator cell, and stores the new rest.
+      ;; Answers 0, or a nonzero rc after a failed call or a dotted list.
+      (let* ((rc 0) (go 1))
+        (seq
+         (while (= go 1)
+           (let* ((rest (heap-read-u64 roots 8)))
+             (if (= (nl_val_tag rest) 7)
+                 (let* ((arglist (nelisp_cons_construct_w (nl_cons_car_word rest) 3 0)))
+                   (seq
+                    (ptr-write-u64 roots 24 arglist)
+                    (let* ((word (nl_apply_function_w (wf_word_view (heap-read-u64 roots 0)) arglist env 0)))
+                      (if (/= word 0)
+                          (seq
+                           (ptr-write-u64 roots 16
+                             (nelisp_cons_construct_w word (heap-read-u64 roots 16) 0))
+                           (ptr-write-u64 roots 8
+                             (nl_cons_cdr_word (heap-read-u64 roots 8))))
+                        (seq (setq rc 1) (setq go 0))))))
+               (seq (setq go 0)
+                    (if (= (nl_val_tag rest) 0) 0
+                      (setq rc (bf_wrong_type_listp (wf_word_view rest))))))))
+         rc)))
     (defun wf_mapcar_slow_w (args env _pad)
       (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
         (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8299415450919395693) (ptr-write-u64 (+ buf 16) 0 7827308) (nl_alloc_symbol buf 19 sym_slot)
@@ -15110,6 +15108,13 @@ eval applyfn.")
               (if (= (sexp-tag fn_slot) 0) 0 1)
             0)
         (seq (nl_sexp_clone_into fn fn_slot) 1)))
+    (defun wf_mapcar_resolve_fn_w (fnw env)
+      ;; The callable FNW denotes, as a WORD, or 0 when it names an unbound
+      ;; or nil function (the cases `wf_mapcar_resolve_fn' answers 0 for).
+      (if (if (= (nl_val_tag fnw) 4) 1 (if (= (nl_val_tag fnw) 16) 1 0))
+          (let* ((fw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) (wf_word_view fnw) 0)))
+            (if (or (= fw 0) (or (= fw 2) (= fw 3))) 0 fw))
+        fnw))
     (defun wf_mapcar_wrong_arity (argc)
       (let* ((bytes (alloc-bytes 8 1)) (name (alloc-bytes 32 8)))
         (seq (ptr-write-u64 bytes 0 125762605703533)
@@ -15119,31 +15124,29 @@ eval applyfn.")
       (let* ((argc (m5_list_len args 0)))
         (if (/= argc 2)
             (nl_abi_fail (wf_mapcar_wrong_arity argc) 0)
-          (let* ((fn (wf_arg_ptr args 0))
-                 (sq (wf_arg_ptr args 1)))
-            (if (or (= fn 0) (= sq 0))
+          (let* ((fnw (wf_arg_word args 0))
+                 (sqw (wf_arg_word args 1)))
+            (if (or (= fnw 0) (= sqw 0))
                 (nl_abi_fail (wf_mapcar_wrong_arity argc) 0)
-              (let* ((sqtag (sexp-tag sq)))
+              (let* ((sqtag (nl_val_tag sqw)))
                 (if (= sqtag 0)
                     3
                   (if (= sqtag 7)
                       (let* ((mark (nl_root_mark env))
-                             (fn_slot (nl_root_reserve env))
-                             (rest_slot (nl_root_reserve env))
-                             (acc_slot (nl_root_reserve env))
-                             (ok (wf_mapcar_resolve_fn fn env fn_slot)))
-                        (if (= ok 1)
+                             (roots (nl_root_words env 4))
+                             (callable (wf_mapcar_resolve_fn_w fnw env)))
+                        (if (/= callable 0)
                             (seq
-                             (wf_copy32 rest_slot sq)
-                             (wf_write_nil acc_slot)
-                             (let* ((rc (wf_mapcar_step rest_slot acc_slot fn_slot env)))
+                             (ptr-write-u64 roots 0 callable)
+                             (ptr-write-u64 roots 8 sqw)
+                             (let* ((rc (wf_mapcar_step roots env)))
                                (if (= rc 0)
                                    ;; The reversed accumulator is the result
                                    ;; WORD; nothing allocates before return.
-                                   (let* ((res (wf_mapcar_reverse_copy acc_slot 3)))
+                                   (let* ((res (wf_mapcar_reverse_copy (heap-read-u64 roots 16) 3)))
                                      (seq (nl_root_release env mark) res))
                                  (seq (nl_root_release env mark) (nl_abi_fail rc 0)))))
-                          (seq (nl_cons_stash_void_function env fn)
+                          (seq (nl_cons_stash_void_function env (wf_word_view fnw))
                                (nl_root_release env mark)
                                (nl_abi_fail 1 0))))
                     (wf_mapcar_slow_w args env 0)))))))))
@@ -16080,23 +16083,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
             0)
         2))
     (defun nl_native_handlers_pop (env ticket state)
-      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env))
-             (tail (nl_root_reserve env)) (rc 2))
-        (if (= (nl_val_tag (nl_vector_slot_word state 4)) 7)
-            (seq (wf_word_store_out entry (nl_cons_car_word (nl_vector_slot_word state 4)))
-                 (wf_word_store_out tail (nl_cons_cdr_word (nl_vector_slot_word state 4)))
-                 (setq rc (nl_native_handlers_retire env ticket entry))
-                 (if (= rc 0) (vector-slot-set state 4 tail) 0)) 0)
-        (seq (nl_root_release env mark) rc)))
+      ;; Doc 216 S6.2: the handler list is reachable from STATE's slot 4
+      ;; until it is replaced by its cdr, so no root is needed.
+      (let* ((lst (nl_vector_slot_word state 4)) (rc 2))
+        (seq
+         (if (= (nl_val_tag lst) 7)
+             (seq (setq rc (nl_native_handlers_retire env ticket (nl_cons_car_word lst)))
+                  (if (= rc 0) (vector-slot-set state 4 (nl_cons_cdr_word lst)) 0)) 0)
+         rc)))
     (defun nl_native_handlers_cross (env ticket state all)
-      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env)) (go 1) (rc 0))
+      (let* ((go 1) (rc 0))
         (seq
          (while (and (= go 1) (= rc 0) (= (nl_val_tag (nl_vector_slot_word state 4)) 7))
-           (seq (wf_word_store_out entry (nl_cons_car_word (nl_vector_slot_word state 4)))
-                (if (or (= all 1) (= (bf_eq2 (vector-ref-ptr entry 4) (vector-ref-ptr state 3)) 1))
-                    (setq rc (nl_native_handlers_pop env ticket state))
-                  (setq go 0))))
-         (nl_root_release env mark) rc)))
+           (let* ((entry (nl_cons_car_word (nl_vector_slot_word state 4))))
+             (if (or (= all 1) (= (bf_eq2 (vector-ref-ptr entry 4) (vector-ref-ptr state 3)) 1))
+                 (setq rc (nl_native_handlers_pop env ticket state))
+               (setq go 0))))
+         rc)))
     (defun nl_native_handlers_land_v2 (env ticket s a r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (state (nl_root_pin_slot_v2 env ticket s))
@@ -25641,23 +25644,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; in this runtime is a flag plus a stash (@268435472), not a stack
     ;; unwind, so `bf_load_readable' returns a code either way and the restore
     ;; below always runs.
-    (defun bf_load_with_lfn_rooted_w (args env old-root loop-root)
+    (defun bf_load_with_lfn_rooted_w (args env old-root)
+  ;; Doc 216 S6.2: OLD-ROOT is a WORD root slot (the caller's frame) holding
+  ;; `load-file-name''s old value across the nested load.  The loop's value
+  ;; view is recorded by the GC context, so it is an arena box made here.
   (let* ((sym (alloc-bytes 32 8)))
     (seq
      (bf_load_file_name_symbol sym)
-     ;; OLD-ROOT is a stable physical input to the setter after nested loads.
-     (if (= (nelisp_env_lookup_value env (+ env 32) sym old-root) 0) 0
-       (wf_write_nil old-root))
+     (ptr-write-u64 old-root 0 (bf_read_load_file_name_w env 0))
      (nl_env_set_value env sym (wf_arg_ptr args 0))
-     (let* ((word (bf_load_readable_rooted_w args env loop-root)))
-       (let* ((restore-name (alloc-bytes 32 8)))
-         (seq
-          (bf_load_file_name_symbol restore-name)
-          (nl_env_set_value env restore-name old-root)
-          word))))))
-    (defun bf_load_inner_rooted_w (args env old-root loop-root)
+     (let* ((out (alloc-bytes 32 8)))
+       (seq
+        (wf_write_nil out)
+        (let* ((word (bf_load_readable_rooted_w args env out)))
+          (let* ((restore-name (alloc-bytes 32 8)))
+            (seq
+             (bf_load_file_name_symbol restore-name)
+             (nl_env_set_value env restore-name (wf_word_view (heap-read-u64 old-root 0)))
+             word))))))))
+    (defun bf_load_inner_rooted_w (args env old-root)
   (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
-      (bf_load_with_lfn_rooted_w args env old-root loop-root)
+      (bf_load_with_lfn_rooted_w args env old-root)
     (bf_load_searched_w args env 0)))
     (defun nl_driver_eval_word_with_recorded_roots (form env result out pool src cursor bsym state)
   (let* ((depth-before (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
@@ -25706,19 +25713,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))))))))
      (if (= more 3) (seq (bf_read_syntax_error src) 0)
        (if (= more 2) 0 (nl_cons_cdr_word state))))))
-    (defun bf_eval_source_string_inner_rooted_w (args env result out state)
+    (defun bf_eval_source_string_inner_rooted_w (args env state)
+  ;; Doc 216 S6.2: STATE is a WORD root slot holding the loop's state cons.
+  ;; The parse result and the value view are recorded by the GC context, like
+  ;; the cursor, pool and BSYM, so they are arena boxes made here.
   (let* ((src (wf_arg_ptr args 0)) (cursor (alloc-bytes 32 8))
          (cap (let* ((n (* 4 (m5_strlen src))))
                 (if (< n 256) 256 (if (> n 32768) 32768 n))))
          (pool (alloc-bytes (* cap 32) 8)) (bsym (alloc-bytes 32 8))
+         (result (alloc-bytes 32 8)) (out (alloc-bytes 32 8))
+         (statew (nelisp_cons_construct_w 3 3 0))
          (prevcap (heap-read-u64 268436448 0)))
     (seq
-     (wf_write_nil bsym)
+     (wf_write_nil bsym) (wf_write_nil result) (wf_write_nil out)
      (ptr-write-u64 268435624 0 0)
      (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-     (wf_word_store_out state (nelisp_cons_construct_w 3 3 0))
+     (ptr-write-u64 state 0 statew)
      (ptr-write-u64 268436448 0 cap)
-     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym state)))
+     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym statew)))
        (seq
         (if (/= word 0) (wf_dirty) 0)
         (ptr-write-u64 268436448 0 prevcap)
@@ -25735,9 +25747,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_load_with_lfn_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_with_lfn_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
-         (loop-root (nl_root_reserve env))
-         (word (bf_load_with_lfn_rooted_w args env old-root loop-root)))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_word env))
+         (word (bf_load_with_lfn_rooted_w args env old-root)))
     (seq (nl_root_release env mark) word)))
     ;; Non-nil when the name carries its own root, so `load-path' must not be
     ;; consulted: a leading `/' or `\\', or a `X:' drive prefix.
@@ -25811,7 +25822,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_load_current_buffer_w env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_current_buffer_w (env _pad)
-  (let* ((mark (nl_root_mark env)) (function-root (nl_root_reserve env))
+  (let* ((mark (nl_root_mark env)) (function-root (nl_root_word env))
          (buf (alloc-bytes 16 1)))
     (seq
      (ptr-write-u64 buf 0 3275364210996049251)
@@ -25820,8 +25831,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (function-word (nelisp_env_lookup_function_w env (+ env 64) sym 0))
             (word (if (or (= function-word 0) (= function-word 2)) 0
                     (seq
-                     (wf_word_store_out function-root function-word)
-                     (nl_apply_function_w function-root (wf_word_view 3) env 0)))))
+                     (ptr-write-u64 function-root 0 function-word)
+                     (nl_apply_function_w (wf_word_view function-word) (wf_word_view 3) env 0)))))
        (seq (nl_root_release env mark) word)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_load_restore_buffer_w (env saved _pad)
@@ -25859,28 +25870,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_w (args env _pad)
   ;; Reserve before creating the lexical file scope (Doc 215 R3).
-  (let* ((mark (nl_root_mark env)) (saved-root (nl_root_reserve env))
-         (old-root (nl_root_reserve env)) (loop-root (nl_root_reserve env))
-         (args-root (nl_root_reserve env)) (saved 0) (word 0))
+  ;; Doc 216 S6.2: one frame of three WORD roots -- the argument list (+0),
+  ;; the saved current-buffer list (+8) and `load-file-name''s old value
+  ;; (+16).
+  (let* ((mark (nl_root_mark env)) (roots (nl_root_words env 3))
+         (saved 0) (word 0))
     (seq
-     (wf_word_store_out args-root args)
+     (ptr-write-u64 roots 0 args)
      (setq saved (bf_load_current_buffer_w env 0))
      (if (/= saved 0)
-         (wf_word_store_out saved-root (nelisp_cons_construct_w saved 3 0)) 0)
+         (ptr-write-u64 roots 8 (nelisp_cons_construct_w saved 3 0)) 0)
      (nelisp_frame_scope_push (+ env 32))
      (setq word (nelisp_eval_call_root_done
-                 (bf_load_inner_rooted_w args-root env old-root loop-root) env))
+                 (bf_load_inner_rooted_w args env (+ roots 16)) env))
      (if (and (/= saved 0) (/= word 0))
-         (bf_load_restore_buffer_w env (nl_cons_car_word saved-root) 0) 0)
+         (bf_load_restore_buffer_w env (nl_cons_car_word (heap-read-u64 roots 8)) 0) 0)
      (nl_root_release env mark)
      word)))
     (defun bf_load_inner (args env out)
   (nl_abi_word_to_rc (bf_load_inner_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_inner_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
-         (loop-root (nl_root_reserve env))
-         (word (bf_load_inner_rooted_w args env old-root loop-root)))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_word env))
+         (word (bf_load_inner_rooted_w args env old-root)))
     (seq (nl_root_release env mark) word)))
     (defun bf_load_readable_rooted_w (args env out)
       ;; Doc 147 Phase 1.5 Group P — the reader parse pool is now a RAW
@@ -26029,21 +26041,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_eval_source_string_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
-         (out (nl_root_reserve env)) (state (nl_root_reserve env)) (word 0))
+  (let* ((mark (nl_root_mark env)) (state (nl_root_word env)) (word 0))
     (seq
      (nelisp_frame_scope_push (+ env 32))
      (setq word (nelisp_eval_call_root_done
-                 (bf_eval_source_string_inner_rooted_w args env result out state) env))
+                 (bf_eval_source_string_inner_rooted_w args env state) env))
      (nl_root_release env mark)
      word)))
     (defun bf_eval_source_string_inner (args env out)
   (nl_abi_word_to_rc (bf_eval_source_string_inner_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_inner_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
-         (out (nl_root_reserve env)) (state (nl_root_reserve env))
-         (word (bf_eval_source_string_inner_rooted_w args env result out state)))
+  (let* ((mark (nl_root_mark env)) (state (nl_root_word env))
+         (word (bf_eval_source_string_inner_rooted_w args env state)))
     (seq (nl_root_release env mark) word)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_read_load_file_name_w (env _pad)
@@ -45149,31 +45159,33 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (nl_clx_write_nil nil_slot)
          (nl_env_capture_lexical_with_filter env nil_slot 0 out))))
     (defun nl_env_capture_lexical_filtered_w (env lambda-args _pad _pad2)
-      (let* ((mark (nl_root_mark env)) (roots (nl_root_reserve env)))
-        (if (= roots 0) (nl_abi_fail 1 0)
-          (seq
-           (vector-make 4 roots)
-           (nl_capture_root_set_word roots 2 lambda-args)
-           (let* ((filter
-                   (if (= (nl_fvcache_disabled) 1)
-                       (nl_clx_symbol_filter_walk_raw_w lambda-args 3 roots)
-                     (let* ((cached (nl_fvcache_lookup lambda-args)))
-                       (if (= cached 0)
-                           (let* ((word (nl_clx_build_symbol_filter_w lambda-args roots)))
-                             (if (= (nl_val_tag word) 7) (nl_fvcache_store lambda-args word) 0)
-                             word)
-                         cached))))
-                  (frames (+ env 32))
-                  (backing (nl_record_slot_word frames 0))
-                  (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
-             ;; Reuse the same roots for filtering and capture. Keep the final
-             ;; filter alive when capture replaces its accumulator in slot 0.
-             (nl_capture_root_set_word roots 2 filter)
-             (nl_capture_root_set_word roots 3 backing)
-             (let* ((word (nl_capture_walk_frames_w backing (- depth 1) 3
-                           (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) filter roots)))
-               (nl_root_release env mark)
-               word))))))
+      ;; Doc 216 S6.2: ROOTS is a native 4-slot vector (acc, pair, filter,
+      ;; backing) whose WORD sits in one WORD root.
+      (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
+             (roots (+ (nl_alloc_vector 4) 6)))
+        (seq
+         (ptr-write-u64 root 0 roots)
+         (nl_capture_root_set_word roots 2 lambda-args)
+         (let* ((filter
+                 (if (= (nl_fvcache_disabled) 1)
+                     (nl_clx_symbol_filter_walk_raw_w lambda-args 3 roots)
+                   (let* ((cached (nl_fvcache_lookup lambda-args)))
+                     (if (= cached 0)
+                         (let* ((word (nl_clx_build_symbol_filter_w lambda-args roots)))
+                           (if (= (nl_val_tag word) 7) (nl_fvcache_store lambda-args word) 0)
+                           word)
+                       cached))))
+                (frames (+ env 32))
+                (backing (nl_record_slot_word frames 0))
+                (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+           ;; Reuse the same roots for filtering and capture. Keep the final
+           ;; filter alive when capture replaces its accumulator in slot 0.
+           (nl_capture_root_set_word roots 2 filter)
+           (nl_capture_root_set_word roots 3 backing)
+           (let* ((word (nl_capture_walk_frames_w backing (- depth 1) 3
+                         (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) filter roots)))
+             (nl_root_release env mark)
+             word)))))
     (defun nl_env_capture_lexical_filtered (env lambda-args out _pad)
   (nl_abi_word_to_rc (nl_env_capture_lexical_filtered_w env lambda-args 0 0) out))))
 
@@ -45409,16 +45421,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (defun nl_n3_notify (env sym value operation)
       ;; This helper is reached only behind the one flag check at each
       ;; semantic write. Preserve pending signal/throw state during unlet.
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into sym copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (roots (nl_root_reserve_checked env))
-             (name (nl_root_reserve env)) (fn (nl_root_reserve env))
-             (args (nl_root_reserve env)) (tail (nl_root_reserve env))
-             (op (nl_root_reserve env)) (nilp (nl_root_reserve env))
-             (where (nl_root_reserve env))
-             (tag-save (nl_root_reserve env)) (val-save (nl_root_reserve env))
+      ;; Doc 216 S6.2: one frame of five WORD roots replaces the 32-byte
+      ;; view slots: the canonical symbol (+0), the watcher's argument list
+      ;; (+8), the new value (+16), and the pending exit's tag (+24) and
+      ;; value (+32).  SYM and VALUE may be scratch, so the frame takes
+      ;; durable WORDs of them.
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 5))
              (flag (heap-read-u64 268435472 0))
              ;; The pending exit's WORDs: unchanged after the watcher, they
              ;; need no restore (the exit fields kept them alive).
@@ -45427,141 +45435,131 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              ;; Raw pending-binding links hold only pointers to live roots.
              ;; Header +24 is per EvalCtx, separate from lean unwind +16.
              (state (nl_n4_state env)) (pending (alloc-bytes 16 8))
-             (buf (alloc-bytes 32 1)) (result (nl_root_reserve env)) (rc 0))
+             (buf (alloc-bytes 32 1)) (name 0) (where 3) (op 0) (rc 0))
         (seq
-         (nl_sexp_clone_into
-          (if (= operation 5) copies (nl_pa_canonical env copies)) roots)
-         (nl_sexp_clone_into (+ copies 32) result)
+         (nl_val_clone_into value (+ fr 16))
+         (nl_val_clone_into sym fr)
+         (nl_val_clone_into
+          (if (= operation 5) (heap-read-u64 fr 0)
+            (nl_pa_canonical env (heap-read-u64 fr 0)))
+          fr)
          ;; GNU restores a localized variable through `set', even when the
          ;; buffer that originally localized it has since been killed.
          (if (= operation 3)
-             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) roots)))
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) (heap-read-u64 fr 0))))
                (if (= entry 0) 0
                  (if (> (record-slot-count entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
-         (wf_copy32 tag-save (if (= tag-w 0) 3 tag-w))
-         (wf_copy32 val-save (if (= val-w 0) 3 val-w))
+         (ptr-write-u64 (+ fr 24) 0 (if (= tag-w 0) 3 tag-w))
+         (ptr-write-u64 (+ fr 32) 0 (if (= val-w 0) 3 val-w))
          (ptr-write-u64 268435472 0 0)
          (ptr-write-u64 buf 0 7021161792682421605) ; emacs-pa
          (ptr-write-u64 (+ buf 8) 0 8316298228994959730) ; rity-mis
          (ptr-write-u64 (+ buf 16) 0 7379557486361914723) ; c--notif
          (ptr-write-u64 (+ buf 24) 0 121) ; y
-         (nl_alloc_symbol buf 25 name)
-         (wf_write_nil nilp)
-         (wf_write_nil where)
+         (setq name (nl_alloc_symbol_w buf 25 0))
          ;; The dispatcher suppresses local-buffer inference for this token,
          ;; then presents GNU's nil WHERE for a default-cell write.
          (if (= operation 6)
              (seq (ptr-write-u64 buf 0 32770348699510116)
-                  (nl_alloc_symbol buf 7 where)) 0) ; default
-         (if (or (= operation 1) (= operation 6))
-             (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol buf 3 op))
-           (if (or (= operation 2) (= operation 7))
-               (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol buf 3 op))
-             (if (= operation 3) (seq (ptr-write-u64 buf 0 499917811317) (nl_alloc_symbol buf 5 op))
-               (if (= operation 5)
-                   (seq (ptr-write-u64 buf 0 7809648991760967012)
-                        (ptr-write-u64 (+ buf 8) 0 7561577)
-                        (nl_alloc_symbol buf 11 op))
-                 (seq (ptr-write-u64 buf 0 8462090451408347501)
-                      (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol buf 10 op))))))
-         (nelisp_cons_construct (if (= operation 6) where 3) 3 tail)
-         (nelisp_cons_construct op tail tail)
-         (nelisp_cons_construct
-          (if (= operation 4) 3 (if (= (logand value 1) 1) value result)) tail tail)
-         (nelisp_cons_construct roots tail args)
+                  (setq where (nl_alloc_symbol_w buf 7 0))) 0) ; default
+         (setq op
+               (if (or (= operation 1) (= operation 6))
+                   (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol_w buf 3 0))
+                 (if (or (= operation 2) (= operation 7))
+                     (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol_w buf 3 0))
+                   (if (= operation 3) (seq (ptr-write-u64 buf 0 499917811317) (nl_alloc_symbol_w buf 5 0))
+                     (if (= operation 5)
+                         (seq (ptr-write-u64 buf 0 7809648991760967012)
+                              (ptr-write-u64 (+ buf 8) 0 7561577)
+                              (nl_alloc_symbol_w buf 11 0))
+                       (seq (ptr-write-u64 buf 0 8462090451408347501)
+                            (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol_w buf 10 0)))))))
+         (ptr-write-u64 (+ fr 8) 0
+           (nelisp_cons_construct_w (heap-read-u64 fr 0)
+             (nelisp_cons_construct_w
+               (if (= operation 4) 3 (heap-read-u64 (+ fr 16) 0))
+               (nelisp_cons_construct_w op (nelisp_cons_construct_w where 3 0) 0) 0) 0))
          (ptr-write-u64 pending 0 (heap-read-u64 state 24))
-         (ptr-write-u64 pending 8 roots)
+         (ptr-write-u64 pending 8 (heap-read-u64 fr 0))
          (if (= operation 2) (ptr-write-u64 state 24 pending) 0)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name fn) 0)
-             (setq rc (nl_apply_function fn args env result)) 0)
+         (let* ((fw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)))
+           (if (or (= fw 0) (= fw 2)) 0
+             (setq rc (if (= (nl_apply_function_w (wf_word_view fw) (heap-read-u64 (+ fr 8) 0) env 0) 0) 1 0))))
          (if (= operation 2) (ptr-write-u64 state 24 (heap-read-u64 pending 0)) 0)
          (if (= rc 0)
              (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) tag-w)
                            (= (heap-read-u64 (data-addr nl_exit_values) 8) val-w))
                       0
-                    (seq (nl_val_clone_into tag-save (data-addr nl_exit_values))
-                         (nl_val_clone_into val-save (+ (data-addr nl_exit_values) 8))))
+                    (seq (ptr-write-u64 (data-addr nl_exit_values) 0 (heap-read-u64 (+ fr 24) 0))
+                         (ptr-write-u64 (data-addr nl_exit_values) 8 (heap-read-u64 (+ fr 32) 0))))
                   (ptr-write-u64 268435472 0 flag)) 0)
          (nl_root_release env mark)
          rc)))
     ;; Evaluator lookup helpers expose reusable scratch views. Root/copy
     ;; operands before declaration lookup and keep them across callbacks.
     (defun nl_n3_bind (env frames name value)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      ;; Doc 216 S6.2: the name (+0) and value (+8) are durable WORDs in one
+      ;; frame, kept across the watcher's callback.
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
          (if (or (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-                 (= (bf_declared_special_p (+ env 0) sym) 1)
-                 (= (nelisp_frame_local_special_p frames sym) 1))
+                 (= (bf_declared_special_p (+ env 0) (heap-read-u64 fr 0)) 1)
+                 (= (nelisp_frame_local_special_p frames (heap-read-u64 fr 0)) 1))
              ;; A watcher may retarget the original alias. Bind the same
              ;; canonical name whose pending binding the watcher observed,
              ;; retaining it in the existing root across the callback.
-             (let ((canonical (nl_pa_binding_name env frames sym)))
+             (let ((canonical (nl_pa_binding_name env frames (heap-read-u64 fr 0))))
                (if (= canonical 0) (setq rc 1)
-                 (seq (nl_sexp_clone_into canonical sym)
-                      (setq rc (nl_n3_notify env sym saved 2))))) 0)
+                 (seq (nl_val_clone_into canonical fr)
+                      (setq rc (nl_n3_notify env (heap-read-u64 fr 0)
+                                             (heap-read-u64 (+ fr 8) 0) 2))))) 0)
          (if (= rc 0)
-             (setq rc (nl_n4_bind_declared env frames sym saved))
+             (setq rc (nl_n4_bind_declared env frames (heap-read-u64 fr 0)
+                                           (heap-read-u64 (+ fr 8) 0)))
            (setq rc 0))
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_dynamic_write (env name value operation)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (setq rc (nl_n3_notify env sym saved operation))
-         (if (= rc 0) (setq rc (nl_n3_set_dynamic_raw env sym saved)) 0)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (setq rc (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) operation))
+         (if (= rc 0)
+             (setq rc (nl_n3_set_dynamic_raw env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0))) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_alias_write_w (name base env _pad)
-  (let* ((copies (alloc-bytes 64 8))
-         (mark (seq (nl_sexp_clone_into name copies)
-                    (nl_sexp_clone_into base (+ copies 32)) (nl_root_mark env)))
-         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
-    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+  (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (w 0))
+    (seq (nl_val_clone_into name fr)
+         (nl_val_clone_into base (+ fr 8))
          ;; Installation owns ordering: migrate the base before notifying
          ;; the former alias watchers, then revalidate before publication.
-         (setq w (nl_n3_defvaralias_raw_w sym val env 0))
+         (setq w (nl_n3_defvaralias_raw_w (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) env 0))
          (nl_root_release env mark) w)))
     (defun nl_n3_alias_write (name base env out)
   (nl_abi_word_to_rc (nl_n3_alias_write_w name base env 0) out))
     (defun nl_n3_default_write_w (env name value _pad)
-  (let* ((copies (alloc-bytes 64 8))
-         (mark (seq (nl_sexp_clone_into name copies)
-                    (nl_sexp_clone_into value (+ copies 32)) (nl_root_mark env)))
-         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0)
-         (saved (if (= (logand value 1) 1) value val)))
-    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nl_n3_notify env sym saved 1) 0)
-             (setq w (nl_n3_declared_default_raw_w env sym saved 0)) 0)
+  (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (w 0))
+    (seq (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (if (= (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) 1) 0)
+             (setq w (nl_n3_declared_default_raw_w env (heap-read-u64 fr 0)
+                                                   (heap-read-u64 (+ fr 8) 0) 0)) 0)
          (nl_root_release env mark) w)))
     (defun nl_n3_default_write (env name value out)
   (nl_abi_word_to_rc (nl_n3_default_write_w env name value 0) out))
     (defun nl_n3_setq (env name value)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nelisp_frame_stack_find_kind (+ env 32) sym 0 0) 0)
-             (setq rc (nl_n3_notify env sym saved 1)) 0)
-         (if (= rc 0) (setq rc (nl_n3_setq_raw env sym saved)) 0)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (if (= (nelisp_frame_stack_find_kind (+ env 32) (heap-read-u64 fr 0) 0 0) 0)
+             (setq rc (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) 1)) 0)
+         (if (= rc 0)
+             (setq rc (nl_n3_setq_raw env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0))) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n4_pop_names_raw (env names depth status)
       (if (= (sexp-tag names) 7)
@@ -45794,21 +45792,22 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           ;; during later initializers; the pair owns a durable value copy.
           (push '(defun nl_let_collect_with_slot
                      (bindings_ptr b_ptr name_ptr env_ptr root_mark val_slot)
+                   ;; Doc 216 S6.2: VAL_SLOT is a WORD root (nl_root_word)
+                   ;; holding the initializer's value while later
+                   ;; initializers run; the pair owns a durable copy.
                    (let* ((word (nl_let_parse_val_w b_ptr env_ptr 0)) (answer 1))
                      (seq
                       (if (= word 0) 0
                         (seq
-                         (wf_word_store_out val_slot word)
+                         (ptr-write-u64 val_slot 0 word)
                          (let* ((rest_pairs (nl_let_collect_walk
                                              (nl_cons_cdr_word bindings_ptr) env_ptr)))
                            (if (= rest_pairs 1) 0
-                             (let* ((pair_slot (alloc-bytes 32 8))
-                                    (node_slot (alloc-bytes 32 8)))
-                               (seq
-                                (nelisp_cons_construct (+ (* name_ptr 4) 1)
-                                  (if (= (logand word 1) 1) word val_slot) pair_slot)
-                                (nelisp_cons_construct pair_slot rest_pairs node_slot)
-                                (setq answer node_slot)))))))
+                             (setq answer
+                                   (nelisp_cons_construct_w
+                                    (nelisp_cons_construct_w (+ (* name_ptr 4) 1)
+                                      (heap-read-u64 val_slot 0) 0)
+                                    rest_pairs 0))))))
                       (if (= (logand (heap-read-u64 (+ env_ptr 112) 0) 1048576) 0)
                           (nl_root_release env_ptr root_mark) 0)
                       answer))) out))
@@ -45871,11 +45870,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                        (nl_frame_push_sym1_ptr) push_scratch)
                                       (if (= (nl_let_bind_walk collected env) 0) 0
                                         (seq (nl_env_pop_frame env) 1)))
-                               (let* ((pairs (nl_root_reserve env)) (rc 1))
-                                 (seq (nl_sexp_clone_into collected pairs)
+                               ;; Doc 216 S6.2: the collected pairs are one
+                               ;; WORD root while the binding loop runs.
+                               (let* ((pairs (nl_root_word env)) (rc 1))
+                                 (seq (ptr-write-u64 pairs 0 collected)
                                       (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                                        (nl_frame_push_sym1_ptr) push_scratch)
-                                      (if (= (nl_let_bind_walk pairs env) 0) (setq rc 0)
+                                      (if (= (nl_let_bind_walk (heap-read-u64 pairs 0) env) 0)
+                                          (setq rc 0)
                                         (nl_env_pop_frame env))
                                       (nl_cons_root_finish env mark rc))))))
                        (seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
@@ -47567,23 +47569,26 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               0))
         0))
     (defun nl_lookup_fn_autoload_load_cell_w (mirror unbound sym cell)
-  (let* ((mark (nl_root_mark mirror))
-         (name-root (nl_root_reserve mirror))
-         (function-root (nl_root_reserve mirror))
-         (args-root (nl_root_reserve mirror)) (bytes (alloc-bytes 16 1)))
+  ;; Doc 216 S6.2: one frame of three WORD roots: the loader's name, the
+  ;; function and the argument list.
+  (let* ((mark (nl_root_mark mirror)) (roots (nl_root_words mirror 3))
+         (bytes (alloc-bytes 16 1)))
     (seq (ptr-write-u64 bytes 0 7233184988050781537)
          (ptr-write-u64 bytes 8 7233184986943153197)
-         (nl_alloc_symbol bytes 16 name-root)
-         (wf_word_store_out args-root
+         (ptr-write-u64 roots 0 (nl_alloc_symbol_w bytes 16 0))
+         (ptr-write-u64 roots 16
            (nelisp_cons_construct_w cell (nelisp_cons_construct_w sym 3 0) 0))
-         (let* ((function-word (nelisp_env_lookup_function_w mirror unbound name-root 0))
+         (let* ((function-word (nelisp_env_lookup_function_w mirror unbound
+                                 (heap-read-u64 roots 0) 0))
                 (word
                  (if (= function-word 0) 0
                    (if (= function-word 2)
-                       (nl_abi_fail (nl_cons_stash_void_function mirror name-root) 0)
+                       (nl_abi_fail (nl_cons_stash_void_function mirror
+                                      (heap-read-u64 roots 0)) 0)
                      (seq
-                      (wf_word_store_out function-root function-word)
-                      (let* ((loaded (nl_apply_function_w function-root args-root mirror 0)))
+                      (ptr-write-u64 roots 8 function-word)
+                      (let* ((loaded (nl_apply_function_w (wf_word_view function-word)
+                                       (heap-read-u64 roots 16) mirror 0)))
                         (if (= loaded 0) 0
                           (nl_lookup_fn_autoload_w mirror unbound sym 0))))))))
            (seq (nl_root_release mirror mark) word)))))
@@ -47909,28 +47914,28 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= state 0) frame
           (let* ((base (nl_word_payload frame)) (forward (heap-read-u64 base 48)))
             (if (/= forward 0) forward
-              (let* ((env (heap-read-u64 state 24)) (mark (nl_root_mark env))
-                     (out (nl_root_reserve env)))
+              ;; Doc 216 S6.2: the promoted frame is built as a native record
+              ;; WORD; no root holds it, and nothing between the allocation and
+              ;; the install can collect.
+              (let* ((rec (nl_alloc_record (nl_record_type_word frame) 4)))
                 (seq
-                 (record-make (nl_record_type_word frame) 4 out)
-                 (record-slot-set out 0 (nl_record_slot_word frame 0))
-                 (record-slot-set out 1 (nl_record_slot_word frame 1))
-                 (record-slot-set out 2 (nl_record_slot_word frame 2))
-                 (record-slot-set out 3 (nl_record_slot_word frame 3))
-                 (let* ((word (+ (nl_word_payload out) 6))
+                 (nl_val_clone_into (nl_record_slot_word frame 0) (+ rec 16))
+                 (nl_val_clone_into (nl_record_slot_word frame 1) (+ rec 24))
+                 (nl_val_clone_into (nl_record_slot_word frame 2) (+ rec 32))
+                 (nl_val_clone_into (nl_record_slot_word frame 3) (+ rec 40))
+                 (let* ((word (+ rec 6))
                         (owner (heap-read-u64 state 8))
                         (backing (nl_record_slot_word owner 0))
                         (index (sar (- base (+ state 128)) 6))
                         (control (nl_frame_stack_control)))
                    (seq
-                    (ptr-write-u64 (nl_word_payload word) 0
+                    (ptr-write-u64 rec 0
                       (logior 1036 (logand (heap-read-u64 base 0) 192)))
                     (ptr-write-u64 base 48 word)
                     (ptr-write-u64 (+ (nl_word_payload backing) (+ 8 (* index 8))) 0 word)
                     (if (= (heap-read-u64 control 16) 0) 0
                       (seq (atomic-fetch-add (+ control 40) 1)
                            (atomic-fetch-add (+ control 48) 1)))
-                    (nl_root_release env mark)
                     word)))))))))
     (defun nl_frame_stack_promote_owner (frames _pad)
       (let* ((depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
@@ -48006,20 +48011,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    (if (= (nl_record_slot_word owner 2) (+ (* state 4) 1))
                        (record-slot-set owner 2 3) 0) 0)))
              (setq state (heap-read-u64 state 0))))) 0))
-    (defun nl_frame_stack_snapshot (env out)
-      (let* ((frames (+ env 32)) (mark (nl_root_mark env))
-             (backing (nl_root_reserve env))
-             (depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
+    (defun nl_frame_stack_snapshot_w (env _pad)
+      ;; The frame stack's snapshot record as a WORD, built from a native
+      ;; vector and record (nl_alloc_vector / nl_alloc_record) with nothing
+      ;; that can collect between the allocations and the return.
+      (let* ((frames (+ env 32))
+             (depth (sar (nl_record_slot_word frames 1) 2)) (i 0)
+             (backing 0) (rec 0))
         (seq
          (nl_frame_stack_promote_owner frames 0)
-         (vector-make depth backing)
+         (setq backing (nl_alloc_vector depth))
          (while (< i depth)
-           (seq (vector-slot-set backing i (nl_vector_slot_word (nl_record_slot_word frames 0) i))
+           (seq (ptr-write-u64 (+ backing 8) (* i 8)
+                  (nl_vector_slot_word (nl_record_slot_word frames 0) i))
                 (setq i (+ i 1))))
-         (record-make (nl_record_type_word frames) 2 out)
-         (record-slot-set out 0 backing)
-         (record-slot-set out 1 (+ (* depth 4) 1))
-         (nl_root_release env mark) 0)))
+         (setq rec (nl_alloc_record (nl_record_type_word frames) 2))
+         (ptr-write-u64 (+ rec 16) 0 (+ backing 6))
+         (ptr-write-u64 (+ rec 24) 0 (+ (* depth 4) 1))
+         (+ rec 6))))
     ;; Convert the parent's active shallow bindings before publishing a child.
     ;; GNU temporarily unbinds them while switching threads (thread.c:95-98,
     ;; eval.c:4177-4191). Concurrent workers instead keep bindings in private
@@ -48156,20 +48165,22 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       ;; A GNU thread starts with an empty specpdl (thread.c:914-917). Inherit
       ;; the lexical closure cells, including local declarations, through the
       ;; same capture/install path as an ordinary closure, never dynamic cells.
-      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv))
-             (backing (nl_root_reserve penv)))
+      ;; Doc 216 S6.2: the captured environment is one WORD root, the backing
+      ;; vector a native vector WORD.
+      (let* ((mark (nl_root_mark penv)) (saved (nl_root_word penv))
+             (backing (+ (nl_alloc_vector 8) 6)))
         (seq
          (nl_thread_parent_unshallow penv)
-         (nl_env_capture_lexical penv saved)
-         (vector-make 8 backing)
+         (let* ((captured (nl_env_capture_lexical_with_filter_w penv 3 0 0)))
+           (ptr-write-u64 saved 0 (if (= captured 0) 3 captured)))
          (record-make (nl_record_type_word (+ penv 32)) 3 (+ env 32))
          (record-slot-set (+ env 32) 0 backing)
          (record-slot-set (+ env 32) 1 1)
-         (nl_env_push_captured env saved)
+         (nl_env_push_captured env (wf_word_view (heap-read-u64 saved 0)))
          (nl_root_release penv mark) 0)))
-    (defun nl_frame_stack_stats_w (env _pad)
+    (defun nl_frame_stack_stats_w (_env _pad)
       (let* ((control (nl_frame_stack_control)) (state (heap-read-u64 control 0))
-             (live 0) (mark (nl_root_mark env)) (out (nl_root_reserve env)) (i 0))
+             (live 0) (box (nl_alloc_vector 6)) (i 0))
         (seq
          (if (/= (heap-read-u64 control 16) 0) 0
            (seq
@@ -48178,12 +48189,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    (setq state (heap-read-u64 state 0))))
             (ptr-write-u64 control 56 live) (ptr-write-u64 control 64 live)
             (ptr-write-u64 control 16 1)))
-         (vector-make 6 out)
          (while (< i 6)
-           (seq (vector-slot-set out i (+ (* (heap-read-u64 control (+ 24 (* i 8))) 4) 1))
+           (seq (ptr-write-u64 (+ box 8) (* i 8)
+                  (+ (* (heap-read-u64 control (+ 24 (* i 8))) 4) 1))
                 (setq i (+ i 1))))
-         (let* ((word (+ (nl_word_payload out) 6)))
-           (seq (nl_root_release env mark) word)))))
+         (+ box 6))))
     (defun nl_frame_stack_locals_start (frame end)
   (let* ((start (heap-read-u64 frame 96))
          (backing (nl_record_slot_word (+ frame 64) 0))
@@ -48207,15 +48217,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; dynamic bindings are private cells and take precedence over the mirror.
     ;; The cache's three WORDs are explicit N4 roots, separate from S6.3.
     (defun nl_frame_stack_limit_setup (env state)
-      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
-             (bytes (alloc-bytes 24 8)))
+      ;; Doc 216 S6.2: the name symbol is a fresh box that STATE keeps; no
+      ;; root is needed for the lookup.
+      (let* ((bytes (alloc-bytes 24 8)))
         (seq
          (ptr-write-u64 bytes 0 8102936067909902701)
          (ptr-write-u64 bytes 8 7306014439016654125)
          (ptr-write-u64 bytes 16 6845552)
-         (nl_alloc_symbol bytes 19 name)
-         (ptr-write-u64 state 48 (nl_word_clone name))
-         (let* ((entry (nelisp_mirror_lookup_entry env name)))
+         (ptr-write-u64 state 48 (nl_alloc_symbol_w bytes 19 0))
+         (let* ((entry (nelisp_mirror_lookup_entry env (heap-read-u64 state 48))))
            (seq
              (ptr-write-u64 state 32
                (if (= entry 0) 0 (+ (nl_word_payload entry) 6)))
@@ -48223,7 +48233,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (ptr-write-u64 state 56
                (if (and (/= entry 0) (> (record-slot-count entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
-         (nl_root_release env mark) 0)))
+         0)))
     ;; GNU eval_sub and Ffuncall (eval.c:2604-2608, 3196-3200) read
     ;; `max-lisp-eval-depth' only once the depth passes it, and count a
     ;; limit below 100 as 100: no evaluation shallower than 100 levels reads
@@ -48396,23 +48406,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= (logand w 1) 1) (+ frame 32) w)))
     (defun nl_n4_exit_debug_w (w env)
       ;; Debug-on-exit: call (debugger 'exit VALUE); its answer is the value.
-      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
-             (fn (nl_root_reserve env)) (args (nl_root_reserve env))
-             (value (nl_root_reserve env)) (tag (nl_root_reserve env))
+      ;; Doc 216 S6.2: the argument list (exit VALUE) is one precise WORD
+      ;; root; the symbols and the function are WORDs.
+      (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
              (buf (alloc-bytes 8 1)))
         (seq
-         (nl_abi_word_to_rc w value)
          (ptr-write-u64 buf 0 8243108387020236132) ; debugger
-         (nl_alloc_symbol buf 8 name)
-         (ptr-write-u64 buf 0 1953069157) ; exit
-         (nl_alloc_symbol buf 4 tag)
-         (wf_write_nil args)
-         (nelisp_cons_construct value args args)
-         (nelisp_cons_construct tag args args)
-         (nl_cons_root_finish env mark
-          (if (= (bf_dynamic_lookup env name fn) 0)
-              (nl_apply_function_w fn args env 0)
-            (nl_abi_fail 1 0))))))
+         (let* ((name (nl_alloc_symbol_w buf 8 0)))
+           (seq
+            (ptr-write-u64 buf 0 1953069157) ; exit
+            (ptr-write-u64 root 0
+              (nelisp_cons_construct_w (nl_alloc_symbol_w buf 4 0)
+                                       (nelisp_cons_construct_w w 3 0) 0))
+            (let* ((fw (bf_dynamic_lookup_w env name 0)))
+              (nl_cons_root_finish env mark
+               (if (or (= fw 0) (= fw 2))
+                   (nl_abi_fail 1 0)
+                 (nl_apply_function_w (wf_word_view fw) (heap-read-u64 root 0)
+                                      env 0)))))))))
     ;; Doc 215 word ABI: W is the activation's result WORD (0 = signal).
     (defun nl_n4_finish_w (w env _pad frame)
       (if (= frame 0) w

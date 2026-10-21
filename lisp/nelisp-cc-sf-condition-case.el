@@ -187,15 +187,21 @@
     ;; Own the error/body scratch across protected evaluation, clause matching
     ;; and the handler. Caller scratch is arena storage and may be reused by GC.
     (defun nl_sf_condition_case_w (args env _pad _caller-scratch)
-      (let* ((mark (nl_root_mark env)) (s1 (nl_root_reserve env)))
-        (if (= s1 0)
-            (seq (nl_root_release env mark) (nl_abi_fail 1 0))
-          (let* ((w (if (= (sexp-tag args) 7)
-                        (nl_sf_cc_after_cdr1_w (nl_cons_cdr_word args) args env 0 s1 0)
-                      (nl_abi_fail 1 0))))
-            ;; Root release has no safepoint. W remains in the return register
-            ;; until the caller publishes it in its own precise root (R2).
-            (seq (nl_root_release env mark) w)))))
+      ;; Doc 216 S6.2: S1, the error and handler-body view, is a 32-byte arena
+      ;; box; a WORD root holds its address (a legacy view WORD), so it stays
+      ;; traced across the protected form as the root-stack slot was.
+      (let* ((mark (nl_root_mark env)) (anchor (nl_root_word env))
+             (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 s1 0 0) (ptr-write-u64 s1 8 0)
+         (ptr-write-u64 s1 16 0) (ptr-write-u64 s1 24 0)
+         (ptr-write-u64 anchor 0 s1)
+         (let* ((w (if (= (sexp-tag args) 7)
+                       (nl_sf_cc_after_cdr1_w (nl_cons_cdr_word args) args env 0 s1 0)
+                     (nl_abi_fail 1 0))))
+           ;; Root release has no safepoint. W remains in the return register
+           ;; until the caller publishes it in its own precise root (R2).
+           (seq (nl_root_release env mark) w)))))
 
     ;; (rc, OUT) adapter.
     (defun nl_sf_condition_case (args env out s1)
