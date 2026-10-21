@@ -128,8 +128,7 @@ def binary_files(binary):
 def own_files():
     return [Path(__file__), ROOT / "test/elc-load-fixture.el",
             ROOT / "test/fixtures/elc-load-fixture.elc-data", ROOT / "test/standalone-elc-load-check.el",
-            ROOT / "test/standalone-elc-load-check.expected", ROOT / "scripts/nelisp-stdlib-prelude.el",
-            heavy_runner()]
+            ROOT / "test/standalone-elc-load-check.expected", ROOT / "scripts/nelisp-stdlib-prelude.el"]
 
 
 def source_root():
