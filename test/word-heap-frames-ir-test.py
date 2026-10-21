@@ -98,6 +98,26 @@ def run(output=None):
         bad = copy.deepcopy(template)
         bad["vm"]["while"]["ir_per_op"] = value
         rejects("bad-cost-" + str(value), lambda: F.ratios_from_costs(bad, template), "invalid/negative performance differential")
+    rejects("performance-tag-traversal", lambda: F.floor({"tag": "unused", "performance_tag": "../final4"}),
+            "invalid performance tag")
+    # Exercise the source/profiler schema adapter using actual final build pins.
+    final = ROOT / "target/wh-s4f/frames/final4"
+    if (final / "evidence.json").exists() and (final / "performance/dynamic/perf.json").exists():
+        captured = json.loads((final / "evidence.json").read_text())["binaries"]["dynamic"]["companions"]
+        measured = json.loads((final / "performance/dynamic/perf.json").read_text())["binary_companions"]
+        for item in captured:
+            F.verify(item)
+        M.need(F.same_companions(measured, captured), "authentic companion schemas disagree")
+        variants = {"omitted": measured[:-1], "reordered": measured[::-1]}
+        for key in ("path", "sha256"):
+            variant = copy.deepcopy(measured)
+            variant[0][key] += "stale"
+            variants[key] = variant
+        for name, variant in variants.items():
+            M.need(not F.same_companions(variant, captured), "companion adapter accepted " + name)
+            rejected.append("live-companion-adapter-" + name)
+        wrong_size = dict(captured[0], bytes=captured[0]["bytes"] + 1)
+        rejects("live-companion-source-size", lambda: F.verify(wrong_size), "changed/missing input")
     # Use actual labeled profiles for provenance controls when the pilot exists.
     live = ROOT / "target/wh-s4f/session3c/frame-ir/pilot/dynamic"
     if (live / "perf.json").exists():
