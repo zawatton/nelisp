@@ -1,0 +1,29 @@
+#+TITLE: Batch F bytecode buffer function-cell bridge
+
+* S1 Runtime bridge
+
+** S1.1 Simulated library calls and results match interpreted source
+#+NOTE: GNU 31.1 bytecode.c:940-942,1476-1482 uses native buffer operations; adapt those operations to NeLisp library ownership. GNU buffer.c:set_buffer_if_live skips a killed saved buffer. Compile fixtures with GNU 31.1 and demonstrate failure on 1aa530d09.
+cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/negative-control.ok
+
+** S1.2 Bare semantics pass on dynamic and static linkages
+#+NOTE: Run bytecode-word corpus and final-verify/checks.sh (11 groups, zero unexpected failures, documented maphash-sparse exception), then standalone-checks.sh sequentially. Preserve logs and binary identities.
+cmd: test -f target/f-buffer-bridge/bare-semantics.ok
+
+** S1.3 Bare bytecode buffer loop stays within 1.03x base
+#+NOTE: CPU 15, warmup, seven alternating paired candidate/base/GNU wall-clock rounds including GC; record per-run CPU frequency and report median candidate/GNU ratio. Base is 1aa530d09. No threshold revision.
+cmd: python3 -c 'import json; p=json.load(open("target/f-buffer-bridge/timing.json")); assert p["rounds"] == 7 and p["cpu"] == 15 and p["candidate_base"] <= 1.03'
+
+** S1.4 End-to-end standalone bridge and Anvil MCP smoke
+#+NOTE: Preserve 40-tool MCP smoke plus semantic and bare-runtime evidence. Library image acceptance remains explicitly external under S2.1.
+cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/bare-semantics.ok && test -f target/f-buffer-bridge/mcp.ok
+
+* S2 External library acceptance
+
+** S2.1 Library image yields (3 nil t) and forced-elc SKK/evil GUI builds
+#+NOTE: Pending by brief: coordinator and library owner run outside this sandbox. Wine cannot run here.
+pending
+
+#+NOTE: Switch census: wf_bytecode_buffer_u4a (112/113) dispatches the frozen Lisp providers, now bridges. wf_bytecode_save_state handles 97 (obsolete save-current-buffer), 114, 138 (save-excursion), and 140 (save-restriction) through the shared cleanup factory; both restriction switches use the bridge. Obsolete window/temp-buffer setup/show in nelisp-bytecode-legacy-source also use it. Native frame-v2 saves use the same factory, and native funcall-v2 obtains the same provider objects. lisp/nelisp-bytecode-handlers-u8.el only analyzes frames and performs no switch. FX m5_fx_run_body has no buffer opcode: named calls already resolve live function cells. bf_load_restore_buffer_w and its boxed adapter restore loader bookkeeping, outside the VM/bytecode buffer handlers; their behavior is covered by the existing load-buffer check and is not changed here.
+#+NOTE: Ownership is a Lisp helper over captured symbol-entry records (function slot 2 in the Lisp aref view), not a new reader builtin or native inventory entry. Fset mutates these records in place; GC and table resizing retain their identity. The bootstrap scan runs once, before cold-image baking. There is no hash or name lookup in the ownership check.
+#+NOTE: The simulated library supplies interpreted save-current-buffer/with-current-buffer macros as well as delegating set-buffer/current-buffer closures. GNU's intrinsic opcodes deliberately bypass public function cells; golden comparison therefore covers results while the NeLisp-specific ownership adaptation also checks exact interpreted/bytecode hook sequences. GNU buffer.c:2446-2450 supplies the killed-buffer liveness rule.

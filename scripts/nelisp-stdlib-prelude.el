@@ -27418,12 +27418,39 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
             (setq remaining (- remaining)))))
       (nelisp-goto-char p b)
       (>= remaining 0))))
-(let ((set-value (symbol-function 'set-buffer))
+(let* ((set-value (symbol-function 'set-buffer))
+       (current-value (symbol-function 'current-buffer))
+       ;; Capture the actual symbol-entry records once. Fset mutates their
+       ;; function slots in place; rehash and GC preserve their Lisp identity.
+       ;; The hot ownership check is only a slot read and EQ, with no lookup.
+       (buckets (aref (aref (car (nelisp--env-capture-roots)) 1) 2))
+       (set-cell nil) (current-cell nil) (i 0))
+  (while (< i (length buckets))
+    (let ((tail (aref buckets i)))
+      (while tail
+        (let ((entry (car tail)))
+          (cond ((equal (car entry) "set-buffer") (setq set-cell (cdr entry)))
+                ((equal (car entry) "current-buffer") (setq current-cell (cdr entry)))))
+        (setq tail (cdr tail))))
+    (setq i (1+ i)))
+  (unless (and set-cell current-cell) (error "Missing runtime buffer function cells"))
+  (defun nelisp--buffer-runtime-owned-p (name)
+    "Whether NAME still has the runtime's original buffer definition."
+    (if (eq name 'set-buffer) (eq (aref set-cell 2) set-value)
+      (eq (aref current-cell 2) current-value)))
+  (defun nelisp--bytecode-current-buffer ()
+    (let ((function (aref current-cell 2)))
+      (funcall (if (eq function current-value) current-value function))))
+  (defun nelisp--bytecode-set-buffer (buffer)
+    (let ((function (aref set-cell 2)))
+      (funcall (if (eq function set-value) set-value function) buffer))))
+(let ((set-value (symbol-function 'nelisp--bytecode-set-buffer))
+      (current-value (symbol-function 'nelisp--bytecode-current-buffer))
       (char-value (symbol-function 'forward-char)))
   (setq nelisp--bytecode-lisp-providers
         (append nelisp--bytecode-lisp-providers
                 (mapcar (lambda (name) (cons name (symbol-function name)))
-                        '(eolp eobp bolp bobp current-buffer forward-word))
+                        '(eolp eobp bolp bobp forward-word))
                 (list (cons 'forward-char
                             (lambda (n)
                               (unless (or (null n)
@@ -27431,6 +27458,7 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                                                (< n 2305843009213693952)))
                                 (signal 'wrong-type-argument (list 'fixnump n)))
                               (funcall char-value n)))
+                      (cons 'current-buffer current-value)
                       (cons 'set-buffer set-value)))))
 
 ;; F2 U4c: the nine VM buffer operations have no evaluator builtin token.
