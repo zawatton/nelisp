@@ -7,33 +7,20 @@
 
 (defconst nelisp-cc-fx-call-primitives--source
   '(seq
+    ;; GNU bytecode.c:803 reads the called symbol's function cell directly.
+    ;; The symbol cell (Doc 221 M02) replaces the per-site entry cache that
+    ;; was validated against the table, its count and its buckets on every
+    ;; call; CACHE's slot 0 is the call site's symbol, owned by CACHE.
+    ;; Alias symbols and malformed/immediate definitions retain the full
+    ;; checked resolver: this answers 0 for them.  The live function cell
+    ;; is read every time, including after FSET and FMAKUNBOUND.
     (defun m5_fx_cached_function (cache env)
-      (let* ((table (nl_record_slot_word env 0))
-             (buckets (nl_record_slot_word table 1))
-             (count (nl_record_slot_word table 2))
-             (owner (nl_vector_slot_word cache 2))
-             (old-buckets (nl_vector_slot_word cache 4))
-             (entry (if (and (/= owner 3) (/= old-buckets 3)
-                             (= (nl_word_payload owner) (nl_word_payload table))
-                             (= (nl_word_payload old-buckets) (nl_word_payload buckets))
-                             (= (nl_vector_slot_word cache 3) count))
-                        (nl_vector_slot_word cache 1) 3)))
-        (seq
-         (if (= entry 3)
-             (seq (setq entry (nelisp_mirror_lookup_entry env (nl_vector_slot_word cache 0)))
-                  (if (/= entry 0)
-                      (let* ((data (+ (nl_word_payload cache) 8)))
-                        (seq (ptr-write-u64 data 8 entry)
-                             (ptr-write-u64 data 16 table)
-                             (ptr-write-u64 data 24 count)
-                             (ptr-write-u64 data 32 buckets))) 0)) 0)
-         ;; Alias symbols and malformed/immediate definitions retain the full
-         ;; checked resolver. The cached record's live function cell is read
-         ;; every time, including after FSET and FMAKUNBOUND.
-         (if (or (= entry 0) (= entry 3)) 0
-           (let* ((fn (nl_record_slot_word entry 1)))
-             (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
-               (if (= (m5_fx_word_cons_p fn 0) 1) fn 0)))))))
+      (let* ((entry (nelisp_mirror_lookup_entry_owned
+                     env (nl_vector_slot_word cache 0))))
+        (if (or (= entry 0) (= entry 3)) 0
+          (let* ((fn (nl_record_slot_word entry 1)))
+            (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
+              (if (= (m5_fx_word_cons_p fn 0) 1) fn 0))))))
     (defun m5_fx_primitive (fn stk sp argc resw env scratch)
       (if (= (m5_fx_word_cons_p fn 0) 0) -3
         (let* ((head (nl_cons_car_word fn)) (tail (nl_cons_cdr_word fn)))

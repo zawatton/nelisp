@@ -178,6 +178,10 @@ written wrong, so the check must fire.  Anything else: no check."
     ;; Answers that entry WORD, or 0 when NAME has no cell (not interned,
     ;; never given an entry, or a table without cells); the hashed path
     ;; then decides, as GNU's non-plain redirects fall to Fsymbol_value.
+    ;; Every hop is an inline load (no accessor calls): a WORD's payload
+    ;; is W-6 for a compact vectorlike and [W+8] for a box; a record keeps
+    ;; its slot count in header>>8 and slot I at payload+16+8I, a vector
+    ;; its length in header>>8 and slot I at payload+8+8I.
     (defun nl_symcell_entry (mirror-ptr name)
       (let* ((buf (heap-read-u64 name 16))
              (base (heap-read-u64 268436288 0)))
@@ -185,11 +189,16 @@ written wrong, so the check must fire.  Anything else: no check."
                  (< buf (heap-read-u64 268436296 0)))
             (let* ((idx (heap-read-u64 (- buf 8) 0)))
               (if (= idx 0) 0
-                (let* ((ht (nl_record_slot_word mirror-ptr 0)))
-                  (if (< (nl_record_length ht) 4) 0
-                    (let* ((cells (nl_record_slot_word ht 3)))
-                      (if (>= idx (nl_vector_length cells)) 0
-                        (let* ((entry (nl_vector_slot_word cells idx)))
+                (let* ((mp (if (= (logand mirror-ptr 7) 6) (- mirror-ptr 6)
+                             (heap-read-u64 mirror-ptr 8)))
+                       (hw (heap-read-u64 mp 16))
+                       (ht (if (= (logand hw 7) 6) (- hw 6) (heap-read-u64 hw 8))))
+                  (if (< (sar (heap-read-u64 ht 0) 8) 4) 0
+                    (let* ((cw (heap-read-u64 ht 40))
+                           (cells (if (= (logand cw 7) 6) (- cw 6)
+                                    (heap-read-u64 cw 8))))
+                      (if (>= idx (sar (heap-read-u64 cells 0) 8)) 0
+                        (let* ((entry (heap-read-u64 (+ cells (* idx 8)) 8)))
                           (if (= (logand entry 1) 1) 0 entry))))))))
           0)))
 
