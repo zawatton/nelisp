@@ -11743,10 +11743,26 @@ leave symbols unresolved at link time."
                            ds span dest cin cout dir)
            (nl_fa_frames_from (+ i 1) depth ds span dest cin cout dir))
         0))
+    ;; A WORD frame (`nl_root_frame_at', marker 1464226381 at +0, N at +8)
+    ;; holds N WORD slots after its header: walk them as `nl_fa_vec_slots'
+    ;; walks a vector's, then step over the frame's padding.
     (defun nl_fa_rootstack_walk (p end ds span dest cin cout dir)
       (if (< p end)
-          (nl_seq2 (nl_fa_slot p ds span dest cin cout dir)
-                   (nl_fa_rootstack_walk (+ p 32) end ds span dest cin cout dir))
+          (if (= (heap-read-u64 p 0) 1464226381)
+              (let* ((n (heap-read-u64 p 8)) (k 0))
+                (seq
+                 (while (< k n)
+                   (nl_seq2
+                    (let ((vw (heap-read-u64 (+ p (+ 32 (* k 8))) 0)))
+                      (if (= (logand vw 1) 1) 0
+                        (nl_seq2 (nl_fa_word_field (+ p (+ 32 (* k 8))) vw ds span dest cin cout dir)
+                                 (if (= (nl_gc_mark_block (if (= (logand vw 7) 6) (- vw 6) vw)) 0) 0
+                                   (nl_fa_slot vw ds span dest cin cout dir)))))
+                    (setq k (+ k 1))))
+                 (nl_fa_rootstack_walk (+ p (+ 32 (logand (+ (* n 8) 31) -32))) end
+                                       ds span dest cin cout dir)))
+            (nl_seq2 (nl_fa_slot p ds span dest cin cout dir)
+                     (nl_fa_rootstack_walk (+ p 32) end ds span dest cin cout dir)))
         0))
     (defun nl_fa_rootstack (ds span dest cin cout dir)
       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
@@ -19877,9 +19893,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; The code vector's last element is its operand stack size.
              (stksize (wf_bytecode_w_int (heap-read-u64 (+ base (* (- (nl_vector_length code) 1) 8)) 0)))
              (nwords (+ nlocals stksize 1))
-             (vbox (nl_alloc_vector nwords))
-             (mem (+ vbox 8))
-             (vslot (nl_root_reserve env))
+             ;; The locals, the operand stack and the result word are one
+             ;; WORD frame on the root stack, as GNU's exec_byte_code pushes
+             ;; its frame on the thread's bytecode stack (bytecode.c:510-525):
+             ;; no heap vector, every word nil and traced until the release.
+             (mem (nl_root_frame env nwords))
              ;; Rooted scratch for call-outs: the callee's definition and its
              ;; result (see `m5_fx_callout'), reserved by the first call-out.
              (fslot 0)
@@ -19888,13 +19906,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (stk (+ mem (* nlocals 8)))
              (resw (+ stk (* stksize 8)))
              (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
+        ;; GNU signals "Bytecode stack overflow" (bytecode.c:514-515); this
+        ;; region's exhaustion is `memory-full', as for every checked frame.
+        (if (= mem 0) (wf_bytecode_root_exhausted)
         (seq
-         (while (< i nwords)
-           (seq (ptr-write-u64 (+ mem (* i 8)) 0 3) (setq i (+ i 1))))
-         (ptr-write-u64 vslot 0 8)
-         (ptr-write-u64 (+ vslot 8) 0 vbox)
-         (ptr-write-u64 (+ vslot 16) 0 0)
-         (ptr-write-u64 (+ vslot 24) 0 0)
          ;; Parameters: the first NPARAMS locals take ARGS' elements, read as
          ;; the cons cells' own car WORDs.
          ;; NPARAMS is the argument count, plus (REST-INDEX + 1) << 16 when
@@ -20007,7 +20022,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed. Checked root failure
          ;; signals only after releasing the activation's partial reserves.
-         (if (= status -4) (wf_bytecode_root_exhausted) status)))))
+         (if (= status -4) (wf_bytecode_root_exhausted) status))))))
 ;; A lexical closure's compiled code: `nelisp--fx-table' (prelude) maps
     ;; the closure's body list to [CODE NLOCALS NPARAMS], or to a symbol when
     ;; the VM does not cover it.  Answers the vector's box, or 0.  SCRATCH is
