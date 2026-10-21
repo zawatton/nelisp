@@ -367,6 +367,51 @@
          0)))
     (defun nl_root_release (env marker)
       (nl_root_release_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
+    ;; WORD frames (word-heap S6.3), after GNU's bytecode stack: a bc_frame
+    ;; header followed by its data stack (bytecode.c:366-376), traced by
+    ;; mark_bytecode (bytecode.c:396-428).  A frame is one 32-byte header
+    ;; entry -- +0 the marker 1464226381 (no Sexp tag is that large), +8 the
+    ;; slot count N, +16 and +24 zero -- followed by N WORD slots padded to
+    ;; whole 32-byte entries, so every later entry stays aligned.  The walkers
+    ;; below trace the N slots with `nl_gc_mark_word' and step over the
+    ;; padding.  Every slot starts as nil (3), never 0, which the WORD marker
+    ;; would take for a block.  A frame belongs to the same LIFO stack as the
+    ;; Sexp slots: `nl_root_release' to a mark taken before it pops it, on
+    ;; the main thread and in a Tier-3b worker's private region alike.
+    ;; Answers the address of slot 0, or 0 when the region cannot hold it.
+    (defun nl_root_frame_at (env entry n)
+      (let* ((top (if (= entry 0) (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                    (heap-read-u64 env 120)))
+             (base (if (= entry 0) (data-addr nl_rootstack_region) (+ env 4096)))
+             (end (if (= entry 0) (nl_rootstack_end) (+ env 1052672)))
+             (next (+ top (+ 32 (logand (+ (* n 8) 31) -32))))
+             (i 0))
+        (if (if (< top base) 1
+              (if (> next end) 1
+                (if (/= (logand (- top base) 31) 0) 1 0)))
+            0
+          (seq
+           (ptr-write-u64 top 0 1464226381)
+           (ptr-write-u64 top 8 n)
+           (ptr-write-u64 top 16 0)
+           (ptr-write-u64 top 24 0)
+           (while (< i n)
+             (seq (ptr-write-u64 (+ top (+ 32 (* i 8))) 0 3)
+                  (setq i (+ i 1))))
+           (if (= entry 0)
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+             (seq (ptr-write-u64 env 120 next)
+                  (nl_thread_registry_store_top entry next)))
+           (+ top 32)))))
+    (defun nl_root_frame (env n)
+      (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                      (nl_thread_registry_find env))))
+        (seq
+         (if (= entry 0)
+             (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
+                 (nl_rootstack_init) 0)
+           0)
+         (nl_root_frame_at env entry n))))
     ;; Native loader roots live in a separate driver-owned BSS region.  The
     ;; evaluator restores its ordinary root top after every interpreted call,
     ;; so a loader frame must never borrow that stack.  Pinning is single-owner:
@@ -786,11 +831,20 @@
                     (if (= cdr-word 0) 2
                       (nl_native_store_word_v2 output cdr-word)))
                 1))))))
-    ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
+    ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root;
+    ;; a WORD frame (`nl_root_frame_at') marks its N slots as WORDs, as
+    ;; GNU's mark_bytecode marks a frame's data stack (bytecode.c:396-428).
     (defun nl_gc_mark_rootstack_walk (p end)
       (if (>= p end) 0
+        (if (= (heap-read-u64 p 0) 1464226381)
+            (let* ((n (heap-read-u64 p 8)) (i 0))
+              (seq
+               (while (< i n)
+                 (seq (extern-call nl_gc_mark_word (heap-read-u64 (+ p (+ 32 (* i 8))) 0))
+                      (setq i (+ i 1))))
+               (nl_gc_mark_rootstack_walk (+ p (+ 32 (logand (+ (* n 8) 31) -32))) end)))
           (seq (extern-call nl_gc_mark_slot p)
-               (nl_gc_mark_rootstack_walk (+ p 32) end))))
+               (nl_gc_mark_rootstack_walk (+ p 32) end)))))
     ;; The non-local exit stash is a root too.  TAG @268435480 and VAL
     ;; @268435512 keep the last thrown or signalled tag and value after the
     ;; exit completes (the flag @268435472 is cleared, the slots are not),
