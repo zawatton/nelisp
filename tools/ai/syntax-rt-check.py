@@ -366,13 +366,19 @@ def mcp_session(binary, tag):
             "clientInfo": {"name": "syntax-rt", "version": "1"}}}, deadline)
         record["initialize_s"] = time.monotonic() - started
         record["initialized"] = "result" in row
-        t0 = time.monotonic()
-        row = ask({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-            "name": "memory-search", "arguments": {"query": MCP_QUERY, "limit": "20"}}},
-                  time.monotonic() + 300)
-        record["search_s"] = time.monotonic() - t0
-        record["search_ok"] = "result" in row and not row["result"].get("isError")
-        row = ask({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+        # The first search opens the database, whose latency varies by
+        # seconds between runs of either binary; the second, warm search is
+        # the query and its encoding.
+        for request_id, field in ((2, "search_cold_s"), (3, "search_s")):
+            t0 = time.monotonic()
+            row = ask({"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                       "params": {"name": "memory-search",
+                                  "arguments": {"query": MCP_QUERY, "limit": "20"}}},
+                      time.monotonic() + 300)
+            record[field] = time.monotonic() - t0
+            record["search_ok"] = ("result" in row and not row["result"].get("isError")
+                                   and record.get("search_ok", True))
+        row = ask({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
                   time.monotonic() + 120)
         tools = row.get("result", {}).get("tools", [])
         record["tools"] = len({t.get("name") for t in tools if isinstance(t, dict)})

@@ -192,6 +192,24 @@ needs Lisp compiled to native code (the codegen lane) and a cheaper call
 path (the callpath lane).  The S1.2 and S1.3 results record the measured
 own costs against GNU's.
 
+Final measurements (S3c builds, paired ratios over 7 rounds on CPU 10):
+
+| Operation | GNU own | base own | final own | to base |
+|-----------+---------+----------+-----------+---------|
+| (char-syntax ?a) | 0.0072 us | 384.0 us | 12.25 us | 0.032 |
+| (char-syntax ?\() | 0.0029 us | 39.4 us | 12.74 us | 0.322 |
+| (string-match "alpha" "alpha") | 0.133 us | 403.4 us | 83.5 us | 0.207 |
+| (string-match "\\sw+" "alpha") | 0.194 us | 2,436 us | 220.8 us | 0.091 |
+
+The decomposition of the remaining =char-syntax= cost: an interpreted
+one-argument call adds 0.15 us over =(integerp 97)=, but every native
+operation it performs costs about 1 us through the interpreter's builtin
+call path -- =aref= 0.97 us whether on a vector or on a char-table, so
+the char-table lookup itself is free; =consp= 0.95 us -- and the
+buffer-to-table =gethash= 2.5 us.  Those layers belong to the callpath
+lane (builtin calls), the codegen lane (compiling the Lisp) and the
+hash-table lane (=gethash=).
+
 * §5 Char-table ownership (S3)
 
 The user decided on 2026-10-21, through the coordinator, that the runtime
