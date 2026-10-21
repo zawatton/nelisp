@@ -40,6 +40,15 @@ apart by looking at the answer.")
   '(("b0" "0") ("b1" "1") ("b3" "3") ("bn" "n"))
   "Loop bounds.  `b0' is the zero-iteration path a `while' body always has.")
 
+(defconst nelisp-aot-differential-tag-values
+  '(("nil" "nil") ("t" "t") ("fix" "(length v)") ("elt" "(aref v 0)")
+    ("cons" "(list 1 2)") ("str" "\"ab\"") ("sym" "'foo")
+    ("vec" "v") ("deep" "(aref w 1)") ("flt" "1.5"))
+  "(TAG . FORM) for values of every type the tag predicates tell apart.
+Doc 224 CG5 fuses a predicate's (= (sexp-tag X) K) in a test into a
+pointer test and a tag-byte compare; each of these values goes through
+every fused predicate and the interpreter answers for comparison.")
+
 (defun nelisp-aot-differential--wrap (name body)
   "Return the source of defun NAME whose frame holds BODY."
   (format (concat "(defun %s (n)\n"
@@ -87,6 +96,20 @@ the arm that did NOT run is only wrong on one of the two calls."
                       (nelisp-aot-differential--wrap name (cdr shape))
                       '(0 3))
                 cases))))
+    ;; Type predicates in tests (Doc 224 CG5), one program per value:
+    ;; bit k of acc says whether predicate k held, so a wrong tag test on
+    ;; any of them shows up as a different answer.
+    (dolist (x nelisp-aot-differential-tag-values)
+      (let ((name (format "d-tag-%s" (car x)))
+            (body "(setq acc 0)")
+            (bit 1))
+        (dolist (pred '(null consp listp atom symbolp stringp vectorp))
+          (setq body (format "%s (if (%s %s) (setq acc (+ acc %d)) nil)"
+                             body pred (cadr x) bit)
+                bit (* bit 2)))
+        (push (list name (nelisp-aot-differential--wrap name (concat "(progn " body ")"))
+                    '(0 3))
+              cases)))
     ;; Loops, including the bound that makes the body run zero times.
     (dolist (a nelisp-aot-differential-producers)
       (dolist (bound nelisp-aot-differential-bounds)

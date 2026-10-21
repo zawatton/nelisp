@@ -4,11 +4,12 @@
 wall NAME     the gate (COMMON.md "Measurement", 2026-10-21 16:30): wall-clock
               ns per iteration of the NeLisp, gcc -O2 GNU-layout and gcc -O2
               NeLisp-layout builds (and, informational, NeLisp built by the
-              9d5f4a515 compiler when target/codegen/base-src exists): the
-              median of 7 alternating runs pinned to the lane's CPU (9), after a
-              warm-up, with the repeat count set so a gcc run takes at least
-              0.5 s, the zero-iteration run subtracted.  Pass iff NeLisp <=
-              gcc -O2 GNU-layout.
+              9d5f4a515 compiler when target/codegen/base-src exists), pinned
+              to the lane's CPU (9) after a warm-up, the repeat count set so a
+              gcc run takes at least 0.5 s and the zero-iteration run
+              subtracted; each of 7 rounds times every variant back to back
+              and divides NeLisp by gcc within the round.  Pass iff the median
+              per-round ratio NeLisp / gcc -O2 GNU-layout is at most 1.0.
 kernel NAME   the Ir diagnostic: Ir per iteration with callgrind over the four
               ABI_LAYOUT_PAD layouts (N-iteration run minus the zero-iteration
               run), with the same verdict rule.
@@ -118,13 +119,23 @@ def idle_cpu():
     return os.environ.get("CODEGEN_CPU", "9")
 
 
+def cpu_freq(cpu):
+    """scaling_cur_freq of CPU in kHz, or 0 when unreadable."""
+    try:
+        return int(Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq").read_text())
+    except (OSError, ValueError):
+        return 0
+
+
 def timed(exe, n, r, cpu):
-    """Wall-clock seconds of one pinned run and its exit status."""
+    """Wall-clock seconds of one pinned run, its exit status and the CPU's
+    clock (kHz) just before it."""
     import time
+    freq = cpu_freq(cpu)
     t0 = time.perf_counter()
-    proc = subprocess.run(["taskset", "-c", cpu, str(exe)], input=f"{n:0{len(str(N))}d} {r}\n",
-                          capture_output=True, text=True)
-    return time.perf_counter() - t0, proc.returncode
+    proc = subprocess.run(["taskset", "-c", cpu, str(exe)],
+                          input=f"{n:0{len(str(N))}d} {r}\n".encode(), capture_output=True)
+    return time.perf_counter() - t0, proc.returncode, freq
 
 
 def median(xs):
@@ -133,12 +144,17 @@ def median(xs):
 
 
 def wall(kernel, rounds=7):
+    """Paired wall-clock ratios (COMMON.md "Measurement", 2026-10-21): each
+    round times every variant at N and at 0 iterations back to back, turns
+    them into ns per iteration and divides NeLisp by each other variant
+    within the round; the verdict is the median of those per-round ratios,
+    since this machine's clock drops for minutes at a time."""
     bins = build(kernel, with_base=True)
     cpu = idle_cpu()
     # Repeat count: a gcc -O2 GNU-layout run of at least 0.5 s.
     r = 100
     while True:
-        t, _ = timed(bins["gcc-gnu"], N, r, cpu)
+        t, _, _ = timed(bins["gcc-gnu"], N, r, cpu)
         if t >= 0.5:
             break
         r = int(r * max(2.0, 0.6 / max(t, 1e-3)))
@@ -146,25 +162,27 @@ def wall(kernel, rounds=7):
     for v in variants:  # warm-up
         timed(bins[v], N, r, cpu)
         timed(bins[v], 0, r, cpu)
-    samples = {v: {"n": [], "zero": []} for v in variants}
+    per_round = []
     codes = {}
     for _ in range(rounds):
+        row = {}
         for v in variants:
-            t, rc = timed(bins[v], N, r, cpu)
-            samples[v]["n"].append(t)
-            codes.setdefault("n", set()).add(rc)
-            t, rc = timed(bins[v], 0, r, cpu)
-            samples[v]["zero"].append(t)
-            codes.setdefault("zero", set()).add(rc)
+            tn, rc_n, f_n = timed(bins[v], N, r, cpu)
+            tz, rc_z, f_z = timed(bins[v], 0, r, cpu)
+            codes.setdefault("n", set()).add(rc_n)
+            codes.setdefault("zero", set()).add(rc_z)
+            row[v] = {"ns_per_iter": (tn - tz) / (N * r) * 1e9, "t_n": tn, "t_zero": tz,
+                      "khz_n": f_n, "khz_zero": f_z}
+        per_round.append(row)
+    ratios = {v: median([row["nl"]["ns_per_iter"] / row[v]["ns_per_iter"] for row in per_round])
+              for v in variants if v != "nl"}
     result = {"kernel": kernel, "n": N, "repeats": r, "rounds": rounds, "cpu": cpu,
-              "results_agree": all(len(c) == 1 for c in codes.values()), "variants": {}}
-    for v in variants:
-        mn, mz = median(samples[v]["n"]), median(samples[v]["zero"])
-        result["variants"][v] = {
-            "ns_per_iter": (mn - mz) / (N * r) * 1e9,
-            "median_s": mn, "median_zero_s": mz,
-            "samples_s": samples[v]["n"], "samples_zero_s": samples[v]["zero"],
-            "sha256": hashlib.sha256(bins[v].read_bytes()).hexdigest()}
+              "results_agree": all(len(c) == 1 for c in codes.values()),
+              "ratio_nl_over": ratios,
+              "median_ns_per_iter": {v: median([row[v]["ns_per_iter"] for row in per_round])
+                                     for v in variants},
+              "rounds_detail": per_round,
+              "sha256": {v: hashlib.sha256(bins[v].read_bytes()).hexdigest() for v in variants}}
     return result
 
 
@@ -174,14 +192,15 @@ def cmd_wall(kernel):
     r = wall(kernel)
     (ROOT / "target/codegen/wall").mkdir(parents=True, exist_ok=True)
     (ROOT / f"target/codegen/wall/{kernel}.json").write_text(json.dumps(r, indent=1))
-    v = r["variants"]
-    base = (f"; NeLisp at 9d5f4a515 {v['nl-base']['ns_per_iter']:.4f}"
-            if "nl-base" in v else "")
-    print(f"{kernel}: nelisp {v['nl']['ns_per_iter']:.4f} ns/iter; gcc -O2 GNU layout "
-          f"{v['gcc-gnu']['ns_per_iter']:.4f}; gcc -O2 NeLisp layout "
-          f"{v['gcc-nl']['ns_per_iter']:.4f}{base}  (median of {r['rounds']}, "
-          f"{r['repeats']} x {N} iterations, cpu {r['cpu']}); results agree: {r['results_agree']}")
-    ok = r["results_agree"] and v["nl"]["ns_per_iter"] <= v["gcc-gnu"]["ns_per_iter"]
+    q, m = r["ratio_nl_over"], r["median_ns_per_iter"]
+    khz = sorted(row[v]["khz_n"] for row in r["rounds_detail"] for v in row)
+    base = f"; x{q['nl-base']:.3f} its 9d5f4a515 build" if "nl-base" in q else ""
+    print(f"{kernel}: NeLisp/gcc -O2 GNU layout x{q['gcc-gnu']:.3f}, NeLisp layout "
+          f"x{q['gcc-nl']:.3f}{base} (median of {r['rounds']} per-round ratios; "
+          f"ns/iter medians nl {m['nl']:.4f} gcc {m['gcc-gnu']:.4f}; {r['repeats']} x {N} "
+          f"iterations; cpu {r['cpu']} at {khz[0] // 1000}-{khz[-1] // 1000} MHz); "
+          f"results agree: {r['results_agree']}")
+    ok = r["results_agree"] and q["gcc-gnu"] <= 1.0
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

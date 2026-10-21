@@ -19755,32 +19755,6 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
             (push (cons (car (pop sorted)) (pop regs)) pairs))
           (cons (nreverse pairs) written))))))
 
-(defvar nelisp-aot-compiler--x86-text-base nil
-  "Address of the text buffer's first byte modulo 64, or nil if unknown.
-When known, a rotated loop's head is aligned to 32 bytes as GCC aligns
-loop heads (-falign-loops); the padding sits after the loop's entry
-jump, so it is never executed.")
-
-(defconst nelisp-aot-compiler--x86-nops
-  ["" "\x90" "\x66\x90" "\x0f\x1f\x00" "\x0f\x1f\x40\x00"
-   "\x0f\x1f\x44\x00\x00" "\x66\x0f\x1f\x44\x00\x00"
-   "\x0f\x1f\x80\x00\x00\x00\x00" "\x0f\x1f\x84\x00\x00\x00\x00\x00"
-   "\x66\x0f\x1f\x84\x00\x00\x00\x00\x00"]
-  "Recommended x86-64 NOP encodings by length, 0-9 bytes.")
-
-(defun nelisp-aot-compiler--x86-align-loop (buf)
-  "Pad BUF with NOPs so the next byte is 32-byte aligned in memory."
-  (when nelisp-aot-compiler--x86-text-base
-    (let ((pad (mod (- 32 (mod (+ nelisp-aot-compiler--x86-text-base
-                                  (nelisp-asm-x86_64-buffer-pos buf))
-                               32))
-                    32)))
-      (while (> pad 0)
-        (let ((n (min pad 9)))
-          (nelisp-asm-x86_64-emit-bytes
-           buf (string-to-unibyte (aref nelisp-aot-compiler--x86-nops n)))
-          (setq pad (- pad n)))))))
-
 (defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop)
   "Call EMIT-LOOP for while NODE with its variables in registers when possible.
 Saves the r12-r15 registers the plan uses, loads every promoted slot,
@@ -19844,7 +19818,6 @@ Layout:
          node buf
          (lambda ()
            (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
-           (nelisp-aot-compiler--x86-align-loop buf)
            (nelisp-asm-x86_64-define-label buf start-lbl)
            (dolist (form (nelisp-aot-compiler--ir-get node :body))
              (nelisp-aot-compiler--emit-effect form buf))

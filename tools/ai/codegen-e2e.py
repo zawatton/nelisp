@@ -11,10 +11,11 @@ run WHO BINARY WORKLOAD [--jobs N]
 wall CAND BASE [CORPUS_LOG]
     The S2.1 gate (COMMON.md "Measurement", 2026-10-21): wall-clock of
     boot, files, regex and regexchar (16 and 128 characters) for CAND, BASE
-    and GNU 31.1 running the same Lisp (`emacs -Q --batch'), the median of 7
-    alternating runs pinned to the lane's CPU (9) after a warm-up, written to
-    target/codegen/endtoend.json with each ratio to the base and to GNU;
-    regex-per-character is the slope between 16 and 128 characters.
+    and GNU 31.1 running the same Lisp (`emacs -Q --batch'), pinned to the
+    lane's CPU (9) after a warm-up; each of 7 rounds runs the three back to
+    back and the ratios are the medians of the per-round ratios, written to
+    target/codegen/endtoend.json; regex-per-character is the slope between
+    16 and 128 characters.
 summarize CAND [CORPUS_LOG]
     Combine the stored workloads into target/codegen/endtoend.json, bound
     to CAND by sha256; CORPUS_LOG is a validate.sh output whose result says
@@ -187,10 +188,17 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
     markers = {"files": "ABI-FILES (1000 527500", "regex": "ABI-REGEX 6000",
                "regexchar16": "REGEXCHAR 16 200", "regexchar128": "REGEXCHAR 128 200"}
 
+    def freq():
+        try:
+            return int(Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq").read_text())
+        except (OSError, ValueError):
+            return 0
+
     def one(who, w):
         cache = Path(tempfile.mkdtemp(prefix="c-", dir=tmp))
         env = dict(os.environ, XDG_CACHE_HOME=str(cache), TMPDIR=str(tmp),
                    ABI_SOURCE_ROOT=str(ROOT))
+        khz = freq()
         t0 = time.perf_counter()
         proc = subprocess.run(["taskset", "-c", cpu] + wall_args(who, runtimes[who], w, files),
                               cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)
@@ -198,32 +206,42 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
         out = proc.stdout + proc.stderr
         if proc.returncode != 0 or (w in markers and markers[w] not in out):
             raise RuntimeError(f"{who} {w}: exit {proc.returncode}: {out[-300:]}")
-        return t
+        return t, khz
 
-    samples = {w: {who: [] for who in runtimes} for w in workloads}
     for w in workloads:
         for who in runtimes:
             one(who, w)  # warm-up
+    # Paired ratios (COMMON.md "Measurement"): every round times all three
+    # runtimes on a workload back to back; the verdict is the median of the
+    # per-round ratios, since the clock drops for minutes at a time.
+    rows = []
     for _ in range(rounds):
+        row = {}
         for w in workloads:
+            row[w] = {}
             for who in runtimes:
-                samples[w][who].append(one(who, w))
+                t, khz = one(who, w)
+                row[w][who] = {"s": t, "khz": khz}
+        rows.append(row)
 
     def med(xs):
         xs = sorted(xs)
         return xs[len(xs) // 2]
+
+    def value(row, w, who):
+        if w == "regex-per-character":
+            return (row["regexchar128"][who]["s"] - row["regexchar16"][who]["s"]) / (112 * 200) * 1e9
+        return row[w][who]["s"]
     result = {}
-    for w in ("boot", "files", "regex"):
-        m = {who: med(samples[w][who]) for who in runtimes}
-        result[w] = {"base": m["base"], "candidate": m["cand"], "gnu": m["gnu"],
-                     "ratio_base": m["cand"] / m["base"], "ratio_gnu": m["cand"] / m["gnu"],
-                     "unit": "s"}
-    slope = {who: (med(samples["regexchar128"][who]) - med(samples["regexchar16"][who]))
-             / (112 * 200) * 1e9 for who in runtimes}
-    result["regex-per-character"] = {
-        "base": slope["base"], "candidate": slope["cand"], "gnu": slope["gnu"],
-        "ratio_base": slope["cand"] / slope["base"], "ratio_gnu": slope["cand"] / slope["gnu"],
-        "unit": "ns/char"}
+    for w, unit in (("boot", "s"), ("files", "s"), ("regex", "s"), ("regex-per-character", "ns/char")):
+        result[w] = {
+            "base": med([value(r, w, "base") for r in rows]),
+            "candidate": med([value(r, w, "cand") for r in rows]),
+            "gnu": med([value(r, w, "gnu") for r in rows]),
+            "ratio_base": med([value(r, w, "cand") / value(r, w, "base") for r in rows]),
+            "ratio_gnu": med([value(r, w, "cand") / value(r, w, "gnu") for r in rows]),
+            "unit": unit}
+    khz = sorted(r[w][who]["khz"] for r in rows for w in workloads for who in runtimes)
     corpus = None
     if corpus_log:
         text = Path(corpus_log).read_text()
@@ -231,13 +249,15 @@ def cmd_wall(cand, base, corpus_log=None, rounds=7):
     out = {"candidate": str(Path(cand).resolve()), "candidate_sha256": sha256(cand),
            "base": str(Path(base).resolve()), "base_sha256": sha256(base),
            "gnu": GNU, "cpu": cpu, "rounds": rounds, "base_commit": "9d5f4a515",
-           "workloads": result, "samples": samples,
+           "workloads": result, "rounds_detail": rows,
+           "mhz_range": [khz[0] // 1000, khz[-1] // 1000],
            "corpus_identical": corpus, "corpus_log": corpus_log}
     (ROOT / "target/codegen/endtoend.json").write_text(json.dumps(out, indent=1))
     for w, m in result.items():
         print(f"{w}: base {m['base']:.4g} cand {m['candidate']:.4g} gnu {m['gnu']:.4g} {m['unit']}"
               f"  x{m['ratio_base']:.3f} base, x{m['ratio_gnu']:.3f} GNU")
-    print(f"corpus identical: {corpus}; cpu {cpu}")
+    print(f"corpus identical: {corpus}; cpu {cpu} at {khz[0] // 1000}-{khz[-1] // 1000} MHz; "
+          f"medians of {rounds} per-round ratios")
     return 0
 
 
