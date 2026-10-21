@@ -1,0 +1,113 @@
+#+TITLE: Doc 223 — Port GNU Emacs 31.1 alloc.c: typed blocks, side mark bits, per-type free lists and sweeps
+#+STATUS: IN PROGRESS
+#+LEDGER: tools/ai/gc-port-progress.org
+#+DATE: 2026-10-21
+
+* Purpose
+
+Doc 220 measured NeLisp's memory manager at 42.79% of the company load
+(GC 23.69%, allocation 19.11%). GNU Emacs 31.1 pays far less because it
+allocates each Lisp type from its own fixed-layout blocks, keeps mark bits
+beside the objects, rebuilds per-type free lists in one sweep loop per type,
+and validates conservative pointers through persistent block metadata.
+NeLisp uses one general block allocator: an 8-byte header per block, a mark
+in that header, an exact-start index rebuilt every collection, and a
+heap-wide header walk that coalesces free runs.
+
+This document maps every alloc.c mechanism to its NeLisp structure. Each
+mechanism is *ported* (GNU's data structure and algorithm), *adapted* (GNU's
+algorithm on a NeLisp-specific layout, with the reason), or *impossible* in
+this stage (the blocking NeLisp layer is named). GNU source:
+=/home/madblack-21/Downloads/emacs-31.1/src/alloc.c= and =pdumper.c=.
+
+* NeLisp starting point (base ad41dc4bf, word heap through S4.2)
+
+- A cons is a 32-byte Sexp view (tag byte 7, payload pointer at +8)
+  allocated by =alloc-bytes 32 8=, plus a 24-byte =NlConsBox= payload
+  (car WORD, cdr WORD, refcount) from =nl_alloc_consbox=. Identity and
+  mutation live in the payload; views may be copied.
+- Floats, strings and symbols are 32-byte Sexp slots. Producers write the
+  tag into a caller-allocated slot (the result-slot protocol), so the
+  allocator does not know the type when it hands out the slot. String
+  character buffers are separate =alloc-bytes N 1= blocks and may be shared
+  by several views (Doc 149 clone aliasing).
+- Vectors, records and char-tables are header-less (tag 110, Doc 216 S4.1):
+  one backing block that starts with a kind/length word.
+- Every block has an 8-byte header =BLOCK_TOTAL | mark= (0 live, 1 marked,
+  2 free, 4 conservatively pinned). Marking validates every pointer through
+  =nl_gc_object_start_p=, which needs the exact-start index that
+  =nl_gc_index_prepare= rebuilds by walking every header of every chunk.
+  =nl_gc_sweep_merge_chunk= walks every header again and relinks coalesced
+  free runs into size buckets.
+- Every ordinary run cold-loads =BINARY.cold=, the post-prelude heap dumped
+  at build time (=nelisp--arena-dump-image-stream=, an in-place swizzle plus
+  a relocation table over the coalesced chunks). Image objects lie below
+  the boot watermark and are never freed: this is NeLisp's pdumper.
+- Compaction is off (flag 268435608 = 0). The conservative stack scan pins
+  blocks (mark 4) and scans pinned blocks word by word.
+- Parallel sections (=nelisp-thread-gc-inhibit=) disable free-list reuse
+  (268435624 = 1) and allocate through the CAS bump path.
+
+* Mechanism map
+
+| Mechanism | GNU | NeLisp structure | Status | Doc 216 interaction |
+|-----------+-----+------------------+--------+---------------------|
+| Block types and aligned blocks | alloc.c:937 =BLOCK_ALIGN= (1<<15), alloc.c:979 =ABLOCKS_SIZE= 16, alloc.c:1060 =lisp_align_malloc=, alloc.c:1157 =lisp_align_free= | =nl_ablock_alloc= maps 16 x 32 KiB blocks aligned to 512 KiB from =nl_os_alloc_chunk=; a free ablocks group is unmapped when all 16 blocks are free | adapted: the group is aligned to its own size (512 KiB) so the registry can find it by masking; GNU only needs 32 KiB alignment because its mem_node tree finds groups | Blocks live outside the arena chunk list, so legacy header walkers never see them; tagged WORDs from S2+ address cells directly |
+| Cons blocks | alloc.c:2526 =CONS_BLOCK_SIZE=, alloc.c:2539 =struct cons_block=, alloc.c:2532 =CONS_BLOCK=, alloc.c:2536 =CONS_INDEX= | Cells first, then =gcmarkbits=, then =next=; the last word of each 32 KiB block is the ablocks link (=abase=) | adapted: 24-byte cells (car, cdr, refcount) because =nelisp_nlconsbox_clone= still does =atomic-fetch-add= at payload+16 (Doc 216 S0: "do not truncate first"); 1356 cells per block. 16-byte cells follow word-heap S2.2 | The cell is the payload that S2 makes the tag-010 object; the 32-byte views stay until S2 |
+| Allocation fast path | alloc.c:2599 =Fcons= | =nl_alloc_consbox=: pop =cons_free_list= (chained through the cdr word), else bump =cons_block_index=, else a new block; charge 24 bytes to the GC debt (=consing_until_gc=) | ported; parallel sections allocate the legacy headered payload because GNU's free list is single-writer | none |
+| Mark bits | alloc.c:2411 =GETMARKBIT=, alloc.c:2416 =SETMARKBIT=, alloc.c:2550 =XMARK_CONS= | A side bitmap per block, bit index =CONS_INDEX= | ported | Removes the header mark word for block cells |
+| Precise marking | alloc.c:6733 =mark_object=, alloc.c:6483 =process_mark_stack= | A cell reached through a cons view sets its side bit and continues; no =nl_gc_object_start_p= | adapted: the registry check (below) guards the side-bit write because NeLisp's precise edges are not yet proven clean (the reason the exact-start index exists); the recursive marker is kept (GNU's explicit mark stack is a separate change) | none |
+| Free lists | alloc.c:2599 =Fcons= (=cons_free_list=), alloc.c:2864 =vector_free_lists= | One free list per type, rebuilt by its sweep | ported | none |
+| sweep_conses | alloc.c:6814 =sweep_conses= | =nl_sweep_conses=: per block, per mark word; all-marked words take the fast path; dead cells are chained and get the dead marker in car; a wholly free block is released once more than one block of free cells is already held | ported | none |
+| sweep_floats | alloc.c:6894 =sweep_floats=, alloc.c:2431 =float_block= | none | impossible in this stage: a float is a caller-allocated 32-byte slot written in place (result-slot protocol), so no allocation site knows it is a float. Blocking layer: word-heap S5 (header-less floats) | S5 gives floats a constructor, then =float_block= ports like cons |
+| sweep_symbols | alloc.c:6997 =sweep_symbols=, alloc.c:3616 =SYMBOL_BLOCK_SIZE= | none | impossible in this stage: symbol objects are 32-byte slots plus the symbol-name sidecar and the intern mirror; the slot is allocated before its type is written. Blocking layer: word-heap S3 | S3 |
+| sweep_strings, compact_small_strings | alloc.c:1826 =sweep_strings=, alloc.c:1959 =compact_small_strings=, alloc.c:1405 =struct sblock=, alloc.c:1343 =SBLOCK_SIZE= | none | impossible in this stage: compaction moves each sdata and updates its single owner through the sdata back pointer; NeLisp string headers are copyable 32-byte views that alias one character buffer (Doc 149), so a buffer has no single owner to update. Blocking layer: word-heap S3 (one canonical string header) and S6 (clone_into = 0) | S3/S6 |
+| sweep_vectors, vector blocks, large vectors | alloc.c:3241 =sweep_vectors=, alloc.c:2845 =struct vector_block=, alloc.c:2969 =allocate_vector_from_block=, alloc.c:2826 =struct large_vector=, alloc.c:3353 =allocate_vectorlike= | Tag-110 backings up to =VBLOCK_BYTES_MAX= come from vector blocks with size-class free lists; larger ones stay headered general blocks (the large_vectors analogue) | adapted: the mark bit moves into the kind/length word (GNU's =ARRAY_MARK_FLAG=); vector blocks are 32 KiB ablocks rather than malloc'd 4 KiB blocks | Fits S4.1: the backing address is WORD - 6 |
+| mem_node tree, mem_find, live_*_p | alloc.c:4213 =mem_find=, alloc.c:4236 =mem_insert=, alloc.c:4440 =mem_delete=, alloc.c:4627 =live_cons_holding=, alloc.c:4664 =live_cons_p= | A persistent open-addressing registry keyed by 512 KiB ablocks group; each 32 KiB block records its type in its last word. =nl_live_cons_holding= ports GNU's checks: offset inside the cell array, index below =cons_block_index= in the current block, cell not dead | adapted: hash of aligned groups instead of a red-black tree of arbitrary malloc ranges, because NeLisp controls block alignment; lookup is O(1) and updated only when groups are mapped or unmapped | none |
+| mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
+| Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects keep their legacy headers, are never freed and are marked through their headers. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | adapted: header marks instead of a separate bitmap; the dump appends converted cells to the coalesced span so the loader is unchanged | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
+| GC threshold | alloc.c:5704 =consing_threshold=, alloc.c:5732 =bump_consing_until_gc=, alloc.c:5769 =maybe_garbage_collect= | Block allocations charge =nl_gc_stats+0= exactly as general allocations do; sweeps add live cell bytes to =nl_gc_stats+16=; =nl_gc_debt_rearm= keeps =max(floor, live * pct)= | adapted: the existing debt trigger already has GNU's shape (threshold from live bytes times a percentage); its policy belongs to the gc-cadence lane | none |
+
+* Interaction with the word heap (Doc 216)
+
+Typed blocks hold the payloads that the word-heap stages turn into objects.
+A cons-block cell is the future tag-010 cons; a vector-block entry is
+already the tag-110 backing. Nothing here adds a new tag or a new WORD
+decoder: a view still points to its payload, and the payload's address
+decides whether marking uses a side bit (block cell) or a header (legacy
+image or parallel-section object). When S2 removes cons views, the WORD
+itself is the cell address plus 2 and =CONS_BLOCK= applies directly.
+
+* Implementation order
+
+1. Cons blocks: ablocks, cons blocks, =nl_alloc_consbox= fast path,
+   registry, side mark bits, =nl_sweep_conses=, conservative
+   =live_cons_holding=, mark reset on conservative rollback. Increment (a)
+   keeps the build-time dump on legacy conses (an environment flag read by
+   the dump run) and makes a dump that meets a block cell fail loudly.
+2. Increment (b): the dump converts block cells into legacy headered image
+   payloads, so runtime and library images carry conses, and the flag goes.
+3. Vector blocks with size-class free lists and large-vector fallback.
+4. Floats, symbols and strings after word-heap S3/S5 (see the map).
+
+* Expected effect and the remaining gap (S2)
+
+Doc 220's churn profiles (base 9d5f4a515, four-layout means, millions of
+Ir) put NeLisp cons churn at mark 991, index/prepare 287, rebuild 564,
+allocation 106, zeroing 40 against GNU's whole-invocation GC plus
+allocation of about 157. Most of NeLisp's cost is per collection over the
+cold image: the index walk, the sweep walk and the marking of image objects
+happen whatever the churned type. Typed blocks remove the allocator, index
+and sweep work for churned objects only. The remaining gap is explained by
+three GNU mechanisms this port does not yet reproduce:
+
+- pdumper's dump is not swept and has a static object-start table
+  (pdumper.c:5229); NeLisp still walks every image header in
+  =nl_gc_index_prepare= and =nl_gc_sweep_merge_chunk=;
+- =mark_object= trusts tagged pointers; NeLisp still probes the start index
+  for every legacy object, image objects included;
+- GNU marks with an explicit stack (alloc.c:6483); NeLisp recurses.
+
+S2.1-S2.3 are therefore expected to stay red after S1; the criteria are not
+revised. The measured numbers and their attribution are recorded in the
+ledger.
