@@ -19726,8 +19726,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (wf_bytecode_w_int (nl_vector_slot_word rec 1))
                               env 0 0 code (if (= argc 0) 0 base) 0)))
                  (if (= word 2)
-                     (nl_n4_direct_apply_w fn
-                      (m5_fx_list_slot (m5_fx_slot_list base argc) scratch) env 0)
+                     (nl_n4_direct_apply_list_w fn (m5_fx_slot_list base argc) env)
                    word))))))))
     (defun m5_fx_interp_run (rec fn tail env out argc code scratch)
       (let* ((base (m5_fx_arg_words env argc)))
@@ -46658,6 +46657,17 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (nl_n4_apply_raw_w function args env frame))))
     (defun nl_n4_direct_apply (function args env out)
       (nl_abi_word_to_rc (nl_n4_direct_apply_w function args env 0) out))
+    ;; `nl_n4_direct_apply_w' for a FUNCTION and argument list LISTW that are
+    ;; WORDs: the activation's argument view takes the list and is the list
+    ;; the apply reads, so a nil list needs no slot of its own.
+    (defun nl_n4_direct_apply_list_w (function listw env)
+      (let* ((state (heap-read-u64 env 176))
+             (frame (nl_n4_record state (- (heap-read-u64 state 0) 1))))
+        (seq (wf_word_store_out (+ frame 32) listw)
+             (ptr-write-u64 frame 152 0)
+             (ptr-write-u64 frame 112 1)
+             (nl_n4_apply_raw_w (if (= (logand function 1) 1) (wf_word_view function) function)
+                                (+ frame 32) env frame))))
     (defun nl_n4_apply_name (function)
       (if (= (sexp-tag function) 18) (let* ((nw (nl_record_slot_word function 0))) (if (= (logand nw 1) 0) nw (record-slot-ref-ptr function 0)))
         (if (= (sexp-tag function) 7)
@@ -47213,34 +47223,43 @@ tails run against a private box), and the (rc, OUT) adapter F."
       (if (= w 2)
           (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
         w))
+    ;; GNU eval_sub keeps FUN and the evaluated arguments in C locals
+    ;; (eval.c:2585-2700).  Here they are the two words of one WORD frame,
+    ;; FW: +0 the definition, +8 the evaluated argument list, released with
+    ;; ROOT_MARK by `nl_cons_root_finish'.  No Sexp copy of either.
     (defun nl_eic_symbol_w (form_ptr head_ptr tail_ptr env root_mark)
-      (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark
-                            (nl_root_reserve env)))
-    ;; Publish the returned definition WORD in FUNC_SLOT before any argument
+      (let* ((fw (nl_root_frame env 2)))
+        (if (= fw 0)
+            (nl_cons_root_finish env root_mark (seq (wf_bytecode_root_exhausted) 0))
+          (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark fw))))
+    ;; Publish the returned definition WORD in FW before any argument
     ;; evaluation or callback can collect (Doc 215 R2).
-    (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark func_slot)
+    (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark fw)
       (nl_eic_after_lookup_w
        (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
-       form_ptr head_ptr tail_ptr env root_mark func_slot))
-    (defun nl_eic_after_lookup_w (lookup_w form_ptr head_ptr tail_ptr env root_mark func_slot)
+       form_ptr head_ptr tail_ptr env root_mark fw))
+    ;; LOOKUP_W is the definition WORD; a pointer WORD is its own view, so
+    ;; the tests read it in place (an immediate cannot be a special form or
+    ;; a macro, and is never dereferenced).
+    (defun nl_eic_after_lookup_w (lookup_w form_ptr head_ptr tail_ptr env root_mark fw)
       (nl_cons_root_finish
        env root_mark
        (if (or (= lookup_w 0) (= lookup_w 2))
            (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
          (seq
-          (wf_word_store_out func_slot lookup_w)
-          (if (= (logior (logxor (sexp-tag func_slot) 7)
-                          (logxor (heap-sexp-data func_slot) 13108)) 0)
-               (nl_n3_special_call_w func_slot tail_ptr env 0)
-             (if (= (sexp-tag func_slot) 0)
+          (ptr-write-u64 fw 0 lookup_w)
+          (if (if (= (logand lookup_w 1) 1) 0
+                (= (logior (logxor (nl_val_tag lookup_w) 7)
+                           (logxor (heap-sexp-data lookup_w) 13108)) 0))
+               (nl_n3_special_call_w lookup_w tail_ptr env 0)
+             (if (= (nl_val_tag lookup_w) 0)
                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
-               (if (= (sexp-tag func_slot) 4)
-                   (nl_eic_alias_w (nl_apply_special_w func_slot tail_ptr env 0)
-                                   tail_ptr env func_slot head_ptr form_ptr)
-                 (if (= (nl_cons_is_macro func_slot) 1)
-                     (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
-                   (nl_eic_eval_args_w tail_ptr env func_slot
-                                       (nl_root_reserve env) head_ptr)))))))))
+               (if (= (nl_val_tag lookup_w) 4)
+                   (nl_eic_alias_w (nl_apply_special_w lookup_w tail_ptr env 0)
+                                   tail_ptr env fw head_ptr form_ptr)
+                 (if (if (= (logand lookup_w 7) 0) (nl_cons_is_macro lookup_w) 0)
+                     (nl_cons_macro_apply_eval_w form_ptr lookup_w tail_ptr env 0)
+                   (nl_eic_eval_args_w tail_ptr env fw head_ptr)))))))))
     ;; GNU eval.c:2634-2638: eval_sub follows the operator's whole function
     ;; chain (indirect_function, data.c:2550) before any argument is
     ;; evaluated, so an argument that redefines a later link does not change
@@ -47250,50 +47269,55 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; whenever the target became one).  A special form at the end, or a
     ;; chain an internal writer made cyclic, keeps the first link and its
     ;; existing handling.  0: the chain ends unbound.
-    (defun nl_eic_resolve_alias_w (func_slot env)
-      (let* ((alias-slot (nl_root_reserve env)) (w 0) (hops 0) (status 2))
+    ;; FW holds WORDs: the first link stays in a local (the call form holds
+    ;; that symbol), each later link is published in FW as it is reached.
+    (defun nl_eic_resolve_alias_w (fw env)
+      (let* ((first (heap-read-u64 fw 0)) (w first) (hops 0) (status 2))
         (seq
-         (wf_copy32 alias-slot func_slot)
          (while (= status 2)
            (seq
-            (setq w (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) func_slot 0))
+            (setq w (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) w 0))
             (setq hops (+ hops 1))
             (if (or (= w 0) (= w 2) (= w 3)) (setq status 0)
-              (seq (wf_word_store_out func_slot w)
+              (seq (ptr-write-u64 fw 0 w)
                    (if (and (< hops 65536)
-                            (or (= (sexp-tag func_slot) 4)
-                                (= (sexp-tag func_slot) 16)))
+                            (or (= (nl_val_tag w) 4)
+                                (= (nl_val_tag w) 16)))
                        0
                      (setq status 1))))))
          (if (= status 0) 0
-           (if (and (< hops 65536) (= (nl_cons_is_macro func_slot) 1)) 3
+           (if (if (< hops 65536)
+                   (if (= (logand w 7) 0) (= (nl_cons_is_macro w) 1) 0) 0)
+               3
              (seq
               (if (or (>= hops 65536)
-                      (= (logior (logxor (sexp-tag func_slot) 7)
-                                 (logxor (heap-sexp-data func_slot) 13108)) 0))
-                  (wf_copy32 func_slot alias-slot) 0)
+                      (if (= (logand w 1) 1) 0
+                        (= (logior (logxor (nl_val_tag w) 7)
+                                   (logxor (heap-sexp-data w) 13108)) 0)))
+                  (ptr-write-u64 fw 0 first) 0)
               1))))))
     ;; FORM_PTR is the whole call form, for a macro the alias chain reaches.
-    (defun nl_eic_alias_w (w tail_ptr env func_slot call_name form_ptr)
+    (defun nl_eic_alias_w (w tail_ptr env fw call_name form_ptr)
       (if (= w 2)
-          (let* ((resolved (nl_eic_resolve_alias_w func_slot env)))
+          (let* ((resolved (nl_eic_resolve_alias_w fw env)))
             (if (= resolved 0)
                 (nl_abi_fail (nl_cons_stash_void_function env call_name) 0)
               (if (= resolved 3)
-                  (nl_cons_macro_apply_eval_w form_ptr func_slot tail_ptr env 0)
-                (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name))))
+                  (nl_cons_macro_apply_eval_w form_ptr (heap-read-u64 fw 0) tail_ptr env 0)
+                (nl_eic_eval_args_w tail_ptr env fw call_name))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
     ;; `m5_fx_interp_call_w' answers 2 when the fx VM does not take the
     ;; call, so the common interpreted call allocates no result box.
-    (defun nl_eic_eval_args_w (tail_ptr env func_slot args_slot call_name)
-      (let* ((w (m5_fx_interp_call_w func_slot tail_ptr env args_slot)))
+    (defun nl_eic_eval_args_w (tail_ptr env fw call_name)
+      (let* ((d (heap-read-u64 fw 0))
+             (w (m5_fx_interp_call_w d tail_ptr env 0)))
         (if (= w 2)
-            (let* ((p (nl_eic_primitive_w func_slot tail_ptr env args_slot call_name)))
+            (let* ((p (nl_eic_primitive_w d tail_ptr env fw call_name)))
               (if (= p 2)
                   (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0)
-                                       env func_slot args_slot call_name)
+                                       env fw call_name)
                 p))
           w)))
     ;; GNU eval_sub evaluates a subr's arguments into argvals and calls the
@@ -47305,12 +47329,12 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; builtin), the evaluated WORDs become the ordinary apply's argument
     ;; list, so no argument is evaluated twice.  `funcall' has its own
     ;; WORD path, `nl_eic_funcall_w'.
-    (defun nl_eic_primitive_w (fn tail env args_slot call_name)
+    (defun nl_eic_primitive_w (fn tail env fw call_name)
       (let* ((name (m5_fx_builtin_name fn 0))
              (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
         (if (< argc 1) 2
         (if (= (sexp-name-eq name "funcall") 1)
-            (nl_eic_funcall_w tail env argc fn args_slot call_name)
+            (nl_eic_funcall_w tail env argc fn fw call_name)
         (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
@@ -47324,7 +47348,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
                    (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
                      (if (= st -3)
                          (nl_eic_after_args_w (m5_fx_slot_list base argc)
-                                              env fn args_slot call_name)
+                                              env fw call_name)
                        0))))))))))))
     ;; GNU Ffuncall (eval.c:3185) and funcall_general (eval.c:3149) on the
     ;; WORDs eval_sub evaluated.  FUNCTION and its arguments go into one
@@ -47336,7 +47360,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; the frame -- none for no arguments -- for funcall_lambda to bind
     ;; (eval.c:3350).  Anything else takes the ordinary `funcall' builtin
     ;; with the same evaluated WORDs as its argument list.
-    (defun nl_eic_funcall_w (tail env argc fn args_slot call_name)
+    (defun nl_eic_funcall_w (tail env argc fn fw call_name)
       (let* ((base (nl_root_frame env (+ argc 3))))
         (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
           (if (/= (m5_fx_eval_forms tail env base 0) 0) 0
@@ -47345,7 +47369,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
              (let* ((w (nl_eic_funcall_words base (- argc 1) env)))
                (if (= w 2)
                    (nl_eic_after_args_w (m5_fx_slot_list base argc)
-                                        env fn args_slot call_name)
+                                        env fw call_name)
                  w)))))))
     ;; BASE holds FUNCTION, then the N arguments, then the definition, result
     ;; and list slots.  The value WORD, 0 with a signal stashed, or 2 for
@@ -47392,24 +47416,39 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (if (= n 0) 0 (ptr-write-u64 lslot 0 args))
                  (nl_n4_finish_w (nl_apply_closure_or_lambda_w def kind args env 0)
                                  env 0 frame))))))))
-    (defun nl_eic_after_args_w (args_w env func_slot args_slot call_name)
+    ;; The evaluated list stays rooted in FW through arity callbacks and the
+    ;; apply.  The call form's activation (the top one, as
+    ;; `nl_n4_direct_apply' assumes) takes it into its argument view, as
+    ;; GNU's set_backtrace_args (eval.c:2693), and that view is the list
+    ;; the arity check and the apply read: no Sexp slot of its own.
+    (defun nl_eic_after_args_w (args_w env fw call_name)
       (if (= args_w 0) 0
-        (seq
-         ;; The argument list remains rooted through arity callbacks and apply.
-         (wf_word_store_out args_slot args_w)
-         (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
-             (nl_n4_direct_apply_w func_slot args_slot env 0)
-           (nl_abi_fail 1 0)))))
+        (let* ((d (heap-read-u64 fw 0))
+               (state (heap-read-u64 env 176))
+               (frame (nl_n4_record state (- (heap-read-u64 state 0) 1))))
+          (seq
+           (ptr-write-u64 (+ fw 8) 0 args_w)
+           (wf_word_store_out (+ frame 32) args_w)
+           (ptr-write-u64 frame 152 0)
+           (ptr-write-u64 frame 112 1)
+           (if (= (if (= (logand d 7) 0)
+                      (bf_n2_direct_arity d (+ frame 32) env call_name) 0) 0)
+               (nl_n4_apply_raw_w (if (= (logand d 1) 1) (wf_word_view d) d)
+                                  (+ frame 32) env frame)
+             (nl_abi_fail 1 0))))))
     (defun nl_eic_callable_w (head_ptr tail_ptr env root_mark)
-      (nl_eic_callable_slot_w head_ptr tail_ptr env root_mark (nl_root_reserve env)))
-    ;; A non-symbol head is evaluated into the rooted FUNC_SLOT.
-    (defun nl_eic_callable_slot_w (head_ptr tail_ptr env root_mark func_slot)
+      (let* ((fw (nl_root_frame env 2)))
+        (if (= fw 0)
+            (nl_cons_root_finish env root_mark (seq (wf_bytecode_root_exhausted) 0))
+          (nl_eic_callable_slot_w head_ptr tail_ptr env root_mark fw))))
+    ;; A non-symbol head is evaluated into the rooted FW.
+    (defun nl_eic_callable_slot_w (head_ptr tail_ptr env root_mark fw)
       (nl_cons_root_finish
        env root_mark
        (let* ((w (nelisp_eval_call_w head_ptr env 0)))
          (if (= w 0) 0
-           (seq (wf_word_store_out func_slot w)
-                (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) 0))))))
+           (seq (ptr-write-u64 fw 0 w)
+                (nl_eic_eval_args_w tail_ptr env fw 0))))))
     ;; Expand, cache the expansion against FORM_PTR, evaluate it.
     (defun nl_cons_macro_apply_eval_w (form_ptr func_ptr tail_ptr env _pad)
       (let* ((macrofn_ptr (let* ((mw (nl_cons_cdr_word func_ptr)))
