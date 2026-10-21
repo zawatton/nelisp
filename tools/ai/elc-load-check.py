@@ -23,6 +23,7 @@ It pins completed final verification, including every subordinate COMMON log.
 final rechecks identities, group counts, standalone count, and MCP tool count.
 """
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -47,6 +48,7 @@ SMALL, LARGE = 10, 2010
 ADDRESS_SPACE_CAP = 8 * 1024**3
 HEAVY_UNIT_ENV = "ELC_LOAD_HEAVY_UNIT"
 HEAVY_QUEUE_TIMEOUT = 300
+PARAGRAPHS_SHA256 = "489ff79c6559d0691f375c50a7ec85e8c13a7b5612e0de24c53911b6f8d3b89e"
 HEAVY_ACQUIRE = """import json, os, pathlib, sys, time
 stamp = time.monotonic()
 path = pathlib.Path(sys.argv[1])
@@ -590,6 +592,36 @@ def build_context():
     print("CONTEXT PASS", len(contexts), "matching-binary images;", member_count - 1, "consumer members unchanged")
 
 
+def copy_paragraph_provider(library):
+    library = Path(library).resolve()
+    plain = library.with_suffix(".el") if library.suffix == ".elc" else library
+    if plain.name.endswith(".gz"):
+        plain = plain.with_suffix("")
+    source = next((path for path in (plain, Path(str(plain) + ".gz")) if path.is_file()), None)
+    need(source is not None, "GNU paragraphs source sibling is missing")
+    raw = source.read_bytes()
+    if source.suffix == ".gz":
+        raw = gzip.decompress(raw)
+    need(hashlib.sha256(raw).hexdigest() == PARAGRAPHS_SHA256, "GNU paragraphs source identity changed")
+    artifact = OUT / "providers/paragraphs.el"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(raw)
+    return dict(source=str(source), artifact=str(artifact))
+
+
+def corpus_prerequisite(manifest):
+    provider = manifest["prerequisite"]
+    source, artifact = Path(provider["source"]), Path(provider["artifact"])
+    need(artifact == OUT / "providers/paragraphs.el", "wrong corpus prerequisite artifact")
+    require_pins(manifest, [source, artifact])
+    raw = source.read_bytes()
+    if source.suffix == ".gz":
+        raw = gzip.decompress(raw)
+    need(raw == artifact.read_bytes() and hashlib.sha256(raw).hexdigest() == PARAGRAPHS_SHA256,
+         "corpus prerequisite provenance changed")
+    return [source, artifact]
+
+
 def prepare():
     CORPUS.mkdir(parents=True, exist_ok=True)
     compiler = Path(emacs()).resolve()
@@ -597,6 +629,14 @@ def prepare():
     need(version["rc"] == 0 and Path(version["stdout"]).read_text() == "31.1"
          and not Path(version["stderr"]).stat().st_size, "GNU Emacs 31.1 required")
     inputs = own_files() + [compiler]
+    locate = execute([compiler, "-Q", "--batch", "--eval", '(princ (locate-library "textmodes/paragraphs"))'],
+                     OUT / "gnu-paragraphs-locate")
+    library = Path(Path(locate["stdout"]).read_text())
+    need(locate["rc"] == 0 and not Path(locate["stderr"]).stat().st_size
+         and library.is_absolute() and library.is_file(), "cannot locate GNU paragraphs library")
+    prerequisite = copy_paragraph_provider(library)
+    inputs += [library, Path(prerequisite["source"]), Path(prerequisite["artifact"]),
+               Path(locate["stdout"]), Path(locate["stderr"])]
     source = notes65()
     files = []
     for name in ("mxlib", *CC):
@@ -639,12 +679,15 @@ def prepare():
          "checked-in GNU fixture differs; regenerate it with GNU 31.1")
     inputs += list(CORPUS.glob("*.el")) + compiled
     inputs += [Path(version["stdout"]), Path(version["stderr"]), Path(run["stdout"]), Path(run["stderr"])]
-    save("corpus.json", dict(inputs=pins(inputs), files=files, tokens=tokens, compiler=str(compiler), gnu_version="31.1"))
+    save("corpus.json", dict(inputs=pins(inputs), files=files, tokens=tokens, compiler=str(compiler),
+                             gnu_version="31.1", prerequisite=prerequisite))
     print("PREPARE PASS", len(files), "libraries;", tokens)
 
 
 def corpus_body(ext):
     text = f"(setq load-path (cons {lisp(CORPUS)} load-path))\n"
+    text += f"(unless (load {lisp(OUT / 'providers/paragraphs.el')} nil t t) (error \"paragraphs prerequisite did not load\"))\n"
+    text += "(unless (fboundp 'sentence-end) (error \"paragraphs prerequisite missing sentence-end\"))\n"
     text += emit("(arrayp (copy-syntax-table))")
     for name in ("elc-load-fixture", "ring", "text-property-search", "mxlib", *CC):
         form = f"(unless (load {lisp(CORPUS / (name + ext))} nil t t) (error \"module load returned nil: {name}\"))\n"
@@ -677,6 +720,7 @@ def compare(mode, body_factory):
     refs, runs, inputs = {}, {}, own_files() + runtime_files() + [OUT / "corpus.json"]
     context = load(context_record_name()) if mode == "corpus" else None
     if mode == "corpus":
+        inputs += corpus_prerequisite(manifest)
         validate_provider_membership(context["provider_roots"], context["provider_sources"])
         validate_provider_membership(context["snapshot_roots"], context["provider_snapshots"])
         validate_provider_snapshot(context["provider_snapshots"])

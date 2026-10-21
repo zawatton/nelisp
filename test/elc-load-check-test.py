@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Negative controls for the retained .elc acceptance evidence (no rebuild)."""
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -335,6 +336,28 @@ class EvidenceControls(unittest.TestCase):
         CHECK.save("final.json", record)
         with self.assertRaisesRegex(ValueError, "omits required input identities"):
             self.invoke(CHECK.final)
+
+    def test_corpus_prerequisite_provenance_and_freshness(self):
+        source = self.out / "paragraphs.el.gz"
+        raw = b";;; Whole GNU provider fixture\n(defun sentence-end () \"fixture\")\n"
+        source.write_bytes(gzip.compress(raw))
+        digest = CHECK.hashlib.sha256(raw).hexdigest()
+        with patch.object(CHECK, "PARAGRAPHS_SHA256", digest):
+            provider = CHECK.copy_paragraph_provider(source)
+            artifact = Path(provider["artifact"])
+            self.assertEqual(artifact.read_bytes(), raw)
+            record = dict(prerequisite=provider, inputs=CHECK.pins([source, artifact]))
+            self.assertEqual(CHECK.corpus_prerequisite(record), [source, artifact])
+            artifact.write_bytes(raw + b"changed")
+            with self.assertRaisesRegex(ValueError, "stale evidence"):
+                CHECK.validate_inputs(record)
+            artifact.write_bytes(raw)
+            source.write_bytes(gzip.compress(raw + b"changed"))
+            with self.assertRaisesRegex(ValueError, "stale evidence"):
+                CHECK.validate_inputs(record)
+            record["inputs"] = CHECK.pins([source, artifact])
+            with self.assertRaisesRegex(ValueError, "provenance changed"):
+                CHECK.corpus_prerequisite(record)
 
     def test_heavy_wrapper_argv_and_environment(self):
         runner = self.out / "heavy-run.sh"
