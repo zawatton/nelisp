@@ -9,6 +9,11 @@
 (defconst nelisp-regexp-syntax-run-test-root
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
+(defconst nelisp-regexp-syntax-run-test-standard-ascii
+  (with-syntax-table (standard-syntax-table)
+    (apply #'string (mapcar #'char-syntax (number-sequence 0 127))))
+  "Fresh GNU default classifications, captured before ERT mutates shared tables.")
+
 (ert-deftest nelisp-regexp-syntax-run-gnu-fixture ()
   "Actual matcher results equal the pinned GNU 31.1 output."
   (let ((default-directory nelisp-regexp-syntax-run-test-root))
@@ -57,8 +62,7 @@
       (should (eq (nlre-string-match pattern "a_b") 0))
       (should (= calls 3)))
     (should (equal nlre--standard-ascii-syntax
-                   (with-syntax-table (standard-syntax-table)
-                     (apply #'string (mapcar #'char-syntax (number-sequence 0 127))))))
+                   nelisp-regexp-syntax-run-test-standard-ascii))
     ;; GNU reads the live table directly.  The bootstrap representation has
     ;; class designators in hash slots rather than raw char-table entries.
     (let* ((parent (record 'nelisp--syntax-table (make-hash-table :test 'eq) nil))
