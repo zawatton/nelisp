@@ -72,4 +72,32 @@
                  (sdc-deep 0)))
 (sdc-head "symbol-function-symbolp" (symbol-function 1))
 (sdc-head "fset-symbolp" (fset 1 2))
+
+;; Catch and throw, and handlers around cleanups (the compiled twin is
+;; `bwc-exits' in test/bytecode-word-corpus-src.el):
+;; the handler receives the thrown value (GNU internal_catch reads
+;; handlerlist->val, eval.c:1399) or the error object.
+(defvar sdc-cleanup nil)
+(defun sdc-exit-cases ()
+  (list (catch 'k (throw 'k 42))
+        (catch 'k (throw 'k "str"))
+        (catch 'k (throw 'k (list 1 2 3)))
+        (catch 'k (throw 'k nil))
+        (catch 'k (catch 'j (throw 'k 'outer)))
+        (catch 'k (unwind-protect (throw 'k 'through) (setq sdc-cleanup 'ran)))
+        sdc-cleanup
+        (condition-case e (throw 'sdc-nobody 9) (no-catch (list 'no-catch e)))
+        (condition-case e (unwind-protect (car 1) (setq sdc-cleanup 'ran2))
+          (error e))
+        sdc-cleanup
+        (condition-case e
+            (condition-case nil (car 1) (arith-error 'wrong))
+          (wrong-type-argument (list 'outer e)))
+        (condition-case e (signal 'sdc-user-condition (list 1 (list 2)))
+          (sdc-user-condition (cdr e)))
+        (catch 'k (condition-case nil (throw 'k 'not-an-error) (error 'caught)))
+        (condition-case e
+            (catch 'k (unwind-protect (throw 'k 1) (car 'x)))
+          (wrong-type-argument (list 'cleanup-error e)))))
+(sdc-case "exits-interpreted" (sdc-exit-cases))
 (kill-emacs 0)

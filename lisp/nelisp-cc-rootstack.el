@@ -139,6 +139,24 @@
            (ptr-write-u64 268435472 0 1)
            (atomic-fetch-add 268435544 1)
            0))
+    ;; The same with an explicit kind (1 signal, 2 throw): a frame that
+    ;; caught an exit and passes it on.
+    (defun nl_exit_raise_w (kind tag val)
+      (seq (extern-call wf_copy32 268435480 tag)
+           (extern-call wf_copy32 268435512 val)
+           (ptr-write-u64 268435472 0 kind)
+           (atomic-fetch-add 268435544 1)
+           0))
+    ;; The exit's two values for its handler (handlerlist->val).  A reader
+    ;; that keeps one copies it (wf_copy32, nelisp_cons_construct, ...):
+    ;; with the transitional storage each is the slot itself, valid until
+    ;; the next exit.
+    (defun nl_exit_tag_w () 268435480)
+    (defun nl_exit_val_w () 268435512)
+    ;; GNU signal_or_quit's Fcons (error_symbol, data) (eval.c:1952): the
+    ;; value a condition-case variable receives, built into OUT.
+    (defun nl_exit_condition_into (out)
+      (extern-call nelisp_cons_construct (nl_exit_tag_w) (nl_exit_val_w) out))
     ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
     ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
