@@ -40468,10 +40468,16 @@ correctly."
                  (- (ptr-read-u64 268435464 0) 1)))
             (seq
              (nl_alloc_str fbuf n src)
-             (let* ((lfn_scratch (alloc-bytes 96 8))
-                    (lfn_path (+ lfn_scratch 0))
-                    (lfn_sym (+ lfn_scratch 32))
-                    (lfn_old (+ lfn_scratch 64)))
+             ;; The three slots live across every top-level form of the
+             ;; file, so they are root-stack slots, not `alloc-bytes'
+             ;; scratch: a collection between forms reclaimed the scratch
+             ;; block and the restore below hashed a reused name (SIGSEGV
+             ;; at exit).  GNU's readevalloop keeps the same values
+             ;; reachable through specbind.
+             (let* ((lfn_mark (nl_root_mark ctx))
+                    (lfn_path (nl_root_reserve ctx))
+                    (lfn_sym (nl_root_reserve ctx))
+                    (lfn_old (nl_root_reserve ctx)))
                (seq
                 (nl_cli_expand_load_path file_ptr dd_value lfn_path)
                 (bf_load_file_name_symbol lfn_sym)
@@ -40481,7 +40487,8 @@ correctly."
                 (nl_env_set_value ctx lfn_sym lfn_path)
                 (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
                                      file_ptr (nl_cstr_len file_ptr))
-                (nl_env_set_value ctx lfn_sym lfn_old)))
+                (nl_env_set_value ctx lfn_sym lfn_old)
+                (nl_root_release ctx lfn_mark)))
              (if (= (ptr-read-u64 268435464 0) 0)
                  (nl_cli_action_loop sp0 argc (+ i 2) dd_value fbuf src cursor
                                       result pool out ctx builtin_sym clal_sym)
@@ -41216,15 +41223,16 @@ correctly."
                       ;; Not an `unwind-protect': same reasoning as
                       ;; `bf_load_with_lfn' -- a signal here is a flag+stash,
                       ;; not a stack unwind, so the restore below always runs.
-                      ;; unsafe-inventory: one `alloc-bytes' call for all
-                      ;; three 32-byte Sexp scratch slots (offsets 0/32/64
-                      ;; into the same 96-byte block) instead of three,
-                      ;; same idiom `ctx' itself uses just above (a single
-                      ;; allocation sliced by `(+ ptr OFFSET)').
-                      (let* ((lfn_scratch (alloc-bytes 96 8))
-                             (lfn_path (+ lfn_scratch 0))
-                             (lfn_sym (+ lfn_scratch 32))
-                             (lfn_old (+ lfn_scratch 64)))
+                      ;; The three Sexp slots are root-stack slots: they live
+                      ;; across every top-level form, and an `alloc-bytes'
+                      ;; scratch block is not a root, so a collection
+                      ;; between forms reclaimed it and the restore hashed a
+                      ;; reused name (SIGSEGV at exit).  GNU's readevalloop
+                      ;; keeps the same values reachable through specbind.
+                      (let* ((lfn_mark (nl_root_mark ctx))
+                             (lfn_path (nl_root_reserve ctx))
+                             (lfn_sym (nl_root_reserve ctx))
+                             (lfn_old (nl_root_reserve ctx)))
                         (seq
                          (nl_cli_expand_load_path arg2 dd_value lfn_path)
                          (bf_load_file_name_symbol lfn_sym)
@@ -41234,7 +41242,8 @@ correctly."
                          (nl_env_set_value ctx lfn_sym lfn_path)
                          (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
                                               arg2 (nl_cstr_len arg2))
-                         (nl_env_set_value ctx lfn_sym lfn_old)))
+                         (nl_env_set_value ctx lfn_sym lfn_old)
+                         (nl_root_release ctx lfn_mark)))
                       (if (= (ptr-read-u64 268435464 0) 0)
                           (nl_cli_write_value fbuf out)
                         (- (ptr-read-u64 268435464 0) 1)))))))
