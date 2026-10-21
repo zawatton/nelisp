@@ -8657,8 +8657,13 @@ leave symbols unresolved at link time."
          ;; the unit whenever DEFAULT-FORM is nil; a caller-supplied
          ;; DEFAULT-FORM (the baked build's bare `1') is used as is.
          (dispatch-default (or default-form '(nl_applyfn_unsupported name_ptr)))
+         ;; GNU eval.c:3307-3311 (funcall_subr): a call outside the subr's
+         ;; min/max is wrong-number-of-arguments before anything else, so a
+         ;; registered builtin without a native arm checks its arity first.
          (dispatch-default (if word-abi
-                               (nelisp-standalone--applyfn-word-arm dispatch-default)
+                               (if default-form
+                                   (nelisp-standalone--applyfn-word-arm dispatch-default)
+                                 '(nl_applyfn_default_w func_ptr args env name_ptr))
                              dispatch-default))
          (entries (let ((es (or table nelisp-standalone--applyfn-dispatch-table)))
                     (if word-abi
@@ -16468,8 +16473,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (= (sexp-tag entry) 12) entry 0))))))
 
 
-    ;; Run at most 128 groups (at most 512 original instructions), then
-    ;; restore the ordinary pending-exit and code-boundary checks.
+    ;; GNU bytecode.c:856-867: the dispatch loop polls quit (and GC) once
+    ;; every 256 backward branches (quitcounter), not per instruction.  The
+    ;; run likewise returns to the full dispatcher's pending-exit and
+    ;; code-boundary checks after 256 backward branches (or on any opcode
+    ;; it does not cover); straight-line code never needs the poll.
     ;; Fusion guards capacity, types, overflow and branch bounds before
     ;; stores. A declined opcode keeps its original PC/SP and operands;
     ;; completed pure instructions retain their rooted active stack.
@@ -16486,10 +16494,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (last-buckets 0) (last-count 0) (last-entry-data 0)
            (last-slots 0) (last-index -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
-           (ref 0) (cmp 0) (branch 0) (failed 0))
+           (ref 0) (cmp 0) (branch 0) (failed 0) (back 256) (prev pc))
         (while (> go 0)
-          (setq go (- go 1))
-          (if (or (< pc 0) (>= pc (- length 1))) (setq go 0)
+          (seq
+           (if (< pc prev)
+               (seq (setq back (- back 1)) (if (= back 0) (setq go 0) 0)) 0)
+           (setq prev pc))
+          (if (or (= go 0) (< pc 0) (>= pc (- length 1))) (setq go 0)
             (seq (setq raw (heap-read-u8 data pc))
                  (if (= raw 84)
                      (if (<= sp 0) (setq go 0)
@@ -26711,6 +26722,11 @@ set, which lacks the reader-only `nl_os_write_stderr')."
      (unless default-form
        (list `(defun nl_applyfn_unsupported (name_ptr)
                 ,(nelisp-standalone--applyfn-unsupported-primitive-form))
+             ;; The shared default arm: GNU funcall_subr's arity error first.
+             '(defun nl_applyfn_default_w (func_ptr args env name_ptr)
+                (if (= (bf_n2_direct_arity func_ptr args env 0) 0)
+                    (nl_abi_fail (nl_applyfn_unsupported name_ptr) 0)
+                  0))
              (nelisp-standalone--static-syms-init-defun)))
      ;; Doc 215 builtin word ABI: the dispatcher returns the result WORD, 0
      ;; after stashing a signal.  `nelisp_apply_function' keeps the legacy

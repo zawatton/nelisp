@@ -59,7 +59,8 @@ def run(command: list[str], out: Path, stem: str, stdin: str | None = None,
 def contracts(out: Path) -> tuple[list, list, dict]:
     path = out / 'contracts.json'
     ffi_path = out / 'ffi-contracts.json'
-    expression = f'''(with-temp-file {json.dumps(str(path))}
+    # One --eval reads one form: both files are written inside one progn.
+    expression = f'''(progn (with-temp-file {json.dumps(str(path))}
       (insert (json-encode
         (vector (vconcat (delete-dups (append (copy-sequence nelisp-standalone--reader-builtins)
           '("eval" "funcall" "apply" "provide" "symbol-function" "fset"
@@ -69,7 +70,7 @@ def contracts(out: Path) -> tuple[list, list, dict]:
       (with-temp-file {json.dumps(str(ffi_path))}
         (insert (json-encode (vconcat
           (mapcar (lambda (row) (vector (nth 0 row) (nth 2 row)))
-                  nelisp-standalone--reader-extern-table)))))'''
+                  nelisp-standalone--reader-extern-table))))))'''
     command = [str(GNU), '-Q', '--batch', '-L', 'lisp', '-L', 'src', '-L', 'scripts',
                '--eval', '(setq load-prefer-newer t)', '-l', 'nelisp-standalone-build',
                '--eval', expression]
@@ -113,9 +114,10 @@ def native_source(rows: list[dict]) -> tuple[str, list[str]]:
         # could otherwise hide a missing native check. Restore each binding.
         source.extend([f"(setq callpath-arity-old (symbol-function '{name}))",
                        f"(fset '{name} '(builtin {name}))"])
+        # The reader prints a builtin callable as GNU prints a subr.
         forms = [(f'({name} {args})', name),
-                 (f"(funcall '(builtin {name}) {args})", f'(builtin {name})'),
-                 (f"(apply '(builtin {name}) '({args}))", f'(builtin {name})')]
+                 (f"(funcall '(builtin {name}) {args})", f'#<subr {name}>'),
+                 (f"(apply '(builtin {name}) '({args}))", f'#<subr {name}>')]
         for route, (form, callable_) in zip(('direct', 'funcall', 'apply'), forms):
             source.append(f"(progn (prin1 (list {number} (condition-case err "
                           f"(progn {form} 'callpath-arity-no-error) (error err)))) (terpri))")
@@ -223,7 +225,7 @@ def ffi_controls(out: Path, linkage: str) -> tuple[str, list[str], list[dict], d
 
     add(None, 'global-min', 0,
         "(condition-case err (progn (funcall '(builtin nl-ffi-call)) 'ffi-no-error) (error err))",
-        '(wrong-number-of-arguments (builtin nl-ffi-call) 0)')
+        '(wrong-number-of-arguments #<subr nl-ffi-call> 0)')
     if linkage == 'dynamic':
         for name, arity in table:
             if not isinstance(arity, int) or arity < 0:
@@ -233,7 +235,7 @@ def ffi_controls(out: Path, linkage: str) -> tuple[str, list[str], list[dict], d
                 call = f"(funcall '(builtin nl-ffi-call) {json.dumps(name)} {args_form(supplied)})"
                 add(name, bound, argc,
                     f"(condition-case err (progn {call} 'ffi-no-error) (error err))",
-                    f'(wrong-number-of-arguments (builtin nl-ffi-call) {argc})')
+                    f'(wrong-number-of-arguments #<subr nl-ffi-call> {argc})')
         zero_target = next((name for name in ('getpid', 'sqlite3_libversion', 'dlerror')
                             if [name, 0] in table), None)
         if zero_target is None:
@@ -272,19 +274,22 @@ def main() -> int:
     rows = boundaries(table)
     # This isolated control is intentionally first: old raw string-search can
     # dereference a missing argument. A crash must not truncate the main sweep.
-    regression_source = '''(setq callpath-public-error
-  (condition-case err (string-search "a") (error err)))
-(progn (prin1 (list 'callpath-public-error callpath-public-error)) (terpri))
-(if (and (eq (car callpath-public-error) 'wrong-number-of-arguments)
-         (= (nth 2 callpath-public-error) 1))
-    (progn
-      (princ "CALLPATH-PUBLIC-ARITY-READY\\n")
-      (princ "CALLPATH-PRIVATE-ENTERED\\n")
-      (prin1 (condition-case err (nelisp--string-search "a") (error err)))
-      (terpri))
-  (error "callpath public arity control failed"))
-(exit 0)
-'''
+    # The REPL reads one form per line: every top-level form is one line.
+    # The base control crashes in the private call, and a crash loses a
+    # formatted (heap) string still in the output buffer while literal
+    # writes survive, so the verified public error is printed as a literal.
+    regression_source = (
+        '(setq callpath-public-error (condition-case err (string-search "a") (error err)))\n'
+        '(if (and (eq (car callpath-public-error) (quote wrong-number-of-arguments)) '
+        '(= (nth 2 callpath-public-error) 1)) (progn '
+        '(if (equal callpath-public-error (quote (wrong-number-of-arguments string-search 1))) '
+        '(princ "(callpath-public-error (wrong-number-of-arguments string-search 1))\\n") '
+        '(princ (format "%S\\n" (list (quote callpath-public-error) callpath-public-error)))) '
+        '(princ "CALLPATH-PUBLIC-ARITY-READY\\n") (princ "CALLPATH-PRIVATE-ENTERED\\n") '
+        '(prin1 (condition-case err (nelisp--string-search "a") (error err))) (terpri)) '
+        '(progn (princ (format "%S\\n" (list (quote callpath-public-error) callpath-public-error))) '
+        '(error "callpath public arity control failed")))\n'
+        '(exit 0)\n')
     regression_path = write(args.out / 'regression.el', regression_source)
     command = [str(binary), '--repl', '--no-prompt', '--no-print']
     regression = run(command, args.out, 'regression', regression_source)

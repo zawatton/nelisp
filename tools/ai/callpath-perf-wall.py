@@ -42,7 +42,9 @@ FIXTURES = {"study": ("0bb2af9272cb4c3e4a297d3b36c5aff5b90e2bbd27a6de53e3309ee81
                       "135e8597a877451058dc4e6f858c33ad665c6a2ce3edbb57bd42868dac11c225"),
             "floors": ("590f1429b281105f6127f8dfd8107105a6dd8e9cc1447e873347bfe06513fe4d",
                        "1f90701eadbcf9e59d17953e5f6b96503155d56b58b50540a36355ae39eb5a7d")}
-ITERATIONS = {"interpreter": 100000, "vm": 300000, "bytecode": 1000000}
+# GNU own costs are a few ns (bytecode) to tens of ns; long loops keep the
+# GNU denominator well above timer and clock noise.
+ITERATIONS = {"interpreter": 300000, "vm": 1000000, "bytecode": 5000000}
 
 
 def sha(path):
