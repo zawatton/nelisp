@@ -1,0 +1,56 @@
+#+TITLE: Symbols: GNU 31.1 struct Lisp_Symbol with direct cells and the redirect model
+
+# User decision 2026-10-21: fix the representation first, imitating GNU.
+# Profiles show variable and function access going through a name-hashed
+# mirror table:
+# - the .elc benchmark spends about 9% in nl_intern_hash, symname_probe,
+#   intern_eq and fnv1a;
+# - buffer operations run mirror_bucket_prepend and name hashing on every
+#   switch and set.
+#
+# GNU 31.1:
+# - lisp.h struct Lisp_Symbol holds the name, the value (by redirect), the
+#   function, the plist and next.
+# - redirect is one of SYMBOL_PLAINVAL, SYMBOL_VARALIAS, SYMBOL_LOCALIZED
+#   (a blv) and SYMBOL_FORWARDED.
+# - data.c find_symbol_value, set_internal, indirect_variable and
+#   swap_in_symval_forwarding read and write through the symbol itself, with
+#   no lookup by name.
+#
+# This lane also owns the symbol half of word-heap S3 (header-less symbols).
+#
+# Base: eval/integ-20261021w (eval/core 7d2d49fa3 plus the word-heap line,
+# in final checks).
+# - callpath-perf already gave function reads direct cells (its steps 1a and
+#   1c, on the word-heap line); build on that layout, not beside it.
+# - buffer-native owns the blv internals and is not yet on this base.
+#   LOCALIZED interop is planned in S0.1 and implemented after buffer-native
+#   is merged onto this base.
+#
+# Bar: wall-clock own cost against GNU 31.1, as paired per-round ratios on
+# CPU 13 (COMMON.md Measurement).
+
+* S0 Plan
+** S0.1 docs/design/226-gnu-symbol-port.org maps every symbol operation to its GNU 31.1 source (lisp.h, data.c, eval.c, lread.c intern/obarray), counts mirror-table uses by subsystem, and plans the LOCALIZED interop with buffer-native's blv
+cmd: python3 tools/ai/symbols-check.py plan
+
+* S1 Port and semantics
+** S1.1 Symbols are header-less word-heap objects with direct name, value, function and plist cells; bytes per uninterned symbol are at or below the word-heap S0 threshold
+cmd: python3 tools/ai/symbols-check.py layout
+** S1.2 PLAINVAL, VARALIAS and FORWARDED variables are read and written through the symbol's own cells; the census of mirror-table lookups on those paths is 0
+cmd: python3 tools/ai/symbols-check.py census
+** S1.3 A GNU 31.1 oracle fixture matches on dynamic and static
+The fixture covers symbol-value, set, setq, let and let* (special and lexical), defvar, defconst, defvaralias with watchers, indirect-variable, makunbound, boundp, default-value, fboundp, fset, symbol-function, fmakunbound, intern, intern-soft, unintern, obarray-make, mapatoms and symbol-plist/get/put.
+cmd: python3 tools/ai/symbols-check.py semantics
+
+* S2 Speed (wall-clock against GNU, paired ratios, CPU 13)
+** S2.1 Own cost of symbol-value, set and boundp on a global variable <= GNU's own cost
+cmd: python3 tools/ai/symbols-check.py speed globals
+** S2.2 The .elc mxlib benchmark and the interpreted-call probe gain against the base (median paired ratio < 1.0), with the GNU ratio reported
+cmd: python3 tools/ai/symbols-check.py speed workloads
+
+* S3 End to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
+cmd: python3 tools/ai/symbols-check.py final
+** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
+pending
