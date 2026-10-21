@@ -37,18 +37,23 @@ cmd: python3 tools/ai/codegen-check.py plan
 
 * S1 Kernels: wall-clock time per iteration <= gcc -O2
 ** S1.1 Byte scan: find a byte in a unibyte string, memchr-style loop
+#+TIMEOUT: 600
 cmd: python3 tools/ai/codegen-check.py wall byte-scan
 #+NOTE: 2026-10-21 final compiler (CG1-CG8), CPU 9, paired ratios: NeLisp/gcc -O2 x0.983 (0.247 against 0.255 ns/iter); the 9d5f4a515 compiler's build of the kernel x5.7 slower.  Ir per iteration 31.00 -> 6.00 against gcc's 6.00.
 ** S1.2 List walk: length of a proper list
+#+TIMEOUT: 600
 cmd: python3 tools/ai/codegen-check.py wall list-walk
 #+NOTE: 2026-10-21 blocked by the object representation, not the compiler: NeLisp/gcc -O2 on GNU's layout x2.027, on NeLisp's own layout x1.002.  A cons is a box whose payload points to a separate cell, so each element costs two dependent loads where GNU's XCDR costs one (lisp.h:408, 1468).  Ir 18.00 -> 7.00 against 5.00 (GNU layout) and 7.00 (NeLisp layout).  The cmd stays failing.
 ** S1.3 Fixnum arithmetic: sum and compare in a counted loop
+#+TIMEOUT: 600
 cmd: python3 tools/ai/codegen-check.py wall fixnum-loop
 #+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.002 (0.688 against 0.689 ns/iter, per-round range 0.994-1.007): the same branch-free instruction stream as gcc -O2 (7 Ir, add/lea/cmp/cmov, loop-carried chain of three) after CG8; with the branch it was 6.05 Ir and x1.10.  Ir 22.20 -> 7.00.
 ** S1.4 Table-driven character class test: a byte through a 256-entry table, as the regex fastmap and syntax lookups do
+#+TIMEOUT: 600
 cmd: python3 tools/ai/codegen-check.py wall class-table
 #+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.022 (0.245 against 0.242 ns/iter, per-round range 0.989-1.109; a 15-round rerun gave x1.013): the same 6 instructions and branch structure as gcc -O2, at the two-branches-per-iteration limit; the ratio sits in this machine's run-to-run spread.  Ir 33.00 -> 6.00.
 ** S1.5 Vector element sum over a simple vector
+#+TIMEOUT: 600
 cmd: python3 tools/ai/codegen-check.py wall vector-sum
 #+NOTE: 2026-10-21 NeLisp/gcc -O2 x1.004 (0.471 against 0.468 ns/iter, per-round range 0.994-1.143): the same 10 instructions per element as gcc -O2.  Ir 43.00 -> 10.00.
 
