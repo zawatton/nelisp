@@ -15668,7 +15668,7 @@ eval applyfn.")
     ;; (Doc 143's own funcall-based walk, unchanged). -------------------
     (defun wf_symbol_is_eq (p)
       (if (= (sexp-tag p) 4)
-          (if (= (heap-read-u64 p 24) 2)
+          (if (= (heap-sexp-length p) 2)
               (wf_name_is p 29029 2)
             0)
         0))
@@ -25118,9 +25118,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; complain about the variable instead of about its value.
     (defun bf_keyword_raw (p)
       (if (= (sexp-tag p) 4)
-          (if (< (heap-read-u64 (+ p 24) 0) 1)
+          (if (< (heap-sexp-length p) 1)
               0
-            (if (= (heap-read-u8 (heap-read-u64 (+ p 16) 0) 0) 58) 1 0))
+            (if (= (heap-read-u8 (heap-sexp-data p) 0) 58) 1 0))
         0))
     (defun bf_arrayp_raw (p)
       (let* ((tg (nl_word_tag64 p)))
@@ -31265,11 +31265,11 @@ Other targets return nil, preserving their generated process source exactly."
   '(
 	    (defun nl_bi_name_ptr (sx)
 	      (if (= (sexp-tag sx) 4)
-	          (heap-read-u64 sx 16)
+	          (heap-sexp-data sx)
 	        (nl_bi_strptr sx)))
 	    (defun nl_bi_name_len (sx)
 	      (if (= (sexp-tag sx) 4)
-	          (heap-read-u64 sx 24)
+	          (heap-sexp-length sx)
 	        (nl_bi_strlen sx)))
 	    (defun nl_bi_word_byte (word idx)
 	      (cond
@@ -47674,6 +47674,27 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               (nl_n3_globals_set_w op name (nl_cons_car_word more) env)
             (nl_n3_globals_read_w op name env)))))))
 
+;; `unintern' of the symbol S (GNU lread.c Funintern removes a name only when
+;; the symbol found in the obarray is that symbol): a canonical view names its
+;; buffer; an object, or a view derived from one, is the interned symbol of its
+;; name when the cell of the name's buffer holds it.  1 when it was removed.
+(defun nl_symbol_intern_remove (s)
+  (let* ((buf (if (= (logand s 7) 0) (heap-read-u64 s 16) 0))
+         (base (heap-read-u64 268436288 0)))
+    (if (if (= buf 0) 0
+          (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0))
+        (nl_intern_remove buf (heap-read-u64 s 24))
+      (let* ((obj (if (= (logand s 7) 6) s (nl_symview_object s))))
+        (if (= obj 0) 0
+          (let* ((n (nl_word_length obj))
+                 (cb (nl_intern_canonical_buf (nl_word_data obj) n))
+                 (view (alloc-bytes 32 8)))
+            (if (= cb 0) 0
+              (seq (nl_intern_write_sexp view cb n)
+                   (if (= (nl_symcell_entry (nl_symcells_mirror) view) obj)
+                       (nl_intern_remove cb n)
+                     0)))))))))
+
 (defun nl_apply_do_globals_op_w (args env _pad)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "frame-stack-stats") 1)
       (nl_frame_stack_stats_w env 0)
@@ -47681,7 +47702,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "intern-remove") 1)
       (let ((s (nl_apply_list_nth args 1)))
         (if (= (nl_val_tag s) 4)
-            (if (= (nl_intern_remove (heap-read-u64 s 16) (heap-read-u64 s 24)) 1) 7 3)
+            (if (= (nl_symbol_intern_remove s) 1) 7 3)
           3))
 
   (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
