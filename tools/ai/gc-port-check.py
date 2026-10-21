@@ -430,6 +430,41 @@ def cmd_while_floor():
     return 0
 
 
+FLOAT8_LIMIT = 9
+
+
+def float8_verdict(slope):
+    """S1.10 bar: a retained float costs at most GNU's 8-byte Lisp_Float cell
+    plus its mark bit (alloc.c:2431 float_block), 9 B with rounding."""
+    return slope <= FLOAT8_LIMIT
+
+
+def cmd_float8():
+    """S1.10: the retained slope per float (tools/ai/word-heap-objsize.el, the
+    word-heap S5.1 probe) on the dynamic and static candidates.  Until the
+    legacy 000 views retire (word-heap S6.1) and 000 becomes the dedicated
+    float tag, a float is a vectorlike object with an 8-byte kind header: 16 B
+    in a typed float block, twice GNU's 8 B (Doc 216, "Route to GNU's 8 B")."""
+    import importlib.util
+    if float8_verdict(40) or not float8_verdict(8):
+        return fail('float8: negative control passed or the bar rejects 8 B')
+    spec = importlib.util.spec_from_file_location('wsc', ROOT / 'tools/ai/word-heap-stage-check.py')
+    wsc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wsc)
+    control = Path(os.environ.get('GC_PORT_BASE', ROOT / 'target/gc-port/base/nelisp-dyn'))
+    base = wsc.slope(control, wsc.OBJSIZE, 'float')
+    if float8_verdict(base):
+        return fail(f'float8: the control {control.name} measures {base:g} B, within the bar')
+    got = {b.name: wsc.slope(b, wsc.OBJSIZE, 'float') for b in binaries()}
+    line = (f"float8: retained slope per float {', '.join(f'{k} {v:g} B' for k, v in got.items())} "
+            f"(bar {FLOAT8_LIMIT} B = GNU's 8-byte float_block cell plus its mark bit; "
+            f"control {base:g} B)")
+    if not all(float8_verdict(v) for v in got.values()):
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
 def not_ready(name):
     return fail(f'{name}: implementation or acceptance evidence outstanding')
 
@@ -455,7 +490,9 @@ def main(argv):
         return cmd_wall(argv[1])
     if cmd == 'while-floor':
         return cmd_while_floor()
-    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final|while-floor')
+    if cmd == 'float8':
+        return cmd_float8()
+    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final|while-floor|float8')
     return 2
 
 
