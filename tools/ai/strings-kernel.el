@@ -6,6 +6,7 @@
 (require 'nelisp-standalone-build)
 (require 'nelisp-artifact)
 (require 'nelisp-cc-string-blocks)
+(require 'nelisp-cc-sexp-clone-into)
 
 (let* ((root (expand-file-name "../.." (file-name-directory load-file-name)))
        (output (expand-file-name "target/strings/kernel.o" root))
@@ -20,10 +21,12 @@
                                 (cl-find name (cdr nelisp-standalone--arena-source) :key #'cadr))
                               '(nl_word_data nl_word_data_legacy))
                       (list (cl-find 'nl_g4arm_copy_w nelisp-standalone--applyfn-core-helpers :key #'cadr))
+                      (list (cl-find 'nl_sexp_clone_into (cdr nelisp-cc-sexp-clone-into--source) :key #'cadr))
                       '((defun strings_equal_probe (a b) (str-eq a b))
                         (defun strings_tag_probe (a) (sexp-tag a))
                         (defun strings_name_probe (a) (sexp-name-eq a "abcdefgh"))
-                        (defun strings_byte_probe (a i) (str-byte-at a i)))))))
+                        (defun strings_byte_probe (a i) (str-byte-at a i))
+                        (defun strings_length_probe (a) (str-len a)))))))
   (nelisp-elf-write-binary
    output
    (list :e-type 'rel :machine 'x86_64

@@ -20,7 +20,7 @@ FREQUENCY = Path("/sys/devices/system/cpu/cpu14/cpufreq/scaling_cur_freq")
 
 def run(role, command, kind, round_number, pressure=False):
     env = os.environ.copy()
-    env.update(STRINGS_KIND=kind, STRINGS_N=os.environ.get("STRINGS_N", "10000"))
+    env.update(STRINGS_KIND=kind, STRINGS_N=os.environ.get("STRINGS_N", "100000"))
     fixture = "test/unibyte-alloc-pressure80.el" if pressure else "tools/ai/strings-timing.el"
     stem = OUT / f"{kind}-{round_number}-{role}"
     frequency = FREQUENCY.read_text().strip() if FREQUENCY.exists() else None
@@ -78,7 +78,11 @@ def run(role, command, kind, round_number, pressure=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workload", choices=["producers", "pressure"])
+    parser.add_argument("--round", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--kind", choices=["concat", "substring", "format"], help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if (ROOT / "target/strings/pause-timing").exists():
+        raise SystemExit("Timing paused before the next paired round")
     OUT.mkdir(parents=True, exist_ok=True)
     candidate = ROOT / "target/strings/dynamic/nelisp"
     base = ROOT / "target/strings/base/nelisp"
@@ -88,23 +92,43 @@ def main():
                   for name, path in [("candidate", candidate), ("base", base), ("gnu", Path(gnu))]}
     assert identities["candidate"] != identities["base"], "candidate and base are the same binary"
     commands = {"candidate": [str(candidate)], "gnu": [gnu, "-Q", "--batch"], "base": [str(base)]}
+    if args.round is not None:
+        assert args.workload == "producers" and args.kind
+        rows = []
+        for role in ["candidate", "gnu", "base"]:
+            rows.append(run(role, commands[role], args.kind, args.round))
+            rows.append(run(role, commands[role], args.kind + "-control", args.round))
+        (OUT / f"{args.kind}-round-{args.round}.json").write_text(json.dumps(rows))
+        return
     samples, verdicts = [], {}
     for kind in (["pressure"] if args.workload == "pressure" else ["concat", "substring", "format"]):
         pressure = kind == "pressure"
-        for role in commands:
-            run(role, commands[role], kind, -1, pressure)
+        if pressure:
+            for role in commands:
+                run(role, commands[role], kind, -1, True)
+        # Primitive fixtures warm inside each process before the timer.
         ratios, base_ratios, own = [], [], []
         for round_number in range(7):
             times = {}
-            for role in ["candidate", "gnu", "base"]:
-                row = run(role, commands[role], kind, round_number, pressure)
-                samples.append(row)
-                if pressure:
+            if pressure:
+                for role in ["candidate", "gnu", "base"]:
+                    row = run(role, commands[role], kind, round_number, True)
+                    samples.append(row)
                     times[role] = row["seconds"]
-                else:
-                    control = run(role, commands[role], kind + "-control", round_number)
-                    samples.append(control)
-                    times[role] = row["seconds"] - control["seconds"]
+            else:
+                # One paired round is one heavy measurement unit, released
+                # before queuing the next round. Keep its six runs together
+                # so queue delays cannot separate a call from its control.
+                print(f"start paired round {kind}/{round_number}", flush=True)
+                subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
+                                sys.executable, str(Path(__file__).resolve()), "producers",
+                                "--round", str(round_number), "--kind", kind],
+                               cwd=ROOT, check=True)
+                rows = json.loads((OUT / f"{kind}-round-{round_number}.json").read_text())
+                samples.extend(rows)
+                for role in ["candidate", "gnu", "base"]:
+                    call, control = [r["seconds"] for r in rows if r["role"] == role]
+                    times[role] = call - control
                     assert times[role] > 0, f"{role}/{kind} own cost has insufficient signal"
             ratios.append(times["candidate"] / times["gnu"])
             base_ratios.append(times["candidate"] / times["base"])
@@ -116,7 +140,8 @@ def main():
                               paired_gnu_ratios=ratios, paired_base_ratios=base_ratios,
                               own_seconds=own, passed=(regression < 1 if pressure else ratio <= 1))
     report = dict(cpu=14, rounds=7, metric="paired wall-clock own cost" if args.workload == "producers"
-                  else "paired process wall-clock", identities=identities, samples=samples, verdicts=verdicts)
+                  else "paired process wall-clock", identities=identities, samples=samples, verdicts=verdicts,
+                  iterations=int(os.environ.get("STRINGS_N", "100000")))
     (OUT / f"{args.workload}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(verdicts), flush=True)
     raise SystemExit(0 if all(v["passed"] for v in verdicts.values()) else 1)

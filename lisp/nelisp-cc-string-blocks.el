@@ -22,21 +22,142 @@
         (if (= p 0) 0
           (if (= (nl_os_commit_range p 0 n) 0)
               (seq (nl_os_free_chunk p n) 0) p))))
+    ;; GNU classifies a pointer's allocation before live_string_holding.
+    ;; This base has no shared mem_node tree. Its String-only page index
+    ;; performs that ownership query without walking unrelated sblocks.
+    ;; Entry: live/deleted/empty, 4-KiB page, block base | private kind.
+    (defun nl_string_page_probe (rows cap key)
+      (let* ((hash (* (/ key 4096) 2654435761))
+             (i (logand (logxor hash (sar hash 32)) (- cap 1)))
+             (row (+ rows (* i 24))) (go 1))
+        (while (= go 1)
+          (if (= (heap-read-u64 row 0) 0) (setq go 0)
+            (if (= (heap-read-u64 row 8) key) (setq go 0)
+              (seq (setq i (logand (+ i 1) (- cap 1)))
+                   (setq row (+ rows (* i 24))))))) row))
+(defun nl_string_mapping_op (w end kind)
+  (if (< kind 3)
+      (let*
+	  ((st (data-addr nl_strings_state))
+	   (lo (heap-read-u64 st 96)) (data-lo (heap-read-u64 st 112))
+	   (hi (heap-read-u64 st 104)) (map (heap-read-u64 st 144)))
+	(if (or (= lo 0) (and (/= data-lo 0) (< data-lo lo)))
+	    (setq lo data-lo)
+	  0)
+	(if (> (heap-read-u64 st 120) hi)
+	    (setq hi (heap-read-u64 st 120))
+	  0)
+	(if (or (= map 0) (< w lo) (>= w hi)) 0
+	  (let*
+	      ((row
+		(extern-call nl_string_page_probe (+ map 24) (heap-read-u64 map 8)
+				      (logand w -4096))))
+	    (if (/= (heap-read-u64 row 0) 1) 0
+	      (let*
+		  ((packed (heap-read-u64 row 16))
+		   (base (logand packed -8))
+		   (block-kind (logand packed 7))
+		   (end
+		    (if (= block-kind 3) (+ base 32736)
+		      (if (= block-kind 4) (+ base 8192)
+			(heap-read-u64 base 8)))))
+		(if (and (>= w base) (< w end))
+		    (if (= kind 1)
+			(if
+			    (and (= block-kind 3) (= (logand w 31) 0)
+				 (/= (heap-read-u64 w 24) 0))
+			    1
+			  0)
+		      packed)
+		  0))))))
+    (let*
+	((st (data-addr nl_strings_state))
+	 (map (heap-read-u64 st 144))
+	 (cap (if (= map 0) 0 (heap-read-u64 map 8)))
+	 (used (if (= map 0) 0 (heap-read-u64 map 16)))
+	 (page (logand w -4096))
+	 (pages (/ (+ (- end page) 4095) 4096)) (ok 1))
+      (if (or (= map 0) (> (* (+ used pages) 2) cap))
+	  (let* ((live 0) (i 0) (nextcap (if (= cap 0) 64 cap)))
+	    (while (< i cap)
+	      (if (= (heap-read-u64 (+ map 24) (* i 24)) 1)
+		  (setq live (+ live 1))
+		0)
+	      (setq i (+ i 1)))
+	    (while (< nextcap (* (+ live pages) 2))
+	      (setq nextcap (* nextcap 2)))
+	    (let*
+		((fresh
+		  (nl_string_alloc_mapping (+ 24 (* nextcap 24)))))
+	      (if (= fresh 0) (setq ok 0)
+		(seq (ptr-write-u64 fresh 8 nextcap)
+		     (ptr-write-u64 fresh 16 live) (setq i 0)
+		     (while (< i cap)
+		       (let* ((old (+ map (+ 24 (* i 24)))))
+			 (if (= (heap-read-u64 old 0) 1)
+			     (let*
+				 ((row
+				   (extern-call nl_string_page_probe (+ fresh 24)
+							 nextcap
+							 (heap-read-u64
+							  old 8))))
+			       (ptr-write-u64 row 8
+					      (heap-read-u64 old 8))
+			       (ptr-write-u64 row 16
+					      (heap-read-u64 old 16))
+			       (ptr-write-u64 row 0 1))
+			   0))
+		       (setq i (+ i 1)))
+		     (if (= map 0) 0
+		       (seq
+			(ptr-write-u64 map 0 (heap-read-u64 st 152))
+			(ptr-write-u64 st 152 map)))
+		     (ptr-write-u64 st 144 fresh) (setq map fresh)
+		     (setq cap nextcap)))))
+	0)
+      (if (= ok 0) 0
+	(seq
+	 (while (< page end)
+	   (let* ((row (extern-call nl_string_page_probe (+ map 24) cap page)))
+	     (if (= (heap-read-u64 row 0) 0)
+		 (ptr-write-u64 map 16 (+ (heap-read-u64 map 16) 1))
+	       0)
+	     (ptr-write-u64 row 8 page)
+	     (ptr-write-u64 row 16 (logior w kind))
+	     (ptr-write-u64 row 0 1))
+	   (setq page (+ page 4096)))
+	 1)))))
+
+    (defun nl_string_register_mapping (base end kind)
+  (nl_string_mapping_op base end kind))
+
+    (defun nl_string_unregister_mapping (base end)
+      (let* ((map (heap-read-u64 (data-addr nl_strings_state) 144))
+             (cap (if (= map 0) 0 (heap-read-u64 map 8)))
+             (page (logand base -4096)))
+        (if (= map 0) 0
+          (seq
+           (while (< page end)
+             (let* ((row (extern-call nl_string_page_probe (+ map 24) cap page)))
+               (if (and (= (heap-read-u64 row 0) 1)
+                        (= (logand (heap-read-u64 row 16) -8) base))
+                   (ptr-write-u64 row 0 2) 0))
+             (setq page (+ page 4096))) 0))))
+    (defun nl_string_mapping_holding (w) (nl_string_mapping_op w 0 0))
+
+    (defun nl_string_reap_page_tables ()
+      (let* ((st (data-addr nl_strings_state)) (map (heap-read-u64 st 152)))
+        (ptr-write-u64 st 152 0)
+        (while (/= map 0)
+          (let* ((next (heap-read-u64 map 0)) (cap (heap-read-u64 map 8)))
+            (nl_os_free_chunk map (+ 24 (* cap 24))) (setq map next))) 0))
     (defun nl_string_sdata_size (n)
       (logand (+ (if (< n 7) 16 (+ n 9)) 7) -8))
     (defun nl_string_nbytes (s)
       (let* ((n (heap-read-u64 s 8)))
         (if (< n 0) (logand (heap-read-u64 s 0) 9223372036854775807) n)))
-    (defun nl_string_header_p (s)
-      (let* ((st (data-addr nl_strings_state)))
-        (if (or (< s 4096) (/= (logand s 31) 0)
-                (< s (heap-read-u64 st 96)) (>= s (heap-read-u64 st 104))) 0
-          (let* ((block (logand s -32768)) (b (heap-read-u64 st 0)) (found 0))
-            (while (and (/= b 0) (= found 0))
-              (if (= b block) (setq found 1)
-                (setq b (heap-read-u64 b 32744))))
-            (if (and (= found 1) (< (- s block) 32736)
-                     (/= (heap-read-u64 s 24) 0)) 1 0)))))
+    (defun nl_string_header_p (s) (nl_string_mapping_op s 0 1))
+
     (defun nl_string_word_p (w)
       (if (= (logand w 7) 4) (nl_string_header_p (- w 4)) 0))
     (defun nl_string_kind (s)
@@ -103,6 +224,8 @@
             (let* ((origin (nl_string_alloc_mapping 65536))
                    (b (if (= origin 0) 0 (logand (+ origin 32767) -32768))) (i 1022))
               (if (= b 0) 0
+                (if (= (nl_string_register_mapping b (+ b 32736) 3) 0)
+                    (seq (nl_os_free_chunk origin 65536) (setq s 0))
                 (seq
                  (ptr-write-u64 b 32736 origin)
                  (ptr-write-u64 b 32744 (heap-read-u64 st 0))
@@ -118,7 +241,7 @@
                      (ptr-write-u64 h 24 0)
                      (ptr-write-u64 st 8 h))
                    (setq i (- i 1)))
-                 (setq s (heap-read-u64 st 8))))) 0)
+                 (setq s (heap-read-u64 st 8)))))) 0)
         (if (= s 0) 0
           (seq (ptr-write-u64 st 8 (heap-read-u64 s 0))
                (ptr-write-u64 s 0 0) (ptr-write-u64 s 8 0)
@@ -130,18 +253,22 @@
         (if (> nbytes 1024)
             (seq (setq b (nl_string_alloc_mapping (+ needed 16)))
                  (if (= b 0) 0
+                   (if (= (nl_string_register_mapping b (+ b needed 16) 5) 0)
+                       (seq (nl_os_free_chunk b (+ needed 16)) (setq b 0))
                    (seq (ptr-write-u64 b 0 (heap-read-u64 st 32))
                         (ptr-write-u64 st 32 b)
-                        (setq data (+ b 16)))))
+                        (setq data (+ b 16))))))
           (seq
            (if (or (= b 0) (> (+ (heap-read-u64 b 8) needed) (+ b 8192)))
                (let* ((fresh (nl_string_alloc_mapping 8192)))
                  (if (= fresh 0) (setq b 0)
+                   (if (= (nl_string_register_mapping fresh (+ fresh 8192) 4) 0)
+                       (seq (nl_os_free_chunk fresh 8192) (setq b 0))
                    (seq (ptr-write-u64 fresh 0 0)
                         (ptr-write-u64 fresh 8 (+ fresh 16))
                         (if (= b 0) (ptr-write-u64 st 16 fresh)
                           (ptr-write-u64 b 0 fresh))
-                        (setq b fresh) (ptr-write-u64 st 24 b)))) 0)
+                        (setq b fresh) (ptr-write-u64 st 24 b))))) 0)
            (if (/= b 0) (setq data (heap-read-u64 b 8)) 0)))
         (if (= data 0) 0
           (seq
@@ -157,8 +284,6 @@
                (ptr-write-u8 (+ data 8) nbytes 0)
                (ptr-write-u64 (data-addr nl_gc_stats) 0
                               (+ (heap-read-u64 (data-addr nl_gc_stats) 0) (+ 32 needed)))
-               (ptr-write-u64 (data-addr nl_gc_stats) 32
-                              (+ (heap-read-u64 (data-addr nl_gc_stats) 32) (+ 32 needed)))
                (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) (+ 32 needed)))
                s))))
     (defun nl_string_new_unlocked (bytes n unibyte)
@@ -178,24 +303,32 @@
     ;; Out slots are caller-owned ABI transport. They never allocate an
     ;; alias object. nl_val_clone_into recovers the canonical header WORD.
     (defun nl_string_store_view (word out)
-      (let* ((s (- word 4)))
-        (seq (ptr-write-u64 out 0 (nl_string_kind s))
-             (ptr-write-u64 out 8 (logior s (logand (nl_string_capacity s) 4611686018427387904)))
-             (ptr-write-u64 out 16 (heap-read-u64 s 24))
-             (ptr-write-u64 out 24 (nl_string_nbytes s)) out)))
+      (let* ((s (- word 4)) (bytes (heap-read-u64 s 8)))
+        ;; Decode size_byte once when packing the compatibility transport.
+        (if (< bytes 0)
+            (seq (ptr-write-u64 out 0 14)
+                 (ptr-write-u64 out 8 (logior s 2305843009213693952))
+                 (ptr-write-u64 out 24 (logand (heap-read-u64 s 0) 9223372036854775807)))
+          (seq (ptr-write-u64 out 0 5)
+               (ptr-write-u64 out 8 (logior s 6917529027641081856))
+               (ptr-write-u64 out 24 bytes)))
+        (ptr-write-u64 out 16 (heap-read-u64 s 24)) out))
     (defun nl_string_view_header (sp)
       (let* ((tag (heap-read-u8 sp 0)))
         (if (or (= tag 5) (= tag 14))
-            (let* ((s (logand (heap-read-u64 sp 8) 4611686018427387903)))
-              (if (= (nl_string_header_p s) 1) s 0)) 0)))
+            (let* ((cap (heap-read-u64 sp 8))
+                   (s (logand cap 2305843009213693951)))
+              ;; Bit 61 identifies a caller-owned view issued by this
+              ;; kernel. As with GNU XSTRING, its precise edge is trusted;
+              ;; arbitrary legacy capacities still need ownership lookup.
+              (if (/= (logand cap 2305843009213693952) 0)
+                  (if (/= (heap-read-u64 s 24) 0) s 0)
+                (if (= (nl_string_header_p s) 1) s 0))) 0)))
     (defun nl_string_from_view (sp)
+      ;; The canonical header owns representation flags. A caller's old
+      ;; view must not resurrect multibyte state after clear-string.
       (let* ((s (nl_string_view_header sp)))
-        (if (= s 0) 0
-          (seq
-           (if (= (heap-read-u8 sp 0) 14) (ptr-write-u64 s 8 -1)
-             (if (/= (logand (heap-read-u64 sp 8) 4611686018427387904) 0)
-                 (ptr-write-u64 s 8 (heap-read-u64 sp 24)) 0))
-           (+ s 4)))))
+        (if (= s 0) 0 (+ s 4))))
     (defun nl_string_mark (s)
       (if (= (nl_string_header_p s) 0) 0
         (if (< (heap-read-u64 s 0) 0) 0
@@ -220,40 +353,21 @@
               (setq i (+ i 1))))
           (setq b (heap-read-u64 b 32744)))
         (ptr-write-u64 st 56 0) (ptr-write-u64 st 64 0) 0))
-    (defun nl_string_data_holding (w first small)
-      (let* ((b first) (owner 0))
-        (while (and (/= b 0) (= owner 0))
-          (let* ((end (heap-read-u64 b 8)))
-            (if (and (>= w (+ b 16)) (< w end))
-                (let* ((d (+ b 16)))
-                  (while (and (< d end) (= owner 0))
-                    (let* ((s (heap-read-u64 d 0))
-                           (n (if (= s 0) (heap-read-u64 d 8) (nl_string_nbytes s))))
-                      (if (and (/= s 0) (>= w (+ d 8)) (<= w (+ d 8 n)))
-                          (setq owner s) 0)
-                      (setq d (+ d (nl_string_sdata_size n)))))) 0))
-          (setq b (heap-read-u64 b 0))) owner))
     (defun nl_string_pin_word (w)
-      (let* ((st (data-addr nl_strings_state)) (s (logand w -32)))
-        (if (= (nl_string_header_p s) 0)
-            (seq (setq s 0)
-                 (if (and (>= w (heap-read-u64 st 112)) (< w (heap-read-u64 st 120)))
-                     (let* ((b (heap-read-u64 st 16)) (large 0))
-                       ;; Search small and large chains with one physical
-                       ;; sdata walk, as GNU live_string_holding does.
-                       (while (and (= s 0) (or (/= b 0) (= large 0)))
-                         (if (= b 0)
-                             (seq (setq b (heap-read-u64 st 32)) (setq large 1))
-                           (let* ((end (heap-read-u64 b 8)))
-                             (if (and (>= w (+ b 16)) (< w end))
-                                 (let* ((d (+ b 16)))
-                                   (while (and (< d end) (= s 0))
-                                     (let* ((owner (heap-read-u64 d 0))
-                                            (n (if (= owner 0) (heap-read-u64 d 8) (nl_string_nbytes owner))))
-                                       (if (and (/= owner 0) (>= w (+ d 8)) (<= w (+ d 8 n)))
-                                           (setq s owner) 0)
-                                       (setq d (+ d (nl_string_sdata_size n)))))) 0)
-                             (setq b (heap-read-u64 b 0)))))) 0)) 0)
+      (let* ((st (data-addr nl_strings_state))
+             (mapping (nl_string_mapping_holding w))
+             (kind (logand mapping 7)) (base (logand mapping -8)) (s 0))
+        (if (= kind 3)
+            (let* ((header (logand w -32)))
+              (if (/= (heap-read-u64 header 24) 0) (setq s header) 0))
+          (if (or (= kind 4) (= kind 5))
+              (let* ((d (+ base 16)) (end (heap-read-u64 base 8)))
+                (while (and (< d end) (= s 0))
+                  (let* ((owner (heap-read-u64 d 0))
+                         (n (if (= owner 0) (heap-read-u64 d 8) (nl_string_nbytes owner))))
+                    (if (and (/= owner 0) (>= w (+ d 8)) (<= w (+ d 8 n)))
+                        (setq s owner) 0)
+                    (setq d (+ d (nl_string_sdata_size n)))))) 0))
         (if (= s 0) 0
           (seq (nl_gc_mark_word (+ s 4)) (ptr-write-u64 st 56 1) 1))))
     (defun nl_compact_small_strings ()
@@ -282,6 +396,7 @@
             (setq b (heap-read-u64 tb 0))
             (while (/= b 0)
               (let* ((next (heap-read-u64 b 0)))
+                (nl_string_unregister_mapping b (+ b 8192))
                 (nl_os_free_chunk b 8192) (setq b next)))
             (ptr-write-u64 tb 8 to) (ptr-write-u64 tb 0 0)
             (ptr-write-u64 st 24 tb) 1))))
@@ -307,7 +422,7 @@
               (setq i (+ i 1)))
             (if (and (= live 0) (>= empty 2))
                 (seq (ptr-write-u64 st 8 before)
-                     (nl_os_free_chunk (heap-read-u64 b 32736) 65536))
+                     (seq (nl_string_unregister_mapping b (+ b 32736)) (nl_os_free_chunk (heap-read-u64 b 32736) 65536)))
               (seq (if (= live 0) (setq empty (+ empty 1)) 0)
                    (ptr-write-u64 b 32744 kept) (setq kept b)))
             (setq b next)))
@@ -315,10 +430,11 @@
         (setq b (heap-read-u64 st 32)) (setq kept 0)
         (while (/= b 0)
           (let* ((next (heap-read-u64 b 0)) (end (heap-read-u64 b 8)))
-            (if (= (heap-read-u64 b 16) 0) (nl_os_free_chunk b (- end b))
+            (if (= (heap-read-u64 b 16) 0) (seq (nl_string_unregister_mapping b end) (nl_os_free_chunk b (- end b)))
               (seq (ptr-write-u64 b 0 kept) (setq kept b))) (setq b next)))
         (ptr-write-u64 st 32 kept)
         (nl_compact_small_strings)
+        (nl_string_reap_page_tables)
         (let* ((fix (heap-read-u64 st 64)))
           (while (/= fix 0)
             (let* ((sp (heap-read-u64 fix 0)) (s (nl_string_view_header sp)))

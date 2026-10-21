@@ -89,17 +89,20 @@ ordinary representation work does not require changing a machine emitter."
            `(if (= (logand ,v 7) 4) (ptr-read-u64 (- ,v 4) 24)
               (ptr-read-u64 ,v 16))))
       `(let* ((,a ,(nelisp-heap-accessors-lower left))
-              (,b ,(nelisp-heap-accessors-lower right))
-              (,an ,(bytes a)) (,bn ,(bytes b))
-              (,i 0) (,ok 1))
-         (if (/= ,an ,bn) 0
-           (let* ((,ap ,(data a)) (,bp ,(data b)))
-             (seq
-              (while (and (< ,i ,an) (= ,ok 1))
-                (if (/= (ptr-read-u8 ,ap ,i) (ptr-read-u8 ,bp ,i))
-                    (setq ,ok 0) 0)
-                (setq ,i (+ ,i 1)))
-              ,ok)))))))
+              (,b ,(nelisp-heap-accessors-lower right)))
+         ;; Legacy Symbol/name slots retain the existing byte-comparison
+         ;; primitive. Only GNU header WORDs need the representation bridge.
+         (if (and (/= (logand ,a 7) 4) (/= (logand ,b 7) 4))
+             (str-eq ,a ,b)
+           (let* ((,an ,(bytes a)) (,bn ,(bytes b)) (,i 0) (,ok 1))
+             (if (/= ,an ,bn) 0
+               (let* ((,ap ,(data a)) (,bp ,(data b)))
+                 (seq
+                  (while (and (< ,i ,an) (= ,ok 1))
+                    (if (/= (ptr-read-u8 ,ap ,i) (ptr-read-u8 ,bp ,i))
+                        (setq ,ok 0) 0)
+                    (setq ,i (+ ,i 1)))
+                  ,ok)))))))))
 
 (defun nelisp-heap-accessors--lower-string-tag (operand)
   "Use the canonical WORD tag accessor, including GNU strings."
@@ -164,7 +167,7 @@ Every operand is retained exactly once; dotted data is preserved."
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
          ((and (eq (car source) 'defun)
-               (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
+               (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nl_sexp_clone_into nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
                    (string-match-p
                 "\\`\\(?:nl_gc_\\|nelisp_env_\\|nelisp_mirror_\\|nelisp_frame_stack_\\|nl_bignum_\\|nl_native_\\|nl_intern_\\|nl_cell_\\|nl_lookup_fn_autoload\\|nl_symname_\\|nl_symbol_name_\\|nl_record_\\|nl_vector_\\|nl_frame_stack_\\|nl_root_\\|nl_hdr_\\|nl_chunk_\\|nl_alloc_\\|nl_freelist_\\|nl_word_\\|nl_vci_\\|nl_vl_\\|nl_sci_\\|nl_val_\\)"
                 (symbol-name (cadr source)))))
@@ -178,7 +181,14 @@ Every operand is retained exactly once; dotted data is preserved."
          ((eq (car source) 'str-eq)
           (nelisp-heap-accessors--lower-string-eq (cadr source) (caddr source)))
          ((eq (car source) 'str-len)
-          (list 'nl_word_length (nelisp-heap-accessors-lower (cadr source))))
+          ;; This grammar op's contract is String/Symbol, while the
+          ;; generic Sexp length accessor also handles vectorlike flags.
+          (let ((p (make-symbol "string-length-value")))
+            `(let* ((,p ,(nelisp-heap-accessors-lower (cadr source))))
+               (if (= (logand ,p 7) 4)
+                   (let* ((n (ptr-read-u64 (- ,p 4) 8)))
+                     (if (< n 0) (logand (ptr-read-u64 (- ,p 4) 0) 9223372036854775807) n))
+                 (ptr-read-u64 ,p 24)))))
          ((eq (car source) 'str-bytes)
           (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
          ((eq (car source) 'str-byte-at)

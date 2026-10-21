@@ -655,7 +655,7 @@ binary's own digest.  Returns the digest as a hex string."
   (let* ((sections (plist-get unit :sections))
          (bss (assq 'bss sections))
          (offset (logand (+ (cdr bss) 7) -8)))
-    (setcdr bss (+ offset 144))
+    (setcdr bss (+ offset 160))
     (plist-put unit :symbols
                (append (plist-get unit :symbols)
                        (list (nelisp-link-symbol "nl_strings_state" offset
@@ -4843,11 +4843,12 @@ REPL-facing module it feeds."
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (nl_gc_mark_vectorlike (- dw 6))
+                      (if (= (logand dw 7) 4) (nl_gc_mark_word dw)
+                       (if (= (logand dw 7) 6) (nl_gc_mark_vectorlike (- dw 6))
                         (if (= (nl_gc_mark_block dw) 0) 0
                           (if (= (nl_val_tag dw) 7)
                               (seq (setq sp dw) (setq go 1))
-                            (nl_gc_mark_slot dw))))))))))) 0)))
+                            (nl_gc_mark_slot dw)))))))))))) 0)))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
@@ -18030,10 +18031,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (nl_alloc_unibyte_mut_str cap slot)
         (mut-str-make-empty slot cap)))
     (defun m5_copy_str_bytes (src dst_ptr src-i dst-i i n)
-      (while (< i n)
-        (seq (ptr-write-u8 dst_ptr (+ dst-i i) (heap-read-u8 src (+ src-i i)))
-             (setq i (+ i 1))))
-      1)
+      (nl_string_copy_bytes (+ src src-i i) (+ dst_ptr dst-i i) (- n i)))
     (defun m5_push_str_bytes_slow (ms src_ptr i n)
       (while (< i n)
         (seq (mut-str-push-byte ms (m5_byte_at src_ptr i))
@@ -18046,8 +18044,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (dst (heap-read-u64 nlstr 8))
                (len (heap-read-u64 nlstr 16))
                (count (- n i)))
-          (if (<= (+ len count) cap)
-              (seq (m5_copy_str_bytes (nl_bi_strptr src_ptr) dst i len 0 count)
+          ;; GNU fns.c:934-967 counts same-kind strings from their byte
+          ;; lengths, then copies each span directly into the final sdata.
+          (if (or (= cap -1) (<= (+ len count) cap))
+              (seq (if (= cap -1) 0
+                     (m5_copy_str_bytes (nl_bi_strptr src_ptr) dst i len 0 count))
                    (ptr-write-u64 (+ nlstr 16) 0 (+ len count)))
             (m5_push_str_bytes_slow ms src_ptr i n)))))
     (defun m5_push_str (ms src_ptr)

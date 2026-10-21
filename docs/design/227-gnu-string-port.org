@@ -222,5 +222,81 @@ The base's optimized cons cdr walk originally called nl_gc_mark_block before
 recognizing a non-cons WORD. A String WORD names a pool header outside the
 old arena, so this skipped lexical bindings whose value was a dotted cdr.
 Its precise String branch must call nl_gc_mark_word directly; it must not
-conservatively pin that ordinary edge. Audit the analogous char-table WORD
-walk when integrating the new String tag into gc-port.
+conservatively pin that ordinary edge. The char-table WORD walk already delegates directly to nl_gc_mark_word.
+
+* Existing Symbol-name ownership
+
+GNU data.c:1678 set_internal retains the Symbol and accesses its value
+cell; it does not create a separate immutable String key. NeLisp's mirror
+still owns its base-specific key table, but a Symbol key now keeps the
+existing Symbol/name owner through the existing clone transport. It no
+longer allocates a pooled String containing a second copy of that name.
+Private callers that explicitly supply String names retain independent
+name-copy semantics. This adapts name ownership only; Symbol layout,
+identity, hashing, and the environment call protocol are unchanged.
+
+The str-eq bridge uses the existing legacy comparison primitive for two
+legacy slots. Its GNU-header span decoder is needed only when at least
+one input is a canonical String WORD. No machine emitter is changed.
+
+* Classified String mapping lookup
+
+GNU alloc.c:4914-4934 first classifies an address with its memory ownership
+index, then calls live_string_holding (alloc.c:4581). This base has no shared
+GNU mem_node tree; the initial whole-pool range/list fallback searched every
+sblock for unrelated old-arena pointers during conservative GC and regressed
+allocation workloads. The String allocator now registers its own committed
+4-KiB pages in an open-addressed ownership index. Private kinds distinguish
+header, small sdata and large sdata mappings. A lookup first finds the exact
+mapping, then inspects only that sblock; it never reads an unmapped page.
+
+This adapts the classification mechanism to the missing shared memory-index
+layer. It adds no Lisp-visible primitive or object header. Index growth
+publishes a single new table pointer; old tables remain mapped until GC's
+quiescent point, after registered evaluator threads have parked outside
+these non-allocating lookup helpers. Deletion is performed only during
+sweep. The String BSS is 160 B, still appended after the base's existing
+storage. Index tables and unused alignment reservations are block
+bookkeeping, excluded from the logical 32+24 B object figure. gc-port can
+replace this adapter with its shared allocation ownership resolver.
+
+The legacy str-len grammar already accepts only String/Symbol receivers.
+Its direct String byte-count lowering does not route through the unrelated
+vectorlike virtual-flags accessor; the generic heap-sexp-length operation
+retains that wider contract.
+
+* Retained layout measurement
+
+Whole-GC String counts include unrelated snapshot/cached names, and the
+public live-byte statistic includes both arenas and the new pool. They
+cannot prove per-object size by subtracting two independently warmed
+processes. The checker instead pauses its own child after collection and
+inspects the retained population vector: every current element is tag 100,
+with a 32 B aligned header, 8 characters/bytes, a correct sdata back-pointer
+and 24 B adjacent small-data stride. Aliases share one canonical header.
+The base's same vector stores 40 B owned views over 16 B character
+allocations. The same acceptance predicate deliberately rejects that base.
+No address or object dump is included in the evidence report.
+
+* Same-kind producer spans
+
+GNU fns.c:934-967 obtains the final byte length before allocating and uses
+memcpy for strings whose encoding matches the result. The count-only
+builder now adds an existing span's byte length directly, and the fill
+pass uses the shared word-sized byte copier. Neither pass creates an
+intermediate character buffer. Inputs requiring unibyte-to-multibyte
+promotion retain character encoding so GNU's raw-byte rules still apply.
+The bytecode builder retains its existing capacity-growth path.
+
+* Remaining property-copy cost
+
+The existing Lisp interval engine keeps String intervals in an identity
+side table. Its compatibility copy bridge installs interpreted concat and
+substring functions after the first String property write; bootstrap can
+already trigger that installation. This preserves the oracle fixture but
+makes plain concat pay for a Lisp property-copy walk. GNU fns.c:948-967
+checks the String's interval pointer in its native concatenation loop.
+That mechanism has not yet been ported: Header.intervals is reserved and
+marked when populated, but the Lisp metadata engine still owns the side
+table. The CPU-14 build37 checkpoint exposes the resulting regression;
+this is an unmet S2.1 criterion, not an approved threshold revision.

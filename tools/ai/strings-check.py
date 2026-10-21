@@ -8,6 +8,9 @@ import os
 import subprocess
 import time
 import hashlib
+import select
+import signal
+import struct
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "target/strings"
@@ -19,6 +22,7 @@ CENSUS = {
     "read": ["nl_str_bytes_ptr", "nl_str_char_count"],
     "publication": ["m5_finish_string_w"],
     "retag": ["nelisp_reader_p_build_head_symbol"],
+    "name_owner": ["nelisp_mirror_bucket_prepend_unchecked"],
 }
 
 
@@ -32,13 +36,13 @@ def plan():
                 for match in re.finditer(r"\(defun\s+" + re.escape(name) + r"(?=\s|\()", source):
                     rows.append(dict(family=family, name=name, path=str(path.relative_to(ROOT)),
                                      line=source.count("\n", 0, match.start()) + 1))
-    assert len(rows) == 16, f"census changed: {len(rows)} definitions; classify before accepting"
+    assert len(rows) == 17, f"census changed: {len(rows)} definitions; classify before accepting"
     for token in ["alloc.c:1729", "character.h:", "fns.c:", "nl_sweep_strings",
                   "nl_gc_mark_reset_all", "nl_gc_conserv_typed", "nl_dump_compact_write"]:
         assert token in doc, f"missing plan mechanism: {token}"
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "census.json").write_text(json.dumps(rows, indent=2) + "\n")
-    print("PASS plan: GNU mechanism map, 16 classified definitions, GC integration contract")
+    print("PASS plan: GNU mechanism map, 17 classified definitions, GC integration contract")
 
 
 def kernel():
@@ -85,41 +89,145 @@ def semantics():
     print(f"PASS semantics: {len(outputs['gnu'])} GNU cases on dynamic and static")
 
 
+def root_layout(binary, symbols, n, mode):
+    """Inspect this check's own paused child; never publish raw addresses."""
+    env = dict(os.environ, STRINGS_N=str(n), STRINGS_MODE=mode)
+    fixture = ROOT / "tools/ai/strings-layout.el"
+    form = "(load " + json.dumps(str(fixture)) + ")"
+    child = subprocess.Popen([str(binary), "--eval", form], cwd=ROOT, env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, bufsize=0)
+    output = b""
+    try:
+        deadline = time.monotonic() + 60
+        while b"STRINGS-HOLD\n" not in output and time.monotonic() < deadline:
+            ready, _, _ = select.select([child.stdout], [], [], 1)
+            if ready:
+                block = os.read(child.stdout.fileno(), 4096)
+                if not block:
+                    break
+                output += block
+        assert b"STRINGS-HOLD\n" in output, "layout child did not reach retained-root barrier"
+        child.send_signal(signal.SIGSTOP)
+        _, stopped = os.waitpid(child.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(stopped), "layout child exited before inspection"
+        with open(f"/proc/{child.pid}/mem", "rb", buffering=0) as memory:
+            def raw(address, count):
+                return os.pread(memory.fileno(), count, address)
+            def u(address):
+                return struct.unpack("<Q", raw(address, 8))[0]
+            def payload(word):
+                return word - 6 if word & 7 == 6 else u(word + 8)
+            def slot(word, index):
+                return u(payload(word) + 16 + index * 8)
+            environment = u(symbols["nl_gc_loop_ctx"] + 64)
+            table = slot(environment, 0)
+            capacity, buckets = slot(table, 0) >> 2, slot(table, 1)
+            assert 0 < capacity <= 65536, "invalid environment bucket count"
+            value = None
+            for index in range(capacity):
+                link, steps = u(payload(buckets) + 8 + index * 8), 0
+                while link > 4096 and steps < 10000:
+                    pair = u(payload(link))
+                    key, entry = u(payload(pair)), u(payload(pair) + 8)
+                    length = u(key - 4 + 8) if key & 7 == 4 else u(key + 24)
+                    if key & 7 == 4 and length == 2**64 - 1:
+                        length = u(key - 4) & (2**63 - 1)
+                    if length == len("strings-layout-keep"):
+                        data = u(key - 4 + 24) if key & 7 == 4 else u(key + 16)
+                        if raw(data, length) == b"strings-layout-keep":
+                            value = slot(entry, 0)
+                            break
+                    link, steps = u(payload(link) + 8), steps + 1
+                if value is not None:
+                    break
+            assert value is not None, "retained vector root not found"
+            kind = u(value - 6) & 63 if value & 7 == 6 else raw(value, 1)[0]
+            if kind == 11:
+                value = u(payload(value))
+            assert value & 7 == 6 and u(value - 6) & 63 == 8, "root is not a vector WORD"
+            assert u(value - 6) >> 8 == n, "retained vector length differs"
+            words = [u(value - 6 + 8 + i * 8) for i in range(n)]
+            canonical = all(word & 7 == 4 for word in words)
+            data_addresses, legacy_totals = [], []
+            for word in words:
+                if canonical:
+                    header = word - 4
+                    assert header % 32 == 0 and u((header & -32768) + 32752) == 3
+                    assert u(header) == 8 and u(header + 8) == 2**64 - 1
+                    data = u(header + 24)
+                    assert u(data - 8) == header and raw(data, 9) == b"xxxxxxxx\0"
+                else:
+                    assert word & 7 == 0 and raw(word, 1)[0] in (5, 14)
+                    data = u(word + 16)
+                    assert u(word + 24) == 8 and raw(data, 8) == b"xxxxxxxx"
+                    legacy_totals.append(((u(word - 8) & 0xFFFFFFF8), (u(data - 8) & 0xFFFFFFF8)))
+                data_addresses.append(data)
+            assert (len(set(data_addresses)) == 1) == (mode == "aliases")
+            if canonical:
+                assert len(set(words)) == (n if mode == "population" else 1)
+                ordered = sorted(set(data_addresses))
+                if len(ordered) > 1:
+                    assert min(b - a for a, b in zip(ordered, ordered[1:])) == 24
+                physical = 32 + 24
+                alias_view = 0
+            else:
+                assert set(legacy_totals) == {(40, 16)}, "base allocation shape changed"
+                physical, alias_view = 56, 40
+            result = dict(canonical=canonical, roots=n, distinct_headers=len(set(words)),
+                          distinct_data=len(set(data_addresses)), string8_bytes=physical,
+                          extra_view_bytes_per_alias=alias_view)
+        child.send_signal(signal.SIGCONT)
+        child.stdin.write(b"nil\n")
+        child.stdin.close()
+        child.stdin = None
+        tail, error = child.communicate(timeout=15)
+        assert child.returncode == 0 and not error, "layout child failed after inspection"
+        return result, output + tail
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
 def layout():
     result = {"status": "PASS", "header_bytes": 32, "sdata_bytes": 24}
     for role in ["base", "dynamic"]:
         binary = OUT / role / "nelisp"
         assert binary.exists(), f"missing {role} binary"
+        symbols = {}
+        for line in subprocess.check_output(["nm", "--defined-only", str(binary)], text=True).splitlines():
+            fields = line.split()
+            if len(fields) == 3:
+                symbols[fields[2]] = int(fields[0], 16)
         rows = {}
         for mode in ["population", "aliases"]:
-            values = []
+            rows[mode] = []
             for n in [4000, 8000]:
-                env = dict(os.environ, STRINGS_N=str(n), STRINGS_MODE=mode)
-                r = subprocess.run([str(binary), "--load", "tools/ai/strings-layout.el"],
-                                   cwd=ROOT, env=env, capture_output=True, timeout=60)
-                stem = OUT / role / f"layout-{mode}-{n}"
-                stem.with_suffix(".out").write_bytes(r.stdout)
-                stem.with_suffix(".err").write_bytes(r.stderr)
-                assert r.returncode == 0 and not r.stderr, f"{role}/{mode}/{n} failed"
-                found = re.findall(rb"^STRINGS-LAYOUT (\w+) (\d+) (-?\d+) (-?\d+) (-?\d+) (nil|t)$", r.stdout, re.M)
-                assert len(found) == 1, "missing layout measurement"
-                _, count, headers, data, arena, same = found[0]
-                assert int(count) == n and (same == b"t") == (mode == "aliases")
-                values.append([int(headers), int(data), int(arena)])
-            rows[mode] = [(b-a)/4000 for a,b in zip(*values)]
-        result[role] = {"sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                        "slopes": rows}
-    current = result["dynamic"]["slopes"]
-    assert current["population"][:2] == [1, 8], "canonical header/data accounting differs"
-    assert current["aliases"][:2] == [0, 0], "alias created string headers/data"
-    assert current["population"][2] <= 0 and current["aliases"][2] <= 0, "retained arena string views remain"
+                row, output = root_layout(binary, symbols, n, mode)
+                (OUT / role / f"root-{mode}-{n}.out").write_bytes(output)
+                rows[mode].append(row)
+                assert row["canonical"] == (role == "dynamic"), "string representation differs"
+        result[role] = dict(sha256=hashlib.sha256(binary.read_bytes()).hexdigest(), roots=rows)
+    def current_layout(row):
+        assert row["canonical"], "legacy String view remains"
+        assert row["string8_bytes"] <= 56 and row["extra_view_bytes_per_alias"] == 0
+    # Run the same acceptance predicate on the known pre-port shape.
+    try:
+        current_layout(result["base"]["roots"]["aliases"][0])
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("layout predicate accepted the legacy base")
+    for mode in ["population", "aliases"]:
+        for row in result["dynamic"]["roots"][mode]:
+            current_layout(row)
     kernel_result = json.loads((OUT / "kernel-result.json").read_text())
     assert kernel_result["status"] == "PASS" and kernel_result["string8_bytes"] == 56
-    result["before_bytes"] = result["base"]["slopes"]["population"][2]
-    result["after_bytes"] = 56
-    (OUT / "layout.json").write_text(json.dumps(result, indent=2)+"\n")
-    print(f"PASS layout: {result['before_bytes']:g} -> 56 B/string; retained views/aliases 0")
-
+    result.update(before_bytes=56, after_bytes=56, before_alias_bytes=40, after_alias_bytes=0,
+                  negative_control="legacy base rejected by canonical WORD predicate")
+    (OUT / "layout.json").write_text(json.dumps(result, indent=2) + "\n")
+    print("PASS layout: 56 -> 56 B/string; 40 -> 0 B/alias; retained roots are canonical WORDs")
 
 def speed(workload):
     assert workload, "choose producers or pressure"
