@@ -12,12 +12,15 @@
 
 * S1 Mechanism
 ** S1.1 A native function body with an unbound free variable fails the standalone build with a message naming the variable and the function
+#+NOTE: 2026-10-21: Adapted GNU Emacs 31.1 bytecomp.el:3845-3876: after lexical lookup misses, accept boundp or the compile-unit declaration list. NeLisp reuses --special-vars and reports :free-symbol and :function before hidden-slot lowering. The brief requires an error instead of GNU's warning because native runtime helpers have no initialized dynamic boundary. The unchanged compiler accepted the bad object fixture; target/free-symbol/base-reject.json records its source and artifact hashes.
 Declared specials (defvar/defconst/known runtime globals) still compile. A fixture shows both, and a control shows the base build accepts the bad case.
 cmd: python3 tools/ai/free-symbol-check.py reject
 ** S1.2 The whole tree still builds, dynamic and static, with zero free-symbol sites reported by the census
+#+NOTE: 2026-10-21: Both final Linux builds succeeded; the symbol-covered census reported zero sites in each. No real free-symbol site was found on this branch, so no site-repair commit was needed. Source, command, log and artifact identities are recorded under target/free-symbol/receipts/.
 Any real site found is fixed in its own commit.
 cmd: python3 tools/ai/free-symbol-check.py census
 
 * S2 No regression
 ** S2.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools
+#+NOTE: 2026-10-21: Final COMMON ran once: 11 groups, zero failures. The separate standalone suite ran 75 cases with zero failures; the source MCP smoke returned 40 distinct tools. The changed definitions passed error-on-warning byte compilation; whole-file compilation stops at the pre-existing line 241 docstring warning, reproduced on the base compiler. Independent Astra review fixes pin the fixture compiler source and include fx-corpus.el in COMMON receipt identities.
 cmd: python3 tools/ai/free-symbol-check.py final
