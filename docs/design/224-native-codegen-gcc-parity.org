@@ -1,0 +1,245 @@
+#+TITLE: Native compiler code quality: GCC -O2 parity for the runtime's inner loops
+#+STATUS: IN-PROGRESS
+#+DATE: 2026-10-21
+
+* Summary
+
+NeLisp's runtime (evaluator, bytecode VM, allocator, GC, string and buffer
+primitives) is written in the AOT dialect and compiled by
+=lisp/nelisp-aot-compiler.el=.  GNU's equivalents are C compiled by GCC.
+Five kernels written the way the runtime writes its loops cost 3.2x to
+5.5x the Ir per iteration of the same algorithm compiled by gcc 14.2 -O2.
+
+The excess is almost entirely code shape, not object representation:
+the compiler is a one-register accumulator tree walker.  Every variable
+lives in a frame slot and is reloaded at each use, every binary operand
+goes through a push/pop temporary or a scratch-register load, every
+=and= in a loop test materializes a boolean and compares it with 0, and
+every loop pays an unconditional back-edge jump.  Across the five kernels
+redundant loads and stores are 38-80% of the excess, branch structure
+7-36%, and operand shuffles 12-21%.  Only list walking has a
+representation component (2 Ir/iter): a cons is a box whose payload
+points to a separate cell, where GNU's cons is one tagged pointer.
+
+The plan reproduces what GCC does for these loops, in five compiler
+mechanisms (CG1-CG5 below), in order of payoff.
+
+* Method
+
+Kernels: =test/perf/codegen-kernels/=.  Each kernel exists three times:
+- =KERNEL.nl.el=: the AOT dialect, in the runtime's own idiom (raw
+  =ptr-read=, =logand= and =sar= on value WORDs, =sexp-tag= for type
+  tests), compiled by =nelisp-aot-compile-sexp= into a freestanding ELF;
+- =KERNEL.c -DREPR_GNU=: the same algorithm on GNU Emacs 31.1's object
+  layout (lisp.h: LSB tags, =CONSP= lisp.h:394, =XCDR= lisp.h:408,
+  =XFIXNUM= lisp.h:1270, =SBYTES= lisp.h:1698, =AREF= lisp.h:1965),
+  compiled with gcc 14.2 -O2.  This is the bar;
+- =KERNEL.c -DREPR_NL=: the same algorithm on NeLisp's word heap
+  (=lisp/nelisp-sexp-layout.el=), gcc 14.2 -O2.  The difference between
+  the two C versions is the object representation's share; the
+  difference between this one and the NeLisp build is the compiler's.
+
+Kernels are =noipa= in C so GCC compiles them for unknown arguments, as
+NeLisp does.  Every program reads N from stdin, builds identical data for
+N and for 0 (a 100,000-element string, list or vector whose logical
+length is N), runs the kernel and exits with the result.  Ir per
+iteration is =(Ir(N) - Ir(0)) / N= with N = 100,000, under callgrind,
+averaged over =ABI_LAYOUT_PAD= = 0, 700, 1400 and 2100.  All three
+versions must agree on the result at every layout.
+
+Runner: =python3 tools/ai/codegen-check.py kernel NAME= (one kernel, the
+gate) and =measure= (all five, JSON).  Attribution:
+=test/perf/codegen-kernels/attribute.py BINARY= runs callgrind with
+=--dump-instr=yes= for N and 0, classifies each executed instruction from
+objdump's decoding and prints category totals only.
+
+* Baseline (9d5f4a515)
+
+Ir per iteration, four layouts (identical at every layout):
+
+| kernel      | NeLisp | gcc -O2 GNU layout | gcc -O2 NeLisp layout | NeLisp / gcc |
+|-------------+--------+--------------------+-----------------------+--------------|
+| byte-scan   | 31.00  | 6.00               | 6.00                  | 5.17x        |
+| list-walk   | 18.00  | 5.00               | 7.00                  | 3.60x        |
+| fixnum-loop | 22.20  | 7.00               | 7.00                  | 3.17x        |
+| class-table | 33.00  | 6.00               | 6.00                  | 5.50x        |
+| vector-sum  | 43.00  | 10.00              | 10.00                 | 4.30x        |
+
+* Attribution per kernel
+
+Excess Ir per iteration over gcc -O2 on GNU's layout, by category, with
+the share of the excess in parentheses.  Categories are assigned per
+executed instruction (=attribute.py=):
+- redundant loads and stores: frame-slot loads/stores (=[rbp-d]=) and
+  push/pop temporaries that GCC's register allocation does not need;
+- operand shuffles: register-to-register moves and immediate loads into a
+  scratch register where GCC encodes the operand in the instruction;
+- branch structure: boolean materialization (=setcc=, =movzx eax,al=,
+  =cmp rax,0= plus the extra conditional jump on it) and the unconditional
+  loop back-edge GCC removes by rotating the loop;
+- tag checks: instructions of the type test beyond GCC's test and compare;
+- boxing and unboxing: tag/untag work beyond what GCC's version does;
+- call overhead and bounds checks: none of the kernels contain either
+  (the loop bound is part of the algorithm and GCC compares it too);
+- addressing: separate address arithmetic or loads where GCC uses a
+  scaled index or a memory operand;
+- representation: gcc -O2 on NeLisp's layout minus gcc -O2 on GNU's.
+
+| kernel      | excess | loads/stores | shuffles   | branch      | tag checks | addressing  | representation |
+|-------------+--------+--------------+------------+-------------+------------+-------------+----------------|
+| byte-scan   | 25.00  | 13.00 (52%)  | 3.00 (12%) | 9.00 (36%)  | 0          | 0           | 0              |
+| list-walk   | 13.00  | 5.00 (38%)   | 2.00 (15%) | 1.00 (8%)   | 3.00 (23%) | 0           | 2.00 (15%)     |
+| fixnum-loop | 15.20  | 12.10 (80%)  | 3.00 (20%) | 1.05 (7%)   | 0          | -0.95 (-6%) | 0              |
+| class-table | 27.00  | 13.00 (48%)  | 4.00 (15%) | 9.00 (33%)  | 0          | 1.00 (4%)   | 0              |
+| vector-sum  | 33.00  | 16.00 (48%)  | 7.00 (21%) | 9.00 (27%)  | 0          | 1.00 (3%)   | 0              |
+
+Boxing/unboxing, call overhead and bounds checks are 0 for every kernel.
+The fixnum-loop's negative addressing entry is GCC's if-conversion: GCC
+spends a =lea= and a =cmov= per iteration where NeLisp branches.
+
+How the excess arises, by emitter (=lisp/nelisp-aot-compiler.el=):
+- =ref= loads =[rbp-8(slot+1)]= at every use and =setq= stores it back;
+  there is no register allocator ("v1 register-allocator-free",
+  commentary of the file).
+- =--emit-binary-operands= evaluates one operand into rax, pushes it,
+  evaluates the other, and pops into r10, unless an operand is an
+  immediate, in which case the immediate is first loaded into r10.  So
+  =(< i n)= is six instructions and =(+ n 1)= is three before the store.
+- =--emit-test-jump-false= fuses only a bare comparison.  A loop test
+  =(and (< i n) (/= ...))= goes through =--emit-logic=, which compares
+  each conjunct's 0/1 with 0 and leaves a boolean in rax, then the loop
+  compares that boolean with 0 again.
+- =--emit-while= tests at the top and jumps back unconditionally.
+- =--emit-sexp-tag= computes the full four-way tag (immediate Int, nil, t
+  or the box's tag byte) into rax before the compare, where the test
+  only needs "pointer with tag byte K".
+- =--emit-ptr-read= computes the base and the offset separately and uses
+  =[rdi+rsi]=; a scaled index =(shl i 3)= is a separate shift.
+
+The list-walk representation share: GNU's =XCDR= is one load from a tagged
+pointer (=XCONS= lisp.h:1468) and =CONSP= tests tag bits only
+(lisp.h:394, 405).  NeLisp's cons is a 32-byte box with a tag byte whose
+payload points to a separate cell holding the cdr WORD, so each step costs
+one tag-byte load and one extra dependent load (=nl_cons_cdr_word= in
+=scripts/nelisp-standalone-build.el=).  gcc -O2 needs 7 Ir per element on
+that layout and 5 on GNU's.  No compiler change removes those 2 Ir; this
+kernel stops at the representation (see "Blocked").
+
+* GCC's code for these loops
+
+What gcc -O2 emits per iteration (counts from the attribution script on
+the gcc builds; no listing reproduced here):
+- every loop variable in a register for the whole loop (IRA/LRA);
+- comparison and ALU instructions take immediate and memory operands
+  directly (combine / instruction selection); no stack temporaries;
+- =&&= in a loop condition becomes a chain of conditional jumps to the
+  exit; no boolean is ever materialized;
+- loops are rotated (loop header copying, =-ftree-ch=): the test sits at
+  the bottom and branches back, so there is no unconditional back-edge;
+- addresses use base + index*scale + displacement, and a table lookup
+  folds into =cmp byte [table+rax], 0=;
+- tag tests are one masked compare (=TAGGEDP=, lisp.h:405).
+
+* Mechanisms, in order of payoff
+
+** CG1 Branch-context lowering and loop rotation
+GCC behaviour: =&&=/=||= jump chains, no materialized booleans; loop
+header copying.  A condition emitter jumps on the flags of the test itself
+for comparisons, =and=, =or=, =not= and constants; =if=, =cond= and
+=while= use it.  =while= becomes =jmp test; body: ...; test: jcc body=.
+Value-position =and=/=or= keep their current semantics (the last value).
+Predicted: removes the branch column (byte-scan, class-table and
+vector-sum -9, list-walk -1, fixnum-loop -1).
+
+** CG2 Direct operand selection
+GCC behaviour: immediates and memory operands folded into ALU and compare
+instructions.  Binary operations take an immediate, a frame slot or a
+register operand directly (=cmp rax, imm32=, =add rax, [rbp-d]=), and
+=(setq x (OP x k))= updates in place.  =(= (logand x M) K)= with a
+low-bit mask M becomes GNU's TAGGEDP form, =((x - K) & M) == 0=, one
+=lea= and one =test=.  Predicted: removes the push/pop part of loads and
+stores and most of the shuffles.
+
+** CG3 Register promotion of call-free loops
+GCC behaviour: loop variables allocated to registers.  For a =while=
+whose test and body contain no call, allocation, non-local exit or frame
+address, the variables it uses live in registers inside the loop (rbx, r8
+and r9 cost nothing, r12-r15 are pushed around the loop) and modified
+ones are written back at the exit.  The restriction to call-free loops is
+the GC's: =nl_gc_conserv_scan= scans the machine stack from
+=(aot-current-sp)= without flushing registers, so a pointer living only in
+a callee-saved register across a call could be missed.  GNU keeps
+pointers in registers across GC because it flushes them first
+(=__builtin_unwind_init= / setjmp, alloc.c:5180; =mark_c_stack=
+alloc.c:5212; =flush_stack_call_func1= alloc.c:5252).  Predicted: removes
+the frame-slot loads and stores in all five kernels.
+
+** CG4 Addressing modes and memory operands
+GCC behaviour: base + index*scale + displacement addressing; table loads
+folded into compares.  =ptr-read=/=ptr-write= take register bases and
+indexes, =(shl i k)= or =(* i 2^k)= becomes a scaled index and =(+ x d)= a
+displacement; =(= (ptr-read-u8 B X) K)= becomes =cmp byte [B+X], K=.
+Predicted: vector-sum -1, class-table -1.
+
+** CG5 Tag-test fusion
+GCC behaviour: a type test is one masked compare (=CONSP=, lisp.h:394).
+NeLisp boxes carry the tag in memory, so the closest equivalent is
+=test x,1= then =cmp byte [x], K= for a box tag K; the immediate tags
+(Int 2, nil 0, t 1) become word compares.  Applies to the runtime's
+=(= (sexp-tag x) K)= idiom in branch context.  Predicted: list-walk -3.
+
+Predicted after CG1-CG5: byte-scan 6, fixnum-loop about 6, class-table 6
+and vector-sum 10 Ir per iteration, at or below gcc -O2; list-walk 7
+against GCC's 5, the representation floor.
+
+** Considered for the kernels and not needed first
+- Type inference for raw words and fixnums: the dialect is already
+  raw-word typed (=+= on two words is one =add=), so the kernels have no
+  boxing column; inference matters for the byte-code native path, not
+  for runtime code written in the dialect.
+- Check hoisting (GCC's loop-invariant motion): the kernels' per-element
+  checks are not invariant, and their invariant loads (data pointer,
+  length) are already outside the loop in the source.  Runtime loops
+  that re-read an invariant field in the loop test are a follow-up
+  (CG6: hoist =ptr-read= out of call-free loops that store nothing).
+- Accessor inlining (GCC inlines lisp.h's =XCDR=, =XCAR=, =AREF=): the
+  kernels inline the accessor body by construction.  In the runtime, a
+  loop that calls =nl_cons_cdr_word= pays a call per element and is
+  excluded from CG3; inlining small leaf accessors (CG7) would make such
+  loops call-free.  Follow-up after CG1-CG5.
+
+* Constraints every mechanism keeps
+
+- Two-pass emission: pass 1 measures text size and pass 2 uses real
+  addresses, so every encoding choice depends only on the IR (immediate
+  values, slots, registers), never on a resolved address.
+- The compiler also runs inside the standalone (artifact compilation)
+  with native emit kernels for =imm= and =ref=; promoted =ref= nodes must
+  bypass =nelisp_emit_value_ref_gp=.
+- Win64 and aarch64 keep their current lowering; the new paths are
+  x86_64 SysV.
+- No new natives: these are compiler changes only (AGENTS.md, minimal
+  native surface).
+
+* Effect on the runtime (S2.1)
+
+=string-match= runs the pure-Lisp matcher (=lisp/nelisp-stdlib-regexp.el=)
+baked as byte-code (=nelisp-standalone--regexp-bytecode-src=), executed by
+the AOT-compiled VM =wf_bytecode_execute_frame=.  The Doc 218 =nnr_*=
+owners no longer exist in this tree, so the per-character regex cost is VM
+dispatch: CG1, CG2, CG4 and CG5 reach it through the VM's own dialect code
+(its dispatch is chains of =(if (= ...))= over slot variables), while CG3
+reaches only its call-free inner loops.
+
+* Blocked
+
+- list-walk: 2 Ir per element of representation (above).  Owner: the
+  object representation, not the compiler.
+- Loops with calls (the VM dispatch loop, list walks through
+  =nl_cons_cdr_word=): promotion across calls needs a register flush
+  before the conservative stack scan, GNU's alloc.c:5180-5252 mechanism.
+  Owner: the GC lane.
+
+* Results
+
+Filled in per mechanism as it lands.
