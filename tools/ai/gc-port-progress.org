@@ -74,6 +74,9 @@ cmd: python3 tools/ai/word-heap-stage-check.py s6.2 --census target/gc-port/cur/
 #+NOTE: Added 2026-10-21 (denominator 13 -> 14) with word-heap S5.3, so the GNU representation is not lost while S1.3/S1.4 count the interim encoding. Known-red: 21 special-form definitions are tag-7 views carrying the marker 13108. Cross-lane; the coordinator assigns it.
 cmd: python3 tools/ai/word-heap-stage-check.py s5-subr --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static --control target/gc-port/base/nelisp-dyn
 
+** S1.8 Doc 226 D9 direct symbols: symbol_block allocation, marking, sweeping, free-list reuse, image dump and restore, on both linkages
+#+NOTE: Added 2026-10-22 (denominator 14 -> 15) for the symbols lane's direct symbol WORDs (coordinator routing 2026-10-21): nl_symbol_alloc (Fmake_symbol, alloc.c:3675) from 32 KiB typed blocks of 682 48-byte cells, gcmarkbit in header bit 24, nl_sweep_symbols (alloc.c:6997), live_symbol_holding (alloc.c:4675), the symbol region of the live-only dump. Checked through the nelisp--debug-switch 40-42 self-test until make-symbol uses nl_symbol_alloc on the merged line; acceptance there is the symbols lane's S1.3 fixture.
+cmd: python3 tools/ai/gc-port-symbol-blocks.py check --dyn target/gc-port/cur/nelisp-dyn --static target/gc-port/cur/nelisp-static
 * S2 Speed
 ** S2.1 Cons churn: wall-clock, GC included, at most GNU 31.1's on the same Lisp workload
 #+NOTE: 2026-10-21 criteria change (coordinator, user switch to wall-clock): was "GC plus allocation Ir <= GNU". Ir attribution on c2 (four-layout means): NeLisp GC+alloc 1567.1M Ir vs GNU 157.0M (x9.98); the residual is the per-collection walk of the cold image (sweep 359M, index 300M, coalescing 92M over 3 collections), which GNU's pdumper never performs.
