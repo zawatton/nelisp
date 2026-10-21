@@ -942,6 +942,9 @@
          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
                                     (heap-read-u64 (data-addr nl_rootstack_top) 0)))
        (nl_gc_mark_pinned_roots)
+       ;; Doc 226 D9 stage 3: the mirror record (BSS `nl_symcells_root').
+       (let* ((mirror (heap-read-u64 (data-addr nl_symcells_root) 0)))
+         (if (= mirror 0) 0 (extern-call nl_gc_mark_word mirror)))
        (let* ((tag (heap-read-u64 (data-addr nl_exit_values) 0))
               (val (heap-read-u64 (data-addr nl_exit_values) 8)))
          (seq (if (= tag 0) 0 (extern-call nl_gc_mark_word tag))
