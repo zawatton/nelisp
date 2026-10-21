@@ -1,0 +1,56 @@
+#+TITLE: Load GNU 31.1 byte-compiled .elc files, so library code runs on the bytecode path
+
+# Context, 2026-10-21. notes-65's S1.3 init takes 1,101 s against a 300 s
+# bar. General evaluation of library-loaded code is 30-70x GNU, and about
+# 4x is needed. Per call, NeLisp bytecode costs about 2,838 Ir against
+# 19,648 Ir in the interpreter (Doc 219), so library code on the bytecode
+# path is the largest available lever.
+#
+# notes-65's A/B in the 9d5f4 + library image:
+# - The library's locate-file deliberately rejects byte-code files. It
+#   will gate that on the S1.3 capability.
+# - An explicit (load "mxlib.elc") reaches the runtime's
+#   nelisp--load-resolved-file and signals (void-function fn): #[...] is
+#   evaluated as source text, not as byte-code objects.
+#
+# GNU-compiled artifacts and the probe (read only):
+# /home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/7da3a5da-6f2a-4eaf-97dd-66ff11205bab/scratchpad/
+# (elc/, elconly/, elcsrc/, mxlib.el, elc2.el).
+#
+# GNU reference: emacs-31.1/src/lread.c and bytecode.c.
+# - lread.c: Fload, openp suffixes, safe_to_load_version, the #@ docstring
+#   skip, #$, and #[ to make-byte-code.
+# - bytecode.c: exec_byte_code.
+#
+# Base: eval/core-20261017 at 9d5f4a515.
+
+* S1 Loader
+** S1.1 A corpus of GNU 31.1 .elc files loads on dynamic and static and behaves like its .el
+The corpus is notes-65's mxlib and cc-*.elc, plus a pinned set compiled from repository vendor files. It covers:
+- the ;ELC header;
+- #@ docstrings;
+- #$;
+- #[...] function objects;
+- top-level (byte-code ...);
+- defalias, defvar and defconst forms.
+
+Every probed function returns the same values as its .el source and as GNU 31.1.
+cmd: python3 tools/ai/elc-load-check.py corpus
+** S1.2 load, require and locate-library in the runtime honour load-suffixes and load-prefer-newer as GNU's openp does
+This covers .elc preferred when listed first, .elc-only directories, and the newer file under load-prefer-newer. A rejected or incompatible .elc signals as GNU does.
+cmd: python3 tools/ai/elc-load-check.py resolve
+** S1.3 Capability: (featurep 'nelisp-elc-load) holds exactly when the runtime can load .elc
+The library gates its locate-file byte-code rejection on it.
+cmd: python3 tools/ai/elc-load-check.py capability
+
+* S2 Speed
+** S2.1 A call of the same function costs at least 3x less when loaded from .elc than from .el
+The functions are the mxlib microbenches, a 6-element cl-loop and a dolist. The measure is four-layout mean Ir per call, GC included. The ratio is the predicted milestone; record the actual one.
+cmd: python3 tools/ai/elc-load-check.py speed
+
+* S3 No regression and end to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, anvil MCP smoke with 40 tools
+cmd: python3 tools/ai/elc-load-check.py final
+** S3.2 End to end: notes-65 reruns cc-fonts load and the S1.3 init with load-suffixes (".elc" ".el") and its gate enabled
+Bar: cc-fonts loads at least 2x faster than from .el, and ccore stays 374/374.
+pending
