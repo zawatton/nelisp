@@ -1,0 +1,2 @@
+HASHTAB-LAYOUT entries=1024 storage-conses=1 vectors=4
+HASHTAB-LAYOUT-COMPLETE

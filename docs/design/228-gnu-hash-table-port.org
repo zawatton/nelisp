@@ -18,7 +18,8 @@ adaptation, not a per-entry allocation.
 | src/fns.c:5087 | hash_find_with_hash (hash_lookup) | native bucket/next walk, identity first |
 | src/fns.c:5132 | hash_put | take next_free, fill pair and hash, link bucket |
 | src/fns.c:5161 | hash_remove_from_table | unlink bucket, clear pair, prepend free list |
-| src/fns.c:5201 | hash_clear | reset next/index and clear pairs |
+| src/fns.c:5201 | hash_clear | clear only nonempty tables, retaining the empty-table free chain |
+| src/fns.c:4916 | copy_hash_table | copy all four vectors, reset callback mutation guard |
 | src/fns.c:5251 | sweep_weak_table | fixed point and unlink using same vector chains |
 | src/fns.c:4780-4820 | hashfn_eq/hashfn_eql | retained eqhash identity hash and relocation stamps |
 
@@ -37,9 +38,17 @@ No public primitive is added for this representation. Existing hash
 allocation/tagged-object access uses minimal-native clause 1. Lisp owns
 keyword validation and user-defined callbacks; the native storage does
 not evaluate arbitrary callbacks outside the existing evaluator bridge.
-The previous implementation is retained in Git as the reference before
-this change. Layout acceptance checks actual populated storage and free
+The Lisp reserve, custom insertion and removal functions in the prelude
+retain a reference implementation using the same vectors. Custom tests
+perform growth in that reference: the existing user-test callback ABI
+returns the final result and exposes no native reserve operation. Extending
+that evaluator ABI or adding a new native entry is outside this storage
+port; ordinary eq/eql/equal tables grow entirely in native code. Layout acceptance checks actual populated storage and free
 chains, with the old cons representation as a negative control.
+
+Weak storage adapters call existing GC entry points through their native
+ABI, rather than duplicating the general tracer inside the adapter. GC
+roots and the native compiler are unchanged.
 
 Weak endpoint marking depends on the collector/root lane. The sweep is
 adapted to the new vectors; unresolved GNU weak fixture differences stay

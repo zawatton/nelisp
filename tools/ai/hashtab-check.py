@@ -30,6 +30,8 @@ def recorded(kind):
     p = OUT / (kind + '.json')
     check(p.exists(), 'missing evidence: ' + str(p.relative_to(ROOT)))
     data = json.loads(p.read_text())
+    if kind == 'semantics':
+        check(data.get('variants') == ['dynamic', 'static'], 'semantics requires dynamic and static fixtures')
     for item in data['inputs']:
         path = ROOT / item['path']
         check(path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == item['sha256'],

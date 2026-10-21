@@ -2579,6 +2579,28 @@
    (list (condition-case e (prim-integ-optional-formal) (error e))
          (condition-case e (prim-integ-optional-formal 9) (error e))))
 
+ ;; GNU fns.c:hash_clear preserves the free chain of an already empty table.
+ (let ((h (make-hash-table :test 'eq)) out)
+   (dolist (key '(a b c)) (puthash key key h))
+   (dolist (key '(a b c)) (remhash key h))
+   (clrhash h) (puthash 'x 1 h) (puthash 'y 2 h)
+   (maphash (lambda (key _value) (setq out (cons key out))) h)
+   (nreverse out))
+
+ ;; GNU copy_hash_table makes a mutable copy even inside a test callback.
+ (let ((nelisp-shadow-copy-source nil) (nelisp-shadow-copy-result nil))
+   (define-hash-table-test 'nelisp-shadow-mutable-copy
+     (lambda (a b)
+       (setq nelisp-shadow-copy-result (copy-hash-table nelisp-shadow-copy-source))
+       (clrhash nelisp-shadow-copy-result)
+       (equal a b))
+     (lambda (_key) 1))
+   (setq nelisp-shadow-copy-source (make-hash-table :test 'nelisp-shadow-mutable-copy))
+   (puthash "a" 1 nelisp-shadow-copy-source)
+   (list (gethash "b" nelisp-shadow-copy-source)
+         (hash-table-count nelisp-shadow-copy-result)
+         (hash-table-count nelisp-shadow-copy-source)))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

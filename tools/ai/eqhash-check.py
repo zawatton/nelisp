@@ -321,7 +321,7 @@ def wall_read(stem):
     return row
 
 def record_wall(a):
-    require(a.calls > 0 and 24 <= a.cpu <= 31, "positive calls and idle CPU 24-31 required")
+    require(a.calls > 0 and 8 <= a.cpu <= 15, "positive calls and a reserved measurement CPU 8-15 required")
     gnu_version()
     dims = [d for d in wall_dimensions(a.role, a.suite) if (not a.kind or d[0] == a.kind) and (not a.op or d[4] == a.op)]
     if a.probe:
