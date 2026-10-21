@@ -79,6 +79,10 @@
                 (if (= (nl_word_payload left) (nl_word_payload right)) 1 0)
               0)
           (if (= right-tag 16) 0
+            ;; Doc 226 D9 stage 3: an interned symbol's object WORD is a key
+            ;; like its view; the two forms of one symbol are equal.
+            (if (if (= (logand left 7) 6) (= right-tag 4) (if (= (logand right 7) 6) (= left-tag 4) 0))
+                (extern-call nl_symbol_word_eq left right)
             ;; Interned symbols share their name buffer. Other string keys
             ;; retain the existing byte comparison fallback.
             (if (if (= left-tag 4)
@@ -89,7 +93,7 @@
                       0)
                   0)
                 1
-              (str-eq left right))))))
+              (str-eq left right)))))))
     (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the

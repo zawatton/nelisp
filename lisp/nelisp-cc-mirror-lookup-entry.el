@@ -295,11 +295,12 @@ written wrong, so the check must fire.  Anything else: no check."
       ;; without this ownership proof (including its cold-load hardening).
       (if (if (= name 0) 1 (= (logand name 1) 1)) 0
         (if (= (sexp-tag name) 4)
-            (let* ((cell (if (= (logand name 7) 6) 1
-                           (nl_symcell_entry mirror-ptr name))))
+            ;; Doc 226 D9 stage 3: an interned symbol's object WORD is its own entry.
+            (if (= (logand name 7) 6) name
+            (let* ((cell (nl_symcell_entry mirror-ptr name)))
               (if (= cell 1)
                   (nelisp_mirror_lookup_hashed mirror-ptr name)
-                ,(nelisp-cc-mirror-lookup-entry--cell-use 'name)))
+                ,(nelisp-cc-mirror-lookup-entry--cell-use 'name))))
           (if (= (sexp-tag name) 16)
               ;; Doc 226 D9: an uninterned symbol is its own object.
               (if (= (logand name 7) 6) name
@@ -347,9 +348,10 @@ written wrong, so the check must fire.  Anything else: no check."
         ;; have no global entry (every lexical variable reference and
         ;; `setq' checks one) land on an empty bucket.  A pointer head is
         ;; the bucket's first Cons view.
-        (if (if (= (sexp-tag sym-ptr) 16)
-                (if (= (logand sym-ptr 7) 6) 1 (> (heap-read-u64 sym-ptr 8) 65535)) 0)
-            ;; Doc 226 D9: an uninterned symbol is its own object.
+        (if (if (= (logand sym-ptr 7) 6) 1
+              (if (= (sexp-tag sym-ptr) 16) (> (heap-read-u64 sym-ptr 8) 65535) 0))
+            ;; Doc 226 D9: a symbol object WORD (kind 4 or 16) is its own entry,
+            ;; and the view of an uninterned symbol carries its object.
             (if (= (logand sym-ptr 7) 6) sym-ptr (+ (heap-read-u64 sym-ptr 8) 6))
         (let ((cell (if (= (sexp-tag sym-ptr) 4)
                         (nl_symcell_entry mirror-ptr sym-ptr) 1)))

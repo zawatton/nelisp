@@ -4906,6 +4906,29 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 dst 16 (nl_word_data w))
            (ptr-write-u64 dst 24 (nl_word_length w))
            dst))
+    ;; `eq' of two symbols when a symbol object WORD (class 110, kind 4 or 16)
+    ;; is one of them and the words differ (the AOT symbol-eq calls this).
+    ;; Doc 226 D9 stage 3: two distinct objects are two symbols (an interned
+    ;; name that was uninterned and interned again is a new symbol with the
+    ;; old name); an object against a symbol view is the same symbol when the
+    ;; names are -- an interned symbol's view shares its canonical name
+    ;; buffer, and a plain overflow view keeps the historical name compare.
+    (defun nl_symbol_word_eq (a b)
+      (if (= a b) 1
+        (let* ((oa (nl_so_p a)) (ob (nl_so_p b)))
+          (if (= (logand oa ob) 1) 0
+            (let* ((view (if (= oa 1) b a)) (obj (if (= oa 1) a b)))
+              (if (= (logand view 7) 0)
+                  (if (= (heap-read-u8 view 0) 4)
+                      (let* ((n (nl_word_length obj)) (i 0) (same 1)
+                             (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
+                        (if (/= n (heap-read-u64 view 24)) 0
+                          (seq (while (if (= same 1) (< i n) 0)
+                                 (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
+                                      (setq i (+ i 1))))
+                               same)))
+                    0)
+                0))))))
     ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
     ;; a pointer WORD passes through, an immediate gets a fresh view.
     (defun nl_ent_ptr (w k)
@@ -11585,7 +11608,17 @@ leave symbols unresolved at link time."
     (defun nl_symobj_word (env sym)
       (if (= env 0) sym
         (let ((obj (nelisp_mirror_lookup_entry_owned (+ env 0) sym)))
-          (if (= obj 0) sym obj))))
+          (if (= obj 0) sym
+            ;; The name cell is filled on the first `symbol-name' (a side table
+            ;; of canonical name strings); an object handed out as a value must
+            ;; carry it, as GNU's symbol does.
+            (seq (if (= (heap-read-u64 (- obj 6) 8) 3)
+                     (let ((out (alloc-bytes 32 8)))
+                       (if (/= (nl_symbol_name_value env sym out) 0)
+                           (nl_val_clone_into out (+ (- obj 6) 8))
+                         0))
+                   0)
+                 obj)))))
     (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
