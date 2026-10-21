@@ -31178,6 +31178,20 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                             (expand-file-name "lisp/nelisp-stdlib-unicode.el"
                                               nelisp-standalone--repo-root))
                            (buffer-string))
+                         "\n"
+                         ;; Compile the ordinary lexical factory with GNU, so
+                         ;; its captured buffer cells become closure constants.
+                         ;; Keep the source-only debugging configuration pure.
+                         (let ((buffer-source
+                                (with-temp-buffer
+                                  (insert-file-contents
+                                   (expand-file-name "lisp/nelisp-bytecode-buffer.el"
+                                                     nelisp-standalone--repo-root))
+                                  (buffer-string))))
+                           (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+                               buffer-source
+                             (car (nelisp-prelude-bytecode-transform
+                                   buffer-source "lisp/nelisp-bytecode-buffer.el" nil t))))
                          "\n" (substring source position)))
          (source-only
           (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
