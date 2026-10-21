@@ -22678,11 +22678,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; not a new Lisp native: macro expansion remains the genuine Lisp
     ;; internal-macroexpand-for-load, including its error/abort behavior.
     (defun nl_load_eager_eval_w (form env _pad)
+      ;; Root the six live inputs. After a recursive result, advancing the
+      ;; rooted tail and returning the value cannot allocate or call Lisp.
       (let* ((mark (nl_root_mark env))
              (roots (nl_root_reserve_checked env))
              (i 1) (valid (if (= roots 0) 0 1)) (answer 0))
         (seq
-         (while (and (= valid 1) (< i 7))
+         (while (and (= valid 1) (< i 6))
            (let* ((slot (nl_root_reserve_checked env)))
              (if (= slot (+ roots (* i 32))) (setq i (+ i 1))
                (setq valid 0))))
@@ -22690,7 +22692,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (let* ((original roots) (name (+ roots 32))
                   (function (+ roots 64)) (arguments (+ roots 96))
                   (expanded (+ roots 128)) (tail (+ roots 160))
-                  (value (+ roots 192))
                   (buf (alloc-bytes 32 8)) (enabled 1))
              (seq
               (wf_copy32 original form)
@@ -22719,7 +22720,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (while (and (/= answer 0) (= (sexp-tag tail) 7))
                              (seq
                               (setq answer (nl_load_eager_eval_w (nl_cons_car_ptr tail) env 0))
-                              (wf_word_store_out value answer)
                               (wf_word_store_out tail (nl_cons_cdr_word tail)))))
                         (seq
                          (wf_word_store_out arguments
@@ -45090,6 +45090,11 @@ tails run against a private box), and the (rc, OUT) adapter F."
                                        (nl_root_reserve env) head_ptr)))))))))
     (defun nl_eic_alias_w (w tail_ptr env func_slot call_name form_ptr)
       (if (= w 2)
+          ;; A canonical native primitive can be represented by its own
+          ;; interned name.  This is direct dispatch, not an alias chain.
+          (if (and (= (sexp-tag func_slot) 4) (= (sexp-tag call_name) 4)
+                   (= (symbol-eq func_slot call_name) 1))
+              (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
           ;; GNU eval.c:2634-2652 resolves symbol indirections before the
           ;; UNEVALLED check.  Reuse normal dispatch on the terminal cell.
           (let* ((checkpoint (nl_root_reserve env)) (power 1) (distance 0)
@@ -45119,7 +45124,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
                      ;; its existing named apply fallback in that case.
                      (nl_eic_eval_args_w tail_ptr env func_slot (nl_root_reserve env) call_name)
                    (nl_eic_after_lookup_w lookup_w form_ptr call_name tail_ptr env
-                                          (nl_root_mark env) func_slot))))))
+                                          (nl_root_mark env) func_slot)))))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.

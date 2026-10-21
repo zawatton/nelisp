@@ -55,7 +55,7 @@ case ${1:-} in
     [[ -x $dyn && -x $static ]] || fail "both final builds are required"
     grep -qx 'GATE-COUNT: 11 cases, 0 failures' "$out/final-checks.log"
     grep -qx 'STANDALONE-CHECKS PASS' "$out/standalone-checks.log"
-    python3 - "$out/mcp/result.json" "$out/perf/results-final-dyn" <<'PY'
+    python3 - "$out/mcp/result.json" "$out/perf/results-final2-dyn" <<'PY'
 import json, sys
 from pathlib import Path
 mcp = json.load(open(sys.argv[1]))
