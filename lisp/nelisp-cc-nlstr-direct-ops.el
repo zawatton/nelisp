@@ -557,11 +557,16 @@ lifetime of a Sexp value.  No `let' binding needed.")
            (ptr-write-u64 dest-slot 16 buf)
            (ptr-write-u64 dest-slot 24 n)
            dest-slot))
+    ;; Doc 226 D9 stage 3.1: a new name gets its symbol object now
+    ;; (`nl_symobj_eager'), as GNU's intern_c_string_1 (lread.c) makes the
+    ;; symbol with the name; before the mirror exists the object is made on
+    ;; first use.
     (defun nl_intern_insert (slot p n dest-slot buf)
       (and (nl_alloc_str_copy_loop p buf 0 n)
            (ptr-write-u64 slot 0 (+ n 1))
            (ptr-write-u64 slot 8 buf)
-           (nl_intern_write_sexp dest-slot buf n)))
+           (nl_intern_write_sexp dest-slot buf n)
+           (seq (extern-call nl_symobj_eager buf n) dest-slot)))
     ;; Plain per-occurrence buffer: used when the region is disabled and
     ;; when it is exhausted (SLOT 0 = table full, or the arena cannot take
     ;; the name).  The symbol is still correct -- `eq' compares names -- it

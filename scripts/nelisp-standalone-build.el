@@ -4929,6 +4929,78 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                                same)))
                     0)
                 0))))))
+    ;; Doc 226 D9 stage 3.1.  The intern path has no evaluator context, so the
+    ;; symbol objects it makes are registered in the mirror table through a
+    ;; root that holds the mirror record WORD (gc-port's `nl_symcells_root'
+    ;; replaces this slot; the three accessors keep its names).  The table's
+    ;; slot 3 is the cells vector `nl_symcell_entry' reads.
+    (defun nl_symcells_mirror () (heap-read-u64 268436344 0))
+    (defun nl_symcells_set (rec) (ptr-write-u64 268436344 0 rec))
+    (defun nl_symcells_get ()
+      (let* ((m (nl_symcells_mirror)))
+        (if (= m 0) 0
+          (let* ((ht (nl_record_slot_word m 0)))
+            (if (< (nl_record_length ht) 4) 0 (nl_record_slot_word ht 3))))))
+    ;; Called by the mirror's entry writers (`nl_symcell_refresh'): the first
+    ;; one names the mirror, and makes the shared unbound view the new
+    ;; objects' void cells need.  Answers 1 when the mirror was just attached.
+    (defun nl_symcells_attach_lazy (mirror-ptr)
+      (if (/= (nl_symcells_mirror) 0) 0
+        (seq (nl_symcells_set (+ (nl_word_payload mirror-ptr) 6))
+             (nl_sym_unbound)
+             1)))
+    ;; The canonical string of the interned name BUF/N (the side table's, made
+    ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
+    ;; The environment-free form of `nl_symbol_name_value_create'.
+    (defun nl_symname_make (buf n out)
+      (let* ((entry (nl_symbol_name_entry_for 1 buf n)))
+        (if (/= entry 0) (nl_symbol_name_copy_out entry out)
+          (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
+                 (name-tag 14) (i 0))
+            (seq (while (< i n)
+                   (seq (if (>= (heap-read-u8 buf i) 128) (setq name-tag 5) 0)
+                        (setq i (+ i 1))))
+                 (if (= (nl_alloc_str_write_tag buf n alloc-n out data name-tag) 0) 0
+                   (nl_symbol_name_register 1 buf n out)))))))
+    ;; The object of the interned symbol whose canonical name buffer is BUF
+    ;; (N bytes): the one it has, else a new one made as the mirror's entry
+    ;; writers make it -- GNU's struct Lisp_Symbol with void value and
+    ;; function and an empty plist, its name string filled (intern_c_string_1,
+    ;; lread.c, makes the name with the symbol), the key in its bucket chain
+    ;; and its cell in the cells vector.  Answers the object WORD, or 0 when
+    ;; it cannot be made: no mirror yet, a parallel section (the mirror is
+    ;; read-only there), no unbound view yet, no cells vector, memory.
+    (defun nl_symobj_ensure (buf n)
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((view (alloc-bytes 32 8)))
+            (seq
+             (nl_intern_write_sexp view buf n)
+             (let* ((e (nl_symcell_entry mp view)))
+               (if (> e 1) e
+                 (if (= e 1) 0
+                   (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                     (let* ((u (heap-read-u64 268436336 0)))
+                       (if (= u 0) 0
+                         (let* ((b (nl_symbol_alloc)))
+                           (if (= b 0) 0
+                             (let* ((name (alloc-bytes 32 8))
+                                    (vec (alloc-bytes 32 8)))
+                               (seq
+                                (ptr-write-u64 b 0 8196)
+                                (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
+                                (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                                (if (= (nl_symname_make buf n name) 0) 0
+                                  (nl_val_clone_into name (+ b 8)))
+                                (nl_env_scratch_vec_sexp (nl_alloc_vector 1) vec)
+                                (nelisp_mirror_bucket_prepend_unchecked mp view (+ b 6) vec)
+                                (+ b 6))))))))))))))))
+    ;; The intern path's hook after it adds a name: make the symbol's object
+    ;; now, so the symbol is complete when it is first used.
+    (defun nl_symobj_eager (buf n)
+      (if (= (nl_symcells_mirror) 0) 0
+        (if (= (heap-read-u64 268436336 0) 0) 0
+          (nl_symobj_ensure buf n))))
     ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
     ;; a pointer WORD passes through, an immediate gets a fresh view.
     (defun nl_ent_ptr (w k)
@@ -11619,11 +11691,28 @@ leave symbols unresolved at link time."
                          0))
                    0)
                  obj)))))
+    ;; (nelisp--debug-switch 45 SYM): what SYM's interned symbol has in the
+    ;; mirror: 0 no object (nil, t, no mirror yet, a name outside the intern
+    ;; arena), 1 an interned object with its name string, 2 an object whose
+    ;; name cell is still nil, 3 an entry that is not an interned symbol object.
+    (defun nl_symobj_state (sym)
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((e (if (= (logand sym 7) 6) sym
+                      (if (= (logand sym 7) 0)
+                          (if (< sym 4096) 0
+                            (if (= (heap-read-u8 sym 0) 4) (nl_symcell_entry mp sym) 0))
+                        0))))
+            (if (<= e 1) 0
+              (if (/= (logand (heap-read-u64 (- e 6) 0) 63) 4) 3
+                (let* ((nm (heap-read-u64 (- e 6) 8)))
+                  (if (= (logand nm 7) 0) (if (< nm 4096) 2 1) 2))))))))
     (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
+          (if (= op 45) (+ (* (nl_symobj_state (wf_arg_word args 1)) 4) 1)
           (if (= op 44) (nl_symobj_word env (wf_arg_word args 1))
           (if (= op 43)
               (let ((pair (wf_arg_word args 1)))
@@ -11637,9 +11726,9 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0)))))))
+             0))))))))
     (defun bf_debug_switch_w (args env)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 44) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 45) 0)
           (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
