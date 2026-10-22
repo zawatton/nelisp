@@ -5537,6 +5537,15 @@ it shares with cons and symbol blocks.")
                  (ptr-write-u64 268436336 0 box)
                  box))
         (heap-read-u64 268436336 0)))
+    ;; Store NAME, a Sexp slot holding the name string, in a symbol object's name
+    ;; cell at CELL.  A view of a canonical String (the strings line: GNU header
+    ;; and sdata outside the arena chunks) is stored as that String's WORD, so
+    ;; the image dump finds the string through the cell; any other view is the
+    ;; box itself, sharing the side table's bytes.
+    (defun nl_symobj_name_store (cell name)
+      (if (/= (nl_string_view_header name) 0)
+          (ptr-write-u64 cell 0 (nl_string_from_view name))
+        (ptr-write-u64 cell 0 name)))
     ;; GNU Fmake_symbol (alloc.c:3675): a new uninterned symbol whose name is
     ;; NAME (a string WORD or Sexp slot), void value and function, empty
     ;; plist.  Answers the symbol WORD, or 0 when memory is exhausted.
@@ -5553,7 +5562,9 @@ it shares with cons and symbol blocks.")
                  (if (if (= share 1)
                          (if (= (logand name 7) 0)
                              (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
-                                 (nl_gc_in_arena name) 0)
+                                 (if (= (nl_string_view_header name) 0)
+                                     (nl_gc_in_arena name) 0)
+                               0)
                            0)
                        0)
                      (ptr-write-u64 b 8 name)
@@ -5721,7 +5732,7 @@ it shares with cons and symbol blocks.")
                                            ;; the side table's bytes, so every
                                            ;; `symbol-name' answer is `eq' and an
                                            ;; `aset' shows through all of them.
-                                           (ptr-write-u64 (- e 6) 8 name))))
+                                           (nl_symobj_name_store (+ (- e 6) 8) name))))
                                 0)
                               (if (= (heap-read-u64 (- e 6) 40) 0)
                                   (ptr-write-u64 (- e 6) 40 (nl_symobj_meta view buf n))
@@ -5751,7 +5762,7 @@ it shares with cons and symbol blocks.")
                              ;; The name is the chain's key: without it (memory) the
                              ;; object is not registered.
                              (if (= (nl_symname_make buf n name) 0) 0
-                               (seq (ptr-write-u64 b 8 name)
+                               (seq (nl_symobj_name_store (+ b 8) name)
                                     (nl_symobj_link mp name (+ b 6) h)
                                     (nl_symobj_cell_store mp buf n (+ b 6))
                                     (+ b 6))))))))))))))))
