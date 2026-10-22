@@ -66,8 +66,8 @@ cmd: bash tools/ai/batch-f-check.sh e-fixtures
 ** S2.10 Batch E's interpreted-closure fixture and syntax-rt fixtures (47 semantics rows, char-table pin) still pass
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh closures && bash tools/ai/batch-f-check.sh syntax-rt
-** S2.11 Simulated library: bytecode and interpreted save-current-buffer, with-current-buffer and set-buffer go through the library's function cells (normal exit, throw, signal)
-#+NOTE: The bridge lane's simulated-library test, extended by this batch to the interpreter's save-current-buffer (which came from gnu-semantics): with set-buffer fset to a recording closure, the interpreter's restore must call it exactly as the bytecode path does, from one shared helper.  Red until the lane delivers.
+** S2.11 Simulated library: bytecode and the runtime's own interpreted save-current-buffer, with-current-buffer and set-buffer reach the library's function cells identically (normal exit, throw, signal, nested, killed buffer)
+#+NOTE: Two tests, each with a GNU 31.1 oracle, run on both linkages: the bridge lane's test/standalone-buffer-function-cell-check.el (its interpreted side uses the library's own save-current-buffer macro) and this batch's test/standalone-save-current-buffer-cell-check.el, the EQUIVALENCE GUARD for the interpreter: it keeps the runtime's save-current-buffer special form (gnu-semantics' Lisp implementation behind the special object, GNU editfns.c:843-853), fsets only set-buffer and current-buffer to recording closures, and requires the interpreter's hook sequence to equal the bytecode path's for the six GNU-compiled cases, with a non-vacuity check (the interpreter must have recorded calls).  Negative controls on the merged partial build: without the bridge both tests fail (the bytecode path records nothing); a special form that bypasses the cells fails all six cases of the second test; batch E's build fails both.  Coordinator, 2026-10-22: option A, the interpreter and the bytecode path keep separate implementations because the test proves identical behaviour at no speed cost; routing the interpreter through the bridge's cell wrappers would cost +18% (211 to 247 us per call) and through the shared cleanup factory +45% (308 us).
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh bridge-test
 ** S2.12 End to end: every fixture above passes on both linkages in one run
@@ -86,7 +86,7 @@ cmd: bash tools/ai/batch-f-check.sh codegen-align
 cmd: bash tools/ai/batch-f-check.sh census
 ** S3.4 Codegen's validate.sh on the dynamic build: standalone checks, fx corpus, fx spike and the AOT differential, 0 failing groups
 cmd: bash tools/ai/batch-f-check.sh log validate
-** S3.5 End to end: the AOT differential (at least 160 programs, the Doc 229 stages included) answers as the interpreter on both linkages
+** S3.5 End to end: the AOT differential (211 programs, the Doc 229 stages included, all compiling natively) answers as the interpreter on both linkages
 cmd: bash tools/ai/batch-f-check.sh log aot
 
 * S4 Pipeline

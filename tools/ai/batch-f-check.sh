@@ -47,7 +47,7 @@ CODEGEN_REV=5bca59688
 E_FIXUPS_REV=784f9c3dd
 # The buffer-bridge lane's tip (eval/f-buffer-bridge-20261022), pinned when the
 # coordinator hands it over.  Empty means the lane has not delivered.
-BRIDGE_REV=
+BRIDGE_REV=6ccf1362a
 
 say() { echo "BATCH-F $*"; }
 # The binaries may predate HEAD only by commits to this ledger's own files.
@@ -130,9 +130,9 @@ log_check() {
             [ "$(grep -c '^FILEIO2 .* PASS' "$f" 2>/dev/null)" = 2 ] || fail "fileio-2 not PASS on both in $f" ;;
     aot)    f=target/integ/focused/summary.log
             # The differential generates its cases from scripts/nelisp-aot-differential-cases.el:
-            # 97 before codegen's Doc 229 programs, at least 160 after.
-            [ "$(grep -c '^AOT-DIFF .* cases=\(1[6-9][0-9]\|[2-9][0-9][0-9]\) wrong-chunks=0 crashes=0 PASS' "$f" 2>/dev/null)" = 2 ] ||
-              fail "AOT differential not >=160/160 on both in $f" ;;
+            # 97 before codegen's Doc 229 programs, 211 on the merged tree (all compile natively).
+            [ "$(grep -c '^AOT-DIFF .* cases=\(21[1-9]\|2[2-9][0-9]\|[3-9][0-9][0-9]\) wrong-chunks=0 crashes=0 PASS' "$f" 2>/dev/null)" = 2 ] ||
+              fail "AOT differential not >=211/211 on both in $f" ;;
     validate) f=target/integ/validate-F.log
             grep -q '^VALIDATE F-dyn: 0 failing groups' "$f" 2>/dev/null || fail "codegen validate.sh not 0 failing groups in $f" ;;
     win)    f=target/win/F/smoke.log
@@ -295,7 +295,31 @@ EOF
     say "PASS syntax-rt semantics and chartab" ;;
   bridge-test)
     [ -n "$BRIDGE_REV" ] || fail "the buffer-bridge lane has not delivered (no pinned hash in this script)"
-    fail "bridge test not wired yet" ;;
+    lane=test/standalone-buffer-function-cell-check   # the bridge lane's simulated library
+    ext=test/standalone-save-current-buffer-cell-check # the same cases through the runtime's own save-current-buffer
+    for f in $lane.el $lane.expected $ext.el $ext.expected test/fixtures/buffer-function-cell.el \
+             test/fixtures/buffer-function-cell.eld; do
+      [ -f "$f" ] || fail "missing $f"
+    done
+    for t in $lane $ext; do
+      # Under GNU 31.1 nothing is recorded (its special forms bypass the function cells): both
+      # sides print the same results, which is the pin.
+      capped timeout 300 "$GNU" -Q --batch --load $t.el > "$OUT/bridge-${t##*/}.gnu.out" 2> /dev/null
+      cmp -s $t.expected "$OUT/bridge-${t##*/}.gnu.out" || fail "GNU no longer prints $t.expected"
+      for tag in dyn static; do
+        bin=$DYN; [ $tag = static ] && bin=$ST
+        [ -x "$bin" ] || fail "missing $tag binary"
+        standalone_file "$bin" $t.el bridge-${t##*/}-$tag ||
+          fail "$t on $tag: $(grep -h 'STANDALONE-CHECK' "$OUT/standalone-bridge-${t##*/}-$tag.log" | head -1 | cut -c1-200)"
+      done
+    done
+    # Negative control: batch E's build (no bridge) must fail both, or the tests prove nothing.
+    base=$ROOT/target/integ/base/nelisp-dyn
+    [ -x "$base" ] || fail "negative control needs batch E's build at $base"
+    for t in $lane $ext; do
+      if standalone_file "$base" $t.el bridge-${t##*/}-base; then fail "negative control: batch E's build passes $t"; fi
+    done
+    say "PASS bridge-test (both linkages; batch E's build fails both)" ;;
   all-fixtures)
     for item in buffer error shadow variables load printer syntax; do
       ( "$0" gnu $item ) || exit 1
