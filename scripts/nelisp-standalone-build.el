@@ -10350,8 +10350,9 @@ argument (reachability + in-arena bounds checks).")
           (seq
            ;; Entry + return bracket every bounded eval call.  RC/ENV and the
            ;; recursion-counter words are parameters across the park call;
-           ;; no runtime let local survives it.
-           (nl_thread_park_safepoint env)
+           ;; no runtime let local survives it.  With no worker registered the
+           ;; safepoint has nothing to do: the question is asked here, in line.
+           (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_park_safepoint env))
            (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) rc)))
         ;; fix/gc-ctx-pop-desync (Doc 180 Phase 2 item 1): PUSHED must gate the
         ;; pop the same way the depth cap gated the push.  `nl_gc_eval_ctx_push'
@@ -10467,10 +10468,10 @@ argument (reachability + in-arena bounds checks).")
         ;; needs no root.
         (defun nelisp_eval_call_inner_w (form env _pad)
           (seq
-           (nl_rootstack_init)
+           (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) (nl_rootstack_init) 0)
            ;; Doc 199 Tier 3b: every evaluator recursion boundary is a worker
-           ;; park safepoint.
-           (nl_thread_park_safepoint env)
+           ;; park safepoint (with no worker registered it has nothing to do).
+           (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_park_safepoint env))
            ;; Context/backtrace records still consume views; only an armed
            ;; record takes one.  The evaluator receives FORM's original
            ;; WORD, including immediate literals.
@@ -23657,6 +23658,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; (eval.c:2585-2599); self-evaluating scalars and keywords are their
     ;; own value.  Everything else goes through the evaluator's entry.
     (defun m5_fx_eval_forms (tail env base n)
+      (let* ((cur tail) (k 0) (rc 0) (w 0) (cslot (+ base (* n 8))))
+        (seq
+         ;; Direct conses, which the reader and the evaluator build, in line.
+         (while (if (= rc 0) (if (< k n) (= (logand cur 7) 2) 0) 0)
+           (seq (ptr-write-u64 cslot 0 cur)
+                (setq w (heap-read-u64 (- cur 2) 0))
+                (let* ((ew (if (= (logand w 1) 1) w
+                             (if (= (logand w 7) 6)
+                                 (let* ((kind (logand (heap-read-u64 (- w 6) 0) 63)))
+                                   (if (if (= kind 4) 1 (= kind 16))
+                                       (if (= (nl_kw_is_keyword w) 0)
+                                           (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
+                                         w)
+                                     (nelisp_eval_call_w w env 0)))
+                               (nelisp_eval_call_w w env 0)))))
+                  (if (= ew 0) (setq rc 1)
+                    (ptr-write-u64 (+ base (* k 8)) 0 ew)))
+                (setq k (+ k 1))
+                (setq cur (heap-read-u64 (- (heap-read-u64 cslot 0) 2) 8))))
+         ;; A list of another shape (a legacy cons view) takes the general loop; its
+         ;; cursor slot, BASE + N * 8, is the same.
+         (if (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
+             (m5_fx_eval_forms_gen cur env (+ base (* k 8)) (- n k))
+           rc))))
+    (defun m5_fx_eval_forms_gen (tail env base n)
       (let* ((cur tail) (k 0) (rc 0) (w 0) (tag 0) (cslot (+ base (* n 8))))
         (seq
          (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
@@ -51172,13 +51198,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; The activation's operator and argument-list WORDs (+0, +8) and its
     ;; zero nil view (+32..+63).  A view is stored as its canonical WORD.
     (defun nl_n4_put_words (frame function args)
-      (seq (ptr-write-u64 frame 0 (nl_word_canon function))
+      (seq (ptr-write-u64 frame 0 (if (= (logand function 7) 6) function (nl_word_canon function)))
            (ptr-write-u64 frame 8 (nl_n4_list_word args))
            (ptr-write-u64 frame 32 0) (ptr-write-u64 frame 40 0)
            (ptr-write-u64 frame 48 0) (ptr-write-u64 frame 56 0)))
     ;; An argument list as a WORD: nil (a nil view, or none) is 3.
     (defun nl_n4_list_word (v)
-      (if (= v 0) 3 (if (= (nl_val_tag v) 0) 3 (nl_word_canon v))))
+      (if (= (logand v 7) 2) v
+        (if (= v 0) 3 (if (= (nl_val_tag v) 0) 3 (nl_word_canon v)))))
     ;; The operator as a value view for a stash or a dispatcher: the WORD
     ;; itself, an immediate through a view.
     (defun nl_n4_op_view (frame)
@@ -52311,14 +52338,30 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; same list with 13108 in its view's data word (`nl_n3_special_object'): it is
       ;; not a builtin to call on evaluated arguments.
       (defun nl_eic_builtin_name (fn)
-        (if (= (m5_fx_word_cons_p fn 0) 0) 0
-          (if (= (heap-sexp-data fn) 13108) 0
-            (let* ((head (nl_cons_car_word fn)))
-              (if (= (logand head 1) 1) 0
-                (if (= (nl_sym_sid head) ,sid-builtin)
-                    (let* ((tail (nl_cons_cdr_word fn)))
-                      (if (= (m5_fx_word_cons_p tail 0) 0) 0 (nl_cons_car_word tail)))
-                  0))))))
+        (if (= (logand fn 7) 6) 0
+          ;; The usual cell is a direct cons whose car is the symbol object `builtin':
+          ;; read in line, -1 for any other shape (a legacy view, a special-form
+          ;; subr), which the general test below decides.
+          (let* ((r (if (= (logand fn 7) 2)
+                        (let* ((c (heap-read-u64 (- fn 2) 0)))
+                          (if (= (logand c 7) 6)
+                              (if (= (logand (heap-read-u64 (- c 6) 0) 63) 4)
+                                  (if (= (logand (sar (heap-read-u64 (- c 6) 40) 20) 4095) ,sid-builtin)
+                                      (let* ((tl (heap-read-u64 (- fn 2) 8)))
+                                        (if (= (logand tl 7) 2) (heap-read-u64 (- tl 2) 0) -1))
+                                    0)
+                                0)
+                            -1))
+                      -1)))
+            (if (/= r -1) r
+              (if (= (m5_fx_word_cons_p fn 0) 0) 0
+                (if (= (heap-sexp-data fn) 13108) 0
+                  (let* ((head (nl_cons_car_word fn)))
+                    (if (= (logand head 1) 1) 0
+                      (if (= (nl_sym_sid head) ,sid-builtin)
+                          (let* ((tail (nl_cons_cdr_word fn)))
+                            (if (= (m5_fx_word_cons_p tail 0) 0) 0 (nl_cons_car_word tail)))
+                        0)))))))))
       ;; eval_sub for a subr FN = (builtin NAME): the count of the unevaluated
       ;; arguments against min_args and max_args before anything is evaluated
       ;; (the error names the original symbol), then the arguments into the
