@@ -17513,6 +17513,77 @@ retain the existing spill path.  Affine RDI/RSI scratch is disabled."
                   (and valid info (not (cdr info)) (<= (car info) 3)))))) args)
          complex)))
 
+(defun nelisp-aot-compiler--x86-memory-call-args-plan (node)
+  "Plan profitable fixed SysV GP arguments containing stable memory reads.
+GNU comp.c:2041-2050 sends argument rvalues to GCC ABI lowering.  Prove
+all args first; each read tree fits RAX/R10/R11 and has no effects.
+RDI/RSI are address scratch, so only earlier arguments targeting those
+registers need staging.  Evaluation stays strictly left to right."
+  (let ((args (nelisp-aot-compiler--ir-get node :args)) (last-read nil)
+        (index 0) (valid t) (suffix 0))
+    (when (and (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p)
+               (not nelisp-aot-compiler--checked-arith)
+               (not (nelisp-aot-compiler--lisp-values-p))
+               (not (nelisp-aot-compiler--ir-get node :internal-boundary-disp))
+               (<= (length args) 6)
+               (not (cl-some (lambda (pair) (memq (cdr pair) '(rax r10 r11)))
+                             nelisp-aot-compiler--promoted-slots))
+               (nelisp-aot-compiler--x86-direct-call-args-p
+                (nelisp-aot-compiler--ir-with node :args nil)))
+      (dolist (arg args)
+        (let ((info (nelisp-aot-compiler--x86-memory-tree-info arg)))
+          (unless (and info (<= (car info) 3)
+                       (or (cdr info) (memq (nelisp-aot-compiler--ir-kind arg) '(imm ref arith shift))))
+            (setq valid nil))
+          (when (and info (cdr info)) (setq last-read index))
+          (nelisp-aot-compiler--walk-ir
+           arg (lambda (n)
+                 (when (or (nelisp-aot-compiler--ir-get n :root-p)
+                           (not (memq (nelisp-aot-compiler--ir-get n :class) '(nil gp)))
+                           (not (memq (nelisp-aot-compiler--ir-get n :cls) '(nil gp))))
+                   (setq valid nil))
+                 (pcase (nelisp-aot-compiler--ir-kind n)
+                   ((or 'imm 'ref)
+                    (unless (nelisp-aot-compiler--x86-direct-call-args-p
+                             (nelisp-aot-compiler--ir-with node :args (list n)))
+                      (setq valid nil)))
+                   ((or 'arith 'shift 'ptr-read-u8 'ptr-read-u16 'ptr-read-u32 'ptr-read-u64 'data-addr) nil)
+                   ('let-rt (unless (nelisp-aot-compiler--x86-forward-load-offset n) (setq valid nil)))
+                   (_ (setq valid nil)))))
+          (setq index (1+ index))))
+      (let ((tail (reverse args)))
+        (while (and tail (nelisp-aot-compiler--call-arg-trivial-p (car tail)))
+          (setq suffix (1+ suffix) tail (cdr tail))))
+      (when (and valid last-read (> (- (length args) suffix) (min 2 last-read)))
+        (list :last-read last-read :staged (min 2 last-read)
+              :prefix (- (length args) suffix))))))
+
+(defun nelisp-aot-compiler--emit-memory-call-args-x86 (node args targets buf)
+  "Emit preflighted memory ARGs in source order, staging only scratch args.
+Every ABI register other than RDI/RSI survives the three-register tree
+emitter.  The small staged prefix is popped after the final argument;
+all temporary stack changes balance before the existing call padding."
+  (let* ((plan (or (nelisp-aot-compiler--x86-memory-call-args-plan node)
+                   (error "Unpreflighted memory call arguments")))
+         (staged (plist-get plan :staged)) (index 0))
+    (cl-mapc
+     (lambda (arg target)
+       (let* ((destination (if (< index staged) 'rax target))
+              (info (nelisp-aot-compiler--x86-memory-tree-info arg)))
+         (if (cdr info)
+             (progn
+               (nelisp-aot-compiler--emit-memory-tree-x86 arg buf '(rax r10 r11))
+               (unless (eq destination 'rax)
+                 (nelisp-asm-x86_64-mov-reg-reg buf destination 'rax)))
+           ;; This helper disables affine RDI/RSI scratch for pure
+           ;; arithmetic after the last memory argument, too.
+           (nelisp-aot-compiler--emit-trivial-into-reg arg destination buf))
+         (when (< index staged) (nelisp-aot-compiler--emit-temp-push buf 'rax))
+         (setq index (1+ index))))
+     args targets)
+    (dolist (target (reverse (cl-subseq targets 0 staged)))
+      (nelisp-aot-compiler--emit-temp-pop buf target))))
+
 (defun nelisp-aot-compiler--call-arg-trivial-p (node)
   "Return non-nil if NODE is a AOT IR value that emits to a GP reg
 without clobbering any other register.
@@ -17780,7 +17851,8 @@ count."
          ;; without consing the full reverse list twice.
          (trivial-suffix-len
           (if (or (nelisp-aot-compiler--x86-direct-call-args-p node)
-                  (nelisp-aot-compiler--x86-pure-call-args-p node))
+                  (nelisp-aot-compiler--x86-pure-call-args-p node)
+                  (nelisp-aot-compiler--x86-memory-call-args-plan node))
               n
             (let ((count 0)
                 (rest (reverse args))
@@ -17817,9 +17889,11 @@ count."
     ;; (3) Trivial suffix: emit each directly into its target reg.
     ;; Order is free since trivial emits never clobber other arg regs;
     ;; we walk source order for deterministic byte layout.
-    (cl-mapc (lambda (a r)
-               (nelisp-aot-compiler--emit-trivial-into-reg a r buf))
-             trivial-args trivial-regs)
+    (if (nelisp-aot-compiler--x86-memory-call-args-plan node)
+        (nelisp-aot-compiler--emit-memory-call-args-x86 node trivial-args trivial-regs buf)
+      (cl-mapc (lambda (a r)
+                 (nelisp-aot-compiler--emit-trivial-into-reg a r buf))
+               trivial-args trivial-regs))
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; Allocate Win64 shadow space (0 for SysV).
@@ -18045,7 +18119,8 @@ same branch and emit the same byte count."
          ;; trivial gp args.  Stack-bound args are handled below.
          (trivial-suffix-len
           (if (or (nelisp-aot-compiler--x86-direct-call-args-p node)
-                  (nelisp-aot-compiler--x86-pure-call-args-p node))
+                  (nelisp-aot-compiler--x86-pure-call-args-p node)
+                  (nelisp-aot-compiler--x86-memory-call-args-plan node))
               (length register-args)
             (let ((count 0)
                 (rest (reverse register-args))
@@ -18206,9 +18281,11 @@ same branch and emit the same byte count."
       ;; Order is free since trivial emits never clobber other arg regs;
       ;; we walk source order for deterministic byte layout.  All targets
       ;; here are gp-regs (suffix gating restricts to :cls gp).
+      (if (nelisp-aot-compiler--x86-memory-call-args-plan node)
+        (nelisp-aot-compiler--emit-memory-call-args-x86 node trivial-args trivial-targets buf)
       (cl-mapc (lambda (a r)
                  (nelisp-aot-compiler--emit-trivial-into-reg a r buf))
-               trivial-args trivial-targets)
+               trivial-args trivial-targets))
       ;; Insert the 8-byte alignment correction before stack args are
       ;; pushed.  That keeps the first stack arg at the ABI-visible top
       ;; of the outgoing argument area while any pad lives below it.
