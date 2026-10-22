@@ -145,7 +145,11 @@ def root_layout(binary, symbols, n, mode):
             def u(address):
                 return struct.unpack("<Q", raw(address, 8))[0]
             def payload(word):
-                return word - 6 if word & 7 == 6 else u(word + 8)
+                # A vectorlike WORD (110) and a direct cons WORD (010) address their
+                # payload at the word minus the tag; a legacy slot holds a box pointer.
+                if word & 7 == 6:
+                    return word - 6
+                return word - 2 if word & 7 == 2 else u(word + 8)
             def slot(word, index):
                 return u(payload(word) + 16 + index * 8)
             environment = u(symbols["nl_gc_loop_ctx"] + 64)
