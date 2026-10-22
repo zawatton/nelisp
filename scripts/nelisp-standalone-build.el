@@ -5652,19 +5652,23 @@ it shares with cons and symbol blocks.")
     ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
     ;; The environment-free form of `nl_symbol_name_value_create'.
     (defun nl_symname_make (buf n out)
-      (let* ((entry (nl_symbol_name_entry_for 1 buf n)))
+      (let* ((entry (nl_symbol_name_entry_for 1 buf n))
+             (vh (if (/= entry 0) (nl_string_view_header (+ entry 40)) 0)))
         ;; An entry made for `symbol-name' holds a view of a canonical String
         ;; (outside the arena chunks): the object's persistent name box must not
         ;; copy that, so it gets a legacy box over arena bytes and the entry stays.
-        (if (if (/= entry 0) (= (nl_string_view_header (+ entry 40)) 0) 0)
+        (if (if (/= entry 0) (= vh 0) 0)
             (nl_symbol_name_copy_out entry out)
           (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
-                 (name-tag 14) (i 0))
-            (seq (while (< i n)
-                   (seq (if (>= (heap-read-u8 buf i) 128) (setq name-tag 5) 0)
-                        (setq i (+ i 1))))
-                 (if (= (nl_alloc_str_write_legacy buf n alloc-n out data name-tag) 0) 0
-                   (nl_symbol_name_register 1 buf n out)))))))
+                 ;; The box is of the kind of the String it stands for: that of the
+                 ;; entry's canonical String (a raw byte keeps a unibyte name, a
+                 ;; multibyte ASCII name stays multibyte); without an entry, the
+                 ;; kind `nl_alloc_str_write_tag' gives these bytes -- unibyte
+                 ;; unless they are a multibyte sequence.
+                 (name-tag (if (/= vh 0) (nl_string_kind vh)
+                             (if (= (nl_string_char_count buf n) n) 14 5))))
+            (if (= (nl_alloc_str_write_legacy buf n alloc-n out data name-tag) 0) 0
+              (nl_symbol_name_register 1 buf n out))))))
     ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
     ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol
     ;; as the mirror's entry writers make it -- void value and function, empty
@@ -29725,7 +29729,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= tg 0) 0
            (if (= tg 1) 1
              (if (= tg 2) (nl_word_payload p)
-               (if (= tg 3) (nl_word_payload p)
+               (if (= tg 3) (nl_float_bits p)
                  (if (= tg 4) (nl_ht_str_hash p)
                    (if (or (= tg 5) (= tg 14) (= tg 13))
                        (if (= (nl_word_length p) 0)
