@@ -8,7 +8,7 @@
 #include <string.h>
 #include <sys/mman.h>
 
-uint64_t nl_strings_state[20], nl_gc_stats[8];
+uint64_t nl_strings_state[32], nl_gc_stats[8];
 uintptr_t nl_os_alloc_chunk(size_t n) {
   void *p = mmap(NULL, n, PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -39,6 +39,8 @@ extern uintptr_t nl_string_store_view(uintptr_t, uintptr_t);
 extern uintptr_t nl_string_from_view(uintptr_t);
 extern uintptr_t nl_sexp_clone_into(uintptr_t, uintptr_t);
 extern uintptr_t nl_string_read64(uintptr_t, size_t);
+extern uintptr_t nl_string_header_p(uintptr_t);
+extern uintptr_t nl_string_image_attach(uintptr_t, uintptr_t);
 extern uint64_t strings_equal_probe(uintptr_t, uintptr_t);
 extern uint64_t strings_tag_probe(uintptr_t);
 extern uint64_t strings_name_probe(uintptr_t);
@@ -143,5 +145,38 @@ int main(void) {
   assert(memcmp((void *)data, "pinned-data", 11) == 0);
   nl_sweep_strings();
   assert(nl_strings_state[5] == 0);
-  puts("PASS string kernel: GNU header, 56 B/string, compaction, back-pointers, large sweep");
+  /* A restored image: footer, header area of three headers (32-byte aligned),
+     data pointers set.  Image headers validate like pool headers, are never
+     marked, and the pool keeps working beside them (pdumper.c:2084). */
+  {
+    size_t slen = 4096;
+    uint64_t *span = aligned_alloc(4096, slen);
+    memset(span, 0, slen);
+    uintptr_t ds = (uintptr_t)span, hoff = 256;
+    for (int i = 0; i < 3; i++) {
+      uint64_t *h = (uint64_t *)(ds + hoff + 32 * i);
+      h[0] = 4; h[1] = (uint64_t)-1; h[2] = 0; h[3] = ds + 1024 + 16 * i;
+    }
+    uint64_t *footer = (uint64_t *)(ds + slen - 32);
+    footer[0] = 32; footer[1] = 21754191157611598ull; footer[2] = hoff; footer[3] = hoff + 96;
+    assert(nl_string_header_p(ds + hoff) == 0);              /* not attached yet */
+    assert(nl_string_image_attach(ds, slen) == 1);
+    for (int i = 0; i < 3; i++) assert(nl_string_header_p(ds + hoff + 32 * i) == 1);
+    assert(nl_string_header_p(ds + hoff + 8) == 0);          /* not a header start */
+    assert(nl_string_header_p(ds + hoff + 96) == 0);         /* one past the area */
+    assert(nl_string_header_p(ds + hoff - 32) == 0);         /* before the area */
+    assert(nl_string_read64(ds + hoff + 4, 24) == 4);        /* nbytes through the view */
+    assert(nl_string_read64(ds + hoff + 32 + 4, 16) == ds + 1024 + 16);
+    assert(nl_string_mark(ds + hoff) == 0 && ((uint64_t *)(ds + hoff))[0] == 4);
+    assert(nl_gc_mark_word(ds + hoff + 4) == 0 && ((uint64_t *)(ds + hoff))[0] == 4);
+    uintptr_t pool = nl_string_new("pool-beside-image", 17, 1);
+    assert(nl_string_header_p(pool - 4) == 1 && nl_string_read64(pool, 24) == 17);
+    nl_string_mark(pool - 4);
+    nl_sweep_strings();
+    assert(nl_string_header_p(ds + hoff) == 1 && ((uint64_t *)(ds + hoff))[0] == 4);
+    assert(nl_string_read64(pool, 24) == 17);
+    uint64_t bad[8] = {0};
+    assert(nl_string_image_attach((uintptr_t)bad, sizeof bad) == 0);  /* no footer */
+  }
+  puts("PASS string kernel: GNU header, 56 B/string, compaction, back-pointers, large sweep, image strings");
 }
