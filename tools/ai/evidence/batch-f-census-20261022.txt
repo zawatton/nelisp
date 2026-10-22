@@ -1,0 +1,18 @@
+Batch F census, 2026-10-22
+Runtime: f3 618171ef1 (v1.5.0-1702-g618171ef1) nelisp-dyn sha256 219ea115190d352dfc93a32184776073492ca49fa62b9eae3e8d58bd12ac4959, cold 36ae0a8308e3b21bb64ff52f1c3696ca05c95a56635d6af25bbad830dc9c3505
+Library: nelisp-emacs-lib e09089c5 (feat/chartab-flip-20261022; mirrored to ccore/20261004 as d6573082)
+- base image (strict, empty stderr, stale-compiler-macro guard): PASS, f3, 218 s
+- gui-image --with-skk (strict, empty stderr): PASS, f3
+- ccore: PASS 374/374 (chars 110/110, files 97/97), f3
+- chartab-oracle bare: PASS 16/16, f3
+- chartab-oracle image: PASS 19/19, f3
+- blv3 .elc probe (S6.2): PASS e=(3 nil t) f=(4 nil t), byte-code-function, f3
+- layout S2.1: PASS 122/122, f3
+- S3.2: PASS, f3
+- S4.1: PASS, f3
+- S5.1: PASS, f3
+- pty: 9/10 at load ~15, f3. The failing case is launcher-no-emacs, startup_under_2s. Paired with f2 under the same load: median 2.038 vs 2.007 s (ratio 1.015, 5 alternating rounds, identical bundles). Both sit at the cap, so this is load; f2 passed 10/10 at load ~7.
+- S1.3 (user init): PASS 648 s, peak VmSize 5.29 GB, VmRSS 2.36 GB, f2. E: 766 s, 4.99/2.67 GB.
+- elcload, SKK/evil .elc on the package image: 57/63, f2. Host GNU is 62/63. The extra failures are library gaps queued for a later batch: modify-coding-system-alist, put-char-code-property, tar-mode, ert-set-test.
+- ifc 15k: F/E 1.05-1.08 at load 5-7, d29b53025. A quiet f3 rerun is pending.
+Library fixes this census: e35bd5f9 (stale struct compiler macros), fa1ee991 (image-build guard), 7287cd67 (image timeout 300 s), e09089c5 (S4.1 GNU curved quotes).
