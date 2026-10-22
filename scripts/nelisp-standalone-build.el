@@ -22786,6 +22786,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                         (nl_n4_named_apply_w name function arguments env 0))))
                            (if (= full 0) 0
                              (seq (wf_word_store_out expanded full)
+                                  ;; EXPANDED is a rooted scratch slot at the same
+                                  ;; address for every top-level form.  A form that
+                                  ;; macroexpansion returned unexpanded (the `skip'
+                                  ;; marker of `macroexp--pending-eager-loads', or a
+                                  ;; cycle) is still a macro call here; the evaluator
+                                  ;; caches its expansion keyed on that address, and
+                                  ;; every later form evaluated at the address then
+                                  ;; hit the stale row, so `load' silently ran the
+                                  ;; first expansion again instead of the rest of the
+                                  ;; file.  Evict at the reuse site, as the loops do
+                                  ;; for RESULT (`nl_mxcache_evict').
+                                  (nl_mxcache_evict expanded)
                                   (setq answer (nelisp_eval_call_w expanded env 0)))))))))))))))
          (nl_root_release env mark)
          answer)))
