@@ -26721,6 +26721,36 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (record-slot-set frame 1 names) (wf_dirty) 1))))
             1)
         1))
+    ;; GNU funcall_lambda (eval.c:3350): lexenv = Fcons (Fcons (sym, arg),
+    ;; lexenv), two conses per parameter and no cell.  A function call's frame
+    ;; (an alist of fewer than 8 bindings, not a shared closure chain, not
+    ;; binding the name yet) takes the parameter as a hybrid binding (NAME .
+    ;; VALUE); a Cell is made for it only if something shares it
+    ;; (`nl_frame_pair_cell').  Any other frame takes the ordinary binder, as
+    ;; does a value that is itself a Cell (the closure printer passes the cells
+    ;; of a captured environment around as ordinary Lisp values): a binding whose
+    ;; cdr is a Cell is a Cell binding.
+    (defun nl_bind_frame_param (frames name value)
+      (let* ((depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+        (if (= depth 0) 1
+          (let* ((frame (vector-ref-ptr (nl_record_slot_word frames 0) (- depth 1)))
+                 (head (nelisp_frame_slot_raw_word frame 0)))
+            (if (if (= (nl_val_tag value) 11) 1
+                  (if (= (heap-sexp-data frame) 13110) 1
+                    (if (= (nelisp_frame_bind_word_tag_p head 12) 1) 1
+                      (if (= (nelisp_frame_chain_has_name head name) 1) 1
+                        (if (>= (nelisp_frame_chain_length head 0) 8) 1 0)))))
+                (nl_bind_frame_fast frames name value)
+              (let* ((slot (nl_call_scratch (- frames 32))))
+                (seq
+                 (nl_val_clone_into name slot)
+                 (nl_val_clone_into value (+ slot 8))
+                 (record-slot-set
+                  frame 0
+                  (nelisp_cons_construct_w
+                   (nelisp_cons_construct_w (heap-read-u64 slot 0) (heap-read-u64 slot 8) 0)
+                   (if (= head 0) 3 head) 0))
+                 1)))))))
     (defun bf_bind_frame_silent (env frames name value)
       ;; Clause 2: argument binding cannot reenter Lisp. Local
       ;; declaration markers do not classify formal parameters in GNU;
@@ -26743,7 +26773,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (let* ((names (alloc-bytes 32 8)))
                          (seq (cons-make-with-clone canonical (nl_record_slot_word frame 1) names)
                               (record-slot-set frame 1 names) (wf_dirty) 1))))))))))))
-          (seq (nl_bind_frame_fast frames name value) 1))))
+          (seq (nl_bind_frame_param frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n4_bind_declared env frames name value)
@@ -47552,6 +47582,16 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (cond
           ((eq tree 'nelisp_frame_stack_find) 'nelisp_frame_stack_find_value)
           ((consp tree) (cons (replace-lookup (car tree)) (replace-lookup (cdr tree))))
+          (t tree)))
+       ;; A lexical read takes the binding's cdr as it is and decodes it with
+       ;; `nl_cell_get_value_w': a hybrid binding (NAME . VALUE) is read without
+       ;; making a Cell for it.
+       (raw-lookup (tree)
+         (cond
+          ((eq tree 'nelisp_frame_stack_find_value) 'nelisp_frame_stack_find_value_raw)
+          ((equal tree '(extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0))
+           '(extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 1))
+          ((consp tree) (cons (raw-lookup (car tree)) (raw-lookup (cdr tree))))
           (t tree))))
     (let ((patched
            (mapcar
@@ -47613,7 +47653,9 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                           mirror-ptr frames-ptr name-ptr)))
               ((memq (cadr form) '(nelisp_env_set_value nelisp_env_set_value_lazy
                                   nelisp_env_lookup_value nelisp_env_lookup_value_w))
-               (replace-lookup form))
+               (if (memq (cadr form) '(nelisp_env_lookup_value nelisp_env_lookup_value_w))
+                   (raw-lookup (replace-lookup form))
+                 (replace-lookup form)))
               (t form)))
            (if (eq (car source) 'seq) (cdr source) (list source)))))
       (if (eq (car source) 'seq) (nelisp-standalone--patch-n3 (cons 'seq patched)) (car patched)))))
@@ -47955,19 +47997,25 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (cond
          ((eq name 'nl_apply_do_eval) nil) ; supplied by shim unit
          ((eq name 'nl_cell_get_value)
+          ;; A hybrid binding's cdr is its plain value (`nl_frame_pair_cell'):
+          ;; the argument is not a Cell, and is the value.
           (push `(defun ,name ,(caddr form)
+                   (if (/= (nl_val_tag cell-ptr) 11)
+                       (seq (nl_sexp_clone_into cell-ptr out) 0)
                    (if (= (nl_cell_pair_p cell-ptr) 1)
                        (let* ((pair (heap-read-u64 (nl_cell_box cell-ptr) 8)))
                          (seq (nl_sexp_clone_into (nl_cons_cdr_ptr pair) out) 0))
-                     ,@(cdddr form))) out))
+                     ,@(cdddr form)))) out))
          ((eq name 'nl_cell_get_value_w)
           ;; The WORD producer must have the same shared-cell interpretation
           ;; as the legacy getter above; raw Cell.value is the binding pair.
           (push `(defun ,name ,(caddr form)
+                   (if (/= (nl_val_tag cell-ptr) 11)
+                       cell-ptr
                    (if (= (nl_cell_pair_p cell-ptr) 1)
                        (nl_cons_cdr_word
                         (heap-read-u64 (nl_cell_box cell-ptr) 8))
-                     ,@(cdddr form))) out))
+                     ,@(cdddr form)))) out))
          ((eq name 'nl_cell_set_w)
           ;; A pair-backed cell stores into its binding pair.
           (push `(defun ,name ,(caddr form)

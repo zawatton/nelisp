@@ -19,16 +19,18 @@
   (let* ((x 1) (f (lambda () x)) (g (lambda (v) (setq x v))))
     (let ((r1 (funcall f)))
       (setq x 2)
+      (garbage-collect)
       (let ((r2 (funcall f)))
         (funcall g 3)
+        (garbage-collect)
         (list r1 r2 (funcall f) x)))))
 
 ;; Two closures over one binding; a second binding of the same function.
 (defun cs-make-counter ()
-  (let ((n 0)) (cons (lambda () (setq n (1+ n))) (lambda () n))))
+  (let ((n 0)) (garbage-collect) (cons (lambda () (setq n (1+ n))) (lambda () n))))
 (defun cs-c2 ()
   (let* ((c (cs-make-counter)) (a (car c)) (b (cdr c)))
-    (funcall a) (funcall a)
+    (funcall a) (garbage-collect) (funcall a)
     (let ((c2 (cs-make-counter)))
       (funcall (car c2))
       (list (funcall b) (funcall (cdr c2))))))
@@ -84,7 +86,7 @@
 
 ;; Closures that outlive the function that bound their variable.
 (defun cs-make-acc (init)
-  (let ((total init)) (lambda (d) (setq total (+ total d)))))
+  (let ((total init)) (garbage-collect) (lambda (d) (setq total (+ total d)))))
 (defun cs-c9 ()
   (let ((a (cs-make-acc 10)) (b (cs-make-acc 100)))
     (list (funcall a 1) (funcall b 1) (funcall a 1) (funcall b 5))))
@@ -93,13 +95,14 @@
 (defun cs-c10 (&optional a &rest r)
   (let ((f (lambda () (list a r))))
     (setq a (list 'changed a))
+    (garbage-collect)
     (funcall f)))
 (defun cs-c10-run () (list (cs-c10) (cs-c10 1) (cs-c10 1 2 3)))
 
 ;; A closure per recursive call.
 (defun cs-c11 (n)
   (if (= n 0) nil
-    (let ((x n)) (cons (lambda () (setq x (* 2 x))) (cs-c11 (1- n))))))
+    (let ((x n)) (garbage-collect) (cons (lambda () (setq x (* 2 x))) (cs-c11 (1- n))))))
 (defun cs-c11-run ()
   (let ((l (cs-c11 3))) (list (mapcar #'funcall l) (mapcar #'funcall l))))
 

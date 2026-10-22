@@ -80,7 +80,24 @@
                 1
               (if (= (sexp-tag word) 14) 1 0))))))
 
-    (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
+    ;; A hybrid binding keeps its value in the pair's cdr, as GNU's
+    ;; (SYMBOL . VALUE) conses do (eval.c:3350 funcall_lambda: Fcons (Fcons (sym,
+    ;; arg), lexenv)); a Cell appears only when something needs one to share:
+    ;; a closure's capture, a setq, a dynamic lookup.  PAIR is a binding pair:
+    ;; answer its Cell, making one first (stored in the pair, where the frame,
+    ;; the closures and the setters find it from then on) when its cdr is a
+    ;; plain value.  Allocation only: nothing collects.
+    (defun nl_frame_pair_cell (pair _pad)
+      (let* ((x (nl_cons_cdr_word pair)))
+        (if (= (nl_val_tag x) 11)
+            x
+          (let* ((cell (+ (nl_alloc_cell_init (alloc-bytes 16 8) x) 6)))
+            (seq (ptr-write-u64 (+ (nl_word_payload pair) 8) 0 cell)
+                 cell)))))
+    ;; RAW 0 answers a binding's Cell (a hybrid binding gets one, see above);
+    ;; RAW 1 answers the pair's cdr as it is, the Cell or the plain value, for a
+    ;; reader that decodes it with `nl_cell_get_value_w'.
+    (defun nelisp_frame_stack_find_walk_bucket_m (cell-ptr name-ptr raw _pad)
       ;; Walk bucket and pair NlConsBox words directly.  No accessor
       ;; materialises a temporary Sexp view, and the owner of the frame/table
       ;; keeps the returned Cell slot live for this borrow-only call.
@@ -96,24 +113,24 @@
               (if (= (nelisp_frame_stack_find_word_tag_p pair-word 7) 0)
                   (if (= (logand next-word 1) 1)
                       0
-                    (nelisp_frame_stack_find_walk_bucket next-word name-ptr))
+                    (nelisp_frame_stack_find_walk_bucket_m next-word name-ptr raw 0))
                 (let* ((pair-box (heap-sexp-payload pair-word)))
                   (let* ((key-word (heap-read-u64 pair-box 0))
                          (value-word (heap-read-u64 pair-box 8)))
                     (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
                         0
                       (if (= (extern-call nelisp_symbol_key_equal key-word name-ptr) 1)
-                          (if (= (nelisp_frame_stack_find_word_tag_p
-                                  value-word 11)
-                                 1)
+                          (if (= (nelisp_frame_stack_find_word_tag_p value-word 11) 1)
                               value-word
-                            0)
+                            (if (= raw 1) value-word (nl_frame_pair_cell pair-word 0)))
                         (if (= (logand next-word 1) 1)
                             0
-                          (nelisp_frame_stack_find_walk_bucket
-                           next-word name-ptr))))))))))))
+                          (nelisp_frame_stack_find_walk_bucket_m
+                           next-word name-ptr raw 0))))))))))))
+    (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
+      (nelisp_frame_stack_find_walk_bucket_m cell-ptr name-ptr 0 0))
 
-    (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
+    (defun nelisp_frame_stack_find_in_frame_m (frame-ptr name-ptr raw _pad)
       ;; Read one validated lexframe/table through semantic WORD accessors.
       ;; The frame owns the table and bucket chain throughout this
       ;; allocation-free borrowed lookup.
@@ -127,7 +144,7 @@
               ;; Small frame: slot 0 is nil or an alist, i.e. one bucket.
               (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
                   (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
-                      (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
+                      (nelisp_frame_stack_find_walk_bucket_m ht-word name-ptr raw 0)
                     0)
                 (if (/= (nl_val_tag (nl_record_type_word ht-word)) 4)
                     0
@@ -150,8 +167,10 @@
                                        (head-word (nl_vector_slot_word buckets-word idx)))
                                   (if (= (logand head-word 1) 1)
                                       0
-                                    (nelisp_frame_stack_find_walk_bucket
-                                     head-word name-ptr)))))))))))))))))
+                                    (nelisp_frame_stack_find_walk_bucket_m
+                                     head-word name-ptr raw 0)))))))))))))))))
+    (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
+      (nelisp_frame_stack_find_in_frame_m frame-ptr name-ptr 0 0))
     (defun nelisp_frame_stack_find_descend (backing-ptr i name-ptr)
       ;; Innermost-first walk: descend from i = depth-1 down to 0.
       ;; Returns the first non-zero hit's cell pointer, or 0 if every
@@ -493,22 +512,24 @@
                                        (nl_frame_push_sym1_ptr) scratch)
              (nelisp_frame_scope_mark frames))))
 
-    (defun nelisp_frame_stack_find_kind_descend (backing-ptr i name-ptr dynamic)
+    (defun nelisp_frame_stack_find_kind_descend_m (backing-ptr i name-ptr dynamic raw _pad)
       (if (< i 0)
           0
         (let* ((frame-ptr (vector-ref-ptr backing-ptr i)))
           (let* ((found (if (= (nelisp_frame_binding_dynamic_p frame-ptr name-ptr)
                                dynamic)
-                            (nelisp_frame_stack_find_in_frame frame-ptr name-ptr)
+                            (nelisp_frame_stack_find_in_frame_m frame-ptr name-ptr raw 0)
                           0)))
             (if (= found 0)
                 (if (and (= dynamic 0) (= (nelisp_frame_scope_boundary_p frame-ptr) 1))
                     0
-                  (nelisp_frame_stack_find_kind_descend
-                   backing-ptr (- i 1) name-ptr dynamic))
+                  (nelisp_frame_stack_find_kind_descend_m
+                   backing-ptr (- i 1) name-ptr dynamic raw 0))
               found)))))
+    (defun nelisp_frame_stack_find_kind_descend (backing-ptr i name-ptr dynamic)
+      (nelisp_frame_stack_find_kind_descend_m backing-ptr i name-ptr dynamic 0 0))
 
-    (defun nelisp_frame_stack_find_kind (frames-ptr name-ptr dynamic _pad)
+    (defun nelisp_frame_stack_find_kind (frames-ptr name-ptr dynamic raw)
       ;; Return the borrowed Cell pointer, like frame_stack_find.  DYNAMIC
       ;; is 0 for lexical and 1 for dynamic.  Leave the old mixed lookup's
       ;; ABI and allocation-free inner walk intact during evaluator migration.
@@ -520,6 +541,8 @@
       ;; `record-slot-ref-ptr' on every call just to unwrap it right back
       ;; out with `sexp-int-unwrap' -- this call happens once per lexical
       ;; variable reference.
+      ;; RAW 1 answers the pair's cdr as it is (a Cell or a hybrid binding's plain
+      ;; value, see `nl_frame_pair_cell'); the callers pass 0 and get a Cell.
       ;; Shallow binding: a dynamic binding of a plain variable lives in the
       ;; mirror, never in a frame cell, so a dynamic lookup of one has
       ;; nothing to find here (FRAMES-PTR is env+32; see `nl_sb_bind').
@@ -528,10 +551,10 @@
         (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
             0
           (let* ((regular
-                  (nelisp_frame_stack_find_kind_descend
+                  (nelisp_frame_stack_find_kind_descend_m
                    (nl_record_slot_word frames-ptr 0)
                    (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
-                   name-ptr dynamic)))
+                   name-ptr dynamic raw 0)))
             (if (and (= dynamic 1) (/= (heap-read-u64 (- frames-ptr 32) 168) 0))
                 (nl_thread_dynamic_cell (- frames-ptr 32) name-ptr regular)
               regular)))))
@@ -542,6 +565,13 @@
       (let* ((lexical (nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)))
         (if (= lexical 0)
             (nelisp_frame_stack_find_kind frames-ptr name-ptr 1 0)
+          lexical)))
+    ;; The lexical reader's finder: the binding's cdr as it is (decode it with
+    ;; `nl_cell_get_value_w'), a hybrid binding is not given a Cell.
+    (defun nelisp_frame_stack_find_value_raw (frames-ptr name-ptr)
+      (let* ((lexical (nelisp_frame_stack_find_kind frames-ptr name-ptr 0 1)))
+        (if (= lexical 0)
+            (nelisp_frame_stack_find_kind frames-ptr name-ptr 1 1)
           lexical)))
 
     (defun nl_capture_name_allowed (filtered filter-ptr name-ptr)
@@ -570,7 +600,9 @@
                               (if (= (nl_val_tag cell) 11)
                                   (= (nl_cell_pair_p cell) 1) 0)
                             (nl_capture_name_allowed filtered filter name)))
-                        (nl_capture_emit_one_w name cell acc roots) acc)
+                        ;; The closure shares the binding's Cell; a hybrid
+                        ;; binding gets one now (`nl_frame_pair_cell').
+                        (nl_capture_emit_one_w name (nl_frame_pair_cell pair 0) acc roots) acc)
                     filtered filter frame roots))
               (nl_capture_walk_bucket_w (nl_cons_cdr_word chain) acc filtered filter frame roots)))
         acc))
