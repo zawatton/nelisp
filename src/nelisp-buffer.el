@@ -41,14 +41,38 @@
   (text-properties nil))  ; list of (START END PROP-PLIST) intervals, §3.2
 
 (cl-defstruct (nelisp-marker
-               (:constructor nelisp-marker--make)
+               (:constructor nelisp-marker--make-plain)
                (:copier nil))
   "Position reference that follows text mutation of a `nelisp-buffer'.
-INSERTION-TYPE t means the marker advances when text is inserted
-exactly at its position; nil means it stays put."
+A marker of record type `nelisp-marker-ins' advances when text is inserted
+exactly at its position; one of type `nelisp-marker' stays put."
   (buffer nil)
-  (position 1)
-  (insertion-type nil))
+  (position 1))
+
+;; Doc 216 S5: the insertion type is the record type, not a third field, so a
+;; marker is a two-field record.  `nelisp-marker-ins' marks one that advances
+;; past text inserted at its position; `nelisp-marker-p' accepts both.
+(cl-defstruct (nelisp-marker-ins
+               (:include nelisp-marker)
+               (:constructor nelisp-marker-ins--make-plain)
+               (:copier nil)))
+
+(defun nelisp-marker--make (&rest args)
+  "Make a marker from the keywords :buffer, :position and :insertion-type."
+  (let ((buffer (plist-get args :buffer))
+        (position (if (plist-member args :position) (plist-get args :position) 1)))
+    (if (plist-get args :insertion-type)
+        (nelisp-marker-ins--make-plain :buffer buffer :position position)
+      (nelisp-marker--make-plain :buffer buffer :position position))))
+
+(defun nelisp-marker-insertion-type (marker)
+  "Return non-nil when MARKER advances past text inserted at its position."
+  (nelisp-marker-ins-p marker))
+
+(defun nelisp-marker--set-insertion-type (marker type)
+  "Set MARKER's insertion type to TYPE by retyping its record."
+  (aset marker 0 (if type 'nelisp-marker-ins 'nelisp-marker))
+  type)
 
 (cl-defstruct (nelisp-overlay
                (:constructor nelisp-overlay--make)

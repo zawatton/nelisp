@@ -11929,11 +11929,35 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (text-properties nil))       ; list of (START END PROP-PLIST) intervals
 
 (cl-defstruct (nelisp-marker
-               (:constructor nelisp-marker--make)
+               (:constructor nelisp-marker--make-plain)
                (:copier nil))
   (buffer nil)
-  (position 1)
-  (insertion-type nil))
+  (position 1))
+
+;; Doc 216 S5: the insertion type is the record type, not a third field, so a
+;; marker is a two-field record.  `nelisp-marker-ins' marks one that advances
+;; past text inserted at its position; `nelisp-marker-p' accepts both.
+(cl-defstruct (nelisp-marker-ins
+               (:include nelisp-marker)
+               (:constructor nelisp-marker-ins--make-plain)
+               (:copier nil)))
+
+(defun nelisp-marker--make (&rest args)
+  "Make a marker from the keywords :buffer, :position and :insertion-type."
+  (let ((buffer (plist-get args :buffer))
+        (position (if (plist-member args :position) (plist-get args :position) 1)))
+    (if (plist-get args :insertion-type)
+        (nelisp-marker-ins--make-plain :buffer buffer :position position)
+      (nelisp-marker--make-plain :buffer buffer :position position))))
+
+(defun nelisp-marker-insertion-type (marker)
+  "Return non-nil when MARKER advances past text inserted at its position."
+  (nelisp-marker-ins-p marker))
+
+(defun nelisp-marker--set-insertion-type (marker type)
+  "Set MARKER's insertion type to TYPE by retyping its record."
+  (aset marker 0 (if type 'nelisp-marker-ins 'nelisp-marker))
+  type)
 
 (cl-defstruct (nelisp-overlay
                (:constructor nelisp-overlay--make)
@@ -15631,7 +15655,7 @@ pointing marker regardless of which buffer happens to be current."
     (let ((new (nelisp-marker--make)))
       (set-marker new position
                   (and (nelisp-marker-p position) (nelisp-marker-buffer position)))
-      (setf (nelisp-marker-insertion-type new) (and type t))
+      (nelisp-marker--set-insertion-type new (and type t))
       new)))
 
 (unless (fboundp 'marker-position)
@@ -15660,7 +15684,7 @@ pointing marker regardless of which buffer happens to be current."
     "Set the insertion-type of MARKER to TYPE."
     (unless (nelisp-marker-p marker)
       (signal 'wrong-type-argument (list 'markerp marker)))
-    (setf (nelisp-marker-insertion-type marker) (and type t))
+    (nelisp-marker--set-insertion-type marker (and type t))
     type))
 
 ;; `point-marker'/`point-min-marker'/`point-max-marker' build a fresh

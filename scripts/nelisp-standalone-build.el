@@ -10627,10 +10627,11 @@ leave symbols unresolved at link time."
     ;; retain their old arguments; marker copies are rooted until dispatch ends.
     (defun wf_numeric_marker_p (p)
       (if (= (nl_val_tag p) 12)
-          (if (= (nl_record_length p) 3)
+          (if (= (nl_record_length p) 2)
               (let ((view (alloc-bytes 32 8)))
                 (seq (nl_sexp_clone_into (nl_record_type_word p) view)
-                     (sexp-name-eq view "nelisp-marker"))) 0) 0))
+                     (if (= (sexp-name-eq view "nelisp-marker") 1) 1
+                       (sexp-name-eq view "nelisp-marker-ins")))) 0) 0))
     ;; Walked by WORD: a fixnum argument or the nil terminator is never a
     ;; marker, and the materialising accessors boxed each of them.
     (defun wf_numeric_has_marker (args)

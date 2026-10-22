@@ -348,6 +348,16 @@ skips it. wf_word_view passes pointer WORDs through unchanged, except that it
 materialises a Bignum object as a view, because the limb readers
 (nl_bignum_prep_operand, the small-divisor helpers) take views.
 
+Marker as a two-field record (recorded 2026-10-22; gc-port ledger S1.5). A
+marker was a three-slot record (buffer, position, insertion type), 48 bytes
+retained.  GNU keeps the insertion type in one bit of the marker; here it is the
+record's type: a marker that stays put when text is inserted at its position is
+a nelisp-marker, one that advances is a nelisp-marker-ins (a child struct that
+includes nelisp-marker, so nelisp-marker-p accepts both), and
+set-marker-insertion-type retypes the record by setting its slot 0.  A marker is
+then a record of two fields, 40 bytes retained, and the native number reader
+(wf_numeric_marker_p) accepts a record of length 2 named by either type.
+
 100 and 110 still require a kind-word load when their subtype is needed;
 only cons and the broad pointer classes can be recognized entirely from WORD
 bits. No universal "zero type-header loads" speed claim is made.
