@@ -16366,7 +16366,121 @@ conditional jump around the update, with no join jump."
   (and (eq (nelisp-aot-compiler--ir-kind node) 'ref)
        (nelisp-aot-compiler--x86-leaf-operand node)))
 
+(defvar nelisp-aot-compiler--x86-affine-addresses t
+  "Non-nil combines pure unchecked RAW affine PTR and OFFSET expressions.
+GNU bytecode.c:510-531 keeps its stack contiguous and its top relative
+to frame_base; GCC folds these offsets into base+index*scale+disp.")
+
+(defun nelisp-aot-compiler--x86-wrap-i64 (value)
+  "Return VALUE modulo 2^64, in the signed i64 range."
+  (let ((bits (logand value #xffffffffffffffff)))
+    (if (>= bits #x8000000000000000) (- bits #x10000000000000000) bits)))
+
+(defun nelisp-aot-compiler--x86-affine-add (a b factor)
+  "Combine affine forms A + FACTOR*B, without changing their term lists."
+  (let ((terms (mapcar (lambda (p) (cons (car p) (cdr p))) (car a))))
+    (dolist (term (car b))
+      (let* ((slot (nelisp-aot-compiler--ir-get (car term) :slot))
+             (old (cl-find slot terms
+                           :key (lambda (p) (nelisp-aot-compiler--ir-get (car p) :slot))))
+             (coefficient (* factor (cdr term))))
+        (if old (setcdr old (nelisp-aot-compiler--x86-wrap-i64 (+ (cdr old) coefficient)))
+          (setq terms (append terms (list (cons (car term)
+                                                (nelisp-aot-compiler--x86-wrap-i64 coefficient))))))))
+    (cons (cl-remove-if (lambda (p) (zerop (cdr p))) terms)
+          (nelisp-aot-compiler--x86-wrap-i64 (+ (cdr a) (* factor (cdr b)))))))
+
+(defun nelisp-aot-compiler--x86-affine-form (node)
+  "Return (TERMS . DISP) for a pure raw i64 affine NODE, otherwise nil.
+TERMS are (GP-REF . COEFFICIENT) pairs, coalesced by frame slot.  No
+heap reads, assignments, calls, checked arithmetic or variable shifts
+enter this form.  All arithmetic preserves raw modulo-2^64 behavior."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (cond
+     ((nelisp-aot-compiler--x86-ref-leaf-p node) (cons (list (cons node 1)) 0))
+     ((nelisp-aot-compiler--imm-int-p node)
+      (cons nil (nelisp-aot-compiler--x86-wrap-i64
+                 (nelisp-aot-compiler--ir-get node :value))))
+     ((and (not nelisp-aot-compiler--checked-arith) (eq kind 'arith)
+           (memq (nelisp-aot-compiler--ir-get node :op) '(+ - *)))
+      (let ((a (nelisp-aot-compiler--x86-affine-form (nelisp-aot-compiler--ir-get node :a)))
+            (b (nelisp-aot-compiler--x86-affine-form (nelisp-aot-compiler--ir-get node :b))))
+        (when (and a b)
+          (pcase (nelisp-aot-compiler--ir-get node :op)
+            ('+ (nelisp-aot-compiler--x86-affine-add a b 1))
+            ('- (nelisp-aot-compiler--x86-affine-add a b -1))
+            ('* (cond ((null (car a)) (nelisp-aot-compiler--x86-affine-add '(nil . 0) b (cdr a)))
+                      ((null (car b)) (nelisp-aot-compiler--x86-affine-add '(nil . 0) a (cdr b)))))))))
+     ((and (eq kind 'shift) (eq (nelisp-aot-compiler--ir-get node :op) 'shl)
+           (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get node :b))
+           (memq (nelisp-aot-compiler--ir-get (nelisp-aot-compiler--ir-get node :b) :value) '(0 1 2 3)))
+      (let ((a (nelisp-aot-compiler--x86-affine-form (nelisp-aot-compiler--ir-get node :a))))
+        (when a
+          (nelisp-aot-compiler--x86-affine-add
+           '(nil . 0) a (ash 1 (nelisp-aot-compiler--ir-get
+                               (nelisp-aot-compiler--ir-get node :b) :value)))))))))
+
+(defun nelisp-aot-compiler--x86-affine-ref-operand (ref)
+  "Return REF's operand when RDI/RSI scratch loads cannot overwrite it."
+  (let ((operand (and ref (nelisp-aot-compiler--x86-leaf-operand ref))))
+    (and (or (eq (car operand) :mem)
+             (and (eq (car operand) :reg)
+                  (memq (cadr operand) '(rbx r8 r9 r12 r13 r14 r15))))
+         operand)))
+
+(defun nelisp-aot-compiler--x86-affine-address-plan (ptr offset)
+  "Preflight pure PTR+OFFSET as (BASE INDEX SCALE DISP), without emitting.
+BASE/INDEX are frame operands or registers untouched by RDI/RSI loads.
+Only two terms and a signed disp32 are admitted; rejection emits nothing."
+  (when (and nelisp-aot-compiler--x86-affine-addresses
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--checked-arith))
+    (let ((a (nelisp-aot-compiler--x86-affine-form ptr))
+          (b (nelisp-aot-compiler--x86-affine-form offset)))
+      (when (and a b)
+        (let* ((form (nelisp-aot-compiler--x86-affine-add a b 1))
+               (terms (car form)) (disp (cdr form)) (base nil) (index nil) (scale 1))
+          (when (and terms (<= (length terms) 2)
+                     (nelisp-aot-compiler--x86-imm32-p disp))
+            (cond
+             ((null (cdr terms))
+              (let ((coefficient (cdar terms)) (ref (caar terms)))
+                (cond ((= coefficient 1) (setq base ref))
+                      ((memq coefficient '(2 4 8)) (setq index ref scale coefficient))
+                      ((memq coefficient '(3 5 9))
+                       (setq base ref index ref scale (1- coefficient))))))
+             ((and (= (cdar terms) 1) (memq (cdr (cadr terms)) '(1 2 4 8)))
+              (setq base (caar terms) index (car (cadr terms)) scale (cdr (cadr terms))))
+             ((and (= (cdr (cadr terms)) 1) (memq (cdar terms) '(1 2 4 8)))
+              (setq base (car (cadr terms)) index (caar terms) scale (cdar terms))))
+            (when (and (or base index)
+                       (or (null base) (nelisp-aot-compiler--x86-affine-ref-operand base))
+                       (or (null index) (nelisp-aot-compiler--x86-affine-ref-operand index)))
+              (list (nelisp-aot-compiler--x86-affine-ref-operand base)
+                    (nelisp-aot-compiler--x86-affine-ref-operand index) scale disp))))))))
+
+(defun nelisp-aot-compiler--emit-affine-address-x86 (plan buf)
+  "Emit preflighted PLAN using only RDI/RSI and return its memory operand."
+  (let* ((base-op (nth 0 plan)) (index-op (nth 1 plan))
+         (base (and base-op (nelisp-aot-compiler--x86-reg-of base-op buf 'rdi)))
+         (index (and index-op (if (equal base-op index-op) base
+                               (nelisp-aot-compiler--x86-reg-of index-op buf 'rsi)))))
+    (list :mem base index (nth 2 plan) (nth 3 plan))))
+
 (defun nelisp-aot-compiler--x86-index-form (node)
+  "Return NODE as (REF SCALE DISP), including distributed affine constants."
+  (let ((old (nelisp-aot-compiler--x86-index-form-legacy node)))
+    (or (and old (nelisp-aot-compiler--x86-imm32-p (nth 2 old)) old)
+        (and nelisp-aot-compiler--x86-affine-addresses
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--checked-arith)
+             (let ((form (nelisp-aot-compiler--x86-affine-form node)))
+               (when (and form (= (length (car form)) 1)
+                          (memq (cdar (car form)) '(1 2 4 8))
+                          (nelisp-aot-compiler--x86-imm32-p (cdr form)))
+                 (list (caar (car form)) (cdar (car form)) (cdr form))))))))
+
+(defun nelisp-aot-compiler--x86-index-form-legacy (node)
   "NODE as (REF SCALE DISP) for an index REF*SCALE+DISP, or nil.
 REF is a GP variable reference; SCALE is 1, 2, 4 or 8 from `shl' by 0-3
 or `*' by a power of two; DISP comes from `+' / `-' of an immediate.
@@ -16423,8 +16537,11 @@ or index forms (no code that could clobber rax is emitted)."
          (pimm (and (eq (car po) :imm) (cadr po)))
          (disp (nelisp-aot-compiler--imm-disp32 offset))
          (ix (and (not disp) (nelisp-aot-compiler--x86-index-form offset)))
-         (fits (lambda (d) (nelisp-aot-compiler--x86-imm32-p d))))
+         (fits (lambda (d) (nelisp-aot-compiler--x86-imm32-p d)))
+         (affine (and (or (not po) (not (or disp ix)))
+                      (nelisp-aot-compiler--x86-affine-address-plan ptr offset))))
     (cond
+     (affine (nelisp-aot-compiler--emit-affine-address-x86 affine buf))
      ((and pimm disp (funcall fits (+ pimm disp)) (<= 0 (+ pimm disp)))
       (list :mem nil nil 1 (+ pimm disp)))
      ;; A data/bss symbol plus a constant: RIP-relative, as GCC addresses
@@ -16494,7 +16611,8 @@ can enter this tree.  This preflight emits no bytes."
                (po (nelisp-aot-compiler--x86-leaf-operand ptr))
                (disp (nelisp-aot-compiler--imm-disp32 offset))
                (ix (and (not disp) (nelisp-aot-compiler--x86-index-form offset))))
-          (when (or (and po (or disp
+          (when (or (nelisp-aot-compiler--x86-affine-address-plan ptr offset)
+                    (and po (or disp
                                (and ix (nelisp-aot-compiler--x86-imm32-p
                                         (nth 2 ix)))))
                     (and disp (eq (nelisp-aot-compiler--ir-kind ptr) 'data-addr)
@@ -16645,9 +16763,10 @@ first only when the address is made of leaves it cannot reassign."
       (when (and mem (not vimm))
         (setq src (nelisp-aot-compiler--x86-reg-of vo buf 'rdx))))
      ((and (nelisp-aot-compiler--x86-no-assign-p val)
-           (nelisp-aot-compiler--x86-leaf-operand ptr)
-           (or (nelisp-aot-compiler--imm-disp32 offset)
-               (nelisp-aot-compiler--x86-index-form offset)))
+           (or (nelisp-aot-compiler--x86-affine-address-plan ptr offset)
+               (and (nelisp-aot-compiler--x86-leaf-operand ptr)
+                    (or (nelisp-aot-compiler--imm-disp32 offset)
+                        (nelisp-aot-compiler--x86-index-form offset)))))
       (nelisp-aot-compiler--emit-value val buf)
       (setq src 'rax)
       (setq mem (nelisp-aot-compiler--x86-address ptr offset buf t))))

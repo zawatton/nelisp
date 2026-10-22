@@ -40,6 +40,140 @@
                        (string-match-p "x86_64" system-configuration)))
      (should (= (nelisp-aot-codegen-test--run ',program) ,expected))))
 
+(ert-deftest nelisp-aot-codegen/affine-widths-and-wrapping ()
+  "All read/write widths preserve full bits under affine address rewrites."
+  (let ((definitions nil) (checks nil) (folds 0)
+        (emit (symbol-function 'nelisp-aot-compiler--emit-affine-address-x86))
+        (shapes '(((+ p (* (- i 1) 8)) 0)
+                  ((+ p 8) (shl (- i 2) 3))
+                  (p (* (+ i -1) 8))
+                  ((+ (* i 8) p) -8)
+                  ((+ p (* i 4)) (* (- i 2) 4))
+                  ((+ p (* i 8)) 18446744073709551608))))
+    (dolist (width '(8 16 32 64))
+      (cl-loop for (ptr offset) in shapes for k from 0 do
+               (let ((name (intern (format "affine_w%d_s%d" width k)))
+                     (read-op (intern (format "ptr-read-u%d" width)))
+                     (write-op (intern (format "ptr-write-u%d" width))))
+                 (push `(defun ,name (p i value expected)
+                          (seq (,write-op ,ptr ,offset value)
+                               (if (= (,read-op ,ptr ,offset) expected) 0 1))) definitions)
+                 (dolist (i '(-2 0 1 5))
+                   (dolist (value '(-1 0 1311768467139281697))
+                     (let ((expected (logand value (1- (ash 1 width)))))
+                       (when (and (= width 64) (>= expected (ash 1 63)))
+                         (setq expected (- expected (ash 1 64))))
+                       (push `(,name (+ mem 256) ,i ,value ,expected) checks)))))))
+    ;; 288 comparisons: OR the independent boolean failures, avoiding an
+    ;; exit-status sum that could wrap to zero after 256 failed checks.
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)
+               (lambda (plan buf) (setq folds (1+ folds)) (funcall emit plan buf))))
+      (should (= 0 (nelisp-aot-codegen-test--run
+                    `(seq (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+                          ,@(nreverse definitions)
+                          (defun run ()
+                            (let ((mem (mmap-page)) (failure 0))
+                              ,@(mapcar (lambda (check) `(setq failure (logior failure ,check))) checks)
+                              failure))
+                          (exit (run)))))))
+    (should (> folds 0))))
+
+(ert-deftest nelisp-aot-codegen/affine-effects-and-memory-rhs ()
+  "Pointer/offset/value mutations retain order and aliased RHS reads retain bits."
+  (should
+   (= 0 (nelisp-aot-codegen-test--run
+         '(seq
+           (defun run (p)
+             (let ((i 1))
+               ;; Address captures i=2 before OFFSET advances i to 3;
+               ;; value then advances i to 4.  The store belongs at p+16.
+               (ptr-write-u64
+                (seq (setq i (+ i 1)) (+ p (* (- i 1) 8)))
+                (seq (setq i (+ i 1)) 8)
+                (seq (setq i (+ i 1)) i))
+               (if (= (ptr-read-u64 p 16) 4)
+                   (seq
+                    (setq i 2)
+                    (ptr-write-u64 (+ p (* (- i 1) 8)) 0
+                                   (seq (setq i 7) 99))
+                    (if (= (ptr-read-u64 p 8) 99)
+                        (seq
+                         (ptr-write-u64 (+ p (* (- i 1) 8)) 0
+                                        (+ (ptr-read-u64 (+ p (* (- i 6) 8)) 0)
+                                           (ptr-read-u64 (+ p (* (- i 5) 8)) 0)))
+                         (if (= (ptr-read-u64 p 48) 103) 0 3))
+                      2))
+                 1)))
+           (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+           (exit (run (mmap-page))))))))
+
+(ert-deftest nelisp-aot-codegen/affine-large-displacement-fallback ()
+  "Unencodable displacements fall back, while cancelling constants normalize."
+  (should
+   (= 0 (nelisp-aot-codegen-test--run
+         '(seq
+           (defun read-large (p) (ptr-read-u64 p 1099511627776))
+           (defun write-large (p v) (ptr-write-u64 p -1099511627776 v))
+           (defun cancelled (p i)
+             (ptr-read-u64 (- p 2147483648) (+ 2147483648 (* (- i 1) 8))))
+           (defun odd-scale (p i) (ptr-read-u64 (+ p (* i 3)) 0))
+           (defun coefficient-wrap (p i)
+             (ptr-read-u64 (+ p (* i 18446744073709551624)) -8))
+           (defun run (p)
+             (seq (write-large (+ p 1099511627776) 123456789)
+                  (if (= (read-large (- p 1099511627776)) 123456789)
+                      (if (= (cancelled p 1) 123456789)
+                          (if (= (odd-scale (- p 3) 1) 123456789)
+                              (if (= (coefficient-wrap p 1) 123456789) 0 4) 3) 2) 1)))
+           (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+           (exit (run (mmap-page))))))))
+
+(ert-deftest nelisp-aot-codegen/affine-checked-arithmetic ()
+  "Checked arithmetic retains its guards and original evaluation path."
+  (let ((nelisp-aot-compiler--checked-arith t) (folds 0)
+        (emit (symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)
+               (lambda (plan buf) (setq folds (1+ folds)) (funcall emit plan buf))))
+      (should (= 11 (nelisp-aot-codegen-test--run
+                     '(seq
+                       (defun run (p i)
+                         (seq (ptr-write-u64 (+ p (* (- i 1) 8)) 0 11)
+                              (ptr-read-u64 (+ p (* (- i 1) 8)) 0)))
+                       (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+                       (exit (run (mmap-page) 2))))))
+      (should (= 97 (nelisp-aot-codegen-test--run
+                     '(seq (defun run (p i)
+                             (ptr-read-u64 (+ p (* (+ i 1) 8)) 0))
+                           (exit (run 0 2305843009213693951)))))))
+    (should (zerop folds))))
+
+(ert-deftest nelisp-aot-codegen/affine-preflight-and-registers ()
+  "Rejected displacements emit nothing, and scratch/result registers cannot be sources."
+  (let* ((nelisp-aot-compiler--arch 'x86_64)
+         (nelisp-aot-compiler--checked-arith nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (p (nelisp-aot-compiler--make-ir 'ref :slot 0 :class 'gp))
+         (i (nelisp-aot-compiler--make-ir 'ref :slot 1 :class 'gp))
+         (zero (nelisp-aot-compiler--make-ir 'imm :value 0))
+         (eight (nelisp-aot-compiler--make-ir 'imm :value 8))
+         (huge (nelisp-aot-compiler--make-ir 'imm :value 1099511627776))
+         (bad (nelisp-aot-compiler--make-ir 'arith :op '+ :a p :b huge))
+         (good (nelisp-aot-compiler--make-ir
+                'arith :op '+ :a p
+                :b (nelisp-aot-compiler--make-ir 'arith :op '* :a i :b eight)))
+         (buf (nelisp-asm-x86_64-make-buffer)))
+    (should-not (nelisp-aot-compiler--x86-affine-address-plan bad zero))
+    (should-not (nelisp-aot-compiler--x86-address bad zero buf t))
+    (should (zerop (nelisp-asm-x86_64-buffer-pos buf)))
+    (should (nelisp-aot-compiler--x86-affine-address-plan good zero))
+    (dolist (reg '(rax rdi rsi r10 r11 rsp))
+      (let ((nelisp-aot-compiler--promoted-slots (list (cons 0 reg))))
+        (should-not (nelisp-aot-compiler--x86-affine-address-plan good zero))))
+    (let ((nelisp-aot-compiler--promoted-slots '((0 . r8) (1 . r9))))
+      (should (nelisp-aot-compiler--x86-affine-address-plan good zero)))
+    (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
+      (should-not (nelisp-aot-compiler--x86-affine-address-plan good zero)))))
+
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/conditions
   "and/or chains in if, while and cond, rotated loops with zero trips."
   (seq
