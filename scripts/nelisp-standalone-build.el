@@ -20854,7 +20854,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_push_float_format (ms vptr fmt)
       (if (or (< fmt 8) (= (logand fmt 1) 1))
           (m5_push_float ms vptr)
-        (let* ((tag (ptr-read-u64 fmt 0)))
+        (let* ((tag (sexp-tag fmt)))
           (if (= (m5_string_tag_p tag) 0) (m5_push_float ms vptr)
             (let* ((n (m5_strlen fmt))
                    (prec (if (and (>= n 3) (= (m5_byte_at fmt 0) 37)
@@ -50551,13 +50551,18 @@ tails run against a private box), and the (rc, OUT) adapter F."
                    (if (= (logand w 1) 1) 0
                      (if (= (logand w 7) 6) 0 (= (nl_cons_is_macro w) 1))) 0)
                3
-             (seq
-              (if (or (>= hops 65536)
-                      (if (= (logand w 1) 1) 0
-                        (= (logior (logxor (nl_val_tag w) 7)
-                                   (logxor (heap-sexp-data w) 13108)) 0)))
-                  (ptr-write-u64 fw 0 first) 0)
-              1))))))
+             ;; A special form's function-cell object at the end of the chain
+             ;; runs as that form (4), as GNU's UNEVALLED subr after
+             ;; indirect_function; FW holds it.
+             (if (if (< hops 65536)
+                     (if (= (logand w 1) 1) 0
+                       (= (logior (logxor (nl_val_tag w) 7)
+                                  (logxor (heap-sexp-data w) 13108)) 0))
+                     0)
+                 4
+               (seq
+                (if (>= hops 65536) (ptr-write-u64 fw 0 first) 0)
+                1)))))))
     ;; FORM_PTR is the whole call form, for a macro the alias chain reaches.
     (defun nl_eic_alias_w (w tail_ptr env fw call_name form_ptr)
       (if (= w 2)
@@ -50566,7 +50571,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
                 (nl_abi_fail (nl_cons_stash_void_function env call_name) 0)
               (if (= resolved 3)
                   (nl_cons_macro_apply_eval_w form_ptr (heap-read-u64 fw 0) tail_ptr env 0)
-                (nl_eic_eval_args_w tail_ptr env fw call_name))))
+                (if (= resolved 4)
+                    (nl_n3_special_call_w (heap-read-u64 fw 0) tail_ptr env form_ptr)
+                  (nl_eic_eval_args_w tail_ptr env fw call_name)))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
     ;; rc with the value in BOX.
