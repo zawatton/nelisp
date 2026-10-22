@@ -11773,18 +11773,53 @@ leave symbols unresolved at link time."
       ;; The evaluator context of the form being evaluated, or 0 outside one.
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 0) 0
         (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (defun nl_symcells_selftest_survive (n hide ctx)
+      ;; Doc 226 D9 stage 3.  A mirror-shaped table that only the root keeps is
+      ;; built, two collections run, the table is checked and the real root is
+      ;; re-derived from the evaluator context CTX, all inside this one native
+      ;; call: the evaluator reads `nl_symcells_root' (symbol compares, the store
+      ;; canonicalization, interning), so no evaluator work may run while it
+      ;; names a table that is not the globals record.  Answers the check (2 N
+      ;; for a table of N and N that survived, a negative code when a record or
+      ;; vector is gone), nil when the table could not be made, -100 outside a
+      ;; form (the root is then untouched).
+      (if (= ctx 0) (+ (* -100 4) 1)
+        (if (= (nl_symcells_selftest_make n hide) 3) 3
+          (let ((r (seq (nl_gc_collect_from_recorded_roots 0)
+                        (nl_gc_collect_from_recorded_roots 0)
+                        (nl_symcells_selftest_check 0))))
+            (seq (nl_symcells_attach ctx) (+ (* r 4) 1))))))
+    (defun nl_symcells_selftest_dump (n path_args ctx)
+      ;; The same window around the image dump: the dump's marking and its
+      ;; relocation walk must agree on a table only the root keeps.  PATH_ARGS
+      ;; is the argument list of the dump builtin (the path first).  Answers the
+      ;; check, -100 outside a form, -101 when the dump failed.
+      (if (= ctx 0) (+ (* -100 4) 1)
+        (if (= (nl_symcells_selftest_make n 0) 3) 3
+          (let* ((d (bf_arena_dump_image_stream_w path_args 0))
+                 (r (nl_symcells_selftest_check 0)))
+            (seq (nl_symcells_attach ctx)
+                 (if (= (logand d 3) 1)
+                     (if (> (sar d 2) 0) (+ (* r 4) 1) (+ (* -101 4) 1))
+                   (+ (* -101 4) 1)))))))
     (defun nl_symcells_selftest_w (args)
       ;; (nelisp--debug-switch 60): `nl_symcells_get', nil when 0;
-      ;; (61 N), (62 N): `nl_symcells_selftest_make', the root visible to the
-      ;; collector, hidden from it; (63): `..._check'; (64): 1 when the root
-      ;; is the record of the evaluator context's globals, else 0, and -1
-      ;; outside a form; (65): re-derive the root from the evaluator context;
-      ;; (66): clear it.  Callers restore the root with 65.
+      ;; (61 N), (62 N): `nl_symcells_selftest_survive', the root visible to the
+      ;; collector, hidden from it (the negative control); (63 (N PATH)): the
+      ;; same around an image dump to PATH (`nl_symcells_selftest_dump'; the
+      ;; builtin takes at most one argument after the code, so N and PATH come
+      ;; as a list); (64):
+      ;; 1 when the root is the record of the evaluator context's globals,
+      ;; else 0, and -1 outside a form; (65): re-derive the root from the
+      ;; evaluator context; (66): clear it.  Arms 61-63 restore the root
+      ;; before they return, so the evaluator never runs with a fake one.
       (let ((op (wf_argval args 0)) (ctx (nl_symcells_selftest_ctx 0)))
         (if (= op 60) (if (= (nl_symcells_get) 0) 3 (nl_symcells_get))
-          (if (= op 61) (nl_symcells_selftest_make (wf_argval args 1) 0)
-            (if (= op 62) (nl_symcells_selftest_make (wf_argval args 1) 1)
-              (if (= op 63) (+ (* (nl_symcells_selftest_check 0) 4) 1)
+          (if (= op 61) (nl_symcells_selftest_survive (wf_argval args 1) 0 ctx)
+            (if (= op 62) (nl_symcells_selftest_survive (wf_argval args 1) 1 ctx)
+              (if (= op 63)
+                  (nl_symcells_selftest_dump (nl_word_payload (nl_cons_car_word (wf_arg_word args 1)))
+                                             (nl_cons_cdr_word (wf_arg_word args 1)) ctx)
                 (if (= op 64)
                     (+ (* (if (= ctx 0) -1
                             (if (= (nl_symcells_mirror) (+ (heap-read-u64 ctx 8) 6)) 1 0)) 4) 1)

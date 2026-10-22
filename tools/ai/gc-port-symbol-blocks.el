@@ -14,6 +14,14 @@
 ;;                                its typed group lies outside the chunks.
 ;; The cells are never printed or handed to a symbol primitive: on this
 ;; line no symbol consumer reads a direct symbol WORD.
+;; Every count is relative to a baseline taken after a warm-up pass.  Where
+;; interned symbols are objects (Doc 226 D9 stage 3) a name is a symbol-block
+;; cell, created when it is first read, and the first call of a function
+;; interns a few more (measured: seven cells at the first call of
+;; `gcsb-check', whose `unless' is expanded then); the warm-up pass runs every
+;; path of the test once with throwaway sizes, so none of that lands between
+;; the baseline and the checks, and the expectations are LIVE0 + N, the blocks
+;; the cells fill (682 per block) and N free cells after the drop.
 ;; GCSB_MODE selects the run:
 ;;   run      allocation, marking, sweeping and free-list reuse;
 ;;   dump     run, then dump the heap to GCSB_IMAGE;
@@ -26,12 +34,13 @@
 (defvar gcsb-checks 0)
 (defvar gcsb-failures 0)
 (defvar gcsb-keep nil)
-(setq gcsb-mode (or (getenv "GCSB_MODE") "run") gcsb-checks 0 gcsb-failures 0)
+(defvar gcsb-quiet nil)
+(setq gcsb-mode (or (getenv "GCSB_MODE") "run") gcsb-checks 0 gcsb-failures 0 gcsb-quiet nil)
 (defun gcsb-check (ok label)
   (setq gcsb-checks (1+ gcsb-checks))
   (unless ok
     (setq gcsb-failures (1+ gcsb-failures))
-    (princ (format "GCSB FAIL %s\n" label))))
+    (unless gcsb-quiet (princ (format "GCSB FAIL %s\n" label)))))
 (defun gcsb-make (n) (nelisp--debug-switch 40 n))
 (defun gcsb-ok (v) (nelisp--debug-switch 41 v))
 (defun gcsb-stats () (nelisp--debug-switch 42))
@@ -43,50 +52,49 @@
   (list 1 2 3)
   (length (make-list 10 nil)))
 
-(if (equal gcsb-mode "restore")
-    (progn
-      (gcsb-check (vectorp gcsb-keep) "the kept vector came through the image")
-      (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells intact after the restore")
-      (gcsb-gc)
-      (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells survive two collections")
-      (let ((v (gcsb-make 700)))
-        (gcsb-gc)
-        (gcsb-check (= (gcsb-ok v) 700) "new cells beside the image cells")
-        (gcsb-check (= (nth 0 (gcsb-stats)) 700) "live count after the restore")
-        (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells unaffected")))
+(defun gcsb-blocks-for (cells) (/ (+ cells 681) 682))
+
+(defun gcsb-pass (n drop reuse)
+  ;; One pass of allocation, marking, sweeping and reuse with N cells kept,
+  ;; DROP swept and REUSE allocated again, every count relative to the
+  ;; baseline taken after a collection.
+  (setq gcsb-keep nil)
+  ;; The conservative scan is off from the baseline to the end of the counts:
+  ;; a stale native word (the warm-up's dead cells are in the frames' unwritten
+  ;; slots) would keep a few cells live at the baseline and not later.
+  (nelisp--debug-switch 28)
   (gcsb-gc)
-  (let ((s0 (gcsb-stats)))
-    (gcsb-check (equal (list (nth 0 s0) (nth 2 s0) (nth 3 s0)) '(0 0 0))
-                "no symbol cell before the test")
-    (setq gcsb-keep (gcsb-make 2000))
-    (gcsb-check (and (vectorp gcsb-keep) (= (length gcsb-keep) 2000)) "a vector of 2000")
-    (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "fresh cells")
+  (let* ((s0 (gcsb-stats)) (live0 (nth 0 s0)) (blocks0 (nth 2 s0)) (alloc0 (nth 3 s0)))
+    (setq gcsb-keep (gcsb-make n))
+    (gcsb-check (and (vectorp gcsb-keep) (= (length gcsb-keep) n)) (format "a vector of %d" n))
+    (gcsb-check (= (gcsb-ok gcsb-keep) n) "fresh cells")
     (gcsb-gc)
-    (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "cells survive two collections")
+    (gcsb-check (= (gcsb-ok gcsb-keep) n) "cells survive two collections")
     (let ((s1 (gcsb-stats)))
-      (gcsb-check (= (nth 0 s1) 2000) "2000 live after the sweep")
-      (gcsb-check (= (nth 2 s1) 3) "three blocks of 682 cells")
-      (gcsb-check (= (nth 3 s1) 2000) "2000 allocated"))
-    ;; Sweeping and reuse, with the conservative scan off so no stale stack
-    ;; word keeps the dropped population.
-    (nelisp--debug-switch 28)
-    (gcsb-drop 1000)
+      (gcsb-check (= (nth 0 s1) (+ live0 n))
+                  (format "%d + %d live after the sweep: %S" live0 n s1))
+      (gcsb-check (= (nth 3 s1) (+ alloc0 n)) (format "%d allocated" n))
+      (gcsb-check (= (nth 2 s1) (max blocks0 (gcsb-blocks-for (+ live0 n))))
+                  (format "blocks of 682 cells for %d live: %S" (+ live0 n) s1)))
+    ;; Sweeping and reuse.
+    (gcsb-drop drop)
     (gcsb-gc)
     (let ((s2 (gcsb-stats)))
-      (gcsb-check (= (nth 0 s2) 2000) "the dropped 1000 are not live")
-      ;; 46 cells ended the third block, 682 filled a fourth, 272 began a
-      ;; fifth: all 1000 swept to the free list, no block wholly free
-      ;; beyond the first block's worth (alloc.c:7050).
-      (gcsb-check (= (nth 1 s2) 1000) "1000 free cells")
-      (gcsb-check (= (nth 2 s2) 5) "five blocks, none wholly free beyond one block")
-      (let ((v (gcsb-make 900)))
+      (gcsb-check (= (nth 0 s2) (+ live0 n)) (format "the dropped %d are not live: %S" drop s2))
+      ;; All DROP cells swept to the free list; the cells fill
+      ;; ceil((LIVE0 + N + DROP) / 682) blocks, and a wholly free block is
+      ;; released only beyond one block's worth of free cells (alloc.c:7050).
+      (gcsb-check (= (nth 1 s2) drop) (format "%d free cells: %S" drop s2))
+      (gcsb-check (= (nth 2 s2) (max blocks0 (gcsb-blocks-for (+ live0 n drop))))
+                  (format "blocks, none wholly free beyond one block: %S" s2))
+      (let ((v (gcsb-make reuse)))
         (let ((s3 (gcsb-stats)))
-          (gcsb-check (= (nth 2 s3) 5) "900 new cells reuse free cells, no new block")
-          (gcsb-check (= (gcsb-ok v) 900) "reused cells")
+          (gcsb-check (= (nth 2 s3) (nth 2 s2)) (format "%d new cells reuse free cells, no new block" reuse))
+          (gcsb-check (= (gcsb-ok v) reuse) "reused cells")
           (gcsb-gc)
-          (gcsb-check (= (gcsb-ok v) 900) "reused cells survive")
-          (gcsb-check (= (nth 0 (gcsb-stats)) 2900) "2900 live")
-          (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "kept cells unaffected"))))
+          (gcsb-check (= (gcsb-ok v) reuse) "reused cells survive")
+          (gcsb-check (= (nth 0 (gcsb-stats)) (+ live0 n reuse)) "live count after the reuse")
+          (gcsb-check (= (gcsb-ok gcsb-keep) n) "kept cells unaffected"))))
     (nelisp--debug-switch 29)
     ;; Doc 223 conservative scan: a cons held only by native frames, in a
     ;; typed group outside the chunks' address range, survives (debug
@@ -94,7 +102,39 @@
     ;; cover only the chunks.
     (let ((r (nelisp--debug-switch 43)))
       (gcsb-check (equal r '(1 1))
-                  (format "a cons held only by the native stack survives: %S" r))))
+                  (format "a cons held only by the native stack survives: %S" r)))))
+
+(defun gcsb-warm ()
+  ;; Every function and builtin of the test is used once, quietly, so that
+  ;; whatever a first use interns exists before the baseline.
+  (let ((checks gcsb-checks) (failures gcsb-failures))
+    (setq gcsb-quiet t)
+    (gcsb-pass 10 5 4)
+    (setq gcsb-quiet nil gcsb-checks checks gcsb-failures failures gcsb-keep nil)))
+
+(if (equal gcsb-mode "restore")
+    (progn
+      (gcsb-check (vectorp gcsb-keep) "the kept vector came through the image")
+      (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells intact after the restore")
+      ;; The warm-up must not touch the restored population.
+      (let ((kept gcsb-keep))
+        (gcsb-warm)
+        (setq gcsb-keep kept))
+      (gcsb-gc)
+      (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells survive two collections")
+      (nelisp--debug-switch 28)
+      (gcsb-gc)
+      (let ((live0 (nth 0 (gcsb-stats))))
+        (let ((v (gcsb-make 700)))
+          (gcsb-gc)
+          (gcsb-check (= (gcsb-ok v) 700) "new cells beside the image cells")
+          ;; Image cells are never counted (GNU counts no pdumper object),
+          ;; so only the 700 new cells join the baseline.
+          (gcsb-check (= (nth 0 (gcsb-stats)) (+ live0 700)) "live count after the restore")
+          (gcsb-check (= (gcsb-ok gcsb-keep) 2000) "image cells unaffected")))
+      (nelisp--debug-switch 29))
+  (gcsb-warm)
+  (gcsb-pass 2000 1000 900)
   (when (equal gcsb-mode "dump")
     (gcsb-gc)
     (gcsb-check (> (nelisp--arena-dump-image-stream (getenv "GCSB_IMAGE")) 0) "image dump")
