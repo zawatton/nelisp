@@ -192,6 +192,12 @@
         (let* ((lex (extern-call nl_lex_cell frames-ptr name-ptr)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
+            ;; No lexical binding: GNU's Fsetq calls Fset, whose set_internal refuses a
+            ;; constant.  A keyword is one (it may only be set to itself), asked after the
+            ;; lexical lookup, not before it.
+            (if (= (bf_keyword_raw name-ptr) 1)
+                (if (= (wf_bytecode_w_eqw name-ptr val-ptr) 1) 0
+                  (bf_setting_constant name-ptr))
             ;; One lookup of the symbol's object serves the constant refusal (its
             ;; trapped_write, data.c set_internal) and the LOCALIZED test.
             (let* ((direct (if (= lex 0)
@@ -217,7 +223,7 @@
                   (if (= cell-ptr 0)
                       (nelisp_env_setv_alias_or_mirror
                        mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
-                    (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))))))))
+                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))))))
 
     ;; nelisp_env_set_value
     ;;

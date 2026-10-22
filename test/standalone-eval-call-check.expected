@@ -132,3 +132,8 @@ macro-defun-f (wrong-number-of-arguments (2 . 2) 1)
 macro-defmacro (wrong-number-of-arguments (2 . 2) 0)
 macro-when-dot-1 (wrong-type-argument listp 1)
 macro-dolist-dot-1 (wrong-type-argument listp 1)
+keyword-self (:foo :bar :foo)
+keyword-param 1
+keyword-param-setq 2
+keyword-setq-const (setting-constant :foo)
+keyword-setq-self :foo

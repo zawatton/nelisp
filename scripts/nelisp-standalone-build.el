@@ -10476,7 +10476,7 @@ argument (reachability + in-arena bounds checks).")
            ;; record takes one.  The evaluator receives FORM's original
            ;; WORD, including immediate literals.
            (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
-             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_eval_depth_limit env rec_cur)))
+             (let* ((rec_cur (ptr-read-u64 rec_cur_addr 0)) (rec_max (nl_eval_depth_limit env rec_cur)))
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
@@ -23659,20 +23659,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; Direct conses, which the reader and the evaluator build, in line.
          (while (if (= rc 0) (if (< k n) (= (logand cur 7) 2) 0) 0)
            (seq (ptr-write-u64 cslot 0 cur)
-                (setq w (heap-read-u64 (- cur 2) 0))
+                (setq w (ptr-read-u64 (- cur 2) 0))
                 (let* ((ew (if (= (logand w 1) 1) w
                              (if (= (logand w 7) 6)
-                                 (let* ((kind (logand (heap-read-u64 (- w 6) 0) 63)))
+                                 (let* ((kind (logand (ptr-read-u64 (- w 6) 0) 63)))
                                    (if (if (= kind 4) 1 (= kind 16))
-                                       (if (= (nl_kw_is_keyword w) 0)
-                                           (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
-                                         w)
+                                       ;; Lexical, then the symbol's value; only an unbound
+                                       ;; symbol is asked whether it is a keyword.
+                                       (nl_ei_var_kw_w (nl_env_lookup_val_w w env 0) w env 0)
                                      (nelisp_eval_call_w w env 0)))
                                (nelisp_eval_call_w w env 0)))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
-                (setq cur (heap-read-u64 (- (heap-read-u64 cslot 0) 2) 8))))
+                (setq cur (ptr-read-u64 (- (ptr-read-u64 cslot 0) 2) 8))))
          ;; A list of another shape (a legacy cons view) takes the general loop; its
          ;; cursor slot, BASE + N * 8, is the same.
          (if (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
@@ -23686,8 +23686,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (setq w (nl_cons_car_word cur))
                 (setq tag (if (= (logand w 1) 1) 0 (nl_val_tag w)))
                 (let* ((ew (if (< tag 4) w
-                             (if (if (or (= tag 4) (= tag 16)) (= (nl_kw_is_keyword w) 0) 0)
-                                 (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
+                             (if (if (= tag 4) 1 (= tag 16))
+                                 (nl_ei_var_kw_w (nl_env_lookup_val_w w env 0) w env 0)
                                (nelisp_eval_call_w w env 0)))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
@@ -48345,7 +48345,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  form :test #'equal) out))
          ((eq name 'nl_env_set_value)
           (push (cons 'defun (cons 'nl_n3_setq_raw (cddr form))) out)
-          (push `(defun nl_env_set_value (env sym_ptr val_ptr)
+          ;; GNU Fsetq (eval.c:496-501) stores into the lexical binding when Fassq finds
+          ;; one and calls Fset (set_internal, which refuses a constant) otherwise: for a
+          ;; symbol object in the normal mode the constant tests are made by
+          ;; `nelisp_env_set_value_lazy' after its lexical lookup; any other shape, and
+          ;; the n3 mode, keeps the checks first.
+          (push `(defun nl_env_set_value_chk (env sym_ptr val_ptr)
                    (if (or (= (sexp-tag sym_ptr) 0) (= (sexp-tag sym_ptr) 1))
                        (bf_setting_constant sym_ptr)
                      (if (= (bf_keyword_raw sym_ptr) 1)
@@ -48353,7 +48358,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            (bf_setting_constant sym_ptr))
                    (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
                        (seq ,@(cdddr form))
-                     (nl_n3_setq env sym_ptr val_ptr))))) out))
+                     (nl_n3_setq env sym_ptr val_ptr))))) out)
+          (push `(defun nl_env_set_value (env sym_ptr val_ptr)
+                   (if (if (= (logand sym_ptr 7) 6)
+                           (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
+                         0)
+                       (seq ,@(cdddr form))
+                     (nl_env_set_value_chk env sym_ptr val_ptr))) out))
          ((memq name '(nelisp_env_setv_cell_hit))
           (push (nelisp-standalone--n3-rewrite form) out))
          ((eq name 'nl_apply_do_globals_op)
@@ -52277,6 +52288,10 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       (defun nl_sp_nargs (args)
         (let* ((n 0) (cur args))
           (seq
+           ;; Direct conses, which the reader and the evaluator build, in line; the
+           ;; general loop takes over at the first list of another shape.
+           (while (= (logand cur 7) 2)
+             (seq (setq n (+ n 1)) (setq cur (ptr-read-u64 (- cur 2) 8))))
            (while (if (= (logand cur 1) 0) (= (sexp-tag cur) 7) 0)
              (seq (setq n (+ n 1)) (setq cur (nl_cons_cdr_word cur))))
            (if (if (= (logand cur 1) 1) (= cur 3) (= (sexp-tag cur) 0)) n -1))))
@@ -52339,11 +52354,11 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
           ;; view or the object): read in line, -1 for any other shape (a legacy cons
           ;; view, a special-form subr), which the general test below decides.
           (let* ((r (if (= (logand fn 7) 2)
-                        (let* ((c (heap-read-u64 (- fn 2) 0)))
+                        (let* ((c (ptr-read-u64 (- fn 2) 0)))
                           (if (= (logand c 1) 1) 0
                             (if (= (nl_sym_sid c) ,sid-builtin)
-                                (let* ((tl (heap-read-u64 (- fn 2) 8)))
-                                  (if (= (logand tl 7) 2) (heap-read-u64 (- tl 2) 0) -1))
+                                (let* ((tl (ptr-read-u64 (- fn 2) 8)))
+                                  (if (= (logand tl 7) 2) (ptr-read-u64 (- tl 2) 0) -1))
                               0)))
                       -1)))
             (if (/= r -1) r
@@ -52547,13 +52562,14 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; FORM is the original canonical WORD, never an immediate view.
       (cond
        ((= (logand form 1) 1) form)
-       ((= (sexp-tag form) 7)
+       ((if (= (logand form 7) 2) 1 (= (sexp-tag form) 7))
         ;; eval_sub's body for a cons: the activation record, the macroexpansion
-        ;; cache, the form (a direct cons' car and cdr are read in line).
+        ;; cache, the form (a direct cons' car and cdr are read in line, from
+        ;; the cell's own address: `ptr-read-u64', not the String-aware slot read).
         (let* ((direct (= (logand form 7) 2))
-               (car-ptr (if direct (heap-read-u64 (- form 2) 0) (extern-call nl_cons_car_word form)))
+               (car-ptr (if direct (ptr-read-u64 (- form 2) 0) (extern-call nl_cons_car_word form)))
                (cdr-ptr (if direct
-                            (let* ((d (heap-read-u64 (- form 2) 8)))
+                            (let* ((d (ptr-read-u64 (- form 2) 8)))
                               (if (= (logand d 7) 2) d (extern-call nl_cons_cdr_ptr form)))
                           (extern-call nl_cons_cdr_ptr form)))
                (n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
@@ -52563,6 +52579,15 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                  (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
                (nelisp_eval_call_w cached env 0)))
            env 0 n4-frame)))
+       ((= (logand form 7) 6)
+        ;; A vectorlike WORD.  GNU eval_sub of a symbol is Fassq over the lexical
+        ;; environment, then Fsymbol_value (eval.c:2585-2594): a keyword is not
+        ;; asked for its name first, it is the symbol's own value.  A Cell gives
+        ;; its value; any other object is its own value.
+        (let* ((k (logand (ptr-read-u64 (- form 6) 0) 63)))
+          (if (if (= k 4) 1 (= k 16))
+              (nl_ei_var_kw_w (extern-call nl_env_lookup_val_w form env 0) form env 0)
+            (if (= k 11) (extern-call nl_cell_get_value_w form 0) form))))
        ((= (nl_kw_is_keyword form) 1) form)
        ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
@@ -52578,9 +52603,18 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     ;; W from `nl_env_lookup_val_w': 2 = unbound -> void-variable.
     (defun nl_ei_var_w (w form env _pad)
       (if (= w 2) (nl_abi_fail (nl_stash_void_variable env form) 0) w))
+    ;; The same for a symbol that was looked up lexical-first, as GNU's eval_sub does:
+    ;; only a symbol that is unbound everywhere is asked whether it is a keyword (a
+    ;; keyword is its own value; GNU gives it that value when it interns the name),
+    ;; so a bound variable pays no name test.
+    (defun nl_ei_var_kw_w (w form env _pad)
+      (if (= w 2)
+          (if (= (nl_kw_is_keyword form) 1) form
+            (nl_abi_fail (nl_stash_void_variable env form) 0))
+        w))
     (defun nl_ei_cons_dispatch_w (car-ptr form env _pad)
       (nl_ei_cons_tail_w
-       (let* ((d (if (= (logand form 7) 2) (heap-read-u64 (- form 2) 8) 0)))
+       (let* ((d (if (= (logand form 7) 2) (ptr-read-u64 (- form 2) 8) 0)))
          (if (= (logand d 7) 2) d (extern-call nl_cons_cdr_ptr form)))
        car-ptr form env 0))
     (defun nl_ei_cons_eval_w (cdr-ptr car-ptr form env)

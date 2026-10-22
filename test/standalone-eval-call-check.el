@@ -197,5 +197,15 @@
 (ec-case macro-when-dot-1 (eval '(when . 1) t))
 (ec-case macro-dolist-dot-1 (eval '(dolist . 1) t))
 
+;; eval_sub of a symbol is Fassq over the lexical environment, then Fsymbol_value (eval.c:2585-2594): a
+;; keyword is its own value, and a parameter named like one is an ordinary lexical binding that
+;; funcall_lambda does not refuse, so the binding wins (and `setq' stores into it, eval.c:496-501).
+;; The parameter cases go through `eval': GNU's eager macroexpansion at load rewrites a `setq' of a
+;; keyword to a constant-symbol check before the evaluator sees it.
+(ec-case keyword-self (list :foo (let ((x :bar)) x) (symbol-value :foo)))
+(ec-case keyword-param (eval '(funcall (lambda (:k) :k) 1) t))
+(ec-case keyword-param-setq (eval '(funcall (lambda (:k) (setq :k 2) :k) 1) t))
+(ec-case keyword-setq-const (eval '(setq :foo 3) t))
+(ec-case keyword-setq-self (eval '(setq :foo :foo) t))
 
 (kill-emacs 0)

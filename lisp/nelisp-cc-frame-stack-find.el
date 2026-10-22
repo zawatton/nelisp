@@ -547,40 +547,40 @@
           (let* ((bp (- backing 6)) (res 0) (go 1))
             (seq
              (while (if (= go 1) (>= i 0) 0)
-               (let* ((f (heap-read-u64 (+ bp (+ 8 (* i 8))) 0)))
+               (let* ((f (ptr-read-u64 (+ bp (+ 8 (* i 8))) 0)))
                  (if (/= (logand f 7) 6)
                      (seq (setq res -1) (setq go 0))
-                   (let* ((fp (- f 6)) (hdr (heap-read-u64 (- f 6) 0)))
+                   (let* ((fp (- f 6)) (hdr (ptr-read-u64 (- f 6) 0)))
                      (if (/= (logand hdr 63) 12)
                          (seq (setq res -1) (setq go 0))
                        (let* ((cnt (sar hdr 8)))
-                         (if (if (> cnt 1) (/= (logand (heap-read-u64 (+ fp 24) 0) 1) 1) 0)
+                         (if (if (> cnt 1) (/= (logand (ptr-read-u64 (+ fp 24) 0) 1) 1) 0)
                              (seq (setq res -1) (setq go 0))
-                           (let* ((cur (heap-read-u64 (+ fp 16) 0)) (hit 0))
+                           (let* ((cur (ptr-read-u64 (+ fp 16) 0)) (hit 0))
                              (seq
                               (while (if (= hit 0) (= (logand cur 7) 2) 0)
-                                (let* ((pair (heap-read-u64 (- cur 2) 0)))
+                                (let* ((pair (ptr-read-u64 (- cur 2) 0)))
                                   (seq
                                    (if (= (logand pair 7) 2)
-                                       (let* ((key (heap-read-u64 (- pair 2) 0)))
+                                       (let* ((key (ptr-read-u64 (- pair 2) 0)))
                                          (if (= key name)
                                              (setq hit pair)
                                            (if (= (logand key 7) 6) 0 (setq hit -1))))
                                      0)
-                                   (setq cur (heap-read-u64 (- cur 2) 8)))))
+                                   (setq cur (ptr-read-u64 (- cur 2) 8)))))
                               (if (= hit -1)
                                   (seq (setq res -1) (setq go 0))
                                 (if (> hit 0)
-                                    (let* ((v (heap-read-u64 (- hit 2) 8)))
+                                    (let* ((v (ptr-read-u64 (- hit 2) 8)))
                                       (seq (setq res (if (= (logand v 7) 6)
-                                                         (if (= (logand (heap-read-u64 (- v 6) 0) 63) 11)
+                                                         (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
                                                              v
                                                            (if (= raw 1) v (nl_frame_pair_cell hit 0)))
                                                        (if (= raw 1) v (nl_frame_pair_cell hit 0))))
                                            (setq go 0)))
                                   (if (/= cur 3)
                                       (seq (setq res -1) (setq go 0))
-                                    (if (if (> cnt 2) (/= (heap-read-u64 (+ fp 32) 0) 3) 0)
+                                    (if (if (> cnt 2) (/= (ptr-read-u64 (+ fp 32) 0) 3) 0)
                                         (setq go 0)
                                       (setq i (- i 1)))))))))))))))
              res)))))
@@ -596,13 +596,13 @@
     ;; no root pin; 2 when the cell holds the unbound marker; -1 for anything else.
     (defun nl_gv_fast (env sym)
       (if (= (logand sym 7) 6)
-          (let* ((hdr (heap-read-u64 (- sym 6) 0)))
+          (let* ((hdr (ptr-read-u64 (- sym 6) 0)))
             (if (= (logand hdr 63) 4)
                 (if (= (logand (sar hdr 8) 3) 0)
-                    (if (= (heap-read-u64 env 168) 0)
-                        (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
-                            (if (/= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
-                                (let* ((v (heap-read-u64 (- sym 6) 16)))
+                    (if (= (ptr-read-u64 env 168) 0)
+                        (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+                            (if (/= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                                (let* ((v (ptr-read-u64 (- sym 6) 16)))
                                   (if (= (logand v 1) 1) v
                                     (if (= (logand v 7) 2) v
                                       (if (= (extern-call wf_bytecode_w_unbound_p env v) 1) 2 v))))
@@ -620,7 +620,16 @@
                                    name 1)))
         (if (= r 0) 0
           (if (= r -1) -1
-            (extern-call nl_cell_get_value_w r 0)))))
+            ;; The binding's cdr decodes to its value (`nl_cell_get_value_w'): an
+            ;; immediate or a direct cons is the value, and so is a vectorlike
+            ;; that is no Cell; only a Cell, a string or a legacy view takes the call.
+            (if (if (= (logand r 1) 1) 1 (= (logand r 7) 2))
+                r
+              (if (= (logand r 7) 6)
+                  (if (= (logand (ptr-read-u64 (- r 6) 0) 63) 11)
+                      (extern-call nl_cell_get_value_w r 0)
+                    r)
+                (extern-call nl_cell_get_value_w r 0)))))))
     (defun nelisp_frame_stack_find_kind_descend_m (backing-ptr i name-ptr dynamic raw _pad)
       (if (< i 0)
           0
