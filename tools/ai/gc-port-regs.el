@@ -27,10 +27,17 @@
     (gcregs-check (equal (nelisp--debug-switch 73) 5) "and again")
     (let ((ctl (nelisp--debug-switch 74)))
       (gcregs-check (equal ctl 0) (format "the window without the spill shows %S sentinels, not 0" ctl)))
-    ;; the production collection goes through the stub; the probe is not a collection
-    (let* ((c0 (nelisp--debug-switch 75))
-           (p (progn (nelisp--debug-switch 73) (nelisp--debug-switch 74) (nelisp--debug-switch 75))))
-      (gcregs-check (or (equal p c0) (>= p c0)) (format "call count went backwards: %S -> %S" c0 p))
+    ;; the production collection goes through the stub; the probes are not collections.
+    ;; An allocation-triggered collection between two reads would move the count, so the
+    ;; equality gets three tries.
+    (let ((ok nil) (tries 0) (c0 nil) (p nil))
+      (while (and (not ok) (< tries 3))
+        (setq c0 (nelisp--debug-switch 75))
+        (nelisp--debug-switch 73)
+        (nelisp--debug-switch 74)
+        (setq p (nelisp--debug-switch 75))
+        (setq ok (= p c0) tries (1+ tries)))
+      (gcregs-check ok (format "the probes are not collections: %S -> %S" c0 p))
       (garbage-collect)
       (let ((c1 (nelisp--debug-switch 75)))
         (gcregs-check (> c1 p) (format "garbage-collect reached nl_gc_scan_regs: %S -> %S" p c1))))))
