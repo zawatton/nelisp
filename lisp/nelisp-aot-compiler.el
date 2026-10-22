@@ -22185,6 +22185,21 @@ Slots needed outside the loop are written before ending its mapping."
 (defvar nelisp-aot-compiler--x86-leaf-entry-state nil
   "CG3 whole-body placement for a profitable acyclic raw leaf.")
 
+(defun nelisp-aot-compiler--x86-leaf-frame-free-p (body pairs)
+  "Whether every actual slot access of the proven leaf BODY is in PAIRS.
+No new allocation is attempted.  The leaf proof has already excluded
+frame observers, calls, loops, roots, floats and implicit clobbers."
+  (let ((ok t))
+    (nelisp-aot-compiler--walk-ir
+     body (lambda (n)
+            (dolist (slot (cond ((memq (nelisp-aot-compiler--ir-kind n)
+                                       '(ref setq-local let-rt))
+                                (list (nelisp-aot-compiler--ir-get n :slot)))
+                               ((eq (nelisp-aot-compiler--ir-kind n) 'let-rt-n)
+                                (mapcar #'cadr (nelisp-aot-compiler--ir-get n :bindings)))))
+              (unless (assq slot pairs) (setq ok nil)))))
+    ok))
+
 (defun nelisp-aot-compiler--x86-leaf-entry-plan (ir)
   "Place acyclic raw leaf values in the existing CG3 register plan.
 GNU comp.c:2409-2418 passes incoming params to mvars; comp.el:2530
@@ -22241,14 +22256,18 @@ already meet in that register.  No frame observer or call may occur."
               (when param (push (list slot slot param) forward))
               (setq gain (+ gain saving)))))
         (when (and safe pairs (>= gain 3))
-          (list :promotions (nreverse pairs) :forward forward :gain gain))))))
+          (setq pairs (nreverse pairs))
+          (list :promotions pairs :forward forward :gain gain
+                :frameless (nelisp-aot-compiler--x86-leaf-frame-free-p body pairs)))))))
 
 (defun nelisp-aot-compiler--emit-leaf-body-x86 (node buf)
   "Emit the acyclic leaf NODE using its verified whole-body plan."
   (let* ((state nelisp-aot-compiler--x86-leaf-entry-state)
          (pairs (plist-get state :promotions))
-         (saved (cl-remove-if-not (lambda (r) (memq r '(r12 r13 r14 r15)))
-                                  (mapcar #'cdr pairs))))
+         (saved (cl-remove-if-not
+                 (lambda (r) (or (memq r '(r12 r13 r14 r15))
+                                 (and (plist-get state :frameless) (eq r 'rbx))))
+                 (mapcar #'cdr pairs))))
     (dolist (r saved) (nelisp-aot-compiler--emit-temp-push buf r))
     (nelisp-aot-compiler--emit-tco-parallel-moves-x86
      (mapcar (lambda (f) (cons (cdr (assq (car f) pairs)) (nth 2 f)))
@@ -22804,6 +22823,15 @@ return reg, untouched by epilogue)."
                       name param-class
                       nelisp-aot-compiler--abi
                       nelisp-aot-compiler--arch))))
+    (if (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+        (progn
+          ;; GCC -fomit-frame-pointer removes an unnecessary leaf frame.
+          ;; Every accessed slot is in the existing CG3 plan; RBX joins
+          ;; R12-R15's push/pop saves, and RBP is never touched.
+          (nelisp-asm-x86_64-align buf 16)
+          (nelisp-asm-x86_64--define-label-inline buf name)
+          (nelisp-aot-compiler--emit-leaf-body-x86 body buf)
+          (nelisp-asm-x86_64--ret-inline buf))
     (if (eq nelisp-aot-compiler--arch 'aarch64)
         (let ((gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
@@ -23181,7 +23209,7 @@ return reg, untouched by epilogue)."
       (nelisp-asm-x86_64--pop-inline buf 'rbp)
       (nelisp-asm-x86_64--ret-inline buf)
       (when (nelisp-aot-compiler--ir-get defun-ir :internal-entry)
-        (nelisp-aot-compiler--emit-internal-entry-x86 defun-ir buf)))))
+        (nelisp-aot-compiler--emit-internal-entry-x86 defun-ir buf))))))
 
 ;; ---- §97.6 orchestrator ----
 

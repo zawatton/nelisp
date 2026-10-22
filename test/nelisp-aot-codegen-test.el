@@ -446,6 +446,113 @@
           (should (= 0 (call-process binary nil nil nil))))
       (dolist (path (list object source binary)) (delete-file path)))))
 
+(ert-deftest nelisp-aot-codegen/frameless-leaf-cycles-and-no-frame-access ()
+  "A complete existing plan omits frame accesses and preserves incoming cycles."
+  (let* ((terms (append (make-list 9 'a) (make-list 8 'f) (make-list 7 'e)
+                        (make-list 6 'b) (make-list 5 'c) (make-list 4 'd)))
+         (body (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
+         (selected 0) (cycles 0)
+         (leaf (symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86))
+         (move (symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86))
+         (op (symbol-function 'nelisp-aot-compiler--x86-op))
+         (load (symbol-function 'nelisp-asm-x86_64-mov-reg-mem-disp8))
+         (store (symbol-function 'nelisp-asm-x86_64-mov-mem-reg-disp8)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86)
+               (lambda (node buf)
+                 (when (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                   (setq selected (1+ selected)))
+                 (funcall leaf node buf)))
+              ((symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)
+               (lambda (moves buf)
+                 (when (and (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                            (member '(r8 . r9) moves) (member '(r9 . r8) moves))
+                   (setq cycles (1+ cycles)))
+                 (funcall move moves buf)))
+              ((symbol-function 'nelisp-aot-compiler--x86-op)
+               (lambda (buf w opcode reg rm &rest rest)
+                 (when (and (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                            (listp rm))
+                   (should-not (memq 'rbp rm)))
+                 (apply op buf w opcode reg rm rest)))
+              ((symbol-function 'nelisp-asm-x86_64-mov-reg-mem-disp8)
+               (lambda (buf reg base disp)
+                 (when (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                   (should-not (eq base 'rbp)))
+                 (funcall load buf reg base disp)))
+              ((symbol-function 'nelisp-asm-x86_64-mov-mem-reg-disp8)
+               (lambda (buf base disp reg)
+                 (when (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                   (should-not (eq base 'rbp)))
+                 (funcall store buf base disp reg))))
+      (dolist (pair '((1 6) (-9223372036854775808 9223372036854775807)
+                      (9223372036854775807 -9223372036854775808)))
+        (let ((expected (logand (+ (* (car pair) 9) (* (cadr pair) 8)
+                                  (* 5 7) (* 2 6) (* 3 5) (* 4 4)) (1- (ash 1 64)))))
+          (when (>= expected (ash 1 63)) (setq expected (- expected (ash 1 64))))
+          (should (= 0 (nelisp-aot-codegen-test--run
+                        `(seq (defun leaf (a b c d e f) ,body)
+                              (exit (if (= (leaf ,(car pair) 2 3 4 5 ,(cadr pair)) ,expected)
+                                        0 1)))))))))
+    (should (> selected 0))
+    (should (> cycles 0))))
+
+(ert-deftest nelisp-aot-codegen/frameless-leaf-coverage-fallback ()
+  "Any access omitted by the unchanged plan retains the ordinary frame."
+  (let* ((nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
+         (nelisp-aot-compiler--checked-arith nil)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (nelisp-aot-compiler--x86-loop-regs '(rbx r8 r9 r12 r13 r14 r15))
+         (simple (nelisp-aot-compiler--parse '(defun leaf (x) (+ x (+ x (+ x x))))))
+         (full (nelisp-aot-compiler--x86-leaf-entry-plan simple))
+         (terms (append (make-list 9 'a) (make-list 8 'f) (make-list 7 'e) '(b c d)))
+         (body (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
+         (partial (nelisp-aot-compiler--x86-leaf-entry-plan
+                   (nelisp-aot-compiler--parse `(defun leaf (a b c d e f) ,body)))))
+    (should (plist-get full :frameless))
+    (should-not (nelisp-aot-compiler--x86-leaf-frame-free-p
+                 (nelisp-aot-compiler--ir-get simple :body) nil))
+    (should partial)
+    (should-not (plist-get partial :frameless))
+    (should (= 101 (nelisp-aot-codegen-test--run
+                    `(seq (defun leaf (a b c d e f) ,body)
+                          (exit (leaf 1 2 3 4 5 6))))))))
+
+(ert-deftest nelisp-aot-codegen/frameless-leaf-native-callee-saves ()
+  "Frameless branches preserve RBP, RBX and R12-R15 for a native C caller."
+  (skip-unless (and (executable-find "gcc") (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let* ((object (make-temp-file "nelisp-frameless-" nil ".o"))
+         (source (make-temp-file "nelisp-frameless-" nil ".c"))
+         (binary (make-temp-file "nelisp-frameless-"))
+         (terms (append (make-list 7 'v) (make-list 6 'a) (make-list 5 'b)
+                        (make-list 4 'c) (make-list 4 'd) (make-list 4 'e) (make-list 4 'f)))
+         (body (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
+         (selected 0) (leaf (symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86)
+                     (lambda (node buf)
+                       (when (plist-get nelisp-aot-compiler--x86-leaf-entry-state :frameless)
+                         (setq selected (1+ selected)))
+                       (funcall leaf node buf))))
+            (nelisp-aot-compile-to-object
+             `(defun leaf (a b c d e f) (let ((v (+ a b))) (if (> a 0) ,body (- 0 ,body)))) object))
+          (should (> selected 0))
+          (with-temp-file source
+            (insert "extern long leaf(long,long,long,long,long,long);\n"
+                    "int main(void) {\n"
+                    " register long b __asm__(\"rbx\")=101, c __asm__(\"r12\")=102,\n"
+                    " d __asm__(\"r13\")=103, e __asm__(\"r14\")=104, f __asm__(\"r15\")=105,\n"
+                    " g __asm__(\"rbp\")=106;\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f),\"+r\"(g));\n"
+                    " long value=leaf(1,2,3,4,5,6), other=leaf(-1,2,3,4,5,6);\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f),\"+r\"(g));\n"
+                    " return value!=109 || other!=-83 || b!=101 || c!=102 || d!=103 || e!=104 || f!=105 || g!=106; }\n"))
+          (should (= 0 (call-process "gcc" nil nil nil "-O2" "-fomit-frame-pointer" source object "-o" binary)))
+          (should (= 0 (call-process binary nil nil nil))))
+      (dolist (path (list object source binary)) (delete-file path)))))
+
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/conditions
   "and/or chains in if, while and cond, rotated loops with zero trips."
   (seq
