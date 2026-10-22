@@ -152,6 +152,8 @@ case ${1:-} in
                   [ "$(grep -c '^GC-PORT-[A-Z-]* PASS' "$f" 2>/dev/null)" = 3 ] || fail "gc-port's light set not 3 PASS in $f" ;;
       mcp)        f=target/final-verify/integ-wh-mcp.log
                   sed -n 2p "$f" 2>/dev/null | grep -qx '2 tools=40' || fail "MCP not 40 tools in $f" ;;
+      scale)      f=target/final-verify/integ-wh-scale.log
+                  tail -n 1 "$f" 2>/dev/null | grep -qx 'IMAGE-SCALE PASS' || fail "the at-scale image check not PASS in $f" ;;
       *) fail "unknown log kind ${2:-}" ;;
     esac
     [ "$f" -nt "$DYN" ] || fail "$f is older than the dynamic binary"
