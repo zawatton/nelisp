@@ -15755,9 +15755,11 @@ the node's class to consume the result correctly."
         (nelisp-aot-compiler--ir-get node :int-expr) buf)
        (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf 'xmm0 'rax))
       ((= tag 1)                ; arith
-       (nelisp-aot-compiler--emit-arith node buf))
+       (unless (nelisp-aot-compiler--emit-affine-value-x86 node buf)
+         (nelisp-aot-compiler--emit-arith node buf)))
       ((= tag 67)               ; shift
-       (nelisp-aot-compiler--emit-shift node buf))
+       (unless (nelisp-aot-compiler--emit-affine-value-x86 node buf)
+         (nelisp-aot-compiler--emit-shift node buf)))
       ((= tag 97)               ; addr-of
        (nelisp-aot-compiler--emit-addr-of node buf))
       ((= tag 99)               ; data-addr — external data/bss symbol addr
@@ -16573,6 +16575,51 @@ Only two terms and a signed disp32 are admitted; rejection emits nothing."
                                (nelisp-aot-compiler--x86-reg-of index-op buf 'rsi)))))
     (list :mem base index (nth 2 plan) (nth 3 plan))))
 
+(defun nelisp-aot-compiler--x86-affine-value-plan (node)
+  "Return a profitable affine LEA plan for pure RAW value NODE, or nil.
+GCC -O2's affine value selection also applies outside a memory operand.
+Keep frame a+b as MOV+ADDmem: loading both frames before LEA is worse.
+Only nested expressions qualify, with fewer instructions or an
+equal-count scale replacing multiply.  Preserve ordinary single adds and
+canonical scale-4, low-bits-01 immediate WORD construction."
+  (when (and nelisp-aot-compiler--x86-call-containing-defun-p
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (memq (nelisp-aot-compiler--ir-kind node) '(arith shift))
+             (not (cl-some (lambda (pair) (memq (cdr pair) '(rdi rsi)))
+                           nelisp-aot-compiler--promoted-slots)))
+    (let ((plan (nelisp-aot-compiler--x86-affine-address-plan
+                 node (nelisp-aot-compiler--make-ir 'imm :value 0))))
+      (when plan
+        (let* ((base (nth 0 plan)) (index (nth 1 plan))
+               (loads (+ (if (eq (car base) :mem) 1 0)
+                         (if (and (eq (car index) :mem) (not (equal base index))) 1 0)))
+               (operations 0))
+          (nelisp-aot-compiler--walk-ir
+           node (lambda (n)
+                  (when (memq (nelisp-aot-compiler--ir-kind n) '(arith shift))
+                    (setq operations (1+ operations)))))
+          (when (and (> operations 1)
+                     ;; A canonical fixnum WORD is 4*N+1.  Keep its
+                     ;; existing lowering, including explicit SHL spelling.
+                     (not (and (null base) (= (nth 2 plan) 4)
+                               (= (logand (nth 3 plan) 3) 1)))
+                     (or (< (1+ loads) (1+ operations))
+                         (and (> (nth 2 plan) 1)
+                              (<= (1+ loads) (1+ operations)))))
+            plan))))))
+
+(defun nelisp-aot-compiler--emit-affine-value-x86 (node buf &optional dst)
+  "Emit pure NODE as a single LEA after necessary frame loads, or nil.
+Only the existing affine RDI/RSI scratch and DST are clobbered.  No
+register value is retained across a call and no heap header is inspected."
+  (let ((plan (nelisp-aot-compiler--x86-affine-value-plan node)))
+    (when plan
+      (nelisp-aot-compiler--x86-op
+       buf t (unibyte-string #x8D) (or dst 'rax)
+       (nelisp-aot-compiler--emit-affine-address-x86 plan buf))
+      t)))
+
 (defun nelisp-aot-compiler--x86-index-form (node)
   "Return NODE as (REF SCALE DISP), including distributed affine constants."
   (let ((old (nelisp-aot-compiler--x86-index-form-legacy node)))
@@ -16758,6 +16805,7 @@ rdi/rsi.  No general emit-value helper or call is used."
       (nelisp-aot-compiler--emit-memory-tree-x86
        (or (nelisp-aot-compiler--x86-forward-load-offset node)
            (error "Unpreflighted load-only let chain")) buf registers))
+     ((nelisp-aot-compiler--emit-affine-value-x86 node buf dst))
      (leaf (nelisp-aot-compiler--x86-load buf dst leaf))
      ((nelisp-aot-compiler--imm-int-p node)
       (nelisp-aot-compiler--emit-imm-to-reg
