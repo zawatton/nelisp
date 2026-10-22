@@ -23299,6 +23299,92 @@ compare A against B and materialize the boolean result."
   '((< . jl) (> . jg) (<= . jle) (>= . jge) (= . je) (/= . jne))
   "Map a comparison op to the x86-64 jump taken when it is TRUE.")
 
+(defvar nelisp-aot-compiler--x86-zero-branches t
+  "Project exact RAW GP zero tests into existing branch continuations.")
+(defvar nelisp-aot-compiler--x86-zero-branch-context nil)
+
+(defun nelisp-aot-compiler--x86-zero-branch-value-boundary-p (node)
+  "Non-nil when direct recursion would bypass an existing value boundary."
+  (or (assq node nelisp-aot-compiler--x86-trace-loop-exits)
+      (memq node (plist-get nelisp-aot-compiler--x86-leaf-entry-state :terminal-barriers))
+      (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :outer))
+      (eq node (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :cut))))
+
+(defun nelisp-aot-compiler--x86-zero-branch-gp-p (node)
+  "Prove NODE's structured result has ordinary full-word GP truth.
+Only result positions are classified.  Other evaluation uses the original
+emitters, so preceding effects and predicates keep their original order."
+  (and (nelisp-aot-compiler--ir-node-p node)
+       (nelisp-aot-compiler--x86-frame-alias-gp-p node)
+       ;; The closed result grammar proves legacy unannotated nodes.  An
+       ;; explicit unknown or boxed/typed result is not such a proof.
+       (cl-every (lambda (key)
+                   (let ((repr (nelisp-aot-compiler--ir-get node key)))
+                     (and (not (eq repr 'unknown))
+                          (memq repr nelisp-aot-compiler--x86-frame-alias-gp-reprs))))
+                 '(:repr :return-repr))
+       (pcase (nelisp-aot-compiler--ir-kind node)
+         ('imm (let ((v (nelisp-aot-compiler--ir-get node :value)))
+                 (and (integerp v) (<= (- (ash 1 63)) v (1- (ash 1 64))))))
+         ((or 'ref 'arith 'shift 'ptr-read-u8 'ptr-read-u16 'ptr-read-u32 'ptr-read-u64
+              'sexp-tag 'call 'extern-call 'syscall-direct) t)
+         ('cmp (assq (nelisp-aot-compiler--ir-get node :op)
+                     nelisp-aot-compiler--cmp-true-jcc))
+         ('logic (and (memq (nelisp-aot-compiler--ir-get node :op) '(and or))
+                      (cl-every #'nelisp-aot-compiler--x86-zero-branch-gp-p
+                                (nelisp-aot-compiler--ir-get node :forms))))
+         ('if (and (nelisp-aot-compiler--x86-zero-branch-gp-p
+                    (nelisp-aot-compiler--ir-get node :test))
+                   (nelisp-aot-compiler--x86-zero-branch-gp-p
+                    (nelisp-aot-compiler--ir-get node :then))
+                   (nelisp-aot-compiler--x86-zero-branch-gp-p
+                    (nelisp-aot-compiler--ir-get node :else))))
+         ('value-seq (let ((forms (nelisp-aot-compiler--ir-get node :forms)))
+                       (and forms (nelisp-aot-compiler--x86-zero-branch-gp-p (car (last forms))))))
+         ('let-rt (and (not (nelisp-aot-compiler--ir-get node :root-p))
+                       (nelisp-aot-compiler--x86-zero-branch-gp-p
+                        (nelisp-aot-compiler--ir-get node :value-ir))
+                       (nelisp-aot-compiler--x86-zero-branch-gp-p
+                        (nelisp-aot-compiler--ir-get node :body))))
+         (_ nil))))
+
+(defun nelisp-aot-compiler--x86-zero-branch-subject (test)
+  "Return a structured RAW GP subject compared with exact integer zero.
+GNU comp.c emit_cond_jump swaps successors for logical negation; GCC's
+branch-position COND_EXPR lowers to continuations rather than a value
+result temporary.  Existing full-value emission remains the fallback."
+  (when (and nelisp-aot-compiler--x86-zero-branches
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--checked-arith)
+             (not nelisp-aot-compiler--runtime-entry-params)
+             (not nelisp-aot-compiler--lisp-internal-entry-names)
+             (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+             (memq (nelisp-aot-compiler--ir-get test :op) '(= /=)))
+    (let* ((a (nelisp-aot-compiler--ir-get test :a))
+           (b (nelisp-aot-compiler--ir-get test :b))
+           (subject (cond ((and (nelisp-aot-compiler--imm-int-p b)
+                                (= (nelisp-aot-compiler--ir-get b :value) 0)) a)
+                          ((and (nelisp-aot-compiler--imm-int-p a)
+                                (= (nelisp-aot-compiler--ir-get a :value) 0)) b))))
+      (and subject
+           (memq (nelisp-aot-compiler--ir-kind subject) '(if logic value-seq let-rt))
+           (nelisp-aot-compiler--x86-zero-branch-gp-p test)
+           (nelisp-aot-compiler--x86-zero-branch-gp-p (if (eq subject a) b a))
+           (nelisp-aot-compiler--x86-zero-branch-gp-p subject)
+           subject))))
+
+(defun nelisp-aot-compiler--x86-zero-branch-let-safe-p (node)
+  "Keep direct condition recursion inside its original promotion scope.
+An active map belongs to the enclosing emitter: both condition successors
+remain inside it.  Without one, retain the value path if it could start
+its own region; a direct edge must never skip that region's cleanup."
+  (or nelisp-aot-compiler--promoted-slots
+      (not (and nelisp-aot-compiler--x86-call-free-regions
+                nelisp-aot-compiler--x86-call-containing-defun-p
+                (nelisp-aot-compiler--x86-call-free-region-plan node)))))
+
 (defun nelisp-aot-compiler--branch-structured-result-p (node)
   "Non-nil when NODE exposes a result worth lowering as branches.
 Two ordinary raw-value arms share one zero test more cheaply in value
@@ -23340,7 +23426,13 @@ all other arms retain their evaluation and zero test."
      ((and yes-constant no-constant)
       (if (eq yes-true no-true)
           (progn
-            (nelisp-aot-compiler--emit-effect test buf)
+            (if nelisp-aot-compiler--x86-zero-branch-context
+                (let ((evaluated (nelisp-aot-compiler--gensym "cj-if-evaluated")))
+                  ;; Preserve the original condition evaluation, including
+                  ;; raw reads/faults, without starting a value-position map.
+                  (nelisp-aot-compiler--emit-cond-jump test buf evaluated nil)
+                  (nelisp-asm-x86_64-define-label buf evaluated))
+              (nelisp-aot-compiler--emit-effect test buf))
             (when (eq yes-true jump-if-true)
               (nelisp-asm-x86_64-jmp-rel32 buf label)))
         (nelisp-aot-compiler--emit-cond-jump
@@ -23378,8 +23470,29 @@ unconditional jump or nothing; anything else is evaluated and tested
 against 0.  Operands are evaluated in source order and only as far as
 the short circuit reaches, exactly as the value-position `and' / `or'
 do, so only the materialized 0/1 disappears."
-  (let ((kind (nelisp-aot-compiler--ir-kind test)))
+  (let ((kind (nelisp-aot-compiler--ir-kind test))
+        (subject (nelisp-aot-compiler--x86-zero-branch-subject test)))
     (cond
+     ((and nelisp-aot-compiler--x86-zero-branch-context
+           (or (nelisp-aot-compiler--x86-zero-branch-value-boundary-p test)
+               (and (memq kind '(if logic value-seq let-rt))
+                    (not (nelisp-aot-compiler--x86-zero-branch-let-safe-p test)))))
+      (nelisp-aot-compiler--emit-value test buf)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+      (if jump-if-true
+          (nelisp-asm-x86_64-jnz-rel32 buf label)
+        (nelisp-asm-x86_64-jz-rel32 buf label)))
+     (subject
+      (let ((nelisp-aot-compiler--x86-zero-branch-context t))
+        (nelisp-aot-compiler--emit-cond-jump
+         subject buf label
+         (if (eq (nelisp-aot-compiler--ir-get test :op) '=)
+             (not jump-if-true) jump-if-true))))
+     ((and nelisp-aot-compiler--x86-zero-branch-context (eq kind 'let-rt)
+           (nelisp-aot-compiler--x86-zero-branch-let-safe-p test))
+      (nelisp-aot-compiler--emit-let-rt-x86
+       test buf (lambda (body)
+                  (nelisp-aot-compiler--emit-cond-jump body buf label jump-if-true))))
      ((and (eq kind 'cmp)
            (assq (nelisp-aot-compiler--ir-get test :op)
                  nelisp-aot-compiler--cmp-true-jcc))
