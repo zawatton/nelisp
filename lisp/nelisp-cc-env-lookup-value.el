@@ -286,6 +286,9 @@
       (let* ((lex (extern-call nl_lex_read frames-ptr name-ptr)))
         (if (if (= lex 0) 0 (if (= lex -1) 0 1))
             lex
+         (if (= lex 0)
+             ;; No lexical binding: the symbol's value (GNU find_symbol_value).
+             (extern-call nl_sym_find_value_w (- frames-ptr 32) name-ptr 0)
           (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr))
                  (local-p (if (= entry 0) 0
                             (if (> (nl_ent_n entry) 5)
@@ -304,7 +307,7 @@
                  mirror-ptr frames-ptr name-ptr entry 0 0 0 0)
               ;; Frame hit: the cell's value WORD itself (Doc 215: a WORD may be
               ;; the object's own box; no private box, no clone).
-              (extern-call nl_cell_get_value_w cell-ptr 0)))))))
+              (extern-call nl_cell_get_value_w cell-ptr 0))))))))
   "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:
