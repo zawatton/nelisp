@@ -179,9 +179,22 @@ def census(path):
         for a, (bt, _) in blocks.items():
             if bt >= 40 and bt <= 1024 * 1024 + 8:
                 slots.update(range(a, a + bt - 39, 32))
+    def word_slot_object(addr):
+        """True when ADDR lies inside a vectorlike object whose slots are 8-byte WORDs
+        (a vector or record whose header kind and length match its block exactly).  A
+        fixnum WORD such as 13 (the fixnum 3) is then not a tag-13 view header."""
+        owner = containing(addr)
+        if owner is None or owner == addr:
+            return False
+        header = read_words(owner, 1)
+        return bool(header) and (header[0] & 63) in (8, 12) and \
+            blocks[owner][0] - 8 == 8 + 8 * (header[0] >> 8)
+
     for addr in sorted(slots):
         w = read_words(addr, 4)
         if not w or w[0] not in TAGS:
+            continue
+        if word_slot_object(addr):
             continue
         if w[3] == 215 and (addr not in blocks or blocks[addr][0] != 40):
             # nl_gc_mark_pool_slots: this slot contains a WORD, not a Sexp.

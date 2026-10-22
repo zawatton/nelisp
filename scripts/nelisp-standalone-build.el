@@ -44439,21 +44439,33 @@ correctly."
       ;; only the `-l'/`-f'/multi-action path this function handles) --
       ;; only `command-line-args-left' (updated incrementally as actions
       ;; are consumed, `nl_cli_set_clal') is this function's own job.
-      (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
-             (clal_sym (alloc-bytes 32 8)))
+      ;; The symbol of `command-line-args-left' outlives every action, so it
+      ;; is a root-stack slot (marked precisely), not an arena block that
+      ;; only the conservative scan keeps: a collection with the scan off
+      ;; (debug switch 28, the object-size probes) used to free it and the
+      ;; next `nl_cli_set_clal' read a recycled block.  The slot holds nil
+      ;; until the symbol is made, and its name buffer is allocated after the
+      ;; prelude for the same reason.
+      (let* ((clal_mark (nl_root_mark ctx))
+             (clal_slot (nl_root_reserve_checked ctx))
+             (clal_sym (if (= clal_slot 0) (alloc-bytes 32 8) clal_slot)))
         (seq
+         (if (= clal_slot 0) 0 (wf_write_nil clal_slot))
          (if (< _cl 0)
              (seq ,@(nelisp-standalone--reader-repl-prelude-forms
                      'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
            0)
          (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
                              result pool out ctx builtin_sym)
-         ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
-         (nl_alloc_symbol clal_sym_buf
-                           ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
-                           clal_sym)
-         (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
-                              pool out ctx builtin_sym clal_sym))))
+         (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1)))
+           (seq
+            ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
+            (nl_alloc_symbol clal_sym_buf
+                              ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
+                              clal_sym)
+            (let* ((clal_rc (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
+                                                pool out ctx builtin_sym clal_sym)))
+              (seq (nl_root_release ctx clal_mark) clal_rc)))))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; N5: before prelude/file/image I/O, ignore SIGPIPE like GNU.
