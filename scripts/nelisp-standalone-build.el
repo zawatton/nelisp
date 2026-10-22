@@ -3315,7 +3315,8 @@ it shares with cons and symbol blocks.")
       ;; side bit with no exact-start probe; a legacy payload (cold image,
       ;; parallel section) keeps its header mark.
       (defun nl_gc_mark_cons_payload (box)
-        (if (= (nl_typed_find box) 1) (nl_cons_mark_cell box)
+        (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_cons_mark_cell box)
           (nl_gc_mark_block box)))
       ;; ---- Doc 226 D9 symbol blocks, collector side ----
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
@@ -3332,7 +3333,8 @@ it shares with cons and symbol blocks.")
       ;; symbol_marked_p, alloc.c:4057, tests the pdumper bitmap for a
       ;; dumped symbol).  1 = newly marked.
       (defun nl_gc_mark_vbox (box)
-        (if (> (nl_typed_find box) 1) (nl_symbol_mark_cell box)
+        (if (> (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_symbol_mark_cell box)
           (nl_gc_mark_block box)))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
@@ -6499,7 +6501,24 @@ REPL-facing module it feeds."
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
       ;; Doc 223: an image object takes its bit in the boot mark bitmap
       ;; (pdumper_set_marked); its header is never written.
-      (if (= (nl_boot_start_p obj) 1) (nl_boot_mark obj)
+      ;; The image test is GNU's pdumper_find_object_type plus pdumper_marked_p and
+      ;; pdumper_set_marked in one pass: the range, the alignment, the start bit
+      ;; and the mark bit share the granule index.  R is -1 for a block outside
+      ;; the image, else the mark answer (1 newly marked, 0 already marked).
+      (let ((r (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
+                 (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
+                   (if (/= (logand obj 7) 0) -1
+                     (let* ((st (data-addr nl_typed_alloc))
+                            (g (sar (- obj (heap-read-u64 st 200)) 3))
+                            (wi (* (sar g 6) 8))
+                            (bit (shl 1 (logand g 63))))
+                       (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
+                         (let* ((wa (+ (heap-read-u64 st 216) wi))
+                                (m (heap-read-u64 wa 0)))
+                           (if (= (logand m bit) 0)
+                               (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                             0)))))))))
+        (if (>= r 0) r
       (if (= (nl_gc_object_start_p obj) 0) 0
         (let* ((hdr (- obj 8))
                (raw (heap-read-u64 hdr 0)))
@@ -6514,7 +6533,7 @@ REPL-facing module it feeds."
                 (if (if (= m 0) 1 (if (= m 4) 1 0))
                     (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
                   0))
-            0)))))
+            0))))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; ELEMENT CAPACITY of the block whose object pointer is PTR: the payload
@@ -6577,7 +6596,8 @@ REPL-facing module it feeds."
             (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
-      (if (= (nl_typed_find box) 3) (nl_symbol_mark_cell box)
+      (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 3) (nl_symbol_mark_cell box)
       (if (= (nl_gc_mark_block box) 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))

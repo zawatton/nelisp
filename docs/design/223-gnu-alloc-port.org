@@ -183,6 +183,25 @@ The restored image was 289 MB of arena with 34.7 MB live in 582K blocks and
 dumping run's garbage. GNU's dump holds live objects only, so it has no hole
 runs to sweep.
 
+Marking an image object is one pass, as in pdumper (F3 of the speed unit).
+=nl_gc_mark_block= used to ask =nl_boot_start_p= (range, alignment, start bit) and
+then =nl_boot_mark= (the same range and index again, then the test-and-set), two
+inlined copies of the address arithmetic: 78 instructions for a block that is
+already marked or newly marked.  It now tests the range and the alignment once,
+reads the start bit and the mark bit with one shared word index and bit mask,
+and answers; a block outside the image falls through to the heap path unchanged
+(57 instructions per call, the rest being this compiler's stack-machine code).
+=nl_gc_mark_cons_payload=, =nl_gc_mark_vbox= and =nl_gc_mark_vectorlike= tested the
+typed envelope through a call of =nl_typed_find= before asking about the image;
+they compare the envelope inline, so an image pointer never calls it.  No
+function is added (the F1 closure stays at 314).  A steady-state collection falls
+from 185.2M to 174.0M instructions.  =tools/ai/gc-port-image-edges.py= checks the
+safety property: items reached only through a global (image conses, strings,
+vectors, floats, bignums) survive five collections with the conservative scan off
+and three with it on, fresh heap objects stored into image conses and held only by
+them survive five more, and a first and a second-generation dump and restore keep
+all of it (ledger S1.17).
+
 ** Live-only image dump (step 3)
 
 pdumper copies only the objects =dump_object= reaches from the roots. The
