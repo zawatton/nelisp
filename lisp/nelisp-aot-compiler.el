@@ -2941,7 +2941,12 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
                              (gethash var (cdr mutation-index))
                            (nelisp-aot-compiler--form-setqs-var-p body-sexp var)))))
                   (let ((val (nelisp-aot-compiler--fold-int val-sexp env)))
-                    (push (cons var val) new-env))
+                    (push (cons var val) new-env)
+                    ;; A constant binding still shadows a runtime local of
+                    ;; the same name.  Initializers keep the original FENV.
+                    (setq new-fenv
+                          (cl-remove-if (lambda (cell) (eq (car cell) var))
+                                        new-fenv)))
                 (unless nelisp-aot-compiler--next-rt-let-slot
                   (signal 'nelisp-aot-compiler-error
                           (list :let-rt-requires-defun-context var)))
@@ -13532,9 +13537,11 @@ functions `((NAME . ARITY) ...)'."
                            body-sexp var)))
               ;; Compile-time path: fold and extend ENV as before.
               (let* ((val (nelisp-aot-compiler--fold-int val-sexp env))
-                     (new-env (cons (cons var val) env)))
+                     (new-env (cons (cons var val) env))
+                     (new-fenv (cl-remove-if
+                                (lambda (cell) (eq (car cell) var)) fenv)))
                 (nelisp-aot-compiler--parse-value
-                 body-sexp new-env fenv defuns))
+                 body-sexp new-env new-fenv defuns))
             ;; Runtime path: allocate a frame slot, emit a `let-rt' node.
             (unless nelisp-aot-compiler--next-rt-let-slot
               (signal 'nelisp-aot-compiler-error
@@ -13707,8 +13714,10 @@ Returns one of:
                            body var)))
               (let* ((val (nelisp-aot-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env))
+                     (new-fenv (cl-remove-if
+                                (lambda (cell) (eq (car cell) var)) fenv))
                      (body-ir (nelisp-aot-compiler--parse-stmt
-                               body new-env fenv defuns)))
+                               body new-env new-fenv defuns)))
                 (nelisp-aot-compiler--make-ir 'let :var var :value val :body body-ir))
             ;; Runtime path: mirrors the `--parse-value' `let-rt' path.
             ;; Statement-context `let-rt' also requires an enclosing defun.
