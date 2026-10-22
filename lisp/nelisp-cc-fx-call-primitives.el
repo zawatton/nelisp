@@ -14,13 +14,21 @@
     ;; Alias symbols and malformed/immediate definitions retain the full
     ;; checked resolver: this answers 0 for them.  The live function cell
     ;; is read every time, including after FSET and FMAKUNBOUND.
+    ;; A symbol object is its own entry (Doc 226 D9, `nelisp_mirror_lookup_entry_owned'),
+    ;; so the function cell is its field at +24 and the lookup is skipped for it; a direct
+    ;; cons (the usual definition, `(builtin NAME)' or a closure) is no unbound marker.
     (defun m5_fx_cached_function (cache env)
-      (let* ((entry (nelisp_mirror_lookup_entry_owned
-                     env (nl_vector_slot_word cache 0))))
+      (let* ((sym (nl_vector_slot_word cache 0))
+             (entry (if (= (logand sym 7) 6)
+                        (let* ((k (logand (ptr-read-u64 (- sym 6) 0) 63)))
+                          (if (= k 4) sym
+                            (if (= k 16) sym (nelisp_mirror_lookup_entry_owned env sym))))
+                      (nelisp_mirror_lookup_entry_owned env sym))))
         (if (or (= entry 0) (= entry 3)) 0
           (let* ((fn (nl_record_slot_word entry 1)))
-            (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
-              (if (= (m5_fx_word_cons_p fn 0) 1) fn 0))))))
+            (if (= (logand fn 7) 2) fn
+              (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
+                (if (= (m5_fx_word_cons_p fn 0) 1) fn 0)))))))
     ;; NAME's WORD when FN is (builtin NAME), else 0.
     (defun m5_fx_builtin_name (fn _pad)
       (if (= (m5_fx_word_cons_p fn 0) 0) 0
