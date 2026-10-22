@@ -602,6 +602,16 @@ Step 2, the dispatch (the instruction profile after step 1):
 Result (back to back): 14.7M -> 13.9M cycles a collection, 30.4M -> 26.6M instructions, task clock 6.19 -> 5.70 ms;
 gc3 ratios x1.44, x1.42, x1.42 -> x1.35, x1.32, x1.33.
 
+Step 3, the fixed costs.  A collection spends 12% of its time outside the mark from the roots (phase timestamps: the
+conservative scan 6%, the caches and symbol-name roots 3%, the sweeps 2%, the index 1%).
+- The owner search of =nl_boot_owner= (the object start at or below an interior pointer in the image start bitmap)
+  found the highest set bit of the word one bit at a time from bit 63, about 30 iterations of nine instructions for
+  each of the 3,700 words a collection; =nl_gc_top_bit= finds it in six halvings (the compiler has no count-leading-zeros).
+  =nl_gc_conserv_typed= asked =nl_typed_find= (range tests and a registry hash lookup) up to three times for one word;
+  it asks once.  =nl_gc_block_elem_cap= divided by the element size with an idiv, 14,400 times a collection; the strides in use
+  are 8 and 32, so it shifts.  Together 1.1M instructions a collection (the idiv is a few hundred thousand cycles
+  that the instruction count does not show); the wall time did not move measurably.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls

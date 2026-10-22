@@ -4140,6 +4140,17 @@ it shares with cons and symbol blocks.")
       ;; payload holds W, searched back at most 4 KiB of starts (GNU accepts
       ;; only exact starts for dump objects).  0 = W is not in the boot range
       ;; or lies in a hole (use the per-collection index); -1 = no owner.
+      (defun nl_gc_top_bit (x)
+        ;; Index of the highest set bit of X (not 0): six halvings, where a walk down from bit 63 took
+        ;; one iteration per bit.  A word with bit 63 set is negative.
+        (if (< x 0) 63
+          (let* ((b 0) (y x))
+            (seq (if (/= (sar y 32) 0) (seq (setq b (+ b 32)) (setq y (sar y 32))) 0)
+                 (if (/= (sar y 16) 0) (seq (setq b (+ b 16)) (setq y (sar y 16))) 0)
+                 (if (/= (sar y 8) 0) (seq (setq b (+ b 8)) (setq y (sar y 8))) 0)
+                 (if (/= (sar y 4) 0) (seq (setq b (+ b 4)) (setq y (sar y 4))) 0)
+                 (if (/= (sar y 2) 0) (seq (setq b (+ b 2)) (setq y (sar y 2))) 0)
+                 (if (/= (sar y 1) 0) (+ b 1) b)))))
       (defun nl_boot_owner (w)
         (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200)))
           (if (< w lo) 0
@@ -4158,10 +4169,7 @@ it shares with cons and symbol blocks.")
                      (seq (setq wi (- wi 1))
                           (setq word (heap-read-u64 starts (* wi 8)))))
                    (if (= word 0) -1
-                     (let* ((bitpos (let ((b 63))
-                                      (seq (while (= (logand (sar word b) 1) 0)
-                                             (setq b (- b 1)))
-                                           b)))
+                     (let* ((bitpos (nl_gc_top_bit word))
                             (start (+ lo (* (+ (* wi 64) bitpos) 8))))
                        (if (< w (+ (- start 8) (nl_hdr_bt (- start 8)))) start -1))))))))))
       ;; nl_gc_index_fill for chunk 0 with boot structures: index only the
@@ -4227,7 +4235,9 @@ it shares with cons and symbol blocks.")
       ;; word inside a live cell marks that cons like mark_object.  1 when W
       ;; lay in a cons block (handled), 0 to continue on the legacy path.
       (defun nl_gc_conserv_typed (w)
-        (if (= (nl_typed_find w) 1)
+        ;; One registry lookup for the word, not one per typed kind.
+        (let ((ty (nl_typed_find w)))
+        (if (= ty 1)
             (let ((c (nl_live_cons_holding w)))
               (seq (if (= c 0) 0
                      (if (= (nl_cons_mark_cell c) 0) 0
@@ -4236,14 +4246,14 @@ it shares with cons and symbol blocks.")
                    1))
           ;; Doc 226 D9: mark_maybe_pointer's MEM_TYPE_SYMBOL case
           ;; (alloc.c:4932) through live_symbol_holding.
-          (if (= (nl_typed_find w) 2)
+          (if (= ty 2)
               (let ((c (nl_live_symbol_holding w)))
                 (seq (if (= c 0) 0 (nl_gc_mark_symbol c)) 1))
             ;; Doc 223: mark_maybe_pointer's MEM_TYPE_FLOAT case (alloc.c:4944).
-            (if (= (nl_typed_find w) 3)
+            (if (= ty 3)
                 (let ((c (nl_live_float_holding w)))
                   (seq (if (= c 0) 0 (nl_symbol_mark_cell c)) 1))
-              0)))))))
+              0))))))))
 
 (defconst nelisp-standalone--arena-source
   (append
@@ -7125,7 +7135,9 @@ REPL-facing module it feeds."
       (let ((bt (nl_hdr_bt (- ptr 8))))
         (if (< bt 16) 0
           (if (= (nl_gc_in_arena (+ ptr (- bt 9))) 0) 0
-            (/ (- bt 8) stride)))))
+            ;; The strides in use are 8 (vector slots) and 32 (sexp views): a shift, not an idiv.
+            (if (= stride 8) (sar (- bt 8) 3)
+              (if (= stride 32) (sar (- bt 8) 5) (/ (- bt 8) stride)))))))
     ;; Mark every slot of a `len'-element buffer starting at data_ptr.
     ;; Doc 147 Phase 2: each slot is now an 8-byte tagged WORD (stride 8,
     ;; was a 32B inline Sexp).  Per-slot WORD-aware mark, mirroring the
