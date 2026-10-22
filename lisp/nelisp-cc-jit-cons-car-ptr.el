@@ -36,8 +36,17 @@
             ;; Doc 216: a legacy view (000) and a direct cons (010) pass through
             ;; unchanged -- no transient box that could not cross an eval;
             ;; immediates and vectorlikes still materialise.
+            ;; Doc 226 D9 stage 3.2: so does a symbol object's WORD (class 110,
+            ;; kind 4 or 16): a view made for it would be a transient box that the
+            ;; native stack alone keeps alive, and the callers read a symbol
+            ;; through the semantic accessors (`sexp-tag', `heap-sexp-data' ...).
             (if (= (logand word 5) 0) word
-              (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))) 0))
+              (if (= (logand word 7) 6)
+                  (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4)
+                          (= (logand (heap-read-u64 (- word 6) 0) 63) 16))
+                      word
+                    (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))
+                (extern-call nl_sexp_clone_into word (alloc-bytes 32 8))))) 0))
   "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
 Doc 216 S2.1: a direct cons WORD (payload | 2) is returned as it is,
 like a legacy view; callers read it through the semantic accessors.

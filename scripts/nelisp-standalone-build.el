@@ -24631,7 +24631,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
-         (nl_alloc_symbol (heap-read-u64 sym 16) (heap-read-u64 sym 24) 268435480)
+         (nl_alloc_symbol (heap-sexp-data sym) (heap-sexp-length sym) 268435480)
          (bf_sig_copy32 268435512 data)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
