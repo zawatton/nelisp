@@ -15628,6 +15628,9 @@ Shared IR, roots and ambiguous slot ownership reject this proof."
 
 (defvar nelisp-aot-compiler--x86-trace-loops t
   "Project proven terminal-dispatch loops into call-free traces.")
+(defvar nelisp-aot-compiler--x86-adjacent-byte-loads t
+  "Combine an adjacent raw byte assembly only inside an active E trace.
+Nil preserves the original two loads and exact E instruction selection.")
 (defvar nelisp-aot-compiler--x86-trace-loop-owner nil
   "Current complete defun IR, scoped by its emission.")
 (defvar nelisp-aot-compiler--x86-trace-loop-exits nil
@@ -15800,8 +15803,9 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
    ((and nelisp-aot-compiler--x86-tco-entry-state
          (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :outer)))
     (nelisp-aot-compiler--emit-self-tco-body-x86 buf))
-   (t (nelisp-aot-compiler--emit-call-free-region
-       node buf (lambda () (nelisp-aot-compiler--emit-value-unpromoted node buf))))))
+   (t (let ((node (or (nelisp-aot-compiler--x86-adjacent-byte-read node) node)))
+        (nelisp-aot-compiler--emit-call-free-region
+         node buf (lambda () (nelisp-aot-compiler--emit-value-unpromoted node buf)))))))
 
 (defun nelisp-aot-compiler--emit-value-unpromoted (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -17125,13 +17129,91 @@ or index forms (no code that could clobber rax is emitted)."
        dst mem)
       t)))
 
+(defun nelisp-aot-compiler--x86-adjacent-byte-read (node)
+  "Preflight an adjacent-byte assembly as an existing raw u16 read.
+GNU bytecode.c:272-278 FETCH2 assembles two bytes.  GCC's PR93040
+get_unaligned_16 testcase recognizes the same target-endian load idiom.
+Only plain non-atomic loads of the same two bytes enter this x86-only
+selection.  Original E IR, slot plan, control and WORD guards stay put."
+  (when (and nelisp-aot-compiler--x86-adjacent-byte-loads
+             nelisp-aot-compiler--x86-trace-loop-exits
+             nelisp-aot-compiler--promoted-slots
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (eq (nelisp-aot-compiler--ir-kind node) 'arith)
+             (memq (nelisp-aot-compiler--ir-get node :op) '(+ logior)))
+    (let* ((low (nelisp-aot-compiler--ir-get node :a))
+           (shift (nelisp-aot-compiler--ir-get node :b))
+           (high (and (eq (nelisp-aot-compiler--ir-kind shift) 'shift)
+                      (nelisp-aot-compiler--ir-get shift :a))))
+      (cl-labels
+          ((plain (v depth)
+             (and (<= depth 16) (nelisp-aot-compiler--ir-node-p v)
+                  (let* ((kind (nelisp-aot-compiler--ir-kind v))
+                         (keys (pcase kind
+                                 ('ref '(:var :reg :slot :class :repr :root-p))
+                                 ('imm '(:value :repr))
+                                 ((or 'arith 'shift) '(:op :a :b :repr))
+                                 ('ptr-read-u8 '(:ptr :offset :repr)))))
+                    ;; Unknown metadata includes volatile/atomic/trapping
+                    ;; attributes: rejection must happen before emission.
+                    (and keys
+                         (cl-loop for i from 1 below (length v) by 2
+                                  always (memq (aref v i) keys))
+                         (or (memq (nelisp-aot-compiler--ir-get v :repr) '(nil raw-i64))
+                             (and (eq kind 'ref) (eq (nelisp-aot-compiler--ir-get v :repr) 'unknown)))
+                         (pcase kind
+                           ('ref (and (not (nelisp-aot-compiler--ir-get v :root-p))
+                                      (integerp (nelisp-aot-compiler--ir-get v :slot))
+                                      (memq (nelisp-aot-compiler--ir-get v :class) '(nil gp))))
+                           ('imm (integerp (nelisp-aot-compiler--ir-get v :value)))
+                           ('ptr-read-u8
+                            (and (plain (nelisp-aot-compiler--ir-get v :ptr) (1+ depth))
+                                 (plain (nelisp-aot-compiler--ir-get v :offset) (1+ depth))))
+                           ((or 'arith 'shift)
+                            (and (plain (nelisp-aot-compiler--ir-get v :a) (1+ depth))
+                                 (plain (nelisp-aot-compiler--ir-get v :b) (1+ depth)))))))))
+           (address-form (read)
+             (let ((a (nelisp-aot-compiler--x86-affine-form
+                       (nelisp-aot-compiler--ir-get read :ptr)))
+                   (b (nelisp-aot-compiler--x86-affine-form
+                       (nelisp-aot-compiler--ir-get read :offset))))
+               (and a b (nelisp-aot-compiler--x86-affine-add a b 1))))
+           (terms (form)
+             (sort (mapcar (lambda (p)
+                             (cons (nelisp-aot-compiler--ir-get (car p) :slot) (cdr p)))
+                           (car form))
+                   (lambda (a b) (< (car a) (car b))))))
+        (when (and (eq (nelisp-aot-compiler--ir-kind low) 'ptr-read-u8)
+                   high (eq (nelisp-aot-compiler--ir-kind high) 'ptr-read-u8)
+                   (eq (nelisp-aot-compiler--ir-get shift :op) 'shl)
+                   (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get shift :b))
+                   (= (nelisp-aot-compiler--ir-get
+                       (nelisp-aot-compiler--ir-get shift :b) :value) 8)
+                   (plain node 0)
+                   (nelisp-aot-compiler--x86-affine-address-plan
+                    (nelisp-aot-compiler--ir-get low :ptr)
+                    (nelisp-aot-compiler--ir-get low :offset))
+                   (nelisp-aot-compiler--x86-affine-address-plan
+                    (nelisp-aot-compiler--ir-get high :ptr)
+                    (nelisp-aot-compiler--ir-get high :offset)))
+          (let ((a (address-form low)) (b (address-form high)))
+            (when (and a b (equal (terms a) (terms b))
+                       (= (- (cdr b) (cdr a)) 1))
+              (nelisp-aot-compiler--make-ir
+               'ptr-read-u16 :ptr (nelisp-aot-compiler--ir-get low :ptr)
+               :offset (nelisp-aot-compiler--ir-get low :offset)))))))))
+
 (defun nelisp-aot-compiler--x86-memory-tree-info (node)
   "Return (REGISTERS . HAS-READ) for a supported pure GP tree, else nil.
 Registers count a left-to-right evaluation, with direct right leaves.
 Only stable folded addresses are allowed; they clobber rdi/rsi, never
 a result register.  No call, store, checked arithmetic or variable shift
 can enter this tree.  This preflight emits no bytes."
-  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+  (let* ((node (or (nelisp-aot-compiler--x86-adjacent-byte-read node) node))
+         (kind (nelisp-aot-compiler--ir-kind node)))
     (when (and (memq (nelisp-aot-compiler--ir-get node :cls) '(nil gp))
                (memq (nelisp-aot-compiler--ir-get node :class) '(nil gp)))
       (cond
@@ -17177,7 +17259,8 @@ can enter this tree.  This preflight emits no bytes."
   "Emit preflighted NODE into the first of REGISTERS without stack temps.
 Only rax/r10/r11 hold expression results; folded addresses may clobber
 rdi/rsi.  No general emit-value helper or call is used."
-  (let* ((dst (car registers))
+  (let* ((node (or (nelisp-aot-compiler--x86-adjacent-byte-read node) node))
+         (dst (car registers))
          (kind (nelisp-aot-compiler--ir-kind node))
          (leaf (nelisp-aot-compiler--x86-leaf-operand node)))
     (cond
@@ -17380,7 +17463,8 @@ takes any signed condition."
 
 (defun nelisp-aot-compiler--emit-value-into-x86 (node buf dst)
   "Emit NODE's value into register DST."
-  (let ((o (nelisp-aot-compiler--x86-leaf-operand node)))
+  (let* ((node (or (nelisp-aot-compiler--x86-adjacent-byte-read node) node))
+         (o (nelisp-aot-compiler--x86-leaf-operand node)))
     (cond
      (o (nelisp-aot-compiler--x86-load buf dst o))
      ((and (memq (nelisp-aot-compiler--ir-kind node)
