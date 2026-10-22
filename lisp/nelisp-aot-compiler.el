@@ -16351,6 +16351,8 @@ immediate or variable reference emits nothing.  Elsewhere this is
         (nelisp-aot-compiler--emit-effect child buf)))
      ((eq kind 'if)
       (nelisp-aot-compiler--emit-if-effect-x86 node buf))
+     ((eq kind 'cond)
+      (nelisp-aot-compiler--emit-cond node buf t))
      ((eq kind 'let-rt)
       (nelisp-aot-compiler--emit-let-rt-x86
        node buf (lambda (body) (nelisp-aot-compiler--emit-effect body buf))))
@@ -22624,8 +22626,10 @@ Layout:
                    (plist-get nelisp-aot-compiler--x86-tco-entry-state :inline-exit))
         (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))))
 
-(defun nelisp-aot-compiler--emit-cond (node buf)
+(defun nelisp-aot-compiler--emit-cond (node buf &optional effects)
   "Emit `cond' first-match-wins dispatch; result in rax.
+On x86, non-nil EFFECTS discards each body result after its effects.
+GNU bytecode.c CASE/NEXT dispatch likewise does not retain case results.
 Clauses with predicate `t' (= already lowered to symbol `always'
 during parse) emit their body unconditionally.  Layout per non-
 trivial clause:
@@ -22669,16 +22673,18 @@ body straight; `end-LABEL' is then defined immediately after."
           (cond
            ((eq pred 'always)
             ;; Unconditional clause (= t / fallthrough).
-            (nelisp-aot-compiler--emit-value body buf))
+            (funcall (if effects #'nelisp-aot-compiler--emit-effect
+                       #'nelisp-aot-compiler--emit-value) body buf))
            (t
             (let ((next-lbl (intern (format "%s-next-%d" id k))))
               (nelisp-aot-compiler--emit-cond-jump pred buf next-lbl nil)
-              (nelisp-aot-compiler--emit-value body buf)
+              (funcall (if effects #'nelisp-aot-compiler--emit-effect
+                       #'nelisp-aot-compiler--emit-value) body buf)
               (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
               (nelisp-asm-x86_64-define-label buf next-lbl))))))
       ;; If no `always' clause and every predicate failed, fall
       ;; through to a 0 sentinel so rax is always defined.
-      (unless (eq (car (car (last clauses))) 'always)
+      (unless (or effects (eq (car (car (last clauses))) 'always))
         (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))
       (nelisp-asm-x86_64-define-label buf end-lbl))))
 
