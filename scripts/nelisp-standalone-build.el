@@ -3347,7 +3347,8 @@ it shares with cons and symbol blocks.")
       (defun nl_gc_mark_cons_payload (box)
         (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
           (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_cons_mark_cell box)
-          (nl_gc_mark_block box)))
+          (let* ((r (nl_gc_mark_image box)))
+            (if (>= r 0) r (nl_gc_mark_block box)))))
       ;; ---- Doc 226 D9 symbol blocks, collector side ----
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
       ;; marked.
@@ -3365,7 +3366,8 @@ it shares with cons and symbol blocks.")
       (defun nl_gc_mark_vbox (box)
         (if (> (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
           (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_symbol_mark_cell box)
-          (nl_gc_mark_block box)))
+          (let* ((r (nl_gc_mark_image box)))
+            (if (>= r 0) r (nl_gc_mark_block box)))))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
       ;; member is a WORD or an immediate (Doc 226 D9), so all four are
@@ -7053,6 +7055,25 @@ REPL-facing module it feeds."
                         (setq chunk 0)))))
                  found))))
         0)))
+    ;; Doc 223: the image half of nl_gc_mark_block.  An image object takes its bit in the boot
+    ;; mark bitmap (pdumper_set_marked); its header is never written.  GNU's pdumper_find_object_type
+    ;; plus pdumper_marked_p and pdumper_set_marked in one pass: the range, the alignment, the start
+    ;; bit and the mark bit share the granule index.  -1 for a block outside the image, else the
+    ;; mark answer (1 newly marked, 0 already marked).  Small enough to be spliced into its callers.
+    (defun nl_gc_mark_image (obj)
+      (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200)))
+        (if (< obj lo) -1
+          (if (>= obj (heap-read-u64 st 208)) -1
+            (if (/= (logand obj 7) 0) -1
+              (let* ((g (sar (- obj lo) 3))
+                     (wi (* (sar g 6) 8))
+                     (bit (shl 1 (logand g 63))))
+                (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
+                  (let* ((wa (+ (heap-read-u64 st 216) wi))
+                         (m (heap-read-u64 wa 0)))
+                    (if (= (logand m bit) 0)
+                        (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                      0)))))))))
     ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
@@ -7073,19 +7094,7 @@ REPL-facing module it feeds."
       ;; pdumper_set_marked in one pass: the range, the alignment, the start bit
       ;; and the mark bit share the granule index.  R is -1 for a block outside
       ;; the image, else the mark answer (1 newly marked, 0 already marked).
-      (let ((r (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
-                 (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
-                   (if (/= (logand obj 7) 0) -1
-                     (let* ((st (data-addr nl_typed_alloc))
-                            (g (sar (- obj (heap-read-u64 st 200)) 3))
-                            (wi (* (sar g 6) 8))
-                            (bit (shl 1 (logand g 63))))
-                       (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
-                         (let* ((wa (+ (heap-read-u64 st 216) wi))
-                                (m (heap-read-u64 wa 0)))
-                           (if (= (logand m bit) 0)
-                               (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
-                             0)))))))))
+      (let ((r (nl_gc_mark_image obj)))
         (if (>= r 0) r
       (if (= (nl_gc_object_start_p obj) 0) 0
         (let* ((hdr (- obj 8))
@@ -7152,10 +7161,24 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 6)
-            (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
+            ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
+            ;; bit is set needs neither the header read nor a call.
+            (let* ((box (- word 6)) (st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200))
+                   (g (sar (- box lo) 3)))
+              (if (if (< box lo) 0
+                    (if (>= box (heap-read-u64 st 208)) 0
+                      (/= (logand (heap-read-u64 (+ (heap-read-u64 st 216) (* (sar g 6) 8)) 0)
+                                  (shl 1 (logand g 63)))
+                          0)))
+                  0
+                (let* ((k (logand (heap-read-u64 box 0) 63)))
+                  (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box)))))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
-            (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))
+            (let* ((r (nl_gc_mark_image word)))
+              (if (>= r 0)
+                  (if (= r 0) 0 (nl_gc_mark_slot word))
+                (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))))
     (defun nl_gc_mark_inline_words (owner offset n)
       (let* ((cap (nl_gc_block_elem_cap owner 8)) (i offset)
              (end (+ offset n)))

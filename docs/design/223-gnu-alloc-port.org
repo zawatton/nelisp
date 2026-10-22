@@ -530,6 +530,29 @@ overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vecto
   instructions (x3.0): one =nl_alloc_bytes= on a fresh heap is 346 of them (the steady state pops from
   =nl_alloc_pop_fast=, the prim lane's fast path, instead), the argument words 112, the fill 130.
 
+** The marker's edges (S2.7)
+
+GNU's =mark_object= tests =pdumper_object_p= and =pdumper_marked_p= in line and breaks out at an object whose bit
+is set.  Here an edge to an already-marked image symbol went =nl_gc_mark_word= -> =nl_gc_mark_symbol= ->
+=nl_gc_mark_vbox= -> =nl_gc_mark_block=, about 140 instructions to find the bit set, and the 7,400 interned symbols
+take 132,000 such edges per collection (about 18 edges each); a collection made 382,769 calls of =nl_gc_mark_block=.
+- =nl_gc_mark_image= is the image half of =nl_gc_mark_block= (the range, the alignment, the start bit and the mark
+  test-and-set in one pass: -1 outside the image, 1 newly marked, 0 already marked), now a function of its own.
+- =nl_gc_mark_word= tests the mark bit of a vectorlike or symbol word before it reads the header (once, not twice),
+  and takes the image answer for a legacy view and for a cons payload (=nl_gc_mark_cons_payload=) and for a symbol
+  box (=nl_gc_mark_vbox=) without calling =nl_gc_mark_block=.  A set bit is only ever written for a validated block
+  start, so a bit test on any pointer needs no start bit.
+- Inlining decides what this costs.  The within-unit inliner splices a body of at most 80 nodes that uses =let*=
+  and pure operators; a plain =let= makes it a call.  The first version of this change used =let= and
+  =nl_gc_mark_word= became a real function (510,000 calls a collection), so the collection cost 66.4M instead of
+  62.6M.  With =let*= both functions are spliced (checked by running the lowering and the inliner on the unit source).
+
+Result (callgrind, churn workload, steady-state collection): 62.6M -> 58.1M instructions (GNU 47.4M),
+=nl_gc_mark_block= calls 382,769 -> 36,746.  The saving is small because the test now sits in the inlined copies:
+=nl_gc_mark_cons= went from 185 to 364 instructions a call.  What is left is mostly this compiler's code for the
+same logic (a naive stack machine: a dozen operations is 60 to 90 instructions), which the code-generation lane's
+S5 work owns.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls
