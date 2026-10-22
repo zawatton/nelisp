@@ -1,0 +1,472 @@
+bma-eql  3        3        ok t
+bma-eql  3        -2       ok nil
+bma-eql  3        2.5      ok nil
+bma-eql  3        m@2      ok nil
+bma-eql  3        m@5      ok nil
+bma-eql  -2       3        ok nil
+bma-eql  -2       -2       ok t
+bma-eql  -2       2.5      ok nil
+bma-eql  -2       m@2      ok nil
+bma-eql  -2       m@5      ok nil
+bma-eql  2.5      3        ok nil
+bma-eql  2.5      -2       ok nil
+bma-eql  2.5      2.5      ok t
+bma-eql  2.5      m@2      ok nil
+bma-eql  2.5      m@5      ok nil
+bma-eql  m@2      3        ok nil
+bma-eql  m@2      -2       ok nil
+bma-eql  m@2      2.5      ok nil
+bma-eql  m@2      m@2      ok t
+bma-eql  m@2      m@5      ok nil
+bma-eql  m@5      3        ok nil
+bma-eql  m@5      -2       ok nil
+bma-eql  m@5      2.5      ok nil
+bma-eql  m@5      m@2      ok nil
+bma-eql  m@5      m@5      ok t
+bma-eql  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-eql  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-eql  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-eql  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-eql  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-eql  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-eql  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-eql  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-eql  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-eql  m@none   3        err (error "Marker does not point anywhere")
+bma-eql  3        m@none   err (error "Marker does not point anywhere")
+bma-eql  m@none   m@2      err (error "Marker does not point anywhere")
+bma-gtr  3        3        ok nil
+bma-gtr  3        -2       ok t
+bma-gtr  3        2.5      ok t
+bma-gtr  3        m@2      ok t
+bma-gtr  3        m@5      ok nil
+bma-gtr  -2       3        ok nil
+bma-gtr  -2       -2       ok nil
+bma-gtr  -2       2.5      ok nil
+bma-gtr  -2       m@2      ok nil
+bma-gtr  -2       m@5      ok nil
+bma-gtr  2.5      3        ok nil
+bma-gtr  2.5      -2       ok t
+bma-gtr  2.5      2.5      ok nil
+bma-gtr  2.5      m@2      ok t
+bma-gtr  2.5      m@5      ok nil
+bma-gtr  m@2      3        ok nil
+bma-gtr  m@2      -2       ok t
+bma-gtr  m@2      2.5      ok nil
+bma-gtr  m@2      m@2      ok nil
+bma-gtr  m@2      m@5      ok nil
+bma-gtr  m@5      3        ok t
+bma-gtr  m@5      -2       ok t
+bma-gtr  m@5      2.5      ok t
+bma-gtr  m@5      m@2      ok t
+bma-gtr  m@5      m@5      ok nil
+bma-gtr  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-gtr  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-gtr  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-gtr  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-gtr  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-gtr  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-gtr  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-gtr  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-gtr  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-gtr  m@none   3        err (error "Marker does not point anywhere")
+bma-gtr  3        m@none   err (error "Marker does not point anywhere")
+bma-gtr  m@none   m@2      err (error "Marker does not point anywhere")
+bma-lss  3        3        ok nil
+bma-lss  3        -2       ok nil
+bma-lss  3        2.5      ok nil
+bma-lss  3        m@2      ok nil
+bma-lss  3        m@5      ok t
+bma-lss  -2       3        ok t
+bma-lss  -2       -2       ok nil
+bma-lss  -2       2.5      ok t
+bma-lss  -2       m@2      ok t
+bma-lss  -2       m@5      ok t
+bma-lss  2.5      3        ok t
+bma-lss  2.5      -2       ok nil
+bma-lss  2.5      2.5      ok nil
+bma-lss  2.5      m@2      ok nil
+bma-lss  2.5      m@5      ok t
+bma-lss  m@2      3        ok t
+bma-lss  m@2      -2       ok nil
+bma-lss  m@2      2.5      ok t
+bma-lss  m@2      m@2      ok nil
+bma-lss  m@2      m@5      ok t
+bma-lss  m@5      3        ok nil
+bma-lss  m@5      -2       ok nil
+bma-lss  m@5      2.5      ok nil
+bma-lss  m@5      m@2      ok nil
+bma-lss  m@5      m@5      ok nil
+bma-lss  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-lss  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-lss  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-lss  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-lss  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-lss  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-lss  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-lss  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-lss  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-lss  m@none   3        err (error "Marker does not point anywhere")
+bma-lss  3        m@none   err (error "Marker does not point anywhere")
+bma-lss  m@none   m@2      err (error "Marker does not point anywhere")
+bma-leq  3        3        ok t
+bma-leq  3        -2       ok nil
+bma-leq  3        2.5      ok nil
+bma-leq  3        m@2      ok nil
+bma-leq  3        m@5      ok t
+bma-leq  -2       3        ok t
+bma-leq  -2       -2       ok t
+bma-leq  -2       2.5      ok t
+bma-leq  -2       m@2      ok t
+bma-leq  -2       m@5      ok t
+bma-leq  2.5      3        ok t
+bma-leq  2.5      -2       ok nil
+bma-leq  2.5      2.5      ok t
+bma-leq  2.5      m@2      ok nil
+bma-leq  2.5      m@5      ok t
+bma-leq  m@2      3        ok t
+bma-leq  m@2      -2       ok nil
+bma-leq  m@2      2.5      ok t
+bma-leq  m@2      m@2      ok t
+bma-leq  m@2      m@5      ok t
+bma-leq  m@5      3        ok nil
+bma-leq  m@5      -2       ok nil
+bma-leq  m@5      2.5      ok nil
+bma-leq  m@5      m@2      ok nil
+bma-leq  m@5      m@5      ok t
+bma-leq  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-leq  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-leq  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-leq  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-leq  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-leq  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-leq  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-leq  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-leq  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-leq  m@none   3        err (error "Marker does not point anywhere")
+bma-leq  3        m@none   err (error "Marker does not point anywhere")
+bma-leq  m@none   m@2      err (error "Marker does not point anywhere")
+bma-geq  3        3        ok t
+bma-geq  3        -2       ok t
+bma-geq  3        2.5      ok t
+bma-geq  3        m@2      ok t
+bma-geq  3        m@5      ok nil
+bma-geq  -2       3        ok nil
+bma-geq  -2       -2       ok t
+bma-geq  -2       2.5      ok nil
+bma-geq  -2       m@2      ok nil
+bma-geq  -2       m@5      ok nil
+bma-geq  2.5      3        ok nil
+bma-geq  2.5      -2       ok t
+bma-geq  2.5      2.5      ok t
+bma-geq  2.5      m@2      ok t
+bma-geq  2.5      m@5      ok nil
+bma-geq  m@2      3        ok nil
+bma-geq  m@2      -2       ok t
+bma-geq  m@2      2.5      ok nil
+bma-geq  m@2      m@2      ok t
+bma-geq  m@2      m@5      ok nil
+bma-geq  m@5      3        ok t
+bma-geq  m@5      -2       ok t
+bma-geq  m@5      2.5      ok t
+bma-geq  m@5      m@2      ok t
+bma-geq  m@5      m@5      ok t
+bma-geq  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-geq  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-geq  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-geq  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-geq  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-geq  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-geq  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-geq  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-geq  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-geq  m@none   3        err (error "Marker does not point anywhere")
+bma-geq  3        m@none   err (error "Marker does not point anywhere")
+bma-geq  m@none   m@2      err (error "Marker does not point anywhere")
+bma-max  3        3        ok 3
+bma-max  3        -2       ok 3
+bma-max  3        2.5      ok 3
+bma-max  3        m@2      ok 3
+bma-max  3        m@5      ok 5
+bma-max  -2       3        ok 3
+bma-max  -2       -2       ok -2
+bma-max  -2       2.5      ok 2.5
+bma-max  -2       m@2      ok 2
+bma-max  -2       m@5      ok 5
+bma-max  2.5      3        ok 3
+bma-max  2.5      -2       ok 2.5
+bma-max  2.5      2.5      ok 2.5
+bma-max  2.5      m@2      ok 2.5
+bma-max  2.5      m@5      ok 5
+bma-max  m@2      3        ok 3
+bma-max  m@2      -2       ok 2
+bma-max  m@2      2.5      ok 2.5
+bma-max  m@2      m@2      ok 2
+bma-max  m@2      m@5      ok 5
+bma-max  m@5      3        ok 5
+bma-max  m@5      -2       ok 5
+bma-max  m@5      2.5      ok 5
+bma-max  m@5      m@2      ok 5
+bma-max  m@5      m@5      ok 5
+bma-max  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-max  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-max  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-max  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-max  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-max  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-max  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-max  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-max  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-max  m@none   3        err (error "Marker does not point anywhere")
+bma-max  3        m@none   err (error "Marker does not point anywhere")
+bma-max  m@none   m@2      err (error "Marker does not point anywhere")
+bma-min  3        3        ok 3
+bma-min  3        -2       ok -2
+bma-min  3        2.5      ok 2.5
+bma-min  3        m@2      ok 2
+bma-min  3        m@5      ok 3
+bma-min  -2       3        ok -2
+bma-min  -2       -2       ok -2
+bma-min  -2       2.5      ok -2
+bma-min  -2       m@2      ok -2
+bma-min  -2       m@5      ok -2
+bma-min  2.5      3        ok 2.5
+bma-min  2.5      -2       ok -2
+bma-min  2.5      2.5      ok 2.5
+bma-min  2.5      m@2      ok 2
+bma-min  2.5      m@5      ok 2.5
+bma-min  m@2      3        ok 2
+bma-min  m@2      -2       ok -2
+bma-min  m@2      2.5      ok 2
+bma-min  m@2      m@2      ok 2
+bma-min  m@2      m@5      ok 2
+bma-min  m@5      3        ok 3
+bma-min  m@5      -2       ok -2
+bma-min  m@5      2.5      ok 2.5
+bma-min  m@5      m@2      ok 2
+bma-min  m@5      m@5      ok 5
+bma-min  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-min  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-min  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-min  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-min  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-min  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-min  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-min  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-min  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-min  m@none   3        err (error "Marker does not point anywhere")
+bma-min  3        m@none   err (error "Marker does not point anywhere")
+bma-min  m@none   m@2      err (error "Marker does not point anywhere")
+bma-add  3        3        ok 6
+bma-add  3        -2       ok 1
+bma-add  3        2.5      ok 5.5
+bma-add  3        m@2      ok 5
+bma-add  3        m@5      ok 8
+bma-add  -2       3        ok 1
+bma-add  -2       -2       ok -4
+bma-add  -2       2.5      ok 0.5
+bma-add  -2       m@2      ok 0
+bma-add  -2       m@5      ok 3
+bma-add  2.5      3        ok 5.5
+bma-add  2.5      -2       ok 0.5
+bma-add  2.5      2.5      ok 5.0
+bma-add  2.5      m@2      ok 4.5
+bma-add  2.5      m@5      ok 7.5
+bma-add  m@2      3        ok 5
+bma-add  m@2      -2       ok 0
+bma-add  m@2      2.5      ok 4.5
+bma-add  m@2      m@2      ok 4
+bma-add  m@2      m@5      ok 7
+bma-add  m@5      3        ok 8
+bma-add  m@5      -2       ok 3
+bma-add  m@5      2.5      ok 7.5
+bma-add  m@5      m@2      ok 7
+bma-add  m@5      m@5      ok 10
+bma-add  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-add  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-add  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-add  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-add  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-add  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-add  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-add  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-add  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-add  m@none   3        err (error "Marker does not point anywhere")
+bma-add  3        m@none   err (error "Marker does not point anywhere")
+bma-add  m@none   m@2      err (error "Marker does not point anywhere")
+bma-sub  3        3        ok 0
+bma-sub  3        -2       ok 5
+bma-sub  3        2.5      ok 0.5
+bma-sub  3        m@2      ok 1
+bma-sub  3        m@5      ok -2
+bma-sub  -2       3        ok -5
+bma-sub  -2       -2       ok 0
+bma-sub  -2       2.5      ok -4.5
+bma-sub  -2       m@2      ok -4
+bma-sub  -2       m@5      ok -7
+bma-sub  2.5      3        ok -0.5
+bma-sub  2.5      -2       ok 4.5
+bma-sub  2.5      2.5      ok 0.0
+bma-sub  2.5      m@2      ok 0.5
+bma-sub  2.5      m@5      ok -2.5
+bma-sub  m@2      3        ok -1
+bma-sub  m@2      -2       ok 4
+bma-sub  m@2      2.5      ok -0.5
+bma-sub  m@2      m@2      ok 0
+bma-sub  m@2      m@5      ok -3
+bma-sub  m@5      3        ok 2
+bma-sub  m@5      -2       ok 7
+bma-sub  m@5      2.5      ok 2.5
+bma-sub  m@5      m@2      ok 3
+bma-sub  m@5      m@5      ok 0
+bma-sub  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-sub  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-sub  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-sub  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-sub  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-sub  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-sub  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-sub  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-sub  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-sub  m@none   3        err (error "Marker does not point anywhere")
+bma-sub  3        m@none   err (error "Marker does not point anywhere")
+bma-sub  m@none   m@2      err (error "Marker does not point anywhere")
+bma-mul  3        3        ok 9
+bma-mul  3        -2       ok -6
+bma-mul  3        2.5      ok 7.5
+bma-mul  3        m@2      ok 6
+bma-mul  3        m@5      ok 15
+bma-mul  -2       3        ok -6
+bma-mul  -2       -2       ok 4
+bma-mul  -2       2.5      ok -5.0
+bma-mul  -2       m@2      ok -4
+bma-mul  -2       m@5      ok -10
+bma-mul  2.5      3        ok 7.5
+bma-mul  2.5      -2       ok -5.0
+bma-mul  2.5      2.5      ok 6.25
+bma-mul  2.5      m@2      ok 5.0
+bma-mul  2.5      m@5      ok 12.5
+bma-mul  m@2      3        ok 6
+bma-mul  m@2      -2       ok -4
+bma-mul  m@2      2.5      ok 5.0
+bma-mul  m@2      m@2      ok 4
+bma-mul  m@2      m@5      ok 10
+bma-mul  m@5      3        ok 15
+bma-mul  m@5      -2       ok -10
+bma-mul  m@5      2.5      ok 12.5
+bma-mul  m@5      m@2      ok 10
+bma-mul  m@5      m@5      ok 25
+bma-mul  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-mul  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-mul  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-mul  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-mul  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-mul  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-mul  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-mul  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-mul  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-mul  m@none   3        err (error "Marker does not point anywhere")
+bma-mul  3        m@none   err (error "Marker does not point anywhere")
+bma-mul  m@none   m@2      err (error "Marker does not point anywhere")
+bma-quo  3        3        ok 1
+bma-quo  3        -2       ok -1
+bma-quo  3        2.5      ok 1.2
+bma-quo  3        m@2      ok 1
+bma-quo  3        m@5      ok 0
+bma-quo  -2       3        ok 0
+bma-quo  -2       -2       ok 1
+bma-quo  -2       2.5      ok -0.8
+bma-quo  -2       m@2      ok -1
+bma-quo  -2       m@5      ok 0
+bma-quo  2.5      3        ok 0.8333333333333334
+bma-quo  2.5      -2       ok -1.25
+bma-quo  2.5      2.5      ok 1.0
+bma-quo  2.5      m@2      ok 1.25
+bma-quo  2.5      m@5      ok 0.5
+bma-quo  m@2      3        ok 0
+bma-quo  m@2      -2       ok -1
+bma-quo  m@2      2.5      ok 0.8
+bma-quo  m@2      m@2      ok 1
+bma-quo  m@2      m@5      ok 0
+bma-quo  m@5      3        ok 1
+bma-quo  m@5      -2       ok -2
+bma-quo  m@5      2.5      ok 2.0
+bma-quo  m@5      m@2      ok 2
+bma-quo  m@5      m@5      ok 1
+bma-quo  a        3        err (wrong-type-argument number-or-marker-p a)
+bma-quo  3        a        err (wrong-type-argument number-or-marker-p a)
+bma-quo  m@2      a        err (wrong-type-argument number-or-marker-p a)
+bma-quo  "s"      3        err (wrong-type-argument number-or-marker-p "s")
+bma-quo  3        "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-quo  m@2      "s"      err (wrong-type-argument number-or-marker-p "s")
+bma-quo  nil      3        err (wrong-type-argument number-or-marker-p nil)
+bma-quo  3        nil      err (wrong-type-argument number-or-marker-p nil)
+bma-quo  m@2      nil      err (wrong-type-argument number-or-marker-p nil)
+bma-quo  m@none   3        err (error "Marker does not point anywhere")
+bma-quo  3        m@none   err (error "Marker does not point anywhere")
+bma-quo  m@none   m@2      err (error "Marker does not point anywhere")
+bma-rem  3        3        ok 0
+bma-rem  3        -2       ok 1
+bma-rem  3        2.5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  3        m@2      ok 1
+bma-rem  3        m@5      ok 3
+bma-rem  -2       3        ok -2
+bma-rem  -2       -2       ok 0
+bma-rem  -2       2.5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  -2       m@2      ok 0
+bma-rem  -2       m@5      ok -2
+bma-rem  2.5      3        err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  2.5      -2       err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  2.5      2.5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  2.5      m@2      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  2.5      m@5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  m@2      3        ok 2
+bma-rem  m@2      -2       ok 0
+bma-rem  m@2      2.5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  m@2      m@2      ok 0
+bma-rem  m@2      m@5      ok 2
+bma-rem  m@5      3        ok 2
+bma-rem  m@5      -2       ok 1
+bma-rem  m@5      2.5      err (wrong-type-argument integer-or-marker-p 2.5)
+bma-rem  m@5      m@2      ok 1
+bma-rem  m@5      m@5      ok 0
+bma-rem  a        3        err (wrong-type-argument integer-or-marker-p a)
+bma-rem  3        a        err (wrong-type-argument integer-or-marker-p a)
+bma-rem  m@2      a        err (wrong-type-argument integer-or-marker-p a)
+bma-rem  "s"      3        err (wrong-type-argument integer-or-marker-p "s")
+bma-rem  3        "s"      err (wrong-type-argument integer-or-marker-p "s")
+bma-rem  m@2      "s"      err (wrong-type-argument integer-or-marker-p "s")
+bma-rem  nil      3        err (wrong-type-argument integer-or-marker-p nil)
+bma-rem  3        nil      err (wrong-type-argument integer-or-marker-p nil)
+bma-rem  m@2      nil      err (wrong-type-argument integer-or-marker-p nil)
+bma-rem  m@none   3        err (error "Marker does not point anywhere")
+bma-rem  3        m@none   err (error "Marker does not point anywhere")
+bma-rem  m@none   m@2      err (error "Marker does not point anywhere")
+bma-inc  3                 ok 4
+bma-inc  -2                ok -1
+bma-inc  2.5               ok 3.5
+bma-inc  m@2               ok 3
+bma-inc  m@5               ok 6
+bma-inc  a                 err (wrong-type-argument number-or-marker-p a)
+bma-inc  "s"               err (wrong-type-argument number-or-marker-p "s")
+bma-inc  nil               err (wrong-type-argument number-or-marker-p nil)
+bma-inc  m@none            err (error "Marker does not point anywhere")
+bma-dec  3                 ok 2
+bma-dec  -2                ok -3
+bma-dec  2.5               ok 1.5
+bma-dec  m@2               ok 1
+bma-dec  m@5               ok 4
+bma-dec  a                 err (wrong-type-argument number-or-marker-p a)
+bma-dec  "s"               err (wrong-type-argument number-or-marker-p "s")
+bma-dec  nil               err (wrong-type-argument number-or-marker-p nil)
+bma-dec  m@none            err (error "Marker does not point anywhere")
+bma-neg  3                 ok -3
+bma-neg  -2                ok 2
+bma-neg  2.5               ok -2.5
+bma-neg  m@2               ok -2
+bma-neg  m@5               ok -5
+bma-neg  a                 err (wrong-type-argument number-or-marker-p a)
+bma-neg  "s"               err (wrong-type-argument number-or-marker-p "s")
+bma-neg  nil               err (wrong-type-argument number-or-marker-p nil)
+bma-neg  m@none            err (error "Marker does not point anywhere")
+MARKER-ARITH 471 cases, 0 failures

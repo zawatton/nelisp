@@ -7892,20 +7892,16 @@ argument (reachability + in-arena bounds checks).")
     ;;
     ;; Doc 190 Phase C: a Bignum DIVIDEND is checked first, same reasoning
     ;; as `/' just above -- `bf_first_non_integer' does not know tag 13.
-    ((:u8 "%") :word . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
-                     (let* ((dptr (wf_arg_ptr args 1)))
-                       (if (= (nl_bignum_small_divisor_p dptr) 1)
-                           (if (= (ptr-read-u64 dptr 8) 0)
-                               (nl_abi_fail (bf_arith_error) 0)
-                             (wf_write_int_w 0 (nl_bignum_rem_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8))))
-                         (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
-                   (let* ((bad (bf_first_non_integer args)))
-                    (if (= bad 0)
-                        (let* ((a (wf_argval args 0)) (b (wf_argval args 1)))
-                          (if (= b 0)
-                              (nl_abi_fail (bf_arith_error) 0)
-                            (wf_write_int_w 0 (- a (* b (/ a b))))))
-                      (nl_abi_fail (bf_wrong_type_int_or_marker bad) 0)))))
+    ;; `%' coerces a marker operand like GNU's Frem (CHECK_INTEGER_COERCE_MARKER):
+    ;; the same normalisation `+', `-', `*' and `/' do, then `wf_rem_w'.
+    ((:u8 "%") :word . (if (= (wf_numeric_has_marker args) 1)
+                    (let* ((mark (nl_root_mark env))
+                           (normalized (nl_root_reserve env))
+                           (rc (wf_numeric_marker_copy_nc args env normalized))
+                           ;; The word crosses only nl_root_release (no safepoint).
+                           (w (if (= rc 0) (wf_rem_w normalized 0) 0)))
+                      (seq (nl_root_release env mark) w))
+                  (wf_rem_w args 0)))
     ;; `/=' = 2-arg numeric not-equal (int/float via wf_num_eq).
     ((:u8 "/=") :word . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare_w args env 5 0)
@@ -8857,19 +8853,24 @@ leave symbols unresolved at link time."
       word)))
 
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
-    (defun wf_numeric_marker_copy_w (args env _pad)
+    ;; NOCHECK 1 coerces the markers only and leaves every other operand to the
+    ;; caller's own type check (`%' names integer-or-marker-p, not number-or-marker-p).
+    (defun wf_numeric_marker_copy_w (args env nocheck)
   (if (= (nl_val_tag args) 7)
       (let* ((holder_root (nl_root_reserve env))
-             (word (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 1)))
+             (word (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0
+                                                   (if (= nocheck 1) 0 1))))
         (if (= word 0) 0
           (let* ((holder (nelisp_cons_construct_w word 3 0)))
             (seq (wf_word_store_out holder_root holder)
-                 (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
+                 (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env nocheck)))
                    (if (= tail_word 0) 0
                      (nelisp_cons_construct_w (nl_cons_car_word holder_root) tail_word 0)))))))
     args))
     (defun wf_numeric_marker_copy (args env out)
       (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
+    (defun wf_numeric_marker_copy_nc (args env out)
+      (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 1) out))
     (defun wf_numeric_marker_relation (a b mode)
       (cond ((= mode 1) (wf_num_lt a b))
             ((= mode 2) (wf_num_gt a b))
@@ -8899,6 +8900,23 @@ leave symbols unresolved at link time."
     7))
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
+    ;; `%' on normalised operands (no marker): C-style integer remainder.  The
+    ;; body of the `%' builtin, moved here so the marker case can reuse it.
+    (defun wf_rem_w (args _pad)
+      (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
+                     (let* ((dptr (wf_arg_ptr args 1)))
+                       (if (= (nl_bignum_small_divisor_p dptr) 1)
+                           (if (= (ptr-read-u64 dptr 8) 0)
+                               (nl_abi_fail (bf_arith_error) 0)
+                             (wf_write_int_w 0 (nl_bignum_rem_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8))))
+                         (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
+                   (let* ((bad (bf_first_non_integer args)))
+                    (if (= bad 0)
+                        (let* ((a (wf_argval args 0)) (b (wf_argval args 1)))
+                          (if (= b 0)
+                              (nl_abi_fail (bf_arith_error) 0)
+                            (wf_write_int_w 0 (- a (* b (/ a b))))))
+                      (nl_abi_fail (bf_wrong_type_int_or_marker bad) 0)))))
     (defun wf_argval (args n) (nl_word_payload (wf_arg_word args n)))
     ;; ptr-call is a raw signed-i64 boundary; tag13 +8 is a sign, not a value.
     (defun wf_ptr_call_i64_fits (w)
@@ -13795,6 +13813,55 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (wf_bytecode_small_arithmetic mem sp opcode) 0)
           0
         (wf_bytecode_call_primitive_slow env mem sp opcode)))
+    ;; The arithmetic and comparison opcodes (83-95, 165, 166) compute on numbers
+    ;; here.  An operand that is not a number -- a marker, an object a library
+    ;; owns, a wrong-type value -- goes through the opcode's symbol instead, i.e.
+    ;; its function cell, as the interpreter's call of the same function does:
+    ;; the runtime's own cell coerces markers and signals GNU's wrong-type
+    ;; error, and a library that redefined the cell is honoured.  GNU
+    ;; bytecode.c reaches the same coercion through arithcompare, Fmax, Fmin and
+    ;; the arith functions (CHECK_NUMBER_COERCE_MARKER).
+    (defun wf_bytecode_w_nonnumber_p (mem sp k)
+      ;; 1 when any of the K operand words below SP is not a number.
+      (let* ((i 0) (bad 0))
+        (seq (while (if (= bad 0) (if (< i k) 1 0) 0)
+               (seq (if (= (wf_num_tag_ok
+                            (nl_val_tag (ptr-read-u64 (+ mem (* (- sp (+ i 1)) 8)) 0))) 0)
+                        (setq bad 1) 0)
+                    (setq i (+ i 1))))
+             bad)))
+    (defun wf_bytecode_call_arith_named (env mem sp argc name name_len)
+      ;; A by-name call of an arithmetic opcode's function: the builtin token
+      ;; while the operands are numbers, the symbol's function cell otherwise.
+      (wf_bytecode_call_named_value env mem sp argc name name_len
+                                    (wf_bytecode_w_nonnumber_p mem sp argc)))
+    (defun wf_bytecode_arith_cell_op (opcode)
+      ;; 1 for the opcodes that run boxed in `wf_bytecode_boxed_op': 85-90
+      ;; (= > < <= >= -), 93 max, 94 min and 166 %.
+      (if (if (>= opcode 85) (<= opcode 90) 0) 1
+        (if (= opcode 93) 1 (if (= opcode 94) 1 (if (= opcode 166) 1 0)))))
+    (defun wf_bytecode_call_arith_cell (env mem sp opcode)
+      ;; Apply the function cell of OPCODE's symbol to the two operands below
+      ;; SP; the result replaces the first.  0, or 1 signalled.
+      (let* ((name (alloc-bytes 8 8)))
+        (seq
+         (if (= opcode 85) (ptr-write-u8 name 0 61)
+           (if (= opcode 86) (ptr-write-u8 name 0 62)
+             (if (= opcode 87) (ptr-write-u8 name 0 60)
+               (if (= opcode 88) (seq (ptr-write-u8 name 0 60) (ptr-write-u8 name 1 61))
+                 (if (= opcode 89) (seq (ptr-write-u8 name 0 62) (ptr-write-u8 name 1 61))
+                   (if (= opcode 90) (ptr-write-u8 name 0 45)
+                     (if (= opcode 93)
+                         (seq (ptr-write-u8 name 0 109) (ptr-write-u8 name 1 97)
+                              (ptr-write-u8 name 2 120))
+                       (if (= opcode 94)
+                           (seq (ptr-write-u8 name 0 109) (ptr-write-u8 name 1 105)
+                                (ptr-write-u8 name 2 110))
+                         (ptr-write-u8 name 0 37)))))))))
+         (wf_bytecode_call_named_value
+          env mem sp 2 name
+          (if (= opcode 88) 2 (if (= opcode 89) 2 (if (= opcode 93) 3 (if (= opcode 94) 3 1))))
+          1))))
     ;; Existing evaluator/tagged arithmetic (clauses 2/5). Inspect the live
     ;; resolved callable, rather than assuming that a symbol still names its
     ;; original builtin. No allocation or callback separates inspection from
@@ -13856,16 +13923,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (wf_bytecode_call_named env mem sp 2 name 3))
         (if (= opcode 84)
             (seq (ptr-write-u8 name 0 49) (ptr-write-u8 name 1 43)
-                 (wf_bytecode_call_named env mem sp 1 name 2))
+                 (wf_bytecode_call_arith_named env mem sp 1 name 2))
           (if (= opcode 83)
             (seq (ptr-write-u8 name 0 49) (ptr-write-u8 name 1 45)
-                 (wf_bytecode_call_named env mem sp 1 name 2))
+                 (wf_bytecode_call_arith_named env mem sp 1 name 2))
           (if (= opcode 92)
             (seq (ptr-write-u8 name 0 43)
-                 (wf_bytecode_call_named env mem sp 2 name 1))
+                 (wf_bytecode_call_arith_named env mem sp 2 name 1))
           (if (= opcode 95)
               (seq (ptr-write-u8 name 0 42)
-                   (wf_bytecode_call_named env mem sp 2 name 1))
+                   (wf_bytecode_call_arith_named env mem sp 2 name 1))
         (if (= opcode 152)
             (seq (ptr-write-u8 name 0 115) (ptr-write-u8 name 1 116)
                  (ptr-write-u8 name 2 114) (ptr-write-u8 name 3 105)
@@ -16239,6 +16306,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; Run a still-boxed opcode body (`wf_bytecode_boxed_op') on the K
       ;; operands ending at SP-1, staged as views in K contiguous roots; its
       ;; value, in staged slot 0, replaces word SP-K.  0, or 1 signalled.
+      ;; The arithmetic family does this for numbers only; any other operand
+      ;; goes through the function cell (`wf_bytecode_call_arith_cell').
+      (if (if (= (wf_bytecode_arith_cell_op opcode) 1)
+              (wf_bytecode_w_nonnumber_p mem sp k)
+            0)
+          (wf_bytecode_call_arith_cell env mem sp opcode)
       (let* ((mark (nl_root_mark env))
              (st (wf_bytecode_w_stage env mem (- sp k) k)))
         (if (= st 0)
@@ -16246,7 +16319,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (let* ((rc (wf_bytecode_boxed_op env st k opcode)))
             (seq (if (= rc 0) (wf_bytecode_w_store mem (- sp k) st) 0)
                  (nl_root_release env mark)
-                 rc)))))
+                 rc))))))
     (defun wf_bytecode_boxed_op (env slots sp base)
       ;; Opcode bodies not yet on words, over a staged frame of SP views.
       ;; The value goes to slot 0.  0, or 1 with a signal stashed.
@@ -16998,7 +17071,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (setq bad-op raw) (setq done 2))
                         (let* ((name (alloc-bytes 8 8)))
                           (seq (ptr-write-u8 name 0 47)
-                               (if (= (wf_bytecode_call_named env mem sp 2 name 1) 0)
+                               (if (= (wf_bytecode_call_arith_named env mem sp 2 name 1) 0)
                                    (setq sp (- sp 1))
                                  (setq done 4))))))
                      ((= base 91)
@@ -17006,7 +17079,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           (seq (setq bad-op raw) (setq done 2))
                         (let* ((name (alloc-bytes 8 8)))
                           (seq (ptr-write-u8 name 0 45)
-                               (if (= (wf_bytecode_call_named env mem sp 1 name 1) 0)
+                               (if (= (wf_bytecode_call_arith_named env mem sp 1 name 1) 0)
                                    0 (setq done 4))))))
                      ((or (= base 155) (= base 157) (= base 93) (= base 94)
                           (= base 166) (= base 78) (= base 56)

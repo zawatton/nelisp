@@ -18,7 +18,15 @@
 # is pending by design).  The bridge lane's tip, 6ccf1362a, is pinned in
 # batch-f-check.sh (BRIDGE_REV).
 #
-# 2026-10-22, later: 47 criteria.  The library owner's unfiltered base image
+# 2026-10-22, later still: 49 criteria.  The library owner's confirmation on the
+# f2 binaries found a second blocker (SKK conversion, S4.1 of the census): the
+# bytecode VM rejects a marker in `<', `=', `max' and the rest of the arithmetic
+# family with (wrong-type-argument number-or-marker-p #<marker ...>), which the
+# interpreter accepts.  S2.16 is the GNU-golden fixture for the fix (the
+# end-to-end fixture criterion is now S2.17), S4.12 the paired timing of the
+# fast paths (the end-to-end pipeline criterion is now S4.13).
+#
+# Before that: 47 criteria.  The library owner's unfiltered base image
 # build found 12 + 3 "Optimization failure" warnings on stderr: the build stages
 # keymap-set and define-keymap out of GNU keymap.el by name, with their compiler
 # macros, but not the helpers those call.  S2.14 and S2.15 are the GNU-golden
@@ -37,8 +45,8 @@ cmd: bash tools/ai/batch-f-check.sh merged casefold
 cmd: bash tools/ai/batch-f-check.sh merged codegen
 ** S1.4 The buffer-bridge lane (eval/f-buffer-bridge-20261022) is merged
 cmd: bash tools/ai/batch-f-check.sh merged bridge
-** S1.5 (provide 'nelisp-elc-reader) is restored, and after it only the keymap compiler-macro fix and this ledger change
-#+NOTE: The provide was the last source commit when the batch was first assembled.  The keymap fix (S2.14, S2.15) was asked for afterwards and cannot go before it without rewriting commits the other lanes already branched from, so the check now allows exactly that fix: the one extraction list in scripts/nelisp-standalone-build.el, its fixtures, the guard script and its test.  Any other source change after the provide commit still fails.
+** S1.5 (provide 'nelisp-elc-reader) is restored, and after it only the keymap and marker-arithmetic fixes and this ledger change
+#+NOTE: The provide was the last source commit when the batch was first assembled.  Two fixes were asked for afterwards, neither can go before it without rewriting commits the other lanes already branched from, and the check now allows exactly them: the keymap extraction list (S2.14, S2.15, S4.11) and the VM's arithmetic on markers (S2.16, S4.12), each with its fixtures, tests and the scripts/nelisp-standalone-build.el edit, plus the guard script.  The prelude that holds the provide must not change at all after the provide commit, and any other source change fails.
 cmd: bash tools/ai/batch-f-check.sh merged provide
 ** S1.6 621386274's Unicode integrity test passes on the merged generator payload
 #+TIMEOUT: 300
@@ -98,7 +106,11 @@ cmd: bash tools/ai/batch-f-check.sh fixture batch-f-keymap-cmacro C.UTF-8
 #+NOTE: keymap--compile-check and define-keymap--compile warn through byte-compile-warn and byte-compile-warn-x, which only bytecomp.el defines; in `emacs -Q --batch` both are void (neither is autoloaded), so outside byte compilation GNU's eager expansion of (keymap-set m "C-cc a" #'ignore) prints "Warning: Optimization failure for keymap-set: Handler: keymap-set--anon-cmacro" and "(void-function byte-compile-warn)" on stderr, once per bad form.  Staging the GNU helpers verbatim and leaving the two warn functions void reproduces that text exactly: five warnings (string key, vector key, define-keymap with a bad key, a bad keyword, an uneven argument list) and none for the valid forms; the 577-byte stderr pin is GNU's.  Defining the warn functions would diverge from GNU.  Known difference, not fixed here: GNU's batch `message' puts a separator newline on stderr after any stdout output (noninteractive_need_newline), which the runtime's `message' does not, so the fixture prints to stdout only at its end.
 #+TIMEOUT: 300
 cmd: bash tools/ai/batch-f-check.sh fixture batch-f-keymap-cmacro-invalid C.UTF-8
-** S2.16 End to end: every fixture above passes on both linkages in one run
+** S2.16 GNU-compiled arithmetic and comparison opcodes on markers: GNU 31.1's output is the pin on both linkages, the VM equals the interpreter, and a library's redefined function cells are honoured
+#+NOTE: The library image's markers are the runtime's own (type nelisp-marker, `copy-marker' from the prelude; the library redefines none of `<' `=' `+' and the rest, which stay runtime subrs, and `max'/`min' are prelude closures).  The interpreter's builtins coerce a marker (wf_numeric_has_marker) but the bytecode VM's slow path for Beqlsign, Bgtr, Blss, Bleq, Bgeq, Bdiff, Bmax, Bmin and Brem ran the number-only chains, so GNU-compiled code signalled (wrong-type-argument number-or-marker-p #<marker at 2 in *SKK GUI*>) where the interpreter answered; Bsub1, Badd1, Bplus, Bmult, Bquo and Bnegate already went by name to the marker-aware builtin.  GNU's bytecode.c coerces in every one of these through CHECK_NUMBER_COERCE_MARKER.  The fix keeps the fixnum fast path and the number-only chains for fixnum, float and bignum operands; an operand that is not a number goes through the opcode's symbol, i.e. its function cell, like the interpreter's call: the runtime's own cell coerces and signals GNU's wrong-type error, and a library that redefined the cell is honoured (as the buffer bridge does for set-buffer).  The remaining interpreter gap was `%', which did not coerce markers (GNU's Frem does): it now normalises them like `/'.  test/standalone-bytecode-marker-arith-check.el calls one GNU-compiled function per opcode (test/fixtures/bytecode-marker-arith.eld) on 471 combinations of fixnums, floats, markers, a detached marker and non-number values; GNU 31.1 prints the same text (the .expected) and each outcome equals the interpreter's.  test/standalone-bytecode-library-arith-check.el redefines each arithmetic function's cell the way a library would ([bla N] objects) and checks 363 cases outcome and cell-call sequence against the interpreter.  The build before the fix (f2) fails both, 176 and 283 cases.  Known difference, not fixed here: `mod' does not coerce markers either.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh marker-arith
+** S2.17 End to end: every fixture above passes on both linkages in one run
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh all-fixtures
 
@@ -145,7 +157,11 @@ cmd: bash tools/ai/batch-f-check.sh log timing
 #+NOTE: The build stages GNU definitions by name, so a declaration comes along without the helpers GNU's file defines next to it, and nothing notices until eager expansion (a compiler macro) or setf (a gv-expander) consults the property.  scripts/nelisp-staged-handler-guard.el reads the build script and the pinned GNU sources of a tree, derives the declarations of every staged definition (144 names in 14 GNU files, 142 before the keymap fix; 32 declarations: the 28 c[ad]+r functions, zerop, eval-after-load, keymap-set, define-keymap), collects the functions each handler calls directly (the symbol itself when the handler is a name; the calls and macros of its macroexpanded body otherwise) and asks the binary which of them are void.  A void callee that stock `emacs -Q --batch' lacks as well is allowed and reported with GNU's answer; any other fails.  Scope is the direct callees only: keymap--compile-check's own callee byte-compile-warn is void in GNU 31.1 batch too and is not followed.  Nine callees are checked today and none is missing.  The check also runs the guard from the tree of the build before the fix against that build's binary (target/integ/old-d29b53025), which fails on keymap-set and define-keymap, and the guard's ERT tests (test/nelisp-staged-handler-guard-test.el).  It is a check script, not part of the build script, so the build script stays free of it for the lanes that edit that file; `emacs --batch -Q -L src -L scripts -l nelisp-staged-handler-guard -f nelisp-staged-handler-guard-batch -- ROOT BINARY [REPORT]` runs it by hand.
 #+TIMEOUT: 300
 cmd: bash tools/ai/batch-f-check.sh guard
-** S4.12 End to end: every pipeline result is newer than the binaries and passes, the guard included
+** S4.12 Paired timing of the VM's arithmetic fast paths against the build before the marker fix (f2) on CPU 11: a fixnum compare-and-sum loop, a loop through the opcodes without a fixnum fast path, and a float loop are each at or below 1.03
+#+NOTE: The fixnum fast path of Beqlsign, Bgtr, Blss, Bleq, Bgeq, Bdiff, Bplus, Badd1 and Bsub1 is untouched.  The test for a non-number operand runs only after it has failed, so the cost lands on the paths that already staged boxed operands: float compares and sums, and max, min and % on fixnums.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh log timing-marker
+** S4.13 End to end: every pipeline result is newer than the binaries and passes, the guard included
 cmd: bash tools/ai/batch-f-check.sh pipeline
 
 * S5 Bytecode VM garbage-collection poll (GNU bytecode.c maybe_gc)
