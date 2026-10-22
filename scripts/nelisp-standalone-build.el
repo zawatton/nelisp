@@ -20241,6 +20241,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (last-owner 0) (last-table 0) (last-table-data 0)
            (last-buckets 0) (last-count 0) (last-entry-data 0)
            (last-slots 0) (last-name -1) (last-entry 0) (last-value 0)
+           (e-fp2 0) (e-stk 0) (e-cw 0) (e-kw 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
            (ref 0) (cmp 0) (branch 0) (failed 0)
            (back (- 255 (sar (ptr-read-u64 cell 0) 2))))
@@ -20543,19 +20544,161 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                         (seq (setq last-name -1) 0)
                                                       0))
                                             (fi (- sp (+ argc 1)))
-                                            (isp (wf_bytecode_call_enter
-                                                  env cell mem fi argc
-                                                  (heap-read-u64 (+ mem (* fi 8)) 0)
-                                                  (+ pc 1))))
+                                            (fw (ptr-read-u64 (+ mem (* fi 8)) 0))
+                                            (pcret (+ pc 1))
+                                            (isp (if (if (< fw 4096) 1
+                                                        (if (= (logand fw 1) 1) 1
+                                                          (if (/= (logand (heap-read-u64 env 112) 4) 0) 1
+                                                            (if (= (logand fw 7) 0) 0 (/= (logand fw 7) 6)))))
+                                                      -2
+                                                    (let* ((flow0 (logand fw 7))
+                                                           (tag (if (= flow0 0) (heap-read-u8 fw 0)
+                                                                  (logand (heap-read-u8 (- fw 6) 0) 63)))
+                                                           (func (if (= tag 17) fw
+                                                                   (if (= tag 4)
+                                                                       (if (= flow0 0)
+                                                                           (let ((cl (nelisp_env_lookup_function_w
+                                                                                      (+ env 0) (+ env 64) fw 0)))
+                                                                             (if (= cl 2) 0 cl))
+                                                                         ;; An interned symbol's object is its own entry
+                                                                         ;; (Doc 226 D9): GNU reads the symbol's function
+                                                                         ;; slot (bytecode.c:803 XBARE_SYMBOL (call_fun)->
+                                                                         ;; u.s.function), here slot 1 of the object.
+                                                                         (let ((fnw (nl_record_slot_word fw 1)))
+                                                                           (if (= (wf_bytecode_w_unbound_p env fnw) 1) 0 fnw)))
+                                                                     0))))
+                                                      ;; A closure named directly is FW itself, already known to be one; only a
+                                                      ;; function found through a symbol is checked again.
+                                                      (if (if (= tag 17) 0
+                                                            (if (< func 4096) 1
+                                                              (if (= (logand func 1) 1) 1
+                                                                (if (= (logand func 7) 0) 0 (/= (logand func 7) 6)))))
+                                                          -2
+                                                        (let* ((lowf (if (= tag 17) flow0 (logand func 7)))
+                                                               (ftag (if (= tag 17) 17
+                                                                       (if (= lowf 0) (ptr-read-u8 func 0)
+                                                                         (logand (ptr-read-u8 (- func 6) 0) 63))))
+                                                               (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
+                                                          (if (if (/= ftag 17) 1
+                                                                (< (sar (ptr-read-u64 p 0) 8) 4))
+                                                              -2
+                                                            (let* ((tw (ptr-read-u64 p 16))
+                                                                   (sw (ptr-read-u64 p 40)))
+                                                              (if (if (/= (logand tw 3) 1) 1 (/= (logand sw 3) 1))
+                                                                  -2
+                                                                (let* ((template (sar tw 2))
+                                                                       (stk (sar sw 2))
+                                                                       (maxargs (sar template 8))
+                                                                       (rest (logand (sar template 7) 1))
+                                                                       (slots (+ maxargs rest)))
+                                                                  (if (if (/= (logand template -32768) 0) 1
+                                                                        (if (< stk slots) 1 (> stk 131063)))
+                                                                      -2
+                                                                    (let* ((rec (heap-read-u64 (+ env 96) 0)))
+                                                                      (if (if (< rec 100) 0
+                                                                            (>= rec (nl_eval_depth_limit env rec)))
+                                                                          (seq (wf_bytecode_signal_nesting) -1)
+                                                                        (let* ((state0 (heap-read-u64 env 176))
+                                                         (state (if (= state0 0) (nl_n4_state env) state0))
+                                                         (n4d (heap-read-u64 state 0))
+                                                         (n4 (if (>= n4d 32768) 0 1))
+                                                         (nslots (+ stk 7))
+                                                         (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+                                                         (next (+ top (+ 32 (logand (+ (* nslots 8) 31) -32))))
+                                                         (fp2 0))
+                                                    (seq
+                                                     ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
+                                                     ;; read lazily from the caller's words.
+                                                     (if (= n4 1)
+                                                         (let* ((frame (+ state (+ 64 (* n4d 160))))
+                                                                (fd (heap-read-u64 env 40))
+                                                                (serial (+ (heap-read-u64 state 8) 1)))
+                                                           (seq (ptr-write-u64 frame 0 fw)
+                                                                (ptr-write-u64 frame 8 3)
+                                                                (ptr-write-u64 frame 64 12)
+                                                                (ptr-write-u64 frame 72 fd)
+                                                                (ptr-write-u64 frame 96 (sar (ptr-read-u64 fd 24) 2))
+                                                                (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
+                                                                (ptr-write-u64 frame 112 1)
+                                                                (ptr-write-u64 frame 120 0)
+                                                                (ptr-write-u64 frame 144 1)
+                                                                (ptr-write-u64 frame 152
+                                                                               (+ (* (+ mem (* (+ fi 1) 8)) 256) argc))
+                                                                (ptr-write-u64 state 8 serial)
+                                                                (ptr-write-u64 frame 128 serial)
+                                                                (ptr-write-u64 state 0 (+ n4d 1))))
+                                                       0)
+                                                     (ptr-write-u64 (+ env 96) 0 (+ rec 1))
+                                                     ;; setup_frame's frame: the main thread's root stack takes it inline
+                                                     ;; (the same stores as `nl_root_frame'); anything else goes through it.
+                                                     ;; Every slot is a valid WORD before anything can allocate: the stack
+                                                     ;; and the result nil, then the footer.
+                                                     (if (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 1
+                                                           (if (= top 0) 1
+                                                             (> next (+ (data-addr nl_rootstack_region) 4194304))))
+                                                         (setq fp2 (nl_root_frame env nslots))
+                                                       (seq
+                                                        (ptr-write-u64 top 0 1464226381)
+                                                        (ptr-write-u64 top 8 nslots)
+                                                        (ptr-write-u64 top 16 0)
+                                                        (ptr-write-u64 top 24 0)
+                                                        (let* ((slot (+ top 32)) (end (+ top (+ 32 (* (+ stk 1) 8)))))
+                                                          (while (< slot end)
+                                                            (seq (ptr-write-u64 slot 0 3)
+                                                                 (setq slot (+ slot 8)))))
+                                                        (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+                                                        (setq fp2 (+ top 32))))
+                                                     (if (= fp2 0)
+                                                         (seq (wf_bytecode_signal_overflow)
+                                                              (ptr-write-u64 (+ env 96) 0 rec)
+                                                              (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
+                                                              -1)
+                                                       (let* ((cfoot (+ fp2 (* (+ stk 1) 8)))
+                                                              (fp p))
+                                                         (seq
+                                                          (ptr-write-u64 cfoot 0 (+ (shl mem 2) 1))
+                                                          (ptr-write-u64 cfoot 8 (+ (shl (+ (* fi 2) n4) 2) 1))
+                                                          (ptr-write-u64 cfoot 16 (+ (shl pcret 2) 1))
+                                                          (setq e-fp2 fp2) (setq e-stk stk)
+                                                          (setq e-cw (ptr-read-u64 fp 24)) (setq e-kw (ptr-read-u64 fp 32))
+                                                          (ptr-write-u64 cfoot 24 e-cw)
+                                                          (ptr-write-u64 cfoot 32 e-kw)
+                                                          (ptr-write-u64 cfoot 40 3)
+                                                          (if (if (< argc (logand template 127)) 1
+                                                                (if (= rest 0) (> argc maxargs) 0))
+                                                              (seq (bf_wrong_number_of_args func argc)
+                                                                   (nl_root_release env (- fp2 32))
+                                                                   (ptr-write-u64 (+ env 96) 0 rec)
+                                                                   (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
+                                                                   -1)
+                                                            (let* ((pushed (if (< maxargs argc) maxargs argc))
+                                                                   (src (+ mem (* (+ fi 1) 8)))
+                                                                   (i 0))
+                                                              (seq
+                                                               (while (< i pushed)
+                                                                 (seq (ptr-write-u64 (+ fp2 (* i 8)) 0 (heap-read-u64 (+ src (* i 8)) 0))
+                                                                      (setq i (+ i 1))))
+                                                               ;; More arguments than named slots: the &rest list, built in
+                                                               ;; its slot so every partial list stays rooted.
+                                                               (if (> argc maxargs)
+                                                                   (let* ((k (- argc 1)) (dst (+ fp2 (* maxargs 8))))
+                                                                     (while (>= k maxargs)
+                                                                       (seq (ptr-write-u64
+                                                                             dst 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ src (* k 8)) 0)
+                                                                                                        (heap-read-u64 dst 0)))
+                                                                            (setq k (- k 1)))))
+                                                                 0)
+                                                               (ptr-write-u64 cell 8 (+ (shl fp2 2) 1))
+                                                               (+ maxargs rest (if (> argc maxargs) 65536 0)))))))))))))))))))))))
                                        (if (>= isp 0)
                                            (seq
                                             (ptr-write-u64 cell 16 7)
                                             (seq
-           (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
-                  (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
+           (let* ((fp2 e-fp2)
+                  (d2 e-stk)
                   (f2 (+ fp2 (* (+ d2 1) 8)))
-                  (cw (ptr-read-u64 f2 24))
-                  (kw (ptr-read-u64 f2 32))
+                  (cw e-cw)
+                  (kw e-kw)
                   (vp (if (= (logand kw 7) 0)
                           (ptr-read-u64 kw 8)
                         (- kw (logand kw 6)))))
