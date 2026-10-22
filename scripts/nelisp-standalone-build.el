@@ -30120,6 +30120,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--arena-dump-image-stream nelisp--arena-dump-image-to-file
       nelisp--arena-load-image-from-file nelisp--arena-load-split-verify
       nelisp--ascii-downcase nelisp--byte-code-wrap-test nelisp--cell-value
+      nelisp--char-table-slots
       nelisp--clear-string-bytes nelisp--declare-local-special nelisp--eval-source-string
       nelisp--intern-lookup nelisp--json-encode nelisp--native-runtime-contract-word
       nelisp--native-runtime-symbol-addr nelisp--native-subr-arity
@@ -30161,7 +30162,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot
       char-table-range cons elt eq equal make-bool-vector make-vector map-char-table
       mapcar maphash member memq mod nelisp--arena-value-survival nelisp--assoc-raw
-      nelisp--bind-local nelisp--equal-leaf nelisp--float-word-half nelisp--format-simple
+      nelisp--bind-local nelisp--char-table-set-slots nelisp--equal-leaf nelisp--float-word-half nelisp--format-simple
       nelisp--fx-run nelisp--native-pin-eq-slots nelisp--plist-get-eq
       nelisp--plist-member-eq nelisp--raw-aref nelisp--sha256-bytes
       nelisp--syscall-path nelisp--syscall-pivot-root nelisp--syscall-stat-field
