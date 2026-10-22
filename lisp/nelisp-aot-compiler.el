@@ -15655,16 +15655,20 @@ Nil preserves the original two loads and exact E instruction selection.")
 (defvar nelisp-aot-compiler--x86-trace-unit-names nil
   "Printed defun names in this emission unit, for private label hygiene.")
 
+(defun nelisp-aot-compiler--x86-call-free-region-emission-plan (node)
+  "Return the original value-position region plan for NODE."
+  (and nelisp-aot-compiler--x86-call-free-regions
+       nelisp-aot-compiler--x86-call-containing-defun-p
+       (eq nelisp-aot-compiler--arch 'x86_64)
+       (not nelisp-aot-compiler--checked-arith)
+       (not (nelisp-aot-compiler--lisp-values-p))
+       (memq (nelisp-aot-compiler--ir-kind node)
+             '(if cond logic value-seq let-rt let-rt-n))
+       (nelisp-aot-compiler--x86-call-free-region-plan node)))
+
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
-  (let ((plan (and nelisp-aot-compiler--x86-call-free-regions
-                   nelisp-aot-compiler--x86-call-containing-defun-p
-                   (eq nelisp-aot-compiler--arch 'x86_64)
-                   (not nelisp-aot-compiler--checked-arith)
-                   (not (nelisp-aot-compiler--lisp-values-p))
-                   (memq (nelisp-aot-compiler--ir-kind node)
-                         '(if cond logic value-seq let-rt let-rt-n))
-                   (nelisp-aot-compiler--x86-call-free-region-plan node))))
+  (let ((plan (nelisp-aot-compiler--x86-call-free-region-emission-plan node)))
     (if plan
         (nelisp-aot-compiler--emit-promoted-loop-x86
          node buf emit plan
@@ -23385,6 +23389,46 @@ its own region; a direct edge must never skip that region's cleanup."
                 nelisp-aot-compiler--x86-call-containing-defun-p
                 (nelisp-aot-compiler--x86-call-free-region-plan node)))))
 
+(defvar nelisp-aot-compiler--x86-cleanup-branches t
+  "Keep proven zero-test outcomes through an original zero-save region.")
+
+(defun nelisp-aot-compiler--x86-cleanup-branch-plan (node)
+  "Return NODE's original plan when both ordinary cleanup edges are safe.
+GNU's conditional successors carry their own stack context.  Initially
+admit no private saves or special owner state: each edge emits only the
+original MOV flushes, after body-local aliases have unwound."
+  (when (and nelisp-aot-compiler--x86-cleanup-branches
+             nelisp-aot-compiler--x86-zero-branch-context
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (null nelisp-aot-compiler--promoted-slots)
+             (not (nelisp-aot-compiler--x86-zero-branch-value-boundary-p node))
+             (not nelisp-aot-compiler--x86-tco-entry-state)
+             (not nelisp-aot-compiler--x86-leaf-entry-state)
+             (not nelisp-aot-compiler--x86-shrink-wrap-state)
+             (nelisp-aot-compiler--x86-zero-branch-gp-p node))
+    (let ((plan (nelisp-aot-compiler--x86-call-free-region-emission-plan node)))
+      (and plan
+           (cl-every (lambda (pair) (memq (cdr pair) '(rbx r8 r9))) (car plan))
+           plan))))
+
+(defun nelisp-aot-compiler--emit-cleanup-branch-x86 (node buf label truth plan)
+  "Emit NODE once, ending its original region on both condition edges."
+  (let ((taken (nelisp-aot-compiler--gensym "cj-cleanup-taken"))
+        (done (nelisp-aot-compiler--gensym "cj-cleanup-done")))
+    (nelisp-aot-compiler--emit-promoted-loop-x86
+     node buf
+     (lambda () (nelisp-aot-compiler--emit-cond-jump node buf taken truth))
+     plan (nelisp-aot-compiler--x86-region-private-let-slots node (car plan))
+     (lambda (cleanup)
+       ;; The body callback has returned.  No temporary let alias or map
+       ;; is active here; both runtime outcomes commit the owner frame.
+       (funcall cleanup)
+       (nelisp-asm-x86_64-jmp-rel32 buf done)
+       (nelisp-asm-x86_64-define-label buf taken)
+       (funcall cleanup)
+       (nelisp-asm-x86_64-jmp-rel32 buf label)
+       (nelisp-asm-x86_64-define-label buf done)))))
+
 (defun nelisp-aot-compiler--branch-structured-result-p (node)
   "Non-nil when NODE exposes a result worth lowering as branches.
 Two ordinary raw-value arms share one zero test more cheaply in value
@@ -23477,11 +23521,14 @@ do, so only the materialized 0/1 disappears."
            (or (nelisp-aot-compiler--x86-zero-branch-value-boundary-p test)
                (and (memq kind '(if logic value-seq let-rt))
                     (not (nelisp-aot-compiler--x86-zero-branch-let-safe-p test)))))
-      (nelisp-aot-compiler--emit-value test buf)
-      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-      (if jump-if-true
-          (nelisp-asm-x86_64-jnz-rel32 buf label)
-        (nelisp-asm-x86_64-jz-rel32 buf label)))
+      (let ((plan (nelisp-aot-compiler--x86-cleanup-branch-plan test)))
+        (if plan
+            (nelisp-aot-compiler--emit-cleanup-branch-x86 test buf label jump-if-true plan)
+          (nelisp-aot-compiler--emit-value test buf)
+          (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+          (if jump-if-true
+              (nelisp-asm-x86_64-jnz-rel32 buf label)
+            (nelisp-asm-x86_64-jz-rel32 buf label)))))
      (subject
       (let ((nelisp-aot-compiler--x86-zero-branch-context t))
         (nelisp-aot-compiler--emit-cond-jump
@@ -24743,7 +24790,7 @@ matches printed names, so avoid the complete unit namespace as well."
         (nelisp-asm-x86_64-jmp-rel32 buf entry)))
     (nelisp-asm-x86_64-define-label buf done)))
 
-(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop &optional plan private-slots)
+(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop &optional plan private-slots finish)
   "Call EMIT-LOOP for while NODE with its variables in registers when possible.
 Saves the r12-r15 registers the plan uses, loads every promoted slot,
 binds `--promoted-slots' around EMIT-LOOP, then stores the assigned
@@ -24751,7 +24798,9 @@ slots back and restores the saved registers.  Every path out of a
 promotable loop falls through its exit, so the stores run once.
 PRIVATE-SLOTS omit entry loads and exit flushes for proven region-local
 definitions, or for E write-through slots dead on every entry.  The
-latter still materialize every original frame assignment in place."
+latter still materialize every original frame assignment in place.
+FINISH, when provided, receives the original cleanup emitter after the
+body callback has returned and its lexical aliases have unwound."
   (let* ((state (and (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :loop))
                      nelisp-aot-compiler--x86-tco-entry-state))
          (plan (or plan (plist-get state :promotions)
@@ -24781,7 +24830,10 @@ latter still materialize every original frame assignment in place."
         (funcall emit-loop)
         (when (plist-get state :inline-exit)
           (nelisp-aot-compiler--emit-value (plist-get state :terminal) buf)))
-      (nelisp-aot-compiler--emit-promotion-cleanup-x86 pairs written saved buf private-slots state))))
+      (let ((cleanup (lambda ()
+                       (nelisp-aot-compiler--emit-promotion-cleanup-x86
+                        pairs written saved buf private-slots state))))
+        (if finish (funcall finish cleanup) (funcall cleanup))))))
 
 (defun nelisp-aot-compiler--emit-while (node buf)
   "Emit `while' loop; result = 0 (in rax) after loop exits.
