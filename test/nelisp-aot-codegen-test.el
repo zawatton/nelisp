@@ -174,6 +174,126 @@
     (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
       (should-not (nelisp-aot-compiler--x86-affine-address-plan good zero)))))
 
+(ert-deftest nelisp-aot-codegen/self-tco-incoming-cycle-and-full-word ()
+  "Incoming R8/R9 cycles and zero/deep loops preserve all 64 result bits."
+  (let ((nelisp-aot-compiler-tco-enabled t) (forwards 0) (cycles 0)
+        (emit (symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)
+               (lambda (moves buf)
+                 (setq forwards (1+ forwards))
+                 (when (and (member '(r8 . r9) moves) (member '(r9 . r8) moves))
+                   (setq cycles (1+ cycles)))
+                 (funcall emit moves buf))))
+      (dolist (n '(-1 0 1 2 17 10000))
+        (dolist (pair '((7 11) (-9223372036854775808 9223372036854775807)))
+          (let ((x (car pair)) (y (cadr pair)) (j n))
+            (while (> j 0) (setq x (* x 2) y (* y 3) j (1- j)))
+            (let ((expected (logand (+ 3 4 5 (* x 5) (* y 7)) (1- (ash 1 64)))))
+              (when (>= expected (ash 1 63)) (setq expected (- expected (ash 1 64))))
+              (should
+               (= 0 (nelisp-aot-codegen-test--run
+                     `(seq
+                       (defun hop (n a b c x y)
+                         (if (and (> n 0) (> (+ n n) 0))
+                             (hop (- n 1) a b c (+ x x) (+ y (+ y y)))
+                           (+ a (+ b (+ c (+ (* x 5) (* y 7)))))))
+                       (exit (if (= (hop ,n 3 4 5 ,(car pair) ,(cadr pair)) ,expected) 0 1))))))))))
+    (should (> forwards 0))
+    (should (> cycles 0)))))
+
+(ert-deftest nelisp-aot-codegen/self-tco-mutation-and-call-exit ()
+  "Mutation order and unchanged loop inputs survive the flushed call exit."
+  (let ((nelisp-aot-compiler-tco-enabled t) (i 37) (x 11) (y 19) (call-exits 0)
+        (plan (symbol-function 'nelisp-aot-compiler--x86-self-tco-entry-plan))
+        (call (symbol-function 'nelisp-aot-compiler--emit-call)))
+    (while (> i 0)
+      (let* ((next-i (1- i)) (next-x (+ x next-i)) (next-y (+ y x)))
+        (setq i next-i x next-x y next-y)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-self-tco-entry-plan)
+               (lambda (ir)
+                 (let ((result (funcall plan ir)))
+                   (when (and result (not (plist-get result :inline-exit)))
+                     (setq call-exits (1+ call-exits))) result)))
+              ((symbol-function 'nelisp-aot-compiler--emit-call)
+               (lambda (node buf)
+                 (should-not nelisp-aot-compiler--promoted-slots)
+                 (funcall call node buf))))
+      (should
+       (= 0 (nelisp-aot-codegen-test--run
+             `(seq
+               (defun finish (h k n) (+ h (+ (* k 11) (* n 13))))
+               (defun hop (n h k)
+                 (if (> n 0) (hop (- n 1) (+ h k) k) (finish h k n)))
+               (defun mutate (n x y)
+                 (if (> n 0) (mutate (setq n (- n 1)) (+ x n) (+ y x))
+                   (+ x (* y 7))))
+               (exit (if (= (hop 37 11 17) ,(+ 11 (* 37 17) (* 17 11)))
+                         (if (= (mutate 37 11 19) ,(+ x (* y 7))) 0 2) 1)))))))
+    (should (> call-exits 0))))
+
+(ert-deftest nelisp-aot-codegen/self-tco-provenance-and-fallback ()
+  "Plain source while, allocating/calling loops and protected frames retain lowering."
+  (let* ((nelisp-aot-compiler-tco-enabled t)
+         (nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
+         (nelisp-aot-compiler--checked-arith nil)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (nelisp-aot-compiler--x86-loop-regs '(rbx r8 r9 r12 r13 r14 r15))
+         (plain (nelisp-aot-compiler--parse
+                 '(defun plain (n h) (let ((n n) (h h))
+                                      (seq (while (> n 0) (setq h (+ h n)) (setq n (- n 1))) h)))))
+         (generated (nelisp-aot-compiler--parse
+                     '(defun looped (n h) (if (> n 0) (looped (- n 1) (+ h n)) h)))))
+    (should-not (nelisp-aot-compiler--ir-get plain :self-tco-raw))
+    (should-not (nelisp-aot-compiler--x86-self-tco-entry-plan plain))
+    (should (nelisp-aot-compiler--ir-get generated :self-tco-raw))
+    (should (nelisp-aot-compiler--x86-self-tco-entry-plan generated))
+    (dolist (field '((:variadic . t) (:gc-root-slots . (0))
+                    (:internal-entry . t) (:param-class . f64)
+                    (:param-regs . (a b c d e f g))))
+      (should-not (nelisp-aot-compiler--x86-self-tco-entry-plan
+                   (nelisp-aot-compiler--ir-with generated (car field) (cdr field)))))
+    (let ((nelisp-aot-compiler--checked-arith t))
+      (should-not (nelisp-aot-compiler--x86-self-tco-entry-plan generated)))
+    (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
+      (should-not (nelisp-aot-compiler--x86-self-tco-entry-plan generated)))
+    (let ((plans 0) (plan (symbol-function 'nelisp-aot-compiler--x86-self-tco-entry-plan)))
+      (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-self-tco-entry-plan)
+                 (lambda (ir) (let ((result (funcall plan ir)))
+                                (when result (setq plans (1+ plans))) result))))
+        (should (= 122 (nelisp-aot-codegen-test--run
+                        '(seq (defun helper (x) (+ x 3))
+                              (defun hop (n h) (if (> n 0) (hop (- n 1) (helper h)) h))
+                              (exit (hop 37 11)))))))
+      (should (zerop plans)))))
+
+(ert-deftest nelisp-aot-codegen/self-tco-native-callee-saves ()
+  "Entry forwarding and inline exit restore RBX and R12-R15 before returning."
+  (skip-unless (and (executable-find "gcc") (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let ((nelisp-aot-compiler-tco-enabled t)
+        (object (make-temp-file "nelisp-tco-entry-" nil ".o"))
+        (source (make-temp-file "nelisp-tco-entry-" nil ".c"))
+        (binary (make-temp-file "nelisp-tco-entry-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(defun hop (n a b c d e)
+              (if (> n 0) (hop (- n 1) (+ a b) (+ b c) (+ c d) (+ d e) (+ e a))
+                (+ a (+ (* b 3) (+ (* c 5) (+ (* d 7) (* e 11))))))) object)
+          (with-temp-file source
+            (insert "extern long hop(long,long,long,long,long,long);\n"
+                    "int main(void) {\n"
+                    " register long b __asm__(\"rbx\")=101, c __asm__(\"r12\")=102,\n"
+                    " d __asm__(\"r13\")=103, e __asm__(\"r14\")=104, f __asm__(\"r15\")=105;\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f));\n"
+                    " long value=hop(2,1,2,3,4,5);\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f));\n"
+                    " return value!=328 || b!=101 || c!=102 || d!=103 || e!=104 || f!=105; }\n"))
+          (should (= 0 (call-process "gcc" nil nil nil "-O2" source object "-o" binary)))
+          (should (= 0 (call-process binary nil nil nil))))
+      (dolist (path (list object source binary)) (delete-file path)))))
+
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/conditions
   "and/or chains in if, while and cond, rotated loops with zero trips."
   (seq
