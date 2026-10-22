@@ -15642,6 +15642,9 @@ Shared IR, roots and ambiguous slot ownership reject this proof."
          (nelisp-aot-compiler--x86-region-private-let-slots node (car plan)))
       (funcall emit))))
 
+(defvar nelisp-aot-compiler--x86-interval-leaf-p nil
+  "Non-nil while emitting a complete immutable interval leaf map.")
+
 (defun nelisp-aot-compiler--x86-copy-let-source-register (node)
   "Return a stable promoted source register for readonly lexical let NODE.
 Keep virtual slots through CG3 selection: early slot merging changes its
@@ -15654,7 +15657,8 @@ register.  GNU comp.el:1932-1949 likewise traces a copy's original mvar."
                       (nelisp-aot-compiler--ir-get value :slot)))
          (reg (and (integerp source)
                    (cdr (assq source nelisp-aot-compiler--promoted-slots)))))
-    (when (and reg (eq nelisp-aot-compiler--arch 'x86_64)
+    (when (and (not nelisp-aot-compiler--x86-interval-leaf-p)
+               reg (eq nelisp-aot-compiler--arch 'x86_64)
                (eq nelisp-aot-compiler--abi 'sysv)
                (not nelisp-aot-compiler--checked-arith)
                (nelisp-aot-compiler--ir-get node :copy-candidate)
@@ -15683,7 +15687,8 @@ GNU bytecode.c:1784-1793 reads indexed values directly; GCC eliminates
 pure SSA temporaries.  Preserve virtual slots and the original CG3 plan.
 Only address expressions are expanded, after validating the whole chain;
 no loads move across control flow or another load."
-  (when (and (eq (nelisp-aot-compiler--ir-kind node) 'let-rt)
+  (when (and (not nelisp-aot-compiler--x86-interval-leaf-p)
+             (eq (nelisp-aot-compiler--ir-kind node) 'let-rt)
              nelisp-aot-compiler--x86-call-containing-defun-p
              (eq nelisp-aot-compiler--arch 'x86_64)
              (eq nelisp-aot-compiler--abi 'sysv)
@@ -22716,9 +22721,126 @@ frame observers, calls, loops, roots, floats and implicit clobbers."
               (unless (assq slot pairs) (setq ok nil)))))
     ok))
 
+(defun nelisp-aot-compiler--x86-leaf-interval-plan (ir old)
+  "Complete an incomplete OLD leaf map using immutable GP intervals.
+GNU comp.el:2475-2505 gives definitions distinct SSA mvars; its dead
+assignment pass at3015-3052 uses whole-function definition/use sets.
+Our closed acyclic subset keeps each expression's inputs overlapping
+until its emission finishes.  Let definitions follow their initializer;
+parallel initializers and their result slots overlap as one group.
+No slot identity changes, no mutation, and no mapping crosses a call."
+  (let* ((body (nelisp-aot-compiler--ir-get ir :body))
+         (arity (length (nelisp-aot-compiler--ir-get ir :param-regs)))
+         (owners (nelisp-aot-compiler--x86-private-let-owners body arity))
+         (records (make-hash-table :test #'eql))
+         (accesses (make-hash-table :test #'eql))
+         (position 0) (valid (and owners (not (plist-get old :frameless))))
+         (pool nelisp-aot-compiler--x86-loop-regs))
+    (when (and nelisp-aot-compiler--native-emit-enabled (fboundp 'nl-jit-call-out-2))
+      (setq valid nil))
+    (unless (cl-every (lambda (r) (memq r '(rbx r8 r9 r12 r13 r14 r15))) pool)
+      (setq valid nil))
+    (dotimes (slot arity) (puthash slot (cons 0 0) records))
+    (cl-labels
+        ((metadata-p (n)
+           (and (not (nelisp-aot-compiler--ir-get n :root-p))
+                (cl-every (lambda (key) (memq (nelisp-aot-compiler--ir-get n key) '(nil gp)))
+                          '(:class :cls :ret-class))))
+         (expression (n)
+           ;; One position for ALL operands, regardless of the emitter's
+           ;; legal pure-operand reordering.  No definition is allowed here.
+           (nelisp-aot-compiler--walk-ir
+            n (lambda (x)
+                (unless (and (metadata-p x)
+                             (pcase (nelisp-aot-compiler--ir-kind x)
+                               ('imm (nelisp-aot-compiler--imm-int-p x))
+                               ('ref
+                                (let ((interval (gethash (nelisp-aot-compiler--ir-get x :slot) records)))
+                                  (when interval
+                                    (setcdr interval position)
+                                    (let ((slot (nelisp-aot-compiler--ir-get x :slot)))
+                                      (puthash slot (1+ (or (gethash slot accesses) 0)) accesses)))
+                                  interval))
+                               ('data-addr (and (nelisp-aot-compiler--ir-get x :name) (symbolp (nelisp-aot-compiler--ir-get x :name))))
+                               ('arith (memq (nelisp-aot-compiler--ir-get x :op) '(+ - * logand logior logxor)))
+                               ('shift (and (memq (nelisp-aot-compiler--ir-get x :op) '(shl shr sar))
+                                            (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get x :b))))
+                               ('cmp (assq (nelisp-aot-compiler--ir-get x :op) nelisp-aot-compiler--cmp-true-jcc))
+                               ('logic (memq (nelisp-aot-compiler--ir-get x :op) '(and or)))
+                               ((or 'if 'ptr-read-u8 'ptr-read-u16 'ptr-read-u32 'ptr-read-u64) t)
+                               (_ nil)))
+                  (setq valid nil)))))
+         (define (slot start)
+           (if (and (assq slot owners) (not (gethash slot records)))
+               (progn (puthash slot (cons start position) records)
+                      (puthash slot (1+ (or (gethash slot accesses) 0)) accesses))
+             (setq valid nil)))
+         (walk (n)
+           (unless (metadata-p n) (setq valid nil))
+           (pcase (nelisp-aot-compiler--ir-kind n)
+             ('let-rt
+              (cl-incf position) (expression (nelisp-aot-compiler--ir-get n :value-ir))
+              (cl-incf position) (define (nelisp-aot-compiler--ir-get n :slot) position)
+              (walk (nelisp-aot-compiler--ir-get n :body)))
+             ('let-rt-n
+              (let* ((bindings (nelisp-aot-compiler--ir-get n :bindings))
+                     (start (cl-incf position)))
+                ;; Existing emission stores each result before later
+                ;; initializers.  Reserve all result registers throughout
+                ;; this group, so no later input is overwritten early.
+                (dolist (b bindings) (expression (nth 2 b)))
+                (cl-incf position)
+                (dolist (b bindings) (define (nth 1 b) start))
+                (walk (nelisp-aot-compiler--ir-get n :body))))
+             ('if
+                 (cl-incf position) (expression (nelisp-aot-compiler--ir-get n :test))
+               (walk (nelisp-aot-compiler--ir-get n :then))
+               (walk (nelisp-aot-compiler--ir-get n :else)))
+             ('value-seq
+              (let ((forms (nelisp-aot-compiler--ir-get n :forms)))
+                (unless forms (setq valid nil)) (mapc #'walk forms)))
+             (_ (cl-incf position) (expression n)))))
+      (walk body))
+    (when valid
+      (let (ordered active pairs used)
+        (maphash (lambda (slot interval) (push (cons slot interval) ordered)) records)
+        (setq ordered (sort ordered (lambda (a b)
+                                      (if (= (cadr a) (cadr b)) (< (car a) (car b))
+                                        (< (cadr a) (cadr b))))))
+        (dolist (entry ordered)
+          (setq active (cl-remove-if (lambda (a) (< (cdr a) (cadr entry))) active))
+          (let ((reg (cl-find-if (lambda (r) (not (assq r active))) pool)))
+            (if (null reg) (setq valid nil)
+              (push (cons reg (cddr entry)) active)
+              (push (cons (car entry) reg) pairs) (cl-pushnew reg used))))
+        ;; Charge newly needed callee-save pairs against the frame traffic
+        ;; eliminated by completing the map.  Do not count frame teardown
+        ;; savings, or reinterpret the original plan's selected slots.
+        (let* ((old-pairs (plist-get old :promotions))
+               (callee-p (lambda (r) (memq r '(r12 r13 r14 r15))))
+               (saving (- (* 2 (cl-count-if callee-p (delete-dups (mapcar #'cdr old-pairs))))
+                          (* 2 (cl-count-if callee-p used)))))
+          (maphash (lambda (slot count)
+                     (unless (assq slot old-pairs) (cl-incf saving count))) accesses)
+          (dotimes (slot arity)
+            (unless (assq slot (plist-get old :forward)) (cl-incf saving)))
+          (when (and valid (>= saving 3))
+            (setq pairs (nreverse pairs))
+            (when (nelisp-aot-compiler--x86-leaf-frame-free-p body pairs)
+              (let ((new (copy-sequence old)))
+                (setq new (plist-put new :promotions pairs)
+                      new (plist-put new :forward
+                                     (cl-loop for slot below arity
+                                              for reg in '(rdi rsi rdx rcx r8 r9)
+                                              collect (list slot slot reg)))
+                      new (plist-put new :frameless t))
+                (setq new (plist-put new :interval-traffic-saving saving))
+                (plist-put new :interval-complete t)))))))))
+
 (defun nelisp-aot-compiler--x86-leaf-entry-plan (ir)
   "Return the existing placement plan for an acyclic call-free raw leaf."
-  (nelisp-aot-compiler--x86-body-entry-plan ir nil))
+  (let ((old (nelisp-aot-compiler--x86-body-entry-plan ir nil)))
+    (or (and old (nelisp-aot-compiler--x86-leaf-interval-plan ir old)) old)))
 
 (defun nelisp-aot-compiler--x86-body-entry-plan (ir terminal-barriers)
   "Place raw values in the CG3 plan until TERMINAL-BARRIERS.
@@ -23014,12 +23136,13 @@ its argument pushes balance and all exits return a GP value in RAX."
          (saved (cl-remove-if-not
                  (lambda (r) (or (memq r '(r12 r13 r14 r15))
                                  (and (plist-get state :frameless) (eq r 'rbx))))
-                 (mapcar #'cdr pairs))))
+                 (delete-dups (mapcar #'cdr pairs)))))
     (dolist (r saved) (nelisp-aot-compiler--emit-temp-push buf r))
     (nelisp-aot-compiler--emit-tco-parallel-moves-x86
      (mapcar (lambda (f) (cons (cdr (assq (car f) pairs)) (nth 2 f)))
              (plist-get state :forward)) buf)
-    (let ((nelisp-aot-compiler--promoted-slots pairs))
+    (let ((nelisp-aot-compiler--promoted-slots pairs)
+          (nelisp-aot-compiler--x86-interval-leaf-p (plist-get state :interval-complete)))
       (nelisp-aot-compiler--emit-value node buf))
     ;; Terminal barriers have already materialized and ended the map.
     ;; RAX retains the result while the callee-saved registers are popped.
