@@ -20070,14 +20070,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (if (= (logand func 7) 0) 0 (/= (logand func 7) 6))))
               -2
             (let* ((lowf (logand func 7))
-                   (ftag (if (= lowf 0) (heap-read-u8 func 0)
-                           (logand (heap-read-u8 (- func 6) 0) 63)))
-                   (p (if (= lowf 0) (heap-read-u64 func 8) (- func 6))))
+                   (ftag (if (= lowf 0) (ptr-read-u8 func 0)
+                           (logand (ptr-read-u8 (- func 6) 0) 63)))
+                   (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
               (if (if (/= ftag 17) 1
-                    (< (sar (heap-read-u64 p 0) 8) 4))
+                    (< (sar (ptr-read-u64 p 0) 8) 4))
                   -2
-                (let* ((tw (heap-read-u64 p 16))
-                       (sw (heap-read-u64 p 40)))
+                (let* ((tw (ptr-read-u64 p 16))
+                       (sw (ptr-read-u64 p 40)))
                   (if (if (/= (logand tw 3) 1) 1 (/= (logand sw 3) 1))
                       -2
                     (let* ((template (sar tw 2))
@@ -20117,7 +20117,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (ptr-write-u64 frame 56 0)
                     (ptr-write-u64 frame 64 12)
                     (ptr-write-u64 frame 72 fd)
-                    (ptr-write-u64 frame 96 (sar (heap-read-u64 fd 24) 2))
+                    (ptr-write-u64 frame 96 (sar (ptr-read-u64 fd 24) 2))
                     (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
                     (ptr-write-u64 frame 112 1)
                     (ptr-write-u64 frame 120 0)
@@ -20159,8 +20159,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (ptr-write-u64 foot 0 (+ (shl mem 2) 1))
               (ptr-write-u64 foot 8 (+ (shl (+ (* fi 2) n4) 2) 1))
               (ptr-write-u64 foot 16 (+ (shl pcret 2) 1))
-              (ptr-write-u64 foot 24 (heap-read-u64 fp 24))
-              (ptr-write-u64 foot 32 (heap-read-u64 fp 32))
+              (ptr-write-u64 foot 24 (ptr-read-u64 fp 24))
+              (ptr-write-u64 foot 32 (ptr-read-u64 fp 32))
               (ptr-write-u64 foot 40 3)
               (if (if (< argc (logand template 127)) 1
                     (if (= rest 0) (> argc maxargs) 0))
@@ -20204,7 +20204,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; of the unwinds cell, +24 the binding depth, raw words the collector
       ;; never reads; N4 state +16 threads it for the thread walkers.  Answers
       ;; the aux address, or 0 when the root stack cannot hold it.
-      (let* ((a (heap-read-u64 foot 40)))
+      (let* ((a (ptr-read-u64 foot 40)))
         (if (/= a 3) (sar a 2)
           (let* ((aux (nl_root_frame env 12)))
             (if (= aux 0) 0
@@ -20245,7 +20245,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (last-slots 0) (last-name -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
            (ref 0) (cmp 0) (branch 0) (failed 0)
-           (back (- 255 (sar (heap-read-u64 cell 0) 2))))
+           (back (- 255 (sar (ptr-read-u64 cell 0) 2))))
         (while (> go 0)
           ;; A backward branch counts in the branch (GNU bytecode.c:861-866); every other
           ;; way of leaving a pc (return, call, handler) is not a back edge.
@@ -20283,17 +20283,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (setq last-owner
                                              (heap-read-u64 env 8))
                                        (setq last-table
-                                             (heap-read-u64 last-owner 16))
+                                             (ptr-read-u64 last-owner 16))
                                        (if (/= (logand last-table 7) 6)
                                            (setq go 0)
                                          (seq
                                           (setq last-table-data
                                                 (logand last-table -8))
                                           (setq last-buckets
-                                                (heap-read-u64
+                                                (ptr-read-u64
                                                  last-table-data 24))
                                           (setq last-count
-                                                (heap-read-u64
+                                                (ptr-read-u64
                                                  last-table-data 32))
                                           (setq last-entry
                                                 (wf_bytecode_w_fast_entry
@@ -20320,18 +20320,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                       (/= (heap-read-u64 env 8) last-owner)
                                       (setq go 0)
                                     (if
-                                        (/= (heap-read-u64 last-owner 16)
+                                        (/= (ptr-read-u64 last-owner 16)
                                             last-table)
                                         (setq go 0)
                                       (if
                                           (/=
-                                           (heap-read-u64 last-table-data
+                                           (ptr-read-u64 last-table-data
                                                           24)
                                            last-buckets)
                                           (setq go 0)
                                         (if
                                             (/=
-                                             (heap-read-u64
+                                             (ptr-read-u64
                                               last-table-data 32)
                                              last-count)
                                             (setq go 0)
@@ -20346,7 +20346,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (> go 0)
 (seq
                                                (setq value
-                                                     (heap-read-u64
+                                                     (ptr-read-u64
                                                       last-entry-data 16))
                                                (if (= value 0) (setq go 0)
                                                  (if (= value last-value)
@@ -20374,7 +20374,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                         1)
                                                                        8)))
                                                                   (tail-value
-                                                                   (heap-read-u64
+                                                                   (ptr-read-u64
                                                                     tail-slot
                                                                     0))
                                                                   (tail-target
@@ -20474,7 +20474,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                          1)
                                                                         8)))
                                                                    (tail-value
-                                                                    (heap-read-u64
+                                                                    (ptr-read-u64
                                                                      tail-slot
                                                                      0))
                                                                    (tail-target
@@ -20546,10 +20546,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            ;; loop pushed.  The entry frame, a frame with handlers,
                            ;; unwinds or bindings, and a frame a debugger waits on
                            ;; return through the full loop.
-                           (if (if (= (heap-read-u64 foot 16) 3) 1
-                                 (if (/= (heap-read-u64 foot 40) 3) 1 (<= sp 0)))
+                           (if (if (= (ptr-read-u64 foot 16) 3) 1
+                                 (if (/= (ptr-read-u64 foot 40) 3) 1 (<= sp 0)))
                                (setq go 0)
-                             (let* ((packed (sar (heap-read-u64 foot 8) 2))
+                             (let* ((packed (sar (ptr-read-u64 foot 8) 2))
                                     (n4 (logand packed 1))
                                     (state (heap-read-u64 env 176)))
                                (if (if (= n4 1)
@@ -20560,8 +20560,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      0)
                                    (setq go 0)
                                  (let* ((fi (sar packed 1))
-                                        (caller (sar (heap-read-u64 foot 0) 2))
-                                        (pcr (sar (heap-read-u64 foot 16) 2)))
+                                        (caller (sar (ptr-read-u64 foot 0) 2))
+                                        (pcr (sar (ptr-read-u64 foot 16) 2)))
                                    (seq
                                     (ptr-write-u64 (+ caller (* fi 8)) 0
                                                    (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
@@ -20575,25 +20575,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                     (ptr-write-u64 cell 16 7)
                                     (ptr-write-u64 cell 8 (+ (shl caller 2) 1))
                                     (seq
-                       (let* ((fp2 (sar (heap-read-u64 cell 8) 2))
-                              (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
+                       (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
+                              (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
                               (f2 (+ fp2 (* (+ d2 1) 8)))
-                              (cw (heap-read-u64 f2 24))
-                              (kw (heap-read-u64 f2 32))
-                              (ct (heap-read-u8 cw 0))
+                              (cw (ptr-read-u64 f2 24))
+                              (kw (ptr-read-u64 f2 32))
                               (vp (if (= (logand kw 7) 0)
-                                      (heap-read-u64 kw 8)
+                                      (ptr-read-u64 kw 8)
                                     (- kw (logand kw 6)))))
                          (seq (setq mem fp2)
                               (setq depth d2)
                               (setq foot f2)
-                              (if (if (= ct 5) 1 (= ct 14))
-                                  (seq (setq data (heap-read-u64 cw 16))
-                                       (setq length (heap-read-u64 cw 24)))
-                                (seq (setq data (nl_bi_strptr cw))
-                                     (setq length (m5_strlen cw))))
+                              ;; The code string: a String WORD gives its data and length through
+                              ;; the string accessors (GNU's SDATA and SCHARS), anything else
+                              ;; keeps the view's fields.
+                              (if (= (logand cw 7) 4)
+                                  (seq (setq data (heap-sexp-data cw))
+                                       (setq length (heap-sexp-length cw)))
+                                (let* ((ct (heap-read-u8 cw 0)))
+                                  (if (if (= ct 5) 1 (= ct 14))
+                                      (seq (setq data (heap-read-u64 cw 16))
+                                           (setq length (heap-read-u64 cw 24)))
+                                    (seq (setq data (nl_bi_strptr cw))
+                                         (setq length (m5_strlen cw))))))
                               (setq constants (+ vp 8))
-                              (setq nconst (sar (heap-read-u64 vp 0) 8)))))
+                              (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
                                     (setq pc pcr)
                                     (setq sp (+ fi 1)))))))
                                                 (if (< raw 6)
@@ -20970,9 +20976,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (w (heap-read-u64 top 0))
                                   (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
                                          (if (= (logand w 7) 6)
-                                             (logand (heap-read-u8 (- w 6) 0) 63)
+                                             (logand (ptr-read-u8 (- w 6) 0) 63)
                                            (if (= (logand w 7) 2) 7
-                                             (heap-read-u8 w 0))))))
+                                             (if (= (logand w 7) 4) 5 (ptr-read-u8 w 0)))))))
                              (if (= tag 7)
                                  (seq (ptr-write-u64 top 0
                                                      (heap-read-u64
@@ -21002,25 +21008,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                        (seq
                                                         (ptr-write-u64 cell 16 7)
                                                         (seq
-                       (let* ((fp2 (sar (heap-read-u64 cell 8) 2))
-                              (d2 (- (heap-read-u64 (- fp2 24) 0) 7))
+                       (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
+                              (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
                               (f2 (+ fp2 (* (+ d2 1) 8)))
-                              (cw (heap-read-u64 f2 24))
-                              (kw (heap-read-u64 f2 32))
-                              (ct (heap-read-u8 cw 0))
+                              (cw (ptr-read-u64 f2 24))
+                              (kw (ptr-read-u64 f2 32))
                               (vp (if (= (logand kw 7) 0)
-                                      (heap-read-u64 kw 8)
+                                      (ptr-read-u64 kw 8)
                                     (- kw (logand kw 6)))))
                          (seq (setq mem fp2)
                               (setq depth d2)
                               (setq foot f2)
-                              (if (if (= ct 5) 1 (= ct 14))
-                                  (seq (setq data (heap-read-u64 cw 16))
-                                       (setq length (heap-read-u64 cw 24)))
-                                (seq (setq data (nl_bi_strptr cw))
-                                     (setq length (m5_strlen cw))))
+                              ;; The code string: a String WORD gives its data and length through
+                              ;; the string accessors (GNU's SDATA and SCHARS), anything else
+                              ;; keeps the view's fields.
+                              (if (= (logand cw 7) 4)
+                                  (seq (setq data (heap-sexp-data cw))
+                                       (setq length (heap-sexp-length cw)))
+                                (let* ((ct (heap-read-u8 cw 0)))
+                                  (if (if (= ct 5) 1 (= ct 14))
+                                      (seq (setq data (heap-read-u64 cw 16))
+                                           (setq length (heap-read-u64 cw 24)))
+                                    (seq (setq data (nl_bi_strptr cw))
+                                         (setq length (m5_strlen cw))))))
                               (setq constants (+ vp 8))
-                              (setq nconst (sar (heap-read-u64 vp 0) 8)))))
+                              (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
                                                         (if (>= isp 65536) (setq last-name -1) 0)
                                                         (setq pc 0)
                                                         (setq sp (logand isp 65535)))
