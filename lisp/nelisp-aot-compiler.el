@@ -16853,6 +16853,38 @@ only when A is an immediate or B assigns no local
 (defvar nelisp-aot-compiler--x86-affine-loop-state nil
   "Exact derived-expression descriptor, live only inside its AB hot span.")
 
+(defvar nelisp-aot-compiler--x86-affine-result-compare t
+  "Use the retained RAX result at the exact existing AE comparison join.")
+
+(defun nelisp-aot-compiler--x86-affine-result-register-p (a b)
+  "Whether AE's original private home still equals RAX at this first use.
+The existing descriptor proves the exact call-valued head and two entries.
+Hot interval-leaf mode excludes copy/alias/forwarded let stores; the result
+is unmapped.  Cold stores likewise use RAX before RAX-neutral reloads and
+AE rederivation.  Keep both stores; change only this consumer operand.
+Adapt GNU31 comp.el:1932-1949's original-definition tracing."
+  (and nelisp-aot-compiler--x86-affine-result-compare
+       nelisp-aot-compiler--x86-affine-loop-state
+       (eq a (plist-get nelisp-aot-compiler--x86-affine-loop-state :lhs))
+       (eq b (plist-get nelisp-aot-compiler--x86-affine-loop-state :expression))
+       (eq (nelisp-aot-compiler--ir-kind a) 'ref)
+       (eq (nelisp-aot-compiler--ir-get a :class) 'gp)
+       (not (nelisp-aot-compiler--ir-get a :root-p))
+       (memq (nelisp-aot-compiler--ir-get a :repr)
+             '(nil raw-i64 raw-bool unknown word raw-ptr sexp-ptr))
+       (eq nelisp-aot-compiler--arch 'x86_64) (eq nelisp-aot-compiler--abi 'sysv)
+       (not nelisp-aot-compiler--checked-arith) (not (nelisp-aot-compiler--lisp-values-p))
+       nelisp-aot-compiler--x86-interval-leaf-p
+       (equal (mapcar #'cdr nelisp-aot-compiler--promoted-slots) '(rbx r8))
+       (not (assq (nelisp-aot-compiler--ir-get a :slot) nelisp-aot-compiler--promoted-slots))
+       (null nelisp-aot-compiler--x86-frame-read-aliases)
+       (null nelisp-aot-compiler--x86-trace-write-through)
+       (null nelisp-aot-compiler--x86-trace-loop-exits)
+       (null nelisp-aot-compiler--x86-shrink-wrap-state)
+       (null nelisp-aot-compiler--x86-leaf-entry-state)
+       (null nelisp-aot-compiler--x86-tco-entry-state)
+       (zerop nelisp-aot-compiler--rsp-temp-depth)))
+
 (defun nelisp-aot-compiler--emit-compare-x86 (a b buf &optional op)
   "x86-64: set the flags of A - B for a signed comparison OP.
 Return non-nil when the flags describe B - A instead (the caller swaps
@@ -16868,8 +16900,10 @@ compared with an immediate compares in memory (CG4)."
       (nelisp-aot-compiler--x86-op
        buf t (unibyte-string #x39)
        (plist-get nelisp-aot-compiler--x86-affine-loop-state :reg)
-       (nelisp-aot-compiler--x86-slot-mem
-        (nelisp-aot-compiler--ir-get a :slot))) nil)
+       (if (nelisp-aot-compiler--x86-affine-result-register-p a b)
+           '(:reg rax)
+         (nelisp-aot-compiler--x86-slot-mem
+          (nelisp-aot-compiler--ir-get a :slot)))) nil)
      ((nelisp-aot-compiler--x86-mem-compare a b buf op) nil)
      ((and (nelisp-aot-compiler--imm-int-p a)
            (nelisp-aot-compiler--x86-mem-compare
