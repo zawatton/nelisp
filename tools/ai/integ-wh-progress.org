@@ -127,3 +127,11 @@ pending
 pending
 ** S3.6 End to end: the library census (ccore, process, display, buffer) passes on the batch's library image
 pending
+
+* S4 Next batch (found by the dry run; none of them gates it)
+** S4.1 The hashtab line's weak-table fixture matches GNU 31.1 in all 56 cases on the merged binary
+#+NOTE: added 2026-10-22 on the coordinator's request (denominator +2 with S4.2).  tools/ai/eqhash-semantics.el against tools/ai/eqhash-semantics.expected matches GNU in 41 of 56 cases on the hashtab lane tip, 39 on the F-final stage, 37 on the gc-port and callpath stages.  The 15 cases red on the lane are weak and rooting cases that its brief permits; the four that went from right to wrong here (weak-unrooted-value, weak-unrooted-key-or-value, weak-unrooted-key-and-value, weak-chain-forward-unrooted) are unrooted-weak cases tied to the conservative stack scan, which can pin a key the test has dropped (switching the scan off, debug switch 28, gives 39 of 56).
+cmd: bash tools/ai/integ-wh-eqhash-fixture.sh
+** S4.2 A binary whose companion .cold image has more than one hard link still starts from that image
+#+NOTE: added 2026-10-22 on the coordinator's request.  With the .cold file at link count 2 the runtime ignores the image and boots the prelude, 8.7 s instead of 19 ms, and prints nothing; the binary's own link count and a symlinked binary do not matter.  Found when `ln' of a build into the strings lane's path layout made its image check fail with "startup 8.773 s, the cold image was not used".  No st_nlink test is in the Lisp sources (the build script says the driver "supplies ... the companion of the actual process executable, resolved by the OS"), so look at how the driver opens and validates the companion.
+cmd: bash tools/ai/integ-wh-hardlink-boot.sh
