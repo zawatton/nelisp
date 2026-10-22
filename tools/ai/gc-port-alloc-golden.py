@@ -4,7 +4,8 @@
   gc-port-alloc-golden.py check --dyn BIN --static BIN [--gnu EMACS]
 
 Runs test/gc-port-make-string-check.el (make-string: unibyte, multibyte and forced-multibyte ASCII, every encoded
-width from one byte to five and the raw-byte characters, sizes around a word and large, mutation, errors) on GNU
+width from one byte to five and the raw-byte characters, sizes around a word and large, mutation, errors) and
+test/gc-port-cons-vector-check.el (cons and make-vector with every kind of element word the runtime has) on GNU
 Emacs and on each NeLisp binary under ulimit -v 8 GiB, and requires the outputs to be identical (a NeLisp
 --load prints the value of its last form, nil, which GNU's does not; both files end in nil and that line is
 dropped).  A negative control changes one line of GNU's output and requires the comparison to fail.
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ['test/gc-port-make-string-check.el']
+FILES = ['test/gc-port-make-string-check.el', 'test/gc-port-cons-vector-check.el']
 
 
 def run(argv):

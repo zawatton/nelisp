@@ -47,9 +47,18 @@
     ;; for hot callers.  Doc 216 S2.1: the WORD is the payload | 2, like
     ;; GNU's Fcons result, with no 32-byte header view.
     (defun nelisp_cons_construct_w (arg0 arg1 _pad)
-      (let ((box (extern-call nl_alloc_consbox)))
-        (seq (extern-call nl_consbox_set_car box arg0)
-             (extern-call nl_consbox_set_cdr box arg1)
+      ;; Fcons (alloc.c:2599): take a cell, store car and cdr.  A word that is not a legacy
+      ;; 32-byte view (low bits not 000) is stored as `nl_val_clone_into' would store it.
+      (let* ((cell (extern-call nl_cons_alloc))
+             (box (if (= cell 0) (alloc-bytes 16 8) cell)))
+        (seq (if (if (/= (logand arg0 7) 0) (/= (logand arg1 7) 0) 0)
+                 (seq (ptr-write-u64 box 0 arg0) (ptr-write-u64 box 8 arg1))
+               ;; A legacy view is cloned into a fresh box, an allocation: seed the cell
+               ;; with Nil first, as nl_alloc_consbox did, so it is a live-looking cons
+               ;; whatever happens before both words are stored.
+               (seq (ptr-write-u64 box 0 3) (ptr-write-u64 box 8 3)
+                    (extern-call nl_consbox_set_car box arg0)
+                    (extern-call nl_consbox_set_cdr box arg1)))
              (+ box 2)))))
   "AOT source for the Doc 101 §101.D cons constructor swap.")
 

@@ -503,6 +503,17 @@ overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vecto
   =test/gc-port-make-string-check.el= prints 167 cases (unibyte, multibyte and forced-multibyte ASCII, every encoded
   width from one byte to five and the raw-byte characters, sizes 0 to 4099, mutation after creation, the error
   cases); the output is identical on GNU 31.1 and on both NeLisp linkages.
+- =cons= (alloc.c =Fcons=): =nelisp_cons_construct_w= went through =nl_alloc_consbox=, which wrote Nil into both
+  words, and then through =nl_consbox_set_car= and =_set_cdr=, calls of the =nl_val_clone_into= keystone that
+  overwrote them: 192 instructions against =Fcons='s 26.  The keystone stores a word whose low three bits are not
+  000 (an immediate, a direct cons or vectorlike, a header-less string) as it is, and converts only a legacy 32-byte
+  view; so the constructor now takes the cell from =nl_cons_alloc= and stores both words in line when neither is a
+  view, and keeps the old path (Nil seed, then the setters) when one is, because cloning a view allocates.  94
+  instructions: =nl_cons_alloc= is 56 of them (the two parallel-section and debug-switch tests, the budget
+  decrement, =cons_cells_consed=, the free-list pop), against =Fcons='s 26 for everything; the rest is this
+  compiler's call and stack-slot overhead, which the code-generation lane owns.  =test/gc-port-cons-vector-check.el=
+  (291 cases: every kind of element word as car, cdr and fill) is identical on GNU and on this build, as it was on the
+  build before.
 
 ** Bytecode VM safepoints (maybe_gc)
 
