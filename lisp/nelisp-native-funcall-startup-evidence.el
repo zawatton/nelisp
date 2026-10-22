@@ -22,11 +22,12 @@ policies remain unchanged. All boundary bytes and relocations are verified."
             ;; C-core activation/watcher owners extend this to the measured
             ;; 300 helpers with symbol cells, cons blocks and the typed-block
             ;; registry, then GNU's symbol objects and Windows typed blocks
-            ;; (305 on Win64), within policy 320; all edges/owners proved.
+            ;; (305 on Win64), then gc-port's header-less floats, Bignums and
+            ;; Cells (324 on Linux), within policy 352; all edges/owners proved.
             ((equal node '(<= 1 (length (alist-get 'records closure)) 192))
-             '(<= 1 (length (alist-get 'records closure)) 320))
+             '(<= 1 (length (alist-get 'records closure)) 352))
             ((equal node '(<= 15 (length functions) 192))
-             '(<= 15 (length functions) 320))
+             '(<= 15 (length functions) 352))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")

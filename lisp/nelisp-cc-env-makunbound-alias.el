@@ -49,8 +49,12 @@
                               ;; Mark the persistent mutation before installing it.
                               (wf_dirty)
                               ;; Both slot writes follow all read-only checks.
-                              (record-slot-set entry 0 unbound-ptr)
-                              (record-slot-set entry 4 nil-scratch)
+                              ;; GNU Fmakunbound (data.c): an alias becomes
+                              ;; PLAINVAL with an unbound value -- the alias
+                              ;; slot is cleared first, since a GNU-layout
+                              ;; object (Doc 226 D9) keeps the target in val.
+                              (nl_ent_set entry 4 nil-scratch)
+                              (nl_ent_set entry 0 unbound-ptr)
                               (extern-call bf_fx_special_bump mirror-ptr)
                               (setq status 0)))))
                     (if (= status 2)

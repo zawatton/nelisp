@@ -74,7 +74,7 @@
     ;;
     ;; Arity 2 (even) ✓.
     (defun nelisp_env_setv_cell_hit (cell-ptr val-ptr)
-      (and (cell-set-value cell-ptr val-ptr) 0))
+      (and (nl_cell_set_w cell-ptr val-ptr) 0))
 
     ;; nelisp_env_setv_mirror
     ;;
@@ -116,7 +116,10 @@
                    (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0)))
           (if (= (extern-call nl_thread_mirror_mutation_guard mirror-ptr name-ptr) 1)
               1
-            (seq (record-slot-set entry 0 val-ptr) 0)))))
+            ;; Doc 226 D5/D9: the store converts or refuses a FORWARDED
+            ;; value as GNU store_symval_forwarding does (data.c:1470); 1
+            ;; after the stashed signal.
+            (if (= (nl_ent_set entry 0 val-ptr) 1) 0 1)))))
 
     ;; On a frame miss, route an existing alias to its canonical variable.
     ;; SCRATCH-PTR=0 selects the lazy mirror writer; nonzero preserves the
@@ -132,7 +135,7 @@
               (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0))
           (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
             (if (and (= candidate 3)
-                     (if (> (record-slot-count entry) 5)
+                     (if (> (nl_ent_n entry) 5)
                          (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
                 (if (= scratch-ptr 0)
                     (nelisp_env_setv_mirror_lazy
@@ -183,19 +186,24 @@
         (mirror-ptr frames-ptr name-ptr val-ptr unbound-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
-        (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
-            1
-          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
-                 (local-p (if (= entry 0) 0
-                            (if (> (record-slot-count entry) 5)
-                                (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
-                 (cell-ptr (if (= local-p 1)
-                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
-                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
-            (if (= cell-ptr 0)
-                (nelisp_env_setv_alias_or_mirror
-                 mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
-              (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
+        ;; One lookup of the symbol's object serves the constant refusal (its
+        ;; trapped_write, data.c set_internal) and the LOCALIZED test.
+        (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+          (if (if (= entry 0) 0
+                (if (= (nl_so_p entry) 1)
+                    (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
+                  (= (nl_val_tag (nl_ent_w entry 3)) 1)))
+              1
+            (let* ((local-p (if (= entry 0) 0
+                              (if (> (nl_ent_n entry) 5)
+                                  (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
+                   (cell-ptr (if (= local-p 1)
+                                 (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                               (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
+              (if (= cell-ptr 0)
+                  (nelisp_env_setv_alias_or_mirror
+                   mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
+                (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))
 
     ;; nelisp_env_set_value
     ;;
@@ -242,31 +250,39 @@
     ;; miss precedent (commit 7aa3ed8b): never dereference a value that is
     ;; not provably what it claims to be.
     (defun nelisp_env_set_value_name_ok (name-ptr)
+      ;; Doc 226 D9: a symbol object's WORD (class 110, kind 4 or 16) lives
+      ;; in a symbol_block cell outside the chunks; its header is the check.
+      (if (= (logand name-ptr 7) 6)
+          (if (or (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 4)
+                  (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 16)) 1 0)
       (if (= (extern-call nl_gc_in_arena name-ptr) 0)
           0
         (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1
           (if (or (= (sexp-tag name-ptr) 5)
-                  (= (sexp-tag name-ptr) 14)) 1 0))))
+                  (= (sexp-tag name-ptr) 14)) 1 0)))))
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
-        (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
-            1
-          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
-                 (local-p (if (= entry 0) 0
-                            (if (> (record-slot-count entry) 5)
-                                (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
-                 (cell-ptr (if (= local-p 1)
-                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
-                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
-            (if (= cell-ptr 0)
-                ;; Frame miss: write to mirror.
-                (nelisp_env_setv_alias_or_mirror
-                 mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0 0 0)
-              ;; Frame hit: overwrite lexical cell (refcount-safe).
-              (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))
+        (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+          (if (if (= entry 0) 0
+                (if (= (nl_so_p entry) 1)
+                    (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
+                  (= (nl_val_tag (nl_ent_w entry 3)) 1)))
+              1
+            (let* ((local-p (if (= entry 0) 0
+                              (if (> (nl_ent_n entry) 5)
+                                  (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
+                   (cell-ptr (if (= local-p 1)
+                                 (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                               (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
+              (if (= cell-ptr 0)
+                  ;; Frame miss: write to mirror.
+                  (nelisp_env_setv_alias_or_mirror
+                   mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0 0 0)
+                ;; Frame hit: overwrite lexical cell (refcount-safe).
+                (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))))
   "AOT source for Wave a-2 `Env::set_value' body.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'

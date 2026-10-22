@@ -50,9 +50,8 @@
     ;; Doc 147 Phase 1: NlCell shrank to value WORD@0 + rc@8 (size 16),
     ;; so the refcount trailer moved from offset 32 to offset 8.
     (defun nelisp_nlcell_clone (box-ptr)
-      (nelisp_nlcell_clone_prog2
-       (atomic-fetch-add (+ box-ptr 8) 1)
-       box-ptr)))
+      ;; Doc 216 S5: a cell is traced, it carries no count.
+      box-ptr))
   "AOT source for the Doc 124 §124.C NlCell Clone kernel.
 
 Mechanical port of §124.A modulo the REFCOUNT_OFFSET literal (= 8

@@ -141,6 +141,18 @@
     ;; decoded here. Use a shallow rebox when SRC is already arena-owned;
     ;; otherwise use the legacy fresh-box clone.  A BSS flag exposed by
     ;; `nl_bind_clone_force_flag' forces the legacy path.
+    (defun nl_vci_float (word dst_word_ptr)
+      (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
+    ;; Doc 216 S6.1: the WORD of a nil, t or Int view is its immediate (nil 3,
+    ;; t 7, a fixnum (n << 2) | 1), so no 32-byte scalar view is retained; only
+    ;; an Int outside the fixnum range keeps an owned box.
+    (defun nl_vci_scalar (src dst_word_ptr)
+      (let ((tag (heap-read-u8 src 0)) (v (heap-read-u64 src 8)))
+        (if (= tag 0) (nl_vci_float 3 dst_word_ptr)
+          (if (= tag 1) (nl_vci_float 7 dst_word_ptr)
+            (if (if (< v -2305843009213693952) 0 (if (> v 2305843009213693951) 0 1))
+                (nl_vci_float (+ (* v 4) 1) dst_word_ptr)
+              (nl_vci_rebox (alloc-bytes 32 8) src dst_word_ptr))))))
     (defun nl_val_clone_legacy (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
@@ -150,7 +162,21 @@
               ;; Retain their physical representation in a fresh owned box;
               ;; do not decode them into canonical immediate WORDs.
               (if (< (heap-read-u8 src_slot 0) 4)
-                  (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
+                  ;; Doc 216 S5: a float view becomes a header-less float
+                  ;; object; a nil, t or fixnum view becomes its immediate WORD.
+                  (if (= (heap-read-u8 src_slot 0) 3)
+                      (nl_vci_float (nl_float_object (heap-read-u64 src_slot 8)) dst_word_ptr)
+                    (nl_vci_scalar src_slot dst_word_ptr))
+              (if (= (heap-read-u8 src_slot 0) 13)
+                  ;; Doc 216 S5: a Bignum view is stored as its object.
+                  (nl_vci_float (nl_big_word src_slot) dst_word_ptr)
+              (if (= (heap-read-u8 src_slot 0) 11)
+                  ;; Doc 216 S5: a Cell view is stored as its object.
+                  (nl_vci_float (nl_cell_word src_slot) dst_word_ptr)
+              (if (if (= (heap-read-u8 src_slot 0) 8)
+                      (= (logand (heap-read-u8 (heap-read-u64 src_slot 8) 0) 63) 8) 0)
+                  ;; Doc 216 S5: a vector view is stored as the WORD of its object.
+                  (nl_vci_float (+ (heap-read-u64 src_slot 8) 6) dst_word_ptr)
               ;; Membership only chooses the shallow symbol/string path.
               ;; Every other tag takes the same fresh clone on either side
               ;; of that test, so avoid walking the chunk chain for it.
@@ -161,7 +187,74 @@
                   (if (extern-call nl_gc_is_boot src_slot)
                       (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
                     (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
-                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))
+                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))))))
+    ;; Doc 216 S5: a float is a header-less vectorlike object, not a 32-byte
+    ;; Sexp view: 16 bytes, the kind word (3) at +0 and the double's bits at
+    ;; +8, the WORD being box|6 (GNU's Lisp_Float, alloc.c:2431, with the
+    ;; kind in the object instead of in the pointer).
+    (defun nl_float_object (bits)
+      ;; Doc 223 float blocks: a cell of the typed float blocks, else (a
+      ;; parallel section, typed cells disabled, memory exhausted) a general
+      ;; heap object.
+      (let ((box (nl_float_alloc)))
+        (if (= box 0)
+            (let ((g (alloc-bytes 16 8)))
+              (seq (ptr-write-u64 g 0 3)
+                   (ptr-write-u64 g 8 bits)
+                   (+ g 6)))
+          (seq (ptr-write-u64 box 0 3)
+               (ptr-write-u64 box 8 bits)
+               (+ box 6)))))
+    ;; Doc 216 S5: the double of a float is read through this accessor only:
+    ;; from a legacy 32-byte view (tag at +0, bits at +8) or from a float
+    ;; object (kind word at +0, bits at +8) alike, the box address being
+    ;; W - (W & 6) for a 000 pointer and for a 110 WORD.
+    (defun nl_float_bits (w)
+      (heap-read-u64 (- w (logand w 6)) 8))
+    ;; Doc 216 S5: a Bignum is a header-less object [header | 32-bit limbs] (WORD
+    ;; = box|6, header = 13 | sign << 6 | limb count << 8).  The sign, the limb
+    ;; address and the limb count are read through these, whether W is the
+    ;; object or a legacy 32-byte view (tag 13, sign@8, limbs@16, count@24); a
+    ;; view made from an object has its limbs at box + 8.
+    (defun nl_big_sign (w)
+      (if (= (logand w 7) 6)
+          (logand (shr (heap-read-u64 (- w 6) 0) 6) 1)
+        (heap-read-u64 w 8)))
+    (defun nl_big_limbs (w)
+      (if (= (logand w 7) 6) (+ w 2) (heap-read-u64 w 16)))
+    (defun nl_big_count (w)
+      (if (= (logand w 7) 6)
+          (shr (heap-read-u64 (- w 6) 0) 8)
+        (heap-read-u64 w 24)))
+    ;; The object a Bignum WORD or view names, as an address: eq on Bignums.
+    (defun nl_big_identity (w)
+      (if (= (logand w 7) 6) (- w 6) (- (heap-read-u64 w 16) 8)))
+    ;; The object WORD of the Bignum view V: V's own object when V's limbs are
+    ;; the limbs of an object (the header at limbs - 8 is the one V implies),
+    ;; else a new object copied from V's limbs.
+    (defun nl_big_word (v)
+      (let* ((limbs (heap-read-u64 v 16)) (cnt (heap-read-u64 v 24))
+             (sign (heap-read-u64 v 8)))
+        (if (= (heap-read-u64 (- limbs 8) 0) (+ 13 (+ (* sign 64) (* cnt 256))))
+            (+ (- limbs 8) 6)
+          (nl_bignum_write_w sign limbs cnt 0))))
+    ;; Doc 216 S5: a Cell is a header-first object [header | value WORD] (kind 11;
+    ;; header bit 8 is N3's pair-backed flag, which a legacy view keeps in its word
+    ;; 16 as 13107), WORD = box | 6.  nl_cell_box answers the object's address for a
+    ;; Cell WORD or a legacy view; nl_cell_pair_p the flag; nl_cell_word turns a view
+    ;; into its object's WORD, moving the flag into the header.
+    (defun nl_cell_box (w)
+      (if (= (logand w 7) 6) (- w 6) (heap-read-u64 w 8)))
+    (defun nl_cell_pair_p (w)
+      (if (= (logand w 7) 6)
+          (logand (shr (heap-read-u64 (- w 6) 0) 8) 1)
+        (if (= (heap-read-u64 w 16) 13107) 1 0)))
+    (defun nl_cell_word (v)
+      (let ((box (heap-read-u64 v 8)))
+        (seq (if (= (heap-read-u64 v 16) 13107)
+                 (ptr-write-u64 box 0 (logior (heap-read-u64 box 0) 256))
+               0)
+             (+ box 6))))
     (defun nl_val_clone_into (src_slot dst_word_ptr)
       (if (= (logand src_slot 7) 4)
           (seq (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
@@ -191,7 +284,21 @@
                    (and (ptr-write-u64 box 0
                          (+ (logand (heap-read-u64 box 0) -64) tag))
                         (ptr-write-u64 dst_word_ptr 0 word)) word))
-              (nl_val_clone_legacy src_slot dst_word_ptr))))))))))
+              ;; Doc 226 D9: an uninterned symbol's view holds its object's
+              ;; backing address; the stored WORD is the object.
+              (if (if (= tag 16) (> (heap-read-u64 src_slot 8) 65535) 0)
+                  (let ((word (+ (heap-read-u64 src_slot 8) 6)))
+                    (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
+                ;; Doc 226 D9 stage 3.2: an interned symbol that has its
+                ;; object is stored as the object's WORD, as GNU's Lisp_Object
+                ;; is the pointer to the struct Lisp_Symbol.  A view without
+                ;; an object (no mirror yet, a plain overflow name) stays a box.
+                (if (= tag 4)
+                    (let ((word (extern-call nl_symview_object src_slot)))
+                      (if (= word 0)
+                          (nl_val_clone_legacy src_slot dst_word_ptr)
+                        (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word)))
+                  (nl_val_clone_legacy src_slot dst_word_ptr))))))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:

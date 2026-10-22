@@ -570,7 +570,11 @@ Unregistered Lisp functions still fail the ordinary subr type check."
     "Mark SYMBOL as declared without assigning it a value."
     (unless (symbolp symbol)
       (signal 'wrong-type-argument (list 'symbolp symbol)))
-    (puthash symbol t nelisp--special-variables)
+    ;; The native runtime keeps GNU's declared_special bit in the symbol;
+    ;; its declaration op also updates this registry (Doc 226).
+    (if (fboundp 'nelisp--env-globals-op)
+        (nelisp--env-globals-op 'variable-declare-special symbol)
+      (puthash symbol t nelisp--special-variables))
     (when doc
       (put symbol 'variable-documentation doc))
     nil))

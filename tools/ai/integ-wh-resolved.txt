@@ -27,3 +27,19 @@ scripts/nelisp-standalone-build.el
 # Post-merge fix 1 (after the first dyn build): direct-only defuns for the F1 closure
 lisp/nelisp-aot-compiler.el
 scripts/nelisp-standalone-build.el
+
+# Merge 5: batch F's final b994d7227 (1 conflicted file, 2 hunks)
+scripts/nelisp-standalone-build.el
+# Post-merge fix 5 and 6 (before merge 5): float-output-format tag, alias of a special form
+scripts/nelisp-standalone-build.el
+
+# Merge 6: eval/gc-port-20261021 7b8916b7f (6 conflicted files, 24 hunks; replayed by rerere)
+lisp/nelisp-cc-mirror-is-bound.el
+lisp/nelisp-cc-nlstr-direct-ops.el
+lisp/nelisp-cc-reader-parser.el
+lisp/nelisp-cc-sexp-clone-into.el
+lisp/nelisp-cc-val-load.el
+scripts/nelisp-standalone-build.el
+# Edited outside the conflict set: the evidence node bound is 81,920 in all three copies
+templates/nelisp-native-rooted-abi-proof.el.in
+test/nelisp-native-compiler-startup-evidence-test.el

@@ -203,15 +203,16 @@ Alias for `nelisp-nlvector--offset-value-vec' kept for emit clarity.")
 (defconst nelisp-nlvector--size                  32
   "Total size of an NlVector struct in bytes.")
 
-(defconst nelisp-nlcell--offset-value            0
-  "Byte offset of the inline `value' WORD @ box+0, rc @ box+8, size 16.
-Doc 147 Phase 1: the NlCell `value' is now an 8-byte tagged WORD (low
-bit 1 = immediate Int/Nil/T; low bit 0 = 8-aligned ptr to a 32B child
-Sexp box), NOT a 32-byte inline Sexp slot.")
+(defconst nelisp-nlcell--offset-value            8
+  "Byte offset of the `value' WORD inside an NlCell: header @ box+0, value @ box+8.
+Doc 216 S5: an NlCell is a header-first object (kind 11, WORD = box|6); the value
+is an 8-byte tagged WORD (low bit 1 = immediate Int/Nil/T; else a WORD or an
+8-aligned ptr to a 32B child Sexp box), NOT a 32-byte inline Sexp slot.")
 
-(defconst nelisp-nlcell--offset-refcount         8
-  "Byte offset of the `refcount' AtomicUsize inside an NlCell.
-Doc 147 Phase 1: immediately after the 8-byte value WORD (was 32).")
+(defconst nelisp-nlcell--offset-refcount         0
+  "Byte offset of the word that used to be the `refcount' of an NlCell.
+Doc 216 S5: the collector traces cells, the count is gone, and the word at box+0
+is the object header (kind 11; bit 8 marks N3's pair-backed cells).")
 
 (defconst nelisp-nlcell--size                    16
   "Total size of an NlCell struct in bytes.

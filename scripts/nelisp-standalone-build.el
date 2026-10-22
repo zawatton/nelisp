@@ -610,6 +610,10 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      512
      ;; `nl_exit_values': a pending nonlocal exit's tag and value WORDs.
      16
+     ;; `nl_float_state': Doc 223 typed float blocks.
+     128
+     ;; `nl_gc_until' and `nl_gc_until_base': the allocation budget (Doc 223).
+     64
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -978,8 +982,43 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_symcells_root"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 480)
                               :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": the test hook that makes every
+    ;; `nl_gc_vm_poll' collect (one WORD inside `nl_typed_alloc', +488; +496
+    ;; and +504 stay free).
+    (list (nelisp-link-symbol "nl_vm_poll_force"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 488)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Scanning callee-saved registers": the probe's buffer (a non-zero
+    ;; WORD makes the next `nl_gc_conserv_scan' copy its window there and scan
+    ;; nothing) and the number of times a collection reached `nl_gc_scan_regs'.
+    (list (nelisp-link-symbol "nl_gc_regs_trace"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 496)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_regs_calls"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 504)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Float blocks": the typed float allocator's state, right after
+    ;; `nl_exit_values' (+0 free list, +8 blocks, +16 cell index of the head
+    ;; block, +24 live cells after the last sweep, +32 free cells, +40 blocks,
+    ;; +48 allocations, +56 ranked cells of a dump, +64 their array, +72 its
+    ;; bytes, +80 the image offset of the float region; +88 the pointer fields
+    ;; pass 1 of a dump visited, +96 the relocation table's capacity in entries
+    ;; (0 = unbounded, the single-chunk dump), +104 set when pass 3 would have
+    ;; written past it).
+    (list (nelisp-link-symbol "nl_float_state"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": GNU's consing_until_gc.  +0 is the word the allocation
+    ;; fast paths subtract their bytes from and a poll site tests for a negative value; +8 is the
+    ;; value it was last set to, so the bytes spent are base - until.
+    (list (nelisp-link-symbol "nl_gc_until"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_until_base"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 24)
@@ -1266,8 +1305,8 @@ cross-unit call) before the freed payload is poisoned."
                                  (bit (shl 1 (/ (- want 16) 8)))
                                  (o 0) (pair-limit (- want 16)))
                             (seq
-                             (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                            (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+                             (ptr-write-u64 (data-addr nl_gc_until) 0
+                                            (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                              (ptr-write-u64 head 0 next)
                              (ptr-write-u64 (data-addr nl_freelist_small_mask) 0
                                             (if (= next 0)
@@ -1300,8 +1339,8 @@ cross-unit call) before the freed payload is poisoned."
                    (obj (+ r 8))
                    (o 0) (pair-limit (- want 16)))
               (seq
-               (ptr-write-u64 (data-addr nl_gc_stats) 0
-                              (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+               (ptr-write-u64 (data-addr nl_gc_until) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                (ptr-write-u64 r 0 want)
                (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
                (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
@@ -1670,10 +1709,15 @@ standalone units can call each other."
   "Operators an inlined body may use besides calls to `_'-named functions.")
 
 (defconst nelisp-standalone--inline-boundaries
-  '(nl_apply_function nl_apply_function_w)
-  "Authenticated evaluator entries whose calls must survive inlining.
-The F1 source/binary proof binds these entries as evaluator terminals.
-Inlining them into a caller would erase that ownership boundary.")
+  '(nl_apply_function nl_apply_function_w
+    ;; Doc 226 D9: the symbol entry API's slow paths.
+    nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp)
+  "Calls that must survive inlining.
+Authenticated evaluator entries: the F1 source/binary proof binds them as
+evaluator terminals, and inlining one into a caller would erase that
+ownership boundary.  Slow paths kept out of line: copied into every caller
+they would grow the F1 prelink closure, whose function count, text and
+root evidence are bounded.")
 
 (defvar nelisp-standalone--inline-max-nodes
   (string-to-number (or (getenv "NELISP_INLINE_MAX_NODES") "80"))
@@ -1758,6 +1802,11 @@ position and under `data-addr'."
     ("lookup-fn.o" "arena.o" "string-blocks.o")
     ("sf-frame-bind.o" "arena.o" "string-blocks.o")
     ("sf-env-lookup-value.o" "arena.o" "string-blocks.o")
+    ;; Doc 226 D9: the entry API (nl_ent_*) in line in the F1 closure.
+    ("sf-env-set-value2.o" "arena.o" "string-blocks.o")
+    ("sf-env-set-value2-epoch.o" "arena.o" "string-blocks.o")
+    ("sf-mirror-setval.o" "arena.o" "string-blocks.o")
+    ("sf-mirror-is-const.o" "arena.o" "string-blocks.o")
     ("frame-pop-epoch.o" "arena.o" "string-blocks.o")
     ("frame-push-epoch.o" "arena.o" "string-blocks.o")
     ("sf-let-setup.o" "arena.o" "string-blocks.o")
@@ -2763,6 +2812,14 @@ the typed-block registry plays mem_find, so a symbol block is a typed block.")
   "A symbol_block cell's gcmarkbit (lisp.h:794): header bit 24, the first
 collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
 
+(defconst nelisp-standalone--float-cell-bytes 16
+  "NeLisp float cell: GNU's Lisp_Float is 8 bytes; here the kind word (3) precedes
+the double (Doc 216 S5).")
+(defconst nelisp-standalone--float-block-size
+  (/ nelisp-standalone--cons-next-offset nelisp-standalone--float-cell-bytes)
+  "Cells per float block: 2046, filling a 32 KiB typed block up to the `next' link
+it shares with cons and symbol blocks.")
+
 (defun nelisp-standalone--typed-alloc-forms ()
   "Return the Doc 223 typed-block allocation forms for arena.o."
   (let ((n nelisp-standalone--cons-block-size)
@@ -2781,7 +2838,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         (sn nelisp-standalone--symbol-block-size)
         (scell nelisp-standalone--symbol-cell-bytes)
         ;; A dumped symbol is a headered legacy block: 8 + 48 bytes.
-        (scb (+ 8 nelisp-standalone--symbol-cell-bytes)))
+        (scb (+ 8 nelisp-standalone--symbol-cell-bytes))
+        (fn nelisp-standalone--float-block-size)
+        (fcell nelisp-standalone--float-cell-bytes)
+        ;; A dumped float is a headered legacy block: 8 + 16 bytes.
+        (fcb (+ 8 nelisp-standalone--float-cell-bytes)))
     ;; The link and the block ordinal (NEXT+8) sit below the type word; the
     ;; dump's rank table holds a cell index in 16 bits.
     (unless (and (= cell 16) (= n 2030) (<= (+ next 16) ty) (< n 65535))
@@ -2789,6 +2850,9 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; Symbol cells end exactly at the shared `next' link.
     (unless (and (= scell 48) (= sn 682) (= (* sn scell) next))
       (error "Doc 226 D9 symbol block geometry changed: %S %S" sn next))
+    ;; So do float cells.
+    (unless (and (= fcell 16) (= fn 2046) (= (* fn fcell) next))
+      (error "Doc 223 float block geometry changed: %S %S" fn next))
     `(;; Registry probe start for group base G (a 512 KiB multiple).
       (defun nl_typed_hash (g mask) (logand (+ (sar g 19) (sar g 29)) mask))
       ;; Entry (16 bytes: group base, busy blocks) of group G, or 0.
@@ -2936,8 +3000,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (if (= (heap-read-u64 268435624 0) 1) 0
               (let ((p (heap-read-u64 st 0)))
                 (seq
-                 (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,cell))
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,cell))
                  (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) 1))
                  (if (> p 0)
                      (seq (ptr-write-u64 st 0 (heap-read-u64 p 8)) p)
@@ -3023,8 +3087,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                  (if (= g 0) 0 (nl_symbol_zero g)))
              (let ((p (heap-read-u64 st 392)))
                (seq
-                (ptr-write-u64 (data-addr nl_gc_stats) 0
-                               (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,scell))
+                (ptr-write-u64 (data-addr nl_gc_until) 0
+                               (- (heap-read-u64 (data-addr nl_gc_until) 0) ,scell))
                 (if (> p 0)
                     (seq (ptr-write-u64 st 392 (heap-read-u64 p 40)) (nl_symbol_zero p))
                   (let ((i (heap-read-u64 st 408)) (b (heap-read-u64 st 400)))
@@ -3034,6 +3098,52 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                             (seq (ptr-write-u64 st 408 1) (nl_symbol_zero nb))))
                       (seq (ptr-write-u64 st 408 (+ i 1))
                            (nl_symbol_zero (+ b (* i ,scell)))))))))))))
+      ;; The symbol_block chain for a walk outside the collector, in
+      ;; sweep_symbols' order (alloc.c:6997): the newest block, a block's
+      ;; successor, and the cells a walk visits in BLK (the newest block up
+      ;; to its index, every other block whole).
+      (defun nl_symbol_block_first () (heap-read-u64 (data-addr nl_typed_alloc) 400))
+      (defun nl_symbol_block_next (blk) (heap-read-u64 blk ,next))
+      (defun nl_symbol_block_cells (blk)
+        (let* ((st (data-addr nl_typed_alloc)))
+          (if (= blk (heap-read-u64 st 400)) (heap-read-u64 st 408) ,sn)))
+      ;; ---- Doc 223 typed float blocks (alloc.c:2431 float_block) ----
+      ;; Make_float's new-block branch (alloc.c:2419-2431): a type 3 block, its
+      ;; cells never allocated (zero), chained at `next'.
+      (defun nl_float_alloc_block (st fst)
+        (let ((nb (nl_ablock_alloc st 3)))
+          (if (= nb 0) 0
+            (seq
+             (ptr-write-u64 nb ,next (heap-read-u64 fst 8))
+             (ptr-write-u64 fst 8 nb)
+             (ptr-write-u64 fst 16 0)
+             (ptr-write-u64 fst 40 (+ (heap-read-u64 fst 40) 1))
+             nb))))
+      ;; make_float's allocation (alloc.c:2431-2455): pop float_free_list, else
+      ;; the next cell of the current float_block, else a new block, and charge
+      ;; the cell to the GC debt as tally_consing does.  Answers the address of
+      ;; a 16-byte cell -- the float WORD is that address | 6 and the caller
+      ;; writes the kind word (3) and the double -- or 0: typed cells disabled
+      ;; (+80 of `nl_typed_alloc'), a parallel section (268435624 = 1, whose
+      ;; free lists have a single writer) or memory exhausted; the caller then
+      ;; takes a general-heap object.
+      (defun nl_float_alloc ()
+        (let ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state)))
+          (if (= (heap-read-u64 st 80) 1) 0
+            (if (= (heap-read-u64 268435624 0) 1) 0
+              (let ((p (heap-read-u64 fst 0)))
+                (seq
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,fcell))
+                 (ptr-write-u64 fst 48 (+ (heap-read-u64 fst 48) 1))
+                 (if (> p 0)
+                     (seq (ptr-write-u64 fst 0 (heap-read-u64 p 8)) p)
+                   (let ((i (heap-read-u64 fst 16)) (b (heap-read-u64 fst 8)))
+                     (if (if (= b 0) 1 (if (= i ,fn) 1 0))
+                         (let ((nb (nl_float_alloc_block st fst)))
+                           (if (= nb 0) 0
+                             (seq (ptr-write-u64 fst 16 1) nb)))
+                       (seq (ptr-write-u64 fst 16 (+ i 1)) (+ b (* i ,fcell))))))))))))
       ;; ---- Live-only image dump (pdumper.c dump_object, reached from the
       ;; roots) ----
       ;; A dump copies only the objects the image walk reaches, packed in
@@ -3178,10 +3288,24 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               (if (= (logand h 33554432) 0) (nl_dump_excluded addr)
                 (+ (heap-read-u64 st 472)
                    (+ (* (sar h 32) ,scb) (+ 8 (- addr c)))))))))
+      ;; Doc 223 float blocks: image offset of ADDR inside a float_block cell: the
+      ;; float region after the symbol region, one headered 24-byte block per
+      ;; ranked cell (`nl_dump_compact_rank_floats' keeps the rank in the
+      ;; cell header's bits 32-63, bit 25 = ranked), or -1 (counted).
+      (defun nl_dump_float_logoff (addr)
+        (let* ((fst (data-addr nl_float_state))
+               (blk (logand addr -32768)) (off (- addr blk)))
+          (if (>= off ,(* fn fcell)) (nl_dump_excluded addr)
+            (let* ((idx (/ off ,fcell)) (c (+ blk (* idx ,fcell)))
+                   (h (heap-read-u64 c 0)))
+              (if (= (logand h 33554432) 0) (nl_dump_excluded addr)
+                (+ (heap-read-u64 fst 80)
+                   (+ (* (sar h 32) ,fcb) (+ 8 (- addr c)))))))))
       ;; Pass 3: image offset of ADDR, or -1 (counting heap addresses that
       ;; have none).
       (defun nl_dump_compact_logoff (addr)
         (let ((st (data-addr nl_typed_alloc)))
+          (if (= (nl_typed_find addr) 3) (nl_dump_float_logoff addr)
           (if (= (nl_typed_find addr) 2) (nl_dump_symbol_logoff addr)
           (if (= (nl_typed_find addr) 1)
               (let* ((blk (logand addr -32768)) (off (- addr blk))
@@ -3199,9 +3323,9 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (hdr (heap-read-u64 arr (* i 16))))
                   (if (< addr (+ hdr (logand (heap-read-u64 hdr 0) 4294967288)))
                       (+ (heap-read-u64 arr (+ (* i 16) 8)) (- addr hdr))
-                    (nl_dump_excluded addr)))))))))
+                    (nl_dump_excluded addr))))))))))
       ;; ---- Strings in the cold image (pdumper.c:2084 dump_string, :3399 dump_cold_string) ----
-      ;; The image carries every reached string after the symbol region as three
+      ;; The image carries every reached string after the float region as three
       ;; legacy blocks: a header area (N * 32 bytes, 32-byte aligned so a restored
       ;; header validates exactly like a pool header), the sdata of every string
       ;; (back pointer first) and a footer.  While the dump runs a reached
@@ -3237,10 +3361,17 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; (+456) lists the ranked cells.
       (defun nl_dump_compact_phys (logoff)
         (let* ((st (data-addr nl_typed_alloc)) (ss (data-addr nl_strings_state))
+               (fst (data-addr nl_float_state))
                (nstr (heap-read-u64 ss 176)) (hoff (heap-read-u64 ss 200)))
           (if (if (> nstr 0) (if (>= logoff hoff) (< logoff (+ hoff (* nstr 32))) 0) 0)
               (+ (heap-read-u64 (heap-read-u64 ss 184) (* (sar (- logoff hoff) 5) 8))
                  (logand (- logoff hoff) 31))
+          (if (if (> (heap-read-u64 fst 56) 0) (>= logoff (heap-read-u64 fst 80)) 0)
+              (let* ((rel (- logoff (heap-read-u64 fst 80)))
+                     (r (/ rel ,fcb)) (within (- (- rel (* r ,fcb)) 8)))
+                (if (< within 0) 0
+                  (if (>= r (heap-read-u64 fst 56)) 0
+                    (+ (heap-read-u64 (heap-read-u64 fst 64) (* r 8)) within))))
           (if (if (> (heap-read-u64 st 448) 0) (>= logoff (heap-read-u64 st 472)) 0)
               (let* ((rel (- logoff (heap-read-u64 st 472)))
                      (r (/ rel ,scb)) (within (- (- rel (* r ,scb)) 8)))
@@ -3269,7 +3400,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               (if (< i 0) 0
                 (let ((arr (heap-read-u64 st 304)))
                   (+ (heap-read-u64 arr (* i 16))
-                     (- logoff (heap-read-u64 arr (+ (* i 16) 8)))))))))))))))
+                     (- logoff (heap-read-u64 arr (+ (* i 16) 8))))))))))))))))
 
 (defun nelisp-standalone--typed-gc-forms ()
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
@@ -3283,7 +3414,10 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         (sn nelisp-standalone--symbol-block-size)
         (scell nelisp-standalone--symbol-cell-bytes)
         (scb (+ 8 nelisp-standalone--symbol-cell-bytes))
-        (smark nelisp-standalone--symbol-mark-bit))
+        (smark nelisp-standalone--symbol-mark-bit)
+        (fn nelisp-standalone--float-block-size)
+        (fcell nelisp-standalone--float-cell-bytes)
+        (fcb (+ 8 nelisp-standalone--float-cell-bytes)))
     `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
       (defun nl_cons_mark_cell (box)
         (let* ((blk (logand box -32768))
@@ -3298,7 +3432,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; side bit with no exact-start probe; a legacy payload (cold image,
       ;; parallel section) keeps its header mark.
       (defun nl_gc_mark_cons_payload (box)
-        (if (= (nl_typed_find box) 1) (nl_cons_mark_cell box)
+        (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_cons_mark_cell box)
           (nl_gc_mark_block box)))
       ;; ---- Doc 226 D9 symbol blocks, collector side ----
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
@@ -3315,7 +3450,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; symbol_marked_p, alloc.c:4057, tests the pdumper bitmap for a
       ;; dumped symbol).  1 = newly marked.
       (defun nl_gc_mark_vbox (box)
-        (if (= (nl_typed_find box) 2) (nl_symbol_mark_cell box)
+        (if (> (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_symbol_mark_cell box)
           (nl_gc_mark_block box)))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
@@ -3408,7 +3544,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 424 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,scell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) num_used))
              0)
@@ -3427,6 +3563,100 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (if (if (= blk (heap-read-u64 st 400)) (>= idx (heap-read-u64 st 408)) 0) 0
                   (let ((c (+ blk (* idx ,scell))))
                     (if (= (heap-read-u64 c 24) ,dead) 0 c))))))))
+      ;; ---- Doc 223 float blocks, collector side ----
+      ;; A float_block cell takes its gcmarkbit through `nl_symbol_mark_cell'
+      ;; (header bit 24, the first collector bit); a float has no children.
+      ;; Clear every float_block cell's gcmarkbit (a mark phase without a
+      ;; sweep).  An image dump's rank bits stay.
+      (defun nl_float_unmark_all ()
+        (let* ((fst (data-addr nl_float_state))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (c 0) (h 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,fcell)))
+                         (setq h (heap-read-u64 c 0))
+                         (if (= (logand h ,smark) 0) 0 (ptr-write-u64 c 0 (- h ,smark)))
+                         (setq i (+ i 1))))
+                  (setq lim ,fn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; Clear every collector bit (24 and up) of every float_block cell: the
+      ;; end of an image dump, whose ranks sat in bits 25 and 32-63.
+      (defun nl_float_clear_collector_bits ()
+        (let* ((fst (data-addr nl_float_state))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (c 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,fcell)))
+                         (ptr-write-u64 c 0 (logand (heap-read-u64 c 0) 16777215))
+                         (setq i (+ i 1))))
+                  (setq lim ,fn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; sweep_floats (alloc.c:6894): rebuild float_free_list from the
+      ;; gcmarkbits -- an unmarked cell is zeroed and takes the free-list link at
+      ;; +8, a marked one loses its mark -- and free a wholly free block once
+      ;; more than one block of free cells is held.  Live cells feed the GC debt
+      ;; threshold (nl_gc_stats+16).
+      (defun nl_sweep_floats ()
+        (let* ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state))
+               (fprev (+ fst 8))
+               (fblk (heap-read-u64 fst 8))
+               (lim (heap-read-u64 fst 16))
+               (free 0) (num_free 0) (num_used 0)
+               (i 0) (this_free 0) (c 0) (h 0))
+          (seq
+           (while (> fblk 0)
+             (seq
+              (setq i 0) (setq this_free 0)
+              (while (< i lim)
+                (seq
+                 (setq c (+ fblk (* i ,fcell)))
+                 (setq h (heap-read-u64 c 0))
+                 (if (= (logand h ,smark) 0)
+                     (seq (ptr-write-u64 c 0 0)
+                          (ptr-write-u64 c 8 free)
+                          (setq free c)
+                          (setq this_free (+ this_free 1)))
+                   (seq (ptr-write-u64 c 0 (- h ,smark))
+                        (setq num_used (+ num_used 1))))
+                 (setq i (+ i 1))))
+              (setq lim ,fn)
+              (if (if (= this_free ,fn) (> num_free ,fn) 0)
+                  (let ((nx (heap-read-u64 fblk ,next)))
+                    (seq
+                     (ptr-write-u64 fprev 0 nx)
+                     (setq free (heap-read-u64 fblk 8))
+                     (ptr-write-u64 fst 40 (- (heap-read-u64 fst 40) 1))
+                     (nl_ablock_free st fblk)
+                     (setq fblk nx)))
+                (seq (setq num_free (+ num_free this_free))
+                     (setq fprev (+ fblk ,next))
+                     (setq fblk (heap-read-u64 fblk ,next))))))
+           (ptr-write-u64 fst 0 free)
+           (ptr-write-u64 fst 24 num_used)
+           (ptr-write-u64 fst 32 num_free)
+           (ptr-write-u64 (data-addr nl_gc_stats) 16
+                          (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,fcell)))
+           0)))
+      ;; live_float_p (alloc.c:4640): the live cell P points into, or 0.  A cell
+      ;; beyond the current block's index was never allocated; a cell whose kind
+      ;; word is not 3 is free.
+      (defun nl_live_float_holding (p)
+        (let* ((fst (data-addr nl_float_state))
+               (blk (logand p -32768))
+               (off (- p blk)))
+          (if (>= off ,(* fn fcell)) 0
+            (let ((idx (/ off ,fcell)))
+              (if (if (= blk (heap-read-u64 fst 8)) (>= idx (heap-read-u64 fst 16)) 0) 0
+                (let ((c (+ blk (* idx ,fcell))))
+                  (if (= (logand (heap-read-u64 c 0) 63) 3) c 0)))))))
       ;; Clear every cons block's mark bits (a mark phase without a sweep:
       ;; conservative failure, image walks, census-only walks).
       (defun nl_cons_unmark_all ()
@@ -3489,7 +3719,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 32 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,cell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 32
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) num_used))
              0)
@@ -3519,6 +3749,13 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
            (ptr-write-u64 st 472 0)
            (nl_dump_string_reset)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 88) 0 0)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 0)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 104) 0 0)
+           (ptr-write-u64 (data-addr nl_float_state) 56 0)
+           (ptr-write-u64 (data-addr nl_float_state) 64 0)
+           (ptr-write-u64 (data-addr nl_float_state) 72 0)
+           (ptr-write-u64 (data-addr nl_float_state) 80 0)
            (if (> incl 0) (nl_os_commit_range incl 0 bytes) 0)
            (if (if (> (heap-read-u64 st 208) 0) (= incl 0) 0) 0
              (seq (ptr-write-u64 st 296 1) 1)))))
@@ -3654,7 +3891,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
              (if (= ok 0) 0
                (if (= (nl_dump_compact_rank_cells st) 0) 0
                  (if (= (nl_dump_compact_rank_symbols st) 0) 0
-                   (nl_dump_string_assign))))))))
+                   (if (= (nl_dump_compact_rank_floats st) 0) 0
+                     (nl_dump_string_assign)))))))))
       ;; Doc 226 D9: give every symbol_block cell the walk reached (its
       ;; gcmarkbit) a rank in the symbol region, which follows the cons
       ;; cells (+472 = its image offset): the rank goes to the cell header's
@@ -3732,7 +3970,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         (let* ((ss (data-addr nl_strings_state)) (k 176))
           (seq (while (<= k 224) (seq (ptr-write-u64 ss k 0) (setq k (+ k 8)))) 0)))
       ;; Pass 2 for strings: number the reached strings, size the three blocks
-      ;; and place them after the symbol region.  The header area starts 32-byte
+      ;; and place them after the float region.  The header area starts 32-byte
       ;; aligned (a live filler block makes up the difference).  1 on success.
       (defun nl_dump_string_assign ()
         (let* ((ss (data-addr nl_strings_state)) (tst (data-addr nl_typed_alloc))
@@ -3750,8 +3988,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                   (seq (setq sum (+ sum (nl_string_sdata_size
                                          (nl_string_nbytes (heap-read-u64 inv (* i 8))))))
                        (setq i (+ i 1))))
-                (setq r (+ (+ (heap-read-u64 tst 328) (* (heap-read-u64 tst 336) ,cb))
-                           (* (heap-read-u64 tst 448) ,scb)))
+                ;; The strings follow the float region (Doc 223), which follows the
+                ;; symbol region: cons cells, symbols, floats, strings.
+                (setq r (+ (+ (+ (heap-read-u64 tst 328) (* (heap-read-u64 tst 336) ,cb))
+                              (* (heap-read-u64 tst 448) ,scb))
+                           (* (heap-read-u64 (data-addr nl_float_state) 56) ,fcb)))
                 (setq f (logand (- 24 r) 31))
                 (setq f (if (= f 0) 0 (if (< f 16) (+ f 32) f)))
                 (ptr-write-u64 ss 224 f)
@@ -3872,12 +4113,49 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                    (nl_os_free_chunk (heap-read-u64 ss 184) (heap-read-u64 ss 192))
                  0)
                (nl_dump_string_reset))))
+      ;; Doc 223 float blocks: give every float_block cell the walk reached (its
+      ;; gcmarkbit) a rank in the float region, which follows the symbol region
+      ;; (+80 of `nl_float_state' = its image offset): the rank goes to the
+      ;; cell header's bits 32-63 with bit 25 as "ranked", the mark is cleared
+      ;; for pass 3's walk, and +64 lists the cells by rank (+56 of them, +72
+      ;; bytes) for the restore mapping and the writer.  1 on success.
+      (defun nl_dump_compact_rank_floats (st)
+        (let* ((fst (data-addr nl_float_state))
+               (nb (heap-read-u64 fst 40))
+               (bytes (nl_align_up (+ (* nb ,(* fn 8)) 8) 65536))
+               (arr (if (= nb 0) 0 (nl_os_alloc_chunk bytes)))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (r 0) (c 0) (h 0))
+          (seq
+           (ptr-write-u64 fst 80 (+ (heap-read-u64 st 472) (* (heap-read-u64 st 448) ,scb)))
+           (if (= nb 0) 1
+             (if (= arr 0) 0
+               (seq
+                (nl_os_commit_range arr 0 bytes)
+                (while (> b 0)
+                  (seq
+                   (setq i 0)
+                   (while (< i lim)
+                     (seq
+                      (setq c (+ b (* i ,fcell)))
+                      (setq h (heap-read-u64 c 0))
+                      (if (= (logand h ,smark) 0) 0
+                        (seq (ptr-write-u64 arr (* r 8) c)
+                             (ptr-write-u64 c 0 (logior (logand h 16777215)
+                                                        (logior 33554432 (shl r 32))))
+                             (setq r (+ r 1))))
+                      (setq i (+ i 1))))
+                   (setq lim ,fn)
+                   (setq b (heap-read-u64 b ,next))))
+                (ptr-write-u64 fst 56 r) (ptr-write-u64 fst 64 arr)
+                (ptr-write-u64 fst 72 bytes)
+                1))))))
       ;; Write the image span: every included block in address order with its
       ;; mark bits cleared, then every reached cell as a headered legacy
       ;; payload block (header, then car and cdr as swizzled), through a
       ;; 1 MiB buffer.  Returns the bytes written.
       (defun nl_dump_compact_write (fd)
-        (let* ((st (data-addr nl_typed_alloc))
+        (let* ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state))
                (buf (nl_os_alloc_chunk 1048576))
                (arr (heap-read-u64 st 304)) (count (heap-read-u64 st 312))
                (nb (heap-read-u64 st 136)) (pre (heap-read-u64 st 360))
@@ -3948,6 +4226,22 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (ptr-write-u64 buf (+ fill 48) (heap-read-u64 c 40))
                 (setq fill (+ fill ,scb))
                 (setq r (+ r 1))))
+             ;; Doc 223 float blocks: every ranked float cell as a headered
+             ;; legacy block -- header 24, then the kind word with its collector
+             ;; bits (24 and up) cleared and the double.
+             (setq r 0)
+             (while (< r (heap-read-u64 fst 56))
+               (seq
+                (if (> (+ fill ,fcb) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (setq c (heap-read-u64 (heap-read-u64 fst 64) (* r 8)))
+                (ptr-write-u64 buf fill ,fcb)
+                (ptr-write-u64 buf (+ fill 8) (logand (heap-read-u64 c 0) 16777215))
+                (ptr-write-u64 buf (+ fill 16) (heap-read-u64 c 8))
+                (setq fill (+ fill ,fcb))
+                (setq r (+ r 1))))
              (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
              (setq written (+ written (nl_dump_string_write fd buf)))
              (nl_os_free_chunk buf 1048576)
@@ -3976,6 +4270,15 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 472 0)
            (nl_dump_string_end)
            (nl_symbol_clear_collector_bits)
+           (if (> (heap-read-u64 (data-addr nl_float_state) 64) 0)
+               (nl_os_free_chunk (heap-read-u64 (data-addr nl_float_state) 64)
+                                 (heap-read-u64 (data-addr nl_float_state) 72))
+             0)
+           (ptr-write-u64 (data-addr nl_float_state) 56 0)
+           (ptr-write-u64 (data-addr nl_float_state) 64 0)
+           (ptr-write-u64 (data-addr nl_float_state) 72 0)
+           (ptr-write-u64 (data-addr nl_float_state) 80 0)
+           (nl_float_clear_collector_bits)
            0)))
       ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
       ;; Objects of a restored cold image are immortal.  GNU never sweeps
@@ -4039,7 +4342,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
              (ptr-write-u64 st 200 0) (ptr-write-u64 st 208 0)
              (ptr-write-u64 st 216 0) (ptr-write-u64 st 224 0)
              (ptr-write-u64 st 256 0)
-             (if (if (= hmap 0) 1 (<= hi lo)) 0
+             (if (if (= (heap-read-u64 (data-addr nl_boot_hole_map) 16) 0) 1 (<= hi lo)) 0
                (let* ((bytes (nl_align_up (+ (sar (- hi lo) 6) 16) 65536))
                       (marks (nl_os_alloc_chunk bytes))
                       (starts (if (= marks 0) 0 (nl_os_alloc_chunk bytes)))
@@ -4054,7 +4357,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (setq bt (nl_hdr_bt hdr))
                        (if (= (nl_gc_bt_ok hdr bt hi) 0) (setq ok 0)
                          (seq
-                          (setq hole (nl_boot_hole_p hdr))
+                          (setq hole (if (= hmap 0) 0 (nl_boot_hole_p hdr)))
                           (if (= hole 1)
                               (if (= run 0) (setq run hdr) 0)
                             (seq
@@ -4209,7 +4512,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
           (if (= (nl_typed_find w) 2)
               (let ((c (nl_live_symbol_holding w)))
                 (seq (if (= c 0) 0 (nl_gc_mark_symbol c)) 1))
-            0))))))
+            ;; Doc 223: mark_maybe_pointer's MEM_TYPE_FLOAT case (alloc.c:4944).
+            (if (= (nl_typed_find w) 3)
+                (let ((c (nl_live_float_holding w)))
+                  (seq (if (= c 0) 0 (nl_symbol_mark_cell c)) 1))
+              0)))))))
 
 (defconst nelisp-standalone--arena-source
   (append
@@ -4775,6 +5082,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
              (ptr-write-u64 268436168 0 desc)
              (ptr-write-u64 268436176 0 (+ (heap-read-u64 268436176 0) 1))
              (ptr-write-u64 268436184 0 (+ (heap-read-u64 268436184 0) size))
+             (nl_gc_budget_poke)
              desc)))))
     (defun nl_chunk_try_alloc (chunk want)
       (let* ((base (heap-read-u64 (+ chunk 0) 0))
@@ -4813,8 +5121,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         ;; add and a store on the hot path; plain (not atomic) on purpose --
         ;; a lost update under Doc 199 workers only delays a trigger.
         (nl_seq2
-         (ptr-write-u64 (data-addr nl_gc_stats) 0
-                        (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+         (ptr-write-u64 (data-addr nl_gc_until) 0
+                        (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
         ;; 1) try exact-fit free-list reuse (sweep populates the list).
         ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
         (let ((reused (if (= (heap-read-u64 268435624 0) 1) 0
@@ -4910,10 +5218,24 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (let* ((bits (heap-read-u64 (if direct (- w 6) (heap-read-u64 w 8)) 0)))
               (if (/= (logand bits 128) 0) 13110
                 (if (/= (logand bits 64) 0) 13109 0)))
-          (heap-read-u64 w 16))))))
+          ;; Doc 226 D9: a symbol object's name is its name string at +8, a
+          ;; legacy view or (strings line) a String WORD.
+          (if (if direct (if (= kind 4) 1 (= kind 16)) 0)
+              (let* ((nm (heap-read-u64 (- w 6) 8)))
+                (if (= (logand nm 7) 4) (nl_word_data nm)
+                  (if (= (logand nm 7) 0) (heap-read-u64 nm 16) 0)))
+            (heap-read-u64 w 16)))))))
     (defun nl_word_length (w)
       (if (= (logand w 7) 4) (nl_string_nbytes (- w 4))
-        (if (= (logand w 7) 0) (heap-read-u64 w 24) 0)))
+        (if (= (logand w 7) 0) (heap-read-u64 w 24)
+          (if (= (logand w 7) 6)
+              (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+                (if (if (= k 4) 1 (= k 16))
+                    (let* ((nm (heap-read-u64 (- w 6) 8)))
+                      (if (= (logand nm 7) 4) (nl_string_nbytes (- nm 4))
+                        (if (= (logand nm 7) 0) (heap-read-u64 nm 24) 0)))
+                  0))
+            0))))
     (defun nl_vector_length (v)
       (sar (heap-read-u64 (nl_word_payload v) 0) 8))
     (defun nl_record_length (v)
@@ -4946,15 +5268,31 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       (let* ((s (alloc-bytes (* n 8) 8)) (i 0))
         (seq (while (< i n) (seq (ptr-write-u64 s (* i 8) 3) (setq i (+ i 1)))) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
-    ;; cons view without metadata becomes its direct WORD (payload | 2);
+    ;; cons view without metadata becomes its direct WORD (payload | 2), and
+    ;; (Doc 216 S5) a vector view the WORD of its object (payload | 6);
     ;; anything else is returned unchanged.  Inlinable (no let).
+    ;; Doc 226 D9: the string a string accessor reads -- a symbol object's name
+    ;; string, anything else itself.
+    (defun nl_str_target (sx)
+      (if (= (logand sx 7) 6)
+          (let* ((k (logand (heap-read-u64 (- sx 6) 0) 63)))
+            (if (if (= k 4) 1 (= k 16)) (heap-read-u64 (- sx 6) 8) sx))
+        sx))
     (defun nl_word_canon (w)
       (if (= (logand w 7) 0)
           (if (< w 4096) w
             (if (= (heap-read-u8 w 0) 7)
                 ;; Only the special-form marker (13108) is metadata.
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
-              w))
+              (if (= (heap-read-u8 w 0) 8)
+                  (if (= (logand (heap-read-u8 (heap-read-u64 w 8) 0) 63) 8)
+                      (+ (heap-read-u64 w 8) 6)
+                    w)
+                ;; Doc 226 D9: an uninterned symbol's view stores its object.
+                (if (if (= (heap-read-u8 w 0) 16) (> (heap-read-u64 w 8) 65535) 0)
+                    (+ (heap-read-u64 w 8) 6)
+                  ;; Stage 3.2: so does an interned symbol's, once it has one.
+                  (if (= (heap-read-u8 w 0) 4) (nl_symview_canon w) w)))))
         w))
     ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
     ;; for nil, t and a cons (a list).  Any other view comes back as V;
@@ -4975,6 +5313,485 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       (heap-read-u64 (+ (+ (nl_word_payload sexp-ptr) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
       (heap-read-u64 (+ (+ (nl_word_payload sexp-ptr) 16) (* idx 8)) 0))
+    ;; ---- Doc 226 D9: symbol objects in GNU's layout ----
+    ;; A symbol object is a class-110 WORD whose header kind (bits 0-5) is
+    ;; 4 (interned) or 16 (uninterned), GNU's struct Lisp_Symbol
+    ;; (lisp.h:786): flags at +0 (redirect in bits 8-9, trapped_write
+    ;; 10-11, interned 12-13, declared_special 14, the FORWARDED type
+    ;; 16-17; bits 24 and up belong to the collector), name +8, val +16,
+    ;; function +24, plist +32, next +40.
+    ;; The entry API below keeps D1's slot numbers for the readers written
+    ;; against the nine-slot record.  Each accessor is an in-line fast path
+    ;; (one body form, `let*', pure operators and `_' calls, for the
+    ;; general inliner) plus one out-of-line slow path, so the F1 prelink
+    ;; closure gains two functions and its callers one call edge each.
+    (defun nl_so_p (w)
+      (if (= (logand w 7) 6)
+          (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+            (if (= k 4) 1 (if (= k 16) 1 0)))
+        0))
+    (defun nl_ent_p (w)
+      (let* ((tg (sexp-tag w)))
+        (if (= tg 12) 1
+          (if (= (logand w 7) 6) (if (= tg 4) 1 (if (= tg 16) 1 0)) 0))))
+    (defun nl_ent_n (w)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (k (logand h 63)))
+            (if (= k 4) 9 (if (= k 16) 9 (sar h 8))))
+        (sar (heap-read-u64 (nl_word_payload w) 0) 8)))
+    ;; In line: a symbol object's function, plist and PLAINVAL or FORWARDED
+    ;; value.  A symbol object answers D1's other slots from GNU's fields:
+    ;; 0 the value (LOCALIZED: the default kept in the blv; VARALIAS: nil,
+    ;; an alias has no value of its own, data.c:1619), 3 t when
+    ;; trapped_write is NOWRITE, 4 the VARALIAS target, 5 the LOCALIZED
+    ;; redirect vector, 6 the bit fields as a fixnum (declared_special =
+    ;; 64), 7 the FORWARDED type, 8 the name.  The LOCALIZED blv is a
+    ;; two-slot vector [REDIRECT DEFAULT].
+    (defun nl_ent_w (w k)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (kind (logand h 63)))
+            (if (if (if (= kind 4) 1 (= kind 16))
+                    (if (= k 0) (let* ((r (logand (sar h 8) 3))) (or (= r 0) (= r 3)))
+                      (< k 3))
+                  0)
+                (heap-read-u64 (+ (- w 6) (+ 16 (* k 8))) 0)
+              (nl_ent_w_slow w k)))
+        (nl_ent_w_slow w k)))
+    (defun nl_ent_w_slow (w k)
+      (if (= (nl_so_p w) 0) (nl_record_slot_word w k)
+        (let* ((b (- w 6)) (h (heap-read-u64 b 0)) (r (logand (sar h 8) 3)))
+          (if (< k 3)
+              (if (= k 0)
+                  (if (= r 1) 3
+                    (if (= r 2) (nl_vector_slot_word (heap-read-u64 b 16) 1)
+                      (heap-read-u64 b 16)))
+                (heap-read-u64 (+ b (+ 16 (* k 8))) 0))
+            (if (= k 3) (if (= (logand (sar h 10) 3) 1) 7 3)
+              (if (= k 4) (if (= r 1) (heap-read-u64 b 16) 3)
+                (if (= k 5) (if (= r 2) (nl_vector_slot_word (heap-read-u64 b 16) 0) 3)
+                  (if (= k 6) (nl_imm_int (if (= (logand (sar h 14) 1) 1) 64 0))
+                    (if (= k 7) (if (= r 3) (nl_imm_int (logand (sar h 16) 3)) 3)
+                      (let* ((nm (heap-read-u64 b 8))) (if (= nm 0) 3 nm)))))))))))
+    ;; Store into a symbol object's flags word, keeping the collector's bits.
+    (defun nl_so_flags_set (b mask bits)
+      (ptr-write-u64 b 0 (logior (logand (heap-read-u64 b 0) (- -1 mask)) bits)))
+    ;; In line: a symbol object's function, plist and PLAINVAL value.  VAL is
+    ;; a WORD or a Sexp slot pointer, as for `nl_record_set_slot', and WORD
+    ;; stores go through the `nl_val_clone_into' keystone.  Answers 1 after
+    ;; the store, 0 after a stashed signal.
+    (defun nl_ent_set (w k val)
+      (if (= (logand w 7) 6)
+          (let* ((h (heap-read-u64 (- w 6) 0)) (kind (logand h 63)))
+            (if (if (if (= kind 4) 1 (= kind 16))
+                    (if (= k 0) (= (logand (sar h 8) 3) 0) (< k 3))
+                  0)
+                (seq (nl_val_clone_into val (+ (- w 6) (+ 16 (* k 8)))) 1)
+              (nl_ent_set_slow w k val)))
+        (nl_ent_set_slow w k val)))
+    ;; The slow store converts a FORWARDED value as GNU store_symval_forwarding
+    ;; (data.c:1470) does -- a boolean variable stores t or nil, an integer
+    ;; variable refuses a non-integer (`nl_sym_signal_wta_integerp') -- except
+    ;; the unbound marker, which an unbinding restores as it was bound.
+    (defun nl_ent_set_slow (w k val)
+      (let* ((so (nl_so_p w))
+             (fwd (if (= k 0)
+                      (if (= so 1)
+                          (let* ((h (heap-read-u64 (- w 6) 0)))
+                            (if (= (logand (sar h 8) 3) 3) (logand (sar h 16) 3) 0))
+                        (if (< (sar (heap-read-u64 (nl_word_payload w) 0) 8) 9) 0
+                          (let* ((d (nl_record_slot_word w 7)))
+                            (if (= (logand d 3) 1) (sar d 2) 0))))
+                    0))
+             (v (if (= fwd 0) val
+                  (if (if (= (logand val 7) 0)
+                          (if (= (heap-read-u8 val 0) 4)
+                              (if (= (heap-read-u64 val 24) 22)
+                                  (let* ((p (heap-read-u64 val 16)))
+                                    (if (= (heap-read-u64 p 0) 3255381746650998126)
+                                        (if (= (heap-read-u64 p 8) 3270860680036773493)
+                                            (= (logand (heap-read-u64 p 16) 281474976710655)
+                                               125779919921517)
+                                          0)
+                                      0))
+                                0)
+                            0)
+                        0)
+                      val
+                    (if (= fwd 2) (if (= (nl_val_tag val) 0) 3 7)
+                      (if (= (logand val 3) 1) val
+                        (if (= (logand val 1) 0)
+                            (if (= (nl_val_tag val) 2) val
+                              (if (= (nl_val_tag val) 13) val 0))
+                          0)))))))
+        (if (= v 0) (nl_sym_signal_wta_integerp val)
+          (if (= so 0)
+              (seq (extern-call nl_record_set_slot (nl_word_payload w) k v) 1)
+            (let* ((b (- w 6)) (h (heap-read-u64 b 0)) (r (logand (sar h 8) 3)))
+              (seq
+               (if (< k 3)
+                   (if (= k 0)
+                       (if (= r 1) 0
+                         (if (= r 2)
+                             (extern-call nl_vector_set_slot
+                                          (nl_word_payload (heap-read-u64 b 16)) 1 v)
+                           (extern-call nl_val_clone_into v (+ b 16))))
+                     (extern-call nl_val_clone_into v (+ b (+ 16 (* k 8)))))
+                 (if (= k 3)
+                     (nl_so_flags_set b 3072 (if (= (nl_val_tag v) 0) 0 1024))
+                   (if (= k 4)
+                       (if (= (nl_val_tag v) 0)
+                           (if (= r 1) (seq (ptr-write-u64 b 16 3) (nl_so_flags_set b 768 0)) 0)
+                         (seq (extern-call nl_val_clone_into v (+ b 16))
+                              (nl_so_flags_set b 768 256)))
+                     (if (= k 5)
+                         (if (= (nl_val_tag v) 8)
+                             (if (= r 2) 0
+                               (let* ((blv (extern-call nl_alloc_vector 2)))
+                                 (seq (ptr-write-u64 blv 0 (+ (* 2 256) 8))
+                                      (ptr-write-u64 blv 8 3)
+                                      (ptr-write-u64 blv 16 3)
+                                      (extern-call nl_val_clone_into v (+ blv 8))
+                                      (if (= r 1) 0
+                                        (ptr-write-u64 blv 16 (heap-read-u64 b 16)))
+                                      (ptr-write-u64 b 16 (+ blv 6))
+                                      (nl_so_flags_set b 768 512))))
+                           (if (= r 2)
+                               (seq (ptr-write-u64 b 16 (nl_vector_slot_word (heap-read-u64 b 16) 1))
+                                    (nl_so_flags_set b 768
+                                                     (if (= (logand (sar h 16) 3) 0) 0 768)))
+                             0))
+                       (if (= k 6)
+                           (nl_so_flags_set b 16384
+                                            (if (= (logand (if (= (logand v 3) 1) (sar v 2) 0) 64) 0)
+                                                0 16384))
+                         (if (= k 7)
+                             (if (= (logand v 3) 1)
+                                 (nl_so_flags_set b 197376
+                                                  (+ 768 (* (logand (sar v 2) 3) 65536)))
+                               (if (= r 3) (nl_so_flags_set b 197376 0) 0))
+                           (extern-call nl_val_clone_into v (+ b 8))))))))
+               1))))))
+    ;; GNU's (wrong-type-argument integerp VAL), raised as a signal through
+    ;; the pending-exit values (`nl_exit_signal_w'); answers 0, the slow
+    ;; store's "signalled".
+    (defun nl_sym_signal_wta_integerp (val)
+      (let* ((bytes (alloc-bytes 24 1)) (tag (alloc-bytes 32 8))
+             (pred (alloc-bytes 32 8)) (tail (alloc-bytes 32 8))
+             (data (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 bytes 0 8751669898145395319)
+             (ptr-write-u64 bytes 8 7887324063363589488)
+             (ptr-write-u64 bytes 16 7630437)
+             (nl_alloc_symbol bytes 19 tag)
+             (ptr-write-u64 bytes 0 8102650174351109737)
+             (nl_alloc_symbol bytes 8 pred)
+             (nelisp_cons_construct val 3 tail)
+             (nelisp_cons_construct pred tail data)
+             (nl_exit_signal_w tag data)
+             0)))
+    ;; GNU find_symbol_value's in-line cases (data.c:1619): the value WORD of
+    ;; ENTRY when its redirect is PLAINVAL or FORWARDED (the unbound marker
+    ;; when void), else 0 and the caller takes `nl_sym_find_value_w'.  A
+    ;; nine-slot record entry is plain when its alias and local slots are
+    ;; nil.  Callers test `nl_sym_direct_env_p' first (Doc 199 workers bind
+    ;; deeply).
+    (defun nl_ent_plain_value (entry)
+      (if (= (logand entry 7) 6)
+          (let* ((b (- entry 6)) (h (heap-read-u64 b 0)) (kind (logand h 63)))
+            (if (if (= kind 4) 1 (= kind 16))
+                (let* ((r (logand (sar h 8) 3)))
+                  (if (or (= r 0) (= r 3)) (heap-read-u64 b 16) 0))
+              (if (= kind 12)
+                  (let* ((n (sar h 8)))
+                    (if (if (> n 4) (= (heap-read-u64 b 48) 3) 1)
+                        (if (if (> n 5) (= (heap-read-u64 b 56) 3) 1)
+                            (heap-read-u64 b 16) 0)
+                      0))
+                0)))
+        0))
+    ;; Doc 226 D9: a symbol's value and function cells start as GNU's
+    ;; Qunbound (alloc.c:3660 init_symbol).  NeLisp's unbound marker is
+    ;; the interned `nelisp--unbound-marker', recognized by name, so every
+    ;; object shares one view of it, made on first use and kept at
+    ;; 268436336 beside the shared symentry (268436328); the collector
+    ;; marks and moves both.
+    (defun nl_sym_unbound ()
+      (if (= (heap-read-u64 268436336 0) 0)
+          (let* ((ubuf (alloc-bytes 24 1)) (box (alloc-bytes 32 8)))
+            (seq (ptr-write-u64 ubuf 0 3255381746650998126)
+                 (ptr-write-u64 (+ ubuf 8) 0 3270860680036773493)
+                 (ptr-write-u64 (+ ubuf 16) 0 125779919921517)
+                 (nl_alloc_symbol ubuf 22 box)
+                 (ptr-write-u64 268436336 0 box)
+                 box))
+        (heap-read-u64 268436336 0)))
+    ;; GNU Fmake_symbol (alloc.c:3675): a new uninterned symbol whose name is
+    ;; NAME (a string WORD or Sexp slot), void value and function, empty
+    ;; plist.  Answers the symbol WORD, or 0 when memory is exhausted.
+    ;; SHARE 1 stores NAME itself, as GNU does, when it is a string box in
+    ;; the heap (a value the caller holds, never a scratch slot); otherwise
+    ;; the keystone stores a box of its own.
+    (defun nl_sym_make_uninterned (name share)
+      (let* ((b (nl_symbol_alloc)))
+        (if (= b 0) 0
+          (let* ((u (nl_sym_unbound)))
+            (seq (ptr-write-u64 b 0 16)
+                 (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
+                 (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                 (if (if (= share 1)
+                         (if (= (logand name 7) 0)
+                             (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
+                                 (nl_gc_in_arena name) 0)
+                           0)
+                       0)
+                     (ptr-write-u64 b 8 name)
+                   (nl_val_clone_into name (+ b 8)))
+                 (+ b 6))))))
+    ;; A legacy 32-byte view of a symbol object, for the Sexp-slot ABI: the
+    ;; tag, the object's backing address as its identity (the payload), and
+    ;; the name's bytes.  Storing the view canonicalizes it back to the
+    ;; object's WORD (`nl_val_clone_into').
+    (defun nl_sym_view_into (w dst)
+      (let* ((meta (if (= (logand (heap-read-u64 (- w 6) 0) 63) 4) (heap-read-u64 (- w 6) 40) 0))
+             (n (nl_word_length w)))
+        (if (= meta 0)
+            (seq (ptr-write-u64 dst 0 (logand (heap-read-u64 (- w 6) 0) 63))
+                 (ptr-write-u64 dst 8 (- w 6))
+                 (ptr-write-u64 dst 16 (nl_word_data w))
+                 (ptr-write-u64 dst 24 n)
+                 dst)
+          ;; Doc 226 D9 stage 3.2: an interned object that has been completed
+          ;; (`nl_symobj_for_view') keeps the table slot of its name at +40, so
+          ;; its view is the canonical view of that name buffer -- what
+          ;; `nl_intern_write_sexp' makes -- and every consumer written for views
+          ;; (the name side table, the static symbol id, the cells) sees what it
+          ;; always saw.  A removed name keeps its slot, hence its own buffer.
+          (nl_intern_write_sexp
+           dst
+           (heap-read-u64 (+ (heap-read-u64 268436288 0) (+ (* (logand meta 1048575) 16) 8)) 0)
+           n))))
+    ;; `eq' of two symbols when a symbol object WORD (class 110, kind 4 or 16)
+    ;; is one of them and the words differ (the AOT symbol-eq calls this).
+    ;; Doc 226 D9 stage 3: two distinct objects are two symbols (an interned
+    ;; name that was uninterned and interned again is a new symbol with the
+    ;; old name); an object against a symbol view is the same symbol when the
+    ;; names are -- an interned symbol's view shares its canonical name
+    ;; buffer, and a plain overflow view keeps the historical name compare.
+    (defun nl_symbol_word_eq (a b)
+      (if (= a b) 1
+        (let* ((oa (nl_so_p a)) (ob (nl_so_p b)))
+          (if (= (logand oa ob) 1) 0
+            (let* ((view (if (= oa 1) b a)) (obj (if (= oa 1) a b)))
+              (if (= (logand view 7) 0)
+                  (if (= (heap-read-u8 view 0) 4)
+                      ;; The symbol of a view is the one its canonical buffer
+                      ;; (or the object address it was derived from) names:
+                      ;; the same symbol as OBJ when that is OBJ's cell.  A
+                      ;; name that was uninterned and interned again is a new
+                      ;; symbol with the old name.  Only a view with no cell
+                      ;; at all (a plain overflow name) is compared by name.
+                      ;; An interned object's meta word (+40) names its intern
+                      ;; table slot, whose buffer is the symbol's canonical name
+                      ;; buffer: a canonical view with that very buffer is the
+                      ;; symbol, any other canonical view another (a removed
+                      ;; slot keeps its buffer, a name interned again gets a new
+                      ;; one).  That needs no table, so the answer holds
+                      ;; whatever the mirror root names.
+                      (let* ((vb (heap-read-u64 view 16))
+                             (base (heap-read-u64 268436288 0))
+                             (m (if (= (logand (heap-read-u64 (- obj 6) 0) 63) 4)
+                                    (heap-read-u64 (- obj 6) 40) 0)))
+                        (if (if (= m 0) 0
+                              (if (> vb (+ base 16777224)) (< vb (heap-read-u64 268436296 0)) 0))
+                            (if (= vb (heap-read-u64 (+ base (+ (* (logand m 1048575) 16) 8)) 0)) 1 0)
+                          (let* ((mp (nl_symcells_mirror))
+                                 (e (if (= mp 0) 1 (nl_symcell_entry mp view))))
+                            (if (> e 1) (if (= e obj) 1 0)
+                              (if (= e 0) 0
+                                (let* ((n (nl_word_length obj)) (i 0) (same 1)
+                                       (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
+                                  (if (/= n (heap-read-u64 view 24)) 0
+                                    (seq (while (if (= same 1) (< i n) 0)
+                                           (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
+                                                (setq i (+ i 1))))
+                                         same))))))))
+                    0)
+                0))))))
+    ;; The canonical string of the interned name BUF/N (the side table's, made
+    ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
+    ;; The environment-free form of `nl_symbol_name_value_create'.
+    (defun nl_symname_make (buf n out)
+      (let* ((entry (nl_symbol_name_entry_for 1 buf n)))
+        (if (/= entry 0) (nl_symbol_name_copy_out entry out)
+          (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
+                 (name-tag 14) (i 0))
+            (seq (while (< i n)
+                   (seq (if (>= (heap-read-u8 buf i) 128) (setq name-tag 5) 0)
+                        (setq i (+ i 1))))
+                 (if (= (nl_alloc_str_write_tag buf n alloc-n out data name-tag) 0) 0
+                   (nl_symbol_name_register 1 buf n out)))))))
+    ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
+    ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol
+    ;; as the mirror's entry writers make it -- void value and function, empty
+    ;; plist, the key in its bucket chain and its cell in the cells vector --
+    ;; with its name string filled (intern_c_string_1, lread.c, makes the name
+    ;; with the symbol).  An object that exists is returned as it is, its name
+    ;; filled if the lazy path made it without.  Answers the object WORD, or 0
+    ;; when it cannot be made: no mirror yet, a name outside the intern arena,
+    ;; a parallel section (the mirror is read-only there), no unbound view, no
+    ;; cells vector, memory.
+    ;; The +40 word of the object of the interned name VIEW (a canonical view
+    ;; of BUF/N): bits 32-63 the name's FNV-1a hash (`nelisp_fnv1a', what the
+    ;; frames and the mirror hash by), bits 20-31 its static symbol id, bits
+    ;; 0-19 its slot in the intern table (a stable index, relocated with the
+    ;; table).  0 when the name has no live slot.
+    ;; The slot of the intern table whose buffer is BUF, probing from IDX; 0 when
+    ;; there is none.  The table's own probe compares the name's bytes; the
+    ;; canonical buffer is known here, so the pointer is compared.
+    (defun nl_intern_slot_of (table idx buf k)
+      (if (< 1048575 k) 0
+        (let* ((slot (+ table (* idx 16))))
+          (if (= (heap-read-u64 slot 0) 0) 0
+            (if (= (heap-read-u64 slot 8) buf) slot
+              (nl_intern_slot_of table (logand (+ idx 1) 1048575) buf (+ k 1)))))))
+    (defun nl_symobj_meta_h (buf h)
+      (let* ((base (heap-read-u64 268436288 0))
+             (slot (if (= base 0) 0 (nl_intern_slot_of base (logand h 1048575) buf 0))))
+        (if (= slot 0) 0
+          (logior (shl h 32)
+                  (logior (shl (logand (sar (heap-read-u64 (- buf 8) 0) 32) 4095) 20)
+                          (sar (- slot base) 4))))))
+    (defun nl_symobj_meta (view buf n)
+      (nl_symobj_meta_h buf (nl_intern_hash buf 0 n 2166136261)))
+    ;; The mirror's name-keyed table gets (NAME . OBJ) at the head of the
+    ;; bucket of hash H and counts it, as `nelisp_mirror_prepend_install' does
+    ;; for the entry writers, without their scratch boxes and the second
+    ;; hashing of the name.  NAME is the Str of the symbol's name.
+    (defun nl_symobj_link (mp name obj h)
+      (let* ((ht (nl_record_slot_word mp 0))
+             (bk (nl_record_slot_word ht 1))
+             (idx (logand h (- (nl_word_payload (nl_record_slot_word ht 0)) 1)))
+             (outer (nelisp_cons_construct_w (nelisp_cons_construct_w name obj 0)
+                                             (nl_vector_slot_word bk idx) 0)))
+        (seq (nl_vector_set_slot (nl_word_payload bk) idx outer)
+             (nl_record_set_slot (nl_word_payload ht) 2
+                                 (+ (* (+ (nl_word_payload (nl_record_slot_word ht 2)) 1) 4) 1))
+             1)))
+    ;; The object's cell in the cells vector (`nl_symcell_refresh' without the
+    ;; lookup of the entry it was just given).
+    (defun nl_symobj_cell_store (mp buf n obj)
+      (let* ((idx (nl_symcell_assign buf n)))
+        (if (= idx 0) 0
+          (if (= (nl_symcell_reserve mp idx) 0) 0
+            (seq (nl_vector_set_slot
+                  (nl_word_payload (nl_record_slot_word (nl_record_slot_word mp 0) 3))
+                  idx obj)
+                 1)))))
+    (defun nl_symobj_for_view (view)
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((buf (heap-read-u64 view 16)) (n (heap-read-u64 view 24))
+                 (e (nl_symcell_entry mp view))
+                 (base (heap-read-u64 268436288 0)))
+            (if (> e 1)
+                ;; A view derived from the object has no canonical buffer: the
+                ;; object is complete already.  A canonical one fills what a
+                ;; lazily made object lacks.
+                (seq (if (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0)
+                         (seq (if (= (heap-read-u64 (- e 6) 8) 3)
+                                  (let* ((name (alloc-bytes 32 8)))
+                                    ;; The string is allocated in the arena the
+                                    ;; top-level boundary may rewind unless
+                                    ;; the mutation epoch moved (wf_dirty).
+                                    (seq (wf_dirty)
+                                         (if (= (nl_symname_make buf n name) 0) 0
+                                           ;; The box itself is the name: it shares
+                                           ;; the side table's bytes, so every
+                                           ;; `symbol-name' answer is `eq' and an
+                                           ;; `aset' shows through all of them.
+                                           (ptr-write-u64 (- e 6) 8 name))))
+                                0)
+                              (if (= (heap-read-u64 (- e 6) 40) 0)
+                                  (ptr-write-u64 (- e 6) 40 (nl_symobj_meta view buf n))
+                                0))
+                       0)
+                     e)
+              (if (= e 1) 0
+                (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                  (let* ((u (heap-read-u64 268436336 0)))
+                    (if (= u 0) 0
+                      (let* ((b (nl_symbol_alloc)))
+                        (if (= b 0) 0
+                          (let* ((name (alloc-bytes 32 8))
+                                 (h (nl_intern_hash buf 0 n 2166136261)))
+                            (seq
+                             ;; Everything allocated here is linked into the
+                             ;; mirror: keep the top-level boundary from
+                             ;; rewinding the arena over it (wf_dirty).
+                             (wf_dirty)
+                             (ptr-write-u64 b 0 8196)
+                             (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
+                             (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                             ;; +40: the name's hash, its static symbol id (GNU's
+                             ;; lispsym index, which the builtin dispatch reads) and
+                             ;; its intern table slot (`nl_symobj_meta').
+                             (ptr-write-u64 b 40 (nl_symobj_meta_h buf h))
+                             ;; The name is the chain's key: without it (memory) the
+                             ;; object is not registered.
+                             (if (= (nl_symname_make buf n name) 0) 0
+                               (seq (ptr-write-u64 b 8 name)
+                                    (nl_symobj_link mp name (+ b 6) h)
+                                    (nl_symobj_cell_store mp buf n (+ b 6))
+                                    (+ b 6))))))))))))))))
+    ;; The reader's and `intern''s hook: W is the WORD they answer.  An
+    ;; interned symbol's view gets its object here, so the symbol is complete
+    ;; when it is first used; any other value passes through.
+    (defun nl_symobj_note (w)
+      (seq (if (= (nl_symcells_mirror) 0) 0
+             (if (= (logand w 7) 0)
+                 (if (< w 4096) 0
+                   (if (= (heap-read-u8 w 0) 4) (nl_symobj_for_view w) 0))
+               0))
+           w))
+    ;; Doc 226 D9 stage 3.4: W, or the object WORD of the interned symbol W is
+    ;; a view of (made if it has none yet).  What the reader and `intern'
+    ;; answer, as GNU's intern_c_string_1 answers the Lisp_Symbol.  A view
+    ;; without a canonical name buffer (no entry) stays as it is.
+    (defun nl_symobj_of (w)
+      (if (= (nl_symcells_mirror) 0) w
+        (if (= (logand w 7) 0)
+            (if (< w 4096) w
+              (if (= (heap-read-u8 w 0) 4)
+                  (let* ((o (nl_symobj_for_view w))) (if (= o 0) w o))
+                w))
+          w)))
+    ;; Doc 226 D9 stage 3.2.  The object WORD an interned symbol's view is
+    ;; stored as, or 0 when the symbol stays a view.  It only looks: the
+    ;; object is made where the reader and `intern' answer the symbol
+    ;; (`nl_symobj_note'), and one without its name string (a lazily made
+    ;; one) is not handed out, since a consumer reads the name from it.
+    ;; The unbound marker stays a view: a cell holding it is void, and every
+    ;; test for it is a name compare.  A view derived from an object (tag 4,
+    ;; the object's address as its identity, the name string's bytes) is its
+    ;; object.
+    (defun nl_symview_object (view)
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((e (nl_symcell_entry mp view)))
+            (if (<= e 1) 0
+              (if (= (heap-read-u64 (- e 6) 8) 3) 0
+                (let* ((u (heap-read-u64 268436336 0)))
+                  (if (= u 0) e
+                    (if (= (heap-read-u64 view 16) (heap-read-u64 u 16)) 0 e)))))))))
+    ;; VIEW's object WORD, else VIEW itself.
+    (defun nl_symview_canon (view)
+      (let* ((o (nl_symview_object view)))
+        (if (= o 0) view o)))
+    ;; `record-slot-ref-ptr' over D1's slot numbers (`nl_record_slot_ptr'):
+    ;; a pointer WORD passes through, an immediate gets a fresh view.
+    (defun nl_ent_ptr (w k)
+      (let ((word (nl_ent_w w k)))
+        (if (= (logand word 1) 0) word
+          (extern-call nl_val_load word (alloc-bytes 32 8)))))
     ;; The fixed-size record's former capacity field retains its type WORD.
     ;; Public slot indexes and the inline type view stay unchanged.
     (defun nl_record_type_word (record)
@@ -6113,7 +6930,7 @@ REPL-facing module it feeds."
            (if (= old 0) 0 (nl_os_free_chunk old (* cap 32))) 1))))
     (defun nl_gc_typed_add (kind key aux countoff amount)
       (let* ((st (data-addr nl_gc_typed_state)))
-        (if (= (heap-read-u64 st 0) 1)
+        (if (if (= (heap-read-u64 st 0) 1) 1 (if (= (heap-read-u64 st 0) 4) 1 0))
             (if (if (= (heap-read-u64 st 16) 0) (= (nl_gc_typed_grow) 0)
                   (if (>= (* (+ (heap-read-u64 st 24) 1) 4)
                           (* (heap-read-u64 st 16) 3))
@@ -6148,7 +6965,7 @@ REPL-facing module it feeds."
               (if (or (= tag 6) (= tag 15))
                   (if (= (heap-read-u64 sp 8) (heap-read-u64 st 80))
                       (ptr-write-u8 sp 0 15) 0) 0))
-          (if (= mode 1)
+          (if (if (= mode 1) 1 (if (= mode 4) 1 0))
               ;; Doc 223, GNU gcstat: cons-block cells are counted by
               ;; sweep_conses, and image objects are not counted, as GNU
               ;; never counts pdumper objects (they live outside its
@@ -6197,6 +7014,39 @@ REPL-facing module it feeds."
         ;; nil and t are immediate symbols, with no name allocation needed.
         (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                        (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) 2)) 0))
+    ;; One explicit collection that leaves the six `garbage-collect' counts at
+    ;; nl_gc_typed_state+32.  MODE 4 counts at the first mark (and the typed sweeps, and the intern
+    ;; table's occupancy, cached by the arena's bump pointer, which only an interning moves);
+    ;; MODE 1 is the reference census, an identity set over the marked edges and a walk of the table.
+    ;; Answers 1, or 0 after an out-of-memory in the identity set.
+    (defun nl_gc_stats_run (mode)
+      (let* ((state (data-addr nl_gc_typed_state)) (i 0))
+        (seq
+         (while (< i 112) (ptr-write-u64 state i 0) (setq i (+ i 8)))
+         (ptr-write-u64 state 0 mode)
+         (nl_gc_collect_from_recorded_roots 0)
+         (nl_gc_explicit_rearm)
+         (if (= mode 1)
+             (nl_gc_typed_interns (alloc-bytes 32 8))
+           (let ((key (+ (heap-read-u64 268436296 0) (heap-read-u64 268436288 0))))
+             (seq
+              (if (= (heap-read-u64 state 112) key) 0
+                (let ((cursor 0) (n 0) (slot (alloc-bytes 32 8)))
+                  (seq
+                   (while (>= cursor 0)
+                     (seq (setq cursor (nl_intern_next cursor slot))
+                          (if (< cursor 0) 0 (setq n (+ n 1)))))
+                   (ptr-write-u64 state 112 key)
+                   (ptr-write-u64 state 120 n))))
+              ;; nil and t are immediate symbols, with no name in the table.
+              (ptr-write-u64 state 40
+                (+ (+ (heap-read-u64 state 40) (heap-read-u64 state 120)) 2)))))
+         (if (= (heap-read-u64 state 8) 0) 0
+           (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
+         (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0) (ptr-write-u64 state 24 0)
+         (if (= (heap-read-u64 state 0) 3)
+             (seq (ptr-write-u64 state 0 0) 0)
+           (seq (ptr-write-u64 state 0 0) 1)))))
     ;; Chunk-aware membership.  During Doc 140 Stage 3 only chunk 0 is active,
     ;; but the walk already follows the descriptor list introduced in Stage 2.
     ;; Membership is restricted to [data-start, base+cursor) so fixed control
@@ -6492,8 +7342,11 @@ REPL-facing module it feeds."
                         (setq chunk 0)))))
                  found))))
         0)))
-    ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
+    ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
+    ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
+    ;; image block.  The counters of an explicit `garbage-collect' count on 2
+    ;; (GNU counts only what lives in its own blocks, never a pdumper object).
     (defun nl_gc_mark_block (obj)
       ;; Doc155 §8.12 sound-GC: recurse on mark 0 (unmarked) OR mark 4
       ;; (conserv-PINNED-not-recursed).  A pinned block was kept alive by the
@@ -6505,7 +7358,24 @@ REPL-facing module it feeds."
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
       ;; Doc 223: an image object takes its bit in the boot mark bitmap
       ;; (pdumper_set_marked); its header is never written.
-      (if (= (nl_boot_start_p obj) 1) (nl_boot_mark obj)
+      ;; The image test is GNU's pdumper_find_object_type plus pdumper_marked_p and
+      ;; pdumper_set_marked in one pass: the range, the alignment, the start bit
+      ;; and the mark bit share the granule index.  R is -1 for a block outside
+      ;; the image, else the mark answer (1 newly marked, 0 already marked).
+      (let ((r (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
+                 (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
+                   (if (/= (logand obj 7) 0) -1
+                     (let* ((st (data-addr nl_typed_alloc))
+                            (g (sar (- obj (heap-read-u64 st 200)) 3))
+                            (wi (* (sar g 6) 8))
+                            (bit (shl 1 (logand g 63))))
+                       (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
+                         (let* ((wa (+ (heap-read-u64 st 216) wi))
+                                (m (heap-read-u64 wa 0)))
+                           (if (= (logand m bit) 0)
+                               (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                             0)))))))))
+        (if (>= r 0) r
       (if (= (nl_gc_object_start_p obj) 0)
           ;; A data-only owner cannot be repaired by a WORD relocation.
           ;; Find its GNU sdata back-pointer, keep the header, and pin data.
@@ -6521,9 +7391,9 @@ REPL-facing module it feeds."
           (if (= (sar raw 32) 0)
               (let ((m (nl_hdr_mark hdr)))
                 (if (if (= m 0) 1 (if (= m 4) 1 0))
-                    (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
+                    (nl_seq2 (nl_hdr_set_mark hdr 1) 2)
                   0))
-            0)))))
+            0))))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; ELEMENT CAPACITY of the block whose object pointer is PTR: the payload
@@ -6599,24 +7469,43 @@ REPL-facing module it feeds."
             (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
-      (if (= (nl_gc_mark_block box) 0) 0
+      (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 3) (nl_symbol_mark_cell box)
+      (let ((mr (nl_gc_mark_block box)))
+       (if (= mr 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
-          (nl_gc_typed_vectorlike box kind n)
+          (nl_gc_typed_vectorlike box kind n mr)
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
+            (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))
-    (defun nl_gc_typed_vectorlike (box kind n)
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))))
+    (defun nl_gc_typed_vectorlike (box kind n mr)
       (let* ((state (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 state 0))
              (before (heap-read-u64 state 64)))
-        (if (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)
-            (seq (nl_gc_typed_add 5 box 0 64 1)
-                 (if (> (heap-read-u64 state 64) before)
-                     (ptr-write-u64 state 72
-                       (+ (heap-read-u64 state 72)
-                          (if (= kind 8) n
-                            (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0)) 0)))
+        (if (if (= kind 3) 0 (if (= kind 13) 0 (if (= kind 11) 0 1)))
+            (if (= mode 4)
+                ;; A heap vector, record, char-table or closure marked for the first time.
+                (if (= mr 2)
+                    (seq (ptr-write-u64 state 64 (+ before 1))
+                         (ptr-write-u64 state 72
+                           (+ (heap-read-u64 state 72)
+                              (if (= kind 8) n
+                                (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))))
+                  0)
+              (if (= mode 1)
+                  (if (= (nl_gc_is_boot box) 0)
+                      (seq (nl_gc_typed_add 5 box 0 64 1)
+                           (if (> (heap-read-u64 state 64) before)
+                               (ptr-write-u64 state 72
+                                 (+ (heap-read-u64 state 72)
+                                    (if (= kind 8) n
+                                      (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0))
+                    0)
+                0))
+          0)))
     ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool GC arms.  The pool
     ;; is no longer a GC-managed Sexp::Vector; it is a flat cap*32B buffer
     ;; whose `cap' is stashed @268436448 (`nl_gc_pool_cap').  Mark = mark the
@@ -6872,8 +7761,21 @@ REPL-facing module it feeds."
         (seq (while (= go 1)
           (seq (setq go 0)
             (let ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8))))
-              (if (= (logand sp 7) 2) 0 (nl_gc_typed_slot sp 7))
-              (if (= (nl_gc_mark_cons_payload box) 0) 0
+              (if (= (logand sp 7) 2) 0
+                (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
+                  (nl_gc_typed_slot sp 7)))
+              (let ((r (nl_gc_mark_cons_payload box)))
+               (if (= r 0) 0
+                (seq
+                  ;; A legacy heap cons marked for the first time (a cons-block cell is counted
+                  ;; by sweep_conses, an image cons never).
+                  (if (= r 2)
+                      (if (= (logand sp 7) 2) 0
+                        (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                            (ptr-write-u64 (data-addr nl_gc_typed_state) 32
+                              (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) 1))
+                          0))
+                    0)
                 (if (> (nl_gc_weak_table_mode box) 0)
                     (let ((meta (heap-read-u64 box 0)) (index (heap-read-u64 box 8)))
                       (seq (ptr-write-u64 (nl_gc_weak_meta_slot meta 10) 0
@@ -6891,7 +7793,7 @@ REPL-facing module it feeds."
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))
-                              (nl_gc_mark_slot dw)))))))))))))) 0)))
+                              (nl_gc_mark_slot dw))))))))))))))) 0))))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
@@ -6937,8 +7839,15 @@ REPL-facing module it feeds."
                (nl_gc_mark_buf extra)
                (nl_gc_mark_char_table_slots extra 0 extra_len 32 0)))))
     (defun nl_gc_mark_bool_vector_box (box)
-      (if (= (nl_gc_mark_block box) 0) 0
-        (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))
+      (let ((r (nl_gc_mark_block box)))
+        (if (= r 0) 0
+          (seq (if (= r 2)
+                   (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                       (ptr-write-u64 (data-addr nl_gc_typed_state) 64
+                         (+ (heap-read-u64 (data-addr nl_gc_typed_state) 64) 1))
+                     0)
+                 0)
+               (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))))
     ;; Canonical symbol-name strings live in an external sidecar and are
     ;; explicit collector edges. Intern entries stay live with the permanent
     ;; intern table; tag-16 entries are live only when reached this epoch.
@@ -7103,11 +8012,20 @@ REPL-facing module it feeds."
         0)))
     ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
     (defun nl_gc_mark_legacy_slot (sp)
-      (let ((tag (heap-read-u8 sp 0)))
-        (nl_gc_typed_slot sp tag)
+      (let* ((tag (heap-read-u8 sp 0))
+             (st (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 st 0)))
+        ;; The identity-set census runs in modes 1 and 2 only; mode 4 counts at the first mark.
+        (if (= (logand mode 3) 0) 0 (nl_gc_typed_slot sp tag))
         (if (= tag 19)
-            (let ((box (heap-read-u64 sp 8)))
-              (if (= (nl_gc_mark_block box) 0) 0 (nl_gc_mark_slot box)))
+            (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+              (if (= r 0) 0
+                (seq (if (= r 2)
+                         (if (= mode 4)
+                             (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
+                           0)
+                       0)
+                     (nl_gc_mark_slot box))))
         (if (= tag 7)
             (nl_gc_mark_cons sp)
           (if (= tag 8)
@@ -7115,20 +8033,27 @@ REPL-facing module it feeds."
             (if (or (= tag 12) (= tag 17) (= tag 18))
                 (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
               (if (= tag 11)
-                  ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged),
-                  ;; rc @ box+8, size 16.  Mark the NlCell box, then the
-                  ;; value WORD: immediate (low bit 1) -> no child; else
-                  ;; mark/recurse the 32B child box it points at (mirrors
-                  ;; the Vector/Record pointer-edge handling).
+                  ;; Cell (Doc 216 S5): header @ box+0, value WORD @ box+8,
+                  ;; size 16.  Mark the NlCell box, then the value WORD:
+                  ;; immediate (low bit 1) -> no child; else mark/recurse the
+                  ;; child it points at (mirrors the Vector/Record handling).
                   (let ((box (heap-read-u64 sp 8)))
                     (if (= (nl_gc_mark_block box) 0) 0
-                      (let ((vw (heap-read-u64 box 0)))
+                      (let ((vw (heap-read-u64 box 8)))
                         (nl_gc_mark_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     ;; MutStr/UnibyteMutStr: NlStr*@sp+8 (ptr@box+8).
-                    (let ((box (heap-read-u64 sp 8)))
-                      (if (= (nl_gc_mark_block box) 0) 0
-                        (nl_gc_mark_buf (heap-read-u64 box 8))))
+                    (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+                      (if (= r 0) 0
+                        (seq (if (= r 2)
+                                 (if (= mode 4)
+                                     (if (< (nl_hdr_bt (- box 8)) 40) 0
+                                       (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                            (ptr-write-u64 st 56
+                                              (+ (heap-read-u64 st 56) (heap-read-u64 box 16)))))
+                                   0)
+                               0)
+                             (nl_gc_mark_buf (heap-read-u64 box 8)))))
                   (if (or (= tag 5) (= tag 14))
                       ;; A caller-owned view of a canonical String: mark the header and
                       ;; queue the view so a sdata move repairs its data pointer.
@@ -7140,22 +8065,50 @@ REPL-facing module it feeds."
                                         (ptr-write-u64 fix 8 (heap-read-u64 stv 64))
                                         (ptr-write-u64 stv 64 fix) 1))))
                              0)
-                          (nl_gc_mark_buf (heap-read-u64 sp 16)) 0) ; legacy transport
+                      (let ((r (nl_gc_mark_block (heap-read-u64 sp 16)))) ; Str/UnibyteStr
+                        (if (= r 2)
+                            (if (= mode 4)
+                                (let* ((p (heap-read-u64 sp 16)) (len (heap-read-u64 sp 24)))
+                                  (if (< len 0) 0
+                                    (if (> len (- (nl_hdr_bt (- p 8)) 8)) 0
+                                      (if (= len 0)
+                                          ;; GNU shares one empty string; so does the census.
+                                          (if (= (heap-read-u64 st 104) 0)
+                                              (seq (ptr-write-u64 st 104 1)
+                                                   (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1)))
+                                            0)
+                                        (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                             (ptr-write-u64 st 56 (+ (heap-read-u64 st 56) len)))))))
+                              0)
+                          0))
+                        0)
                     (if (or (= tag 4) (= tag 16))
                         (nl_seq2
-                         (nl_gc_mark_buf (heap-read-u64 sp 16))
+                         (if (= tag 16) (nl_gc_mark_symview sp) 0)
+                        (nl_seq2
+                         (let ((r (nl_gc_mark_block (heap-read-u64 sp 16))))
+                           ;; A symbol named by a block (an uninterned or per-occurrence name) is
+                           ;; counted when the block is first marked; a name in the intern region
+                           ;; is in the table's count; a tag-16 symbol's identity is not a block, so
+                           ;; the identity set counts those.
+                           (if (= tag 16)
+                               (if (= mode 4) (nl_gc_typed_slot sp 16) 0)
+                             (if (= r 0) 0
+                               (if (= mode 4)
+                                   (ptr-write-u64 st 40 (+ (heap-read-u64 st 40) 1))
+                                 0))))
                          (nl_gc_symname_mark_one
                           (if (= tag 4) 1 2)
                           (if (= tag 4) (heap-read-u64 sp 16)
                             (heap-read-u64 sp 8))
-                          (heap-read-u64 sp 24)))
+                          (heap-read-u64 sp 24))))
                       ;; Bignum (Doc 190 Phase A, tag 13): sign@sp+8,
                       ;; limb-ptr@sp+16, limb-count@sp+24 -- the same
                       ;; inline-pointer shape as Str/Symbol above (a raw
                       ;; limb byte buffer, no Sexp children), so it is
                       ;; marked the SAME way: mark the limb buffer block,
                       ;; no recursion (there is nothing to recurse into).
-                      (if (= tag 13) (nl_gc_mark_buf (heap-read-u64 sp 16))
+                      (if (= tag 13) (nl_gc_mark_block (- (heap-read-u64 sp 16) 8))
                       (if (= tag 9) (nl_gc_mark_char_table_box (heap-read-u64 sp 8))
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
@@ -7340,29 +8293,44 @@ REPL-facing module it feeds."
     ;; Record the free (mark 2) blocks of the loaded image [DS, END) before
     ;; anything reuses them.  A walk desync stops early; unmapped holes stay
     ;; permanent, which only keeps garbage, never frees a boot object.
+    (defun nl_boot_hole_map_fill (map ds hdr end)
+      ;; One bit per 8 bytes of [DS, END) for every free block (mark 2) of the
+      ;; header run [HDR, END).
+      (let ((bt 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
+                                         (sar (- (+ hdr bt) ds) 3))
+                0)
+              (setq hdr (+ hdr bt)))))
+         0)))
     (defun nl_boot_hole_map_build (ds end)
       (let* ((bytes (* (+ (sar (- end ds) 9) 1) 8))
              (map (nl_os_alloc_chunk bytes))
-             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0))
-             (bt 0))
+             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0)))
         (if (= map 0) 0
           (if (< hdr ds) 0
             (seq
              (nl_os_commit_range map 0 bytes)
-             (while (and (> hdr 0) (< hdr end))
-               (setq bt (nl_hdr_bt hdr))
-               (if (= (nl_gc_bt_ok hdr bt end) 0)
-                   (setq hdr end)
-                 (seq
-                  (if (= (nl_hdr_mark hdr) 2)
-                      (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
-                                             (sar (- (+ hdr bt) ds) 3))
-                    0)
-                  (setq hdr (+ hdr bt)))))
+             (nl_boot_hole_map_fill map ds hdr end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 0 map)
              0)))))
+    (defun nl_boot_hole_map_none (ds end)
+      ;; The image [DS, END) is loaded and has no hole run: no map, so
+      ;; `nl_boot_hole_p' answers 0 and every block below the watermark is boot
+      ;; (the sweep's `hmap = 0' arm).  The published end is what tells
+      ;; `nl_boot_build' that an image is present.
+      (seq (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 0 0)
+           0))
     (defun nl_gc_coalesce_and_rebuild_freelist ()
       (seq
        (nl_alloc_run_reset)
@@ -7661,9 +8629,48 @@ REPL-facing module it feeds."
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (ptr-write-u64 (data-addr nl_gc_stats) 8
-                     (nl_gc_debt_limit_for
-                      (heap-read-u64 (data-addr nl_gc_stats) 16))))
+      (seq (ptr-write-u64 (data-addr nl_gc_stats) 8
+                          (nl_gc_debt_limit_for
+                           (heap-read-u64 (data-addr nl_gc_stats) 16)))
+           (nl_gc_budget_refill)))
+    (defun nl_gc_debt_now ()
+      ;; The bytes allocated since the last collection: the debt folded at the last refill plus
+      ;; the slice spent since (the budget's base less what is left of it).
+      (+ (heap-read-u64 (data-addr nl_gc_stats) 0)
+         (- (heap-read-u64 (data-addr nl_gc_until_base) 0)
+            (heap-read-u64 (data-addr nl_gc_until) 0))))
+    ;; The budget a poll site tests (GNU's consing_until_gc, alloc.c): negative means decide now.
+    ;; It is a slice of the headroom before a trigger can fire: the debt against its limit (64 MiB
+    ;; before the trigger arms, the poll's backstop), at most 4 MiB at a time, less one so that a
+    ;; nonnegative word proves debt < limit; -1 when the force hook is set or the reservation has
+    ;; reached the mid-form trigger.  The debt is folded into nl_gc_stats+0 here.
+    (defun nl_gc_budget_refill ()
+      (let* ((st (data-addr nl_gc_stats))
+             (debt (nl_gc_debt_now))
+             (rem (if (< (heap-read-u64 st 24) 2)
+                      (- 67108864 debt)
+                    (if (= (heap-read-u64 st 8) 0) 4194304
+                      (- (heap-read-u64 st 8) debt))))
+             (u (if (< rem 4194304) rem 4194304))
+             (until (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) -1
+                      (if (<= u 0) -1
+                        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                            (if (>= (heap-read-u64 268436184 0)
+                                    (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                                -1 (- u 1))
+                          (- u 1))))))
+        (seq (ptr-write-u64 st 0 debt)
+             (ptr-write-u64 (data-addr nl_gc_until_base) 0 until)
+             (ptr-write-u64 (data-addr nl_gc_until) 0 until)
+             0)))
+    ;; Make the budget negative without losing the debt spent so far: the base moves with it.
+    (defun nl_gc_budget_poke ()
+      (let ((u (heap-read-u64 (data-addr nl_gc_until) 0)))
+        (if (< u 0) 0
+          (seq (ptr-write-u64 (data-addr nl_gc_until_base) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until_base) 0) (+ u 1)))
+               (ptr-write-u64 (data-addr nl_gc_until) 0 -1)
+               0))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
@@ -7672,9 +8679,11 @@ REPL-facing module it feeds."
        (ptr-write-u64 268435576 0 live)
        (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
        (ptr-write-u64 (data-addr nl_gc_stats) 32
-                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32)
-                         (heap-read-u64 (data-addr nl_gc_stats) 0)))
+                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32) (nl_gc_debt_now)))
        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+       (nl_gc_budget_refill)
        0))
     (defun nl_gc_debt_rearm ()
       (seq
@@ -7685,7 +8694,7 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_due ()
       (if (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
         (if (= (heap-read-u64 (data-addr nl_gc_stats) 8) 0) 0
-        (if (< (heap-read-u64 (data-addr nl_gc_stats) 0)
+        (if (< (nl_gc_debt_now)
                (heap-read-u64 (data-addr nl_gc_stats) 8))
             0 1))))
     ;; The form-boundary test: growth watermark (unchanged) OR debt.
@@ -7840,6 +8849,7 @@ REPL-facing module it feeds."
        ;; then pdumper_clear_marks (gc_sweep alloc.c:7114) for image objects.
        (nl_sweep_conses)
        (nl_sweep_symbols)
+       (nl_sweep_floats)
        (nl_boot_clear_marks)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_swept_chunks
@@ -8083,7 +9093,20 @@ REPL-facing module it feeds."
       (if (= (nl_gc_conserv_typed w) 1) 0
         (let ((owner (nl_gc_conserv_resolve w)))
           (if (= owner 0) 0 (nl_gc_conserv_pin owner))))))
+    (defun nl_gc_regs_trace_window (p0 top)
+      ;; Probe mode of `nl_gc_conserv_scan' (Doc 223, "Scanning callee-saved
+      ;; registers"): the buffer named by nl_gc_regs_trace receives up to nine
+      ;; words of the window [P0, TOP) and nothing is scanned or marked.
+      (let* ((tr (heap-read-u64 (data-addr nl_gc_regs_trace) 0))
+             (n (/ (- top p0) 8)) (i 0))
+        (seq (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0)
+             (while (and (< i n) (< i 9))
+               (seq (ptr-write-u64 tr (* i 8) (heap-read-u64 p0 (* i 8)))
+                    (setq i (+ i 1))))
+             0)))
     (defun nl_gc_conserv_scan (p0 top)
+      (if (> (heap-read-u64 (data-addr nl_gc_regs_trace) 0) 0)
+          (nl_gc_regs_trace_window p0 top)
       (let* ((index (data-addr nl_gc_start_index))
              (active (heap-read-u64 index 16))
              (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
@@ -8098,7 +9121,7 @@ REPL-facing module it feeds."
           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
               (nl_gc_conserv_word word) 0)
           (setq p (+ p 8)))
-        0))
+        0)))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
              (index (data-addr nl_gc_start_index))
@@ -8159,6 +9182,7 @@ REPL-facing module it feeds."
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
         (nl_cons_unmark_all)
         (nl_symbol_unmark_all)
+        (nl_float_unmark_all)
         (nl_boot_clear_marks)
         0))
     (defun nl_gc_conserv_rollback ()
@@ -8189,7 +9213,13 @@ REPL-facing module it feeds."
       (if (= (heap-read-u64 268436464 0) 1)
           (if (= (nl_gc_conserv_begin) 0) 0
             (let ((top (heap-read-u64 268436456 0)))
-              (if (> top 0) (nl_gc_conserv_scan (aot-current-sp) top) 0)
+              ;; nl_gc_scan_regs (gc-regs.o) pushes the callee-saved registers and
+              ;; scans from there: GNU's flush_stack_call_func (alloc.c:5252).
+              (if (> top 0)
+                  (seq (ptr-write-u64 (data-addr nl_gc_regs_calls) 0
+                                      (+ 1 (heap-read-u64 (data-addr nl_gc_regs_calls) 0)))
+                       (nl_gc_scan_regs top))
+                0)
               (nl_gc_conserv_drain)
               (if (= (nl_gc_conserv_failed_p) 1)
                   (seq (nl_gc_conserv_finish) 0)
@@ -8676,10 +9706,12 @@ REPL-facing module it feeds."
                                 ;; lives in a growth chunk, not the interned region,
                                 ;; so a bare block-mark left it unmarked -> munmap'd
                                 ;; -> mirror name-compare dangles (SIGSEGV).
-                                (if (= (heap-read-u64 268436328 0) 0) 0
-                                  (nl_seq2
-                                   (nl_gc_mark_block (heap-read-u64 268436328 0))
-                                   (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+                                (nl_seq2
+                                 (if (= (heap-read-u64 268436328 0) 0) 0
+                                   (nl_seq2
+                                    (nl_gc_mark_block (heap-read-u64 268436328 0))
+                                    (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+                                 (nl_gc_mark_symunbound))
                                 ;; perf/macroexpansion-cache: keep every CURRENT-
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
@@ -8860,9 +9892,10 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
+            (if (= kind 11) (nl_compact_rw_vec_slots (+ box 8) 0 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
-              (if (= kind 9) (nl_compact_rw_char_table box) 0)))))))
+              (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
     (defun nl_compact_rw_char_table (box)
       (seq (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 8)))
            (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 16)))
@@ -8942,7 +9975,7 @@ REPL-facing module it feeds."
                   ;; value word dangled after the child moved + munmap.)
                   (let ((old (nl_compact_rw_edge (+ sp 8))))
                     (if (= (nl_compact_rw_block old) 0) 0
-                      (let ((vw (nl_compact_rw_word_edge old)))
+                      (let ((vw (nl_compact_rw_word_edge (+ old 8))))
                         (nl_compact_rw_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     (let ((old (nl_compact_rw_edge (+ sp 8))))
@@ -9018,10 +10051,16 @@ REPL-facing module it feeds."
            ;; edge @ s+16 is rewritten (and that buffer block flipped 1->3 to be
            ;; moved) BEFORE phase 4 memmoves the slot to to-space.  Without the
            ;; slot walk the name buffer is never moved -> dangling name ptr.
-           (if (= (heap-read-u64 268436328 0) 0) 0
-             (let ((old (nl_compact_rw_edge 268436328)))
-               (nl_seq2 (nl_compact_rw_block old)
-                        (nl_compact_rw_slot old)))))))
+           (nl_seq2
+            (if (= (heap-read-u64 268436328 0) 0) 0
+              (let ((old (nl_compact_rw_edge 268436328)))
+                (nl_seq2 (nl_compact_rw_block old)
+                         (nl_compact_rw_slot old))))
+            ;; Doc 226 D9: the shared unbound view of symbol objects.
+            (if (= (heap-read-u64 268436336 0) 0) 0
+              (let ((old (nl_compact_rw_edge 268436336)))
+                (nl_seq2 (nl_compact_rw_block old)
+                         (nl_compact_rw_slot old))))))))
     ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
@@ -9319,9 +10358,35 @@ REPL-facing module it feeds."
     ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
     ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
     (defun nl_gc_mark_symentry ()
-      (if (= (heap-read-u64 268436328 0) 0) 0
-        (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436328 0))
-                 (nl_gc_mark_slot (heap-read-u64 268436328 0)))))
+      (nl_seq2
+       (if (= (heap-read-u64 268436328 0) 0) 0
+         (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436328 0))
+                  (nl_gc_mark_slot (heap-read-u64 268436328 0))))
+       (nl_gc_mark_symunbound)))
+    ;; Doc 226 D9: the shared unbound-marker view of symbol objects
+    ;; (268436336, `nl_sym_unbound'), marked like the shared symentry.
+    (defun nl_gc_mark_symunbound ()
+      (if (= (heap-read-u64 268436336 0) 0) 0
+        (nl_seq2 (nl_gc_mark_block (heap-read-u64 268436336 0))
+                 (nl_gc_mark_slot (heap-read-u64 268436336 0)))))
+    ;; Doc 226 D9: the view of an uninterned symbol object holds the
+    ;; object's backing address at +8 (a legacy identity number is small).
+    ;; A view can outlive its object off the precise paths (a dead scratch
+    ;; slot the conservative scan finds), so the address is validated
+    ;; first.  Inside a symbol_block it goes through live_symbol_holding
+    ;; (alloc.c:4675), as mark_maybe_pointer does (alloc.c:4932): the cell
+    ;; index, the offset in the cell, a cell never allocated and a swept
+    ;; cell (GNU's dead marker #xdead0 in `function') are all refused, and
+    ;; the cell it answers is the one marked.  Otherwise the mark bit
+    ;; (header bit 24) would land inside a cell.
+    (defun nl_gc_mark_symview (sp)
+      (let* ((base (heap-read-u64 sp 8)))
+        (if (> base 65535)
+            (if (= (nl_typed_find base) 2)
+                (let ((c (nl_live_symbol_holding base)))
+                  (if (= c 0) 0 (nl_gc_mark_symbol c)))
+              (if (= (nl_gc_in_arena base) 1) (nl_gc_mark_word (+ base 6)) 0))
+          0)))
     ;; Mode-split mid-form collector.  mode 0 = conservative scan allowed,
     ;; mode 1 = precise-only.  NL_GC_IN_PROGRESS (ctx+24) is a reentrancy guard.
     ;; Always mark+sweep (never compact): mid-form objects must stay put.  The
@@ -9421,24 +10486,57 @@ REPL-facing module it feeds."
               0
             (nl_gc_midform_collect_now))
         0))
-    ;; GNU bytecode.c `maybe_gc': the bytecode VM's safepoint, taken at Bcall
-    ;; entry (bytecode.c:797) and at every 256th backward branch (:861-866),
-    ;; with every live value on the VM stack.  It is the interpreter's gated
-    ;; mid-form collector.  `(nelisp--debug-switch 32)' sets ctx+8 to 2, which
-    ;; collects at EVERY VM poll (the interpreter's `while' edge sees "not
-    ;; armed" then); `(nelisp--debug-switch 5)' re-arms the normal mode.
-    ;; ctx+8 above 1 is a budget: MODE-1 polls remain to be forced, and the
-    ;; poll that spends the last one re-arms the normal mode itself.
-    ;; `(nelisp--debug-switch 32 N)' forces the next N polls; without N all of
-    ;; them (2^60).
+
+    ;; Doc 223 "Bytecode VM safepoints".  GNU's maybe_gc for the bytecode
+    ;; interpreter: bytecode.c:797 polls at every Bcall and bytecode.c:861-866
+    ;; on every 256th backward branch.  `nl_gc_vm_poll' runs a mid-form
+    ;; collection when the allocator's growth or debt trigger is due (the gate
+    ;; of the `while' back edge, `nl_gc_midform_collect') and returns 0.  Cost
+    ;; with nothing due: two loads, then the gate (the armed flag, the
+    ;; reservation against the trigger, the debt test).  A call site must be a
+    ;; VM instruction boundary where
+    ;;   1. every heap value the VM uses after the poll is reachable from the GC
+    ;;      root stack (the VM frame's roots), a recorded evaluator frame, a
+    ;;      heap object reachable from those, or a native stack slot (the
+    ;;      conservative scan pins pointers, interior ones included, found in
+    ;;      [sp, stack top));
+    ;;   2. no such value lives only in a callee-saved register (the scan does
+    ;;      not read registers; DSL locals live across a call are in stack
+    ;;      slots, register promotion being limited to call-free loops);
+    ;;   3. caches of heap addresses (mirror entries, frame cursors) are
+    ;;      dropped afterwards, as after any call that can run Lisp: the
+    ;;      collector never moves objects, but a swept block is reused.
+    ;; The gate also refuses while the collector runs and parks parallel
+    ;; workers around a collection, so a worker thread needs no extra check.
+    ;; Backstop: the typed blocks (cons, symbol, vector) are mapped outside the
+    ;; arena chunks, so before the debt trigger arms (two collections after
+    ;; boot) a loop that allocates only typed cells never crosses the growth
+    ;; watermark and nothing would collect it.  Until then one chunk (64 MiB)
+    ;; of debt opens the gate, as a mapped chunk would; once armed the debt
+    ;; trigger counts typed bytes itself.  Debug switch 70 sets
+    ;; `nl_vm_poll_force': every poll then collects (the trigger is zeroed
+    ;; before the gate), 71 clears it, 72 answers the number of mid-form
+    ;; collections so far.
+    ;; Merged from F's poll (GNU bytecode.c maybe_gc at Bcall and every 256th
+    ;; backward branch, F's f2d6a2492): `(nelisp--debug-switch 32 [N])' sets the
+    ;; interpreter's mid-form gate word (ctx+8) above 1, so the next N polls (all
+    ;; of them without N) collect unconditionally and the poll that spends the
+    ;; last one re-arms the normal mode.  Below that the poll is gc-port's.
     (defun nl_gc_vm_poll ()
       (let ((mode (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8)))
-        (if (= mode 1) (nl_gc_midform_collect)
-          (if (> mode 1)
-              (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8
-                                  (if (= mode 2) 1 (- mode 1)))
-                   (nl_gc_midform_collect_now))
-            0))))
+        (if (> mode 1)
+            (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8
+                                (if (= mode 2) 1 (- mode 1)))
+                 (nl_gc_midform_collect_now))
+          (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
+                   (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
+                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
+                     (if (< (nl_gc_debt_now) 67108864) 0
+                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
+                   0))
+               (nl_gc_midform_collect)
+               (nl_gc_budget_refill)
+               0))))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
     ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
@@ -9448,6 +10546,7 @@ REPL-facing module it feeds."
         (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56 r)
              (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                             (+ r (if (< 16777216 (/ r 2)) (/ r 2) 16777216)))
+             (nl_gc_budget_refill)
              0)))
     ;; After an explicit `garbage-collect', re-arm both growth triggers the
     ;; way the automatic paths do (the form-boundary watermark at
@@ -9518,11 +10617,15 @@ REPL-facing module it feeds."
                         ;; Doc 226 D9: symbols never move -- eq and eq-hash
                         ;; identity is the cell's address -- so no symbol
                         ;; cell (typed or parallel-section) may exist.
-                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 440) 0) 0))
+                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 440) 0) 0)
+                        ;; Doc 223 float blocks: a typed float cell never moves
+                        ;; either (it holds no edge, but WORDs name its address).
+                        (= (heap-read-u64 (+ (data-addr nl_float_state) 40) 0) 0))
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_seq2 (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_sweep_symbols))
+                          (nl_seq2 (nl_seq2 (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_sweep_symbols))
+                                                      (nl_sweep_floats))
                                             (nl_seq2 (nl_boot_clear_marks) (nl_gc_debt_rearm)))
                                    (nl_gc_conserv_state_clear)))
                  (nl_seq2 (nl_gc_sweep)
@@ -10067,7 +11170,7 @@ argument (reachability + in-arena bounds checks).")
                            (normalized (nl_root_reserve env))
                            (rc (wf_numeric_marker_copy args env normalized))
                            ;; The word crosses only nl_root_release (no safepoint).
-                           (w (if (= rc 0) (let ((args normalized)) (if (= (sexp-tag (wf_arg_ptr args 0)) 13)
+                           (w (if (= rc 0) (let ((args normalized)) (if (if (= (sexp-tag (wf_arg_ptr args 0)) 13) (= (wf_has_float_nums args) 0) 0)
                      (let* ((rest (nl_cons_cdr_ptr args)))
                        (if (if (= (sexp-tag rest) 7)
                                (= (sexp-tag (nl_cons_cdr_ptr rest)) 0)
@@ -10079,7 +11182,7 @@ argument (reachability + in-arena bounds checks).")
                                    (nl_bignum_quot_small_w (wf_arg_ptr args 0) (heap-read-u64 dptr 8) 0))
                                (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
                          (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
-                   (let* ((f (wf_any_float args))
+                   (let* ((f (if (= (wf_has_float_nums args) 1) 1 (wf_any_float args)))
                           (rest (nl_cons_cdr_ptr args)))
                     (if (= f 2)
                         (nl_abi_fail (bf_wrong_type_number_or_marker (wf_first_non_number args)) 0)
@@ -10095,7 +11198,7 @@ argument (reachability + in-arena bounds checks).")
                               (nl_abi_fail (bf_arith_error) 0)
                             (wf_write_int_w 0 (/ 1 (wf_argval args 0)))))))))) 0)))
                       (seq (nl_root_release env mark) w))
-                  (if (= (sexp-tag (wf_arg_ptr args 0)) 13)
+                  (if (if (= (sexp-tag (wf_arg_ptr args 0)) 13) (= (wf_has_float_nums args) 0) 0)
                      (let* ((rest (nl_cons_cdr_ptr args)))
                        (if (if (= (sexp-tag rest) 7)
                                (= (sexp-tag (nl_cons_cdr_ptr rest)) 0)
@@ -10107,7 +11210,7 @@ argument (reachability + in-arena bounds checks).")
                                    (nl_bignum_quot_small_w (wf_arg_ptr args 0) (heap-read-u64 dptr 8) 0))
                                (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
                          (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
-                   (let* ((f (wf_any_float args))
+                   (let* ((f (if (= (wf_has_float_nums args) 1) 1 (wf_any_float args)))
                           (rest (nl_cons_cdr_ptr args)))
                     (if (= f 2)
                         (nl_abi_fail (bf_wrong_type_number_or_marker (wf_first_non_number args)) 0)
@@ -10223,16 +11326,22 @@ argument (reachability + in-arena bounds checks).")
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))))
     ((:u8 "floor")    :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_ffloor p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 0)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "truncate") :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_ftrunc p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 1)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "ceiling")  :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_fceil p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 2)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "=") :word . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare_w args env 0 0)
                   (let* ((r (wf_chain_eq args)))
@@ -10745,7 +11854,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-load-split-verify") :word . (bf_arena_load_split_verify_w args 0))
     ((:lit "nelisp--arena-value-survival") :word . (bf_arena_value_survival_w args 0))
     ((:lit "garbage-collect") :word . (bf_garbage_collect_w func_ptr args env 0))
-    ((:lit "nelisp--debug-switch") :word . (bf_debug_switch_w args 0))
+    ((:lit "nelisp--debug-switch") :word . (bf_debug_switch_w args env))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
     ((:lit "nelisp--gc-diag") :word . (bf_debug_switch_w args 0))
     ((:lit "nelisp--arena-force-grow-smoke") :word . (bf_arena_force_grow_smoke_w 0))
@@ -10886,8 +11995,23 @@ by name pending that follow-up; this paragraph is the record of why."
   '("builtin" "lambda" "closure" "macro" "autoload" "symbol-value" "set"
     "funcall" "apply" "eval" "quote" "function" "throw" "signal"
     "symbol-function" "fset" "consp" "not" "null" "nth" "nthcdr" "setcar"
-    "setcdr" "string<" "<" "car" "cdr" "eq")
-  "Static names beyond the builtin dispatch table (heads and name tests).")
+    "setcdr" "string<" "<" "car" "cdr" "eq" "`" "," ",@")
+  "Static names beyond the builtin dispatch table (heads and name tests).
+The last three are the reader's backquote, comma and comma-at heads: GNU reads
+them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.")
+
+;; The names `nl_apply_name_classify' (lisp/nelisp-cc-evalport-combiner-apply.el)
+;; sorts out: ids 1 to 11 are the intercepted builtins (class 1), 12 to 18 the
+;; deferred ones (class 2).  They come first so that the classification of an
+;; interned symbol's object is a range test on its static id.
+(defconst nelisp-standalone--static-symbol-intercepts
+  '("eval" "funcall" "apply" "nelisp--push-frame" "nelisp--pop-frame"
+    "nelisp--bind-local" "nelisp--push-captured" "nelisp--set-use-elisp-apply"
+    "nelisp--env-globals-op" "symbol-function" "fset"
+    "signal" "nelisp--syscall-stat" "nelisp--syscall-readdir"
+    "nelisp--syscall-read-file" "nelisp--syscall-canonicalize"
+    "nelisp--apply-lambda-inner" "nelisp--apply-builtin-dispatch")
+  "Static names 1 to 18, in the order of `nl_apply_name_class_sid''s ranges.")
 
 (defvar nelisp-standalone--static-symbol-index nil
   "Hash table NAME -> static symbol id, built once from the builtin tables.")
@@ -10898,6 +12022,7 @@ by name pending that follow-up; this paragraph is the record of why."
     ;; Only tables defined before the build script's first dispatch is
     ;; generated (at load time), so every generated form sees one list.
     (dolist (name (append
+                   nelisp-standalone--static-symbol-intercepts
                    (mapcar (lambda (e) (cadr (car e))) nelisp-standalone--applyfn-dispatch-table)
                    nelisp-standalone--static-symbol-extras))
       (when (and (stringp name) (not (member name '("nil" "t")))
@@ -10905,8 +12030,16 @@ by name pending that follow-up; this paragraph is the record of why."
                  (not (gethash name seen)))
         (puthash name (1+ (hash-table-count seen)) seen)
         (push name out)))
+    ;; An interned symbol object keeps its id in 12 bits of its +40 word.
+    (when (>= (length out) 4095)
+      (error "static symbol ids exceed 12 bits: %d" (length out)))
     (setq nelisp-standalone--static-symbol-index seen)
-    (nreverse out)))
+    (setq out (nreverse out))
+    (unless (equal (cl-subseq out 0 (length nelisp-standalone--static-symbol-intercepts))
+                   nelisp-standalone--static-symbol-intercepts)
+      (error "the intercepted names are not static ids 1 to %d"
+             (length nelisp-standalone--static-symbol-intercepts)))
+    out))
 
 (defun nelisp-standalone--sid (name)
   "NAME's static symbol id, or nil."
@@ -10917,13 +12050,19 @@ by name pending that follow-up; this paragraph is the record of why."
 (defun nelisp-standalone--sid-read-form (w)
   "Inline form: the static id of the interned symbol WORD/view W, else 0."
   `(let* ((nl_sw ,w))
-     (if (or (= (logand nl_sw 1) 1) (= (logand nl_sw 7) 6)) 0
+     (if (= (logand nl_sw 1) 1) 0
+       (if (= (logand nl_sw 7) 6)
+           ;; Doc 226 D9 stage 3.2: an interned symbol's object keeps the
+           ;; static id of its name at +40 (an uninterned one has none).
+           (if (= (logand (heap-read-u64 (- nl_sw 6) 0) 63) 4)
+               (logand (sar (heap-read-u64 (- nl_sw 6) 40) 20) 4095)
+             0)
        (if (/= (heap-read-u8 nl_sw 0) 4) 0
          (let* ((nl_sb (heap-read-u64 nl_sw 16)))
            (if (and (> nl_sb (+ (heap-read-u64 268436288 0) 16777224))
                     (< nl_sb (heap-read-u64 268436296 0)))
                (sar (heap-read-u64 (- nl_sb 8) 0) 32)
-             0))))))
+             0)))))))
 
 (defun nelisp-standalone--key-tree (var pairs default)
   "A balanced `if' tree over VAR for PAIRS ((KEY . FORM)...) sorted by KEY."
@@ -11077,7 +12216,7 @@ leave symbols unresolved at link time."
         `(let* ((nl_ds ,(nelisp-standalone--sid-read-form 'name_ptr))
                 (nl_dk (if (/= nl_ds 0) nl_ds
                          (let* ((nl_name_len
-                                 (if (= (sexp-tag name_ptr) 4) (heap-read-u64 name_ptr 24)
+                                 (if (= (sexp-tag name_ptr) 4) (nl_word_length name_ptr)
                                    (if (= (sexp-tag name_ptr) 5) (heap-read-u64 name_ptr 24)
                                      (if (= (sexp-tag name_ptr) 14) (heap-read-u64 name_ptr 24)
                                        -1)))))
@@ -11149,10 +12288,11 @@ leave symbols unresolved at link time."
     ;; retain their old arguments; marker copies are rooted until dispatch ends.
     (defun wf_numeric_marker_p (p)
       (if (= (nl_val_tag p) 12)
-          (if (= (nl_record_length p) 3)
+          (if (= (nl_record_length p) 2)
               (let ((view (alloc-bytes 32 8)))
                 (seq (nl_sexp_clone_into (nl_record_type_word p) view)
-                     (sexp-name-eq view "nelisp-marker"))) 0) 0))
+                     (if (= (sexp-name-eq view "nelisp-marker") 1) 1
+                       (sexp-name-eq view "nelisp-marker-ins")))) 0) 0))
     ;; Walked by WORD: a fixnum argument or the nil terminator is never a
     ;; marker, and the materialising accessors boxed each of them.
     (defun wf_numeric_has_marker (args)
@@ -11339,7 +12479,7 @@ leave symbols unresolved at link time."
     (defun wf_raw_eq (a b)
       (if (= (nl_word_tag64 a) (nl_word_tag64 b))
           (if (= (nl_word_tag64 a) 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0)
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0)
             ;; Doc 201 §6.17: Str(5)/UnibyteStr(14) are inline {cap@8,
             ;; ptr@16, len@24}; offset 8 is the capacity, so the generic
             ;; word compare made every equal-capacity pair `eq'.  The char
@@ -11353,7 +12493,9 @@ leave symbols unresolved at link time."
                         1
                       (if (= (nl_word_data a) (nl_word_data b)) 1 0))
                   0)
-              (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
+              (if (= (nl_word_tag64 a) 3)
+                  (if (= (nl_float_bits a) (nl_float_bits b)) 1 0)
+                (if (= (nl_word_payload a) (nl_word_payload b)) 1 0))))
         0))
     ;; --- Doc 190 Phase A: Bignum (tag 13) numeric comparison -----------
     ;; Bignum-vs-Bignum and Bignum-vs-Int ONLY (the task's own scope);
@@ -11417,22 +12559,22 @@ leave symbols unresolved at link time."
     ;; Compare BIGNUM_PTR (tag 13) against INT_PTR (tag 2).  Returns
     ;; -1/0/1 for bignum < / = / > int.
     (defun nl_bignum_cmp_int (bignum_ptr int_ptr)
-      (let* ((bsign (heap-read-u64 bignum_ptr 8))
+      (let* ((bsign (nl_big_sign bignum_ptr))
              (ival (heap-read-u64 int_ptr 8))
              (isign (if (< ival 0) 1 0)))
         (if (if (= bsign 0) (= isign 1) 0) 1
           (if (if (= bsign 1) (= isign 0) 0) -1
             (let* ((imag (if (= isign 1) (- 0 ival) ival))
-                   (mc (nl_bignum_mag_cmp_i64 (heap-read-u64 bignum_ptr 16)
-                                               (heap-read-u64 bignum_ptr 24) imag)))
+                   (mc (nl_bignum_mag_cmp_i64 (nl_big_limbs bignum_ptr)
+                                               (nl_big_count bignum_ptr) imag)))
               (if (= bsign 1) (- 0 mc) mc))))))
     ;; Compare two Bignums.  Returns -1/0/1.
     (defun nl_bignum_cmp_bignum (a b)
-      (let* ((asign (heap-read-u64 a 8)) (bsign (heap-read-u64 b 8)))
+      (let* ((asign (nl_big_sign a)) (bsign (nl_big_sign b)))
         (if (if (= asign 0) (= bsign 1) 0) 1
           (if (if (= asign 1) (= bsign 0) 0) -1
-            (let* ((mc (nl_bignum_mag_cmp (heap-read-u64 a 16) (heap-read-u64 a 24)
-                                           (heap-read-u64 b 16) (heap-read-u64 b 24))))
+            (let* ((mc (nl_bignum_mag_cmp (nl_big_limbs a) (nl_big_count a)
+                                           (nl_big_limbs b) (nl_big_count b))))
               (if (= asign 1) (- 0 mc) mc))))))
     ;; Master comparator: A and B are already known (by `wf_num_pairp'
     ;; below) to both be tag 2 (Int) or tag 13 (Bignum) -- never Float
@@ -11879,6 +13021,8 @@ leave symbols unresolved at link time."
     ;; holding its index.  (nelisp--debug-switch 41 V): how many cells of V
     ;; still hold exactly that, with no collector bit set.
     ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
+    ;; (nelisp--debug-switch 48 (SYM . OFFSET)): a stale view's mark, below.
+    ;; (nelisp--debug-switch 49 SYM): SYM's kind-4 object WORD, below.
     ;; Never print V's elements: no symbol consumer reads a direct symbol
     ;; WORD on this line.  Native allocation never collects, and every
     ;; object is stored where the vector reaches it before the next one.
@@ -11933,6 +13077,92 @@ leave symbols unresolved at link time."
                                       (heap-read-u64 slots (* i 8)) i)))
                   (setq i (+ i 1))))
            good))))
+    ;; (nelisp--debug-switch 48 (SYM . OFFSET)): the collector's view marker on
+    ;; a stale tag-16 view whose +8 is not the start of a live cell.  The
+    ;; builtin takes at most two arguments, so the pair is one.  The view
+    ;; points OFFSET bytes into SYM's cell (1 to 47), or, for OFFSET -1, at
+    ;; the first never-allocated cell of the current symbol_block.  Result:
+    ;; how many words of the three cells around that address the marker
+    ;; changed.  GNU marks a symbol only through live_symbol_holding
+    ;; (alloc.c:4675), so 0 is right; -1 means SYM is no symbol_block cell,
+    ;; OFFSET is out of range, or every cell of the block was allocated.
+    ;; 682 and 48 are the block's cells and a cell's bytes.
+    (defun nl_symview_selftest (sw off)
+      (let* ((st (data-addr nl_typed_alloc))
+             (c (- sw 6))
+             (idx (heap-read-u64 st 408))
+             (target (if (< off 0) (+ (heap-read-u64 st 400) (* idx 48)) (+ c off))))
+        (if (if (/= (logand sw 7) 6) 1
+              (if (/= (nl_typed_find c) 2) 1
+                (if (> off 47) 1
+                  (if (< off -1) 1
+                    (if (< off 0) (if (< idx 682) 0 1) (if (= off 0) 1 0))))))
+            -3
+          (let* ((blk (logand target -32768))
+                 (lo0 (logand (- target 48) -8))
+                 (lo (if (< lo0 blk) blk lo0))
+                 (hi0 (+ target 96))
+                 (hi (if (> hi0 (+ blk 32768)) (+ blk 32768) hi0))
+                 (words (/ (- hi lo) 8))
+                 (snap (alloc-bytes 160 8))
+                 (v (alloc-bytes 32 8))
+                 (i 0) (changed 0))
+            (seq
+             (while (< i words)
+               (seq (ptr-write-u64 snap (* i 8) (heap-read-u64 lo (* i 8)))
+                    (setq i (+ i 1))))
+             (ptr-write-u64 v 0 16)
+             (ptr-write-u64 v 8 target)
+             (ptr-write-u64 v 16 0)
+             (ptr-write-u64 v 24 0)
+             (nl_gc_mark_symview v)
+             (setq i 0)
+             (while (< i words)
+               (seq (if (= (heap-read-u64 snap (* i 8)) (heap-read-u64 lo (* i 8))) 0
+                      (setq changed (+ changed 1)))
+                    (setq i (+ i 1))))
+             (+ (* changed 4) 1))))))
+    ;; (nelisp--debug-switch 49 SYM): SYM's object as a Lisp value -- the
+    ;; kind-4 symbol object WORD (class 110) of an interned symbol, which no
+    ;; reader or intern answers yet (Doc 226 D9 stage 3) -- or SYM itself when
+    ;; it has no object (a symbol with no state, nil, t) or the call has no
+    ;; evaluator context.  The conformance check of every symbol consumer
+    ;; runs on this value before a producer is switched.
+    (defun nl_symobj_word (env sym)
+      (if (= env 0) sym
+        (if (if (= (logand sym 7) 0)
+                (if (< sym 4096) 0 (= (heap-read-u8 sym 0) 4))
+              0)
+            ;; An interned view: its object, made now when it has none, with
+            ;; its name string (an object handed out as a value carries it,
+            ;; as GNU's symbol does) and its static id.
+            (let* ((obj (nl_symobj_for_view sym)))
+              (if (= obj 0) sym obj))
+          sym)))
+    ;; (nelisp--debug-switch 50 SYM): what SYM's interned symbol has in the
+    ;; mirror: 0 no object (nil, t, no mirror yet, a name outside the intern
+    ;; arena), 1 an interned object with its name string, 2 an object whose
+    ;; name cell is still nil, 3 an entry that is not an interned symbol object.
+    ;; What a WORD is, for tests: -1 an immediate, 2 a direct cons, 100 plus
+    ;; the header kind for a class-110 object, else the legacy view's tag.
+    (defun nl_word_class (w)
+      (if (= (logand w 1) 1) -1
+        (if (= (logand w 7) 2) 2
+          (if (= (logand w 7) 6) (+ 100 (logand (heap-read-u64 (- w 6) 0) 63))
+            (if (< w 4096) -1 (heap-read-u8 w 0))))))
+    (defun nl_word_int_word (n) (+ (* n 4) 1))
+    (defun nl_symobj_state (sym)
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((e (if (= (logand sym 7) 6) sym
+                      (if (= (logand sym 7) 0)
+                          (if (< sym 4096) 0
+                            (if (= (heap-read-u8 sym 0) 4) (nl_symcell_entry mp sym) 0))
+                        0))))
+            (if (<= e 1) 0
+              (if (/= (logand (heap-read-u64 (- e 6) 0) 63) 4) 3
+                (let* ((nm (heap-read-u64 (- e 6) 8)))
+                  (if (= (logand nm 7) 0) (if (< nm 4096) 2 1) 2))))))))
     ;; (nelisp--debug-switch 43): Doc 223 conservative-scan regression.  A
     ;; cons held only by native frames survives a collection, as
     ;; mark_maybe_pointer keeps it (alloc.c:4854).  Answers (SURVIVED
@@ -11957,12 +13187,124 @@ leave symbols unresolved at link time."
           (+ (* (nl_conserv_selftest_hold c 0) 4) 1)
           (nelisp_cons_construct_w (if (if (< g lo) 1 (>= g hi)) 5 1) 3 0)
           0))))
-    (defun nl_symbol_selftest_w (args)
+    ;; (nelisp--debug-switch 44): (LIVE FREE BLOCKS ALLOCATED) float cells, as 42
+    ;; answers for symbols; (nelisp--debug-switch 45): Doc 223 float blocks and the
+    ;; conservative scan -- a float held only by native frames survives a
+    ;; collection.  Answers (SURVIVED TYPED): TYPED 1 when the float is a
+    ;; float_block cell.
+    (defun nl_float_stats_w (_pad)
+      (let ((fst (data-addr nl_float_state)))
+        (nelisp_cons_construct_w
+         (+ (* (heap-read-u64 fst 24) 4) 1)
+         (nelisp_cons_construct_w
+          (+ (* (heap-read-u64 fst 32) 4) 1)
+          (nelisp_cons_construct_w
+           (+ (* (heap-read-u64 fst 40) 4) 1)
+           (nelisp_cons_construct_w (+ (* (heap-read-u64 fst 48) 4) 1) 3 0)
+           0)
+          0)
+         0)))
+    (defun nl_float_selftest_hold (f _pad)
+      (seq (nl_gc_collect_from_recorded_roots 0)
+           (if (= (heap-read-u64 (- f 6) 8) 4611686018427387904) 1 0)))
+    (defun nl_float_selftest_w (_pad)
+      (let* ((f (nl_float_object 4611686018427387904))
+             (typed (if (= (nl_typed_find (- f 6)) 3) 1 0)))
+        (nelisp_cons_construct_w
+         (+ (* (nl_float_selftest_hold f 0) 4) 1)
+         (nelisp_cons_construct_w (+ (* typed 4) 1) 3 0)
+         0)))
+    (defun nl_boot_selftest_state (_pad)
+      ;; Doc 223, image loading.  Bit 0: a hole map exists; bit 1: the boot
+      ;; structures (start and mark bitmaps) are built; bit 2: a cold image is
+      ;; loaded (its end is published).  A live-only image shows 2 + 4 once a
+      ;; collection has built the structures, an older image 1 + 2 + 4.
+      (let ((st (data-addr nl_typed_alloc)) (hm (data-addr nl_boot_hole_map)))
+        (+ (if (= (heap-read-u64 hm 0) 0) 0 1)
+           (+ (if (= (heap-read-u64 st 216) 0) 0 2)
+              (if (= (heap-read-u64 hm 16) 0) 0 4)))))
+    (defun nl_boot_selftest_holes (_pad)
+      ;; How many 8-byte granules of the loaded image the hole map marks free.
+      (let* ((hm (data-addr nl_boot_hole_map)) (map (heap-read-u64 hm 0))
+             (words (if (= map 0) 0 (+ (sar (- (heap-read-u64 hm 16) (heap-read-u64 hm 8)) 9) 1)))
+             (i 0) (n 0) (w 0))
+        (seq
+         (while (< i words)
+           (seq (setq w (heap-read-u64 map (* i 8)))
+                (while (/= w 0)
+                  (seq (setq n (+ n (logand w 1)))
+                       (setq w (logand (sar w 1) 9223372036854775807))))
+                (setq i (+ i 1))))
+         n)))
+    (defun nl_boot_selftest_bit (map g)
+      (logand (sar (heap-read-u64 map (* (sar g 6) 8)) (logand g 63)) 1))
+    (defun nl_boot_selftest_synth (_pad)
+      ;; The hole scan on a synthetic header run: live 48, free 64, live 32,
+      ;; free 32, free 32, live 48 (256 bytes, granules 0-31).  The free blocks
+      ;; are granules 6-13 and 18-25.  Answers 1 when exactly those bits are set.
+      (let* ((buf (alloc-bytes 256 8)) (map (alloc-bytes 64 8)) (i 0) (ok 1))
+        (seq
+         (while (< i 8) (seq (ptr-write-u64 map (* i 8) 0) (setq i (+ i 1))))
+         (ptr-write-u64 buf 0 48) (ptr-write-u64 buf 48 (+ 64 2))
+         (ptr-write-u64 buf 112 32) (ptr-write-u64 buf 144 (+ 32 2))
+         (ptr-write-u64 buf 176 (+ 32 2)) (ptr-write-u64 buf 208 48)
+         (nl_boot_hole_map_fill map buf buf (+ buf 256))
+         (setq i 0)
+         (while (< i 32)
+           (seq
+            (if (= (nl_boot_selftest_bit map i)
+                   (if (and (>= i 6) (< i 14)) 1 (if (and (>= i 18) (< i 26)) 1 0)))
+                0 (setq ok 0))
+            (setq i (+ i 1))))
+         (+ (* ok 4) 1))))
+    (defun nl_gc_stats_check_w (_pad)
+      (let* ((state (data-addr nl_gc_typed_state))
+             (k0 0) (k1 0) (k2 0) (k3 0) (k4 0) (k5 0)
+             (c0 0) (c1 0) (c2 0) (c3 0) (c4 0) (c5 0) (mask 0) (lst 3))
+        (if (= (nl_gc_stats_run 1) 0) (+ (* -1 4) 1)
+          (seq
+           (setq k0 (heap-read-u64 state 32)) (setq k1 (heap-read-u64 state 40))
+           (setq k2 (heap-read-u64 state 48)) (setq k3 (heap-read-u64 state 56))
+           (setq k4 (heap-read-u64 state 64)) (setq k5 (heap-read-u64 state 72))
+           (if (= (nl_gc_stats_run 4) 0) (+ (* -2 4) 1)
+             (seq
+              (setq c0 (heap-read-u64 state 32)) (setq c1 (heap-read-u64 state 40))
+              (setq c2 (heap-read-u64 state 48)) (setq c3 (heap-read-u64 state 56))
+              (setq c4 (heap-read-u64 state 64)) (setq c5 (heap-read-u64 state 72))
+              (setq mask (+ (+ (+ (if (= c0 k0) 0 1) (if (= c1 k1) 0 2))
+                               (+ (if (= c2 k2) 0 4) (if (= c3 k3) 0 8)))
+                            (+ (if (= c4 k4) 0 16) (if (= c5 k5) 0 32))))
+              (setq lst (nelisp_cons_construct_w (+ (* k5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k0 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c0 4) 1) lst 0))
+              (nelisp_cons_construct_w (+ (* mask 4) 1) lst 0)))))))
+    (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 53) (nl_gc_stats_check_w 0)
+        (if (= op 52) (nl_boot_selftest_synth 0)
+        (if (= op 47) (+ (* (nl_boot_selftest_holes 0) 4) 1)
+        (if (= op 46) (+ (* (nl_boot_selftest_state 0) 4) 1)
+        (if (= op 45) (nl_float_selftest_w 0)
+        (if (= op 44) (nl_float_stats_w 0)
         (if (= op 43) (nl_conserv_selftest_w 0)
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
+          (if (= op 50) (+ (* (nl_symobj_state (wf_arg_word args 1)) 4) 1)
+          (if (= op 51) (nl_word_int_word (nl_word_class (wf_arg_word args 1)))
+          (if (= op 49) (nl_symobj_word env (wf_arg_word args 1))
+          (if (= op 48)
+              (let ((pair (wf_arg_word args 1)))
+                (nl_symview_selftest (nl_cons_car_word pair) (nl_word_int (nl_cons_cdr_word pair))))
             (nelisp_cons_construct_w
              (+ (* (heap-read-u64 st 416) 4) 1)
              (nelisp_cons_construct_w
@@ -11972,7 +13314,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))
+             0))))))))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -12044,29 +13386,117 @@ leave symbols unresolved at link time."
       ;; The evaluator context of the form being evaluated, or 0 outside one.
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 0) 0
         (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (defun nl_symcells_selftest_survive (n hide ctx)
+      ;; Doc 226 D9 stage 3.  A mirror-shaped table that only the root keeps is
+      ;; built, two collections run, the table is checked and the real root is
+      ;; re-derived from the evaluator context CTX, all inside this one native
+      ;; call: the evaluator reads `nl_symcells_root' (symbol compares, the store
+      ;; canonicalization, interning), so no evaluator work may run while it
+      ;; names a table that is not the globals record.  Answers the check (2 N
+      ;; for a table of N and N that survived, a negative code when a record or
+      ;; vector is gone), nil when the table could not be made, -100 outside a
+      ;; form (the root is then untouched).
+      (if (= ctx 0) (+ (* -100 4) 1)
+        (if (= (nl_symcells_selftest_make n hide) 3) 3
+          (let ((r (seq (nl_gc_collect_from_recorded_roots 0)
+                        (nl_gc_collect_from_recorded_roots 0)
+                        (nl_symcells_selftest_check 0))))
+            (seq (nl_symcells_attach ctx) (+ (* r 4) 1))))))
+    (defun nl_symcells_selftest_dump (n path_args ctx)
+      ;; The same window around the image dump: the dump's marking and its
+      ;; relocation walk must agree on a table only the root keeps.  PATH_ARGS
+      ;; is the argument list of the dump builtin (the path first).  Answers the
+      ;; check, -100 outside a form, -101 when the dump failed.
+      (if (= ctx 0) (+ (* -100 4) 1)
+        (if (= (nl_symcells_selftest_make n 0) 3) 3
+          (let* ((d (bf_arena_dump_image_stream_w path_args 0))
+                 (r (nl_symcells_selftest_check 0)))
+            (seq (nl_symcells_attach ctx)
+                 (if (= (logand d 3) 1)
+                     (if (> (sar d 2) 0) (+ (* r 4) 1) (+ (* -101 4) 1))
+                   (+ (* -101 4) 1)))))))
     (defun nl_symcells_selftest_w (args)
       ;; (nelisp--debug-switch 60): `nl_symcells_get', nil when 0;
-      ;; (61 N), (62 N): `nl_symcells_selftest_make', the root visible to the
-      ;; collector, hidden from it; (63): `..._check'; (64): 1 when the root
-      ;; is the record of the evaluator context's globals, else 0, and -1
-      ;; outside a form; (65): re-derive the root from the evaluator context;
-      ;; (66): clear it.  Callers restore the root with 65.
+      ;; (61 N), (62 N): `nl_symcells_selftest_survive', the root visible to the
+      ;; collector, hidden from it (the negative control); (63 (N PATH)): the
+      ;; same around an image dump to PATH (`nl_symcells_selftest_dump'; the
+      ;; builtin takes at most one argument after the code, so N and PATH come
+      ;; as a list); (64):
+      ;; 1 when the root is the record of the evaluator context's globals,
+      ;; else 0, and -1 outside a form; (65): re-derive the root from the
+      ;; evaluator context; (66): clear it.  Arms 61-63 restore the root
+      ;; before they return, so the evaluator never runs with a fake one.
       (let ((op (wf_argval args 0)) (ctx (nl_symcells_selftest_ctx 0)))
         (if (= op 60) (if (= (nl_symcells_get) 0) 3 (nl_symcells_get))
-          (if (= op 61) (nl_symcells_selftest_make (wf_argval args 1) 0)
-            (if (= op 62) (nl_symcells_selftest_make (wf_argval args 1) 1)
-              (if (= op 63) (+ (* (nl_symcells_selftest_check 0) 4) 1)
+          (if (= op 61) (nl_symcells_selftest_survive (wf_argval args 1) 0 ctx)
+            (if (= op 62) (nl_symcells_selftest_survive (wf_argval args 1) 1 ctx)
+              (if (= op 63)
+                  (nl_symcells_selftest_dump (nl_word_payload (nl_cons_car_word (wf_arg_word args 1)))
+                                             (nl_cons_cdr_word (wf_arg_word args 1)) ctx)
                 (if (= op 64)
                     (+ (* (if (= ctx 0) -1
                             (if (= (nl_symcells_mirror) (+ (heap-read-u64 ctx 8) 6)) 1 0)) 4) 1)
                   (if (= op 65)
                       (seq (if (= ctx 0) 0 (nl_symcells_attach ctx)) 5)
                     (seq (nl_symcells_set 0) 5)))))))))
-    (defun bf_debug_switch_w (args _pad)
+        ;; (nelisp--debug-switch 70): every bytecode VM safepoint collects;
+    ;; 71: back to the allocator's triggers; 72: the number of mid-form
+    ;; collections so far (the same counter on every path, so a forced run is
+    ;; checked by its difference).  Doc 223 "Bytecode VM safepoints".
+        ;; (nelisp--debug-switch 73): how many of the five sentinel registers (rbx
+    ;; r12-r15) the scan window shows after `nl_gc_scan_regs' (5 expected); 74: the
+    ;; same with no spill, a window of the same size at the caller's frame (0
+    ;; expected, the negative control); both answer -1 where gc-regs.o has no
+    ;; self-test.  75: how many times a collection reached `nl_gc_scan_regs'.
+    (defun nl_gc_regs_probe (mode)
+      (let* ((buf (alloc-bytes 80 8)) (i 0) (mask 0) (d 0) (n 0))
+        (seq
+         (while (< i 10)
+           (seq (ptr-write-u64 buf (* i 8) 0) (setq i (+ i 1))))
+         (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 buf)
+         (if (= (nl_gc_regs_selftest mode) 0)
+             (seq (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0) -1)
+           (seq
+            (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0)
+            (setq i 0)
+            (while (< i 9)
+              (seq
+               (setq d (- (heap-read-u64 buf (* i 8)) 1033294639504818176))
+               (if (and (>= d 1) (<= d 5))
+                   (setq mask (logior mask (shl 1 (- d 1))))
+                 0)
+               (setq i (+ i 1))))
+            (setq i 0)
+            (while (< i 5)
+              (seq (setq n (+ n (logand (shr mask i) 1))) (setq i (+ i 1))))
+            n)))))
+    (defun nl_vm_poll_switch_w (args)
+      (seq
+       (if (= (wf_argval args 0) 70)
+           (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1) (nl_gc_budget_poke))
+         (if (= (wf_argval args 0) 71)
+             (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0) (nl_gc_budget_refill))
+           0))
+       (if (= (wf_argval args 0) 73)
+           (+ (* (nl_gc_regs_probe 0) 4) 1)
+         (if (= (wf_argval args 0) 74)
+             (+ (* (nl_gc_regs_probe 1) 4) 1)
+           (if (= (wf_argval args 0) 75)
+               (+ (* (heap-read-u64 (data-addr nl_gc_regs_calls) 0) 4) 1)
+             (if (= (wf_argval args 0) 76)
+                 (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until) 0))
+               (if (= (wf_argval args 0) 77)
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until_base) 0))
+                 (if (= (wf_argval args 0) 78)
+                     (wf_write_int_w 0 (nl_gc_debt_now))
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))))))))
+    (defun bf_debug_switch_w (args env)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
+          (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
-          (nl_symbol_selftest_w args)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 53) 0)
+          (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
           (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
@@ -12084,7 +13514,8 @@ leave symbols unresolved at link time."
                                         (heap-read-u64 268436184 0))
                          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                                         (+ (heap-read-u64 268436184 0) 16777216))
-                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))
+                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)
+                         (nl_gc_budget_refill))
                   (if (= (wf_argval args 0) 6)
                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 0)
                     (if (= (wf_argval args 0) 7)
@@ -12172,7 +13603,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
@@ -12191,8 +13622,8 @@ leave symbols unresolved at link time."
       (let* ((st (data-addr nl_gc_stats))
              (lim (heap-read-u64 st 8))
              (debt (if (if (< (heap-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
-                       (/ (* (heap-read-u64 st 0) 100) 16777216)
-                     (/ (* (heap-read-u64 st 0) 100) lim)))
+                       (/ (* (nl_gc_debt_now) 100) 16777216)
+                     (/ (* (nl_gc_debt_now) 100) lim)))
              (base (heap-read-u64 (data-addr nl_gc_loop_ctx) 56))
              (mark (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
              (now (heap-read-u64 268436184 0))
@@ -12365,7 +13796,7 @@ leave symbols unresolved at link time."
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
           (nl_seq2 (nl_seq2 (nl_seq2 (nl_cons_unmark_all) (nl_symbol_unmark_all))
-                            (nl_string_unmark))
+                            (nl_seq2 (nl_float_unmark_all) (nl_string_unmark)))
                    (nl_boot_clear_marks))
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
@@ -12499,7 +13930,10 @@ leave symbols unresolved at link time."
                    (heap-read-u64 (data-addr nl_fa_tbl_base) 0))))
         (nl_seq2
          (if (= dir 3)
-             (ptr-write-u64 (+ tbl (* 8 (heap-read-u64 cin 0))) 0 fldoff)
+             (if (if (= (heap-read-u64 (+ (data-addr nl_float_state) 96) 0) 0) 1
+                   (< (heap-read-u64 cin 0) (heap-read-u64 (+ (data-addr nl_float_state) 96) 0)))
+                 (ptr-write-u64 (+ tbl (* 8 (heap-read-u64 cin 0))) 0 fldoff)
+               (ptr-write-u64 (+ (data-addr nl_float_state) 104) 0 1))
            0)
          (nl_seq2
           (ptr-write-u64 cin 0 (+ (heap-read-u64 cin 0) 1))
@@ -12520,7 +13954,9 @@ leave symbols unresolved at link time."
                  (ie (heap-read-u64 (+ base 840) 0))
                  (tlog (if (= ptag 4) (nl_dump_string_logoff tgt) (nl_mc_logoff tgt))))
             (if (= dir 1)
-                (ptr-write-u64 loc 0 (heap-read-u64 waddr 0))
+                (seq (ptr-write-u64 (+ (data-addr nl_float_state) 88) 0
+                                    (+ (heap-read-u64 (+ (data-addr nl_float_state) 88) 0) 1))
+                     (ptr-write-u64 loc 0 (heap-read-u64 waddr 0)))
               (if (< tlog 0)
                   (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
                       (nl_fa_emit loc (+ span (- tgt ib) ptag) (+ wlog ptag)
@@ -12670,12 +14106,16 @@ leave symbols unresolved at link time."
     ;; core for Phase B -- see this block's own header comment above.)
     ;; Doc 215 builtin word ABI: nl_bignum_write_w returns the result WORD (0 = signal stashed); nl_bignum_write keeps the (rc, OUT) ABI.
     (defun nl_bignum_write_w (sign limb_ptr limb_count _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (ptr-write-u8  s 0  13)
-             (ptr-write-u64 s 8  sign)
-             (ptr-write-u64 s 16 limb_ptr)
-             (ptr-write-u64 s 24 limb_count)
-             s)))
+      ;; Doc 216 S5: the Bignum object [header | limbs], answered as its WORD.
+      (let* ((box (alloc-bytes (+ 8 (logand (+ (* limb_count 4) 7) -8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 13 (+ (* sign 64) (* limb_count 256))))
+             (while (< i limb_count)
+               (seq (ptr-write-u32 box (+ 8 (* i 4)) (heap-read-u32 limb_ptr (* i 4)))
+                    (setq i (+ i 1))))
+             (if (= (logand limb_count 1) 1)
+                 (ptr-write-u32 box (+ 8 (* limb_count 4)) 0)
+               0)
+             (+ box 6))))
     ;; Old callers may use the returned slot pointer, so the adapter keeps it.
     (defun nl_bignum_write (sign limb_ptr limb_count result_slot)
       (seq (nl_abi_word_to_rc (nl_bignum_write_w sign limb_ptr limb_count 0) result_slot)
@@ -13238,6 +14678,13 @@ leave symbols unresolved at link time."
       (if (= (wf_first_non_number list_ptr) 0)
           (wf_has_float list_ptr)
         2))
+    (defun wf_has_float_nums (list_ptr)
+      ;; 1 when every element of LIST_PTR is a number or a Bignum and at least
+      ;; one is a float: the arguments of a float operation, a Bignum among them
+      ;; converting to the nearest double.
+      (if (= (wf_first_non_number_or_bignum list_ptr) 0)
+          (wf_has_float list_ptr)
+        0))
     ;; Doc 190 Phase A/B: bignum-aware sibling of `wf_any_float', used ONLY
     ;; by `+'/`-'/`*''s dispatch entries (see `wf_first_non_number_or_
     ;; bignum').  `wf_has_float' itself needs no change: it only answers 1
@@ -13251,8 +14698,10 @@ leave symbols unresolved at link time."
     (defun wf_elem_fbits (car_ptr scratch)
       (if (= (sexp-tag car_ptr) 3)
           (heap-read-u64 car_ptr 8)
-        (seq (sexp-write-float scratch (i64-to-f64 (heap-read-u64 car_ptr 8)))
-             (heap-read-u64 scratch 8))))
+        (if (= (sexp-tag car_ptr) 13)
+            (nl_bignum_f64_bits car_ptr)
+          (seq (sexp-write-float scratch (i64-to-f64 (heap-read-u64 car_ptr 8)))
+               (heap-read-u64 scratch 8)))))
     (defun wf_int_fbits (n scratch)
       (seq (sexp-write-float scratch (i64-to-f64 n)) (heap-read-u64 scratch 8)))
     (defun wf_fsum (list_ptr acc_bits scratch)
@@ -13298,17 +14747,98 @@ leave symbols unresolved at link time."
     ;; arch safe (no syscall).  Note: `round' (banker's rounding) and `float-time'
     ;; (needs a per-arch clock_gettime OS helper) are deferred.
     (defun wf_ftrunc (p)
-      (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p))))
+      (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p))))
     (defun wf_ffloor (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-lt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-lt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (- t0 1)
           t0)))
     (defun wf_fceil (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-gt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (+ t0 1)
           t0)))
+    (defun nl_bignum_bitlen32 (v)
+      ;; Significant bits of the 32-bit limb V (0 for 0).
+      (let* ((w 0) (x v))
+        (seq (while (> x 0) (seq (setq w (+ w 1)) (setq x (shr x 1)))) w)))
+    (defun nl_bignum_window64 (limbs n shift)
+      ;; The 64 bits of the N-limb magnitude LIMBS starting at bit SHIFT (zero
+      ;; beyond its top).
+      (let* ((q (/ shift 32)) (r (mod shift 32))
+             (w0 (if (< q n) (heap-read-u32 limbs (* q 4)) 0))
+             (w1 (if (< (+ q 1) n) (heap-read-u32 limbs (* (+ q 1) 4)) 0))
+             (w2 (if (< (+ q 2) n) (heap-read-u32 limbs (* (+ q 2) 4)) 0)))
+        (if (= r 0) (logior w0 (shl w1 32))
+          (logior (logior (shr w0 r) (shl w1 (- 32 r))) (shl w2 (- 64 r))))))
+    (defun nl_bignum_low_nonzero (limbs shift)
+      ;; 1 when some bit strictly below bit SHIFT of the magnitude LIMBS is set.
+      (let* ((q (/ shift 32)) (r (mod shift 32)) (i 0) (nz 0))
+        (seq (while (if (< i q) (= nz 0) 0)
+               (seq (if (/= (heap-read-u32 limbs (* i 4)) 0) (setq nz 1) 0)
+                    (setq i (+ i 1))))
+             (if (= nz 0)
+                 (if (> r 0)
+                     (if (/= (logand (heap-read-u32 limbs (* q 4)) (- (shl 1 r) 1)) 0) 1 0)
+                   0)
+               1))))
+    (defun nl_bignum_f64_bits (vptr)
+      ;; The bits of the double nearest the Bignum view VPTR, ties to even, as
+      ;; GNU's bignum_to_double rounds; beyond the largest double it is an
+      ;; infinity.  A 64-bit window of the top of the magnitude gives the 53-bit
+      ;; significand, the round bit and (with the bits below the window) the
+      ;; sticky bit.
+      (let* ((sign (heap-read-u64 vptr 8))
+             (limbs (heap-read-u64 vptr 16))
+             (n (nl_bignum_canon_count limbs (heap-read-u64 vptr 24)))
+             (bl (+ (* (- n 1) 32)
+                    (nl_bignum_bitlen32 (heap-read-u32 limbs (* (- n 1) 4))))))
+        (if (<= bl 0) 0
+          (let* ((shift (if (> bl 64) (- bl 64) 0))
+                 (w (if (> bl 64) (nl_bignum_window64 limbs n shift)
+                      (shl (nl_bignum_window64 limbs n 0) (- 64 bl))))
+                 (sticky (if (> bl 64) (nl_bignum_low_nonzero limbs shift) 0))
+                 (m (shr w 11))
+                 (low (if (/= (logand w 1023) 0) 1 0))
+                 (up (if (= (logand (shr w 10) 1) 1)
+                         (if (or (= low 1) (= sticky 1) (= (logand m 1) 1)) 1 0)
+                       0))
+                 (m2 (+ m up))
+                 (carry (if (= m2 9007199254740992) 1 0))
+                 (ef (+ (+ bl carry) 1022)))
+            (logior (shl sign 63)
+                    (if (>= ef 2047) 9218868437227405312
+                      (logior (shl ef 52)
+                              (logand (if (= carry 1) 4503599627370496 m2)
+                                      4503599627370495))))))))
+    (defun nl_f64_to_int_w (bits)
+      ;; The exact Int or Bignum WORD of a finite double of magnitude at least
+      ;; 2^52 (exponent field 1075 and up), which is an integer: its 53-bit
+      ;; significand shifted left by the exponent field minus 1075, in 32-bit
+      ;; limbs.  `nl_bignum_finish_w' demotes to an Int inside the fixnum range.
+      (let* ((m (logior (logand bits 4503599627370495) 4503599627370496))
+             (e2 (- (logand (shr bits 52) 2047) 1075))
+             (q (/ e2 32)) (r (mod e2 32))
+             (n (+ q 3))
+             (buf (alloc-bytes (* n 4) 8))
+             (i 0))
+        (seq
+         (while (< i n) (seq (ptr-write-u32 buf (* i 4) 0) (setq i (+ i 1))))
+         (let* ((t0 (shl (logand m 4294967295) r))
+                (t1 (+ (shl (shr m 32) r) (shr t0 32))))
+           (seq (ptr-write-u32 buf (* q 4) (logand t0 4294967295))
+                (ptr-write-u32 buf (* (+ q 1) 4) (logand t1 4294967295))
+                (ptr-write-u32 buf (* (+ q 2) 4) (shr t1 32))))
+         (nl_bignum_finish_w (shr bits 63) buf (nl_bignum_canon_count buf n) 0))))
+    (defun wf_float_round_w (p mode)
+      ;; floor (MODE 0), truncate (1) or ceiling (2) of the float view P as an
+      ;; Int or Bignum WORD; an infinity or a NaN signals `overflow-error' (GNU's
+      ;; double_to_integer).  From 2^52 up a double is already an integer.
+      (let* ((bits (nl_float_bits p)) (ef (logand (shr bits 52) 2047)))
+        (if (= ef 2047) (nl_abi_fail (bf_signal_overflow_error) 0)
+          (if (>= ef 1075) (nl_f64_to_int_w bits)
+            (wf_write_int_w 0 (if (= mode 0) (wf_ffloor p)
+                                (if (= mode 1) (wf_ftrunc p) (wf_fceil p))))))))
     ;; float-time wrapper: the nl_os_float_time extern must be called from a
     ;; helper defun (its own frame), not inline in a dispatch arm -- an inline
     ;; extern call from the spliced dispatch if-chain aborts at runtime (same as
@@ -13502,7 +15032,16 @@ leave symbols unresolved at link time."
     ;; compatibility view.  Consumers must use semantic tag/payload accessors.
     ;; Use it on exit/error paths, never inside a walk.
     (defun wf_word_view (w)
-      (if (= (logand w 1) 0) w (extern-call nl_val_load w (alloc-bytes 32 8))))
+      ;; Doc 216 S5: a Bignum object is materialised as the legacy 32-byte view
+      ;; the limb readers (nl_bignum_prep_operand, nl_bignum_quot_small_w, ...)
+      ;; take; every other pointer WORD travels unchanged.
+      (if (= (logand w 1) 0)
+          (if (= (logand w 7) 6)
+              (if (= (logand (heap-read-u8 (- w 6) 0) 63) 13)
+                  (extern-call nl_val_load w (alloc-bytes 32 8))
+                w)
+            w)
+        (extern-call nl_val_load w (alloc-bytes 32 8))))
     ;; wf_word_store_out: write W into the caller's 32-byte result slot OUT
     ;; with no scratch box: copy a pointed-to box, or store an immediate
     ;; in place.
@@ -13629,8 +15168,9 @@ leave symbols unresolved at link time."
       ;; Doc 223: this single-chunk copy dump has no converted cons region;
       ;; with cons or symbol blocks in use it refuses
       ;; (`nelisp--arena-dump-image-stream' converts them).
-      (if (> (+ (heap-read-u64 (data-addr nl_typed_alloc) 40)
-                (heap-read-u64 (data-addr nl_typed_alloc) 432)) 0)
+      (if (> (+ (+ (heap-read-u64 (data-addr nl_typed_alloc) 40)
+                   (heap-read-u64 (data-addr nl_typed_alloc) 432))
+                (heap-read-u64 (data-addr nl_float_state) 40)) 0)
           (wf_write_int_w 0 -1)
       (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
@@ -13777,7 +15317,9 @@ leave symbols unresolved at link time."
              ;; for the two counters. Anonymous mmap is demand-paged (see
              ;; `nl_os_commit_range'), so over-provisioning this scratch region
              ;; costs virtual address space only, not physical memory.
-             (tblcap (+ total 1048576))
+             ;; Passes 1 and 2 write no entry: the header block only.  Pass 3's
+             ;; table is allocated after pass 1 has counted the pointer fields.
+             (tblcap 65536)
              (tblbase (nl_os_alloc_chunk tblcap))
              (cin tblbase) (cout (+ tblbase 8)) (tbl (+ tblbase 16))
              (depth (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
@@ -13799,6 +15341,9 @@ leave symbols unresolved at link time."
                  (wf_write_int_w 0 -1))
           (seq
            (nl_build_digest_trailer trl)
+           ;; Version 2: the stream dump writes only included blocks with their
+           ;; marks cleared, so the image has no free block and no hole run.
+           (ptr-write-u64 trl 8 2)
            ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
            (ptr-write-u64 hdr 0 1179407692)
            (ptr-write-u64 hdr 16 isz)
@@ -13837,6 +15382,28 @@ leave symbols unresolved at link time."
                 0)
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cin cin)
               (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+              ;; Doc 223: the relocation table for pass 3, one entry per pointer
+              ;; field pass 1 visited (pdumper.c grows its tables as it dumps),
+              ;; plus 1/16 and a page of slack; the counts of both passes agree
+              ;; and pass 3 refuses to write past the capacity.  The demand-paged
+              ;; table still costs address space, which `ulimit -v' caps.
+              (if (= cok 1)
+                  (let* ((nf (heap-read-u64 (+ (data-addr nl_float_state) 88) 0))
+                         (cap2 (+ (+ nf (/ nf 16)) 4096))
+                         (bytes2 (+ 16 (* cap2 8)))
+                         (base2 (nl_os_alloc_chunk bytes2)))
+                    (if (= base2 0) (setq cok 0)
+                      (seq
+                       ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                             '((nl_os_commit_range base2 0 bytes2))
+                           nil)
+                       (nl_os_free_chunk tblbase tblcap)
+                       (setq tblbase base2) (setq tblcap bytes2)
+                       (setq cin base2) (setq cout (+ base2 8)) (setq tbl (+ base2 16))
+                       (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+                       (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
+                       (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 cap2))))
+                0)
               (if (= cok 1)
                   (seq
                    (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
@@ -13845,8 +15412,11 @@ leave symbols unresolved at link time."
                                       (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
                                          ,(+ 8 nelisp-standalone--cons-cell-bytes)))
                                    ;; Doc 226 D9: the symbol region.
-                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
-                                      ,(+ 8 nelisp-standalone--symbol-cell-bytes)))))
+                                   (+ (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
+                                         ,(+ 8 nelisp-standalone--symbol-cell-bytes))
+                                      ;; Doc 223: the float region.
+                                      (* (heap-read-u64 (+ (data-addr nl_float_state) 56) 0)
+                                         ,(+ 8 nelisp-standalone--float-cell-bytes))))))
                    (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
                    (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
@@ -13865,6 +15435,8 @@ leave symbols unresolved at link time."
               ;; a heap target the packed layout lacks would load as a stale
               ;; pointer: the dump fails instead
               (if (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 384) 0) 0) (setq cok 0) 0)
+              ;; a pass 3 that outgrew its table: no image
+              (if (> (heap-read-u64 (+ (data-addr nl_float_state) 104) 0) 0) (setq cok 0) 0)
               (ptr-write-u64 hdr 8 ctotal) (ptr-write-u64 hdr 24 tlen)
               (if (= cok 1)
                   (seq
@@ -13893,6 +15465,7 @@ leave symbols unresolved at link time."
               ;; through it would be swept while still live.
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cout cout)
               (nl_dump_compact_end)
+              (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 0)
               (nl_os_free_chunk tblbase tblcap)
               (wf_write_int_w 0 ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                                  '(if (= cok 0) -1
@@ -14113,7 +15686,7 @@ leave symbols unresolved at link time."
               (let* ((entry (nelisp_mirror_lookup_entry rootslot qsym)))
                 (if (= entry 0)
                     3
-                  (nl_record_slot_word entry 0))))))))
+                  (nl_ent_w entry 0))))))))
 ))
     ;; The rest of the flat-arena in-memory swizzle machinery, moved from
     ;; `nelisp-standalone--applyfn-core-helpers': it calls `nl_gc_mark_block'/
@@ -14216,12 +15789,14 @@ leave symbols unresolved at link time."
       (if (= tag 8)
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
+        (if (= tag 11)
+            (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
                              ds span dest cin cout dir)
           (if (= tag 9)
               (nl_fa_char_table_fields box ds span dest cin cout dir)
-            0)))))
+            0))))))
     (defun nl_fa_slot (sp ds span dest cin cout dir)
       (let ((tag (nl_val_tag sp)))
         (if (= (logand sp 7) 6)
@@ -14242,7 +15817,7 @@ leave symbols unresolved at link time."
                     (let ((box (heap-read-u64 sp 8)))
                       (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                         (if (= (nl_gc_mark_block box) 0) 0
-                          (nl_fa_vec_slots box 0 1 ds span dest cin cout dir))))
+                          (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir))))
                   (if (or (= tag 6) (= tag 15))
                       (let ((box (heap-read-u64 sp 8)))
                         (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
@@ -14743,35 +16318,22 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     (defun bf_garbage_collect_snapshot_w (env _pad)
   (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
          (args-root (nl_root_word env)) (i 0))
-    (seq
-     (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
-     (ptr-write-u64 state 0 1)
-     (nl_gc_collect_from_recorded_roots 0)
-     (nl_gc_explicit_rearm)
-     ;; The census walk's symbol view is scratch, made after the collection.
-     (nl_gc_typed_interns (alloc-bytes 32 8))
-     (ptr-write-u64 state 0 (if (= (heap-read-u64 state 0) 3) 3 0))
-     (if (= (heap-read-u64 state 0) 3)
-         (seq (if (= (heap-read-u64 state 8) 0) 0
-                (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-              (ptr-write-u64 state 0 0) (nl_root_release env mark)
-              (nl_abi_fail (bf_signal_memory_full) 0))
-       (let* ((snapshot-word (nl_w_vector_make 6 0))
-              (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
-         (seq
-          ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
-          ;; vector's actual WORD header.
-          (ptr-write-u64 args-root 0 args-word)
-          (setq i 0)
-          (while (< i 6)
-            (vector-slot-set (nl_cons_car_word args-word) i
-                             (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
-            (setq i (+ i 1)))
-          (if (= (heap-read-u64 state 8) 0) 0
-            (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-          (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
-          (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
-            (seq (nl_root_release env mark) word))))))))
+    (if (= (nl_gc_stats_run 4) 0)
+        (seq (nl_root_release env mark)
+             (nl_abi_fail (bf_signal_memory_full) 0))
+      (let* ((snapshot-word (nl_w_vector_make 6 0))
+             (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
+        (seq
+         ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
+         ;; vector's actual WORD header.
+         (ptr-write-u64 args-root 0 args-word)
+         (setq i 0)
+         (while (< i 6)
+           (vector-slot-set (nl_cons_car_word args-word) i
+                            (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
+           (setq i (+ i 1)))
+         (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
+           (seq (nl_root_release env mark) word)))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
@@ -15038,7 +16600,9 @@ eval applyfn.")
                                 0
                               (setq ok 0))
                             (if (or (= ta 2) (= ta 16))
-                              (if (= (wf_word_int a) (wf_word_int b))
+                              ;; An uninterned symbol is its object's address
+                              ;; (the view keeps it at +8, the WORD is it).
+                              (if (= (nl_word_payload a) (nl_word_payload b))
                                   0
                                 (setq ok 0))
                             (if (= ta 4)
@@ -15150,8 +16714,10 @@ eval applyfn.")
             (if (< (vector-len meta_ptr) 3)
                 0
               (let* ((sy (vector-ref-ptr meta_ptr 2)))
-                (if (= (heap-read-u64 sy 0) 4)
-                    (let* ((n (heap-read-u64 sy 24)) (p (heap-read-u64 sy 16)))
+                (if (= (sexp-tag sy) 4)
+                    ;; Doc 226 D9 stage 3.2: the test symbol of a table is an
+                    ;; object WORD, whose name is its name string's.
+                    (let* ((n (heap-sexp-length sy)) (p (heap-sexp-data sy)))
                       (if (= n 2)
                           (if (= (heap-read-u8 p 0) 101)
                               (if (= (heap-read-u8 p 1) 113) 1 0)
@@ -15207,8 +16773,11 @@ eval applyfn.")
       (let* ((tag (heap-sexp-tag-word key_ptr)))
         (if (or (= tag 2) (= tag 16))
             (logand (heap-sexp-payload key_ptr) 2147483647)
+          ;; Doc 226 D9 stage 3: an interned symbol hashes by its name, which a
+          ;; view and an object WORD of one symbol share (the payload of a view
+          ;; is its name length, of an object its address).
           (if (= tag 4)
-              (logand (heap-sexp-payload key_ptr) 2147483647)
+              (nl_ht_str_hash key_ptr)
             (if (or (= tag 5) (= tag 14))
                 (nl_ht_str_hash key_ptr)
               (if (or (= tag 6) (= tag 15))
@@ -15554,7 +17123,7 @@ eval applyfn.")
             (bf_elt_list_walk_w (wf_arg_ptr args 1) (nl_word_payload np) 0)
           (if (= tag 13)
               (bf_elt_list_walk_w (wf_arg_ptr args 1)
-                                  (if (= (nl_word_payload np) 0)
+                                  (if (= (nl_big_sign np) 0)
                                       4611686018427387903
                                     -1)
                                   0)
@@ -15564,7 +17133,7 @@ eval applyfn.")
         (if (= tag 2)
             (bf_nthcdr_walk_w (nl_word_payload np) (wf_arg_word args 1) 0)
           (if (= tag 13)
-              (if (= (nl_word_payload np) 0)
+              (if (= (nl_big_sign np) 0)
                   (bf_nthcdr_walk_w 4611686018427387903 (wf_arg_word args 1) 0)
                 (wf_arg_word args 1))
             (nl_abi_fail (bf_wrong_type_integerp np) 0)))))
@@ -15910,7 +17479,7 @@ eval applyfn.")
     ;; (Doc 143's own funcall-based walk, unchanged). -------------------
     (defun wf_symbol_is_eq (p)
       (if (= (sexp-tag p) 4)
-          (if (= (heap-read-u64 p 24) 2)
+          (if (= (heap-sexp-length p) 2)
               (wf_name_is p 29029 2)
             0)
         0))
@@ -16219,6 +17788,28 @@ above this defconst for the shadow-vs-delegate rationale.")
            (if (= k 0)
                (mut-str-push-byte ms 48)
              (m5_push_bignum_digits_emit ms digit_buf k))))))
+    (defun nl_bignum_bits_at (limbs n p g)
+      ;; The G bits (G <= 8) of the N-limb magnitude LIMBS starting at bit P.
+      (let* ((li (/ p 32)) (off (mod p 32))
+             (lo (if (< li n) (heap-read-u32 limbs (* li 4)) 0))
+             (hi (if (< (+ li 1) n) (heap-read-u32 limbs (* (+ li 1) 4)) 0)))
+        (logand (shr (logior lo (shl hi 32)) off) (- (shl 1 g) 1))))
+    (defun m5_push_bignum_radix (ms vptr bits upper)
+      ;; "%x" (BITS 4), "%X" (4, UPPER 1) and "%o" (BITS 3) of the Bignum view
+      ;; VPTR: the magnitude in the radix, a leading '-' for a negative number.
+      (let* ((limbs (heap-read-u64 vptr 16))
+             (n (nl_bignum_canon_count limbs (heap-read-u64 vptr 24)))
+             (bl (+ (* (- n 1) 32)
+                    (nl_bignum_bitlen32 (heap-read-u32 limbs (* (- n 1) 4)))))
+             (j (/ (+ bl (- bits 1)) bits)))
+        (seq
+         (if (= (heap-read-u64 vptr 8) 1) (mut-str-push-byte ms 45) 0)
+         (if (= bl 0) (mut-str-push-byte ms 48)
+           (while (> j 0)
+             (seq (setq j (- j 1))
+                  (let* ((d (nl_bignum_bits_at limbs n (* j bits) bits)))
+                    (mut-str-push-byte ms (if (< d 10) (+ 48 d)
+                                            (+ d (if (= upper 1) 55 87)))))))))))
     )
   "Doc 190 Phase A: Bignum (Sexp tag 13) construction from a decimal
 reader token (`nl_read_int_or_bignum', dispatched as the reader-only
@@ -17616,10 +19207,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (seq
                   (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
                                             (nl_frame_push_sym1_ptr) scratch)
-                  (if (= (nl_sb_bind env frames canonical saved) 0) 0
+                  (let ((sb (nl_sb_bind env frames canonical saved))) (if (= sb 0) 0 (if (= sb -2) (setq rc 1)
                     (seq
                      (wf_bytecode_mark_dynamic frames canonical)
-                     (nl_bind_frame_fast frames canonical saved)))) 0))) 0)
+                     (nl_bind_frame_fast frames canonical saved)))))) 0))) 0)
            (nl_root_release env mark) rc))))
     (defun wf_bytecode_unbind (frames n)
       (if (= n 0)
@@ -18865,32 +20456,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; shallow-bound: its mirror entry holds the current value word.
       ;; NAME is a live WORD from a rooted constants/operand vector. The
       ;; owned lookup retains type checks and needs no heap-membership scan.
-      (let* ((entry (if (or (= (nl_sb_worker_p env) 1)
-                (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
-                     (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
-                     (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
-                      (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
-             (w (if (= entry 0) 0
-                  ;; Retain the common slot-4 classification for the alias
-                  ;; reader, just as the interpreter does. The plain test
-                  ;; is identical to nl_sb_plain_entry_p after ENTRY != 0.
-                  (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
-                    (if (and (= candidate 3)
-                             (if (> (record-slot-count entry) 5)
-                                 (= (nelisp_env_entry_slot_tag entry 5) 0) 1))
-                        (nl_record_slot_word entry 0)
-                      (let ((alias (nl_pa_alias_read_w env (+ env 32) entry
-                                                      (= candidate 0))))
-                        (if (or (= alias 2) (= alias 6)) 0 alias)))))))
+      ;; Doc 226 D9: GNU Bvarref reads find_symbol_value (data.c:1619); its
+      ;; PLAINVAL and FORWARDED cases are in line (`nl_ent_plain_value'),
+      ;; the rest is `nl_sym_find_value_w' (VARALIAS chains, LOCALIZED and
+      ;; Doc 199 workers through the general path).
+      (let* ((entry (if (= (nl_sym_direct_env_p env) 1)
+                        (nelisp_mirror_lookup_entry_owned (+ env 0) name) 0))
+             (w (if (= entry 0) 0 (nl_ent_plain_value entry))))
         (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
             (seq (ptr-write-u64 dst 0 w) 0)
-          ;; The fallback lookup also has a WORD ABI. A legacy OUT view
-          ;; followed by nl_val_clone_into turned every dynamic nil/t/int
-          ;; reference into a retained scalar box.
-          (let* ((value (bf_dynamic_lookup_w env name 0)))
-            (if (or (= value 0) (= value 2))
-                (seq (nl_stash_void_variable env name) 1)
-              (seq (ptr-write-u64 dst 0 value) 0))))))
+          (let* ((value (nl_sym_find_value_w env name 0)))
+            (if (= value 0) 1
+              (if (= value 2) (seq (nl_stash_void_variable env name) 1)
+                (seq (ptr-write-u64 dst 0 value) 0)))))))
     (defun wf_bytecode_w_memq (mem sp scratch)
       (let* ((x (heap-read-u64 (+ mem (* (- sp 2) 8)) 0))
              (l (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
@@ -19160,7 +20738,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
                 (if (= entry 0) 1
                   (if (= (nl_sb_plain_entry_p entry) 0) 1
-                    (let* ((saved (nl_record_slot_word entry 0)))
+                    (let* ((saved (nl_ent_w entry 0)))
                       (seq
                        (nelisp_cons_construct (wf_bytecode_w_cons name saved tmp) unwinds unwinds)
                        (wf_dirty)
@@ -19170,8 +20748,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((carw (nl_cons_car_word event)))
         (if (= carw 0) 0
           (if (= (logand carw 1) 1) 0
-            (if (or (= (sexp-tag carw) 4)
-                    (= (sexp-tag carw) 11)) 1 0)))))
+            (if (or (= (nl_val_tag carw) 4)
+                    (= (nl_val_tag carw) 11)) 1 0)))))
     (defun wf_bytecode_w_lean_unbind (env event scratch)
       ;; A migrated event's private Cell ceases to be visible when the caller
       ;; removes this event from UNWINDS. It must never restore the mirror.
@@ -19231,7 +20809,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= entry 0) 0
               ;; The sole caller checks the raw alias/redirect slots after
               ;; lookup. Retain its record-kind requirement here.
-              (if (= (sexp-tag entry) 12) entry 0))))))
+              (if (= (nl_ent_p entry) 1) entry 0))))))
 
 
     ;; GNU bytecode.c:856-867: the dispatch loop polls quit (and GC) once
@@ -19322,8 +20900,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                (setq last-entry-data
                                                      (logand last-entry -8))
                                                (setq last-slots
-                                                     (record-slot-count
-                                                      last-entry))
+                                                     (nl_ent_n last-entry))
                                                (if (< last-slots 4)
                                                    (setq go 0)
                                                  (if
@@ -19345,19 +20922,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               last-table-data 32)
                                              last-count)
                                             (setq go 0)
-                                          (if
-                                              (if (> last-slots 4)
-                                                  (/= (heap-read-u64 last-entry-data 48) 3)
-                                                0)
+                                          ;; Doc 226 D9: find_symbol_value's
+                                          ;; in-line cases only.
+                                          (if (= (nl_ent_plain_value last-entry) 0)
                                               (setq go 0)
-                                            (if
-                                                (if (> last-slots 5)
-                                                  (/= (heap-read-u64 last-entry-data 56) 3)
-                                                0)
-                                                (setq go 0)
                                               (seq
                                                   (setq last-index index)
-                                                  (setq last-value 0)))))))))))))))))
+                                                  (setq last-value 0))))))))))))))))
                                 0)
                               (if (> go 0)
 (seq
@@ -20887,7 +22458,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (m5_wdig buf w (- D 1))
              (if (= (if (< DE -4) 1 (if (>= DE 15) (if (>= q 1) 1 0) 0)) 1) (m5_emit_sci2 ms buf D DE) (m5_emit_fixed ms buf D DE)))))
     (defun m5_push_float (ms vptr)
-      (let* ((bits (sexp-float-unwrap vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
+      (let* ((bits (nl_float_bits vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
         (seq
          (if (= (logand (sar bits 63) 1) 1) (mut-str-push-byte ms 45) 0)
          (if (= ef 2047)
@@ -23410,6 +24981,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
         1))
     (defun m5_fmt_argptr (argp)
       (nl_cons_car_ptr argp))
+    ;; "%d" "%i" "%x" "%X" "%o": a Bignum argument (tag 13) prints from its
+    ;; limbs, anything else from the payload word.
+    (defun m5_fmt_push_dec (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum ms a)
+        (m5_push_dec ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_hex (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 4 0)
+        (m5_push_hex ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_hex_up (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 4 1)
+        (m5_push_hex_up ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_oct (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 3 0)
+        (m5_push_oct ms (heap-read-u64 a 8))))
     (defun m5_fmt_loop (ms fmt i n argp)
       (if (>= i n) 1
         (let* ((c (m5_byte_at fmt i)))
@@ -23421,10 +25006,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (seq (mut-str-push-byte ms 37)
                            (m5_fmt_loop ms fmt (+ i 2) n argp))
                     (if (= d 100)
-                        (seq (m5_push_dec ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                        (seq (m5_fmt_push_dec ms (m5_fmt_argptr argp))
                              (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                       (if (= d 120)
-                          (seq (m5_push_hex ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                          (seq (m5_fmt_push_hex ms (m5_fmt_argptr argp))
                                (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                         (if (= d 102)
                             (seq (m5_emit_value ms (m5_fmt_argptr argp))
@@ -23439,13 +25024,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (seq (m5_emit_value ms (m5_fmt_argptr argp))
                                        (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                 (if (= d 105)
-                                    (seq (m5_push_dec ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                    (seq (m5_fmt_push_dec ms (m5_fmt_argptr argp))
                                          (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                   (if (= d 88)
-                                      (seq (m5_push_hex_up ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                      (seq (m5_fmt_push_hex_up ms (m5_fmt_argptr argp))
                                            (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                     (if (= d 111)
-                                        (seq (m5_push_oct ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                        (seq (m5_fmt_push_oct ms (m5_fmt_argptr argp))
                                              (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                       (if (= d 99)
                                           (seq (m5_push_char ms (heap-read-u64 (m5_fmt_argptr argp) 8))
@@ -23476,13 +25061,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
   '(;; symbol-name str-bytes -> Symbol(tag4).  A Str (tag5) keeps ptr@16/len@24,
     ;; a MutStr (tag6) wraps NlStr* @8 with ptr@8/len@16.  nl_alloc_symbol takes
     ;; (bytes-ptr len result-slot).
-    (defun bf_str_ptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun bf_str_ptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 8)
           (heap-read-u64 sx 16))))
-    (defun bf_str_len (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun bf_str_len (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-read-u64 sx 8) 16)
           (heap-read-u64 sx 24))))
@@ -23607,7 +25192,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_w (sx _pad)
   (let* ((w (nl_alloc_symbol_named_w (bf_str_ptr sx) (bf_str_len sx) sx 0)))
-    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w)))
+    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) (nl_symobj_of w))))
     ;; Doc 163 Phase C: real soft-fail lookup backing elisp `intern-soft''s
     ;; string-argument case (lisp/nelisp-stdlib-misc.el).  `nl_intern_lookup'
     ;; (lisp/nelisp-cc-nlstr-direct-ops.el) probes the SAME open-addressing
@@ -23620,7 +25205,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; ...))) ...)' then never terminated (see Doc 163).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_soft_w (sx _pad)
-  (nl_intern_lookup_w (bf_str_ptr sx) (bf_str_len sx) 0))
+  ;; Doc 226 D9 stage 3.4: a hit answers the symbol's object WORD.
+  (nl_symobj_of (nl_intern_lookup_w (bf_str_ptr sx) (bf_str_len sx) 0)))
     ;; Every name in the global intern table as a fresh list of symbols, for a
     ;; library `mapatoms' and obarray completion.  One native walk over the
     ;; 2^20 slots (len+1 @+0, buf @+8; 0 = empty), consing from the last slot
@@ -23649,8 +25235,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
        (while (> i 0)
          (seq
           (setq i (- i 1))
+          ;; A removed name (`nl_intern_remove', bit 62) is not listed.
           (if (if (= (heap-read-u64 (+ base (* i 16)) 0) 0) 1
-                (nl_intern_slot_unbound_marker_p (+ base (* i 16)))) 0
+                (if (/= (logand (heap-read-u64 (+ base (* i 16)) 0)
+                                4611686018427387904) 0) 1
+                  (nl_intern_slot_unbound_marker_p (+ base (* i 16))))) 0
             (let* ((object (alloc-bytes 32 8)))
               (seq (nl_intern_write_sexp object
                      (heap-read-u64 (+ base (* i 16)) 8)
@@ -23853,15 +25442,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (+ (logand (sar n (shl shift 2)) 15) 87)))
              (bf_mksym_hex n buf start (- shift 1)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; Doc 226 D9: GNU Fmake_symbol (alloc.c:3675) -- the symbol is a direct
+    ;; object whose name is the given string itself.
     (defun bf_make_symbol_w (sx _pad)
   (if (= (m5_string_tag_p (sexp-tag sx)) 0)
       (nl_abi_fail (bf_wrong_type_stringp sx) 0)
-    (let* ((identity (nl_next_symbol_identity)))
-      (if (> identity 0)
-          (let* ((w (nl_alloc_uninterned_symbol_named_w
-                     (bf_str_ptr sx) (bf_str_len sx) identity sx 0)))
-            (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))
-        (nl_abi_fail (bf_signal_overflow_error) 0)))))
+    (let* ((w (nl_sym_make_uninterned sx 1)))
+      (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))))
     ;; Doc 22 A14 (test harness): `record' / `recordp'.  The reader left these
     ;; VOID so no tag-12 Record could be built (and thus the aref-on-record
     ;; SEGFAULT could not be reproduced on the bare reader).  `(record TYPE
@@ -25189,7 +26776,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
-         (nl_alloc_symbol (heap-read-u64 sym 16) (heap-read-u64 sym 24) sig-tag)
+         (nl_alloc_symbol (heap-sexp-data sym) (heap-sexp-length sym) sig-tag)
          (bf_sig_copy32 sig-val data)
          (nl_exit_signal_w sig-tag sig-val)
          0)))
@@ -25757,9 +27344,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; complain about the variable instead of about its value.
     (defun bf_keyword_raw (p)
       (if (= (sexp-tag p) 4)
-          (if (< (heap-read-u64 (+ p 24) 0) 1)
+          (if (< (heap-sexp-length p) 1)
               0
-            (if (= (heap-read-u8 (heap-read-u64 (+ p 16) 0) 0) 58) 1 0))
+            (if (= (heap-read-u8 (heap-sexp-data p) 0) 58) 1 0))
         0))
     (defun bf_arrayp_raw (p)
       (let* ((tg (nl_word_tag64 p)))
@@ -25929,15 +27516,30 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (let* ((table (alloc-bytes 32 8)))
                    (seq (nl_alloc_symbol bytes 25 name) (nl_ht_make table)
                         (if (= (nl_env_set_value env name table) 0) table 0))))
-             (record-slot-ref-ptr entry 0))))))
+             (nl_ent_w entry 0))))))
     (defun bf_declare_special (env name)
       (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 16))
           (let* ((table (bf_special_registry env 1)) (value (alloc-bytes 32 8)))
             (if (= table 0) 1
               (seq (wf_write_t value) (wf_dirty)
                    (bf_fx_special_bump env)
+                   (nl_sym_set_special env name 1)
                    (nl_ht_put_values name value table value))))
         (bf_wrong_type_symbolp name)))
+    ;; GNU lisp.h:786 declared_special, one bit of the symbol: Fdefvar,
+    ;; Fdefconst and Fdefvaralias set it, internal-make-var-non-special
+    ;; clears it, and let consults it (eval.c:1133).  Doc 226 D1 keeps the
+    ;; bit fields in slot 6 of the symbol object as a fixnum; bit 6 (64) is
+    ;; declared_special.  The registry hash table stays for Lisp readers.
+    (defun nl_sym_set_special (env name on)
+      (let* ((obj (nl_pa_entry env name)))
+        (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
+          (let* ((w (nl_ent_w obj 6))
+                 (bits (if (= (logand w 3) 1) (sar w 2) 0)))
+            (seq (nl_ent_set obj 6
+                                  (nl_imm_int (if (= on 1) (logior bits 64)
+                                                (logand bits -65))))
+                 1)))))
     ;; Count a declaration in `nelisp--fx-special-gen' (prelude), a vector
     ;; whose slot 0 compiled VM code compares at entry; see the prelude.
     (defun bf_fx_special_bump (env)
@@ -25951,7 +27553,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
            (if (= entry 0) 0
              (seq
-              (record-slot-ref entry 0 val)
+              (nl_sexp_clone_into (nl_ent_ptr entry 0) val)
               (if (= (heap-sexp-tag-word val) 8)
                   (let* ((w (nl_vector_slot_word val 0)))
                     (if (= (nl_val_tag w) 2)
@@ -25959,10 +27561,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (wf_write_int_w 0 (+ (wf_bytecode_w_int w) 1))) 0)
                       0))
                 0)))))))
+    ;; The declared_special bit of NAME's object (see `nl_sym_set_special');
+    ;; a symbol without an object has never been declared.  Objects made
+    ;; before the bit existed (short records) keep the registry lookup.
     (defun bf_declared_special_p (mirror name)
-      (let* ((table (bf_special_registry mirror 0)))
-        (if (= table 0) 0
-          (if (= (nl_ht_find_in table name) 0) 0 1))))
+      (let* ((obj (nelisp_mirror_lookup_entry_owned mirror name)))
+        (if (= obj 0) 0
+          (if (= (nl_so_p obj) 1)
+              (if (= (logand (heap-read-u64 (- obj 6) 0) 16384) 0) 0 1)
+            (if (< (nl_ent_n obj) 9)
+                (let* ((table (bf_special_registry mirror 0)))
+                  (if (= table 0) 0
+                    (if (= (nl_ht_find_in table name) 0) 0 1)))
+              (let* ((w (nl_ent_w obj 6)))
+                (if (= (logand w 3) 1)
+                    (if (= (logand (sar w 2) 64) 0) 0 1)
+                  0)))))))
     (defun bf_declare_local_value_w (env name _pad)
   ;; NAME comes directly from the argument list as a canonical WORD.
   (let* ((rc (bf_declare_local_status env name)))
@@ -26004,16 +27618,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
         ;; variable lexically.  The frame's +24 declaration cache is no
         ;; longer filled (`nl_push_and_bind').
         (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-            (if (= (nl_sb_bind env frames name value) 0) 1
+            (let ((sb (nl_sb_bind env frames name value))) (if (= sb 0) 1 (if (= sb -2) 0
               (let* ((canonical (nl_pa_binding_name env frames name)))
                 (if (= canonical 0) 0
-                  (if (= (nl_sb_bind env frames canonical value) 0) 1
+                  (let ((sb (nl_sb_bind env frames canonical value))) (if (= sb 0) 1 (if (= sb -2) 0
                     (seq
                      (nl_bind_frame_fast frames canonical value)
                      (if (= (nelisp_frame_binding_dynamic_p frame canonical) 1) 1
                        (let* ((names (alloc-bytes 32 8)))
                          (seq (cons-make-with-clone canonical (nl_record_slot_word frame 1) names)
-                              (record-slot-set frame 1 names) (wf_dirty) 1))))))))
+                              (record-slot-set frame 1 names) (wf_dirty) 1))))))))))))
           (seq (nl_bind_frame_fast frames name value) 1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
@@ -26028,7 +27642,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
   ;; 2 is an unbound miss; 0 preserves an existing nonlocal exit.
   (let* ((entry (nelisp_mirror_lookup_entry env name))
          (local-p (if (= entry 0) 0
-                    (if (> (record-slot-count entry) 5)
+                    (if (> (nl_ent_n entry) 5)
                         (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
          (cell (if (= local-p 1) 0
                  (nelisp_frame_stack_find_kind (+ env 32) name 1 0))))
@@ -26046,8 +27660,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (or (= tag 4) (= tag 16))
               (if (= (bf_keyword_raw sym) 1)
                   7
-                (if (= (bf_dynamic_lookup env sym (alloc-bytes 32 8)) 0)
-                    7 3))
+                (let ((w (nl_sym_find_value_w env sym 0)))
+                  (if (or (= w 0) (= w 2)) 3 7)))
             (nl_abi_fail (bf_wrong_type_symbolp sym) 0)))))
     ;; The reader keeps provided features in the evaluator's global mirror.
     ;; That makes the list visible to the collector and gives `features' the
@@ -26437,16 +28051,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (bf_setting_constant sym)
         (if (= (bf_keyword_raw sym) 1)
             (if (= (wf_bytecode_w_eqw sym val) 1) 0 (bf_setting_constant sym))
+      (let ((direct (nl_sym_set_w env sym val)))
+        (if (= direct 0) 0
+          (if (= direct 2) 1
       (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
           (nl_n3_set_dynamic_raw env sym val)
-        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1))))))
+        (nl_n3_dynamic_write env sym val (if (= val (+ env 64)) 4 1)))))))))
 
     (defun nl_n3_set_dynamic_raw (env sym val)
       (let* ((entry (nelisp_mirror_lookup_entry env sym)))
-      (if (if (= entry 0) 0 (= (nl_val_tag (nl_record_slot_word entry 3)) 1))
+      (if (if (= entry 0) 0 (= (nl_val_tag (nl_ent_w entry 3)) 1))
           (bf_setting_constant sym)
         (let* ((local-p (if (= entry 0) 0
-                          (if (> (record-slot-count entry) 5)
+                          (if (> (nl_ent_n entry) 5)
                               (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
                (cell (if (= local-p 1) 0
                        (nelisp_frame_stack_find_kind (+ env 32) sym 1 0))))
@@ -26460,7 +28077,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (nelisp_env_setv_mirror_lazy env sym val (+ env 64))
                      (nelisp_env_setv_alias_or_mirror
                       (+ env 0) (+ env 32) sym val 0 (+ env 64) 1 0))
-                 (seq (cell-set-value cell val) 0)))))))
+                 (seq (nl_cell_set_w cell val) 0)))))))
     (defun bf_set_declared_default_w (env sym val _pad)
   (if (= (logand (heap-read-u64 env 112) 1048576) 0)
       (nl_n3_declared_default_raw_w env sym val 0)
@@ -26590,6 +28207,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (or (= tag 4) (= tag 16))
               (if (= (bf_keyword_raw sym) 1)
                   (nl_abi_fail (bf_setting_constant sym) 0)
+                (if (= (nl_sym_forwarded_p env sym) 1)
+                    (nl_abi_fail (nl_sym_signal_unbind_builtin sym) 0)
                 ;; A real alias is detached and unbound in its own entry.
                 ;; Preserve the legacy path for absent, legacy, or ordinary
                 ;; entries. The helper checks constants and the mutation guard
@@ -26610,7 +28229,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (if (= alias-rc 2)
                                     (nl_abi_fail (nelisp_env_makunbound_alias_signal_cycle sym 0) 0)
                                   (nl_abi_fail (nelisp_env_makunbound_alias_signal_malformed sym 0) 0))))))))
-                  result))
+                  result)))
             (nl_abi_fail (bf_wrong_type_symbolp sym) 0)))))
     ;; `symbol-value' reads dynamic cells and then the global mirror.  Lexical
     ;; cells are not symbol values.  Both public read paths share the unbound
@@ -26624,8 +28243,175 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; is the same two lines, so the two ways of reading a variable now
     ;; fail the same way.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; ---- Doc 226 D3: GNU find_symbol_value / set_internal ----
+    ;; GNU data.c:1619 find_symbol_value and data.c:1678 set_internal switch
+    ;; on struct Lisp_Symbol's redirect (lisp.h:771) and read or write the
+    ;; symbol's own cell.  The NeLisp symbol object (Doc 226 D1, reached
+    ;; through the name header without hashing) keeps the val union members
+    ;; in slots 0 (PLAINVAL value, and the FORWARDED storage), 4 (VARALIAS
+    ;; target) and 5 (LOCALIZED), and the FORWARDED descriptor in slot 7.
+    ;; Main-thread dynamic bindings are shallow (the object holds the
+    ;; current dynamic value, Doc 226 D4), so no frame is searched, as in
+    ;; GNU.  Doc 199 workers bind deeply and keep the general path.
+    ;; nl_sym_redirect: 0 PLAINVAL, 1 VARALIAS, 2 LOCALIZED, 3 FORWARDED in
+    ;; lisp.h:771 order; 4 for a shape only the general path handles (a
+    ;; short legacy entry, a non-symbol alias slot, slot 5 used as an
+    ;; alias-presence flag).
+    ;; A forwarded variable made buffer-local is LOCALIZED (GNU
+    ;; make-local-variable turns SYMBOL_FORWARDED into a blv whose fwd is
+    ;; the old forwarding), so slot 5 is tested before the descriptor.
+    (defun nl_sym_redirect (obj)
+      ;; GNU reads sym->u.s.redirect (lisp.h:771); a symbol object keeps it in
+      ;; bits 8-9 of its flags word, in the 0 1 2 3 order of this answer.
+      (if (= (nl_so_p obj) 1)
+          (logand (sar (heap-read-u64 (- obj 6) 0) 8) 3)
+        (if (< (nl_ent_n obj) 9) 4
+          (let ((a (nelisp_env_alias_slot_candidate obj 0)))
+            (if (= a 0) 1
+              (if (/= a 3) 4
+                (let ((t5 (nelisp_env_entry_slot_tag obj 5)))
+                  (if (= t5 8) 2
+                    (if (/= t5 0) 4
+                      (if (/= (nl_ent_w obj 7) 3) 3 0))))))))))
+    ;; 1 when ENV reads and writes symbol objects directly: not a Doc 199
+    ;; worker and not inside the legacy root-pin capture (the conditions
+    ;; under which `nl_sb_bind' binds deeply).
+    (defun nl_sym_direct_env_p (env)
+      (if (= (nl_sb_worker_p env) 1) 0
+        (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                 (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
+                 (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env)) 0 1)))
+    ;; GNU data.c:1619.  SYM is a symbol WORD (tag 4 or 16) from an owned
+    ;; container.  Answers the value WORD, 2 when void, 0 after a stashed
+    ;; signal -- the contract of `bf_dynamic_lookup_w', the general path.
+    (defun nl_sym_find_value_w (env sym _pad)
+      (if (= (nl_sym_direct_env_p env) 0)
+          (bf_dynamic_lookup_w env sym 0)
+        ;; RESULT is -1 until the walk has an answer: a value WORD can be
+        ;; 1 (the fixnum 0 that a store leaves in the cell), but never -1.
+        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+               (hops 0) (result -1))
+          (seq
+           (while (= result -1)
+             (if (= obj 0) (setq result 2)
+               (let ((r (nl_sym_redirect obj)))
+                 (if (or (= r 0) (= r 3))
+                     (let ((v (nl_ent_w obj 0)))
+                       (setq result (if (= (wf_bytecode_w_unbound_p env v) 1) 2 v)))
+                   (if (and (= r 1) (< hops 100))
+                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                       env (nl_ent_w obj 4)))
+                            (setq hops (+ hops 1)))
+                     (setq result (bf_dynamic_lookup_w env sym 0)))))))
+           result))))
+    ;; GNU store_symval_forwarding (data.c:1470) on the object's storage:
+    ;; descriptor 1 is an intfwd (integer check), 2 a boolfwd (t or nil).
+    ;; VAL may be a WORD or a 32-byte view (`wf_bytecode_w_view').  Answers
+    ;; the value to store, or 0 after stashing wrong-type-argument.
+    (defun nl_sym_fwd_value (obj val)
+      (let ((kind (sar (nl_ent_w obj 7) 2)))
+        (if (= kind 2) (if (= (nl_val_tag val) 0) 3 7)
+          (if (= kind 1)
+              (if (= (logand val 3) 1) val
+                (if (and (= (logand val 1) 0)
+                         (or (= (nl_val_tag val) 2) (= (nl_val_tag val) 13))) val
+                  (seq (bf_wrong_type_integerp (wf_word_view val)) 0)))
+            val))))
+    ;; GNU data.c:1678 set_internal for `set' and `set-default' (bindflag
+    ;; SET_INTERNAL_SET) outside LOCALIZED.  The caller has refused nil, t
+    ;; and keywords.  Answers 0 after the store, 1 when the general path
+    ;; must decide (watched variables -- GNU's TRAPPED_WRITE -- while the
+    ;; global watcher mode is on, workers, constants, no object yet,
+    ;; LOCALIZED), or 2 after a stashed signal.
+    (defun nl_sym_set_w (env sym val)
+      (if (or (= (nl_sym_direct_env_p env) 0)
+              (/= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0))
+          1
+        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+               (hops 0) (result -1))
+          (seq
+           (while (= result -1)
+             (if (= obj 0) (setq result 1)
+               (if (if (= (nl_so_p obj) 1)
+                       (= (logand (sar (heap-read-u64 (- obj 6) 0) 10) 3) 1)
+                     (= (nl_val_tag (nl_ent_w obj 3)) 1))
+                   (setq result 1)
+                 (let ((r (nl_sym_redirect obj)))
+                   (if (and (= r 1) (< hops 100))
+                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                       env (nl_ent_w obj 4)))
+                            (setq hops (+ hops 1)))
+                     (if (= r 0)
+                         (seq (if (= (logand val 1) 0) (wf_dirty) 0)
+                              (nl_ent_set obj 0 val) (setq result 0))
+                       (if (= r 3)
+                           (if (= (wf_bytecode_w_unbound_p env val) 1)
+                               (setq result 1)
+                             (let ((v (nl_sym_fwd_value obj val)))
+                               (if (= v 0) (setq result 2)
+                                 (seq (if (= (logand v 1) 0) (wf_dirty) 0)
+                                      (nl_ent_set obj 0 v) (setq result 0)))))
+                         (setq result 1))))))))
+           result))))
+    ;; Doc 226 D5: GNU's forwarded built-ins (DEFVAR_INT max-lisp-eval-depth,
+    ;; eval.c; DEFVAR_BOOL print-escape-newlines, print.c).  The descriptor
+    ;; in slot 7 (1 intfwd, 2 boolfwd) makes every store check and convert
+    ;; the value as store_symval_forwarding (data.c:1470) does.  The storage
+    ;; is the object's slot 0, which the frame-depth check reads directly
+    ;; (GNU reads the C variable max_lisp_eval_depth).
+    (defun nl_sym_fwd_mark (env bytes n kind)
+      (let* ((name (alloc-bytes 32 8)))
+        (seq (nl_alloc_symbol bytes n name)
+             (let* ((obj (nl_pa_entry env name)))
+               (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
+                 (seq (nl_ent_set obj 7 (nl_imm_int kind))
+                      (if (= kind 2)
+                          (let ((v (nl_ent_w obj 0)))
+                            (if (= (wf_bytecode_w_unbound_p env v) 1) 0
+                              (nl_ent_set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
+                        0)
+                      1))))))
+    (defun nl_sym_fwd_init (env)
+      (let* ((bytes (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 bytes 0 8102936067909902701)
+         (ptr-write-u64 bytes 8 7306014439016654125)
+         (ptr-write-u64 bytes 16 6845552)
+         (nl_sym_fwd_mark env bytes 19 1)
+         (ptr-write-u64 bytes 0 8315102265101349488)
+         (ptr-write-u64 bytes 8 8603403804415648099)
+         (ptr-write-u64 bytes 16 495622973804)
+         (nl_sym_fwd_mark env bytes 21 2)
+         0)))
+    ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
+    ;; 1 when SYM is FORWARDED (redirect 3); a forwarded variable made
+    ;; buffer-local is LOCALIZED instead (see `nl_sym_redirect').
+    (defun nl_sym_forwarded_p (env sym)
+      (let* ((obj (nelisp_mirror_lookup_entry env sym)))
+        (if (= obj 0) 0
+          (if (= (nl_sym_redirect obj) 3) 1 0))))
+    ;; GNU set_internal (data.c:1678): "Built-in variable may not be unbound".
+    ;; Raises (error "Built-in variable may not be unbound : NAME") through the
+    ;; pending-exit values and answers 1, the signalled status.
+    (defun nl_sym_signal_unbind_builtin (sym)
+      (let* ((n (str-len sym)) (buf (alloc-bytes (+ 40 n) 1))
+             (msg (alloc-bytes 32 8)) (ebytes (alloc-bytes 8 8))
+             (tag (alloc-bytes 32 8)) (data (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 7955940194784998722)
+         (ptr-write-u64 buf 8 7809911809332311584)
+         (ptr-write-u64 buf 16 8029390891345846373)
+         (ptr-write-u64 buf 24 7092735245155442804)
+         (ptr-write-u64 buf 32 9071110053066095)
+         (nl_alloc_str_copy_loop (str-bytes-ptr sym) (+ buf 39) 0 n)
+         (nl_alloc_str buf (+ 39 n) msg)
+         (ptr-write-u64 ebytes 0 491496043109)
+         (nl_alloc_symbol ebytes 5 tag)
+         (nelisp_cons_construct msg 3 data)
+         (nl_exit_signal_w tag data)
+         1)))
     (defun bf_symbol_value_w (args env _pad)
-  (let* ((sym (wf_arg_ptr args 0)) (w (bf_dynamic_lookup_w env sym 0)))
+  (let* ((sym (wf_arg_ptr args 0)) (w (nl_sym_find_value_w env sym 0)))
     (if (or (= w 0) (= w 2)) (seq (nl_stash_void_variable env sym) 0) w)))
     ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
@@ -27747,7 +29533,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= ta tb)
             (cond
              ((= ta 2) (if (= (nl_word_payload a) (nl_word_payload b)) 1 0))
-             ((= ta 4) (symbol-eq a b))
+             ;; Doc 226 D6: a symbol is its canonical name buffer, so two
+             ;; interned symbols are eq iff they share it (GNU EQ compares
+             ;; the struct pointer); a removed-and-reinterned name differs.
+             ;; A plain (non-canonical) buffer keeps the name comparison.
+             ((= ta 4)
+              ;; Doc 226 D9 stage 3: an operand that is an object WORD has no
+              ;; canonical buffer at +16 (that read lands in the object's
+              ;; cells); the identity of an object is its WORD.
+              (if (= (logior (logand a 7) (logand b 7)) 0)
+                  (let* ((ba (heap-read-u64 a 16))
+                         (bb (heap-read-u64 b 16)))
+                    (if (= ba bb) 1
+                      (let* ((lo (+ (heap-read-u64 268436288 0) 16777224))
+                             (hi (heap-read-u64 268436296 0)))
+                        (if (and (> ba lo) (< ba hi) (> bb lo) (< bb hi)) 0
+                          (symbol-eq a b)))))
+                (nl_symbol_word_eq a b)))
              ((= ta 0) 1)
              ((= ta 1) 1)
              ;; Doc 201 §6.17: strings are compared by IDENTITY, as in
@@ -27781,7 +29583,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; would make most positive bignums mutually eq.  The limb
              ;; pointer at offset 16 is the real per-allocation identity.
              ((= ta 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0))
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0))
+             ;; Doc 216 S5: a float compares by its bits here (recorded above),
+             ;; read through `nl_float_bits' whatever its representation.
+             ((= ta 3) (if (= (nl_float_bits a) (nl_float_bits b)) 1 0))
              (t (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
           0))))
     (defun bf_eq_w (args _pad)
@@ -28953,7 +30758,8 @@ into that constant unconditionally is what broke every aarch64 build."
                  (if (= word 3)
                      (if (= (extern-call nl_thread_mirror_mutation_guard (+ env 0) string) 1)
                          0 (bf_intern_w string 0))
-                   word)))))
+                   ;; Doc 226 D9 stage 3.4: a hit answers the object WORD too.
+                   (nl_symobj_of word))))))
        (nl_abi_fail (bf_wrong_type_stringp string) 0)))))
     ;; `intern-soft' natively (2026-09-06).  A symbol (nil and t included)
     ;; answers itself -- name identity is symbol identity here, see Doc 163
@@ -30527,13 +32333,13 @@ extern arms in dynamic builds."
 ;; ===================================================================
 (defconst nelisp-standalone--fileio-forms-part1
   '(
-    (defun nl_bi_strptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-sexp-payload sx) 8)
           (heap-sexp-data sx))))
-    (defun nl_bi_strlen (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strlen (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-sexp-payload sx) 16)
           (heap-sexp-length sx))))
@@ -31842,11 +33648,11 @@ Other targets return nil, preserving their generated process source exactly."
   '(
 	    (defun nl_bi_name_ptr (sx)
 	      (if (= (sexp-tag sx) 4)
-	          (heap-read-u64 sx 16)
+	          (heap-sexp-data sx)
 	        (nl_bi_strptr sx)))
 	    (defun nl_bi_name_len (sx)
 	      (if (= (sexp-tag sx) 4)
-	          (heap-read-u64 sx 24)
+	          (heap-sexp-length sx)
 	        (nl_bi_strlen sx)))
 	    (defun nl_bi_word_byte (word idx)
 	      (cond
@@ -32997,8 +34803,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                              (record-slot-ref-ptr old-alias-entry 0) unbound-ptr) 1)
                          0
                        (if (= (nl_uninterned_symbol_equal
-                               (record-slot-ref-ptr base-entry 0) unbound-ptr) 1)
-                           (record-slot-set base-entry 0
+                               (nl_ent_ptr base-entry 0) unbound-ptr) 1)
+                           (nl_ent_set base-entry 0
                                             (nl_record_slot_word old-alias-entry 0))
                          0))) (extern-call nl_env_build_scratch unbound-ptr unbound-ptr scratch) (extern-call nelisp_mirror_bucket_prepend
                                 mirror-ptr alias-sym-ptr base-entry scratch) (nl_word_clone base-sym-ptr)))))) 0)))
@@ -34439,6 +36245,146 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
           (heap-read-u64 out_s 8))))))
 
 ;; ===================================================================
+;; gc-regs.o: GNU's flush_stack_call_func for the conservative scan (Doc 223,
+;; "Scanning callee-saved registers").  `nl_gc_conserv_scan' reads [P0, TOP) of
+;; the native stack, so a heap pointer held only in a callee-saved register
+;; (rbx rbp r12-r15 on SysV, plus rdi rsi on Win64, x19-x29 on arm64) was
+;; invisible to it.  Compiled code keeps live values in stack slots, so none was
+;; lost, but register promotion would lose them.  `nl_gc_scan_regs (TOP)' pushes
+;; the callee-saved registers and calls `nl_gc_conserv_scan (rsp, TOP)', so the
+;; scan starts at the spilled values; rcx and r11 are saved too, as in
+;; `nl_os_float_time' (the extern-call model keeps them intact).  On arm64 the
+;; stub only tail-calls the scan from the caller's sp, the old behaviour, until
+;; a spill is written and run on that hardware.
+;; `nl_gc_regs_selftest (MODE)' (x86_64 Linux) loads the sentinels BASE+1..BASE+5
+;; into rbx r12 r13 r14 r15 and, for MODE 0, calls `nl_gc_scan_regs' with a TOP that
+;; ends the scan at the spilled block (nine words: the alignment pad, r11, rcx,
+;; r15..r12, rbp, rbx); for MODE 1 it calls `nl_gc_conserv_scan' over a window of
+;; the same size at its own frame, with no spill.  It answers 1 when it ran and 0
+;; where this target has no self-test.  With nl_gc_regs_trace set the scan copies
+;; its window instead of scanning it, which is how nl_gc_regs_probe counts the
+;; sentinels the window shows.
+;; ===================================================================
+(defun nelisp-standalone--gc-regs-unit ()
+  "Return the raw link unit exporting `nl_gc_scan_regs' and `nl_gc_regs_selftest'."
+  (let* ((target (nelisp-standalone-arena-rewrite-target))
+         (selftest-offset nil) (text nil) (relocs nil))
+    (pcase target
+      ('linux-x86_64
+       (let* ((scan (append
+                     '(#x53                       ; push rbx
+                       #x55                       ; push rbp
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x51                       ; push rcx
+                       #x41 #x53                  ; push r11
+                       #x48 #x83 #xec #x08        ; sub rsp, 8   (16-byte alignment)
+                       #x48 #x89 #xfe             ; mov rsi, rdi (TOP)
+                       #x48 #x89 #xe7             ; mov rdi, rsp (P0: the spilled registers)
+                       #xe8)                      ; call nl_gc_conserv_scan
+                     '(0 0 0 0)
+                     '(#x48 #x83 #xc4 #x08        ; add rsp, 8
+                       #x41 #x5b                  ; pop r11
+                       #x59                       ; pop rcx
+                       #x41 #x5f #x41 #x5e        ; pop r15, r14
+                       #x41 #x5d #x41 #x5c        ; pop r13, r12
+                       #x5d                       ; pop rbp
+                       #x5b                       ; pop rbx
+                       #xc3)))                    ; ret
+              (scan-reloc 24)
+              (pad (make-list (- 48 (length scan)) #xcc))
+              (sentinels
+               (let ((base 1033294639504818176) (out nil))
+                 ;; movabs rbx/r12/r13/r14/r15, BASE+k
+                 (dolist (op '((#x48 #xbb) (#x49 #xbc) (#x49 #xbd) (#x49 #xbe) (#x49 #xbf)))
+                   (setq base (1+ base))
+                   (setq out (append out op
+                                     (let ((v base) (bytes nil))
+                                       (dotimes (_ 8)
+                                         (push (logand v 255) bytes)
+                                         (setq v (ash v -8)))
+                                       (nreverse bytes)))))
+                 out))
+              (head (append
+                     '(#x53                       ; push rbx
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x48 #x89 #xf8)            ; mov rax, rdi (MODE)
+                     sentinels
+                     '(#x85 #xc0                  ; test eax, eax
+                       #x75 #x0c)))               ; jnz control (over the 12-byte spill arm)
+              (spill '(#x48 #x8d #x7c #x24 #xf8   ; lea rdi, [rsp-8]  (TOP: below the stub's return address)
+                       #xe8 0 0 0 0               ; call nl_gc_scan_regs
+                       #xeb #x0d))                ; jmp done (over the 13-byte control arm)
+              (control '(#x48 #x89 #xe7           ; mov rdi, rsp
+                         #x48 #x8d #x74 #x24 #x48 ; lea rsi, [rsp+72]
+                         #xe8 0 0 0 0))           ; call nl_gc_conserv_scan
+              (tail '(#xb8 #x01 #x00 #x00 #x00    ; mov eax, 1
+                      #x41 #x5f #x41 #x5e         ; pop r15, r14
+                      #x41 #x5d #x41 #x5c         ; pop r13, r12
+                      #x5b                        ; pop rbx
+                      #xc3))                      ; ret
+              (self (append head spill control tail))
+              (spill-reloc (+ 48 (length head) 6))
+              (control-reloc (+ 48 (length head) (length spill) 3 5 1)))
+         (setq selftest-offset 48)
+         (setq text (apply #'unibyte-string (append scan pad self)))
+         (setq relocs
+               (list (list :offset scan-reloc :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)
+                     (list :offset spill-reloc :type 'pc32 :symbol "nl_gc_scan_regs"
+                           :addend 0 :section 'text)
+                     (list :offset control-reloc :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)))))
+      ('windows-x86_64
+       (let* ((scan (append
+                     '(#x53 #x55 #x57 #x56        ; push rbx, rbp, rdi, rsi
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x48 #x83 #xec #x28        ; sub rsp, 40  (shadow space + alignment)
+                       #x48 #x89 #xca             ; mov rdx, rcx (TOP)
+                       #x48 #x8d #x4c #x24 #x28   ; lea rcx, [rsp+40] (P0: the spilled registers)
+                       #xe8)                      ; call nl_gc_conserv_scan
+                     '(0 0 0 0)
+                     '(#x48 #x83 #xc4 #x28        ; add rsp, 40
+                       #x41 #x5f #x41 #x5e        ; pop r15, r14
+                       #x41 #x5d #x41 #x5c        ; pop r13, r12
+                       #x5e #x5f #x5d #x5b        ; pop rsi, rdi, rbp, rbx
+                       #xc3)))                    ; ret
+              (pad (make-list (- 48 (length scan)) #xcc))
+              (self '(#x31 #xc0                   ; xor eax, eax  (no self-test on this target)
+                      #xc3)))                     ; ret
+         (setq selftest-offset 48)
+         (setq text (apply #'unibyte-string (append scan pad self)))
+         (setq relocs
+               (list (list :offset (+ 4 8 4 3 5 1) :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)))))
+      ((or 'macos-aarch64 'linux-aarch64 'windows-aarch64)
+       (require 'nelisp-asm-arm64)
+       (let* ((buf (nelisp-asm-arm64-make-buffer)) (reloc-off nil))
+         (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)  ; TOP
+         (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)    ; P0 = the caller's sp
+         (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
+         (nelisp-asm-arm64-emit-reloc buf 'b26-pc "nl_gc_conserv_scan")
+         (nelisp-asm-arm64--emit-word buf #x14000000) ; b nl_gc_conserv_scan
+         (setq selftest-offset (nelisp-asm-arm64-buffer-pos buf))
+         (nelisp-asm-arm64-mov-imm64 buf 'x0 0)       ; no self-test on this target
+         (nelisp-asm-arm64--emit-word buf #xd65f03c0) ; ret
+         (nelisp-asm-arm64-resolve-fixups buf)
+         (setq text (nelisp-asm-arm64-buffer-bytes buf))
+         (setq relocs (list (list :offset reloc-off :type 'b26-pc
+                                  :symbol "nl_gc_conserv_scan" :addend 0 :section 'text)))))
+      (other (error "standalone: nl_gc_scan_regs has no body for %S" other)))
+    (nelisp-link-unit-make
+     (nelisp-standalone--target-object-name "gc-regs.o")
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "nl_gc_scan_regs" 0
+                               :section 'text :bind 'global :type 'func)
+           (nelisp-link-symbol "nl_gc_regs_selftest" selftest-offset
+                               :section 'text :bind 'global :type 'func))
+     relocs)))
+
+;; ===================================================================
 ;; Manifest — ORDERED unit list.  Each entry: (NAME KIND SRC).
 ;;   KIND = a feature symbol  -> (require it); SRC = its --source defvar symbol
 ;;        = :glue              -> SRC is a local glue defconst symbol
@@ -34514,6 +36460,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ;; doc comments: AOT syscall<->f64 codegen aborts at runtime).
     ("reader-float.o"     :raw    nelisp-standalone--reader-float-unit)
     ("float-time.o"       :raw    nelisp-standalone--float-time-unit)
+    ("gc-regs.o"          :raw    nelisp-standalone--gc-regs-unit)
     ("trap.o"             :glue   nelisp-standalone--trap-source)
     ;; Core GC/arena primitives (`nl_gc_in_arena'/`_is_boot'/`_mark_slot'/
     ;; `_free_block' &c.), unconditionally needed by several OTHER manifest
@@ -34603,13 +36550,13 @@ outside it needs; copied rather than the whole block pulled in."
        (_
         '(defun nl_os_write_stderr (ptr len)
            (syscall-direct 1 2 ptr len 0 0 0))))
-    (defun nl_bi_strptr (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strptr (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-sexp-payload sx) 8)
           (heap-sexp-data sx))))
-    (defun nl_bi_strlen (sx)
-      (let* ((tag (sexp-tag sx)))
+    (defun nl_bi_strlen (sx0)
+      (let* ((sx (nl_str_target sx0)) (tag (sexp-tag sx)))
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-sexp-payload sx) 16)
           (heap-sexp-length sx))))
@@ -35896,8 +37843,10 @@ never on the build host.  Keep the original Lisp factory as the reference."
                                                       (lambda (row) (equal (nth 3 row) "adopt"))
                                                       (nth 2 compiled)))
                                              #'string<)
-                                       '("nelisp-buffer-local--entry"
-                                         "nelisp-buffer-local--redirect"
+                                       ;; Doc 226 D9: Lisp reaches the redirect
+                                       ;; vector, never the symbol object.
+                                       '("nelisp-buffer-local--redirect"
+                                         "nelisp-buffer-local--redirect-vector"
                                          "nelisp-buffer-local-default"
                                          "nelisp-buffer-local-kill"
                                          "nelisp-buffer-local-make"
@@ -44006,7 +45955,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     (defun nl_cold_trailer_valid_p (trl n)
       (if (< n 48) 0
         (if (/= (heap-read-u64 trl 0) 1195655758) 0
-          (if (/= (heap-read-u64 trl 8) 1) 0
+          (if (if (= (heap-read-u64 trl 8) 1) 0 (if (= (heap-read-u64 trl 8) 2) 0 1)) 0
             (if (= (nl_build_digest_stamped_p) 0) 0
               (nl_build_digest_eq (+ trl 16)))))))
     (defun nl_cold_diag_bad_digest ()
@@ -44129,7 +46078,10 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                          ;; table in the chunk-0 scratch; `trl_n' < 48 means
                          ;; the file has no (or a truncated) trailer.
                          (let* ((trl (+ tbl (* tlen 8)))
-                                (trl_n (nl_fa_read_all fd trl 48 0)))
+                                (trl_n (nl_fa_read_all fd trl 48 0))
+                                ;; Trailer version 2 (Doc 223): the stream dump wrote
+                                ;; no free block, no mark and so no hole run.
+                                (liveonly (if (= (heap-read-u64 trl 8) 2) 1 0)))
                            (seq
                             (nl_os_close_handle fd)
                             (if (= (nl_cold_reloc_table_valid_p tbl tlen slen) 0)
@@ -44154,7 +46106,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; ZEROED memory -- matching the fresh-mmap
                             ;; invariant the boot constructors depend on.
                             (nl_cold_zero tbl (+ (* tlen 8) 48))
-                            (nl_cold_clear_marks ds (+ ds slen))
+                            (if (= liveonly 1) 0 (nl_cold_clear_marks ds (+ ds slen)))
                             (nl_string_image_attach ds slen)
                             (ptr-write-u64 base 0 (+ 1024 slen))
                             ;; Keep the chunk-0 descriptor cursor in sync with
@@ -44173,10 +46125,19 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; pages/chunks (page faults, growth, ~3x slower
                             ;; `--load').  Keep them free and rebuild the free
                             ;; lists from the header walk, as a GC sweep does.
-                            (nl_gc_coalesce_and_rebuild_freelist)
+                            ;; A live-only image has no free block: the two header walks
+                            ;; (coalesce and relink) would find nothing, so only the
+                            ;; allocator's run and bucket state is reset.
+                            (if (= liveonly 1)
+                                (seq (nl_alloc_run_reset) (nl_gc_clear_freelist_buckets 0))
+                              (nl_gc_coalesce_and_rebuild_freelist))
                             ;; Holes are reusable but not permanent: map them
-                            ;; before the first allocation lands in one.
-                            (nl_boot_hole_map_build ds (+ ds slen))
+                            ;; before the first allocation lands in one.  A live-only
+                            ;; image has none (pdumper has no hole map): publish only
+                            ;; where the image is.
+                            (if (= liveonly 1)
+                                (nl_boot_hole_map_none ds (+ ds slen))
+                              (nl_boot_hole_map_build ds (+ ds slen)))
                             ;; image end: lets the pointer-keyed macro/function
                             ;; caches treat image objects as cacheable (see
                             ;; `nl_cache_boot_p').
@@ -45460,21 +47421,33 @@ correctly."
       ;; only the `-l'/`-f'/multi-action path this function handles) --
       ;; only `command-line-args-left' (updated incrementally as actions
       ;; are consumed, `nl_cli_set_clal') is this function's own job.
-      (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
-             (clal_sym (alloc-bytes 32 8)))
+      ;; The symbol of `command-line-args-left' outlives every action, so it
+      ;; is a root-stack slot (marked precisely), not an arena block that
+      ;; only the conservative scan keeps: a collection with the scan off
+      ;; (debug switch 28, the object-size probes) used to free it and the
+      ;; next `nl_cli_set_clal' read a recycled block.  The slot holds nil
+      ;; until the symbol is made, and its name buffer is allocated after the
+      ;; prelude for the same reason.
+      (let* ((clal_mark (nl_root_mark ctx))
+             (clal_slot (nl_root_reserve_checked ctx))
+             (clal_sym (if (= clal_slot 0) (alloc-bytes 32 8) clal_slot)))
         (seq
+         (if (= clal_slot 0) 0 (wf_write_nil clal_slot))
          (if (< _cl 0)
              (seq ,@(nelisp-standalone--reader-repl-prelude-forms
                      'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
            0)
          (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
                              result pool out ctx builtin_sym)
-         ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
-         (nl_alloc_symbol clal_sym_buf
-                           ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
-                           clal_sym)
-         (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
-                              pool out ctx builtin_sym clal_sym))))
+         (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1)))
+           (seq
+            ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
+            (nl_alloc_symbol clal_sym_buf
+                              ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
+                              clal_sym)
+            (let* ((clal_rc (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
+                                                pool out ctx builtin_sym clal_sym)))
+              (seq (nl_root_release ctx clal_mark) clal_rc)))))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; N5: before prelude/file/image I/O, ignore SIGPIPE like GNU.
@@ -45700,6 +47673,8 @@ correctly."
         ;; Doc 226 D9 stage 3: the mirror record root names this process's
         ;; globals record, fresh or restored from the image.
         (nl_symcells_attach globals)
+        ;; Doc 226 D9 stage 3.1: the shared unbound view that new symbol objects' void cells point at.
+        (nl_sym_unbound)
         (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         ;; Doc 221 M03/M17: static symbol ids (GNU lispsym) for dispatch.
         (nl_static_syms_init)
@@ -45745,6 +47720,8 @@ correctly."
         (nl_sexp_clone_into globals (+ ctx 0))
         (nl_sexp_clone_into frames (+ ctx 32))
         (nl_sexp_clone_into unbound (+ ctx 64))
+        ;; Doc 226 D5: forwarded built-ins (max-lisp-eval-depth, ...).
+        (nl_sym_fwd_init ctx)
         ;; Doc 152 (artifact-cli-silent-noop fix): publish `nelisp-standalone-argv'
         ;; HERE, at shallow nesting depth, right after `ctx' is fully built --
         ;; NOT from deep inside the `path' dispatch `if' chain below.  Root cause
@@ -45911,6 +47888,8 @@ correctly."
         ;; from its measured live set.
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
         ;; Doc 152 Stage 5: mid-form collection is ON by default, but only
         ;; after the permanent-generation watermark above has made collection
         ;; sound.  `nl_arena_init' seeded chunk-bytes-reserved@268436184 and
@@ -45955,6 +47934,9 @@ correctly."
               'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+        (nl_gc_budget_refill)
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
@@ -46790,12 +48772,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   '(seq
     (defun nl_n3_cell_set (cell value)
       ;; Pair-backed cells retain the original cons as an ordinary traced
-      ;; Cell.value, and mark the Sexp view's otherwise unused word 16.
+      ;; Cell.value, and flag the cell (header bit 8, word 16 of a view).
       ;; No interior pointer or new heap layout escapes to GC/image code.
-      (if (= (heap-read-u64 cell 16) 13107)
-          (let* ((pair (heap-read-u64 (nl_word_payload cell) 0)))
+      (if (= (nl_cell_pair_p cell) 1)
+          (let* ((pair (heap-read-u64 (nl_cell_box cell) 8)))
             (seq (nl_consbox_set_cdr (nl_word_payload pair) value) 0))
-        (seq (cell-set-value cell value) 0)))
+        (seq (nl_cell_set_value (nl_cell_box cell) value) 0)))
     (defun nl_n3_eval_bind_pairs (alist frames)
       ;; Reverse installation gives GNU's first duplicate binding precedence.
       (if (= (sexp-tag alist) 7)
@@ -46914,7 +48896,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (if (= operation 3)
              (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) (heap-read-u64 fr 0))))
                (if (= entry 0) 0
-                 (if (> (record-slot-count entry) 5)
+                 (if (> (nl_ent_n entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
          (ptr-write-u64 (+ fr 24) 0 (if (= tag-w 0) 3 tag-w))
@@ -47050,7 +49032,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                     (nl_cell_get_value inner current))
                   (if (= outer 0)
                       (nelisp_env_setv_mirror_lazy (+ env 0) sym current (+ env 64))
-                    (cell-set-value outer current))
+                    (nl_cell_set_w outer current))
                   (setq status 1))))
              (nl_n3_pop_names env (nl_cons_cdr_word names) depth status)))
         status))
@@ -47122,17 +49104,23 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          ((eq name 'nl_apply_do_eval) nil) ; supplied by shim unit
          ((eq name 'nl_cell_get_value)
           (push `(defun ,name ,(caddr form)
-                   (if (= (heap-read-u64 cell-ptr 16) 13107)
-                       (let* ((pair (heap-read-u64 (nl_word_payload cell-ptr) 0)))
+                   (if (= (nl_cell_pair_p cell-ptr) 1)
+                       (let* ((pair (heap-read-u64 (nl_cell_box cell-ptr) 8)))
                          (seq (nl_sexp_clone_into (nl_cons_cdr_ptr pair) out) 0))
                      ,@(cdddr form))) out))
          ((eq name 'nl_cell_get_value_w)
           ;; The WORD producer must have the same shared-cell interpretation
           ;; as the legacy getter above; raw Cell.value is the binding pair.
           (push `(defun ,name ,(caddr form)
-                   (if (= (heap-read-u64 cell-ptr 16) 13107)
+                   (if (= (nl_cell_pair_p cell-ptr) 1)
                        (nl_cons_cdr_word
-                        (heap-read-u64 (nl_word_payload cell-ptr) 0))
+                        (heap-read-u64 (nl_cell_box cell-ptr) 8))
+                     ,@(cdddr form))) out))
+         ((eq name 'nl_cell_set_w)
+          ;; A pair-backed cell stores into its binding pair.
+          (push `(defun ,name ,(caddr form)
+                   (if (= (nl_cell_pair_p cell) 1)
+                       (nl_n3_cell_set cell val)
                      ,@(cdddr form))) out))
          ((eq name 'nelisp_env_set_value_name_ok)
           ;; Clause 2: callback-protected names live in active root slots.
@@ -47417,7 +49405,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
       (defun nl_n3_special_cell_w (name_ptr args_ptr env_ptr _pad)
         (let* ((entry (nelisp_mirror_lookup_entry (+ env_ptr 0) name_ptr)))
           (if (= entry 0) (nl_n3_special_unchecked_w name_ptr args_ptr env_ptr 0)
-            (let* ((fn (record-slot-ref-ptr entry 1)))
+            (let* ((fn (nl_ent_ptr entry 1)))
               (if (= (nl_n3_special_object fn) 1)
                   (nl_n3_special_call_w fn args_ptr env_ptr 0)
                 2)))))
@@ -47456,8 +49444,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (if (= (nl_n3_special_object sym) 1) 1
             (if (or (= (sexp-tag sym) 4) (= (sexp-tag sym) 16))
                 (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) sym)))
-                  (if (= entry 0) (nl_n3_special_name sym)
-                    (bf_special_form_p_walk (record-slot-ref-ptr entry 1) env (+ depth 1))))
+                  ;; Doc 226 D9: a symbol has its entry from the moment it is
+                  ;; read, before any definition; its function cell then
+                  ;; holds the unbound marker, which defines nothing.
+                  (if (if (= entry 0) 1
+                        (= (wf_bytecode_w_unbound_p env (nl_ent_w entry 1)) 1))
+                      (nl_n3_special_name sym)
+                    (bf_special_form_p_walk (nl_ent_ptr entry 1) env (+ depth 1))))
               0)))))))
 
 ;; Every evaluated cons with a symbol head ran `nl_apply_special''s whole
@@ -48295,7 +50288,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (if (or (= (sexp-name-eq op "get-value") 1) (= (sexp-name-eq op "get-function") 1))
         (let* ((entry (nelisp_mirror_lookup_entry env sym)))
           (if (= entry 0) (seq (nl_apply_stash_wta env op) 0)
-            (nl_record_slot_word entry (if (= (sexp-name-eq op "get-value") 1) 0 1))))
+            (nl_ent_w entry (if (= (sexp-name-eq op "get-value") 1) 0 1))))
       (if (= (sexp-name-eq op "is-bound") 1)
           (if (= (nelisp_mirror_is_bound env sym unbound) 0) 3 7)
         (if (= (sexp-name-eq op "is-fbound") 1)
@@ -48338,12 +50331,41 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               (nl_n3_globals_set_w op name (nl_cons_car_word more) env)
             (nl_n3_globals_read_w op name env)))))))
 
+;; `unintern' of the symbol S (GNU lread.c Funintern removes a name only when
+;; the symbol found in the obarray is that symbol): a canonical view names its
+;; buffer; an object, or a view derived from one, is the interned symbol of its
+;; name when the cell of the name's buffer holds it.  1 when it was removed.
+(defun nl_symbol_intern_remove (s)
+  (let* ((buf (if (= (logand s 7) 0) (heap-read-u64 s 16) 0))
+         (base (heap-read-u64 268436288 0)))
+    (if (if (= buf 0) 0
+          (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0))
+        (nl_intern_remove buf (heap-read-u64 s 24))
+      (let* ((obj (if (= (logand s 7) 6) s (nl_symview_object s))))
+        (if (= obj 0) 0
+          (let* ((n (nl_word_length obj))
+                 (cb (nl_intern_canonical_buf (nl_word_data obj) n))
+                 (view (alloc-bytes 32 8)))
+            (if (= cb 0) 0
+              (seq (nl_intern_write_sexp view cb n)
+                   (if (= (nl_symcell_entry (nl_symcells_mirror) view) obj)
+                       (nl_intern_remove cb n)
+                     0)))))))))
+
 (defun nl_apply_do_globals_op_w (args env _pad)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "frame-stack-stats") 1)
       (nl_frame_stack_stats_w env 0)
+  ;; Doc 226 D6: GNU Funintern on the initial obarray (lread.c:4858).
+  (if (= (sexp-name-eq (nl_apply_list_nth args 0) "intern-remove") 1)
+      (let ((s (nl_apply_list_nth args 1)))
+        (if (= (nl_val_tag s) 4)
+            (if (= (nl_symbol_intern_remove s) 1) 7 3)
+          3))
 
   (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "indirect-variable") 1)
-          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot-create") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-entry-slot-set") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-aliases") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-value") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-default-boundp") 1)
@@ -48351,13 +50373,19 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-set") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-delete") 1)
           (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-alias-source-kind") 1)
-          (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1))
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "constant-variable-p") 1)
+          ;; Doc 226 D5: whether a symbol is a forwarded built-in.
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-forwarded-p") 1)
+          ;; Doc 226: GNU's declared_special bit (internal--define-
+          ;; uninitialized-variable, internal-make-var-non-special).
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-declare-special") 1)
+          (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-make-non-special") 1))
       (nl_pa_operation_w args env 0)
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
       (nl_n3_globals_mode_w args env 0)
     (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
         (nl_n4_frame_op_w args env 0)
-      (nl_n3_globals_raw_w args env 0))))))
+      (nl_n3_globals_raw_w args env 0)))))))
 
 (defun nl_n4_snapshot_w (env _pad)
       (seq (nl_frame_stack_promote_env env 0)
@@ -49730,7 +51758,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                (if (= entry 0) 0 (+ (nl_word_payload entry) 6)))
              ;; Six-slot metadata can acquire a local redirect after setup.
              (ptr-write-u64 state 56
-               (if (and (/= entry 0) (> (record-slot-count entry) 5)) 1 0))))
+               (if (and (/= entry 0) (> (nl_ent_n entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
          0)))
     ;; GNU eval_sub and Ffuncall (eval.c:2604-2608, 3196-3200) read
@@ -49755,7 +51783,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                      (setq entry (heap-read-u64 state 32))) 0)
             (let* ((value 3))
               (seq
-               (if (or (= (heap-read-u64 state 56) 1)
+               ;; Doc 226 D9: the redirect is read live, as GNU's
+               ;; find_symbol_value switch does: PLAINVAL and FORWARDED
+               ;; answer in line (`nl_ent_plain_value'), VARALIAS and
+               ;; LOCALIZED take the general path.
+               (if (or (and (/= entry 0) (= (nl_ent_plain_value entry) 0))
                        (/= (heap-read-u64 env 168) 0)
                        ;; A registered worker can retain a pre-publication entry.
                        ;; Resolve the shared mirror afresh without cross-thread writes.
@@ -49765,8 +51797,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    ;; Its selected-cell answer also owns dynamic binding order.
                    (setq value (bf_dynamic_lookup_w env (heap-read-u64 state 48) 0))
                  (seq
-                  ;; Setup stores payload+6; slot0 is at WORD+10.
-                  (setq value (if (= entry 0) 3 (heap-read-u64 entry 10)))
+                  (setq value (if (= entry 0) 3 (nl_ent_plain_value entry)))
                   (if (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
                            (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
                            (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))
@@ -50163,7 +52194,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_sb_plain_entry_p (entry)
       (if (= entry 0) 1
         (if (/= (nelisp_env_alias_slot_candidate entry 0) 3) 0
-          (if (> (record-slot-count entry) 5)
+          (if (> (nl_ent_n entry) 5)
               (if (= (nelisp_env_entry_slot_tag entry 5) 0) 1 0)
             1))))
     ;; NAME and VALUE may be scratch views a lookup reuses, so they are
@@ -50183,17 +52214,28 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
            (let* ((saved (if (= (logand value 1) 1) value
                           (seq (nl_sexp_clone_into value (+ copies 32))
                                (+ copies 32)))))
-             (if (= (nl_sb_plain_entry_p (nelisp_mirror_lookup_entry (+ env 0) copies)) 0) -1
-               (nl_sb_bind_plain env frames copies saved)))))))
-    (defun nl_sb_bind_plain (env frames sym val)
-      (let* ((old (alloc-bytes 32 8)) (rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8)))
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
+               (if (= (nl_sb_plain_entry_p entry) 0) -1
+                 (nl_sb_bind_plain env frames copies saved entry))))))))
+    ;; GNU specbind (eval.c:3656) for SYMBOL_PLAINVAL: record the symbol's
+    ;; own cell as the old value, then store the new value into the cell
+    ;; (do_specbind, eval.c:3613).  ENTRY is the symbol's object (Doc 226
+    ;; D1) or 0 when the symbol has no state yet.  The record [NAME OLD] on
+    ;; the frame's name list stands in for GNU's specpdl entry.  Objects do
+    ;; not move inside a form (mid-form collections only sweep), and ENTRY
+    ;; is reachable from the symbol table, so it stays valid across the
+    ;; record allocations.  -2: a forwarded variable refused VAL (signal
+    ;; stashed); the record is already on the frame, as GNU's specbind
+    ;; pushes before do_specbind signals.
+    (defun nl_sb_bind_plain (env frames sym val entry)
+      (let* ((rec (alloc-bytes 32 8)) (cell (alloc-bytes 32 8))
+             (box (nl_alloc_vector 2)))
         (seq
-         (if (= (nelisp_env_lkv_mirror (+ env 0) sym old 0) 0) 0
-           (nl_sexp_clone_into (+ env 64) old))
-         (let* ((box (nl_alloc_vector 2)))
-           (seq (nl_vector_set_slot box 0 sym) (nl_vector_set_slot box 1 old)
-                (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
-                (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)))
+         (nl_vector_set_slot box 0 sym)
+         (nl_vector_set_slot box 1 (if (= entry 0) (+ env 64)
+                                     (nl_ent_w entry 0)))
+         (ptr-write-u64 rec 0 8) (ptr-write-u64 (+ rec 8) 0 box)
+         (ptr-write-u64 (+ rec 16) 0 0) (ptr-write-u64 (+ rec 24) 0 0)
          ;; The depth and the frame's name list are read as raw WORDs: the
          ;; depth is always a fixnum and the list starts as nil, and the
          ;; materialising readers boxed both on every binding.  The cons
@@ -50202,9 +52244,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
            (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
-         (nl_sb_set env sym val)
-         (wf_dirty)
-         0)))
+         (if (= (nl_sb_set env sym val) 0)
+             (seq (wf_dirty) 0)
+           -2))))
     ;; 1 when NAME's dynamic bindings are all shallow (mirror-held): a
     ;; plain variable outside a worker.
     (defun nl_sb_mirror_only_p (env name)
@@ -50212,7 +52254,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (and (= (heap-read-u64 (data-addr nl_root_pin_control) 48) 2)
                      (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 1)
                      (= (heap-read-u64 (data-addr nl_root_pin_control) 8) env))) 0
-        (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) name)))
+        (let* ((entry (nelisp_mirror_lookup_entry_owned (+ env 0) name)))
           (if (= (nl_sb_plain_entry_p entry) 1) 1
             ;; Aliases bind their terminal name, never a source dynamic
             ;; cell. The caller has already searched source lexical cells.
@@ -50269,7 +52311,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (nelisp_env_setv_mirror_lazy (+ env 0) sym
               (if (= (logand val 1) 1) (nl_val_load val (alloc-bytes 32 8)) val)
               (+ env 64))
-          (seq (record-slot-set entry 0 val) 0))))
+          ;; Doc 226 D5/D9: the store converts or refuses a FORWARDED value
+          ;; as GNU store_symval_forwarding does (data.c:1470); 1 after the
+          ;; stashed signal.
+          (if (= (nl_ent_set entry 0 val) 1) 0 1))))
     ;; NAMES is the frame's name list as a WORD (pointer or immediate nil);
     ;; walking it by WORD keeps the nil terminator and a saved immediate
     ;; value from being boxed on every restore.
@@ -50286,9 +52331,23 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_bind_declared (env frames name value)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
-             (nl_n4_bind_declared_1 env frames copies
-               (if (= (logand value 1) 1) value
-                 (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))
+             ;; Doc 226 D5: GNU specbind stores through set_internal, so an
+             ;; intfwd built-in refuses a non-integer binding.  Checked here,
+             ;; before the binder, so `nl_n4_bind_declared_1' stays small
+             ;; enough to inline (the F1 prelink closure is capped at 296).
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
+               (if (if (= entry 0) 0
+                     (if (< (nl_ent_n entry) 9) 0
+                       (if (/= (sar (nl_ent_w entry 7) 2) 1) 0
+                         (if (= (logand value 3) 1) 0
+                           (if (= (logand value 1) 1) 1
+                             (if (= (nl_val_tag value) 2) 0
+                               (if (= (nl_val_tag value) 13) 0 1)))))))
+                   ;; (wrong-type-argument integerp VALUE).
+                   (nl_sym_signal_wta_integerp value)
+                 (nl_n4_bind_declared_1 env frames copies
+                   (if (= (logand value 1) 1) value
+                     (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))))
     (defun nl_n4_bind_declared_1 (env frames name value)
       (if (= (nl_sb_dynamic_p env frames name) 1)
           (if (= (nl_sb_bind env frames name value) 0) 1
@@ -50987,6 +53046,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                          nelisp-standalone--reader-extra-manifest))
          (float-stub (nelisp-standalone--reader-float-unit))
          (float-time-stub (nelisp-standalone--float-time-unit))
+         (gc-regs-stub (nelisp-standalone--gc-regs-unit))
          ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
          ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
          ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
@@ -51123,7 +53183,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
             (nelisp-standalone--rooted-protocol-startup-src
            (append (list start applyfn) helpers
                    (list eval-inner combiner-cons combiner)
-                   extras (list float-stub float-time-stub) real-sf
+                   extras (list float-stub float-time-stub gc-regs-stub) real-sf
                    (list sf-cc capture errstub fileio catch-throw boundary
                          eval-source neln-demo gc arena)
                    (delq nil (list arena-base callsite))))))
@@ -51133,7 +53193,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (driver (nelisp-standalone--reader-driver-unit)))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
-            extras (list float-stub float-time-stub) real-sf
+            extras (list float-stub float-time-stub gc-regs-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
                   eval-source neln-demo gc arena)
             (delq nil (list arena-base callsite)))))

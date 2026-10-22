@@ -57,7 +57,11 @@
     ;; `word == 7' decides the exact same predicate as
     ;; `(sexp-tag (materialised)) == 1' for every value it can hold.
     (defun nelisp_mirror_is_constant_slot_word (entry-ptr)
-      (nl_record_slot_word entry-ptr 3))
+      ;; A symbol object keeps trapped_write in bits 10-11 of its flags word
+      ;; (NOWRITE is a constant, data.c set_internal); t, else nil.
+      (if (= (nl_so_p entry-ptr) 1)
+          (if (= (logand (sar (heap-read-u64 (- entry-ptr 6) 0) 10) 3) 1) 7 3)
+        (nl_ent_w entry-ptr 3)))
     (defun nelisp_mirror_is_constant_check (entry-ptr _mirror-ptr _sym-ptr _pad)
       (if (= entry-ptr 0)
           0

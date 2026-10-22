@@ -40,7 +40,7 @@
        (if (= entry 0)
            0
          (if (= (extern-call nl_uninterned_symbol_equal
-                 (record-slot-ref-ptr entry 0)
+                 (nl_ent_ptr entry 0)
                  unbound-ptr)
                 1)
              0

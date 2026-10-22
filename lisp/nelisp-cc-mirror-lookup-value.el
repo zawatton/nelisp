@@ -39,7 +39,7 @@
     ;; when there is no entry.  The adapter keeps writing nil on a miss.
     (defun nelisp_mirror_lookup_value_w (mirror-ptr sym-ptr _pad)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
-        (if (= entry 0) 2 (nl_record_slot_word entry 0))))
+        (if (= entry 0) 2 (nl_ent_w entry 0))))
     (defun nelisp_mirror_lookup_value_done (w result-slot)
       (nl_abi_word_to_rc (if (= w 2) 3 w) result-slot))
     (defun nelisp_mirror_lookup_value (mirror-ptr sym-ptr result-slot)

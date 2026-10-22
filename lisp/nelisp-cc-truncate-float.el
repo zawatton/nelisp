@@ -45,7 +45,7 @@
      (sexp-int-make result-slot
        (f64-to-i64-trunc
          (bits-to-f64
-           (sexp-float-unwrap arg0)))))
+           (nl_float_bits arg0)))))
   "AOT source for the Doc 119 §119.A `bi_truncate' Float arm swap.
 
 Two-argument function — SysV AMD64 prologue spills arg0 (* const
