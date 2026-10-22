@@ -20251,367 +20251,621 @@ baked build's own `<'/`>'/`=' arms need it too.")
           ;; way of leaving a pc (return, call, handler) is not a back edge.
           (if (>= pc length) (setq go 0)
             (seq (setq raw (heap-read-u8 data pc))
-                 (if (= raw 84)
-                     (if (<= sp 0) (setq go 0)
-                       (seq
-                        (setq a (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
-                        (if (/= (logand a 3) 1) (setq go 0)
-                          (if (= a 9223372036854775805) (setq go 0)
-                            (seq
-                             (ptr-write-u64 (+ mem (* (- sp 1) 8)) 0
-                                            (+ a 4))
-                             (setq pc (+ pc 1)))))))
-                   (if (= raw 130)
-                       (if (>= (+ pc 2) length) (setq go 0)
-                         (seq
-                          (setq target
-                                (+ (heap-read-u8 data (+ pc 1))
-                                   (shl (heap-read-u8 data (+ pc 2)) 8)))
-                          (if (< target length) (seq (if (< target pc) (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0) (setq pc target))
-                            (setq go 0))))
-                     (if (and (>= raw 8) (< raw 14))
-                         (let* ((index (- raw 8)) (value 0)
-                                (kname (if (< index nconst)
-                                           (heap-read-u64 (+ constants (* index 8)) 0)
-                                         0)))
-                           (if (>= sp depth) (setq go 0)
-                             (seq
-                              (if (/= kname last-name)
-                                  (if (= env 0) (setq go 0)
-                                    (if (>= index nconst) (setq go 0)
-                                      (seq
-                                       (setq last-owner
-                                             (heap-read-u64 env 8))
-                                       (setq last-table
-                                             (ptr-read-u64 last-owner 16))
-                                       (if (/= (logand last-table 7) 6)
-                                           (setq go 0)
-                                         (seq
-                                          (setq last-table-data
-                                                (logand last-table -8))
-                                          (setq last-buckets
-                                                (ptr-read-u64
-                                                 last-table-data 24))
-                                          (setq last-count
-                                                (ptr-read-u64
-                                                 last-table-data 32))
-                                          (setq last-entry
-                                                (wf_bytecode_w_fast_entry
-                                                 env
-                                                 (heap-read-u64
-                                                  (+ constants (* index 8))
-                                                  0)))
-                                          (if
-                                              (/= (logand last-buckets 7)
-                                                  6)
-                                              (setq go 0)
-                                            (if
-                                                (/= (logand last-entry 7)
-                                                    6)
-                                                (setq go 0)
-                                              (seq
-                                               (setq last-entry-data
-                                                     (logand last-entry -8))
-                                               (setq last-slots
-                                                     (nl_ent_n last-entry))
-                                               (if (< last-slots 4)
-                                                   (setq go 0)
-                                                 (if
-                                      (/= (heap-read-u64 env 8) last-owner)
-                                      (setq go 0)
-                                    (if
-                                        (/= (ptr-read-u64 last-owner 16)
-                                            last-table)
-                                        (setq go 0)
-                                      (if
-                                          (/=
-                                           (ptr-read-u64 last-table-data
-                                                          24)
-                                           last-buckets)
-                                          (setq go 0)
-                                        (if
-                                            (/=
-                                             (ptr-read-u64
-                                              last-table-data 32)
-                                             last-count)
-                                            (setq go 0)
-                                          ;; Doc 226 D9: find_symbol_value's
-                                          ;; in-line cases only.
-                                          (if (= (nl_ent_plain_value last-entry) 0)
-                                              (setq go 0)
-                                              (seq
-                                                  (setq last-name kname)
-                                                  (setq last-value 0))))))))))))))))
-                                0)
-                              (if (> go 0)
-(seq
-                                               (setq value
-                                                     (ptr-read-u64
-                                                      last-entry-data 16))
-                                               (if (= value 0) (setq go 0)
-                                                 (if (= value last-value)
-                                                     (if
-                                                         (and
-                                                          (< (+ pc 2)
-                                                             length)
-                                                          (=
-                                                           (heap-read-u8
-                                                            data (+ pc 1))
-                                                           136))
-                                                         (if
-                                                             (and (> sp 0)
-                                                                  (<
-                                                                   (+ pc 6)
-                                                                   length))
-                                                             (let*
-                                                                 ((tail-op
-                                                                   (heap-read-u32 data (+ pc 1)))
-                                                                  (tail-slot
-                                                                   (+ mem
-                                                                      (*
-                                                                       (-
-                                                                        sp
-                                                                        1)
-                                                                       8)))
-                                                                  (tail-value
-                                                                   (ptr-read-u64
-                                                                    tail-slot
-                                                                    0))
-                                                                  (tail-target
-                                                                   (heap-read-u16 data (+ pc 4))))
-                                                               (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
-(if
-                                                                           (=
-                                                                            (logand
-                                                                             tail-value
-                                                                             3)
-                                                                            1)
-                                                                           (if
-                                                                               (<
-                                                                                tail-target
-                                                                                length)
-                                                                               (if
-                                                                                   (if
-                                                                                       (= (logand tail-op 65535) 21640)
-                                                                                       (=
-                                                                                        tail-value
-                                                                                        9223372036854775805)
-                                                                                     (=
-                                                                                      tail-value
-                                                                                      -9223372036854775807))
-                                                                                   (setq
-                                                                                    pc
-                                                                                    (+
-                                                                                     pc
-                                                                                     2))
-                                                                                 (seq
-                                                                                  (ptr-write-u64
-                                                                                   tail-slot
-                                                                                   0
-                                                                                   (if
-                                                                                       (= (logand tail-op 65535) 21640)
-                                                                                       (+
-                                                                                        tail-value
-                                                                                        4)
-                                                                                     (-
-                                                                                      tail-value
-                                                                                      4)))
-                                                                                  (setq
-                                                                                   pc
-                                                                                   tail-target)))
-                                                                             (setq
-                                                                              pc
-                                                                              (+
-                                                                               pc
-                                                                               2)))
-                                                                         (setq
-                                                                          pc
-                                                                          (+
-                                                                           pc
-                                                                           2)))
-(setq pc
-                                                                       (+
-                                                                        pc
-                                                                        2))))
-                                                           (setq pc
-                                                                 (+ pc 2)))
-                                                       (seq
-                                                        (ptr-write-u64
-                                                         (+ mem (* sp 8))
-                                                         0 value)
-                                                        (setq sp (+ sp 1))
-                                                        (setq pc (+ pc 1))))
-                                                   (if
-                                                       (=
-                                                        (wf_bytecode_w_unbound_p
-                                                         env value)
-                                                        1)
-                                                       (setq go 0)
-                                                     (seq
-                                                      (setq last-value
-                                                            value)
-                                                      (if
-                                                          (and
-                                                           (< (+ pc 2)
-                                                              length)
-                                                           (=
-                                                            (heap-read-u8
-                                                             data (+ pc 1))
-                                                            136))
-                                                          (if
-                                                              (and
-                                                               (> sp 0)
-                                                               (< (+ pc 6)
-                                                                  length))
-                                                              (let*
-                                                                  ((tail-op
-                                                                    (heap-read-u32 data (+ pc 1)))
-                                                                   (tail-slot
-                                                                    (+ mem
-                                                                       (*
-                                                                        (-
-                                                                         sp
-                                                                         1)
-                                                                        8)))
-                                                                   (tail-value
-                                                                    (ptr-read-u64
-                                                                     tail-slot
-                                                                     0))
-                                                                   (tail-target
-                                                                    (heap-read-u16 data (+ pc 4))))
-                                                                (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
-(if
-                                                                            (=
-                                                                             (logand
-                                                                              tail-value
-                                                                              3)
-                                                                             1)
-                                                                            (if
-                                                                                (<
-                                                                                 tail-target
-                                                                                 length)
-                                                                                (if
-                                                                                    (if
-                                                                                        (= (logand tail-op 65535) 21640)
-                                                                                        (=
-                                                                                         tail-value
-                                                                                         9223372036854775805)
-                                                                                      (=
-                                                                                       tail-value
-                                                                                       -9223372036854775807))
-                                                                                    (setq
-                                                                                     pc
-                                                                                     (+
-                                                                                      pc
-                                                                                      2))
-                                                                                  (seq
-                                                                                   (ptr-write-u64
-                                                                                    tail-slot
-                                                                                    0
-                                                                                    (if
-                                                                                        (= (logand tail-op 65535) 21640)
-                                                                                        (+
-                                                                                         tail-value
-                                                                                         4)
-                                                                                      (-
-                                                                                       tail-value
-                                                                                       4)))
-                                                                                   (setq
-                                                                                    pc
-                                                                                    tail-target)))
-                                                                              (setq
-                                                                               pc
-                                                                               (+
-                                                                                pc
-                                                                                2)))
-                                                                          (setq
-                                                                           pc
-                                                                           (+
-                                                                            pc
-                                                                            2)))
-(setq pc
-                                                                        (+
-                                                                         pc
-                                                                         2))))
-                                                            (setq pc
-                                                                  (+ pc 2)))
-                                                        (seq
-                                                         (ptr-write-u64
-                                                          (+ mem (* sp 8))
-                                                          0 value)
-                                                         (setq sp (+ sp 1))
-                                                         (setq pc (+ pc 1)))))))))))))
-                       (if (= raw 135)
-                           ;; GNU bytecode.c:892-923 CASE (Breturn) in a frame this
-                           ;; loop pushed.  The entry frame, a frame with handlers,
-                           ;; unwinds or bindings, and a frame a debugger waits on
-                           ;; return through the full loop.
-                           (if (if (= (ptr-read-u64 foot 16) 3) 1
-                                 (if (/= (ptr-read-u64 foot 40) 3) 1 (<= sp 0)))
-                               (setq go 0)
-                             (let* ((packed (sar (ptr-read-u64 foot 8) 2))
-                                    (n4 (logand packed 1))
-                                    (state (heap-read-u64 env 176)))
-                               (if (if (= n4 1)
-                                       (/= (heap-read-u64
-                                            (+ state (+ 64 (* (- (heap-read-u64 state 0) 1) 160)))
-                                            120)
-                                           0)
-                                     0)
-                                   (setq go 0)
-                                 (let* ((fi (sar packed 1))
-                                        (caller (sar (ptr-read-u64 foot 0) 2))
-                                        (pcr (sar (ptr-read-u64 foot 16) 2)))
-                                   (seq
-                                    (ptr-write-u64 (+ caller (* fi 8)) 0
-                                                   (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
-                                    (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
-                                        (ptr-write-u64 (data-addr nl_rootstack_top) 0 (- mem 32))
-                                      (nl_root_release env (- mem 32)))
-                                    (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
-                                    (if (= n4 1)
-                                        (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
-                                      0)
-                                    (ptr-write-u64 cell 16 7)
-                                    (ptr-write-u64 cell 8 (+ (shl caller 2) 1))
+                 (if (< raw 93)
+                     (if (< raw 83)
+                         (if (< raw 32)
+                             (if (< raw 6)
+                                 (seq
+                                  (if (or (>= sp depth) (<= sp raw)) (setq go 0)
                                     (seq
-                       (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
-                              (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
-                              (f2 (+ fp2 (* (+ d2 1) 8)))
-                              (cw (ptr-read-u64 f2 24))
-                              (kw (ptr-read-u64 f2 32))
-                              (vp (if (= (logand kw 7) 0)
-                                      (ptr-read-u64 kw 8)
-                                    (- kw (logand kw 6)))))
-                         (seq (setq mem fp2)
-                              (setq depth d2)
-                              (setq foot f2)
-                              ;; The code string: a String WORD gives its data and length through
-                              ;; the string accessors (GNU's SDATA and SCHARS), anything else
-                              ;; keeps the view's fields.
-                              (if (= (logand cw 7) 4)
-                                  (seq (setq data (heap-sexp-data cw))
-                                       (setq length (heap-sexp-length cw)))
-                                (let* ((ct (heap-read-u8 cw 0)))
-                                  (if (if (= ct 5) 1 (= ct 14))
-                                      (seq (setq data (heap-read-u64 cw 16))
-                                           (setq length (heap-read-u64 cw 24)))
-                                    (seq (setq data (nl_bi_strptr cw))
-                                         (setq length (m5_strlen cw))))))
-                              (setq constants (+ vp 8))
-                              (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
-                                    (setq pc pcr)
-                                    (setq sp (+ fi 1)))))))
-                                                (if (< raw 6)
-                           (seq
-                            (if (or (>= sp depth) (<= sp raw)) (setq go 0)
-                              (seq
-                               (ptr-write-u64 (+ mem (* sp 8)) 0
-                                              (heap-read-u64
-                                               (+ mem (* (- sp raw 1) 8))
-                                               0))
-                               (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
-                         (if (= raw 137)
+                                     (ptr-write-u64 (+ mem (* sp 8)) 0
+                                                    (heap-read-u64
+                                                     (+ mem (* (- sp raw 1) 8))
+                                                     0))
+                                     (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
+                                 (if (< raw 8)
+                                     (seq (setq go 0))
+                                     (if (< raw 14)
+                                         (let* ((index (- raw 8)) (value 0)
+                                                (kname (if (< index nconst)
+                                                           (heap-read-u64 (+ constants (* index 8)) 0)
+                                                         0)))
+                                           (if (>= sp depth) (setq go 0)
+                                             (seq
+                                              (if (/= kname last-name)
+                                                  (if (= env 0) (setq go 0)
+                                                    (if (>= index nconst) (setq go 0)
+                                                      (seq
+                                                       (setq last-owner
+                                                             (heap-read-u64 env 8))
+                                                       (setq last-table
+                                                             (ptr-read-u64 last-owner 16))
+                                                       (if (/= (logand last-table 7) 6)
+                                                           (setq go 0)
+                                                         (seq
+                                                          (setq last-table-data
+                                                                (logand last-table -8))
+                                                          (setq last-buckets
+                                                                (ptr-read-u64
+                                                                 last-table-data 24))
+                                                          (setq last-count
+                                                                (ptr-read-u64
+                                                                 last-table-data 32))
+                                                          (setq last-entry
+                                                                (wf_bytecode_w_fast_entry
+                                                                 env
+                                                                 (heap-read-u64
+                                                                  (+ constants (* index 8))
+                                                                  0)))
+                                                          (if
+                                                              (/= (logand last-buckets 7)
+                                                                  6)
+                                                              (setq go 0)
+                                                            (if
+                                                                (/= (logand last-entry 7)
+                                                                    6)
+                                                                (setq go 0)
+                                                              (seq
+                                                               (setq last-entry-data
+                                                                     (logand last-entry -8))
+                                                               (setq last-slots
+                                                                     (nl_ent_n last-entry))
+                                                               (if (< last-slots 4)
+                                                                   (setq go 0)
+                                                                 (if
+                                                      (/= (heap-read-u64 env 8) last-owner)
+                                                      (setq go 0)
+                                                    (if
+                                                        (/= (ptr-read-u64 last-owner 16)
+                                                            last-table)
+                                                        (setq go 0)
+                                                      (if
+                                                          (/=
+                                                           (ptr-read-u64 last-table-data
+                                                                          24)
+                                                           last-buckets)
+                                                          (setq go 0)
+                                                        (if
+                                                            (/=
+                                                             (ptr-read-u64
+                                                              last-table-data 32)
+                                                             last-count)
+                                                            (setq go 0)
+                                                          ;; Doc 226 D9: find_symbol_value's
+                                                          ;; in-line cases only.
+                                                          (if (= (nl_ent_plain_value last-entry) 0)
+                                                              (setq go 0)
+                                                              (seq
+                                                                  (setq last-name kname)
+                                                                  (setq last-value 0))))))))))))))))
+                                                0)
+                                              (if (> go 0)
+                (seq
+                                                               (setq value
+                                                                     (ptr-read-u64
+                                                                      last-entry-data 16))
+                                                               (if (= value 0) (setq go 0)
+                                                                 (if (= value last-value)
+                                                                     (if
+                                                                         (and
+                                                                          (< (+ pc 2)
+                                                                             length)
+                                                                          (=
+                                                                           (heap-read-u8
+                                                                            data (+ pc 1))
+                                                                           136))
+                                                                         (if
+                                                                             (and (> sp 0)
+                                                                                  (<
+                                                                                   (+ pc 6)
+                                                                                   length))
+                                                                             (let*
+                                                                                 ((tail-op
+                                                                                   (heap-read-u32 data (+ pc 1)))
+                                                                                  (tail-slot
+                                                                                   (+ mem
+                                                                                      (*
+                                                                                       (-
+                                                                                        sp
+                                                                                        1)
+                                                                                       8)))
+                                                                                  (tail-value
+                                                                                   (ptr-read-u64
+                                                                                    tail-slot
+                                                                                    0))
+                                                                                  (tail-target
+                                                                                   (heap-read-u16 data (+ pc 4))))
+                                                                               (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
+                (if
+                                                                                           (=
+                                                                                            (logand
+                                                                                             tail-value
+                                                                                             3)
+                                                                                            1)
+                                                                                           (if
+                                                                                               (<
+                                                                                                tail-target
+                                                                                                length)
+                                                                                               (if
+                                                                                                   (if
+                                                                                                       (= (logand tail-op 65535) 21640)
+                                                                                                       (=
+                                                                                                        tail-value
+                                                                                                        9223372036854775805)
+                                                                                                     (=
+                                                                                                      tail-value
+                                                                                                      -9223372036854775807))
+                                                                                                   (setq
+                                                                                                    pc
+                                                                                                    (+
+                                                                                                     pc
+                                                                                                     2))
+                                                                                                 (seq
+                                                                                                  (ptr-write-u64
+                                                                                                   tail-slot
+                                                                                                   0
+                                                                                                   (if
+                                                                                                       (= (logand tail-op 65535) 21640)
+                                                                                                       (+
+                                                                                                        tail-value
+                                                                                                        4)
+                                                                                                     (-
+                                                                                                      tail-value
+                                                                                                      4)))
+                                                                                                  (setq
+                                                                                                   pc
+                                                                                                   tail-target)))
+                                                                                             (setq
+                                                                                              pc
+                                                                                              (+
+                                                                                               pc
+                                                                                               2)))
+                                                                                         (setq
+                                                                                          pc
+                                                                                          (+
+                                                                                           pc
+                                                                                           2)))
+                (setq pc
+                                                                                       (+
+                                                                                        pc
+                                                                                        2))))
+                                                                           (setq pc
+                                                                                 (+ pc 2)))
+                                                                       (seq
+                                                                        (ptr-write-u64
+                                                                         (+ mem (* sp 8))
+                                                                         0 value)
+                                                                        (setq sp (+ sp 1))
+                                                                        (setq pc (+ pc 1))))
+                                                                   (if
+                                                                       (=
+                                                                        (wf_bytecode_w_unbound_p
+                                                                         env value)
+                                                                        1)
+                                                                       (setq go 0)
+                                                                     (seq
+                                                                      (setq last-value
+                                                                            value)
+                                                                      (if
+                                                                          (and
+                                                                           (< (+ pc 2)
+                                                                              length)
+                                                                           (=
+                                                                            (heap-read-u8
+                                                                             data (+ pc 1))
+                                                                            136))
+                                                                          (if
+                                                                              (and
+                                                                               (> sp 0)
+                                                                               (< (+ pc 6)
+                                                                                  length))
+                                                                              (let*
+                                                                                  ((tail-op
+                                                                                    (heap-read-u32 data (+ pc 1)))
+                                                                                   (tail-slot
+                                                                                    (+ mem
+                                                                                       (*
+                                                                                        (-
+                                                                                         sp
+                                                                                         1)
+                                                                                        8)))
+                                                                                   (tail-value
+                                                                                    (ptr-read-u64
+                                                                                     tail-slot
+                                                                                     0))
+                                                                                   (tail-target
+                                                                                    (heap-read-u16 data (+ pc 4))))
+                                                                                (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064))
+                (if
+                                                                                            (=
+                                                                                             (logand
+                                                                                              tail-value
+                                                                                              3)
+                                                                                             1)
+                                                                                            (if
+                                                                                                (<
+                                                                                                 tail-target
+                                                                                                 length)
+                                                                                                (if
+                                                                                                    (if
+                                                                                                        (= (logand tail-op 65535) 21640)
+                                                                                                        (=
+                                                                                                         tail-value
+                                                                                                         9223372036854775805)
+                                                                                                      (=
+                                                                                                       tail-value
+                                                                                                       -9223372036854775807))
+                                                                                                    (setq
+                                                                                                     pc
+                                                                                                     (+
+                                                                                                      pc
+                                                                                                      2))
+                                                                                                  (seq
+                                                                                                   (ptr-write-u64
+                                                                                                    tail-slot
+                                                                                                    0
+                                                                                                    (if
+                                                                                                        (= (logand tail-op 65535) 21640)
+                                                                                                        (+
+                                                                                                         tail-value
+                                                                                                         4)
+                                                                                                      (-
+                                                                                                       tail-value
+                                                                                                       4)))
+                                                                                                   (setq
+                                                                                                    pc
+                                                                                                    tail-target)))
+                                                                                              (setq
+                                                                                               pc
+                                                                                               (+
+                                                                                                pc
+                                                                                                2)))
+                                                                                          (setq
+                                                                                           pc
+                                                                                           (+
+                                                                                            pc
+                                                                                            2)))
+                (setq pc
+                                                                                        (+
+                                                                                         pc
+                                                                                         2))))
+                                                                            (setq pc
+                                                                                  (+ pc 2)))
+                                                                        (seq
+                                                                         (ptr-write-u64
+                                                                          (+ mem (* sp 8))
+                                                                          0 value)
+                                                                         (setq sp (+ sp 1))
+                                                                         (setq pc (+ pc 1)))))))))))))
+                                         (seq (setq go 0)))))
+                             (if (< raw 38)
+                                 (let* ((argc (- raw 32)))
+                                   (if (< sp (+ argc 1)) (setq go 0)
+                                     (let* ((polled (if (= (wf_bytecode_poll) 1)
+                                                        (seq (setq last-name -1) 0)
+                                                      0))
+                                            (fi (- sp (+ argc 1)))
+                                            (isp (wf_bytecode_call_enter
+                                                  env cell mem fi argc
+                                                  (heap-read-u64 (+ mem (* fi 8)) 0)
+                                                  (+ pc 1))))
+                                       (if (>= isp 0)
+                                           (seq
+                                            (ptr-write-u64 cell 16 7)
+                                            (seq
+           (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
+                  (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
+                  (f2 (+ fp2 (* (+ d2 1) 8)))
+                  (cw (ptr-read-u64 f2 24))
+                  (kw (ptr-read-u64 f2 32))
+                  (vp (if (= (logand kw 7) 0)
+                          (ptr-read-u64 kw 8)
+                        (- kw (logand kw 6)))))
+             (seq (setq mem fp2)
+                  (setq depth d2)
+                  (setq foot f2)
+                  ;; The code string: a String WORD gives its data and length through
+                  ;; the string accessors (GNU's SDATA and SCHARS), anything else
+                  ;; keeps the view's fields.
+                  (if (= (logand cw 7) 4)
+                      (seq (setq data (heap-sexp-data cw))
+                           (setq length (heap-sexp-length cw)))
+                    (let* ((ct (heap-read-u8 cw 0)))
+                      (if (if (= ct 5) 1 (= ct 14))
+                          (seq (setq data (heap-read-u64 cw 16))
+                               (setq length (heap-read-u64 cw 24)))
+                        (seq (setq data (nl_bi_strptr cw))
+                             (setq length (m5_strlen cw))))))
+                  (setq constants (+ vp 8))
+                  (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
+                                            (if (>= isp 65536) (setq last-name -1) 0)
+                                            (setq pc 0)
+                                            (setq sp (logand isp 65535)))
+                                         (if (= isp -2)
+                                             (let* ((rc (wf_bytecode_call env mem sp argc cell)))
+                                               (seq
+                                                (setq last-name -1)
+                                                (if (= rc 0)
+                                                    (seq (setq sp (- sp argc))
+                                                         (setq pc (+ pc 1)))
+                                                  (seq (setq failed 1) (setq go 0)))))
+                                           (seq (setq failed 1) (setq go 0)))))))
+                                 (if (< raw 64)
+                                     (seq (setq go 0))
+                                     (if (< raw 66)
+                                         (if (<= sp 0) (setq go 0)
+                           (let* ((top (+ mem (* (- sp 1) 8)))
+                                  (w (heap-read-u64 top 0))
+                                  (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
+                                         (if (= (logand w 7) 6)
+                                             (logand (ptr-read-u8 (- w 6) 0) 63)
+                                           (if (= (logand w 7) 2) 7
+                                             (if (= (logand w 7) 4) 5 (ptr-read-u8 w 0)))))))
+                             (if (= tag 7)
+                                 (seq (ptr-write-u64 top 0
+                                                     (heap-read-u64
+                                                      (+ (nl_word_payload w)
+                                                         (if (= raw 64) 0 8)) 0))
+                                      (setq pc (+ pc 1)))
+                               (if (= tag 0)
+                                   (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
+                                 (setq go 0)))))
+                                         (seq (setq go 0))))))
+                         (if (= raw 84)
+                           (if (<= sp 0) (setq go 0)
+                             (seq
+                              (setq a (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                              (if (/= (logand a 3) 1) (setq go 0)
+                                (if (= a 9223372036854775805) (setq go 0)
+                                  (seq
+                                   (ptr-write-u64 (+ mem (* (- sp 1) 8)) 0
+                                                  (+ a 4))
+                                   (setq pc (+ pc 1)))))))
+                           (if (= raw 91)
+                             (seq (setq go 0))
+                             (seq
+                              (if (< sp (if (< raw 85) 1 2))
+                                  (setq go 0)
+                                (seq
+                                 (setq a
+                                       (heap-read-u64
+                                        (+ mem
+                                           (*
+                                            (- sp
+                                               (if (< raw 85) 1
+                                                 2))
+                                            8))
+                                        0))
+                                 (setq b
+                                       (heap-read-u64
+                                        (+ mem (* (- sp 1) 8)) 0))
+                                 (if
+                                     (or (/= (logand a 3) 1)
+                                         (/= (logand b 3) 1))
+                                     (setq go 0)
+                                   (seq
+                                    (setq word
+                                          (if (= raw 87)
+                                              (seq
+                                               (if (< a b) 7 3))
+                                            (if (= raw 84)
+                                                (seq
+                                                 (if
+                                                     (= a
+                                                        9223372036854775805)
+                                                     -1
+                                                   (+ a 4)))
+                                              (if (= raw 83)
+                                                  (seq
+                                                   (if
+                                                       (= a
+                                                          -9223372036854775807)
+                                                       -1
+                                                     (- a 4)))
+                                                (if (= raw 85)
+                                                    (seq
+                                                     (if (= a b)
+                                                         7
+                                                       3))
+                                                  (if (= raw 86)
+                                                      (seq
+                                                       (if
+                                                           (> a
+                                                              b)
+                                                           7
+                                                         3))
+                                                    (if
+                                                        (= raw
+                                                           88)
+                                                        (seq
+                                                         (if
+                                                             (<=
+                                                              a
+                                                              b)
+                                                             7
+                                                           3))
+                                                      (if
+                                                          (= raw
+                                                             89)
+                                                          (seq
+                                                           (if
+                                                               (>=
+                                                                a
+                                                                b)
+                                                               7
+                                                             3))
+                                                        (seq
+                                                         (let*
+                                                             ((n
+                                                               (if
+                                                                   (=
+                                                                    raw
+                                                                    92)
+                                                                   (+
+                                                                    (sar
+                                                                     a
+                                                                     2)
+                                                                    (sar
+                                                                     b
+                                                                     2))
+                                                                 (-
+                                                                  (sar
+                                                                   a
+                                                                   2)
+                                                                  (sar
+                                                                   b
+                                                                   2)))))
+                                                           (if
+                                                               (or
+                                                                (>
+                                                                 n
+                                                                 2305843009213693951)
+                                                                (<
+                                                                 n
+                                                                 -2305843009213693952))
+                                                               -1
+                                                             (+
+                                                              (shl
+                                                               n
+                                                               2)
+                                                              1))))))))))))
+                                    (if (= word -1) (setq go 0)
+                                      (seq
+                                       (if (>= raw 85)
+                                           (setq sp (- sp 1))
+                                         0)
+                                       (ptr-write-u64
+                                        (+ mem (* (- sp 1) 8)) 0
+                                        word)
+                                       (setq pc (+ pc 1))))))))))))
+                     (if (< raw 137)
+                         (if (< raw 131)
+                             (if (< raw 130)
+                                 (seq (setq go 0))
+                                 (if (>= (+ pc 2) length) (setq go 0)
+                                   (seq
+                                    (setq target
+                                          (+ (heap-read-u8 data (+ pc 1))
+                                             (shl (heap-read-u8 data (+ pc 2)) 8)))
+                                    (if (< target length) (seq (if (< target pc) (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0) (setq pc target))
+                                      (setq go 0)))))
+                             (if (< raw 135)
+                                 (seq
+                                  (if
+                                      (or (<= sp 0)
+                                          (>= (+ pc 2) length))
+                                      (setq go 0)
+                                    (seq
+                                     (setq a
+                                           (heap-read-u64
+                                            (+ mem (* (- sp 1) 8)) 0))
+                                     (if (= (logand a 1) 0)
+                                         (setq go 0)
+                                       (seq
+                                        (setq target
+                                              (+
+                                               (heap-read-u8 data
+                                                             (+ pc 1))
+                                               (shl
+                                                (heap-read-u8 data
+                                                              (+ pc 2))
+                                                8)))
+                                        (if
+                                            (and (< target length)
+                                                 (< (+ pc 3) length))
+                                            (if (= raw 131)
+                                                (seq
+                                                 (setq sp (- sp 1))
+                                                 (setq pc
+                                                       (if (= a 3)
+                                                           target
+                                                         (+ pc 3))))
+                                              (if (= raw 132)
+                                                  (seq
+                                                   (setq sp (- sp 1))
+                                                   (setq pc
+                                                         (if (= a 3)
+                                                             (+ pc 3)
+                                                           target)))
+                                                (if (= raw 133)
+                                                    (if (= a 3)
+                                                        (setq pc
+                                                              target)
+                                                      (seq
+                                                       (setq sp
+                                                             (- sp 1))
+                                                       (setq pc
+                                                             (+ pc 3))))
+                                                  (if (= a 3)
+                                                      (seq
+                                                       (setq sp
+                                                             (- sp 1))
+                                                       (setq pc
+                                                             (+ pc 3)))
+                                                    (seq (if (< target pc) (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0) (setq pc target))))))
+                                          (setq go 0)))))))
+                                 (if (< raw 136)
+                                     (if (if (= (ptr-read-u64 foot 16) 3) 1
+                                           (if (/= (ptr-read-u64 foot 40) 3) 1 (<= sp 0)))
+                                         (setq go 0)
+                                       (let* ((packed (sar (ptr-read-u64 foot 8) 2))
+                                              (n4 (logand packed 1))
+                                              (state (heap-read-u64 env 176)))
+                                         (if (if (= n4 1)
+                                                 (/= (heap-read-u64
+                                                      (+ state (+ 64 (* (- (heap-read-u64 state 0) 1) 160)))
+                                                      120)
+                                                     0)
+                                               0)
+                                             (setq go 0)
+                                           (let* ((fi (sar packed 1))
+                                                  (caller (sar (ptr-read-u64 foot 0) 2))
+                                                  (pcr (sar (ptr-read-u64 foot 16) 2)))
+                                             (seq
+                                              (ptr-write-u64 (+ caller (* fi 8)) 0
+                                                             (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                                              (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                                                  (ptr-write-u64 (data-addr nl_rootstack_top) 0 (- mem 32))
+                                                (nl_root_release env (- mem 32)))
+                                              (ptr-write-u64 (+ env 96) 0 (- (heap-read-u64 (+ env 96) 0) 1))
+                                              (if (= n4 1)
+                                                  (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
+                                                0)
+                                              (ptr-write-u64 cell 16 7)
+                                              (ptr-write-u64 cell 8 (+ (shl caller 2) 1))
+                                              (seq
+                                 (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
+                                        (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
+                                        (f2 (+ fp2 (* (+ d2 1) 8)))
+                                        (cw (ptr-read-u64 f2 24))
+                                        (kw (ptr-read-u64 f2 32))
+                                        (vp (if (= (logand kw 7) 0)
+                                                (ptr-read-u64 kw 8)
+                                              (- kw (logand kw 6)))))
+                                   (seq (setq mem fp2)
+                                        (setq depth d2)
+                                        (setq foot f2)
+                                        ;; The code string: a String WORD gives its data and length through
+                                        ;; the string accessors (GNU's SDATA and SCHARS), anything else
+                                        ;; keeps the view's fields.
+                                        (if (= (logand cw 7) 4)
+                                            (seq (setq data (heap-sexp-data cw))
+                                                 (setq length (heap-sexp-length cw)))
+                                          (let* ((ct (heap-read-u8 cw 0)))
+                                            (if (if (= ct 5) 1 (= ct 14))
+                                                (seq (setq data (heap-read-u64 cw 16))
+                                                     (setq length (heap-read-u64 cw 24)))
+                                              (seq (setq data (nl_bi_strptr cw))
+                                                   (setq length (m5_strlen cw))))))
+                                        (setq constants (+ vp 8))
+                                        (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
+                                              (setq pc pcr)
+                                              (setq sp (+ fi 1)))))))
+                                     (seq
+                                      (if (<= sp 0) (setq go 0)
+                                        (seq (setq sp (- sp 1))
+                                             (setq pc (+ pc 1))))))))
+                         (if (< raw 138)
                              (seq
                               (seq (setq fused 0)
                                    (if
@@ -20762,290 +21016,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                           (setq sp (+ sp 1))
                                           (setq pc (+ pc 1))))
                                      0)))
-                           (if (>= raw 192)
-                               (seq
-                                (if
-                                    (or (>= sp depth)
-                                        (>= (- raw 192) nconst))
-                                    (setq go 0)
-                                  (seq
-                                   (ptr-write-u64 (+ mem (* sp 8)) 0
-                                                  (heap-read-u64
-                                                   (+ constants
-                                                      (* (- raw 192) 8))
-                                                   0))
-                                   (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
-                             (if (= raw 136)
+                             (if (< raw 192)
+                                 (seq (setq go 0))
                                  (seq
-                                  (if (<= sp 0) (setq go 0)
-                                    (seq (setq sp (- sp 1))
-                                         (setq pc (+ pc 1)))))
-                               (if (= raw 130)
-                                   (seq
-                                    (if (>= (+ pc 2) length) (setq go 0)
-                                      (seq
-                                       (setq target
-                                             (+
-                                              (heap-read-u8 data (+ pc 1))
-                                              (shl
-                                               (heap-read-u8 data (+ pc 2))
-                                               8)))
-                                       (if (< target length)
-                                           (seq (if (< target pc) (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0) (setq pc target))
-                                         (setq go 0)))))
-                                 (if (and (>= raw 131) (<= raw 134))
-                                     (seq
-                                      (if
-                                          (or (<= sp 0)
-                                              (>= (+ pc 2) length))
-                                          (setq go 0)
-                                        (seq
-                                         (setq a
-                                               (heap-read-u64
-                                                (+ mem (* (- sp 1) 8)) 0))
-                                         (if (= (logand a 1) 0)
-                                             (setq go 0)
-                                           (seq
-                                            (setq target
-                                                  (+
-                                                   (heap-read-u8 data
-                                                                 (+ pc 1))
-                                                   (shl
-                                                    (heap-read-u8 data
-                                                                  (+ pc 2))
-                                                    8)))
-                                            (if
-                                                (and (< target length)
-                                                     (< (+ pc 3) length))
-                                                (if (= raw 131)
-                                                    (seq
-                                                     (setq sp (- sp 1))
-                                                     (setq pc
-                                                           (if (= a 3)
-                                                               target
-                                                             (+ pc 3))))
-                                                  (if (= raw 132)
-                                                      (seq
-                                                       (setq sp (- sp 1))
-                                                       (setq pc
-                                                             (if (= a 3)
-                                                                 (+ pc 3)
-                                                               target)))
-                                                    (if (= raw 133)
-                                                        (if (= a 3)
-                                                            (setq pc
-                                                                  target)
-                                                          (seq
-                                                           (setq sp
-                                                                 (- sp 1))
-                                                           (setq pc
-                                                                 (+ pc 3))))
-                                                      (if (= a 3)
-                                                          (seq
-                                                           (setq sp
-                                                                 (- sp 1))
-                                                           (setq pc
-                                                                 (+ pc 3)))
-                                                        (seq (if (< target pc) (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0) (setq pc target))))))
-                                              (setq go 0)))))))
-                                   (if
-                                       (and (>= raw 83) (<= raw 92)
-                                            (/= raw 91))
-                                       (seq
-                                        (if (< sp (if (< raw 85) 1 2))
-                                            (setq go 0)
-                                          (seq
-                                           (setq a
-                                                 (heap-read-u64
-                                                  (+ mem
-                                                     (*
-                                                      (- sp
-                                                         (if (< raw 85) 1
-                                                           2))
-                                                      8))
-                                                  0))
-                                           (setq b
-                                                 (heap-read-u64
-                                                  (+ mem (* (- sp 1) 8)) 0))
-                                           (if
-                                               (or (/= (logand a 3) 1)
-                                                   (/= (logand b 3) 1))
-                                               (setq go 0)
-                                             (seq
-                                              (setq word
-                                                    (if (= raw 87)
-                                                        (seq
-                                                         (if (< a b) 7 3))
-                                                      (if (= raw 84)
-                                                          (seq
-                                                           (if
-                                                               (= a
-                                                                  9223372036854775805)
-                                                               -1
-                                                             (+ a 4)))
-                                                        (if (= raw 83)
-                                                            (seq
-                                                             (if
-                                                                 (= a
-                                                                    -9223372036854775807)
-                                                                 -1
-                                                               (- a 4)))
-                                                          (if (= raw 85)
-                                                              (seq
-                                                               (if (= a b)
-                                                                   7
-                                                                 3))
-                                                            (if (= raw 86)
-                                                                (seq
-                                                                 (if
-                                                                     (> a
-                                                                        b)
-                                                                     7
-                                                                   3))
-                                                              (if
-                                                                  (= raw
-                                                                     88)
-                                                                  (seq
-                                                                   (if
-                                                                       (<=
-                                                                        a
-                                                                        b)
-                                                                       7
-                                                                     3))
-                                                                (if
-                                                                    (= raw
-                                                                       89)
-                                                                    (seq
-                                                                     (if
-                                                                         (>=
-                                                                          a
-                                                                          b)
-                                                                         7
-                                                                       3))
-                                                                  (seq
-                                                                   (let*
-                                                                       ((n
-                                                                         (if
-                                                                             (=
-                                                                              raw
-                                                                              92)
-                                                                             (+
-                                                                              (sar
-                                                                               a
-                                                                               2)
-                                                                              (sar
-                                                                               b
-                                                                               2))
-                                                                           (-
-                                                                            (sar
-                                                                             a
-                                                                             2)
-                                                                            (sar
-                                                                             b
-                                                                             2)))))
-                                                                     (if
-                                                                         (or
-                                                                          (>
-                                                                           n
-                                                                           2305843009213693951)
-                                                                          (<
-                                                                           n
-                                                                           -2305843009213693952))
-                                                                         -1
-                                                                       (+
-                                                                        (shl
-                                                                         n
-                                                                         2)
-                                                                        1))))))))))))
-                                              (if (= word -1) (setq go 0)
-                                                (seq
-                                                 (if (>= raw 85)
-                                                     (setq sp (- sp 1))
-                                                   0)
-                                                 (ptr-write-u64
-                                                  (+ mem (* (- sp 1) 8)) 0
-                                                  word)
-                                                 (setq pc (+ pc 1)))))))))
-                                     (if (or (= raw 64) (= raw 65))
-                                         ;; GNU bytecode.c:658-666 CASE (Bcar) and the Bcdr case: a cons TOP
-                                         ;; becomes its car/cdr, nil stays nil, anything else leaves for the
-                                         ;; full dispatcher, which signals wrong-type-argument.  Last in the
-                                         ;; chain, so the loop opcodes tested before it pay nothing.
-                                         (if (<= sp 0) (setq go 0)
-                           (let* ((top (+ mem (* (- sp 1) 8)))
-                                  (w (heap-read-u64 top 0))
-                                  (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
-                                         (if (= (logand w 7) 6)
-                                             (logand (ptr-read-u8 (- w 6) 0) 63)
-                                           (if (= (logand w 7) 2) 7
-                                             (if (= (logand w 7) 4) 5 (ptr-read-u8 w 0)))))))
-                             (if (= tag 7)
-                                 (seq (ptr-write-u64 top 0
-                                                     (heap-read-u64
-                                                      (+ (nl_word_payload w)
-                                                         (if (= raw 64) 0 8)) 0))
-                                      (setq pc (+ pc 1)))
-                               (if (= tag 0)
-                                   (seq (ptr-write-u64 top 0 3) (setq pc (+ pc 1)))
-                                 (setq go 0)))))
-(if (and (>= raw 32) (< raw 38))
-                                             ;; GNU bytecode.c:735-750 CASE (Bcall) docall: a closure with
-                                             ;; a fixnum arglist template is entered in this loop
-                                             ;; (setup_frame); any other callee goes through the ordinary
-                                             ;; call, which may collect, so the varref cache is dropped.
-                                             ;; A signal ends the run with -1.
-                                             (let* ((argc (- raw 32)))
-                                               (if (< sp (+ argc 1)) (setq go 0)
-                                                 (let* ((polled (if (= (wf_bytecode_poll) 1)
-                                                                    (seq (setq last-name -1) 0)
-                                                                  0))
-                                                        (fi (- sp (+ argc 1)))
-                                                        (isp (wf_bytecode_call_enter
-                                                              env cell mem fi argc
-                                                              (heap-read-u64 (+ mem (* fi 8)) 0)
-                                                              (+ pc 1))))
-                                                   (if (>= isp 0)
-                                                       (seq
-                                                        (ptr-write-u64 cell 16 7)
-                                                        (seq
-                       (let* ((fp2 (sar (ptr-read-u64 cell 8) 2))
-                              (d2 (- (ptr-read-u64 (- fp2 24) 0) 7))
-                              (f2 (+ fp2 (* (+ d2 1) 8)))
-                              (cw (ptr-read-u64 f2 24))
-                              (kw (ptr-read-u64 f2 32))
-                              (vp (if (= (logand kw 7) 0)
-                                      (ptr-read-u64 kw 8)
-                                    (- kw (logand kw 6)))))
-                         (seq (setq mem fp2)
-                              (setq depth d2)
-                              (setq foot f2)
-                              ;; The code string: a String WORD gives its data and length through
-                              ;; the string accessors (GNU's SDATA and SCHARS), anything else
-                              ;; keeps the view's fields.
-                              (if (= (logand cw 7) 4)
-                                  (seq (setq data (heap-sexp-data cw))
-                                       (setq length (heap-sexp-length cw)))
-                                (let* ((ct (heap-read-u8 cw 0)))
-                                  (if (if (= ct 5) 1 (= ct 14))
-                                      (seq (setq data (heap-read-u64 cw 16))
-                                           (setq length (heap-read-u64 cw 24)))
-                                    (seq (setq data (nl_bi_strptr cw))
-                                         (setq length (m5_strlen cw))))))
-                              (setq constants (+ vp 8))
-                              (setq nconst (sar (ptr-read-u64 vp 0) 8)))))
-                                                        (if (>= isp 65536) (setq last-name -1) 0)
-                                                        (setq pc 0)
-                                                        (setq sp (logand isp 65535)))
-                                                     (if (= isp -2)
-                                                         (let* ((rc (wf_bytecode_call env mem sp argc cell)))
-                                                           (seq
-                                                            (setq last-name -1)
-                                                            (if (= rc 0)
-                                                                (seq (setq sp (- sp argc))
-                                                                     (setq pc (+ pc 1)))
-                                                              (seq (setq failed 1) (setq go 0)))))
-                                                       (seq (setq failed 1) (setq go 0)))))))
-                                           (seq (setq go 0))))))))))))))))))
+                                  (if
+                                      (or (>= sp depth)
+                                          (>= (- raw 192) nconst))
+                                      (setq go 0)
+                                    (seq
+                                     (ptr-write-u64 (+ mem (* sp 8)) 0
+                                                    (heap-read-u64
+                                                     (+ constants
+                                                        (* (- raw 192) 8))
+                                                     0))
+                                     (setq sp (+ sp 1)) (setq pc (+ pc 1))))))))))))
         (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
              (ptr-write-u64 cell 0 (+ (shl (- 255 back) 2) 1))
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
