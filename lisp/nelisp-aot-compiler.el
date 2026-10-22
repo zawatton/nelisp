@@ -6349,6 +6349,278 @@ the whole program."
     '(seq))
    (t source)))
 
+;; Context clones are made before TCO, so ordinary parsing owns all new slots,
+;; labels and recursive PHIs.  GCC ipa-cp.cc likewise keeps the original entry
+;; and redirects only call contexts whose constants are proved.  This first
+;; slice starts at recursive-invariant literal arguments; descendants may then
+;; inherit those constants.  Unknown syntax or effects which observe a frame
+;; make the whole candidate ineligible, rather than guessing binding syntax.
+(defun nelisp-aot-compiler--specialize-raw-recursive-source (source)
+  "Specialize supported contexts; leave malformed SOURCE to the parser."
+  (condition-case nil
+      (nelisp-aot-compiler--specialize-raw-recursive-source-1 source)
+    ((wrong-type-argument args-out-of-range circular-list) source)))
+
+(defun nelisp-aot-compiler--specialize-raw-recursive-source-1 (source)
+  "Clone bounded RAW recursion contexts with invariant literal arguments.
+Keep original definitions/signatures for all other callers.  Removing only
+literal actual arguments preserves the order and effects of every remaining
+argument.  Fixed growth limits are four clones and 512 source cons cells."
+  (if (not (and nelisp-aot-compiler-tco-enabled
+                (eq nelisp-aot-compiler--arch 'x86_64)
+                (eq nelisp-aot-compiler--abi 'sysv)
+                (not (nelisp-aot-compiler--lisp-values-p))
+                (not nelisp-aot-compiler--checked-arith)
+                (consp source) (proper-list-p source) (eq (car source) 'seq)))
+      source
+    (let ((definitions nil) (duplicate nil) (used (make-hash-table :test 'equal))
+          (safe (make-hash-table :test 'eq)) (invariants (make-hash-table :test 'eq))
+          (contexts nil) (pending nil) (clones nil) (clone-count 0) (growth 0)
+          (serial 0))
+      (cl-labels
+          ((symbols (x)
+             (when (and (consp x) (not (proper-list-p x)))
+               (signal 'wrong-type-argument (list 'proper-list-p x)))
+             (while (consp x) (symbols (car x)) (setq x (cdr x)))
+             (when (symbolp x) (puthash (symbol-name x) t used)))
+           (size (x)
+             (let ((n 0))
+               (while (consp x) (setq n (+ n 1 (size (car x))) x (cdr x))) n))
+           (safe-definition (name trail)
+             (let ((cached (gethash name safe 'unseen)))
+               (if (not (eq cached 'unseen)) cached
+                 (let* ((definition (cdr (assq name definitions)))
+                        (params (nth 2 definition))
+                        (ok (and definition (proper-list-p definition) (= (length definition) 4)
+                                 (proper-list-p params) (<= (length params) 6)
+                                 (= (length params) (length (delete-dups (copy-sequence params))))
+                                 (cl-every (lambda (p)
+                                             (and (symbolp p) p (not (eq p t))
+                                                  (not (keywordp p))
+                                                  (not (string-prefix-p "&" (symbol-name p)))
+                                                  (not (nelisp-aot-compiler--special-var-p p)))) params)
+                                 (not (memq name trail))
+                                 (safe-expression (nth 3 definition) params params name (cons name trail)))))
+                   (puthash name ok safe) ok))))
+           (safe-expression (x bound params owner trail)
+             (cond
+              ((integerp x) (<= (- (ash 1 63)) x (1- (ash 1 63))))
+              ((null x) t)
+              ((symbolp x) (and (memq x bound) (not (nelisp-aot-compiler--special-var-p x))))
+              ((not (consp x)) nil)
+              ((not (proper-list-p x)) nil)
+              ((memq (car x) '(let let*))
+               (let ((bindings (cadr x)) (scope bound) (ok (and (>= (length x) 3) (proper-list-p (cadr x)))))
+                 (dolist (b (and ok bindings))
+                   (unless (and (consp b) (proper-list-p b) (= (length b) 2) (symbolp (car b))
+                                (not (memq (car b) params))
+                                (not (nelisp-aot-compiler--special-var-p (car b)))
+                                (safe-expression (cadr b) (if (eq (car x) 'let*) scope bound)
+                                                 params owner trail))
+                     (setq ok nil))
+                   (push (car-safe b) scope))
+                 (and ok (cl-every (lambda (b) (safe-expression b scope params owner trail)) (cddr x)))))
+              ((eq (car x) 'setq)
+               (let ((args (cdr x)) (ok (= 0 (% (length (cdr x)) 2))))
+                 (while args
+                   (unless (and (symbolp (car args)) (memq (car args) bound)
+                                (not (memq (car args) params))
+                                (not (nelisp-aot-compiler--special-var-p (car args)))
+                                (safe-expression (cadr args) bound params owner trail))
+                     (setq ok nil))
+                   (setq args (cddr args))) ok))
+              ((eq (car x) 'data-addr)
+               (and (= (length x) 2) (symbolp (cadr x))))
+              ((or (and (memq (car x) '(+ - * logand logior logxor shl shr sar = /= < <= > >=))
+                         (= (length x) 3))
+                   (and (memq (car x) '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
+                         (= (length x) 3))
+                   (and (memq (car x) '(ptr-write-u8 ptr-write-u16 ptr-write-u32 ptr-write-u64))
+                         (= (length x) 4))
+                   (and (eq (car x) 'if) (memq (length x) '(3 4)))
+                   (and (memq (car x) '(while seq progn)) (>= (length x) 2))
+                   (and (assq (car x) definitions)
+                        (= (length (cdr x)) (length (nth 2 (cdr (assq (car x) definitions)))))
+                        (or (eq (car x) owner) (safe-definition (car x) trail))))
+               (cl-every (lambda (a) (safe-expression a bound params owner trail)) (cdr x)))
+              (t nil)))
+           (frame-observer (x)
+             (and (consp x)
+                  (or (and (symbolp (car x))
+                           (or (memq (car x) '(addr-of current-sp))
+                               (string-prefix-p "aot-" (symbol-name (car x)))
+                               (string-prefix-p "va-" (symbol-name (car x)))))
+                      (cl-some #'frame-observer x))))
+           (safe-arguments (args)
+             ;; Later argument evaluation can observe temporary argument pushes.
+             ;; Keep the original signature when any actual has an observer or
+             ;; unknown call, even if the callee itself is frame-independent.
+             (let (bound)
+               (cl-labels ((collect (x)
+                             (cond ((symbolp x) (push x bound))
+                                   ((consp x) (mapc #'collect x)))))
+                 (mapc #'collect args))
+               (cl-every (lambda (a) (safe-expression a bound nil nil nil)) args)))
+           (invariant-parameters (name)
+             (or (gethash name invariants)
+                 (let* ((definition (cdr (assq name definitions)))
+                        (params (nth 2 definition)) (indices nil) (self-calls nil))
+                   (cl-labels ((walk (x)
+                                 (when (consp x)
+                                   (when (eq (car x) name) (push (cdr x) self-calls))
+                                   (mapc #'walk x))))
+                     (walk (nth 3 definition)))
+                   (cl-loop for p in params for i from 0
+                            when (cl-every (lambda (args) (eq (nth i args) p)) self-calls)
+                            do (push i indices))
+                   (let ((result (cons (and self-calls t) (nreverse indices))))
+                     (puthash name result invariants) result))))
+           (folding-safe (definition constants)
+             ;; Existing RAW constant folding uses host integers.  Do not expose
+             ;; a new out-of-range constant intermediate: runtime arithmetic
+             ;; wraps at 64 bits.  This preflight also follows immutable let
+             ;; constants and statically selected if branches; it changes no IR.
+             (let ((environment nil) (params (nth 2 definition)))
+               (dolist (c constants) (push (cons (nth (car c) params) (cdr c)) environment))
+               (catch 'unsafe-fold
+                 (cl-labels
+                     ((value (x env)
+                        (cond
+                         ((integerp x) x) ((null x) 0)
+                         ((symbolp x) (let ((c (assq x env))) (if c (cdr c) 'unknown)))
+                         ((memq (car x) '(let let*))
+                          (let ((scope env) (remaining (cadr x)))
+                            (dolist (b (cadr x))
+                              ;; A later initializer may mutate an earlier let*
+                              ;; local.  Leave this context unchanged rather than
+                              ;; invent a source-level binding propagation pass.
+                              (when (nelisp-aot-compiler--form-setqs-var-p
+                                     (cons 'seq (mapcar #'cadr (cdr remaining))) (car b))
+                                (throw 'unsafe-fold nil))
+                              (setq remaining (cdr remaining))
+                              (let ((v (value (cadr b) (if (eq (car x) 'let*) scope env))))
+                                (push (cons (car b)
+                                            (if (nelisp-aot-compiler--form-setqs-var-p
+                                                 (cons 'seq (cddr x)) (car b)) 'unknown v)) scope)))
+                            (let ((result 'unknown))
+                              (dolist (b (cddr x)) (setq result (value b scope))) result)))
+                         ((eq (car x) 'data-addr) 'unknown)
+                         ((eq (car x) 'setq)
+                          (let ((args (cdr x)))
+                            (while args (value (cadr args) env) (setq args (cddr args)))) 'unknown)
+                         (t
+                          (let* ((args (mapcar (lambda (a) (value a env)) (cdr x)))
+                                 (a (car args)) (b (cadr args)) (op (car x)))
+                            (cond
+                             ((memq op '(seq progn)) (car (last args)))
+                             ((eq op 'if)
+                              (if (integerp a) (if (= a 0) (if (cddr args) (nth 2 args) 0) b) 'unknown))
+                             ((and (integerp a) (integerp b))
+                              (cond
+                               ((memq op '(+ - *))
+                                (let ((result (funcall op a b)))
+                                  (unless (<= (- (ash 1 63)) result (1- (ash 1 63)))
+                                    (throw 'unsafe-fold nil)) result))
+                               ((memq op '(= /= < <= > >=)) (if (funcall op a b) 1 0))
+                               ((memq op '(logand logior logxor)) (funcall op a b))
+                               (t 'unknown)))
+                             (t 'unknown)))))))
+                   (value (nth 3 definition) environment))
+                 t)))
+           (fresh-name (original constants)
+             ;; Independent units restart SERIAL.  Qualify the helper with its
+             ;; original global owner and full deterministic context digest.
+             (let* ((print-length nil) (print-level nil) (print-circle t)
+                    (digest (secure-hash 'sha256
+                             (prin1-to-string (list (cdr (assq original definitions)) constants))))
+                    name)
+               (while (or (null name) (gethash name used))
+                 (setq name (format "%s--nelisp-context-%s-%d" original digest serial)
+                       serial (1+ serial)))
+               (puthash name t used) (intern name)))
+           (request (name args descendant)
+             (when (and (safe-definition name nil) (safe-arguments args)
+                        (= (length args) (length (nth 2 (cdr (assq name definitions))))))
+               (let* ((info (invariant-parameters name)) (constants nil))
+                 (when (or descendant (car info))
+                   (dolist (i (cdr info))
+                     (when (integerp (nth i args)) (push (cons i (nth i args)) constants)))
+                 (when constants
+                   (setq constants (nreverse constants))
+                   (let* ((key (cons name constants)) (context (assoc key contexts))
+                          (definition (cdr (assq name definitions)))
+                          (cost (size definition)))
+                     (or (cdr context)
+                         (when (and (< clone-count 4) (<= (+ growth cost) 512)
+                                    (folding-safe definition constants))
+                           (let ((entry (list :name (fresh-name name constants) :original name :constants constants)))
+                             (setq clone-count (1+ clone-count) growth (+ growth cost))
+                             (push (cons key entry) contexts) (push entry pending) entry)))))))))
+           (rewrite (x substitutions descendant)
+             (cond
+              ((symbolp x) (let ((value (assq x substitutions))) (if value (cdr value) x)))
+              ((not (consp x)) x)
+              ((memq (car x) '(quote function data-addr write data-blob static-imm32-table-define)) x)
+              ((eq (car x) 'defun)
+               (unless (>= (length x) 4)
+                 (signal 'args-out-of-range (list x 3)))
+               ;; A definition establishes its own lexical environment.
+               (if (frame-observer (cdddr x)) x
+                 (append (cl-subseq x 0 3) (mapcar (lambda (b) (rewrite b nil nil)) (cdddr x)))))
+              ((memq (car x) '(let let*))
+               (cons (car x)
+                     (cons
+                      (mapcar (lambda (b)
+                                (if (and (consp b) (= (length b) 2))
+                                    (list (car b) (rewrite (cadr b) substitutions descendant)) b))
+                              (cadr x))
+                      (mapcar (lambda (b) (rewrite b substitutions descendant)) (cddr x)))))
+              ((eq (car x) 'setq)
+               (unless (= 0 (% (length (cdr x)) 2))
+                 (signal 'wrong-type-argument (list 'setq-pairs x)))
+               (let ((args (cdr x)) (out nil))
+                 (while args
+                   (push (car args) out) (push (rewrite (cadr args) substitutions descendant) out)
+                   (setq args (cddr args)))
+                 (cons 'setq (nreverse out))))
+              ((eq (car x) 'cond)
+               (cons 'cond (mapcar (lambda (c) (mapcar (lambda (a) (rewrite a substitutions descendant)) c)) (cdr x))))
+              ((assq (car x) definitions)
+               (let* ((args (mapcar (lambda (a) (rewrite a substitutions descendant)) (cdr x)))
+                      (context (request (car x) args descendant)))
+                 (if (null context) (cons (car x) args)
+                   (let ((i 0) (constants (plist-get context :constants)) (remaining nil))
+                     (dolist (a args)
+                       (unless (assq i constants) (push a remaining)) (setq i (1+ i)))
+                     (cons (plist-get context :name) (nreverse remaining))))))
+              ((memq (car x) '(seq progn if while and or + - * / mod rem
+                                  logand logior logxor shl shr sar = /= < <= > >=
+                                  ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
+                                  ptr-write-u8 ptr-write-u16 ptr-write-u32 ptr-write-u64
+                                  syscall-direct exit sexp-tag sexp-payload))
+               (cons (car x) (mapcar (lambda (a) (rewrite a substitutions descendant)) (cdr x))))
+              (t x))))
+        (symbols source)
+        (dolist (form (cdr source))
+          (when (and (consp form) (eq (car form) 'defun))
+            (let ((name (cadr form)))
+              (when (assq name definitions) (setq duplicate t))
+              (push (cons name form) definitions))))
+        (if duplicate source
+          (let ((rewritten (rewrite source nil nil)))
+            (while pending
+              (let* ((context (pop pending))
+                     (definition (cdr (assq (plist-get context :original) definitions)))
+                     (params (nth 2 definition)) (constants (plist-get context :constants))
+                     (i 0) (remaining nil) (substitutions nil))
+                (dolist (p params)
+                  (let ((constant (assq i constants)))
+                    (if constant (push (cons p (cdr constant)) substitutions) (push p remaining)))
+                  (setq i (1+ i)))
+                (push (list 'defun (plist-get context :name) (nreverse remaining)
+                            (rewrite (nth 3 definition) substitutions t)) clones)))
+            (if clones (append rewritten (nreverse clones)) source)))))))
+
 (defun nelisp-aot-compiler--prepare-source (sexp)
   "Apply Doc 129.1 compile-time macro handling to SEXP."
   (let* ((extracted (nelisp-aot-compiler--extract-defmacros sexp))
@@ -6368,6 +6640,8 @@ the whole program."
               (nelisp-aot-compiler--lambda-lift-names
                (nelisp-aot-compiler--top-level-defun-names source))
               (nelisp-aot-compiler--special-vars special-vars)
+              (source (if defs source
+                        (nelisp-aot-compiler--specialize-raw-recursive-source source)))
               (processed
                (nelisp-aot-compiler--preprocess-source source))
               (hoists (nreverse
