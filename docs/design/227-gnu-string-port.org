@@ -140,8 +140,10 @@ build's cold image and for library images) adapts that:
   word, which stays odd so the collector never reads it as a pointer), pass 2
   numbers the flagged strings and pass 3 answers the header's slot in the image.
   An unplaced target counts against the dump, which then fails.
-- The image carries the strings after the symbol region as three legacy blocks
-  (so the boot structures walk them like any block): a header area of N *
+- =nl_dump_compact_assign= places the strings after the symbol region and
+  =nl_dump_compact_write= calls =nl_dump_string_write= to emit them. The image
+  carries them as three legacy blocks (so the boot structures walk them like
+  any block): a header area of N *
   32-byte headers, the sdata of every string (back pointer, bytes, NUL, padding
   to =sdata_size=), and a 32-byte footer naming the header area. A live filler
   block before the header area makes it 32-byte aligned, so a restored header
