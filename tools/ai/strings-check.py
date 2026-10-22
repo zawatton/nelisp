@@ -76,8 +76,8 @@ def semantics():
     fixture = "tools/ai/strings-semantics.el"
     outputs = {}
     runtimes = [("gnu", [os.environ.get("GNU_EMACS", "emacs"), "-Q", "--batch"]),
-                ("dynamic", [str(OUT / "dynamic/nelisp")]),
-                ("static", [str(OUT / "static/nelisp")])]
+                ("dynamic", [os.environ.get("STRINGS_DYNAMIC", str(OUT / "dynamic/nelisp"))]),
+                ("static", [os.environ.get("STRINGS_STATIC", str(OUT / "static/nelisp"))])]
     for kind, command in runtimes:
         assert Path(command[0]).exists() or kind == "gnu", f"missing {kind} candidate"
         result = subprocess.run(command + ["--load", fixture], cwd=ROOT, capture_output=True, timeout=40)
@@ -327,7 +327,10 @@ def final():
 
 def format_semantics():
     outputs = {}
-    runtimes = [("gnu", [os.environ.get("GNU_EMACS", "/usr/local/bin/emacs"), "-Q", "--batch"]),
+    golden = os.environ.get("GNU_EMACS", "/usr/local/bin/emacs")
+    version = subprocess.check_output([golden, "--version"], text=True).splitlines()[0]
+    assert version.startswith("GNU Emacs 31.1"), "format golden must be GNU Emacs 31.1"
+    runtimes = [("gnu", [golden, "-Q", "--batch"]),
                 ("dynamic", [str(OUT / "format-dynamic/nelisp")]),
                 ("static", [str(OUT / "format-static/nelisp")])]
     for role, command in runtimes:
@@ -337,7 +340,8 @@ def format_semantics():
         (OUT / f"format-{role}.err").write_bytes(result.stderr)
         assert result.returncode == 0 and not result.stderr, f"{role} format oracle failed"
         outputs[role] = [line for line in result.stdout.splitlines() if line.startswith(b"STRINGS-CASE ")]
-        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) >= 28
+        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) == 37
+    assert len(outputs["gnu"]) == 50
     for role in ["dynamic", "static"]:
         assert outputs[role] == outputs["gnu"], f"{role} GNU oracle differs: see format-{role}.out"
     identities = {role: hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()

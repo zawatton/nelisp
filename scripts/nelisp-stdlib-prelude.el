@@ -23277,7 +23277,7 @@ NUL.  Emacs signals for every one of those."
   (cond
    ;; d i o x X e E f F g G a A -- any number, integer or float.  A marker is
    ;; NOT accepted: Emacs signals for one too (measured).
-   ((or (= conv 100) (= conv 105) (= conv 111) (= conv 120) (= conv 88)
+   ((or (= conv 98) (= conv 66) (= conv 100) (= conv 105) (= conv 111) (= conv 120) (= conv 88)
         (= conv 101) (= conv 69) (= conv 102) (= conv 70)
         (= conv 103) (= conv 71) (= conv 97) (= conv 65))
     (unless (numberp arg)
@@ -23794,7 +23794,7 @@ field-width layer."
 
 (defun nelisp--format-integer (value conv precision)
   "Render integer VALUE in CONV's radix, including GNU integer precision."
-  (let* ((base (cond ((= conv 111) 8) ((or (= conv 120) (= conv 88)) 16) (t 10)))
+  (let* ((base (cond ((or (= conv 98) (= conv 66)) 2) ((= conv 111) 8) ((or (= conv 120) (= conv 88)) 16) (t 10)))
          (digits (if (= conv 88) "0123456789ABCDEF" "0123456789abcdef"))
          (negative (< value 0)) (magnitude (abs value)) (body ""))
     (while (> magnitude 0)
@@ -23863,6 +23863,14 @@ argument end extends over right padding (textprop.c:2123)."
             (let ((field-start i) (j (1+ i))
                   (f- nil) (f0 nil) (fplus nil) (fspace nil) (fhash nil)
                   (width nil) (prec nil) (scan t))
+              ;; GNU editfns.c:3597 resets the argument cursor at N$.
+              ;; Its actual parser permits mixed fields and N=0 selects
+              ;; the format itself; preserve those observable semantics.
+              (let ((end j) (number 0))
+                (while (and (< end n) (nelisp--digit-char-p (aref template end)))
+                  (setq number (+ (* number 10) (- (aref template end) 48)) end (1+ end)))
+                (when (and (> end j) (< end n) (= (aref template end) 36))
+                  (setq j (1+ end) argp (if (= number 0) (cons template args) (nthcdr (1- number) args)))))
               (while (and scan (< j n))
                 (let ((c (aref template j)))
                   (cond
@@ -23889,27 +23897,8 @@ argument end extends over right padding (textprop.c:2123)."
                           (list "Format string ends in middle of format specifier"))
                 (let ((conv (aref template j)))
                   (setq i (1+ j))
-                  ;; Emacs accepts s S d i o x X e f g c and %% -- everything
-                  ;; else is "Invalid format operation".  This accepted the C
-                  ;; uppercase spellings (%E %F %G) because the conversion char
-                  ;; was handed straight to the native delegate, and answered
-                  ;; the SPEC STRING itself ("%b", "%z") for the ones the
-                  ;; delegate did not know either.
-                  ;;
-                  ;; `a'/`A' are rejected too, and that is a deliberate
-                  ;; NARROWING: the C99 hex-float conversions used to be a
-                  ;; NeLisp superset (Doc 159 sec 11).  Parity with Emacs won
-                  ;; -- a program that runs here and signals there is a
-                  ;; divergence whichever direction it points.  The hex-float
-                  ;; formatter itself is still in the AOT dialect
-                  ;; (`m5_fmt_hexfloat'), it just has no route through
-                  ;; `format' any more.
-                  (unless (or (= conv 115) (= conv 83) (= conv 100) (= conv 105)
-                              (= conv 111) (= conv 120) (= conv 88) (= conv 101)
-                              (= conv 102) (= conv 103) (= conv 99) (= conv 37))
-                    (signal 'error
-                            (list (concat "Invalid format operation %"
-                                          (char-to-string conv)))))
+                  ;; GNU 31.1 also accepts b/B binary integers. Uppercase
+                  ;; E/F/G and C99 a/A remain invalid public operations.
                   (if (= conv 37)        ; ?%
                       (setq out (concat out (nelisp--format-field-properties (copy-sequence "%") template field-start)))
                     ;; Emacs signals when the arguments run out; this
@@ -23921,6 +23910,12 @@ argument end extends over right padding (textprop.c:2123)."
                     (unless argp
                       (signal 'error
                               (list "Not enough arguments for format string")))
+                  (unless (or (= conv 98) (= conv 66) (= conv 115) (= conv 83) (= conv 100) (= conv 105)
+                              (= conv 111) (= conv 120) (= conv 88) (= conv 101)
+                              (= conv 102) (= conv 103) (= conv 99) (= conv 37))
+                    (signal 'error
+                            (list (concat "Invalid format operation %"
+                                          (char-to-string conv)))))
                     (let* ((arg (nelisp--format-check-arg conv (car argp)))
                            (body (if (and (numberp arg)
                                           (or (= conv 102) (= conv 70)   ; f F
@@ -23989,12 +23984,14 @@ argument end extends over right padding (textprop.c:2123)."
                       ;; at all -- it hands back the spec string unchanged --
                       ;; so the prefix has to be built here.
                       (when (and fhash (= conv 111) (string= body "")) (setq body "0"))
-                      (when (and fhash (or (= conv 111) (= conv 120) (= conv 88))
+                      (when (and fhash (or (= conv 98) (= conv 66) (= conv 111) (= conv 120) (= conv 88))
                                  (> (length body) 0))
                         (let* ((neg (= (aref body 0) 45))
                                (mag (if neg (substring body 1) body)))
                           (unless (or (string= mag "0") (= (length mag) 0))
-                            (setq mag (cond ((= conv 120) (concat "0x" mag))
+                            (setq mag (cond ((= conv 98) (concat "0b" mag))
+                                            ((= conv 66) (concat "0B" mag))
+                                            ((= conv 120) (concat "0x" mag))
                                             ((= conv 88) (concat "0X" mag))
                                             ((= (aref mag 0) 48) mag)
                                             (t (concat "0" mag))))
@@ -24002,10 +23999,10 @@ argument end extends over right padding (textprop.c:2123)."
                       ;; `+' and a leading space apply to the integer
                       ;; conversions as well -- "%+05x" of 10 is "+000a" in
                       ;; Emacs, and o/x/X/i were all missing from this list.
-                      (when (and (or (= conv 100) (= conv 105) (= conv 111)
+                      (when (and (or (= conv 98) (= conv 66) (= conv 100) (= conv 105) (= conv 111)
                                      (= conv 120) (= conv 88)
                                      (= conv 102) (= conv 101) (= conv 103))
-                                 (> (length body) 0) (not (= (aref body 0) 45)))
+                                 (not (and (> (length body) 0) (= (aref body 0) 45))))
                         (cond (fplus (setq body (concat "+" body)))
                               (fspace (setq body (concat " " body)))))
                       (let ((body-width (if (or (= conv 115) (= conv 83))
@@ -24016,7 +24013,7 @@ argument end extends over right padding (textprop.c:2123)."
                           (unless f- (setq leading-pad pad))
                           (cond
                            (f- (setq body (concat body (make-string pad 32))))
-                           ((and f0 (not (and prec (memq conv '(100 105 111 120 88))))
+                           ((and f0 (not (and prec (memq conv '(98 66 100 105 111 120 88))))
                                  ;; d/i/o/x/X always produce digits, so `0'
                                  ;; always applies.  The old guard asked whether
                                  ;; the first character was a DECIMAL digit,
@@ -24025,7 +24022,7 @@ argument end extends over right padding (textprop.c:2123)."
                                  ;; Emacs writes "0a".  For f/e/g the guard is
                                  ;; still needed -- inf/nan space-pad (Doc 159
                                  ;; §13).
-                                 (if (or (= conv 100) (= conv 105) (= conv 111)
+                                 (if (or (= conv 98) (= conv 66) (= conv 100) (= conv 105) (= conv 111)
                                          (= conv 120) (= conv 88))
                                      t
                                    (and (or (= conv 102) (= conv 101) (= conv 103))
@@ -24045,11 +24042,11 @@ argument end extends over right padding (textprop.c:2123)."
                                          (or (= (aref body 0) 45) (= (aref body 0) 43)
                                              (= (aref body 0) 32)))
                                 (setq k 1))
-                              (when (and (or (= conv 120) (= conv 88))
+                              (when (and (or (= conv 98) (= conv 66) (= conv 120) (= conv 88))
                                          (> (length body) (+ k 1))
                                          (= (aref body k) 48)
-                                         (or (= (aref body (+ k 1)) 120)
-                                             (= (aref body (+ k 1)) 88)))
+                                         (or (= (aref body (+ k 1)) 98) (= (aref body (+ k 1)) 66)
+                                             (= (aref body (+ k 1)) 120) (= (aref body (+ k 1)) 88)))
                                 (setq k (+ k 2)))
                               (setq body (concat (substring body 0 k)
                                                  (make-string pad 48)

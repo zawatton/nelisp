@@ -112,3 +112,12 @@ nil
                              (setq last (format fmt arg i) sum (+ sum (length last))))
                            (list sum last))))
 nil
+(strings-case 'fmt-zero-signs-binary
+              (lambda () (strings-format-result "%+.0d|% .0d|%#.0x|%b|%#08B|%.8b" '(0 0 0 10 10 5))))
+(strings-case 'fmt-numbered
+              (lambda () (list (strings-format-result "%2$-5s:%1$04d:%%" '(7 "x"))
+                               (strings-format-result "%s:%2$s" '("a" "b"))
+                               (strings-format-result "%0$s" nil))))
+(strings-case 'fmt-numbered-too-few (lambda () (format "%2$s:%s" "a" "b")))
+(strings-case 'fmt-invalid-no-args (lambda () (format "%q")))
+nil
