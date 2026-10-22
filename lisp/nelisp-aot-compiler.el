@@ -22457,9 +22457,10 @@ scratch; arm code starts after the jump and keeps its ordinary contract."
       (let* ((ref (nth 0 plan)) (lo (nth 1 plan)) (hi (nth 2 plan))
              (arms (nth 3 plan)) (default (nth 4 plan))
              (id (nelisp-aot-compiler--ir-get node :id))
-             ;; New sparse labels are private identities even if a source
-             ;; function has the same printed name.  Dense labels stay exact.
-             (label (if (= (length arms) (1+ (- hi lo))) #'intern #'make-symbol))
+             ;; GNU comp.c:500-507 scopes basic blocks to their function.
+             ;; All table labels have private identities, even when a source
+             ;; function has the same printed name; ordinary bytes stay exact.
+             (label #'make-symbol)
              (table (funcall label (format "%s-table" id)))
              (fallback (funcall label (format "%s-default" id)))
              (end (funcall label (format "%s-end" id))) labels)

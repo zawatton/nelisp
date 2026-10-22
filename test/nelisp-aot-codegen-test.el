@@ -1462,20 +1462,23 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
     ;; Two ordinary emission passes, each reporting all ten entries including91.
     (should (equal spans '(40 40)))))
 (ert-deftest nelisp-aot-codegen/sparse-switch-source-label-collision ()
-  (let* ((form (nelisp-aot-codegen-test--sparse-form (nelisp-aot-codegen-test--sparse-keys 83)))
-         (node (nelisp-aot-codegen-test--sparse-plan `(seq ,form)))
-         (id (nelisp-aot-compiler--ir-get node :id))
-         (table (intern (format "%s-table" id)))
-         (fallback (intern (format "%s-default" id)))
-         (case-label (intern (format "%s-case-83" id))))
-    (should (= 0 (nelisp-aot-codegen-test--run
-                  `(seq ,form
-                    (defun ,table () 17) (defun ,fallback () 19) (defun ,case-label () 23)
-                    (defun check ()
-                      (let ((p (syscall-direct 9 0 4096 3 34 -1 0)))
-                        (if (and (= (sparse-choose 91 p) 91) (= (,table) 17)
-                                 (= (,fallback) 19) (= (,case-label) 23)) 0 1)))
-                    (exit (check))))))))
+  (dolist (keys (list (number-sequence 83 91)
+                     (nelisp-aot-codegen-test--sparse-keys 83)))
+    (let* ((form (nelisp-aot-codegen-test--sparse-form keys))
+           (input (if (= 91 (car (last keys))) 92 91))
+           (node (nelisp-aot-codegen-test--sparse-plan `(seq ,form)))
+           (id (nelisp-aot-compiler--ir-get node :id))
+           (table (intern (format "%s-table" id)))
+           (fallback (intern (format "%s-default" id)))
+           (case-label (intern (format "%s-case-83" id))))
+      (should (= 0 (nelisp-aot-codegen-test--run
+                    `(seq ,form
+                      (defun ,table () 17) (defun ,fallback () 19) (defun ,case-label () 23)
+                      (defun check ()
+                        (let ((p (syscall-direct 9 0 4096 3 34 -1 0)))
+                          (if (and (= (sparse-choose ,input p) ,input) (= (,table) 17)
+                                   (= (,fallback) 19) (= (,case-label) 23)) 0 1)))
+                      (exit (check)))))))))
 
 (provide 'nelisp-aot-codegen-test)
 
