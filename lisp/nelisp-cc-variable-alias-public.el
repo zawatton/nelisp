@@ -167,12 +167,12 @@
       ;; Callbacks can replace either cell and collect. Root all borrowed
       ;; operands, including private nil/t keys and the migrating old value.
       (let* ((mark (nl_root_mark env))
-             (roots (wf_bytecode_w_roots env 5)) (result 0))
+             (roots (nl_anchor_views env 5)) (result 0))
         (seq
          (if (= roots 0) (wf_bytecode_root_exhausted)
-           (seq (wf_word_store_out roots alias)
-                (wf_word_store_out (+ roots 32) base)
-                (setq result (nl_pa_install_w roots (+ roots 32) env roots))))
+           (seq (wf_word_store_out (heap-read-u64 roots 0) alias)
+                (wf_word_store_out (heap-read-u64 roots 8) base)
+                (setq result (nl_pa_install_w (heap-read-u64 roots 0) (heap-read-u64 roots 8) env roots))))
          (nl_root_release env mark)
          result)))
     (defun nl_pa_install_w (alias base env roots)
@@ -180,10 +180,10 @@
           (seq (bf_wrong_type_symbolp alias) 0)
         (if (= (nl_thread_mirror_mutation_guard env alias) 1) 0
           (let* ((base-name
-                  (seq (wf_word_store_out (+ roots 64)
+                  (seq (wf_word_store_out (heap-read-u64 roots 16)
                          (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1))
                              (nl_pa_constant_name base) base))
-                       (+ roots 64)))
+                       (heap-read-u64 roots 16)))
                  (terminal (nl_pa_terminal env (nelisp_mirror_lookup_entry env base-name)
                                            base-name alias)))
             (if (= terminal 0) 0
@@ -192,11 +192,11 @@
                      (saved (bf_dynamic_lookup_w env alias 0))
                      (migration 0))
                 (seq
-                 (wf_word_store_out (+ roots 96) terminal)
-                 (setq terminal (+ roots 96))
+                 (wf_word_store_out (heap-read-u64 roots 24) terminal)
+                 (setq terminal (heap-read-u64 roots 24))
                  (if (and (/= saved 0) (/= saved 2))
-                     (seq (wf_word_store_out (+ roots 128) saved)
-                          (setq saved (+ roots 128))) 0)
+                     (seq (wf_word_store_out (heap-read-u64 roots 32) saved)
+                          (setq saved (heap-read-u64 roots 32))) 0)
                  (if (or (= (nl_val_tag base) 0) (= (nl_val_tag base) 1)
                          (= (bf_keyword_raw base-name) 1))
                      (seq (nl_ent_set base-entry 0 base)
@@ -308,27 +308,27 @@
                 (if (= void 1)
                     (seq (nl_stash_void_variable env name) 0) old)))))))
     (defun nl_pa_watched_default_w (env name value _pad)
-      (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_w_roots env 2))
+      (let* ((mark (nl_root_mark env)) (roots (nl_anchor_views env 2))
              (result (alloc-bytes 8 8)))
         (seq
          (ptr-write-u64 result 0 0)
          (if (= roots 0) (wf_bytecode_root_exhausted)
            (seq
-            (wf_word_store_out roots name)
-            (wf_word_store_out (+ roots 32) value)
-            (if (= (nl_n3_notify env roots (+ roots 32) 6) 0)
-                (let* ((canonical (nl_pa_canonical env roots))
+            (wf_word_store_out (heap-read-u64 roots 0) name)
+            (wf_word_store_out (heap-read-u64 roots 8) value)
+            (if (= (nl_n3_notify env (heap-read-u64 roots 0) (heap-read-u64 roots 8) 6) 0)
+                (let* ((canonical (nl_pa_canonical env (heap-read-u64 roots 0)))
                        (cell (if (= canonical 0) 0
                                (nelisp_frame_stack_find_kind (+ env 32) canonical 1 0))))
                   (if (= canonical 0) 0
                     (if (= (nelisp_mirror_is_constant env canonical) 1)
-                        (bf_setting_constant roots)
+                        (bf_setting_constant (heap-read-u64 roots 0))
                       (if (= (nl_thread_mirror_mutation_guard env canonical) 1) 0
                         (seq (wf_dirty)
                              (if (= (if (/= cell 0)
-                                        (seq (nl_cell_set_w cell (+ roots 32)) 0)
-                                      (nelisp_env_setv_mirror_lazy env canonical (+ roots 32) (+ env 64))) 0)
-                                 (nl_val_clone_into (+ roots 32) result) 0)))))) 0)))
+                                        (seq (nl_cell_set_w cell (heap-read-u64 roots 8)) 0)
+                                      (nelisp_env_setv_mirror_lazy env canonical (heap-read-u64 roots 8) (+ env 64))) 0)
+                                 (nl_val_clone_into (heap-read-u64 roots 8) result) 0)))))) 0)))
          (nl_root_release env mark)
          (heap-read-u64 result 0))))
     (defun nl_pa_operation_w (args env _pad)

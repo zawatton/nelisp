@@ -1,0 +1,2 @@
+SITE-CACHE ((old 1) (old 2) (other 3) (old 4) (new 5) (new 6) (redefined 7) (redefined 8) wrong-number-of-arguments)
+SITE-CACHE-AGAIN ((old 1) (old 2) (other 3) (old 4) (new 5) (new 6) (redefined 7) (redefined 8) wrong-number-of-arguments)

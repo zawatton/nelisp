@@ -499,7 +499,7 @@
     ;; WORD so nothing is materialised or allocated while the last value
     ;; word is live (same reading as `nl_sf_progn_next').  Arity 2 (even).
     (defun nl_ali_body_tail_nil (state-slot _pad)
-      (let ((tail (heap-read-u64 (nl_word_payload state-slot) 8)))
+      (let ((tail (heap-read-u64 (nl_word_payload (heap-read-u64 state-slot 0)) 8)))
         (if (= (logand tail 1) 1)
             (if (= tail 3) 1 0)
           (if (= (sexp-tag tail) 0) 1 0))))
@@ -513,7 +513,7 @@
     (defun nl_ali_body_after_cdr
         (cdr-ptr state-slot env _pad cap-flag root-mark)
       (nl_ali_body_after_clone
-       (extern-call wf_word_store_out state-slot cdr-ptr)
+       (seq (ptr-write-u64 state-slot 0 cdr-ptr) 0)
        state-slot env 0 cap-flag root-mark))
 
     ;; After nelisp_eval_call_w: EVAL-W is the form's value WORD or 0.
@@ -534,7 +534,7 @@
              (nl_root_release env root-mark)
              (nl_ali_finish 0 env eval-w cap-flag 0 0))
           (nl_ali_body_after_cdr
-           (extern-call nl_cons_cdr_word state-slot)
+           (extern-call nl_cons_cdr_word (heap-read-u64 state-slot 0))
            state-slot env 0 cap-flag root-mark))))
 
     ;; CAR-WORD is read without materialising an immediate form.
@@ -553,12 +553,12 @@
     ;; Else: fetch car(body) FIRST ✓.
     ;; Arity 6 (even).
     (defun nl_ali_body_drive (state-slot env _pad cap-flag root-mark _pad1)
-      (if (= (sexp-tag state-slot) 0)
+      (if (= (sexp-tag (heap-read-u64 state-slot 0)) 0)
           (seq
            (nl_root_release env root-mark)
            (nl_ali_finish 0 env 3 cap-flag 0 0))
         (nl_ali_body_eval
-         (extern-call nl_cons_car_word state-slot)
+         (extern-call nl_cons_car_word (heap-read-u64 state-slot 0))
          state-slot env 0 cap-flag root-mark)))
 
     (defun nl_ali_body_start
@@ -568,12 +568,12 @@
     (defun nl_ali_body_slot
         (state-slot body env _pad cap-flag root-mark)
       (nl_ali_body_start
-       (extern-call wf_word_store_out state-slot body)
+       (seq (ptr-write-u64 state-slot 0 body) 0)
        state-slot env 0 cap-flag root-mark))
 
     (defun nl_ali_body_mark (root-mark body env _pad cap-flag _pad1)
       (nl_ali_body_slot
-       (nl_root_reserve env) body env 0 cap-flag root-mark))
+       (nl_root_word env) body env 0 cap-flag root-mark))
 
     ;; The body chain already returns WORDs; its third argument is padding.
     (defun nl_ali_body (body env _pad cap-flag _p5 _p6)

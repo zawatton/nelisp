@@ -43,3 +43,7 @@ scripts/nelisp-standalone-build.el
 # Edited outside the conflict set: the evidence node bound is 81,920 in all three copies
 templates/nelisp-native-rooted-abi-proof.el.in
 test/nelisp-native-compiler-startup-evidence-test.el
+
+# Merge 7: eval/callpath-perf-20261021 e4755b52f (2 conflicted files, 8 hunks)
+scripts/nelisp-standalone-build.el
+test/standalone-vm-special-form-head-check.el

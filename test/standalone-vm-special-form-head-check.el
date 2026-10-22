@@ -56,6 +56,8 @@
 (defun vsh-short-prog2 ()
   (macroexpand '(prog2 (setq vsh-short-effects (1+ vsh-short-effects)))))
 (dotimes (i 6)
+  ;; GNU: prog2 is a macro of two required arguments, so (prog2 X) signals its
+  ;; arity error before X runs, in the interpreter and in the compiled function alike.
   (vsh-check (list 'short-prog2 i) #'vsh-short-prog2 '(error wrong-number-of-arguments))
   (vsh-check (list 'short-prog2-effects i) (lambda () vsh-short-effects) 0))
 

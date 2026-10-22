@@ -278,22 +278,33 @@
 
     ;; Doc 215 word ABI: the value WORD, 2 when not found, 0 on a signal.
     (defun nelisp_env_lookup_value_w (mirror-ptr frames-ptr name-ptr _pad)
-      (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr))
-             (local-p (if (= entry 0) 0
-                        (if (> (nl_ent_n entry) 5)
-                            (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
-             ;; Lexical cells shadow locals. A default dynamic binding does
-             ;; not shadow an existing local cell in another buffer.
-             (cell-ptr (if (= local-p 1)
-                           (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
-                         (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
-        (if (= cell-ptr 0)
-            ;; Frame miss: check mirror.
-            (nelisp_env_lkv_mirror_with_frames_w
-             mirror-ptr frames-ptr name-ptr entry 0 0 0 0)
-          ;; Frame hit: the cell's value WORD itself (Doc 215: a WORD may be
-          ;; the object's own box; no private box, no clone).
-          (extern-call nl_cell_get_value_w cell-ptr 0)))))
+      ;; A lexical binding is found first, whatever the entry says (a buffer-local
+      ;; flag does not shadow it, see below): GNU's Fassq over the lexical
+      ;; environment returns before the symbol's value cell is read.  LEX is the
+      ;; value, 0 for no lexical binding, -1 for a shape the loop leaves to the
+      ;; general code.
+      (let* ((lex (extern-call nl_lex_read frames-ptr name-ptr)))
+        (if (if (= lex 0) 0 (if (= lex -1) 0 1))
+            lex
+          (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr))
+                 (local-p (if (= entry 0) 0
+                            (if (> (nl_ent_n entry) 5)
+                                (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
+                 ;; Lexical cells shadow locals. A default dynamic binding does
+                 ;; not shadow an existing local cell in another buffer.
+                 (cell-ptr (if (= local-p 1)
+                               (if (= lex 0) 0
+                                 (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0))
+                             (if (= lex 0)
+                                 (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 1 1)
+                               (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))))
+            (if (= cell-ptr 0)
+                ;; Frame miss: check mirror.
+                (nelisp_env_lkv_mirror_with_frames_w
+                 mirror-ptr frames-ptr name-ptr entry 0 0 0 0)
+              ;; Frame hit: the cell's value WORD itself (Doc 215: a WORD may be
+              ;; the object's own box; no private box, no clone).
+              (extern-call nl_cell_get_value_w cell-ptr 0)))))))
   "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:

@@ -16,9 +16,9 @@
       ;; advice and alias changes in their callees, without name substitution.
       (dolist (callee dependencies)
         (setq code (append code (list callee (symbol-function callee)))))
-      (puthash key
-               ;; -1 reserves whole-function lowering before VM allocation.
-               (vector (vconcat code) -1
-                       (nth 2 row) nelisp--fx-next-index name (nth 3 row) -1)
-               nelisp--fx-table)
+      (nelisp--fx-table-put
+       key
+       ;; -1 reserves whole-function lowering before VM allocation.
+       (vector (vconcat code) -1
+               (nth 2 row) nelisp--fx-next-index name (nth 3 row) -1 nil))
       (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))))

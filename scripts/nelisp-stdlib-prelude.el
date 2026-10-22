@@ -28584,12 +28584,21 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
             ((not (consp x)) (emit 1 x))
             (t
              (let ((op (car x)))
+               ;; GNU eval_sub takes list_length of the arguments and checks the subr's
+               ;; min_args (eval.c:2640-2649) before anything runs: a form it would reject
+               ;; stays with the interpreter, which signals.
+               (let ((tl x))
+                 (while (consp tl) (setq tl (cdr tl)))
+                 (when tl (unsupported x)))
                (cond
-                ((eq op 'quote) (emit 1 (cadr x)))
+                ((eq op 'quote)
+                 (unless (and (consp (cdr x)) (null (cddr x))) (unsupported x))
+                 (emit 1 (cadr x)))
                 ;; #'SYMBOL is the symbol itself.
                 ((and (eq op 'function) (symbolp (cadr x)) (null (cddr x)))
                  (emit 1 (cadr x)))
                 ((memq op '(let let*))
+                 (unless (consp (cdr x)) (unsupported x))
                  (let ((saved vars) (pending nil))
                    (dolist (b (cadr x))
                      (let ((name (if (consp b) (car b) b)))
@@ -28610,6 +28619,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                      (emit 1 (nth 1 x)) (comp (nth 2 x)) (emit 16 'set 2))))
                 ((eq op 'progn) (body (cdr x)))
                 ((memq op '(when unless))
+                 (unless (consp (cdr x)) (unsupported x))
                  (let ((skip (label)) (end (label)))
                    (comp (cadr x)) (jump 9 skip)
                    (if (eq op 'when) (body (cddr x)) (emit 1 nil))
@@ -28622,16 +28632,18 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (comp (cadr x))
                    (dolist (a (cddr x)) (comp a) (emit 11))))
                 ((eq op 'prog2)
-                 (if (null (cddr x)) (emit 1 nil)
+                 (if (null (cddr x)) (unsupported x)
                    (comp (cadr x)) (emit 11) (comp (nth 2 x))
                    (dolist (a (nthcdr 3 x)) (comp a) (emit 11))))
                 ((eq op 'if)
+                 (unless (consp (cddr x)) (unsupported x))
                  (let ((else (label)) (end (label)))
                    (comp (nth 1 x)) (jump 9 else)
                    (comp (nth 2 x)) (jump 8 end)
                    (place else) (body (nthcdr 3 x))
                    (place end)))
                 ((eq op 'while)
+                 (unless (consp (cdr x)) (unsupported x))
                  (let ((top (label)) (end (label)))
                    (place top) (comp (nth 1 x)) (jump 9 end)
                    (body (cddr x)) (emit 11) (jump 8 top)
@@ -28898,7 +28910,7 @@ Defining it as a function compiles them again.")
               (puthash body (if c
                                 (prog1 (vector (car c) (cdr c) (nth 1 shape)
                                                nelisp--fx-next-index name
-                                               (nth 2 shape) (nth 3 shape))
+                                               (nth 2 shape) (nth 3 shape) nil)
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table)))))))))
@@ -29339,8 +29351,30 @@ are skipped.")
         (let ((fn (and (fboundp w) (symbol-function w))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
-            (remhash (nthcdr 3 fn) nelisp--fx-table)
+            (nelisp--fx-retire (nthcdr 3 fn))
             (nelisp--fx-defer w)))))))
+
+;; Defined after `nelisp--fx-check-macro': the `nl-afset' wrapper above calls it
+;; for every definition, these two included.
+(defun nelisp--fx-retire (body)
+  "Remove BODY's entry from `nelisp--fx-table'.
+A compiled record leaves marked retired (its slot 7): a `funcall' call
+site that cached it (`m5_fx_funcall_site') checks that slot, so retired
+code never starts again from a cache.  Its code slot stays: the record's
+own activations, and any caller that already holds the record, still run it
+(GNU's function object keeps its code for as long as anything refers to
+it)."
+  (let ((rec (gethash body nelisp--fx-table)))
+    (when (and (vectorp rec) (> (length rec) 7)) (aset rec 7 t))
+    (remhash body nelisp--fx-table)))
+
+(defun nelisp--fx-table-put (body rec)
+  "Install REC as BODY's entry, marking a compiled record it replaces retired."
+  (let ((old (gethash body nelisp--fx-table)))
+    (when (and (vectorp old) (not (eq old rec)) (> (length old) 7))
+      (aset old 7 t)))
+  (puthash body rec nelisp--fx-table))
+
 (when (and (fboundp 'nl-afset)
            (not (fboundp 'nelisp--fx-plain-fset)))
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
