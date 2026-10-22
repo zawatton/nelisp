@@ -24,10 +24,11 @@ run() {  # run LABEL FILE_FOR_STDOUT ARGS...
   local label=$1; shift
   (ulimit -v 8388608; timeout 900 "$@" > "$W/$label.out" 2> "$W/$label.err")
   local rc=$?
-  local last; last=$(tail -n 1 "$W/$label.out")
+  # --load echoes the form's value after the script's own output: a lone quote closes it.
+  local last; last=$(grep -v '^"*$' "$W/$label.out" | tail -n 1)
   echo "$label rc=$rc stderr=$(wc -c < "$W/$label.err")B: $last"
   [ $rc = 0 ] && [ ! -s "$W/$label.err" ] || fail=1
-  printf '%s' "$last" | grep -q 'PASS$\|SCALE-DUMPED' || fail=1
+  printf '%s' "$last" | grep -q 'PASS\|SCALE-DUMPED' || fail=1
 }
 run generate "$BIN" --eval "$gen"
 run check env ICHK_MODE=check "$BIN" --cold-load-from "$W/s1.img" --load tools/ai/integ-wh-gc-check.el
