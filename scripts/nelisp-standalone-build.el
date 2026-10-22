@@ -20065,13 +20065,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (let ((fnw (nl_record_slot_word fw 1)))
                                (if (= (wf_bytecode_w_unbound_p env fnw) 1) 0 fnw)))
                          0))))
-          (if (if (< func 4096) 1
-                (if (= (logand func 1) 1) 1
-                  (if (= (logand func 7) 0) 0 (/= (logand func 7) 6))))
+          ;; A closure named directly is FW itself, already known to be one; only a
+          ;; function found through a symbol is checked again.
+          (if (if (= tag 17) 0
+                (if (< func 4096) 1
+                  (if (= (logand func 1) 1) 1
+                    (if (= (logand func 7) 0) 0 (/= (logand func 7) 6)))))
               -2
-            (let* ((lowf (logand func 7))
-                   (ftag (if (= lowf 0) (ptr-read-u8 func 0)
-                           (logand (ptr-read-u8 (- func 6) 0) 63)))
+            (let* ((lowf (if (= tag 17) flow0 (logand func 7)))
+                   (ftag (if (= tag 17) 17
+                           (if (= lowf 0) (ptr-read-u8 func 0)
+                             (logand (ptr-read-u8 (- func 6) 0) 63))))
                    (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
               (if (if (/= ftag 17) 1
                     (< (sar (ptr-read-u64 p 0) 8) 4))
@@ -20096,8 +20100,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (state (if (= state0 0) (nl_n4_state env) state0))
              (n4d (heap-read-u64 state 0))
              (n4 (if (>= n4d 32768) 0 1))
-             (maxargs (sar template 8))
-             (rest (logand (sar template 7) 1))
              (nslots (+ stk 7))
              (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
              (next (+ top (+ 32 (logand (+ (* nslots 8) 31) -32))))
@@ -20111,10 +20113,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (serial (+ (heap-read-u64 state 8) 1)))
                (seq (ptr-write-u64 frame 0 fw)
                     (ptr-write-u64 frame 8 3)
-                    (ptr-write-u64 frame 32 0)
-                    (ptr-write-u64 frame 40 0)
-                    (ptr-write-u64 frame 48 0)
-                    (ptr-write-u64 frame 56 0)
                     (ptr-write-u64 frame 64 12)
                     (ptr-write-u64 frame 72 fd)
                     (ptr-write-u64 frame 96 (sar (ptr-read-u64 fd 24) 2))
@@ -51198,13 +51196,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                  (m5_fx_word_list addr n n 0))))))
     (defun nl_n4_store_args (frame w)
       (ptr-write-u64 frame 8 (nl_n4_list_word w)))
-    ;; The activation's operator and argument-list WORDs (+0, +8) and its
-    ;; zero nil view (+32..+63).  A view is stored as its canonical WORD.
+    ;; The activation's operator and argument-list WORDs (+0, +8); its nil view
+    ;; (+32..+63) is zero: the chunk is mapped zero-filled and nothing writes those
+    ;; words (readers only take their address as the argument list of a call with
+    ;; none), so a push does not store zeros there again.  A view is stored as its
+    ;; canonical WORD.
     (defun nl_n4_put_words (frame function args)
       (seq (ptr-write-u64 frame 0 (if (= (logand function 7) 6) function (nl_word_canon function)))
-           (ptr-write-u64 frame 8 (nl_n4_list_word args))
-           (ptr-write-u64 frame 32 0) (ptr-write-u64 frame 40 0)
-           (ptr-write-u64 frame 48 0) (ptr-write-u64 frame 56 0)))
+           (ptr-write-u64 frame 8 (nl_n4_list_word args))))
     ;; An argument list as a WORD: nil (a nil view, or none) is 3.
     (defun nl_n4_list_word (v)
       (if (= (logand v 7) 2) v
