@@ -30,9 +30,11 @@
 (defvar bla-calls nil)
 
 (defun bla-outcome (thunk)
-  (condition-case err
-      (format "ok %S" (funcall thunk))
-    (error (format "err %S" err))))
+  ;; The outcome is rendered after the library's cells stop recording: the calls the
+  ;; runtime's own printing makes (a Lisp format layer, say) are not the VM's.
+  (let ((result (condition-case err (list "ok" (funcall thunk)) (error (list "err" err)))))
+    (setq bla-recording nil)
+    (format "%s %S" (car result) (cadr result))))
 
 (defun bla-run (name thunk)
   "Call THUNK with NAME redefined by the library; return (OUTCOME . CALLS)."
