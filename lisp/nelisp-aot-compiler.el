@@ -18117,14 +18117,176 @@ here the original argument staging remains, including every effect."
               (puthash name (list :arity arity :param slot) facts)))))))
     facts))
 
+(defvar nelisp-aot-compiler--cmp-false-jcc)
+(defvar nelisp-aot-compiler--cmp-true-jcc)
+
+(defvar nelisp-aot-compiler--x86-partial-call-folding t
+  "Whether cheap pure leading guards may bypass a same-unit RAW call.")
+
+(defvar nelisp-aot-compiler--x86-partial-call-facts nil
+  "Compilation-local unique callee leading-guard facts.")
+
+(defun nelisp-aot-compiler--x86-partial-call-value (node params)
+  "Describe NODE as a signed64 immediate or an exact non-root PARAMS ref."
+  (pcase (nelisp-aot-compiler--ir-kind node)
+    ('imm
+     (let ((v (nelisp-aot-compiler--ir-get node :value)))
+       (and (integerp v) (<= (- (expt 2 63)) v) (< v (expt 2 64))
+            (list :value v))))
+    ('ref
+     (let ((slot (nelisp-aot-compiler--ir-get node :slot)))
+       (and (integerp slot) (<= 0 slot) (< slot (length params))
+            (eq (nelisp-aot-compiler--ir-get node :var) (nth slot params))
+            (not (nelisp-aot-compiler--ir-get node :root-p))
+            (eq (nelisp-aot-compiler--ir-get node :class) 'gp)
+            (list :param slot))))))
+
+(defun nelisp-aot-compiler--x86-partial-call-tree (node params depth)
+  "Return scratch need for a closed cheap GP tree, or nil.
+Only three caller-saved non-argument registers are available.  Add/sub
+and bitwise operations have the existing RAW modulo-2^64 semantics;
+there are no memory reads, traps, calls, shifts or pointer tag loads."
+  (and (> depth 0)
+       (not (memq 'f64 (mapcar (lambda (k) (nelisp-aot-compiler--ir-get node k))
+                              '(:class :cls :ret-class))))
+       (or (and (nelisp-aot-compiler--x86-partial-call-value node params) 1)
+           (and (eq (nelisp-aot-compiler--ir-kind node) 'arith)
+                (memq (nelisp-aot-compiler--ir-get node :op)
+                      '(+ - logand logior logxor))
+                (let ((a (nelisp-aot-compiler--x86-partial-call-tree
+                          (nelisp-aot-compiler--ir-get node :a) params (1- depth)))
+                      (b (nelisp-aot-compiler--x86-partial-call-tree
+                          (nelisp-aot-compiler--ir-get node :b) params (1- depth))))
+                  (and a b (<= (max a (1+ b)) 3) (max a (1+ b))))))))
+
+(defun nelisp-aot-compiler--x86-partial-call-guard-p (test params)
+  "Whether TEST is a bounded pure formal/immediate guard."
+  (let ((count 0))
+    (nelisp-aot-compiler--walk-ir test (lambda (_) (cl-incf count)))
+    (and (<= count 9)
+     (if (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+      (let ((a (nelisp-aot-compiler--x86-partial-call-tree
+                (nelisp-aot-compiler--ir-get test :a) params 4))
+            (b (nelisp-aot-compiler--x86-partial-call-tree
+                (nelisp-aot-compiler--ir-get test :b) params 4)))
+        (and (memq (nelisp-aot-compiler--ir-get test :op) '(= /= < > <= >=))
+             a b (<= (max a (1+ b)) 3)))
+    (nelisp-aot-compiler--x86-partial-call-tree test params 4)))))
+
+(defun nelisp-aot-compiler--x86-partial-call-heavy-p (body)
+  "Require at least twenty IR nodes in the retained callee body."
+  (let ((count 0))
+    (catch 'heavy
+      (nelisp-aot-compiler--walk-ir
+       body (lambda (_) (when (>= (cl-incf count) 20) (throw 'heavy t))))
+      nil)))
+
+(defun nelisp-aot-compiler--x86-partial-call-facts (defuns)
+  "Describe cheap leading returns in unique all-GP DEFUNS.
+Adapt GCC 14 ipa-split.cc `consider_split': a cheap return arm may
+bypass a heavy function.  Unlike source inlining, this operates after
+argument staging, retaining original calls, frames and slow paths."
+  (let ((facts (make-hash-table :test #'eq))
+        (seen (make-hash-table :test #'eq)))
+    (dolist (d defuns)
+      (let* ((name (nelisp-aot-compiler--ir-get d :name))
+             (body (nelisp-aot-compiler--ir-get d :body))
+             (params (nelisp-aot-compiler--ir-get d :params))
+             (kind (nelisp-aot-compiler--ir-kind body))
+             (valid (gethash name
+                     (nelisp-aot-compiler--x86-trivial-call-facts
+                      (list (nelisp-aot-compiler--ir-with
+                             d :body (nelisp-aot-compiler--make-ir 'imm :value 0))))))
+             (test nil) (result nil) (true-p t))
+        (if (gethash name seen)
+            (remhash name facts)
+          (puthash name t seen)
+          (when (and valid (nelisp-aot-compiler--x86-partial-call-heavy-p body))
+            (cond
+             ((eq kind 'if)
+              (setq test (nelisp-aot-compiler--ir-get body :test)
+                    result (nelisp-aot-compiler--x86-partial-call-value
+                            (nelisp-aot-compiler--ir-get body :then) params))
+              (unless result
+                (setq result (nelisp-aot-compiler--x86-partial-call-value
+                              (nelisp-aot-compiler--ir-get body :else) params)
+                      true-p nil)))
+             ((eq kind 'cond)
+              (let ((first (car (nelisp-aot-compiler--ir-get body :clauses))))
+                (when (and first (vectorp (car first)) (vectorp (cdr first)))
+                  (setq test (car first)
+                        result (nelisp-aot-compiler--x86-partial-call-value
+                                (cdr first) params))))))
+            (when (and test result
+                       (nelisp-aot-compiler--x86-partial-call-guard-p test params))
+              (puthash name (append (list :arity (length params) :guard test
+                                          :guard-true-p true-p) result) facts))))))
+    facts))
+
+(defun nelisp-aot-compiler--emit-partial-call-tree-x86 (node regs buf)
+  "Emit preflighted NODE into the first of REGS without argument clobbers."
+  (let ((dst (car regs)))
+    (pcase (nelisp-aot-compiler--ir-kind node)
+      ('ref
+       (nelisp-asm-x86_64-mov-reg-reg
+        buf dst (nth (nelisp-aot-compiler--ir-get node :slot) '(rdi rsi rdx rcx r8 r9))))
+      ('imm (nelisp-aot-compiler--emit-trivial-into-reg node dst buf))
+      ('arith
+       (nelisp-aot-compiler--emit-partial-call-tree-x86
+        (nelisp-aot-compiler--ir-get node :a) regs buf)
+       (nelisp-aot-compiler--emit-partial-call-tree-x86
+        (nelisp-aot-compiler--ir-get node :b) (cdr regs) buf)
+       (funcall (cdr (assq (nelisp-aot-compiler--ir-get node :op)
+                           '((+ . nelisp-asm-x86_64-add-reg-reg)
+                             (- . nelisp-asm-x86_64-sub-reg-reg)
+                             (logand . nelisp-asm-x86_64-and-reg-reg)
+                             (logior . nelisp-asm-x86_64-or-reg-reg)
+                             (logxor . nelisp-asm-x86_64-xor-reg-reg))))
+                buf dst (cadr regs))))))
+
+(defun nelisp-aot-compiler--emit-partial-named-call-x86 (node fact buf)
+  "Emit FACT's pure guard at NODE's original, already-staged call point."
+  (let ((test (plist-get fact :guard))
+        (slow (make-symbol "partial-call-slow"))
+        (done (make-symbol "partial-call-done")))
+    (if (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+        (progn
+          (nelisp-aot-compiler--emit-partial-call-tree-x86
+           (nelisp-aot-compiler--ir-get test :a) '(rax r10 r11) buf)
+          (nelisp-aot-compiler--emit-partial-call-tree-x86
+           (nelisp-aot-compiler--ir-get test :b) '(r10 r11) buf)
+          (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
+          (nelisp-asm-x86_64-jcc-rel32
+           buf (cdr (assq (nelisp-aot-compiler--ir-get test :op)
+                          (if (plist-get fact :guard-true-p)
+                              nelisp-aot-compiler--cmp-false-jcc
+                            nelisp-aot-compiler--cmp-true-jcc))) slow))
+      (nelisp-aot-compiler--emit-partial-call-tree-x86 test '(rax r10 r11) buf)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+      (nelisp-asm-x86_64-jcc-rel32
+       buf (if (plist-get fact :guard-true-p) 'je 'jne) slow))
+    (if (plist-member fact :param)
+        (nelisp-asm-x86_64-mov-reg-reg
+         buf 'rax (nth (plist-get fact :param) '(rdi rsi rdx rcx r8 r9)))
+      (nelisp-aot-compiler--emit-trivial-into-reg
+       (nelisp-aot-compiler--make-ir 'imm :value (plist-get fact :value)) 'rax buf))
+    (nelisp-asm-x86_64-jmp-rel32 buf done)
+    (nelisp-asm-x86_64-define-label buf slow)
+    (nelisp-asm-x86_64-call-rel32 buf (nelisp-aot-compiler--ir-get node :name))
+    (nelisp-asm-x86_64-define-label buf done)))
+
 (defun nelisp-aot-compiler--emit-named-gp-call-x86 (node buf)
   "Emit NODE's ordinary call, or its complete trivial result after staging.
 Arguments and alignment have ALREADY been emitted.  No evaluation or
 frame layout changes here; the caller's original cleanup follows."
   (let* ((name (nelisp-aot-compiler--ir-get node :name))
          (args (nelisp-aot-compiler--ir-get node :args))
-         (fact (and nelisp-aot-compiler--x86-trivial-call-facts
-                    (gethash name nelisp-aot-compiler--x86-trivial-call-facts)))
+         (fact (or (and nelisp-aot-compiler--x86-trivial-call-folding
+                              nelisp-aot-compiler--x86-trivial-call-facts
+                              (gethash name nelisp-aot-compiler--x86-trivial-call-facts))
+                        (and nelisp-aot-compiler--x86-partial-call-folding
+                             nelisp-aot-compiler--x86-partial-call-facts
+                             (gethash name nelisp-aot-compiler--x86-partial-call-facts))))
          (gp t))
     (dolist (arg (cons node args))
       (nelisp-aot-compiler--walk-ir
@@ -18136,7 +18298,7 @@ frame layout changes here; the caller's original cleanup follows."
                        (and (eq (nelisp-aot-compiler--ir-kind n) 'imm)
                             (not (integerp (nelisp-aot-compiler--ir-get n :value)))))
                (setq gp nil)))))
-    (if (and nelisp-aot-compiler--x86-trivial-call-folding fact gp
+    (if (and fact gp
              (eq nelisp-aot-compiler--arch 'x86_64)
              (eq nelisp-aot-compiler--abi 'sysv)
              (not (nelisp-aot-compiler--lisp-values-p))
@@ -18145,11 +18307,13 @@ frame layout changes here; the caller's original cleanup follows."
              (not (cl-some (lambda (k) (nelisp-aot-compiler--ir-get node k))
                            '(:fn-value :varargs-p :internal-boundary-disp)))
              (<= (length args) 6) (= (length args) (plist-get fact :arity)))
-        (if (plist-member fact :param)
+        (if (plist-member fact :guard)
+            (nelisp-aot-compiler--emit-partial-named-call-x86 node fact buf)
+          (if (plist-member fact :param)
             (nelisp-asm-x86_64-mov-reg-reg
              buf 'rax (nth (plist-get fact :param) '(rdi rsi rdx rcx r8 r9)))
           (nelisp-aot-compiler--emit-trivial-into-reg
-           (nelisp-aot-compiler--make-ir 'imm :value (plist-get fact :value)) 'rax buf))
+           (nelisp-aot-compiler--make-ir 'imm :value (plist-get fact :value)) 'rax buf)))
       (nelisp-asm-x86_64-call-rel32 buf name))))
 
 (defun nelisp-aot-compiler--emit-call (node buf)
@@ -24204,6 +24368,8 @@ helper signature.  Pass nil when no static-imm32 tables exist.
 Doc 101 §101.B Wave 5: buffer is created with the current
 `nelisp-aot-compiler--abi' so Win64 callers get a 'win64 buffer."
   (let ((nelisp-aot-compiler--table-vaddrs table-vaddrs)
+        (nelisp-aot-compiler--x86-partial-call-facts
+         (nelisp-aot-compiler--x86-partial-call-facts defuns))
         (nelisp-aot-compiler--x86-trivial-call-facts
          (nelisp-aot-compiler--x86-trivial-call-facts defuns))
         (nelisp-aot-compiler--rsp-temp-depth 0)
@@ -26000,7 +26166,9 @@ register budgeting while ELF/Mach-O keep SysV."
     (when (eq arch 'wasm32)
       (cl-return-from nelisp-aot-compile-to-link-unit
         (nelisp-aot-compiler--compile-to-wasm-unit defuns data-blobs)))
-    (let* ((nelisp-aot-compiler--x86-trivial-call-facts
+    (let* ((nelisp-aot-compiler--x86-partial-call-facts
+            (nelisp-aot-compiler--x86-partial-call-facts defuns))
+           (nelisp-aot-compiler--x86-trivial-call-facts
             (nelisp-aot-compiler--x86-trivial-call-facts defuns))
            (nelisp-aot-compiler--rsp-temp-depth 0)
            (buf (if (eq arch 'aarch64)
