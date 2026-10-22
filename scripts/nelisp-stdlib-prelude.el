@@ -11821,17 +11821,27 @@ never an error, for any integer argument."
         (char-to-string char)
       (unibyte-string (logand char 255)))))
 
-(unless (fboundp 'set-buffer-multibyte)
-  (defun set-buffer-multibyte (flag)
-  "Set the current buffer's multibyte flag and return FLAG."
-  (let ((old (nelisp--buffer-multibyte-p (current-buffer))))
-    ;; enable-multibyte-characters is a constant (GNU buffer.c:5279) that only
-    ;; this function changes, as GNU's C code does: the mark is lifted around its
-    ;; own write.
+(unless (fboundp 'nelisp--bset-enable-multibyte-characters)
+  (defun nelisp--bset-enable-multibyte-characters (flag)
+    "Set the current buffer's `enable-multibyte-characters' to FLAG (non-nil: t).
+`enable-multibyte-characters' is a constant (GNU buffer.c:5279), so `set', `setq'
+and `let' refuse it with `setting-constant'.  GNU's C code stores the flag with
+`bset_enable_multibyte_characters' (buffer.h), a plain field store that never goes
+through `set_internal'; this is the runtime's counterpart, for library code that
+owns buffers (`set-buffer-multibyte' is the only caller here).  It sets the
+buffer's own value, not the default, and leaves the variable constant.  Returns
+the flag as t or nil."
     (unwind-protect
         (progn (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters nil)
                (set (make-local-variable 'enable-multibyte-characters) (and flag t)))
       (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters t))
+    (and flag t)))
+
+(unless (fboundp 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (flag)
+  "Set the current buffer's multibyte flag and return FLAG."
+  (let ((old (nelisp--buffer-multibyte-p (current-buffer))))
+    (nelisp--bset-enable-multibyte-characters flag)
     (unless (eq old (and flag t))
       (set (make-local-variable 'buffer-undo-list) nil)))
   flag))
