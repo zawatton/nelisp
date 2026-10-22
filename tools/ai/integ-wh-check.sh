@@ -20,6 +20,8 @@
 #   built         the dynamic binary exists and names HEAD's tree
 #   boot          the dynamic binary evaluates (+ 1 2)
 #   sanity        fib, a cons-heavy loop and a string-heavy loop print GNU's bytes
+#   weakmark      fix 20: test/standalone-weak-symbol-mark-check.el passes on the binary and on a copy without
+#                 its cold image, and a fresh-prelude boot dumps an image in-process four times
 #   log KIND      pipeline evidence newer than the dynamic binary: checks standalone mcp
 #                 fchecks (batch F's fixture checks) gcport (gc-port's light set)
 cd "$(dirname "$0")/../.." || exit 2
@@ -139,6 +141,30 @@ case ${1:-} in
     cmp -s "$OUT/sanity.gnu.out" "$OUT/sanity.dyn.out" || fail "stdout differs from GNU ($(diff "$OUT/sanity.gnu.out" "$OUT/sanity.dyn.out" | grep -c '^[<>]') lines)"
     [ -s "$OUT/sanity.dyn.err" ] && fail "stderr not empty: $(head -c 140 "$OUT/sanity.dyn.err" | tr '\n' ' ')"
     say "PASS sanity ($(wc -l < "$OUT/sanity.dyn.out") lines identical to GNU)" ;;
+  weakmark)
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    # The collector's weak-table marker used to mark a symbol's cell and trace none of its slots (fix 20).
+    # Run the check on the binary as built (with its cold image) and on a copy without the image, which
+    # boots the prelude afresh, as the build does to make the image.
+    c=$OUT/nocold; rm -rf "$c"; mkdir -p "$c"; cp -p "$DYN" "$c/nelisp" || fail "cannot copy the binary"
+    for e in .buffer-local-bytecode.tsv .native-startup.el .variable-alias-bytecode.tsv .version.json; do
+      [ -f "$DYN$e" ] && cp -p "$DYN$e" "$c/nelisp$e"; done
+    for b in "$DYN" "$c/nelisp"; do
+      capped env EVAL_BIN="$b" STANDALONE_CHECK_LOGDIR="$OUT/weakmark" sh test/perf/standalone-checks.sh \
+        test/standalone-weak-symbol-mark-check.el > "$OUT/weakmark.out" 2>&1 \
+        || fail "the weak-symbol check fails on $b: $(tail -n 3 "$OUT/weakmark.out" | tr '\n' ' ')"
+    done
+    # A fresh-prelude boot and an image dump in the same process: the unfixed binaries died in it or
+    # produced an image with an empty name box, depending on the environment's size.
+    for i in 1 2 3 4; do
+      img=$OUT/weakmark-$i.img; rm -f "$img"
+      if [ "$i" -gt 2 ] && command -v setarch > /dev/null; then run="setarch $(uname -m) -R"; else run=; fi
+      got=$(capped $run timeout 300 "$c/nelisp" --eval "(progn (princ (symbol-name 'eq)) (princ (nelisp--arena-dump-image-stream \"$img\")))" 2>&1)
+      rc=$?
+      case $got in eq[0-9]*) ;; *) fail "fresh boot plus dump, run $i ($run): rc=$rc, '$(printf %s "$got" | head -c 80)'" ;; esac
+      rm -f "$img"
+    done
+    say "PASS weakmark (the check on the binary and on a copy without its cold image; 4 fresh-boot dumps)" ;;
   log)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
     case ${2:-} in

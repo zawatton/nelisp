@@ -57,3 +57,6 @@ test/standalone-bytecode-library-arith-check.el
 # Merge 7: eval/callpath-perf-20261021 e4755b52f (2 conflicted files, 8 hunks)
 scripts/nelisp-standalone-build.el
 test/standalone-vm-special-form-head-check.el
+
+# Post-merge fix 20 (m8): the weak-table marker's symbol arm
+scripts/nelisp-standalone-build.el
