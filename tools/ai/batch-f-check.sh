@@ -136,7 +136,7 @@ log_check() {
     sweep)  f=target/integ/sweep-F.txt
             [ "$(grep -c 'SIGSEGV=0/' "$f" 2>/dev/null)" = 4 ] && ! grep -q 'other=[^ ]' "$f" ||
               fail "sweep not clean in $f" ;;
-    fileio) f=target/integ/focused/summary.log
+    fileio) f=target/integ/fileio-F.txt
             [ "$(grep -c '^FILEIO2 .* PASS' "$f" 2>/dev/null)" = 2 ] || fail "fileio-2 not PASS on both in $f" ;;
     aot)    f=target/integ/focused/summary.log
             # The differential generates its cases from scripts/nelisp-aot-differential-cases.el:
@@ -348,11 +348,11 @@ EOF
     say "PASS bridge-test (both linkages; batch E's build fails both)" ;;
   all-fixtures)
     for item in buffer error shadow variables load printer syntax; do
-      ( "$0" gnu $item ) || exit 1
+      ( bash "$ROOT/tools/ai/batch-f-check.sh" gnu $item ) || exit 1
     done
-    for k in casefold e-fixtures closures syntax-rt; do ( "$0" $k ) || exit 1; done
-    for f in batch-f-doc-closure batch-f-skip-load; do ( "$0" fixture $f C.UTF-8 ) || exit 1; done
-    ( "$0" bridge-test ) || exit 1
+    for k in casefold e-fixtures closures syntax-rt; do ( bash "$ROOT/tools/ai/batch-f-check.sh" $k ) || exit 1; done
+    for f in batch-f-doc-closure batch-f-skip-load; do ( bash "$ROOT/tools/ai/batch-f-check.sh" fixture $f C.UTF-8 ) || exit 1; done
+    ( bash "$ROOT/tools/ai/batch-f-check.sh" bridge-test ) || exit 1
     say "PASS all fixtures" ;;
   fixture) check_fixture "${2:?fixture name}" "${3:-C.UTF-8}" ;;
   vm-memory)
