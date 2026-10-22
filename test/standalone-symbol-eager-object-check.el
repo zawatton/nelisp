@@ -107,6 +107,31 @@
     (seoc-check (eql (symbol-value old) 1) "the old one is unchanged by the new")
     (seoc-check (equal (symbol-name new) "seoc-unintern") "the new one names itself")))
 
+;; A name interned again after unintern is a new symbol, and the old one keeps
+;; its identity, hash and name through any number of cycles.
+(let ((syms nil))
+  (dotimes (k 5)
+    (let ((s (intern "seoc-cycle")))
+      (push s syms)
+      (set s k)
+      (seoc-check (eq s (intern "seoc-cycle")) (format "cycle %d: intern answers the symbol" k))
+      (unintern "seoc-cycle" nil)))
+  (seoc-check (equal (mapcar #'symbol-value syms) '(4 3 2 1 0)) "each removed symbol keeps its own value")
+  (seoc-check (let ((ok t) (l syms))
+                (while l
+                  (let ((m (cdr l)))
+                    (while m (when (eq (car l) (car m)) (setq ok nil)) (setq m (cdr m))))
+                  (setq l (cdr l)))
+                ok)
+              "five removed symbols are five symbols")
+  (seoc-check (null (memq (intern "seoc-cycle") syms)) "and the new interning is none of them")
+  (seoc-check (let ((h (make-hash-table :test 'eq)) (ok t))
+                (dolist (s syms) (puthash s (symbol-value s) h))
+                (dolist (s syms) (unless (eql (gethash s h) (symbol-value s)) (setq ok nil)))
+                (and ok (= (hash-table-count h) 5)))
+              "an eq table keeps them apart")
+  (seoc-check (equal (mapcar #'symbol-name syms) (make-list 5 "seoc-cycle")) "all five are named seoc-cycle"))
+
 ;; Many names: the cells vector grows from 16 on, the buckets get chains.
 (let ((syms nil) (i 0) (before (length (nelisp--intern-table-symbols))))
   (while (< i 6000)

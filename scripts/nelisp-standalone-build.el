@@ -5010,17 +5010,31 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                       ;; name that was uninterned and interned again is a new
                       ;; symbol with the old name.  Only a view with no cell
                       ;; at all (a plain overflow name) is compared by name.
-                      (let* ((mp (nl_symcells_mirror))
-                             (e (if (= mp 0) 1 (nl_symcell_entry mp view))))
-                        (if (> e 1) (if (= e obj) 1 0)
-                          (if (= e 0) 0
-                            (let* ((n (nl_word_length obj)) (i 0) (same 1)
-                                   (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
-                              (if (/= n (heap-read-u64 view 24)) 0
-                                (seq (while (if (= same 1) (< i n) 0)
-                                       (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
-                                            (setq i (+ i 1))))
-                                     same))))))
+                      ;; An interned object's meta word (+40) names its intern
+                      ;; table slot, whose buffer is the symbol's canonical name
+                      ;; buffer: a canonical view with that very buffer is the
+                      ;; symbol, any other canonical view another (a removed
+                      ;; slot keeps its buffer, a name interned again gets a new
+                      ;; one).  That needs no table, so the answer holds
+                      ;; whatever the mirror root names.
+                      (let* ((vb (heap-read-u64 view 16))
+                             (base (heap-read-u64 268436288 0))
+                             (m (if (= (logand (heap-read-u64 (- obj 6) 0) 63) 4)
+                                    (heap-read-u64 (- obj 6) 40) 0)))
+                        (if (if (= m 0) 0
+                              (if (> vb (+ base 16777224)) (< vb (heap-read-u64 268436296 0)) 0))
+                            (if (= vb (heap-read-u64 (+ base (+ (* (logand m 1048575) 16) 8)) 0)) 1 0)
+                          (let* ((mp (nl_symcells_mirror))
+                                 (e (if (= mp 0) 1 (nl_symcell_entry mp view))))
+                            (if (> e 1) (if (= e obj) 1 0)
+                              (if (= e 0) 0
+                                (let* ((n (nl_word_length obj)) (i 0) (same 1)
+                                       (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
+                                  (if (/= n (heap-read-u64 view 24)) 0
+                                    (seq (while (if (= same 1) (< i n) 0)
+                                           (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
+                                                (setq i (+ i 1))))
+                                         same))))))))
                     0)
                 0))))))
     ;; The canonical string of the interned name BUF/N (the side table's, made
