@@ -3121,6 +3121,49 @@ without the async core and process adapter that define the standard names."
       (should (equal (nelisp-standalone--rooted-protocol-startup-src nil)
                      "rooted;compiler;funcall;")))))
 
+;; Doc 223, "Scanning callee-saved registers": gc-regs.o exists on every target.
+(ert-deftest nelisp-standalone-target-gc-regs-unit-shape ()
+  "Every target links `nl_gc_scan_regs' and `nl_gc_regs_selftest'; Linux spills the SysV set."
+  (dolist (target '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64 windows-aarch64))
+    (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target) (lambda () target)))
+      (let* ((unit (nelisp-standalone--gc-regs-unit))
+             (text (cdr (assq 'text (plist-get unit :sections))))
+             (names (mapcar (lambda (s) (plist-get s :name)) (plist-get unit :symbols))))
+        (should (equal names '("nl_gc_scan_regs" "nl_gc_regs_selftest")))
+        (should (member "nl_gc_conserv_scan"
+                        (mapcar (lambda (r) (plist-get r :symbol)) (plist-get unit :relocs))))
+        (when (eq target 'linux-x86_64)
+          (let ((bytes (append text nil)))
+            ;; rbx rbp r12 r13 r14 r15 rcx r11 pushed, then an 8-byte pad: the spilled block
+            ;; is 72 bytes, the window the self-test's control scans
+            (should (equal (cl-subseq bytes 0 17)
+                           '(#x53 #x55 #x41 #x54 #x41 #x55 #x41 #x56 #x41 #x57 #x51 #x41 #x53
+                             #x48 #x83 #xec #x08)))
+            ;; the self-test loads a sentinel into each of rbx r12 r13 r14 r15
+            (dolist (op '((#x48 #xbb) (#x49 #xbc) (#x49 #xbd) (#x49 #xbe) (#x49 #xbf)))
+              (should (cl-search op (cl-subseq bytes 48))))
+            ;; its control window is lea rsi,[rsp+72]
+            (should (cl-search '(#x48 #x8d #x74 #x24 #x48) (cl-subseq bytes 48)))))))))
+
+(ert-deftest nelisp-standalone-target-gc-regs-spill-reaches-the-scan ()
+  "A collection scans from the spilled registers, and the scan has a probe mode."
+  (cl-labels ((defun-form (name)
+                (cl-find-if (lambda (f) (and (eq (car-safe f) 'defun) (eq (cadr f) name)))
+                            (cdr nelisp-standalone--gc-source)))
+              (mentions (name tree)
+                (cond ((eq tree name) t)
+                      ((consp tree) (or (mentions name (car tree)) (mentions name (cdr tree))))
+                      (t nil))))
+    (let ((maybe (defun-form 'nl_gc_conserv_maybe))
+          (scan (defun-form 'nl_gc_conserv_scan)))
+      (should maybe)
+      (should scan)
+      (should (mentions 'nl_gc_scan_regs maybe))
+      (should (mentions 'nl_gc_regs_calls maybe))
+      (should-not (mentions 'nl_gc_conserv_scan maybe))
+      (should (mentions 'nl_gc_regs_trace scan))
+      (should (mentions 'nl_gc_regs_trace_window scan)))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

@@ -75,8 +75,9 @@
     ;; directly; boxed child deep-cloned into a fresh 32B box and its
     ;; 8-aligned pointer stored as the word) — NOT a 4xu64 inline copy.
     (defun nl_alloc_cell_init (box-ptr initial)
-      (and (or (extern-call nl_val_clone_into initial box-ptr) 1)
-           (ptr-write-u64 box-ptr 8 1)
+      ;; Doc 216 S5: header (kind 11) @ box+0, the value WORD @ box+8.
+      (seq (ptr-write-u64 box-ptr 0 11)
+           (extern-call nl_val_clone_into initial (+ box-ptr 8))
            box-ptr))
 
     ;; Public entry — allocate 16-byte NlCell with alignment 8,

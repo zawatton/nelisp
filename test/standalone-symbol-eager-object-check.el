@@ -8,7 +8,7 @@
 ;; string in the name cell, the key in its bucket chain and the cell in the
 ;; cells vector).
 ;;
-;; (nelisp--debug-switch 45 SYM) answers what SYM has in the mirror: 0 no
+;; (nelisp--debug-switch 50 SYM) answers what SYM has in the mirror: 0 no
 ;; object, 1 an interned object with its name string, 2 an object with a nil
 ;; name cell, 3 an entry that is not an interned symbol object.  A fresh
 ;; name must answer 1 however it was interned (`intern', the reader, a quoted
@@ -24,7 +24,7 @@
     (setq seoc-failures (1+ seoc-failures))
     (princ (format "SEOC FAIL %s\n" label))))
 
-(defun seoc-state (sym) (nelisp--debug-switch 45 sym))
+(defun seoc-state (sym) (nelisp--debug-switch 50 sym))
 
 ;; The probe itself: it must see an object that exists, and not invent one.
 (seoc-check (eql (seoc-state nil) 0) "nil has no object")
@@ -106,6 +106,19 @@
     (seoc-check (not (boundp new)) "the new symbol is void")
     (seoc-check (eql (symbol-value old) 1) "the old one is unchanged by the new")
     (seoc-check (equal (symbol-name new) "seoc-unintern") "the new one names itself")))
+
+;; The apply path sorts the builtins it intercepts out by the static id in a symbol
+;; object's meta word: each of them still runs.
+(seoc-check (eql (eval '(+ 1 2)) 3) "eval")
+(seoc-check (eql (funcall '+ 1 2) 3) "funcall")
+(seoc-check (eql (apply '+ '(1 2)) 3) "apply")
+(seoc-check (progn (fset 'seoc-fn-alias 'car) (eq (symbol-function 'seoc-fn-alias) 'car)) "fset and symbol-function")
+(seoc-check (equal (condition-case e (signal 'seoc-sig '(1)) (seoc-sig (cdr e))) '(1)) "signal")
+(seoc-check (equal (condition-case e (signal 'error '("seoc")) (error (cdr e))) '("seoc")) "signal of error")
+(seoc-check (eql (funcall (intern "car") '(7 8)) 7) "a builtin named by intern")
+(seoc-check (eq (condition-case e (funcall (intern "seoc-not-a-builtin-so-void") 1) (void-function (car e)))
+                'void-function)
+            "a function that is not a builtin is not taken for one")
 
 ;; A name interned again after unintern is a new symbol, and the old one keeps
 ;; its identity, hash and name through any number of cycles.

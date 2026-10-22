@@ -6,7 +6,7 @@
 ;; a view whose symbol has its object (made when the reader or `intern'
 ;; answered it) now stores the object's class-110 WORD instead.
 ;;
-;; (nelisp--debug-switch 46 X) answers what X's WORD is: 4 a legacy symbol view,
+;; (nelisp--debug-switch 51 X) answers what X's WORD is: 4 a legacy symbol view,
 ;; 104 an interned symbol object, 116 an uninterned one, 2 a direct cons, -1 an
 ;; immediate.  Passing a value to a function stores it in an argument list, so
 ;; the probe sees an object where the program holds a view of a symbol that has
@@ -25,7 +25,7 @@
     (setq scsc-failures (1+ scsc-failures))
     (princ (format "SCSC FAIL %s\n" label))))
 
-(defun scsc-class (x) (nelisp--debug-switch 46 x))
+(defun scsc-class (x) (nelisp--debug-switch 51 x))
 
 ;; The probe itself.
 (scsc-check (eql (scsc-class 5) -1) "a fixnum is an immediate")
