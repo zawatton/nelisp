@@ -1,5 +1,8 @@
-;;; Copied unchanged from the symbols lane (eval/symbols-20261021, target/symbols/img/gc-check.el)
+;;; Copied from the symbols lane (eval/symbols-20261021, target/symbols/img/gc-check.el)
 ;;; for the integ-wh at-scale dump and restore check (tools/ai/integ-wh-image-scale.sh).
+;;; One change: `macroexp--dynvars' is volatile (its length is the defvars the loader has
+;;; seen, and each run of this file loads it again); the lane's library image had the
+;;; same value in the dumping and the verifying run.
 ;;; gc-check.el --- a restored library image keeps every symbol across collections -*- lexical-binding: t; -*-
 
 ;; BIN --cold-load-from IMAGE --load gc-check.el      (ICHK_MODE=check, default)
@@ -46,7 +49,7 @@
 
 (defun ichk-volatile-p (name)
   "Library state that printing or running changes: only its class is compared."
-  (or (string-match-p "\\`\\(emacs-batch\\|ichk-\\)" name) (string-match-p "pending\\|tick\\|counter\\|count\\'\\|index\\|serial\\|-gen\\|stats\\|-hits\\|-calls\\|-misses\\|environment" name)))
+  (or (string-match-p "\\`\\(emacs-batch\\|ichk-\\|macroexp--dynvars\\)" name) (string-match-p "pending\\|tick\\|counter\\|count\\'\\|index\\|serial\\|-gen\\|stats\\|-hits\\|-calls\\|-misses\\|environment" name)))
 
 (defun ichk-one (s)
   (let ((name (symbol-name s)))

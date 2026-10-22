@@ -40,7 +40,7 @@ built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/integ-wh-check.sh' \
     ':(exclude)tools/ai/integ-wh-progress.org' ':(exclude)tools/ai/integ-wh-build.sh' \
     ':(exclude)tools/ai/integ-wh-sanity.el' ':(exclude)tools/ai/integ-wh-mcp-smoke.sh' \
-    ':(exclude)tools/ai/integ-wh-resolved.txt'
+    ':(exclude)tools/ai/integ-wh-resolved.txt' ':(exclude)tools/ai/integ-wh-*'
 }
 
 case ${1:-} in
