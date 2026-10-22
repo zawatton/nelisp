@@ -30774,15 +30774,15 @@ into that constant unconditionally is what broke every aarch64 build."
                                       (tg (sexp-tag s)))
                               (if (or (= tg 4) (= tg 16))
                                   (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_value env s b) 1) b
+                                    (if (= (nl_symbol_name_value env s b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                 (if (= tg 0)
                                     (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_immediate env 0 b) 1) b
+                                    (if (= (nl_symbol_name_immediate env 0 b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                   (if (= tg 1)
                                       (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_immediate env 1 b) 1) b
+                                    (if (= (nl_symbol_name_immediate env 1 b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                     (nl_abi_fail (bf_wrong_type_symbolp s) 0))))))
     ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).
