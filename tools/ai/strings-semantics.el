@@ -104,3 +104,11 @@ nil
 (strings-case 'fmt-alternate-floats
               (lambda () (strings-format-result "%#.0f|%#.0e|%#.0g|%08.2f" '(1.0 1.0 1.0 1.25))))
 nil
+(strings-case 'fmt-gc-churn
+              (lambda () (let ((gc-cons-threshold 256) (gc-cons-percentage 0.0)
+                               (fmt (copy-sequence "%s:%d")) (arg (make-string 80 ?漢))
+                               (sum 0) (last nil))
+                           (dotimes (i 100)
+                             (setq last (format fmt arg i) sum (+ sum (length last))))
+                           (list sum last))))
+nil

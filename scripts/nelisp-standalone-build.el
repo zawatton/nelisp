@@ -23510,18 +23510,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ((= d 111) (m5_push_oct ms value))
                 ((= d 99) (m5_push_char ms value))
                 (t (m5_push_dec ms value)))))))
-    (defun bf_fmt_loop_w (ms data i n argp)
+    (defun bf_fmt_loop_w (ms fmt i n argp)
       (if (>= i n) 1
-        (let* ((c (ptr-read-u8 data i)))
+        ;; Output allocation and float printing may collect. Keep the format
+        ;; WORD live and refresh its sdata rather than retaining a raw pointer.
+        (let* ((data (nl_bi_strptr fmt)) (c (ptr-read-u8 data i)))
           (if (= c 37)
               (let* ((d (ptr-read-u8 data (+ i 1))))
                 (if (= d 37)
                     (seq (mut-str-push-byte ms 37)
-                         (bf_fmt_loop_w ms data (+ i 2) n argp))
+                         (bf_fmt_loop_w ms fmt (+ i 2) n argp))
                   (seq (bf_fmt_emit_w ms d (nl_cons_car_word argp))
-                       (bf_fmt_loop_w ms data (+ i 2) n (nl_cons_cdr_word argp)))))
+                       (bf_fmt_loop_w ms fmt (+ i 2) n (nl_cons_cdr_word argp)))))
             (seq (mut-str-push-byte ms c)
-                 (bf_fmt_loop_w ms data (+ i 1) n argp))))))
+                 (bf_fmt_loop_w ms fmt (+ i 1) n argp))))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_format_simple_w (fmt argl _pad)
       (if (= (m5_string_tag_p (nl_val_tag fmt)) 0) 3
@@ -23543,9 +23545,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (unibyte (if (and (= scan 1) (= (m5_observably_unibyte_p fmt) 1))
                                           (bf_fmt_unibyte_p argl) 0)))
                         (seq (m5_count_builder builder unibyte)
-                             (bf_fmt_loop_w builder data 0 n argl)
+                             (bf_fmt_loop_w builder fmt 0 n argl)
                              (m5_builder_allocate_string builder unibyte)
-                             (bf_fmt_loop_w builder data 0 n argl)
+                             (bf_fmt_loop_w builder fmt 0 n argl)
                              (m5_finish_string_w builder 0 (- 1 unibyte)))))))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
     ;; the name unchanged and a separate tag-16 identity. It reuses the
