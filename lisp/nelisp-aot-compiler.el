@@ -16736,19 +16736,27 @@ is 0), one instruction shorter than and + cmp when X is a register."
         ;; `--emit-sexp-tag' reads it on the word heap -- a word whose low
         ;; three bits are 6 addresses its box at word - 6, and the tag is
         ;; the byte's low six bits.
-        (let ((legacy (nelisp-aot-compiler--gensym "tag-legacy")))
+        (let ((legacy (nelisp-aot-compiler--gensym "tag-legacy"))
+              (cons-lbl (nelisp-aot-compiler--gensym "tag-cons")))
           (unless (eq r 'rdi)
             (nelisp-asm-x86_64-mov-reg-reg buf 'rdi r))
           (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
           (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+          ;; Doc 216 S2.1, as `--emit-sexp-tag': a direct cons WORD
+          ;; (payload | 2) is a Cons and has no tag byte to load.
+          (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2)
+          (nelisp-asm-x86_64-jz-rel32 buf cons-lbl)
           (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
           (nelisp-asm-x86_64-jnz-rel32 buf legacy)
           (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
-          (nelisp-asm-x86_64-define-label buf legacy))
-        (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
-        (nelisp-aot-compiler--x86-alu-imm buf 'logand '(:reg rax) 63)
-        (nelisp-aot-compiler--x86-alu-imm buf 'cmp '(:reg rax) k)
-        (nelisp-asm-x86_64-jcc-rel32 buf (if want-equal 'je 'jne) label)
+          (nelisp-asm-x86_64-define-label buf legacy)
+          (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+          (nelisp-aot-compiler--x86-alu-imm buf 'logand '(:reg rax) 63)
+          (nelisp-aot-compiler--x86-alu-imm buf 'cmp '(:reg rax) k)
+          (nelisp-asm-x86_64-jcc-rel32 buf (if want-equal 'je 'jne) label)
+          (nelisp-asm-x86_64-jmp-rel32 buf skip)
+          (nelisp-asm-x86_64-define-label buf cons-lbl)
+          (nelisp-asm-x86_64-jmp-rel32 buf (if (= k nelisp-sexp--tag-cons) on-equal on-differ)))
         (nelisp-asm-x86_64-define-label buf skip)
         t))))
 
