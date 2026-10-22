@@ -204,6 +204,28 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
   ;; 2283 & 255 = 235
   235)
 
+(nelisp-aot-codegen-test--deftest nelisp-aot-codegen/word-tag-tests
+  "Fused tag tests preserve direct-cons and masked vectorlike WORD tags."
+  (seq
+   (defun tagged (w)
+     (let ((r 0))
+       (if (= (sexp-tag w) 7) (setq r (+ r 1)) 0)
+       (if (/= (sexp-tag w) 7) (setq r (+ r 2)) 0)
+       (if (= (sexp-tag w) 4) (setq r (+ r 4)) 0)
+       (if (/= (sexp-tag w) 4) (setq r (+ r 8)) 0)
+       r))
+   (defun main ()
+     (let ((b (syscall-direct 9 0 4096 3 34 -1 0)))
+       ;; The direct cell's first byte deliberately disagrees with Cons.
+       (ptr-write-u8 b 2 4)
+       ;; Vectorlike header flag bits must not contribute to its kind.
+       (ptr-write-u8 b 64 196)
+       (ptr-write-u8 b 70 7)
+       (+ (tagged (+ b 2)) (* 10 (tagged (+ b 70))))))
+   (exit (main)))
+  ;; Direct cons: 1+8=9; vectorlike kind4: 2+4=6.
+  69)
+
 ;; If-conversion: a conditional register update becomes cmov (both arm
 ;; orders), and an update that may trap (division) keeps its branch.
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/if-conversion

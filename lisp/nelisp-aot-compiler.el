@@ -16750,7 +16750,7 @@ is 0), one instruction shorter than and + cmp when X is a register."
           (nelisp-asm-x86_64-jnz-rel32 buf legacy)
           (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
           (nelisp-asm-x86_64-define-label buf legacy)
-          (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+          (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
           (nelisp-aot-compiler--x86-alu-imm buf 'logand '(:reg rax) 63)
           (nelisp-aot-compiler--x86-alu-imm buf 'cmp '(:reg rax) k)
           (nelisp-asm-x86_64-jcc-rel32 buf (if want-equal 'je 'jne) label)
