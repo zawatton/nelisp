@@ -16009,10 +16009,19 @@ to a register (CG3)."
   "Emit `OP DST, OPERAND' (64-bit) for OP in `--x86-alu-ops'.
 OPERAND is (:imm V), (:reg R) or a (:mem ...) operand."
   (let ((cell (cdr (assq op nelisp-aot-compiler--x86-alu-ops))))
-    (if (eq (car operand) :imm)
+    (if (and (eq op 'logand) (eq (car operand) :imm)
+             (<= #x80000000 (cadr operand) #xFFFFFFFF))
+        ;; GNU Flogand: upper bits are zero.  GCC uses a 32-bit destination.
+        (if (= (cadr operand) #xFFFFFFFF)
+            (nelisp-aot-compiler--x86-op
+             buf nil (unibyte-string #x8B) dst (list :reg dst))
+          (nelisp-aot-compiler--x86-op
+           buf nil (unibyte-string #x81) 4 (list :reg dst)
+           (nelisp-aot-compiler--disp32-bytes (cadr operand))))
+      (if (eq (car operand) :imm)
         (nelisp-aot-compiler--x86-alu-imm buf op (list :reg dst) (cadr operand))
       (nelisp-aot-compiler--x86-op
-       buf t (unibyte-string (car cell)) dst operand))))
+       buf t (unibyte-string (car cell)) dst operand)))))
 
 (defun nelisp-aot-compiler--x86-alu-imm (buf op rm v)
   "Emit `OP RM, V' (64-bit, V sign-extended imm8 or imm32)."
@@ -16059,8 +16068,14 @@ OP is one of + - * logand logior logxor.  Left-to-right evaluation is
 kept: a leaf B is read after A is evaluated; a leaf A is read after B
 only when A is an immediate or B assigns no local
 (`--x86-no-assign-p').  Returns non-nil when it emitted."
-  (let ((ao (nelisp-aot-compiler--x86-leaf-operand a))
-        (bo (nelisp-aot-compiler--x86-leaf-operand b)))
+  (let ((ao (or (nelisp-aot-compiler--x86-leaf-operand a)
+                (and (eq op 'logand) (nelisp-aot-compiler--imm-int-p a)
+                     (<= #x80000000 (nelisp-aot-compiler--ir-get a :value) #xFFFFFFFF)
+                     (list :imm (nelisp-aot-compiler--ir-get a :value)))))
+        (bo (or (nelisp-aot-compiler--x86-leaf-operand b)
+                (and (eq op 'logand) (nelisp-aot-compiler--imm-int-p b)
+                     (<= #x80000000 (nelisp-aot-compiler--ir-get b :value) #xFFFFFFFF)
+                     (list :imm (nelisp-aot-compiler--ir-get b :value))))))
     (cond
      (bo
       (nelisp-aot-compiler--emit-value a buf)
@@ -16536,7 +16551,10 @@ rdi/rsi.  No general emit-value helper or call is used."
      (t
       (let* ((op (nelisp-aot-compiler--ir-get node :op))
              (b (nelisp-aot-compiler--ir-get node :b))
-             (bo (nelisp-aot-compiler--x86-leaf-operand b)))
+             (bo (or (nelisp-aot-compiler--x86-leaf-operand b)
+                (and (eq op 'logand) (nelisp-aot-compiler--imm-int-p b)
+                     (<= #x80000000 (nelisp-aot-compiler--ir-get b :value) #xFFFFFFFF)
+                     (list :imm (nelisp-aot-compiler--ir-get b :value))))))
         (nelisp-aot-compiler--emit-memory-tree-x86
          (nelisp-aot-compiler--ir-get node :a) buf registers)
         (unless bo

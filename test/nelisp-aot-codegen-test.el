@@ -440,6 +440,58 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
              (exit (main))))
       0))))
 
+(ert-deftest nelisp-aot-codegen/wide-u32-masks ()
+  "Wide unsigned masks match GNU with full-width inputs and fallback masks."
+  (let ((xs (list (- (expt 2 63)) (1+ (- (expt 2 63)))
+                  -1025 -1024 -1023 -9 -8 -7 -1 0 1 7 8 9
+                  1023 1024 1025 (1- (expt 2 63))))
+        (ds (list #x80000000 #xFFFFFFFF #x80000001 #xFEDCBA98 #x1FFFFFFFF -1 255))
+        (defs nil) (checks nil))
+    (dolist (d ds)
+      (let ((name (intern (format "quotient-%s" d))))
+        (push `(defun ,name (x) (logand x ,d)) defs)
+        (dolist (x xs)
+          (push `(seq (ptr-write-u64 p 0 ,x)
+                      (if (= (,name (ptr-read-u64 p 0)) ,(logand x d)) 0
+                        (setq errors (+ errors 1)))
+                      (if (= (logand ,d (ptr-read-u64 p 0)) ,(logand x d)) 0
+                        (setq errors (+ errors 1)))
+                      (if (= (+ (ptr-read-u64 p 8)
+                                (logand (ptr-read-u64 p 0) ,d))
+                             ,(let ((v (+ 13 (logand x d)))) (if (>= v (expt 2 63)) (- v (expt 2 64)) v))) 0
+                        (setq errors (+ errors 1)))
+                      (if (= (if (> (logand (ptr-read-u64 p 0) ,d) 0) 1 2)
+                             ,(if (> (logand x d) 0) 1 2)) 0
+                        (setq errors (+ errors 1)))) checks))))
+    (should
+     (equal
+      (nelisp-aot-codegen-test--run
+       `(seq ,@(nreverse defs)
+             (defun main ()
+               (let ((p (syscall-direct 9 0 4096 3 34 -1 0)) (errors 0))
+                 (ptr-write-u64 p 8 13)
+                 ,@(nreverse checks) (if (= errors 0) 0 1)))
+             (exit (main))))
+      0))))
+
+(ert-deftest nelisp-aot-codegen/wide-mask-evaluates-once ()
+  "A constant mask on either side preserves observable operand evaluation."
+  (should
+   (= 0
+      (nelisp-aot-codegen-test--run
+       '(seq
+         (defun bump (p)
+           (ptr-write-u64 p 8 (+ (ptr-read-u64 p 8) 1))
+           (ptr-read-u64 p 0))
+         (defun main ()
+           (let ((p (syscall-direct 9 0 4096 3 34 -1 0)))
+             (ptr-write-u64 p 0 -1)
+             (ptr-write-u64 p 8 0)
+             (let ((n (+ (logand #xFFFFFFFF (bump p))
+                         (logand (bump p) #x80000000))))
+               (if (and (= n 6442450943) (= (ptr-read-u64 p 8) 2)) 0 1))))
+         (exit (main)))))))
+
 (provide 'nelisp-aot-codegen-test)
 
 ;;; nelisp-aot-codegen-test.el ends here
