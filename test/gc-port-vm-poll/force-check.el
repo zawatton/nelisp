@@ -23,8 +23,18 @@
       (fset (car p) (cdr p)))
     (dolist (c (nth 3 data))
       (setq n (1+ n))
-      (let ((got (format "%S" (condition-case e (apply (car c) (copy-tree (cadr c) t))
-                                (error (list 'error (car e)))))))
+      ;; The bwc-deep cases recurse to the depth limit (about 1600 calls, one
+      ;; of them from 150000) and bisect it.  A collection at every Bcall
+      ;; makes that tens of thousands of full collections (about an hour) and
+      ;; reaches no collector path the shallower cases do not, so they run
+      ;; with the allocator's own triggers; test/bytecode-poll-corpus.eld
+      ;; forces a deep recursion of its own.
+      (let* ((deep (string-prefix-p "bwc-deep" (symbol-name (car c))))
+             (got (progn
+                    (when deep (nelisp--debug-switch 71))
+                    (prog1 (format "%S" (condition-case e (apply (car c) (copy-tree (cadr c) t))
+                                          (error (list 'error (car e)))))
+                      (when deep (nelisp--debug-switch 70))))))
         (unless (equal got (nth 2 c))
           (setq fails (1+ fails))
           (princ (format "VM-POLL-FORCE FAIL %S %S got %s want %s\n"

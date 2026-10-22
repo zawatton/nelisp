@@ -18272,6 +18272,53 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (ptr-write-u64 (+ cell 24) 0 n)
                    n))
           b)))
+
+    ;; GNU bytecode.c:797 and :861-866: the VM's allocator safepoints.  maybe_gc
+    ;; runs at every Bcall, and on every 255th backward branch (quitcounter is an
+    ;; unsigned char that starts at 1, counts `new_pc < pc' and wraps to 0).  The
+    ;; count of backward branches since the last poll is slot +0 of the
+    ;; activation cell (a fixnum; the frame starts with nil, which reads as 0),
+    ;; shared by the fast loop and the full loop like GNU's one local.  A poll is
+    ;; the allocator's growth and debt gate (`nl_gc_vm_poll'); it answers 1 when
+    ;; a collection ran, so the fast loop drops its mirror-entry cache as after
+    ;; any call that can run Lisp.  A poll site is an instruction boundary: the
+    ;; frame holds every value the VM uses afterwards, and the code and
+    ;; constants are kept by the frame's footer.
+    ;; GNU's maybe_gc is one load and compare (`consing_until_gc < 0').  The
+    ;; allocator keeps no such budget, so the decision is read here without a
+    ;; call: 1 when `nl_gc_vm_poll' could collect, the same test as its force
+    ;; hook, its backstop before the debt trigger arms (stats+24 < 2, 64 MiB)
+    ;; and `nl_gc_midform_collect''s gate (armed, reservation against the
+    ;; trigger, the debt test).  A call that finds nothing due pays loads and
+    ;; branches only.  Even that is too much for the call path (51 Ir against a
+    ;; call of about 950), so the fast loop asks only on every 16th call of an
+    ;; activation, or on every call while the force hook is set: a call
+    ;; allocates a few words, and the collection it postpones is one of a 16 MiB
+    ;; growth step.  The full loop asks on every call.
+    (defun wf_bytecode_poll_due ()
+      (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) 1
+        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+            (if (< (heap-read-u64 268436184 0) (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
+                    (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0 1)
+                  (nl_gc_debt_due))
+              1)
+          0)))
+    (defun wf_bytecode_poll ()
+      (if (= (wf_bytecode_poll_due) 0) 0
+        (let* ((before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))
+          (seq (nl_gc_vm_poll)
+               (if (= before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)) 0 1)))))
+    ;; The count reached the limit: start again from 0 and poll.
+    (defun wf_bytecode_back_poll (cell)
+      (seq (ptr-write-u64 cell 0 1)
+           (wf_bytecode_poll)))
+    ;; The full loop takes a backward branch.
+    (defun wf_bytecode_back_edge (cell)
+      (let* ((n (+ (sar (heap-read-u64 cell 0) 2) 1)))
+        (if (< n 255)
+            (seq (ptr-write-u64 cell 0 (+ (shl n 2) 1)) 0)
+          (wf_bytecode_back_poll cell))))
     (defun wf_bytecode_call (env mem sp argc cell)
       ;; Bcall (GNU bytecode.c:735-750, docall).  A bytecode callee runs on the
       ;; caller's argument words directly; `throw' is GNU's Fthrow on the
@@ -18804,11 +18851,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (last-buckets 0) (last-count 0) (last-entry-data 0)
            (last-slots 0) (last-name -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
-           (ref 0) (cmp 0) (branch 0) (failed 0) (back 256) (prev pc))
+           (ref 0) (cmp 0) (branch 0) (failed 0)
+           (back (- 255 (sar (heap-read-u64 cell 0) 2))) (prev pc)
+           (qc (sar (heap-read-u64 cell 32) 2))
+           (qmask (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) 0 15)))
         (while (> go 0)
           (seq
            (if (< pc prev)
-               (seq (setq back (- back 1)) (if (= back 0) (setq go 0) 0)) 0)
+               (seq (setq back (- back 1)) (if (<= back 0) (setq go 0) 0)) 0)
            (setq prev pc))
           (if (or (= go 0) (< pc 0) (>= pc length)) (setq go 0)
             (seq (setq raw (heap-read-u8 data pc))
@@ -19559,7 +19609,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                              ;; A signal ends the run with -1.
                                              (let* ((argc (- raw 32)))
                                                (if (< sp (+ argc 1)) (setq go 0)
-                                                 (let* ((fi (- sp (+ argc 1)))
+                                                 (let* ((polled (seq (setq qc (+ qc 1))
+                                                                     (if (= (logand qc qmask) 0)
+                                                                         (if (= (wf_bytecode_poll) 1)
+                                                                             (seq (setq last-name -1) 0)
+                                                                           0)
+                                                                       0)))
+                                                        (fi (- sp (+ argc 1)))
                                                         (isp (wf_bytecode_call_enter
                                                               env cell mem fi argc
                                                               (heap-read-u64 (+ mem (* fi 8)) 0)
@@ -19602,6 +19658,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                        (seq (setq failed 1) (setq go 0)))))))
                                            (seq (setq go 0))))))))))))))))))
         (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
+             (ptr-write-u64 cell 0 (+ (shl (- 255 back) 2) 1))
+             (ptr-write-u64 cell 32 (+ (shl (logand qc 15) 2) 1))
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
 
 
@@ -19631,18 +19689,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; views; a frame gets them as an aux block (`wf_bytecode_frame_aux') the
       ;; first time it pushes a handler, binds or unwinds, and a frame that
       ;; never does has none.
-      ;; Below the activation's first frame is a four-WORD frame, the
-      ;; activation cell (CURFP): +8 the frame the fast loop
+      ;; Below the activation's first frame is a five-WORD frame, the
+      ;; activation cell (CURFP): +0 the backward branches taken since the
+      ;; last poll (GNU's quitcounter), +8 the frame the fast loop
       ;; stopped in (fixnum-coded address), +16 t when a frame was pushed or
       ;; popped, +24 the 128-byte scratch of four 32-byte views for the
       ;; helpers that take a view of a word (`wf_bytecode_scratch', allocated
-      ;; on first use).  The activation reserves no Sexp root slot.
+      ;; on first use), +32 the calls the fast loop made since its last poll
+      ;; (it polls every 16th, see `wf_bytecode_poll_due').  The activation
+      ;; reserves no Sexp root slot.
       (let* ((code-len (m5_strlen code))
              (code-data (nl_bi_strptr code))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (cellf (if (or (< depth 0) (> depth 131063)) 0 (nl_root_frame env 4)))
+             (cellf (if (or (< depth 0) (> depth 131063)) 0 (nl_root_frame env 5)))
              (fp (if (= cellf 0) 0 (nl_root_frame env (+ depth 7))))
              (mem fp)
              (foot (+ mem (* (+ depth 1) 8)))
@@ -19786,6 +19847,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                (ptr-write-u64 268435472 0 0)
                                (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
                                (atomic-fetch-add 268435544 1)
+                               ;; bytecode.c:980-982: the next backward branch polls.
+                               (ptr-write-u64 curfp 0 1017)
                                (setq done 0)) 0))
                        0)
                      (and (= done 0) (< pc code-len)))
@@ -19819,7 +19882,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          ;; -1: a call made from the fast loop signalled; the
                          ;; pending exit then unwinds as after the full Bcall arm.
                          (if (< state 0) (setq done 4)
-                           (seq (setq pc (sar state 17)) (setq sp (logand state 131071)))))) 0)) 0)
+                           (seq (setq pc (sar state 17)) (setq sp (logand state 131071))
+                                (if (>= (sar (heap-read-u64 curfp 0) 2) 255)
+                                    (wf_bytecode_back_poll curfp)
+                                  0))))) 0)) 0)
            ;; The opcodes that push a handler, bind, unwind or save state need
            ;; the frame's aux block; the instruction below is the one at PC
            ;; now, after the fast loop.
@@ -19890,7 +19956,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (setq sp (+ sp 1)))
                     (if (= base 131)
                         (if (= (wf_bytecode_w_nilp (heap-read-u64 top 0)) 1)
-                            (seq (setq sp (- sp 1)) (setq pc operand))
+                            (seq (setq sp (- sp 1))
+                                 (if (< operand pc) (wf_bytecode_back_edge curfp) 0)
+                                 (setq pc operand))
                           (setq sp (- sp 1)))
                       (if (= base 135)
                           (seq (ptr-write-u64 resw 0 (heap-read-u64 top 0))
@@ -19898,7 +19966,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (if (= base 136)
                             (setq sp (- sp 1))
                           (if (= base 130)
-                              (setq pc operand)
+                              (seq (if (< operand pc) (wf_bytecode_back_edge curfp) 0)
+                                   (setq pc operand))
                     (cond
                      ;; Fixnum arithmetic and comparison on the words
                      ;; themselves: 83 sub1, 84 add1, 85 =, 86 >, 87 <,
@@ -19981,15 +20050,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((or (= base 132) (= base 134))
                       (if (= (wf_bytecode_w_nilp (heap-read-u64 top 0)) 0)
                           (seq (if (= base 132) (setq sp (- sp 1)) 0)
+                               (if (< operand pc) (wf_bytecode_back_edge curfp) 0)
                                (setq pc operand))
                         (setq sp (- sp 1))))
                      ((= base 133)
                       (if (= (wf_bytecode_w_nilp (heap-read-u64 top 0)) 1)
-                          (setq pc operand)
+                          (seq (if (< operand pc) (wf_bytecode_back_edge curfp) 0)
+                               (setq pc operand))
                         (setq sp (- sp 1))))
                      ((= base 32)
                       ;; The same entry as the fast loop's (bytecode.c:735-750).
                       (let* ((fi (- sp (+ operand 1)))
+                             (polled (if (< fi 0) 0 (wf_bytecode_poll)))
                              (isp (if (< fi 0) -2
                                     (wf_bytecode_call_enter
                                      env curfp mem fi operand
@@ -20125,7 +20197,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (setq sp (- sp 2))
                            (if (= target -1)
                                0
-                             (setq pc target))))))
+                             (seq (if (< target pc) (wf_bytecode_back_edge curfp) 0)
+                                  (setq pc target)))))))
                      ((= base 71)
                       (if (= (bf_length_checked
                               (wf_bytecode_w_view (heap-read-u64 top 0) (wf_bytecode_scratch curfp)) (+ (wf_bytecode_scratch curfp) 96)) 0)
