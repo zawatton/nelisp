@@ -17254,11 +17254,12 @@ x86_64 moves B into RCX because SHL/SAR require the count in CL."
         (signal 'nelisp-aot-compiler-error
                 (list :unknown-shift-op op))))))))
 
-(defun nelisp-aot-compiler--x86-direct-call-args-p (node)
+(defun nelisp-aot-compiler--x86-direct-call-args-p (node &optional stack-p)
   "Non-nil when NODE's arguments can go straight to SysV GP registers.
 GNU comp.c:2045 hands argument values to GCC without push/pop temporaries.
 An imm64 or any GP frame slot can likewise be loaded directly here.
-Only named, non-variadic calls with at most six GP leaves qualify.  A
+Only named, non-variadic calls with GP leaves qualify.  STACK-P also
+admits arguments beyond the six GP registers.  A
 promoted source in an argument register is excluded: sequential moves
 could overwrite a later source, so it needs the existing spill path."
   (let ((args (nelisp-aot-compiler--ir-get node :args)))
@@ -17269,7 +17270,7 @@ could overwrite a later source, so it needs the existing spill path."
          (not (nelisp-aot-compiler--ir-get node :fn-value))
          (not (nelisp-aot-compiler--ir-get node :varargs-p))
          (not (eq (nelisp-aot-compiler--ir-get node :ret-class) 'f64))
-         (<= (length args) 6)
+         (or stack-p (<= (length args) 6))
          (seq-every-p
           (lambda (arg)
             (and (memq (nelisp-aot-compiler--ir-get arg :cls) '(nil gp))
@@ -17288,6 +17289,46 @@ could overwrite a later source, so it needs the existing spill path."
                            (not (memq source '(rdi rsi rdx rcx r8 r9))))))
                    (_ nil))))
           args))))
+
+(defun nelisp-aot-compiler--x86-direct-gp-stack-call-p (node)
+  "Non-nil for a fixed raw SysV GP call needing outgoing stack words.
+All arguments are effect-free frame/literal leaves.  They can be placed
+directly as GNU comp.c:2041-2050 hands rvalues to GCC's call lowering.
+Hidden Lisp boundaries retain their existing storage and ownership path."
+  (and (> (length (nelisp-aot-compiler--ir-get node :args)) 6)
+       (not (nelisp-aot-compiler--lisp-values-p))
+       (not (nelisp-aot-compiler--ir-get node :internal-boundary-disp))
+       ;; Stack leaves use rax as their push scratch before GP placement.
+       (not (cl-some (lambda (arg)
+                       (eq (cdr (assq (nelisp-aot-compiler--ir-get arg :slot)
+                                      nelisp-aot-compiler--promoted-slots)) 'rax))
+                     (nelisp-aot-compiler--ir-get node :args)))
+       (nelisp-aot-compiler--x86-direct-call-args-p node t)))
+
+(defun nelisp-aot-compiler--emit-direct-gp-stack-call-x86 (node buf extern-p)
+  "Place preflighted NODE's first six GP args and outgoing stack tail.
+Only outgoing words are pushed, in reverse order, with any alignment
+padding reserved before them.  Source leaves cannot clobber one another
+or observe the changed stack pointer.  No value survives across the call
+in a new register; the ordinary caller frame still owns all arguments."
+  (let* ((args (nelisp-aot-compiler--ir-get node :args))
+         (name (nelisp-aot-compiler--ir-get node :name))
+         (stack-count (- (length args) 6))
+         (pad (= (logand (+ nelisp-aot-compiler--rsp-temp-depth stack-count) 1) 1)))
+    (when pad (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+    (dolist (arg (reverse (nthcdr 6 args)))
+      (nelisp-aot-compiler--emit-value-into-x86 arg buf 'rax)
+      (nelisp-aot-compiler--emit-temp-push buf 'rax))
+    (cl-mapc (lambda (arg reg)
+               (nelisp-aot-compiler--emit-value-into-x86 arg buf reg))
+             (cl-subseq args 0 6) '(rdi rsi rdx rcx r8 r9))
+    (if extern-p
+        (progn
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here buf (symbol-name name) -4 'text))
+      (nelisp-asm-x86_64-call-rel32 buf name))
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (+ stack-count (if pad 1 0))))
+    (cl-decf nelisp-aot-compiler--rsp-temp-depth stack-count)))
 
 (defun nelisp-aot-compiler--call-arg-trivial-p (node)
   "Return non-nil if NODE is a AOT IR value that emits to a GP reg
@@ -17418,6 +17459,8 @@ unaffected.  Byte-length invariance holds (Doc 92): for any given
 NODE, pass1 and pass2 traverse the same branch (each arg's kind /
 class / slot / value is parse-time fixed) and emit the same byte
 count."
+  (if (nelisp-aot-compiler--x86-direct-gp-stack-call-p node)
+      (nelisp-aot-compiler--emit-direct-gp-stack-call-x86 node buf nil)
   (let* ((name (nelisp-aot-compiler--ir-get node :name))
          (fn-value (nelisp-aot-compiler--ir-get node :fn-value))
          (args (nelisp-aot-compiler--ir-get node :args))
@@ -17608,7 +17651,7 @@ count."
     (when (> shadow 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
 	    (when needs-align
-	      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))))
+	      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))))))
 
 (defconst nelisp-aot-compiler--win64-rsp-save-symbol "nl_dynalign_rsp_save"
   "Name of the driver-owned bss slot used by the `win64-dynamic-align-p'
@@ -17718,6 +17761,8 @@ Byte-length invariance (Doc 92): the suffix-vs-prefix split is
 deterministic from parse-time-fixed fields (`:cls', `:kind',
 `:value', `:slot', `:class') so pass1 and pass2 traverse the
 same branch and emit the same byte count."
+  (if (nelisp-aot-compiler--x86-direct-gp-stack-call-p node)
+      (nelisp-aot-compiler--emit-direct-gp-stack-call-x86 node buf t)
   (let* ((name (nelisp-aot-compiler--ir-get node :name))
          (args (nelisp-aot-compiler--ir-get node :args))
          ;; Doc 122 §122.D `extern-call-ptr': when :fn-value is set the call
@@ -18134,7 +18179,7 @@ same branch and emit the same byte count."
     ;; Caller convention: extern-call result is i64 in rax (default)
     ;; or f64 in xmm0 (when :ret-class = f64).  Both ABIs agree on the
     ;; return register convention for scalar values.
-    (ignore ret-class)))
+    (ignore ret-class))))
 
 (defun nelisp-aot-compiler--emit-syscall-direct (node buf)
   "Emit an x86_64 raw SYSCALL instruction for NODE into BUF.
