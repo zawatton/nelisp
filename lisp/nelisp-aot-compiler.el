@@ -19052,6 +19052,41 @@ ipa-split motivates retaining a large fallback while exposing a closed arm."
 (defvar nelisp-aot-compiler--x86-predicate-facts t
   "Use must-dominating facts inside a completed guarded-body plan.")
 
+(defvar nelisp-aot-compiler--x86-flag-zero t
+  "Reuse a completed full-width AND's zero flags after closed CFG proof.")
+
+(defun nelisp-aot-compiler--x86-flag-zero-comparisons
+    (code successors predecessors order tick)
+  "Return redundant compare indices in fully validated acyclic CODE.
+Only equality consumers may observe the old flags before a known writer.
+Every path must reach that writer or the original FLAGS-dead ABI exit.
+Fallback still rejects.  TICK
+shares the original predicate-plan budget; no bytes or source IR change."
+  (let* ((n (length code)) (safe (make-vector n nil)) (result nil))
+    (dolist (i (reverse order))
+      (funcall tick)
+      (let* ((x (aref code i)) (kind (car x)) (next (aref successors i)))
+        (aset safe i
+              (or (memq kind '(:alu :cmp))
+                  (and (or (memq kind '(:mov :load :store :label :jmp))
+                           (and (eq kind :jcc) (memq (nth 1 x) '(e ne))))
+                       ;; X's unchanged exit contract keeps RAX and all six
+                       ;; argument registers live, but no FLAGS value.
+                       (or (null next)
+                           (cl-every (lambda (j) (aref safe j)) next)))))))
+    (dotimes (i n)
+      (funcall tick)
+      (when (and (> i 0)
+                 (equal (aref predecessors i) (list (1- i))))
+        (let ((x (aref code i)) (previous (aref code (1- i))))
+          (when (and (eq (car x) :cmp) (equal (nth 2 x) '(:imm 0))
+                     (eq (car previous) :alu) (eq (nth 1 previous) 'logand)
+                     (eq (nth 1 x) (nth 2 previous))
+                     (aref successors i)
+                     (cl-every (lambda (j) (aref safe j)) (aref successors i)))
+            (push i result)))))
+    result))
+
 (defun nelisp-aot-compiler--x86-predicate-facts-plan (plan)
   "Simplify closed acyclic PLAN, or return nil before any byte emission.
 Each LOAD is a distinct observation.  All loads, stores and original
@@ -19156,6 +19191,12 @@ unconditional jumps remain.  Facts never survive a fallback epoch."
                 (when (= (aref indegree j) 0) (push j queue)))))
           (unless (= (length order) n) (no))
           (setq order (nreverse order))
+          ;; Full original validation and CFG precede the separate ZF proof.
+          ;; Mark compares dead before liveness, so their AND flags stay live.
+          (when nelisp-aot-compiler--x86-flag-zero
+            (dolist (i (nelisp-aot-compiler--x86-flag-zero-comparisons
+                        code successors predecessors order #'tick))
+              (aset dead i t)))
           (aset incoming 0 (list (list (mapcar (lambda (r) (cons r (if (eq r 'flags) (list :input r) (vnum (list :input r)))))
                                                   (cons 'flags regs)) nil)))
           (dolist (i order)
