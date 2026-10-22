@@ -28,6 +28,12 @@ The same two engines also run three interpreted LOOPS, whose whole iteration is 
 figure (no control row): a `while' with a let-bound counter, the same with a second
 `setq', and a loop that calls a one-argument closure (GNU eval.c eval_sub, Fsetq,
 Fwhile, funcall_lambda).
+
+And the floors fixture's GNU-compiled bytecode (target/callpath-perf/floors-queued/
+gnu-capped/bytecode.el, loaded by both engines) with four loops: the empty control, a
+funcall of a bytecode function (GNU bytecode.c Bcall -> setup_frame -> Breturn, all in
+exec_byte_code's loop), a builtin call, and a call with &optional and &rest arguments;
+a row's figure is its Ir per iteration above the control.
 """
 import argparse
 import hashlib
@@ -54,6 +60,9 @@ LOOPS = {
     "while3": "(defun lp-row (n) (let ((i 0) (a 1) (b 2)) (while (< i n) (setq a (+ a b)) (setq i (1+ i))) i))",
     "closure": "(defun lp-f (x) (+ x 1))\n(defun lp-row (n) (let ((i 0)) (while (< i n) (setq i (lp-f i))) i))",
 }
+BC_FIXTURE = ROOT / "target/callpath-perf/floors-queued/gnu-capped/bytecode.el"
+BC_ROWS = ("pcf-control", "pcf-funcall", "pcf-builtin", "pcf-optional-rest")
+BN1, BN2 = 1000, 6000
 CAP = 8 * 1024 ** 3
 
 
@@ -101,6 +110,17 @@ def loop_program(name, n):
             "(kill-emacs 0)\n")
 
 
+def bc_program(row, n):
+    """The Lisp source both engines run for one bytecode row and iteration count."""
+    return (";;; -*- lexical-binding: t -*-\n"
+            f"(load \"{BC_FIXTURE}\" nil t)\n"
+            "(setq pcf-empty (symbol-function 'pcf-empty-body) pcf-one (symbol-function 'pcf-one-body))\n"
+            f"({row} 20)\n"
+            "(garbage-collect)\n"
+            f"({row} {n})\n"
+            "(kill-emacs 0)\n")
+
+
 def callgrind_total(path):
     total = None
     for line in Path(path).read_text().splitlines()[-40:]:
@@ -133,7 +153,8 @@ def measure(args):
     (dest / "producer.py").write_bytes(Path(__file__).read_bytes())
     report = {"schema": 3, "source": source_identity(), "binary": pin(binary), "gnu": pin(gnu),
               "producer": pin(dest / "producer.py"), "n": [N1, N2], "rows": {}, "per_iter": {}, "files": {},
-              "loop_n": [LN1, LN2], "loops": {}}
+              "loop_n": [LN1, LN2], "loops": {}, "bc_n": [BN1, BN2], "bc": {},
+              "bc_fixture": pin(BC_FIXTURE)}
     env_nelisp = dict(os.environ, NELISP_FX_DISABLE="1")
     env_gnu = dict(os.environ)
     for engine, path, env in (("nelisp", binary, env_nelisp), ("gnu", gnu, env_gnu)):
@@ -160,14 +181,31 @@ def measure(args):
                 report["files"][f"{engine}-loop-{name}-{n}"] = {"src": pin(source), "cg": pin(out)}
                 print(f"{engine} loop {name} N={n}: {ir[n]} Ir", flush=True)
             report["loops"][engine][name] = (ir[LN2] - ir[LN1]) / (LN2 - LN1)
+        report["bc"][engine] = {}
+        for row in BC_ROWS:
+            ir = {}
+            for n in (BN1, BN2):
+                source = dest / f"{engine}-bc-{row}-{n}.el"
+                source.write_text(bc_program(row, n))
+                out = dest / f"{engine}-bc-{row}-{n}.cg"
+                ir[n] = callgrind(path, source, out, env)
+                report["files"][f"{engine}-bc-{row}-{n}"] = {"src": pin(source), "cg": pin(out)}
+                print(f"{engine} bytecode {row} N={n}: {ir[n]} Ir", flush=True)
+            report["bc"][engine][row] = (ir[BN2] - ir[BN1]) / (BN2 - BN1)
     base = {e: report["per_iter"][e]["control"] for e in ("nelisp", "gnu")}
     report["above_control"] = {
         e: {row: report["per_iter"][e][row] - base[e] for row in ROWS if row != "control"} for e in base}
     report["ratio"] = {row: report["above_control"]["nelisp"][row] / report["above_control"]["gnu"][row]
                        for row in ROWS if row != "control"}
     (dest / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    report["bc_ratio"] = {row: (report["bc"]["nelisp"][row] - report["bc"]["nelisp"]["pcf-control"])
+                          / (report["bc"]["gnu"][row] - report["bc"]["gnu"]["pcf-control"])
+                          for row in BC_ROWS if row != "pcf-control"}
     report["loop_ratio"] = {name: report["loops"]["nelisp"][name] / report["loops"]["gnu"][name] for name in LOOPS}
     (dest / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    for row, ratio in report["bc_ratio"].items():
+        print(f"evalbc {row}: nelisp {report['bc']['nelisp'][row] - report['bc']['nelisp']['pcf-control']:.0f} Ir/call, "
+              f"gnu {report['bc']['gnu'][row] - report['bc']['gnu']['pcf-control']:.0f} Ir/call, ratio {ratio:.2f}x")
     for name in LOOPS:
         print(f"evalloop {name}: nelisp {report['loops']['nelisp'][name]:.0f} Ir/iter, "
               f"gnu {report['loops']['gnu'][name]:.0f} Ir/iter, ratio {report['loop_ratio'][name]:.2f}x")
