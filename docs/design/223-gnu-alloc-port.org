@@ -226,6 +226,24 @@ through each dump (ledger S1.14).  The binary before this change grew 449 MiB
 through the first dump and 678 MiB through the second, a table the size of the
 string; this one grows 10 and 15 MiB.
 
+Loading such an image needs no hole map.  The stream dump writes only included
+blocks, with their mark bits cleared, so the image has no free block and no
+hole run (pdumper has no hole map either).  The writer stamps trailer version 2
+for that; the loader then skips =nl_cold_clear_marks=, the coalesce and relink
+walks of the free-list rebuild and =nl_boot_hole_map_build= (together 45.7M
+instructions of a 116.5M startup, each a walk over the image's 329,000 block
+headers), and publishes only the image's origin and end (=nl_boot_hole_map_none=;
+=nl_boot_build= keys on the published end, not on a map, and without a map
+=nl_boot_hole_p= answers 0 and every block below the watermark is boot, the
+sweep's old no-map arm).  A version 1 image (an older writer) takes the old path
+and builds its map.  =(nelisp--debug-switch 46)= answers the state (bit 0 a map,
+bit 1 the boot structures, bit 2 an image), 47 the number of hole granules, 48
+checks the hole scan on a synthetic header run; =tools/ai/gc-port-image-holes.py=
+loads the companion image, a copy stamped version 1 and a copy stamped version 3
+(refused) on both linkages (ledger S1.16).  Startup falls from 116.5M to 70.8M
+instructions (21.4 to 18.0 ms wall, paired); the first collection of a process
+loses the 13M of hole queries its boot structure build made.
+
 ** Sixteen-byte cells and header-less cons WORDs (word-heap S2.1/S2.2)
 
 GNU's =struct Lisp_Cons= is 16 bytes (car, cdr), and a cons

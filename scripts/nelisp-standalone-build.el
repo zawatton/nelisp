@@ -4035,7 +4035,7 @@ it shares with cons and symbol blocks.")
              (ptr-write-u64 st 200 0) (ptr-write-u64 st 208 0)
              (ptr-write-u64 st 216 0) (ptr-write-u64 st 224 0)
              (ptr-write-u64 st 256 0)
-             (if (if (= hmap 0) 1 (<= hi lo)) 0
+             (if (if (= (heap-read-u64 (data-addr nl_boot_hole_map) 16) 0) 1 (<= hi lo)) 0
                (let* ((bytes (nl_align_up (+ (sar (- hi lo) 6) 16) 65536))
                       (marks (nl_os_alloc_chunk bytes))
                       (starts (if (= marks 0) 0 (nl_os_alloc_chunk bytes)))
@@ -4050,7 +4050,7 @@ it shares with cons and symbol blocks.")
                        (setq bt (nl_hdr_bt hdr))
                        (if (= (nl_gc_bt_ok hdr bt hi) 0) (setq ok 0)
                          (seq
-                          (setq hole (nl_boot_hole_p hdr))
+                          (setq hole (if (= hmap 0) 0 (nl_boot_hole_p hdr)))
                           (if (= hole 1)
                               (if (= run 0) (setq run hdr) 0)
                             (seq
@@ -7096,29 +7096,44 @@ REPL-facing module it feeds."
     ;; Record the free (mark 2) blocks of the loaded image [DS, END) before
     ;; anything reuses them.  A walk desync stops early; unmapped holes stay
     ;; permanent, which only keeps garbage, never frees a boot object.
+    (defun nl_boot_hole_map_fill (map ds hdr end)
+      ;; One bit per 8 bytes of [DS, END) for every free block (mark 2) of the
+      ;; header run [HDR, END).
+      (let ((bt 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
+                                         (sar (- (+ hdr bt) ds) 3))
+                0)
+              (setq hdr (+ hdr bt)))))
+         0)))
     (defun nl_boot_hole_map_build (ds end)
       (let* ((bytes (* (+ (sar (- end ds) 9) 1) 8))
              (map (nl_os_alloc_chunk bytes))
-             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0))
-             (bt 0))
+             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0)))
         (if (= map 0) 0
           (if (< hdr ds) 0
             (seq
              (nl_os_commit_range map 0 bytes)
-             (while (and (> hdr 0) (< hdr end))
-               (setq bt (nl_hdr_bt hdr))
-               (if (= (nl_gc_bt_ok hdr bt end) 0)
-                   (setq hdr end)
-                 (seq
-                  (if (= (nl_hdr_mark hdr) 2)
-                      (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
-                                             (sar (- (+ hdr bt) ds) 3))
-                    0)
-                  (setq hdr (+ hdr bt)))))
+             (nl_boot_hole_map_fill map ds hdr end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 0 map)
              0)))))
+    (defun nl_boot_hole_map_none (ds end)
+      ;; The image [DS, END) is loaded and has no hole run: no map, so
+      ;; `nl_boot_hole_p' answers 0 and every block below the watermark is boot
+      ;; (the sweep's `hmap = 0' arm).  The published end is what tells
+      ;; `nl_boot_build' that an image is present.
+      (seq (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 0 0)
+           0))
     (defun nl_gc_coalesce_and_rebuild_freelist ()
       (seq
        (nl_alloc_run_reset)
@@ -11684,8 +11699,54 @@ leave symbols unresolved at link time."
          (+ (* (nl_float_selftest_hold f 0) 4) 1)
          (nelisp_cons_construct_w (+ (* typed 4) 1) 3 0)
          0)))
+    (defun nl_boot_selftest_state (_pad)
+      ;; Doc 223, image loading.  Bit 0: a hole map exists; bit 1: the boot
+      ;; structures (start and mark bitmaps) are built; bit 2: a cold image is
+      ;; loaded (its end is published).  A live-only image shows 2 + 4 once a
+      ;; collection has built the structures, an older image 1 + 2 + 4.
+      (let ((st (data-addr nl_typed_alloc)) (hm (data-addr nl_boot_hole_map)))
+        (+ (if (= (heap-read-u64 hm 0) 0) 0 1)
+           (+ (if (= (heap-read-u64 st 216) 0) 0 2)
+              (if (= (heap-read-u64 hm 16) 0) 0 4)))))
+    (defun nl_boot_selftest_holes (_pad)
+      ;; How many 8-byte granules of the loaded image the hole map marks free.
+      (let* ((hm (data-addr nl_boot_hole_map)) (map (heap-read-u64 hm 0))
+             (words (if (= map 0) 0 (+ (sar (- (heap-read-u64 hm 16) (heap-read-u64 hm 8)) 9) 1)))
+             (i 0) (n 0) (w 0))
+        (seq
+         (while (< i words)
+           (seq (setq w (heap-read-u64 map (* i 8)))
+                (while (/= w 0)
+                  (seq (setq n (+ n (logand w 1)))
+                       (setq w (logand (sar w 1) 9223372036854775807))))
+                (setq i (+ i 1))))
+         n)))
+    (defun nl_boot_selftest_bit (map g)
+      (logand (sar (heap-read-u64 map (* (sar g 6) 8)) (logand g 63)) 1))
+    (defun nl_boot_selftest_synth (_pad)
+      ;; The hole scan on a synthetic header run: live 48, free 64, live 32,
+      ;; free 32, free 32, live 48 (256 bytes, granules 0-31).  The free blocks
+      ;; are granules 6-13 and 18-25.  Answers 1 when exactly those bits are set.
+      (let* ((buf (alloc-bytes 256 8)) (map (alloc-bytes 64 8)) (i 0) (ok 1))
+        (seq
+         (while (< i 8) (seq (ptr-write-u64 map (* i 8) 0) (setq i (+ i 1))))
+         (ptr-write-u64 buf 0 48) (ptr-write-u64 buf 48 (+ 64 2))
+         (ptr-write-u64 buf 112 32) (ptr-write-u64 buf 144 (+ 32 2))
+         (ptr-write-u64 buf 176 (+ 32 2)) (ptr-write-u64 buf 208 48)
+         (nl_boot_hole_map_fill map buf buf (+ buf 256))
+         (setq i 0)
+         (while (< i 32)
+           (seq
+            (if (= (nl_boot_selftest_bit map i)
+                   (if (and (>= i 6) (< i 14)) 1 (if (and (>= i 18) (< i 26)) 1 0)))
+                0 (setq ok 0))
+            (setq i (+ i 1))))
+         (+ (* ok 4) 1))))
     (defun nl_symbol_selftest_w (args)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 48) (nl_boot_selftest_synth 0)
+        (if (= op 47) (+ (* (nl_boot_selftest_holes 0) 4) 1)
+        (if (= op 46) (+ (* (nl_boot_selftest_state 0) 4) 1)
         (if (= op 45) (nl_float_selftest_w 0)
         (if (= op 44) (nl_float_stats_w 0)
         (if (= op 43) (nl_conserv_selftest_w 0)
@@ -11701,7 +11762,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))))
+             0)))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -11876,7 +11937,7 @@ leave symbols unresolved at link time."
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 45) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 48) 0)
           (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -13703,6 +13764,9 @@ leave symbols unresolved at link time."
                  (wf_write_int_w 0 -1))
           (seq
            (nl_build_digest_trailer trl)
+           ;; Version 2: the stream dump writes only included blocks with their
+           ;; marks cleared, so the image has no free block and no hole run.
+           (ptr-write-u64 trl 8 2)
            ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
            (ptr-write-u64 hdr 0 1179407692)
            (ptr-write-u64 hdr 16 isz)
@@ -43636,7 +43700,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     (defun nl_cold_trailer_valid_p (trl n)
       (if (< n 48) 0
         (if (/= (heap-read-u64 trl 0) 1195655758) 0
-          (if (/= (heap-read-u64 trl 8) 1) 0
+          (if (if (= (heap-read-u64 trl 8) 1) 0 (if (= (heap-read-u64 trl 8) 2) 0 1)) 0
             (if (= (nl_build_digest_stamped_p) 0) 0
               (nl_build_digest_eq (+ trl 16)))))))
     (defun nl_cold_diag_bad_digest ()
@@ -43759,7 +43823,10 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                          ;; table in the chunk-0 scratch; `trl_n' < 48 means
                          ;; the file has no (or a truncated) trailer.
                          (let* ((trl (+ tbl (* tlen 8)))
-                                (trl_n (nl_fa_read_all fd trl 48 0)))
+                                (trl_n (nl_fa_read_all fd trl 48 0))
+                                ;; Trailer version 2 (Doc 223): the stream dump wrote
+                                ;; no free block, no mark and so no hole run.
+                                (liveonly (if (= (heap-read-u64 trl 8) 2) 1 0)))
                            (seq
                             (nl_os_close_handle fd)
                             (if (= (nl_cold_reloc_table_valid_p tbl tlen slen) 0)
@@ -43784,7 +43851,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; ZEROED memory -- matching the fresh-mmap
                             ;; invariant the boot constructors depend on.
                             (nl_cold_zero tbl (+ (* tlen 8) 48))
-                            (nl_cold_clear_marks ds (+ ds slen))
+                            (if (= liveonly 1) 0 (nl_cold_clear_marks ds (+ ds slen)))
                             (ptr-write-u64 base 0 (+ 1024 slen))
                             ;; Keep the chunk-0 descriptor cursor in sync with
                             ;; the legacy bump cursor immediately after
@@ -43802,10 +43869,19 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; pages/chunks (page faults, growth, ~3x slower
                             ;; `--load').  Keep them free and rebuild the free
                             ;; lists from the header walk, as a GC sweep does.
-                            (nl_gc_coalesce_and_rebuild_freelist)
+                            ;; A live-only image has no free block: the two header walks
+                            ;; (coalesce and relink) would find nothing, so only the
+                            ;; allocator's run and bucket state is reset.
+                            (if (= liveonly 1)
+                                (seq (nl_alloc_run_reset) (nl_gc_clear_freelist_buckets 0))
+                              (nl_gc_coalesce_and_rebuild_freelist))
                             ;; Holes are reusable but not permanent: map them
-                            ;; before the first allocation lands in one.
-                            (nl_boot_hole_map_build ds (+ ds slen))
+                            ;; before the first allocation lands in one.  A live-only
+                            ;; image has none (pdumper has no hole map): publish only
+                            ;; where the image is.
+                            (if (= liveonly 1)
+                                (nl_boot_hole_map_none ds (+ ds slen))
+                              (nl_boot_hole_map_build ds (+ ds slen)))
                             ;; image end: lets the pointer-keyed macro/function
                             ;; caches treat image objects as cacheable (see
                             ;; `nl_cache_boot_p').
