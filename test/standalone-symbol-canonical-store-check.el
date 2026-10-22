@@ -8,8 +8,10 @@
 ;;
 ;; (nelisp--debug-switch 46 X) answers what X's WORD is: 4 a legacy symbol view,
 ;; 104 an interned symbol object, 116 an uninterned one, 2 a direct cons, -1 an
-;; immediate.  (nelisp--debug-switch 47 1) turns the canonicalization off, and
-;; 0 on again, so one binary can hold a symbol both ways.
+;; immediate.  Passing a value to a function stores it in an argument list, so
+;; the probe sees an object where the program holds a view of a symbol that has
+;; one; the views left in a running image are the heads and names that native
+;; code made before the mirror existed (the (builtin NAME) definitions).
 ;;
 ;; Everything a program can observe must be the same for either form of the
 ;; same symbol: eq, equal, hashing, name, plist, function and value cells,
@@ -24,8 +26,6 @@
     (princ (format "SCSC FAIL %s\n" label))))
 
 (defun scsc-class (x) (nelisp--debug-switch 46 x))
-(defun scsc-off () (nelisp--debug-switch 47 1))
-(defun scsc-on () (nelisp--debug-switch 47 0))
 
 ;; The probe itself.
 (scsc-check (eql (scsc-class 5) -1) "a fixnum is an immediate")
@@ -83,40 +83,29 @@
 (makunbound 'scsc-void)
 (scsc-check (not (boundp 'scsc-void)) "makunbound leaves it void")
 
-;; One symbol held both ways.
-(let (view obj)
-  (scsc-off)
-  (setq view (list (intern "scsc-both")))
-  ;; The class is read while the switch is still off: passing the element to
-  ;; `scsc-class' binds a parameter, which is a store.
-  (scsc-check (eql (scsc-class (car view)) 4) "with the switch off a symbol is stored as a view")
-  (scsc-on)
-  (setq obj (list (intern "scsc-both")))
-  (scsc-check (eql (scsc-class (car obj)) 104) "with it on, as its object")
-  (scsc-check (eq (car view) (car obj)) "eq: view and object")
-  (scsc-check (eq (car obj) (car view)) "eq: object and view")
-  (scsc-check (eql (car view) (car obj)) "eql")
-  (scsc-check (equal view obj) "equal on lists of either")
-  (scsc-check (equal (car obj) (car view)) "equal on the symbols")
-  (scsc-check (eq (memq (car view) obj) obj) "memq finds the view in a list of objects")
-  (scsc-check (eq (memq (car obj) view) view) "memq finds the object in a list of views")
-  (scsc-check (equal (assq (car view) (list (cons (car obj) 1))) (cons 'scsc-both 1)) "assq")
-  (scsc-check (equal (delq (car view) (list (car obj) 'scsc-other)) '(scsc-other)) "delq")
-  (scsc-check (equal (symbol-name (car view)) (symbol-name (car obj))) "same name")
-  (scsc-check (equal (format "%S %s" (car view) (car obj)) "scsc-both scsc-both") "same print")
-  (scsc-check (= (sxhash-equal (car view)) (sxhash-equal (car obj))) "same sxhash")
+;; A symbol the image holds as a view and the same symbol as the program's object:
+;; the definition of a builtin, (builtin NAME), was made at boot before the mirror
+;; was attached.
+(let* ((def (symbol-function 'car)) (marker (car def)) (name (cadr def)))
+  (scsc-check (eq marker 'builtin) "eq: the definition's marker and the quoted symbol")
+  (scsc-check (eq 'builtin marker) "eq: the other way")
+  (scsc-check (eq name 'car) "eq: the definition's name and the quoted symbol")
+  (scsc-check (eql marker 'builtin) "eql")
+  (scsc-check (equal (list marker name) '(builtin car)) "equal on the lists")
+  (scsc-check (equal (memq 'builtin (list 'a marker)) (list 'builtin)) "memq finds a symbol in a list")
+  (scsc-check (equal (memq marker (list 'a 'builtin)) (list 'builtin)) "memq finds the definition's symbol")
+  (scsc-check (equal (assq marker (list (cons 'builtin 1))) (cons 'builtin 1)) "assq")
+  (scsc-check (equal (delq marker (list 'builtin 'other)) '(other)) "delq")
+  (scsc-check (equal (symbol-name marker) "builtin") "the name")
+  (scsc-check (equal (format "%S %s" marker name) "builtin car") "the print")
+  (scsc-check (= (sxhash-equal marker) (sxhash-equal 'builtin)) "same sxhash")
   (let ((h (make-hash-table :test 'equal)))
-    (puthash (car view) 1 h)
-    (scsc-check (eql (gethash (car obj) h) 1) "an equal table finds an object by its view"))
+    (puthash marker 1 h)
+    (scsc-check (eql (gethash 'builtin h) 1) "an equal table finds a quoted symbol by the definition's"))
   (let ((h (make-hash-table :test 'eq)))
-    (puthash (car view) 1 h)
-    (scsc-check (eql (gethash (car obj) h) 1) "an eq table finds an object by its view"))
-  (set (car view) 3)
-  (scsc-check (eql (symbol-value (car obj)) 3) "a value set through the view reads through the object")
-  (put (car obj) 'scsc-pp 4)
-  (scsc-check (eql (get (car view) 'scsc-pp) 4) "a property put through the object reads through the view")
-  (fset (car view) #'car)
-  (scsc-check (equal (funcall (car obj) '(9)) 9) "a function set through the view runs through the object"))
+    (puthash 'builtin 1 h)
+    (scsc-check (eql (gethash marker h) 1) "an eq table finds the definition's symbol by the quoted one"))
+  (scsc-check (equal (funcall name '(9 8)) 9) "a builtin runs through the definition's name"))
 
 ;; Builtins are called through the symbol however it is stored (the builtin
 ;; dispatch reads the static id of the symbol).
@@ -126,12 +115,6 @@
   (scsc-check (equal (apply plus '(1 2 3)) 6) "apply through the object")
   (scsc-check (equal (funcall mem 'b '(a b c)) '(b c)) "memq through the object")
   (scsc-check (equal (eval (list fn '(quote (7 8)))) 7) "eval of a form headed by the object"))
-(scsc-off)
-(let ((fn (car (list (intern "cdr")))) (plus (car (list (intern "+")))))
-  (scsc-check (eql (scsc-class fn) 4) "cdr stored as a view with the switch off")
-  (scsc-check (equal (funcall fn '(1 2)) '(2)) "funcall through the view")
-  (scsc-check (equal (apply plus '(1 2 3)) 6) "apply through the view"))
-(scsc-on)
 
 ;; A user function named by the object.
 (defun scsc-double (x) (* 2 x))
