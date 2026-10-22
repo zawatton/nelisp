@@ -17417,6 +17417,49 @@ in a new register; the ordinary caller frame still owns all arguments."
     (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (+ stack-count (if pad 1 0))))
     (cl-decf nelisp-aot-compiler--rsp-temp-depth stack-count)))
 
+(defun nelisp-aot-compiler--x86-pure-call-args-p (node)
+  "Non-nil when all NODE args are pure RAW GP trees placed without spills.
+GNU comp.c:2041-2050 gives argument rvalues to GCC for ABI lowering.
+Preflight every argument before emission.  At least one arithmetic tree
+must remove an existing complex-prefix push/pop; each tree fits the
+RAX/R10/R11 pool.  Heap reads, effects and argument-register sources
+retain the existing spill path.  Affine RDI/RSI scratch is disabled."
+  (let ((args (nelisp-aot-compiler--ir-get node :args))
+        (nelisp-aot-compiler--x86-affine-addresses nil)
+        (complex nil))
+    (and (not nelisp-aot-compiler--checked-arith)
+         (not (nelisp-aot-compiler--lisp-values-p))
+         (not (nelisp-aot-compiler--ir-get node :internal-boundary-disp))
+         (<= (length args) 6)
+         (nelisp-aot-compiler--x86-direct-call-args-p
+          (nelisp-aot-compiler--ir-with node :args nil))
+         (cl-every
+          (lambda (arg)
+            (let ((kind (nelisp-aot-compiler--ir-kind arg)) (valid t))
+              (if (memq kind '(imm ref))
+                  (nelisp-aot-compiler--x86-direct-call-args-p
+                   (nelisp-aot-compiler--ir-with node :args (list arg)))
+                (let ((info (nelisp-aot-compiler--x86-memory-tree-info arg))
+                      (form (nelisp-aot-compiler--x86-affine-form arg)))
+                  (when (and (car-safe form) (null (cdar form))
+                             (= (cdaar form) 4) (= (logand (cdr form) 3) 1))
+                    ;; Keep canonical 4*N+1 WORD-constructor call sites on
+                    ;; the established CG5 byte layout, although computing
+                    ;; the same bits directly would be semantically valid.
+                    (setq valid nil))
+                  (setq complex t)
+                  (nelisp-aot-compiler--walk-ir
+                   arg (lambda (n)
+                         (pcase (nelisp-aot-compiler--ir-kind n)
+                           ((or 'imm 'ref)
+                            (unless (nelisp-aot-compiler--x86-direct-call-args-p
+                                     (nelisp-aot-compiler--ir-with node :args (list n)))
+                              (setq valid nil)))
+                           ((or 'arith 'shift) nil)
+                           (_ (setq valid nil)))))
+                  (and valid info (not (cdr info)) (<= (car info) 3)))))) args)
+         complex)))
+
 (defun nelisp-aot-compiler--call-arg-trivial-p (node)
   "Return non-nil if NODE is a AOT IR value that emits to a GP reg
 without clobbering any other register.
@@ -17457,9 +17500,18 @@ across both passes for the same NODE."
 (defun nelisp-aot-compiler--emit-trivial-into-reg (node target buf)
   "Emit NODE's value directly into TARGET register (no spill).
 NODE must satisfy `nelisp-aot-compiler--call-arg-trivial-p', or be a leaf
-of a call accepted by `nelisp-aot-compiler--x86-direct-call-args-p'."
+of a call accepted by `nelisp-aot-compiler--x86-direct-call-args-p'.
+An arithmetic tree additionally requires `--x86-pure-call-args-p'."
   (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
+     ((memq kind '(arith shift))
+      ;; Only reached after --x86-pure-call-args-p has preflighted ALL
+      ;; arguments.  Disable affine RDI/RSI scratch so earlier ABI
+      ;; destinations survive the next argument's calculation.
+      (let ((nelisp-aot-compiler--x86-affine-addresses nil))
+        (nelisp-aot-compiler--emit-memory-tree-x86 node buf '(rax r10 r11)))
+      (unless (eq target 'rax)
+        (nelisp-asm-x86_64-mov-reg-reg buf target 'rax)))
      ((eq kind 'imm)
       ;; Value-dependent: small → 7-byte mov TARGET, imm32;
       ;; large (> imm32 range) → 10-byte movabs TARGET, imm64.
@@ -17674,7 +17726,8 @@ count."
          ;; complex).  Walking the reverse of args lets us count
          ;; without consing the full reverse list twice.
          (trivial-suffix-len
-          (if (nelisp-aot-compiler--x86-direct-call-args-p node)
+          (if (or (nelisp-aot-compiler--x86-direct-call-args-p node)
+                  (nelisp-aot-compiler--x86-pure-call-args-p node))
               n
             (let ((count 0)
                 (rest (reverse args))
@@ -17938,7 +17991,8 @@ same branch and emit the same byte count."
          ;; the reverse of register-bound args to count trailing
          ;; trivial gp args.  Stack-bound args are handled below.
          (trivial-suffix-len
-          (if (nelisp-aot-compiler--x86-direct-call-args-p node)
+          (if (or (nelisp-aot-compiler--x86-direct-call-args-p node)
+                  (nelisp-aot-compiler--x86-pure-call-args-p node))
               (length register-args)
             (let ((count 0)
                 (rest (reverse register-args))
