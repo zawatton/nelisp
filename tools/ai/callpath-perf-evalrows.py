@@ -23,6 +23,11 @@ gc-cons-threshold and collects once before the measured loop, so neither engine
 collects inside it (GNU's make-vector row otherwise absorbs a collection at the
 longer run).  Each run is its own callgrind process under an 8 GiB address-space
 cap; run the whole measurement as one heavy unit.
+
+The same two engines also run three interpreted LOOPS, whose whole iteration is the
+figure (no control row): a `while' with a let-bound counter, the same with a second
+`setq', and a loop that calls a one-argument closure (GNU eval.c eval_sub, Fsetq,
+Fwhile, funcall_lambda).
 """
 import argparse
 import hashlib
@@ -42,6 +47,12 @@ ROWS = {
     "plus": "(+ i 120)",
     "cons": "(cons i i)",
     "makevec": "(make-vector 16 i)",
+}
+LN1, LN2 = 1000, 5000
+LOOPS = {
+    "while": "(defun lp-row (n) (let ((i 0)) (while (< i n) (setq i (1+ i))) i))",
+    "while3": "(defun lp-row (n) (let ((i 0) (a 1) (b 2)) (while (< i n) (setq a (+ a b)) (setq i (1+ i))) i))",
+    "closure": "(defun lp-f (x) (+ x 1))\n(defun lp-row (n) (let ((i 0)) (while (< i n) (setq i (lp-f i))) i))",
 }
 CAP = 8 * 1024 ** 3
 
@@ -79,6 +90,17 @@ def program(expr, n):
             "(kill-emacs 0)\n")
 
 
+def loop_program(name, n):
+    """The Lisp source both engines interpret for one loop and iteration count."""
+    return (";;; -*- lexical-binding: t -*-\n"
+            "(setq gc-cons-threshold most-positive-fixnum)\n"
+            f"{LOOPS[name]}\n"
+            "(lp-row 20)\n"
+            "(garbage-collect)\n"
+            f"(lp-row {n})\n"
+            "(kill-emacs 0)\n")
+
+
 def callgrind_total(path):
     total = None
     for line in Path(path).read_text().splitlines()[-40:]:
@@ -109,8 +131,9 @@ def measure(args):
     dest.mkdir(parents=True, exist_ok=False)
     binary, gnu = Path(args.binary).resolve(), Path(args.gnu).resolve()
     (dest / "producer.py").write_bytes(Path(__file__).read_bytes())
-    report = {"schema": 2, "source": source_identity(), "binary": pin(binary), "gnu": pin(gnu),
-              "producer": pin(dest / "producer.py"), "n": [N1, N2], "rows": {}, "per_iter": {}, "files": {}}
+    report = {"schema": 3, "source": source_identity(), "binary": pin(binary), "gnu": pin(gnu),
+              "producer": pin(dest / "producer.py"), "n": [N1, N2], "rows": {}, "per_iter": {}, "files": {},
+              "loop_n": [LN1, LN2], "loops": {}}
     env_nelisp = dict(os.environ, NELISP_FX_DISABLE="1")
     env_gnu = dict(os.environ)
     for engine, path, env in (("nelisp", binary, env_nelisp), ("gnu", gnu, env_gnu)):
@@ -126,12 +149,28 @@ def measure(args):
                 print(f"{engine} {row} N={n}: {ir[n]} Ir", flush=True)
             report["rows"].setdefault(row, {})[engine] = {str(n): ir[n] for n in ir}
             report["per_iter"][engine][row] = (ir[N2] - ir[N1]) / (N2 - N1)
+        report["loops"][engine] = {}
+        for name in LOOPS:
+            ir = {}
+            for n in (LN1, LN2):
+                source = dest / f"{engine}-loop-{name}-{n}.el"
+                source.write_text(loop_program(name, n))
+                out = dest / f"{engine}-loop-{name}-{n}.cg"
+                ir[n] = callgrind(path, source, out, env)
+                report["files"][f"{engine}-loop-{name}-{n}"] = {"src": pin(source), "cg": pin(out)}
+                print(f"{engine} loop {name} N={n}: {ir[n]} Ir", flush=True)
+            report["loops"][engine][name] = (ir[LN2] - ir[LN1]) / (LN2 - LN1)
     base = {e: report["per_iter"][e]["control"] for e in ("nelisp", "gnu")}
     report["above_control"] = {
         e: {row: report["per_iter"][e][row] - base[e] for row in ROWS if row != "control"} for e in base}
     report["ratio"] = {row: report["above_control"]["nelisp"][row] / report["above_control"]["gnu"][row]
                        for row in ROWS if row != "control"}
     (dest / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    report["loop_ratio"] = {name: report["loops"]["nelisp"][name] / report["loops"]["gnu"][name] for name in LOOPS}
+    (dest / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    for name in LOOPS:
+        print(f"evalloop {name}: nelisp {report['loops']['nelisp'][name]:.0f} Ir/iter, "
+              f"gnu {report['loops']['gnu'][name]:.0f} Ir/iter, ratio {report['loop_ratio'][name]:.2f}x")
     for row in report["ratio"]:
         print(f"evalrows {row}: nelisp {report['above_control']['nelisp'][row]:.0f} Ir/iter, "
               f"gnu {report['above_control']['gnu'][row]:.0f} Ir/iter, ratio {report['ratio'][row]:.2f}x")

@@ -721,12 +721,13 @@ def evalrows_report(tag):
     """The report TAG of tools/ai/callpath-perf-evalrows.py with every Ir recomputed from its callgrind files."""
     tool = evalrows_tool()
     report = read(EVALROWS / tag / "report.json")
-    need(report.get("schema") == 2 and report["n"] == [tool.N1, tool.N2], "unqualified evalrows protocol")
+    need(report.get("schema") == 3 and report["n"] == [tool.N1, tool.N2]
+         and report["loop_n"] == [tool.LN1, tool.LN2], "unqualified evalrows protocol")
     need(report["source"] == source_identity(), "the evalrows report is stale")
     for key in ("binary", "gnu", "producer"):
         auth(report[key])
     need(Path(report["gnu"]["path"]).name in ("emacs", "emacs-31.1"), "GNU reference is not emacs 31.1")
-    per = {}
+    per, loops = {}, {}
     for engine in ("nelisp", "gnu"):
         per[engine] = {}
         for row, expr in tool.ROWS.items():
@@ -736,7 +737,16 @@ def evalrows_report(tag):
                 need(auth(entry["src"]).read_text() == tool.program(expr, n), f"{engine} {row} {n}: not the tool's program")
                 ir[n] = callgrind_total(auth(entry["cg"]))
             per[engine][row] = (ir[tool.N2] - ir[tool.N1]) / (tool.N2 - tool.N1)
-    return report, per
+        loops[engine] = {}
+        for name in tool.LOOPS:
+            ir = {}
+            for n in (tool.LN1, tool.LN2):
+                entry = report["files"][f"{engine}-loop-{name}-{n}"]
+                need(auth(entry["src"]).read_text() == tool.loop_program(name, n),
+                     f"{engine} loop {name} {n}: not the tool's program")
+                ir[n] = callgrind_total(auth(entry["cg"]))
+            loops[engine][name] = (ir[tool.LN2] - ir[tool.LN1]) / (tool.LN2 - tool.LN1)
+    return report, per, loops
 
 
 def callgrind_total(path):
@@ -751,7 +761,7 @@ def callgrind_total(path):
 def check_evalrow(row, factor, tag="result"):
     """S5.1-S5.3: Ir per iteration of an interpreted builtin call, above the loop's control row, at most
     FACTOR times GNU 31.1's.  The final receipt (tag result) must come from the wall-clock result build."""
-    report, per = evalrows_report(tag)
+    report, per, _ = evalrows_report(tag)
     if tag == "result":
         need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
     mine = per["nelisp"][row] - per["nelisp"]["control"]
@@ -760,6 +770,19 @@ def check_evalrow(row, factor, tag="result"):
     print(f"evalrow {row} nelisp={mine:.0f} gnu={gnu:.0f} ratio={mine / gnu:.2f}x cap={factor}x")
     need(mine <= factor * gnu, f"{row}: {mine / gnu:.2f}x GNU's Ir per iteration, above the {factor}x cap")
     print(f"evalrow {row} PASS")
+
+
+def check_evalloop(name, factor, tag="result"):
+    """S5.6-S5.7: Ir per iteration of an interpreted loop, at most FACTOR times GNU 31.1's.  The final
+    receipt (tag result) must come from the wall-clock result build."""
+    report, _, loops = evalrows_report(tag)
+    if tag == "result":
+        need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
+    mine, gnu = loops["nelisp"][name], loops["gnu"][name]
+    need(gnu > 0, f"{name}: GNU loop has no cost")
+    print(f"evalloop {name} nelisp={mine:.0f} gnu={gnu:.0f} ratio={mine / gnu:.2f}x cap={factor}x")
+    need(mine <= factor * gnu, f"{name}: {mine / gnu:.2f}x GNU's Ir per iteration, above the {factor}x cap")
+    print(f"evalloop {name} PASS")
 
 
 def bounded_run(cmd):
@@ -797,7 +820,7 @@ def check_s5e2e():
     fixture matches GNU, and the three evalrows are measured on that very build."""
     check_final()
     check_evalcall()
-    report, _ = evalrows_report("result")
+    report, _, _ = evalrows_report("result")
     need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
     print("s5e2e PASS")
 
@@ -869,6 +892,10 @@ def main():
     for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e",
                  "stash", "s5e2e"):
         sub.add_parser(name)
+    p = sub.add_parser("evalloop")
+    p.add_argument("name", choices=("while", "closure"))
+    p.add_argument("factor", type=float)
+    p.add_argument("--tag", default="result", help="evalrows report tag; the final receipt is `result'")
     p = sub.add_parser("evalcall")
     p.add_argument("--binary", help="run this binary instead of the wall-clock result build (development)")
     p = sub.add_parser("evalrow")
@@ -912,6 +939,8 @@ def main():
             check_s63census(args.kind)
         elif args.check == "evalrow":
             check_evalrow(args.row, args.factor, args.tag)
+        elif args.check == "evalloop":
+            check_evalloop(args.name, args.factor, args.tag)
         elif args.check == "evalcall":
             check_evalcall(Path(args.binary).resolve() if args.binary else None)
         else:
