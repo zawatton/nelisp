@@ -52,7 +52,7 @@ case ${1:-} in
       hashtab)    rev=76f7c484a ;;
       f-final)    rev=b994d7227 ;;
       gc-port)    rev=7b8916b7f ;;
-      callpath)   rev=fd4f1d3a0 ;;
+      callpath)   rev=e4755b52f ;;
       *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath" ;;
     esac
     git merge-base --is-ancestor $rev HEAD || fail "$2: $rev is not an ancestor of HEAD"
@@ -154,6 +154,29 @@ case ${1:-} in
                   sed -n 2p "$f" 2>/dev/null | grep -qx '2 tools=40' || fail "MCP not 40 tools in $f" ;;
       scale)      f=target/final-verify/integ-wh-scale.log
                   tail -n 1 "$f" 2>/dev/null | grep -qx 'IMAGE-SCALE PASS' || fail "the at-scale image check not PASS in $f" ;;
+      arity)      f=target/final-verify/integ-wh-arity/report.json
+                  sha=$(sha256sum "$DYN" | cut -d' ' -f1)
+                  python3 - "$f" "$sha" <<'PY' || fail "the arity sweep did not pass on this binary ($f)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["passed"] and d["counts"]["failed"] == 0 and d["counts"]["gnu_passed"] == d["counts"]["gnu_cases"]
+assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
+print("arity sweep: %d cases over %d builtins, 0 failed" % (d["counts"]["passed"], d["counts"]["builtins"]))
+PY
+                  ;;
+      evalrows)   f=target/callpath-perf/evalrows/m7f/report.json
+                  sha=$(sha256sum "$DYN" | cut -d' ' -f1)
+                  python3 - "$f" "$sha" <<'PY' || fail "the interpreted builtin-call rows are not within the callpath stage's figures ($f)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
+a = d["above_control"]["nelisp"]
+# callpath e4755b52f measured 1,769 and 2,429 Ir above the control on its own base; the gc-port line adds a
+# typed cons cell and the budget word to an allocation.  Without the callpath stage (m6) the rows were 7,216 and 10,286.
+assert a["plus"] <= 2000 and a["cons"] <= 3000, a
+print("Ir above control: plus %.0f cons %.0f makevec %.0f" % (a["plus"], a["cons"], a["makevec"]))
+PY
+                  ;;
       *) fail "unknown log kind ${2:-}" ;;
     esac
     [ "$f" -nt "$DYN" ] || fail "$f is older than the dynamic binary"
