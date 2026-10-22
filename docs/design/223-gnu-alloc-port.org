@@ -611,6 +611,13 @@ conservative scan 6%, the caches and symbol-name roots 3%, the sweeps 2%, the in
   it asks once.  =nl_gc_block_elem_cap= divided by the element size with an idiv, 14,400 times a collection; the strides in use
   are 8 and 32, so it shifts.  Together 1.1M instructions a collection (the idiv is a few hundred thousand cycles
   that the instruction count does not show); the wall time did not move measurably.
+- The reader's parse pool (a raw buffer of 32,768 slots of 32 bytes, 1 MB) was walked in full as roots at every collection:
+  32,768 slots at about 80 instructions, 2.6M a collection, and 1 MB of reads that evict useful lines.  The reader keeps
+  its extent in slot 3, the label count at +8 and the deepest nesting level reached at +16, and zeroes exactly those
+  regions when a read ends (=nelisp_reader_p_clear_used=: the per-depth slots 4 + 4d .. 7 + 4d and the label entries that
+  come down from the tail), so every other slot is zero.  =nl_gc_mark_pool= walks those regions with a margin, and the
+  whole pool if the extent is out of range.  The pool arm contributes no roots of its own (=bf_pool_root_coverage=
+  polices it), so what is marked is what the whole walk marked.
 
 ** Bytecode VM safepoints (maybe_gc)
 

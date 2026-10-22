@@ -7262,9 +7262,25 @@ REPL-facing module it feeds."
                    (nl_gc_mark_slot slot)))
                (setq k (+ k 1)))) 0))
     (defun nl_gc_mark_pool (base cap)
+      ;; The reader records its extent in slot 3: the label count at +8, the deepest nesting level at +16
+      ;; (nelisp_reader_p_depth_ok_p).  Per-depth working slots are 4 + 4d .. 7 + 4d, label entries come
+      ;; down from the tail, and nelisp_reader_p_clear_used zeroes exactly those regions when a read ends,
+      ;; so every other slot is zero.  Walk the used regions with a margin; an extent that is out of range
+      ;; walks the whole pool.
       (if (= base 0) 0
-        (nl_seq2 (nl_gc_mark_block base)
-                 (nl_gc_mark_pool_slots base 0 cap))))
+        (let* ((lcount (heap-read-u64 base 104))
+               (deepest (heap-read-u64 base 112))
+               (low-end (+ (* deepest 4) 12))
+               (high-start (- cap (+ (* lcount 2) 8))))
+          (nl_seq2 (nl_gc_mark_block base)
+                   (if (if (< lcount 0) 1
+                         (if (> lcount cap) 1
+                           (if (< deepest 0) 1
+                             (if (> deepest cap) 1
+                               (if (>= low-end high-start) 1 0)))))
+                       (nl_gc_mark_pool_slots base 0 cap)
+                     (nl_seq2 (nl_gc_mark_pool_slots base 0 low-end)
+                              (nl_gc_mark_pool_slots base high-start cap)))))))
     ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
     ;; on cdr) so list LENGTH does not bound native mark depth.  SP points
     ;; at a Sexp slot known to be tag 7 (Cons).
