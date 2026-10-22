@@ -117,6 +117,20 @@ inline and call nl_string_read64 only for a String WORD.")
 (defvar nelisp-heap-accessors--string-physical nil
   "Non-nil inside a storage API whose caller has already decoded WORDs.")
 
+;; Doc 226 D9: a symbol object's WORD (class 110, header byte 4 or 16) names itself
+;; by its name cell at +8 -- a String WORD or a legacy view.  The grammar emitters
+;; for the name ops redirect it the same way (`emit-symbol-object-redirect'); these
+;; lowerings replace the grammar op before the emitter sees it, so they redirect too.
+(defun nelisp-heap-accessors--symbol-name-operand (form)
+  "FORM's value, or the name cell of FORM's value when that is a symbol object WORD."
+  (let ((v (make-symbol "name-operand")) (k (make-symbol "name-operand-kind")))
+    `(let* ((,v ,form))
+       (if (= (logand ,v 7) 6)
+           (let* ((,k (ptr-read-u8 (- ,v 6) 0)))
+             (if (= ,k 4) (ptr-read-u64 (- ,v 6) 8)
+               (if (= ,k 16) (ptr-read-u64 (- ,v 6) 8) ,v)))
+         ,v))))
+
 (defun nelisp-heap-accessors--lower-string-eq (left right)
   "Compare byte spans in GNU headers or legacy String/Symbol views.
 The old grammar emitter reads physical fields implicitly. Decode here so
@@ -135,8 +149,10 @@ ordinary representation work does not require changing a machine emitter."
          (data (v)
            `(if (= (logand ,v 7) 4) (ptr-read-u64 (- ,v 4) 24)
               (ptr-read-u64 ,v 16))))
-      `(let* ((,a ,(nelisp-heap-accessors-lower left))
-              (,b ,(nelisp-heap-accessors-lower right)))
+      `(let* ((,a ,(nelisp-heap-accessors--symbol-name-operand
+                    (nelisp-heap-accessors-lower left)))
+              (,b ,(nelisp-heap-accessors--symbol-name-operand
+                    (nelisp-heap-accessors-lower right))))
          ;; Legacy Symbol/name slots retain the existing byte-comparison
          ;; primitive. Only GNU header WORDs need the representation bridge.
          (if (and (/= (logand ,a 7) 4) (/= (logand ,b 7) 4))
@@ -179,7 +195,8 @@ ordinary representation work does not require changing a machine emitter."
     (while (< index (length bytes))
       (push `(= (ptr-read-u8 ,p ,index) ,(aref bytes index)) comparisons)
       (setq index (1+ index)))
-    `(let* ((,v ,(nelisp-heap-accessors-lower operand))
+    `(let* ((,v ,(nelisp-heap-accessors--symbol-name-operand
+                  (nelisp-heap-accessors-lower operand)))
             (,tag (if (= (logand ,v 7) 4) 5 (ptr-read-u8 ,v 0))))
        (if (or (= ,tag 4) (= ,tag 5) (= ,tag 14))
            (let* ((,n (if (= (logand ,v 7) 4)
@@ -243,7 +260,8 @@ Every operand is retained exactly once; dotted data is preserved."
           ;; This grammar op's contract is String/Symbol, while the
           ;; generic Sexp length accessor also handles vectorlike flags.
           (let ((p (make-symbol "string-length-value")))
-            `(let* ((,p ,(nelisp-heap-accessors-lower (cadr source))))
+            `(let* ((,p ,(nelisp-heap-accessors--symbol-name-operand
+                          (nelisp-heap-accessors-lower (cadr source)))))
                (if (= (logand ,p 7) 4)
                    (let* ((n (ptr-read-u64 (- ,p 4) 8)))
                      (if (< n 0) (logand (ptr-read-u64 (- ,p 4) 0) 9223372036854775807) n))

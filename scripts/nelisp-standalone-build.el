@@ -11988,7 +11988,7 @@ by name pending that follow-up; this paragraph is the record of why."
          ,(length (encode-coding-string
                    nelisp-standalone--unsupported-primitive-tag 'utf-8 t))
          sig-tag)
-        (nl_alloc_symbol (heap-read-u64 name_ptr 16) (heap-read-u64 name_ptr 24)
+        (nl_alloc_symbol (heap-sexp-data name_ptr) (heap-sexp-length name_ptr)
                           ,dataname)
         (wf_write_nil ,nilslot)
         (nelisp_cons_construct ,dataname ,nilslot sig-val)
