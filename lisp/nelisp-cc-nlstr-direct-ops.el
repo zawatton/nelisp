@@ -500,17 +500,21 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; set up (base 0) `nl_alloc_symbol_pos' falls back to the plain allocator.
     ;; No-let style (AOT alloc/ptr-read values can't be `let'-bound): values
     ;; thread through tail-recursive helper args, like the copy loop.
+    ;; The two byte loops below are `while' loops over `let*' locals instead
+    ;; (the AOT compiler makes a real call of a self tail call: 40 instructions
+    ;; a byte, 19% of a new name's reader cost): FNV-1a is the same function.
     (defun nl_intern_hash (p i n h)
-      (if (< i n)
-          (nl_intern_hash p (+ i 1) n
-                          (logand (* (logxor h (heap-read-u8 p i)) 16777619) 4294967295))
-        h))
+      (let* ((hh h) (ii i))
+        (seq (while (< ii n)
+               (seq (setq hh (logand (* (logxor hh (heap-read-u8 p ii)) 16777619) 4294967295))
+                    (setq ii (+ ii 1))))
+             hh)))
     (defun nl_intern_eq (a b i n)
-      (if (= i n)
-          1
-        (if (= (heap-read-u8 a i) (heap-read-u8 b i))
-            (nl_intern_eq a b (+ i 1) n)
-          0)))
+      (let* ((ii i) (same 1))
+        (seq (while (if (= same 1) (< ii n) 0)
+               (seq (if (= (heap-read-u8 a ii) (heap-read-u8 b ii)) 0 (setq same 0))
+                    (setq ii (+ ii 1))))
+             same)))
     (defun nl_intern_slotmatch (slot p n)
       (if (= (heap-read-u64 slot 0) (+ n 1))
           (nl_intern_eq p (heap-read-u64 slot 8) 0 n)
