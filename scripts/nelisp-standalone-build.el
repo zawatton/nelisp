@@ -52612,6 +52612,21 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                      (setq ok 0))
                  (setq ok 0))))
            (if (if (= ok 1) (= cur 3) 0) n -1))))
+      ;; 1 when the NF parameter names are pairwise different symbols (a repeated name
+      ;; takes the ordinary binder, which keeps both bindings apart).
+      (defun nl_fl_distinct (formals nf)
+        (let* ((a formals) (i 0) (ok 1))
+          (seq
+           (while (if (= ok 1) (< i nf) 0)
+             (let* ((x (ptr-read-u64 (- a 2) 0)) (b (ptr-read-u64 (- a 2) 8)) (j (+ i 1)))
+               (seq
+                (while (if (= ok 1) (< j nf) 0)
+                  (seq (if (= (ptr-read-u64 (- b 2) 0) x) (setq ok 0) 0)
+                       (setq b (ptr-read-u64 (- b 2) 8))
+                       (setq j (+ j 1))))
+                (setq a (ptr-read-u64 (- a 2) 8))
+                (setq i (+ i 1)))))
+           ok)))
       (defun nl_fl_call_w (d tail env fw call_name)
         (if (/= (logand d 7) 2) 2
           (if (/= (nl_sym_sid (ptr-read-u64 (- d 2) 0)) ,sid-closure) 2
@@ -52623,9 +52638,10 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                            (body (ptr-read-u64 (- r2 2) 8))
                            (nf (nl_fl_formals formals)))
                       (if (if (< nf 0) 1 (> nf 6)) 2
+                        (if (if (> nf 1) (= (nl_fl_distinct formals nf) 0) 0) 2
                         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 3145728) 0) 2
                           (if (/= (nl_sp_nargs tail) nf) 2
-                            (nl_fl_run_w cap formals body nf tail env fw call_name))))))))))))
+                            (nl_fl_run_w cap formals body nf tail env fw call_name)))))))))))))
       (defun nl_fl_run_w (cap formals body nf tail env fw call_name)
         (let* ((base (nl_root_frame env (+ nf 1))))
           (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
@@ -52638,7 +52654,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                    (m5_fx_frame_lazy env base nf 0)
                    (nl_eic_exit_debug_now (nl_fl_apply_w cap formals body base nf env) env))))))))
       (defun nl_fl_apply_w (cap formals body base nf env)
-        (let* ((frames (+ env 32)) (capflag (if (= (nl_ali_cap_none cap 0) 1) 0 1))
+        (let* ((frames (+ env 32)) (capflag (if (= (nl_fl_cap_none cap) 1) 0 1))
                ;; A closure with no parameters, capturing nothing, whose body is
                ;; literals only runs in no frame at all (`nl_apply_lambda_inner_w').
                (lit (if (= nf 0) (if (= capflag 0) (nl_ali_literal_body_w body 0) 2) 2)))
@@ -52647,18 +52663,56 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
             (seq
              (if (= capflag 1) (nelisp_frame_scope_mark frames) 0)
              (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr) (nl_frame_push_sym1_ptr) 0)
-             (nl_frame_set_flags
-              (nl_vector_slot_word (nl_record_slot_word frames 0)
-                                   (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
-              13109)
-             (let* ((cur formals) (i 0))
+             (let* ((frame (nl_vector_slot_word (nl_record_slot_word frames 0)
+                                                (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
+               (seq
+                (nl_frame_set_flags frame 13109)
+                (nl_fl_bind_params frames frame formals base nf)
+                ;; The scope mark of the frame just pushed (a compact record of four slots).
+                (if (= capflag 0) (record-slot-set frame 2 5) 0)
+                (nl_fl_finish (nl_fl_body_w body env) env capflag frame))))))))
+      ;; 1 when CAP captures no variable: nil, or exactly (t).  The usual (t) is a direct cons.
+      (defun nl_fl_cap_none (cap)
+        (if (= (logand cap 7) 2)
+            (if (= (ptr-read-u64 (- cap 2) 0) 7)
+                (if (= (ptr-read-u64 (- cap 2) 8) 3) 1 0)
+              0)
+          (nl_ali_cap_none cap 0)))
+      ;; 1 when no argument value is a legacy view or a Cell, which the ordinary binder
+      ;; treats apart (`nl_bind_frame_param').
+      (defun nl_fl_values_plain (base nf)
+        (let* ((i 0) (ok 1))
+          (seq (while (if (= ok 1) (< i nf) 0)
+                 (let* ((v (ptr-read-u64 (+ base (* i 8)) 0)))
+                   (seq (if (= (logand v 7) 0) (setq ok 0)
+                          (if (= (logand v 7) 6)
+                              (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11) (setq ok 0) 0)
+                            0))
+                        (setq i (+ i 1)))))
+               ok)))
+      ;; funcall_lambda binds each parameter as `Fcons (Fcons (next, arg), lexenv)'
+      ;; (eval.c:3401): the fresh frame's alist is built newest first and stored once.
+      ;; Values the ordinary binder treats apart go through it one by one.
+      (defun nl_fl_bind_params (frames frame formals base nf)
+        (if (= (nl_fl_values_plain base nf) 1)
+            (let* ((cur formals) (i 0) (head 3))
+              (seq
                (while (< i nf)
-                 (seq (nl_bind_frame_param frames (ptr-read-u64 (- cur 2) 0)
-                                           (ptr-read-u64 (+ base (* i 8)) 0))
+                 (seq (setq head (nelisp_cons_construct_w
+                                  (nelisp_cons_construct_w (ptr-read-u64 (- cur 2) 0)
+                                                           (ptr-read-u64 (+ base (* i 8)) 0) 0)
+                                  head 0))
                       (setq cur (ptr-read-u64 (- cur 2) 8))
-                      (setq i (+ i 1)))))
-             (if (= capflag 0) (nelisp_frame_scope_mark frames) 0)
-             (nl_fl_finish (nl_fl_body_w body env) env capflag))))))
+                      (setq i (+ i 1))))
+               (record-slot-set frame 0 head)
+               1))
+          (let* ((cur formals) (i 0))
+            (seq (while (< i nf)
+                   (seq (nl_bind_frame_param frames (ptr-read-u64 (- cur 2) 0)
+                                             (ptr-read-u64 (+ base (* i 8)) 0))
+                        (setq cur (ptr-read-u64 (- cur 2) 8))
+                        (setq i (+ i 1))))
+                 1))))
       ;; Fprogn of the body: the last form's value, nil for none, 0 for a signal.
       (defun nl_fl_body_w (body env)
         (let* ((cur body) (v 3) (go 1))
@@ -52672,13 +52726,24 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                   (setq cur (if direct (ptr-read-u64 (- cur 2) 8) (nl_cons_cdr_word cur)))))))
            v)))
       ;; unbind_to: the parameter frame, then the captured one; a pop that fails fails
-      ;; the call.
-      (defun nl_fl_finish (w env capflag)
-        (let* ((p1 (nl_env_pop_frame env))
+      ;; the call.  The parameter frame binds no dynamic variable and declares no name
+      ;; (its name list is still nil) when it is on top, so there is nothing to restore
+      ;; and it goes without the restore walk of `nelisp_frame_pop'.
+      (defun nl_fl_pop_param (env frame)
+        (let* ((frames (+ env 32)) (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+          (if (if (> depth 0)
+                  (if (= (nl_vector_slot_word (nl_record_slot_word frames 0) (- depth 1)) frame)
+                      (= (logand (nelisp_frame_slot_raw_word frame 1) 1) 1)
+                    0)
+                0)
+              (nelisp_frame_pop_inner frames 0 (- depth 1) 0)
+            (nl_env_pop_frame env))))
+      (defun nl_fl_finish (w env capflag frame)
+        (let* ((p1 (nl_fl_pop_param env frame))
                (st (if (= p1 -1) 1 (if (= w 0) 1 0)))
                (st2 (if (= capflag 1) (if (= (nl_env_pop_frame env) -1) 1 st) st)))
           (if (= st2 0) w 0)))
-            ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
+      ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
       (defun nl_eic_prim2_run (id base argc resw)
         (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
@@ -52776,7 +52841,13 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
             (let* ((fw (nl_root_frame env 2)))
               (if (= fw 0)
                   (nl_cons_root_finish env root_mark (seq (wf_bytecode_root_exhausted) 0))
-                (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark fw))))))
+                ;; A closure in the cell is no alias, autoload, macro or special form:
+                ;; GNU goes from the function cell to apply_lambda (eval.c:2693).
+                (if (if (= (logand w 7) 2) (= (nl_sym_sid (ptr-read-u64 (- w 2) 0)) ,sid-closure) 0)
+                    (seq (ptr-write-u64 fw 0 w)
+                         (nl_cons_root_finish env root_mark
+                                              (nl_eic_eval_args_w tail_ptr env fw head_ptr)))
+                  (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark fw)))))))
       (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark fw)
         (nl_eic_after_lookup_w
          (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
