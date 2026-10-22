@@ -2479,7 +2479,9 @@ twice appears twice; readers keep the last occurrence of each unit."
                (- (length nelisp-aot-compiler--tco-log)
                   nelisp--tco-log-start)
                name))
-    (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf))
+    (let ((nelisp-aot-compiler--x86-guarded-body-facts
+           (nelisp-aot-compiler--x86-guarded-body-facts defuns)))
+      (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf)))
     (let* ((arm64-linked (when (eq arch 'aarch64)
                            (nelisp-standalone--arm64-link-unit-text+relocs buf)))
            (text (if (eq arch 'aarch64)
