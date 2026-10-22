@@ -72,8 +72,8 @@ capped() { (ulimit -v 8388608; exec "$@"); }
 run_nelisp() {
   capped env LC_ALL="$3" timeout 300 "$1" -l "$2" > "$4" 2> "$5"
 }
-run_gnu() {
-  capped env LC_ALL="$2" LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> /dev/null
+run_gnu() {   # run_gnu FIXTURE LOCALE OUTFILE [ERRFILE]
+  capped env LC_ALL="$2" LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> "${4:-/dev/null}"
 }
 
 expected_for() {
@@ -86,18 +86,28 @@ expected_for() {
 }
 
 check_fixture() {
-  local name=$1 loc=${2:-C.UTF-8} fx="test/fixtures/$1.el" want
+  local name=$1 loc=${2:-C.UTF-8} fx="test/fixtures/$1.el" want wanterr="test/fixtures/$1.gnu-31.1.stderr"
   want=$(expected_for "$name" "$loc")
   [ -f "$fx" ] && [ -f "$want" ] || fail "missing $fx or $want"
-  run_gnu "$fx" "$loc" "$OUT/$name.$loc.gnu.out" || fail "$name ($loc): GNU exited $?"
+  run_gnu "$fx" "$loc" "$OUT/$name.$loc.gnu.out" "$OUT/$name.$loc.gnu.err" || fail "$name ($loc): GNU exited $?"
   cmp -s "$want" "$OUT/$name.$loc.gnu.out" || fail "$name ($loc): GNU no longer prints the pin"
+  # A .gnu-31.1.stderr pin (possibly empty) makes stderr part of the fixture: GNU and
+  # both linkages must print exactly it.  Without one, stderr must be empty.
+  if [ -f "$wanterr" ]; then
+    cmp -s "$wanterr" "$OUT/$name.$loc.gnu.err" || fail "$name ($loc): GNU's stderr no longer matches its pin"
+  fi
   local tag bin rc
   for tag in dyn static; do
     bin=$DYN; [ $tag = static ] && bin=$ST
     [ -x "$bin" ] || fail "missing $tag binary $bin"
     run_nelisp "$bin" "$fx" "$loc" "$OUT/$name.$loc.$tag.out" "$OUT/$name.$loc.$tag.err"; rc=$?
     [ $rc = 0 ] || fail "$name ($loc) $tag: exit $rc"
-    [ -s "$OUT/$name.$loc.$tag.err" ] && fail "$name ($loc) $tag: stderr not empty"
+    if [ -f "$wanterr" ]; then
+      cmp -s "$wanterr" "$OUT/$name.$loc.$tag.err" ||
+        fail "$name ($loc) $tag: stderr differs from GNU's ($(wc -c < "$OUT/$name.$loc.$tag.err") bytes against $(wc -c < "$wanterr"): $(head -c 140 "$OUT/$name.$loc.$tag.err" | tr '\n' ' '))"
+    else
+      [ -s "$OUT/$name.$loc.$tag.err" ] && fail "$name ($loc) $tag: stderr not empty"
+    fi
     cmp -s "$want" "$OUT/$name.$loc.$tag.out" ||
       fail "$name ($loc) $tag: differs from GNU ($(diff "$want" "$OUT/$name.$loc.$tag.out" | grep -c '^[<>]') lines)"
   done
@@ -229,9 +239,16 @@ case ${1:-} in
         c=$(git log -1 --format=%H -S"(provide 'nelisp-elc-reader)" -- scripts/nelisp-stdlib-prelude.el)
         [ -n "$c" ] || fail "no commit introduces the provide"
         git merge-base --is-ancestor "$c" HEAD || fail "provide commit not in HEAD"
-        git diff --quiet "$c" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' ':(exclude)tools/ai/batch-f-progress.org' ||
-          fail "sources changed after the provide commit ${c:0:9}: it must be the last source commit"
-        say "PASS merged provide (last source commit ${c:0:9})" ;;
+        # The provide was the last source commit until the coordinator asked for the
+        # keymap compiler-macro helpers (S2.15, S2.16, S4.12).  After it only that fix
+        # and the ledger's own files may change; any other source change fails.
+        git diff --quiet "$c" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' ':(exclude)tools/ai/batch-f-progress.org' \
+          ':(exclude)scripts/nelisp-standalone-build.el' ':(exclude)scripts/nelisp-staged-handler-guard.el' \
+          ':(exclude)test/nelisp-staged-handler-guard-test.el' ':(exclude)test/fixtures/batch-f-keymap-cmacro*' ||
+          fail "sources changed after the provide commit ${c:0:9} beyond the keymap compiler-macro fix"
+        git diff "$c" HEAD -- scripts/nelisp-standalone-build.el | grep '^[-+][^-+]' | grep -qv 'keymap\|^[-+] *;;\|define-keymap--compile' &&
+          fail "the build script changed after the provide commit ${c:0:9} outside the keymap extraction list"
+        say "PASS merged provide (${c:0:9}; later source changes limited to the keymap compiler-macro fix)" ;;
       *) fail "usage: merged gnu-semantics|casefold|codegen|bridge|provide" ;;
     esac ;;
   integrity)
@@ -351,7 +368,7 @@ EOF
       ( bash "$ROOT/tools/ai/batch-f-check.sh" gnu $item ) || exit 1
     done
     for k in casefold e-fixtures closures syntax-rt; do ( bash "$ROOT/tools/ai/batch-f-check.sh" $k ) || exit 1; done
-    for f in batch-f-doc-closure batch-f-skip-load; do ( bash "$ROOT/tools/ai/batch-f-check.sh" fixture $f C.UTF-8 ) || exit 1; done
+    for f in batch-f-doc-closure batch-f-skip-load batch-f-keymap-cmacro batch-f-keymap-cmacro-invalid; do ( bash "$ROOT/tools/ai/batch-f-check.sh" fixture $f C.UTF-8 ) || exit 1; done
     ( bash "$ROOT/tools/ai/batch-f-check.sh" bridge-test ) || exit 1
     say "PASS all fixtures" ;;
   fixture) check_fixture "${2:?fixture name}" "${3:-C.UTF-8}" ;;

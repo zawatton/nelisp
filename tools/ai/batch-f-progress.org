@@ -17,6 +17,13 @@
 # the eager-load skip fix and the bytecode VM GC poll; the census is now S6 and
 # is pending by design).  The bridge lane's tip, 6ccf1362a, is pinned in
 # batch-f-check.sh (BRIDGE_REV).
+#
+# 2026-10-22, later: 46 criteria.  The library owner's unfiltered base image
+# build found 12 + 3 "Optimization failure" warnings on stderr: the build stages
+# keymap-set and define-keymap out of GNU keymap.el by name, with their compiler
+# macros, but not the helpers those call.  S2.14 and S2.15 are the GNU-golden
+# fixtures for the fix (the end-to-end fixture criterion is now S2.16); S1.5 now
+# names that fix as the only source change allowed after the provide.
 
 * S1 Merge
 ** S1.1 eval/gnu-semantics-20261022 (a00f45cdf) is merged
@@ -27,7 +34,8 @@ cmd: bash tools/ai/batch-f-check.sh merged casefold
 cmd: bash tools/ai/batch-f-check.sh merged codegen
 ** S1.4 The buffer-bridge lane (eval/f-buffer-bridge-20261022) is merged
 cmd: bash tools/ai/batch-f-check.sh merged bridge
-** S1.5 (provide 'nelisp-elc-reader) is restored, in the last source commit
+** S1.5 (provide 'nelisp-elc-reader) is restored, and after it only the keymap compiler-macro fix and this ledger change
+#+NOTE: The provide was the last source commit when the batch was first assembled.  The keymap fix (S2.14, S2.15) was asked for afterwards and cannot go before it without rewriting commits the other lanes already branched from, so the check now allows exactly that fix: the one extraction list in scripts/nelisp-standalone-build.el, its fixtures, the guard script and its test.  Any other source change after the provide commit still fails.
 cmd: bash tools/ai/batch-f-check.sh merged provide
 ** S1.6 621386274's Unicode integrity test passes on the merged generator payload
 #+TIMEOUT: 300
@@ -79,7 +87,15 @@ cmd: bash tools/ai/batch-f-check.sh fixture batch-f-doc-closure C.UTF-8
 #+NOTE: Cause 3 of the fileio-2 failure, found by the library owner.  With (skip) as the first element of macroexp--pending-eager-loads, internal-macroexpand-for-load answers the form unexpanded, as GNU's does, and the eager driver then evaluated a top-level macro call whose expansion the evaluator caches by the address of the driver's rooted scratch slot, the same address for every form: all later forms hit the stale row and `load' silently re-ran the first form's expansion (and every later load in the process did the same).  nl_load_eager_eval_w now evicts that row before it evaluates (nl_mxcache_evict, as bf_load_eval_loop already did for RESULT).  Switching the macroexpansion cache off with (nelisp--debug-switch 13) made the bug disappear, which located it.  The fixture fails on e62a2be5a and passes on E's build.
 #+TIMEOUT: 300
 cmd: bash tools/ai/batch-f-check.sh fixture batch-f-skip-load C.UTF-8
-** S2.14 End to end: every fixture above passes on both linkages in one run
+** S2.14 Eager expansion of valid keymap-set and define-keymap forms prints nothing and leaves the calls unchanged, GNU golden with an empty stderr pin
+#+NOTE: GNU's keymap.el declares a compiler macro on keymap-set (it calls keymap--compile-check) and on define-keymap (define-keymap--compile).  The build staged both functions by name without the two helpers, so under eager macroexpansion (GNU lread.c readevalloop_eager_expand_eval; batch E's lazy expansion never ran the handlers) every call printed "Optimization failure for keymap-set: Handler: keymap-set--anon-cmacro (void-function keymap--compile-check)" or the define-keymap--compile form of it: 12 and 3 times in the library's base image build, 1305 bytes of stderr on this fixture.  The fix adds the two names to the keymap extraction list in scripts/nelisp-standalone-build.el, which stages GNU's own forms verbatim.  The fixture's stdout and its empty stderr (test/fixtures/batch-f-keymap-cmacro.gnu-31.1.stderr) are GNU 31.1's; the build before the fix (d29b53025) fails this check on its stderr.
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh fixture batch-f-keymap-cmacro C.UTF-8
+** S2.15 An invalid key reaches the same Optimization-failure warning GNU prints, and byte-compile-warn and byte-compile-warn-x stay void as in GNU, GNU golden for stdout and stderr
+#+NOTE: keymap--compile-check and define-keymap--compile warn through byte-compile-warn and byte-compile-warn-x, which only bytecomp.el defines; in `emacs -Q --batch` both are void (neither is autoloaded), so outside byte compilation GNU's eager expansion of (keymap-set m "C-cc a" #'ignore) prints "Warning: Optimization failure for keymap-set: Handler: keymap-set--anon-cmacro" and "(void-function byte-compile-warn)" on stderr, once per bad form.  Staging the GNU helpers verbatim and leaving the two warn functions void reproduces that text exactly: five warnings (string key, vector key, define-keymap with a bad key, a bad keyword, an uneven argument list) and none for the valid forms; the 577-byte stderr pin is GNU's.  Defining the warn functions would diverge from GNU.  Known difference, not fixed here: GNU's batch `message' puts a separator newline on stderr after any stdout output (noninteractive_need_newline), which the runtime's `message' does not, so the fixture prints to stdout only at its end.
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh fixture batch-f-keymap-cmacro-invalid C.UTF-8
+** S2.16 End to end: every fixture above passes on both linkages in one run
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh all-fixtures
 

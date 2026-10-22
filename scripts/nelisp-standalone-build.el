@@ -32244,10 +32244,13 @@ resolved fine.  Same feature, different answer per entry point."
    (nelisp-vendor-source-form
     "vendor/staged-emacs-lisp/subr.el" 'add-minor-mode)
    ;; Stage exact GNU keymap definitions before the macro that uses them.
+   ;; The compiler macros declared by `keymap-set' and `define-keymap' call
+   ;; `keymap--compile-check' and `define-keymap--compile', so those come too.
    "\n;; --- GNU Emacs 31.1 keymap.el: keymap substrate ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/keymap.el"
-    '(keymap--check key-parse key-valid-p keymap-set define-keymap))
+    '(keymap--check keymap--compile-check key-parse key-valid-p keymap-set
+      define-keymap--compile define-keymap))
    ;; Preserve global bindings in the standalone keymap representation.
    "\n;; --- Standalone global keymap substrate ---\n"
    "(defvar global-map (make-sparse-keymap) \"Global keymap.\")\n"
