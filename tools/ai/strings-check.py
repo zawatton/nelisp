@@ -357,6 +357,8 @@ def format_semantics():
 
 def format_speed():
     report = json.loads((OUT / "format-timing/producers.json").read_text())
+    assert report["harness_sha256"] == hashlib.sha256((ROOT / "tools/ai/strings-wall.py").read_bytes()).hexdigest(), "stale timing harness"
+    assert report["fixture_sha256"] == hashlib.sha256((ROOT / "tools/ai/strings-timing.el").read_bytes()).hexdigest(), "stale timing fixture"
     assert report["cpu"] == 14 and report["rounds"] == 7
     assert set(report["verdicts"]) == {"concat", "substring", "format"}
     for role, path in [("candidate", OUT / "format-dynamic/nelisp"), ("base", OUT / "format-base/nelisp")]:

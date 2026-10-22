@@ -91,12 +91,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workload", choices=["producers", "pressure"])
     parser.add_argument("--round", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--kind", choices=["concat", "substring", "format", "pressure"], help=argparse.SUPPRESS)
+    parser.add_argument("--kind", choices=["concat", "substring", "format", "pressure", "producers"], help=argparse.SUPPRESS)
     parser.add_argument("--candidate", type=Path, default=ROOT / "target/strings/dynamic/nelisp")
     parser.add_argument("--base", type=Path, default=ROOT / "target/strings/base/nelisp")
     parser.add_argument("--output", type=Path, default=OUT)
     parser.add_argument("--base-cost", choices=["own", "total-guards"], default="own",
                         help="Use total call costs for concat/substring guards when the base own cost is at the control floor; format always uses own cost")
+    parser.add_argument("--batch-producers", action="store_true",
+                        help="Run the three primitive pairs in each heavy round, releasing the slot between seven rounds")
     args = parser.parse_args()
     OUT = args.output.resolve()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -115,33 +117,40 @@ def main():
     if args.round is not None:
         assert args.kind and (args.workload == "pressure") == (args.kind == "pressure")
         rows = []
-        for role in ["candidate", "gnu", "base"]:
-            rows.append(run(role, commands[role], args.kind, args.round,
-                            pressure=args.kind == "pressure", in_slot=True))
-            if args.kind != "pressure":
-                rows.append(run(role, commands[role], args.kind + "-control", args.round))
+        for kind in (["concat", "substring", "format"] if args.kind == "producers" else [args.kind]):
+            for role in ["candidate", "gnu", "base"]:
+                rows.append(run(role, commands[role], kind, args.round,
+                                pressure=kind == "pressure", in_slot=True))
+                if kind != "pressure":
+                    rows.append(run(role, commands[role], kind + "-control", args.round))
         (OUT / f"{args.kind}-round-{args.round}.json").write_text(json.dumps(rows))
         return
+    def paired_round(kind, number):
+        print(f"start paired round {kind}/{number}", flush=True)
+        subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
+                        sys.executable, str(Path(__file__).resolve()), args.workload,
+                        "--round", str(number), "--kind", kind,
+                        "--candidate", str(candidate), "--base", str(base), "--output", str(OUT),
+                        "--base-cost", args.base_cost], cwd=ROOT, check=True)
+        return json.loads((OUT / f"{kind}-round-{number}.json").read_text())
+    batched = None
+    if args.batch_producers:
+        assert args.workload == "producers", "batching applies only to short primitive workloads"
+        batched = {number: paired_round("producers", number) for number in range(7)}
     samples, verdicts = [], {}
     for kind in (["pressure"] if args.workload == "pressure" else ["concat", "substring", "format"]):
         pressure = kind == "pressure"
-        def paired_round(number):
-            print(f"start paired round {kind}/{number}", flush=True)
-            subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
-                            sys.executable, str(Path(__file__).resolve()), args.workload,
-                            "--round", str(number), "--kind", kind,
-                            "--candidate", str(candidate), "--base", str(base), "--output", str(OUT),
-                            "--base-cost", args.base_cost], cwd=ROOT, check=True)
-            return json.loads((OUT / f"{kind}-round-{number}.json").read_text())
         if pressure:
-            paired_round(-1)
+            paired_round(kind, -1)
         # Primitive fixtures warm inside each process before the timer.
         ratios, base_ratios, own = [], [], []
         total_guard = args.base_cost == "total-guards" and kind in ["concat", "substring"]
         for round_number in range(7):
             times = {}
             # Release between rounds; keep candidate/GNU/base close together.
-            rows = paired_round(round_number)
+            rows = ([row for row in batched[round_number]
+                     if row["kind"] in [kind, kind + "-control"]] if batched is not None
+                    else paired_round(kind, round_number))
             samples.extend(rows)
             if pressure:
                 times = {row["role"]: row["seconds"] for row in rows}
@@ -167,14 +176,18 @@ def main():
             assert len({s["output"] for s in samples}) == 1, "pressure outputs differ"
         ratio, regression = statistics.median(ratios), statistics.median(base_ratios)
         verdicts[kind] = dict(gnu_ratio=ratio, base_ratio=regression,
-                              base_metric="total call" if total_guard else "own cost",
+                              base_metric="total call" if total_guard else ("process wall" if pressure else "own cost"),
                               paired_gnu_ratios=ratios, paired_base_ratios=base_ratios,
                               own_seconds=own, passed=(regression < 1 if pressure else ratio <= 1),
                               candidate_rounds_at_or_below_control=(
                                   0 if pressure else sum(1 for t in own if t["candidate"] <= 0)))
     report = dict(cpu=14, rounds=7, metric="paired wall-clock own cost" if args.workload == "producers"
                   else "paired process wall-clock", identities=identities, samples=samples, verdicts=verdicts,
-                  iterations=int(os.environ.get("STRINGS_N", "100000")))
+                  iterations=int(os.environ.get("STRINGS_N", "100000")),
+                  batch_producers=args.batch_producers,
+                  harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  fixture_sha256=hashlib.sha256((ROOT / ("test/unibyte-alloc-pressure80.el" if args.workload == "pressure" else "tools/ai/strings-timing.el")).read_bytes()).hexdigest(),
+                  loadavg_at_finish=os.getloadavg())
     (OUT / f"{args.workload}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(verdicts), flush=True)
     raise SystemExit(0 if all(v["passed"] for v in verdicts.values()) else 1)
