@@ -2400,6 +2400,17 @@ entries carry explicit hex-encoded byte sections."
                   "-"))
               (nelisp-standalone--dep-files) "\n")))))
 
+(defconst nelisp-standalone--direct-only-reader-defuns '(bf_identity_hash m5_length)
+  "Reader defuns that keep direct branches although their unit uses jump tables.
+The authenticated F1 prelink closure admits direct control flow only.  The
+word-heap call path reaches these two through `nl_native_frame_v2' ->
+`nl_n3_bind' -> `bf_declared_special_p' -> `nl_ht_find_table_h' (hash bucket
+index and key equality); the rest of the applyfn unit, the bytecode VM
+included, keeps dense lowering.  Bound to
+`nelisp-aot-compiler--x86-direct-only-defuns' while that unit is compiled.
+tools/ai/integ-wh-f1-indirect.py lists every function the closure reaches
+that still has indirect control flow.")
+
 (defun nelisp-standalone--unit-cache-key (source)
   "Content key for SOURCE: what is compiled, plus what compiles it.
 
@@ -2425,6 +2436,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
                                (format "jump-tables=%s\0" nelisp-aot-compiler--x86-jump-tables-enabled)
+                               (format "direct-only=%S\0" nelisp-aot-compiler--x86-direct-only-defuns)
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)
                                (when (bound-and-true-p nelisp-standalone--inline-import-sources)
@@ -50845,10 +50857,12 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                        (t (nelisp-standalone--unit-for entry))))))
                                 nelisp-standalone--manifest))))
          ;; Full reader applyfn (arithmetic + HT + strings/format + file I/O).
-         (applyfn (nelisp-standalone--cached-unit
-                   "applyfn-reader.o" (nelisp-standalone--patch-autoload-lookups
-                                     (nelisp-standalone--applyfn-source))
-                   nelisp-standalone--this-file))
+         (applyfn (let ((nelisp-aot-compiler--x86-direct-only-defuns
+                         nelisp-standalone--direct-only-reader-defuns))
+                    (nelisp-standalone--cached-unit
+                     "applyfn-reader.o" (nelisp-standalone--patch-autoload-lookups
+                                       (nelisp-standalone--applyfn-source))
+                     nelisp-standalone--this-file)))
          ;; M4: keyword self-eval patched eval-inner, PLUS perf/macroexpansion-
          ;; cache's `nl_ei_cons_dispatch'/`nl_ei_cons_tail' form-threading
          ;; (composed after the M4 patch; unit renamed so any pre-existing

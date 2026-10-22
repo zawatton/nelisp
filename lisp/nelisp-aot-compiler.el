@@ -21612,6 +21612,17 @@ See `nelisp-aot-compiler--emit-cond-jump'."
   "Non-nil permits raw x86 dense dispatch through relative jump tables.
 Bind nil for direct-control-flow consumers, like GCC -fno-jump-tables.")
 
+(defvar nelisp-aot-compiler--x86-direct-only-defuns nil
+  "Symbols of defuns that keep direct branches although jump tables are on.
+The per-function form of `nelisp-aot-compiler--x86-jump-tables-enabled', like
+GCC's optimize(\"no-jump-tables\") attribute.  The authenticated prelink
+closure admits direct control flow only; a function of a unit that otherwise
+keeps dense lowering can become reachable from it (the word-heap call path
+reaches the reader's hash and length helpers) and is listed here.")
+
+(defvar nelisp-aot-compiler--emitting-defun-name nil
+  "Name of the defun `nelisp-aot-compiler--emit-defun' is emitting, or nil.")
+
 (defvar nelisp-aot-compiler--x86-inline-data-hook nil
   "Hook called with (BUFFER OFFSET SIZE) for each inline data span.
 Offsets are relative to BUFFER.  Profilers must exclude these proven data
@@ -21638,6 +21649,8 @@ Only repeated reads of one GP local qualify: skipping their redundant
 reads cannot change effects or traps.  Require at least four distinct,
 contiguous signed32 keys; other shapes retain their existing lowering."
   (when (and nelisp-aot-compiler--x86-jump-tables-enabled
+             (not (memq nelisp-aot-compiler--emitting-defun-name
+                        nelisp-aot-compiler--x86-direct-only-defuns))
              (eq nelisp-aot-compiler--arch 'x86_64)
              (not (nelisp-aot-compiler--lisp-values-p))
              (not (cl-some (lambda (p) (memq (cdr p) '(rax r10)))
@@ -22223,6 +22236,7 @@ rbp; pop rbp; ret' tears the frame down identically to the GP
 path.  Return value lands in xmm0 implicitly (= the SysV f64
 return reg, untouched by epilogue)."
   (let* ((name (nelisp-aot-compiler--ir-get defun-ir :name))
+         (nelisp-aot-compiler--emitting-defun-name name)
          (param-regs (nelisp-aot-compiler--ir-get defun-ir :param-regs))
          (param-class (or (nelisp-aot-compiler--ir-get defun-ir :param-class) 'gp))
          (param-classes (nelisp-aot-compiler--ir-get defun-ir :param-classes))

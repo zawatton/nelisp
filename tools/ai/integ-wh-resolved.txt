@@ -23,3 +23,7 @@ test/nelisp-aot-compiler-test.el
 
 # Merge 4: eval/hashtab-20261021 76f7c484a (1 conflicted file, 3 hunks)
 scripts/nelisp-standalone-build.el
+
+# Post-merge fix 1 (after the first dyn build): direct-only defuns for the F1 closure
+lisp/nelisp-aot-compiler.el
+scripts/nelisp-standalone-build.el
