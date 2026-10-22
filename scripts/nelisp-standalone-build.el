@@ -10873,6 +10873,19 @@ by name pending that follow-up; this paragraph is the record of why."
 The last three are the reader's backquote, comma and comma-at heads: GNU reads
 them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.")
 
+;; The names `nl_apply_name_classify' (lisp/nelisp-cc-evalport-combiner-apply.el)
+;; sorts out: ids 1 to 11 are the intercepted builtins (class 1), 12 to 18 the
+;; deferred ones (class 2).  They come first so that the classification of an
+;; interned symbol's object is a range test on its static id.
+(defconst nelisp-standalone--static-symbol-intercepts
+  '("eval" "funcall" "apply" "nelisp--push-frame" "nelisp--pop-frame"
+    "nelisp--bind-local" "nelisp--push-captured" "nelisp--set-use-elisp-apply"
+    "nelisp--env-globals-op" "symbol-function" "fset"
+    "signal" "nelisp--syscall-stat" "nelisp--syscall-readdir"
+    "nelisp--syscall-read-file" "nelisp--syscall-canonicalize"
+    "nelisp--apply-lambda-inner" "nelisp--apply-builtin-dispatch")
+  "Static names 1 to 18, in the order of `nl_apply_name_class_sid''s ranges.")
+
 (defvar nelisp-standalone--static-symbol-index nil
   "Hash table NAME -> static symbol id, built once from the builtin tables.")
 
@@ -10882,6 +10895,7 @@ them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot."
     ;; Only tables defined before the build script's first dispatch is
     ;; generated (at load time), so every generated form sees one list.
     (dolist (name (append
+                   nelisp-standalone--static-symbol-intercepts
                    (mapcar (lambda (e) (cadr (car e))) nelisp-standalone--applyfn-dispatch-table)
                    nelisp-standalone--static-symbol-extras))
       (when (and (stringp name) (not (member name '("nil" "t")))
@@ -10893,7 +10907,12 @@ them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot."
     (when (>= (length out) 4095)
       (error "static symbol ids exceed 12 bits: %d" (length out)))
     (setq nelisp-standalone--static-symbol-index seen)
-    (nreverse out)))
+    (setq out (nreverse out))
+    (unless (equal (cl-subseq out 0 (length nelisp-standalone--static-symbol-intercepts))
+                   nelisp-standalone--static-symbol-intercepts)
+      (error "the intercepted names are not static ids 1 to %d"
+             (length nelisp-standalone--static-symbol-intercepts)))
+    out))
 
 (defun nelisp-standalone--sid (name)
   "NAME's static symbol id, or nil."
