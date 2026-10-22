@@ -1645,11 +1645,31 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
         (t (or (nelisp-standalone--inline-clone-p (car body))
                (nelisp-standalone--inline-clone-p (cdr body))))))
 
+(defun nelisp-standalone--inline-used-names (source &optional table)
+  "Return all symbols in SOURCE and optional helper TABLE bodies."
+  (let ((used (make-hash-table :test 'eq)) (pending (list source)))
+    (when table (maphash (lambda (_ body) (push body pending)) table))
+    (while pending
+      (let ((x (pop pending)))
+        (cond ((symbolp x) (puthash x t used))
+              ((consp x) (push (car x) pending) (push (cdr x) pending)))))
+    used))
+
+(defun nelisp-standalone--inline-fresh-name (param suffix used)
+  "Return a fresh argument name absent from source symbols USED."
+  (let (name)
+    (while (or (null name) (gethash name used))
+      (setq name (intern (format "%s__%s%d" param suffix
+                                 (cl-incf nelisp-standalone--inline-counter)))))
+    (puthash name t used)
+    name))
+
 (defun nelisp-standalone--inline-small-defuns (source)
   "SOURCE (a (seq FORM...) unit) with calls to small leaf defuns inlined."
   (if (not (and (member (nelisp-standalone--inline-level) '("1" "2")) (eq (car-safe source) 'seq)))
       source
-    (let ((cands (make-hash-table :test 'eq)) (count 0))
+    (let ((cands (make-hash-table :test 'eq))
+          (used-names (nelisp-standalone--inline-used-names source)) (count 0))
       (dolist (form (cdr source))
         (pcase form
           (`(defun ,name ,params ,body)
@@ -1668,8 +1688,7 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
                       (cand (and (symbolp (car x)) (gethash (car x) cands))))
                  (if (and cand (= (length args) (length (car cand))))
                      (let ((alist (mapcar (lambda (p)
-                                            (cons p (intern (format "%s__i%d"
-                                                                    p (cl-incf nelisp-standalone--inline-counter)))))
+                                            (cons p (nelisp-standalone--inline-fresh-name p "i" used-names)))
                                           (car cand))))
                        (setq count (1+ count))
                        (if alist
@@ -1781,7 +1800,9 @@ Arguments are bound in order to fresh names by `let*', exactly as the
 within-unit pass does; one level, so a helper body is spliced as written."
   (if (not (and nelisp-standalone--xinline-table (eq (car-safe source) 'seq)))
       source
-    (let ((own (make-hash-table :test 'eq)))
+    (let ((own (make-hash-table :test 'eq))
+          (used-names (nelisp-standalone--inline-used-names
+                       source nelisp-standalone--xinline-table)))
       (dolist (form (cdr source))
         (when (eq (car-safe form) 'defun)
           (puthash (cadr form) t own)))
@@ -1798,7 +1819,7 @@ within-unit pass does; one level, so a helper body is spliced as written."
                                  (gethash (car x) nelisp-standalone--xinline-table))))
                  (if (and (consp cand) (= (length args) (length (car cand))))
                      (let ((alist (mapcar (lambda (p)
-                                            (cons p (intern (format "%s__x%d" p (cl-incf nelisp-standalone--inline-counter)))))
+                                            (cons p (nelisp-standalone--inline-fresh-name p "x" used-names)))
                                           (car cand))))
                        (puthash (car x) t nelisp-standalone--xinline-used)
                        (if alist
