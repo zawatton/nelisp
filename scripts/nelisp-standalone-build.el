@@ -48670,12 +48670,22 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                          (seq (nl_let_bad_name b_ptr) 0)))))
                 out))
          ((eq name 'nl_let_bind_walk)
+          ;; GNU interns a keyword as declared_special (lread.c intern_sym), so `let'
+          ;; binds it through specbind, whose set_internal (data.c) refuses a constant:
+          ;; setting-constant, except when the value is the keyword itself.  A bind
+          ;; answers 0 for a failure, with the signal stashed.
+          (push '(defun nl_let_bind_one (env name value)
+                   (if (= (bf_keyword_raw name) 1)
+                       (if (= (wf_bytecode_w_eqw name value) 1)
+                           (nl_logic_bind_local env name value)
+                         (seq (bf_setting_constant name) 0))
+                     (nl_logic_bind_local env name value))) out)
           (push '(defun nl_let_bind_walk (pairs_ptr env)
                    (if (= (nl_val_tag pairs_ptr) 7)
                        (let* ((pair (nl_cons_car_word pairs_ptr))
                               (name (sar (nl_cons_car_word pair) 2))
                               (value (nl_cons_cdr_word pair)))
-                         (if (= (nl_logic_bind_local env name value) 0) 1
+                         (if (= (nl_let_bind_one env name value) 0) 1
                            (nl_let_bind_walk (nl_cons_cdr_word pairs_ptr) env)))
                      0)) out))
          ((eq name 'nl_let_setup)
@@ -48715,7 +48725,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                          (if (= name 0) (seq (nl_env_pop_frame env) 1)
                            (let* ((word (nl_let_parse_val_w binding env 0)))
                              (if (= word 0) (seq (nl_env_pop_frame env) 1)
-                               (if (= (nl_logic_bind_local env name word) 0)
+                               (if (= (nl_let_bind_one env name word) 0)
                                    (seq (nl_env_pop_frame env) 1)
                                  (nl_let_star_walk (nl_cons_cdr_word bindings_ptr)
                                                    env frames_ptr))))))

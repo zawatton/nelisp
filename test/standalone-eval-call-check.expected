@@ -160,3 +160,14 @@ closure-shared-capture (1 2 2)
 closure-returned-param (7 (2 3))
 closure-wrong-args (wrong-number-of-arguments wrong-number-of-arguments wrong-number-of-arguments)
 closure-in-condition-case (wta number-or-marker-p)
+let-keyword (setting-constant :k)
+let-keyword-self :k
+letstar-keyword (setting-constant :k)
+letstar-keyword-self :k
+let-keyword-bare (setting-constant :k)
+let-nil (setting-constant nil)
+let-t (setting-constant t)
+let-keyword-among ((1 :k 2) (setting-constant :k))
+let-keyword-after 5
+let-keyword-init-first ((setting-constant :k) (init))
+letstar-keyword-order ((setting-constant :k) (1))

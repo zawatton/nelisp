@@ -265,4 +265,28 @@
         (car (ec-err (lambda () (ec-f0 1))))))
 (ec-case closure-in-condition-case (condition-case e (ec-f1 'a) (wrong-type-argument (list 'wta (cadr e)))))
 
+;; GNU marks a keyword special when it interns it (lread.c intern_sym), so `let' binding one goes
+;; through specbind, whose set_internal refuses a constant (data.c): setting-constant, unless the value is
+;; the keyword itself.  nil and t are refused the same way.  Flet evaluates every initialiser before it
+;; binds the first variable (eval.c:1133), `let*' binds each variable before the next initialiser.
+(ec-case let-keyword (eval '(let ((:k 1)) :k) t))
+(ec-case let-keyword-self (eval '(let ((:k :k)) :k) t))
+(ec-case letstar-keyword (eval '(let* ((:k 1)) :k) t))
+(ec-case letstar-keyword-self (eval '(let* ((:k :k)) :k) t))
+(ec-case let-keyword-bare (eval '(let (:k) :k) t))
+(ec-case let-nil (eval '(let ((nil 1)) 2) t))
+(ec-case let-t (eval '(let ((t 1)) 2) t))
+(ec-case let-keyword-among
+  (list (eval '(let ((a 1) (:k :k) (b 2)) (list a :k b)) t)
+        (ec-err (lambda () (eval '(let ((a 1) (:k 3) (b 2)) (list a :k b)) t)))))
+(ec-case let-keyword-after
+  (progn (ec-err (lambda () (eval '(let ((:k 1)) 2) t))) (eval '(let ((x 5)) x) t)))
+(ec-case let-keyword-init-first
+  (progn (setq ec-log nil)
+         (list (ec-err (lambda () (eval '(let ((:k (ec-note 'init))) :k) t))) (reverse ec-log))))
+(ec-case letstar-keyword-order
+  (progn (setq ec-log nil)
+         (list (ec-err (lambda () (eval '(let* ((a (ec-note 1)) (:k 2) (b (ec-note 3))) b) t)))
+               (reverse ec-log))))
+
 (kill-emacs 0)
