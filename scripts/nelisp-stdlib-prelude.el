@@ -20225,9 +20225,10 @@ through the next unit separator.  Only file streams use the byte count."
     i))
 
 ;; This runtime's reader handles what GNU .elc files need: lazy `#@N'
-;; docstrings, `#s(...)' records and hash tables.  The library tests this
-;; feature before it prefers ".elc" in `load-suffixes'.
-;; Withheld until the interpreted-closure GNU/ddskk acceptance passes.
+;; docstrings, `#s(...)' records and hash tables, and GNU 31.1's interpreted
+;; closures (#[ARGS BODY ENV ...] built through `make-interpreted-closure').
+;; The library tests this feature before it prefers ".elc" in `load-suffixes'.
+(provide 'nelisp-elc-reader)
 
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
