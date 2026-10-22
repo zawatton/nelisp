@@ -15551,6 +15551,81 @@ arithmetic guard or Lisp-value operation.  Nil retains the old lowering.")
   "Non-nil within a defun whose emitted body contains a call.
 Leaf functions retain their existing lowering, including CG3 loops.")
 
+(defvar nelisp-aot-compiler--x86-region-private-let-owners nil
+  "Whole-defun unique lexical slot owners, proven before region emission.")
+
+(defun nelisp-aot-compiler--x86-private-let-owners (body param-count)
+  "Prove unique lexical let slot lifetimes in the complete defun BODY.
+GNU comp.el:2475-2505 renames definitions before replacing subsequent
+mvar uses; comp.el:3015-3052 separates l-values from live r-values.
+Here no slot is renumbered: a slot may omit region boundary traffic
+only when all its uses are in its unique binder's body.  Initializers
+are outside the new scope, including every parallel let-rt-n initializer.
+Shared IR, roots and ambiguous slot ownership reject this proof."
+  (let ((seen (make-hash-table :test #'eq)) (owners nil) (invalid nil) (bad nil))
+    (cl-labels
+        ((own (slot node)
+           (if (or (not (integerp slot)) (< slot param-count) (assq slot owners))
+               (setq bad t)
+             (push (cons slot node) owners)))
+         (collect (value)
+           (cond
+            ((nelisp-aot-compiler--ir-node-p value)
+             (if (gethash value seen)
+                 (setq bad t)
+               (puthash value t seen)
+               (when (nelisp-aot-compiler--ir-get value :root-p) (setq bad t))
+               (pcase (nelisp-aot-compiler--ir-kind value)
+                 ('let-rt (own (nelisp-aot-compiler--ir-get value :slot) value))
+                 ('let-rt-n
+                  (dolist (binding (nelisp-aot-compiler--ir-get value :bindings))
+                    (when (nth 3 binding) (setq bad t))
+                    (own (nth 1 binding) value))))
+               (cl-loop for i from 1 below (length value) do (collect (aref value i)))))
+            ((consp value) (collect (car value)) (collect (cdr value)))
+            ((vectorp value) (mapc #'collect value))))
+         (visit (value scope)
+           (cond
+            ((nelisp-aot-compiler--ir-node-p value)
+             (let* ((kind (nelisp-aot-compiler--ir-kind value))
+                    (slot (nelisp-aot-compiler--ir-get value :slot))
+                    (owner (assq slot owners)))
+               (when (and owner (not (eq kind 'let-rt))
+                          (or (not (memq kind '(ref setq-local)))
+                              (not (eq (cdr owner) (cdr (assq slot scope))))))
+                 (cl-pushnew slot invalid))
+               (pcase kind
+                 ('let-rt
+                  (visit (nelisp-aot-compiler--ir-get value :value-ir) scope)
+                  (visit (nelisp-aot-compiler--ir-get value :body)
+                         (cons (cons slot value) scope)))
+                 ('let-rt-n
+                  (let ((bindings (nelisp-aot-compiler--ir-get value :bindings)))
+                    (dolist (binding bindings) (visit (nth 2 binding) scope))
+                    (visit (nelisp-aot-compiler--ir-get value :body)
+                           (append (mapcar (lambda (b) (cons (nth 1 b) value)) bindings) scope))))
+                 (_ (cl-loop for i from 1 below (length value)
+                             do (visit (aref value i) scope))))
+               (when (memq kind '(let-rt let-rt-n))
+                 (cl-loop for i from 1 below (length value) by 2
+                          unless (memq (aref value i) '(:value-ir :body :bindings))
+                          do (visit (aref value (1+ i)) scope)))))
+            ((consp value) (visit (car value) scope) (visit (cdr value) scope))
+            ((vectorp value) (mapc (lambda (v) (visit v scope)) value)))))
+      (collect body)
+      (unless bad
+        (visit body nil)
+        (cl-remove-if (lambda (owner) (memq (car owner) invalid)) owners)))))
+
+(defun nelisp-aot-compiler--x86-region-private-let-slots (node pairs)
+  "Return selected let slots whose entire proven lifetime is inside NODE."
+  (let ((inside (make-hash-table :test #'eq)) slots)
+    (nelisp-aot-compiler--walk-ir node (lambda (n) (puthash n t inside)))
+    (dolist (pair pairs)
+      (when (gethash (cdr (assq (car pair) nelisp-aot-compiler--x86-region-private-let-owners)) inside)
+        (push (car pair) slots)))
+    slots))
+
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
   (let ((plan (and nelisp-aot-compiler--x86-call-free-regions
@@ -15563,7 +15638,8 @@ Leaf functions retain their existing lowering, including CG3 loops.")
                    (nelisp-aot-compiler--x86-call-free-region-plan node))))
     (if plan
         (nelisp-aot-compiler--emit-promoted-loop-x86
-         node buf emit plan)
+         node buf emit plan
+         (nelisp-aot-compiler--x86-region-private-let-slots node (car plan)))
       (funcall emit))))
 
 (defun nelisp-aot-compiler--x86-copy-let-source-register (node)
@@ -22947,12 +23023,14 @@ its argument pushes balance and all exits return a GP value in RAX."
     (unless (plist-get state :inline-exit)
       (nelisp-aot-compiler--emit-value (plist-get state :terminal) buf))))
 
-(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop &optional plan)
+(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop &optional plan private-slots)
   "Call EMIT-LOOP for while NODE with its variables in registers when possible.
 Saves the r12-r15 registers the plan uses, loads every promoted slot,
 binds `--promoted-slots' around EMIT-LOOP, then stores the assigned
 slots back and restores the saved registers.  Every path out of a
-promotable loop falls through its exit, so the stores run once."
+promotable loop falls through its exit, so the stores run once.
+Only a call-free region may pass proven PRIVATE-SLOTS: its original let
+initializers set these registers, and no use survives the region."
   (let* ((state (and (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :loop))
                      nelisp-aot-compiler--x86-tco-entry-state))
          (plan (or plan (plist-get state :promotions)
@@ -22970,7 +23048,8 @@ promotable loop falls through its exit, so the stores run once."
          (mapcar (lambda (f) (cons (cdr (assq (car f) pairs)) (nth 2 f)))
                  (plist-get state :forward)) buf))
       (dolist (p pairs)
-        (unless (assq (car p) (plist-get state :forward))
+        (unless (or (memq (car p) private-slots)
+                    (assq (car p) (plist-get state :forward)))
           (nelisp-aot-compiler--x86-op
            buf t (unibyte-string #x8B) (cdr p)
            (nelisp-aot-compiler--x86-slot-mem (car p)))))
@@ -22979,7 +23058,8 @@ promotable loop falls through its exit, so the stores run once."
         (when (plist-get state :inline-exit)
           (nelisp-aot-compiler--emit-value (plist-get state :terminal) buf)))
       (dolist (p pairs)
-        (when (and (not (plist-get state :inline-exit))
+        (when (and (not (memq (car p) private-slots))
+                   (not (plist-get state :inline-exit))
                    (or (memq (car p) written) (assq (car p) (plist-get state :forward))))
           (nelisp-aot-compiler--x86-op
            buf t (unibyte-string #x89) (cdr p)
@@ -23403,6 +23483,13 @@ return reg, untouched by epilogue)."
                                 (memq k '(addr-of syscall syscall-direct raw-syscall)))
                         (setq found t)))))
             found))
+         (nelisp-aot-compiler--x86-region-private-let-owners
+          (and nelisp-aot-compiler--x86-call-containing-defun-p
+               (eq nelisp-aot-compiler--arch 'x86_64)
+               (not nelisp-aot-compiler--checked-arith)
+               (not (nelisp-aot-compiler--lisp-values-p))
+               (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p)
+               (nelisp-aot-compiler--x86-private-let-owners body (length param-regs))))
          (rt-slot-count (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (param-slot-rounded (if (zerop (logand (length param-regs) 1))
                                  (length param-regs)
