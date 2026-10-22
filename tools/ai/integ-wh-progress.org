@@ -12,8 +12,15 @@
 #   2. the word-heap base 702ccc8d7 (batch W, eval/integ-20261021w), alone
 #   3. eval/strings-20261021 (375939a85, final)
 #   4. eval/hashtab-20261021 (76f7c484a, final)
-# The gc-port, callpath-perf and codegen tips follow when the coordinator hands them
-# over (S3).
+# Coordinator update 2026-10-22: batch F landed (eval/core-20261017 = b994d7227, five
+# commits over the base) and callpath moved, so the queue continues with
+#   5. F's final b994d7227 (S1.8)
+#   6. eval/gc-port-20261021 (7b8916b7f; carries symbols' final 15ee6d20f and the F1
+#      policy 352, so 7ef8b2128 is not cherry-picked separately) (S1.9)
+#   7. eval/callpath-perf-20261021 at fd4f1d3a0 (replaces 5995ea654) (S1.10)
+# The codegen tip follows when the coordinator hands it over (S3).  Merge 6 was first
+# resolved on a side branch (eval/integ-wh-20261022-m5, 5940fb82e, on the merge-4 state)
+# so rerere holds its resolutions; the main line replays it after merge 5.
 #
 # Files: tools/ai/integ-wh-check.sh (the checks), integ-wh-build.sh (dynamic snapshot
 # build), integ-wh-sanity.el, integ-wh-mcp-smoke.sh, and integ-wh-resolved.txt (the
@@ -59,6 +66,15 @@ cmd: bash tools/ai/integ-wh-check.sh codegen-ert
 ** S1.7 End to end: the dynamic binary builds from a snapshot of HEAD's tree and evaluates (+ 1 2)
 cmd: bash tools/ai/integ-wh-check.sh built
 cmd: bash tools/ai/integ-wh-check.sh boot
+** S1.8 Batch F's final b994d7227 (eval/core-20261017: keymap compiler-macro helpers, staged-handler guard, VM arithmetic through the function cell) is merged
+#+NOTE: 2026-10-22 merge of b994d7227: 1 conflicted file (scripts/nelisp-standalone-build.el), 2 hunks.  (a) the "%" builtin: F's form (marker coercion, then wf_rem_w); wf_rem_w, F's moved body, keeps the word-heap Bignum tag test (sexp-tag) and heap-read-u64 operand reads.  (b) wf_numeric_marker_copy_w: the word-heap line's single rooted WORD slot (Doc 216 S6.2) with F's NOCHECK argument forwarded to the operand check and the recursion.  The VM hunks (wf_bytecode_w_nonnumber_p, wf_bytecode_call_arith_cell, the call-site renames) merged cleanly; wf_bytecode_w_nonnumber_p reads operand tags with nl_val_tag, so the fast paths keep their tag tests and a non-number operand takes F's function-cell route.  The staged keymap list is F's, untouched.
+#+NOTE: FIX 5 (found by fchecks on the 057347fdb binary): m5_push_float_format read the float-output-format header with ptr-read-u64, wrong for a string WORD; every string format fell back to the default shape (gnu-semantics-printer differed on 216 rows).  The tag is (sexp-tag fmt) now.  FIX 6 (same run): the callpath lane's nl_eic_resolve_alias_w rewound a symbol alias chain ending in a special form's function-cell object, so (fset 'a 'save-current-buffer) then (a ...) signalled invalid-function (GNU runs the UNEVALLED subr; F's loop re-dispatched on the terminal cell).  The resolver answers 4 with the object in FW and nl_eic_alias_w calls nl_n3_special_call_w on it with the call form; chains of more than one hop work too (gnu-semantics-buffer row symbol-alias).  The callpath tip fd4f1d3a0 patches nl_eic_after_lookup_w by cl-subst on '(nl_n3_special_call_w lookup_w tail_ptr env 0) (nelisp-standalone--patch-combiner-cons-word); this line passes form_ptr instead of 0 (F's macro-cache key), so that pattern no longer matches: check it at merge 7.
+cmd: bash tools/ai/integ-wh-check.sh merged f-final
+** S1.9 eval/gc-port-20261021 (7b8916b7f: F1/F2/F3, allocation budget, symbols' final 15ee6d20f, F1 policy 352) is merged
+#+NOTE: pending: replay of the side-branch resolutions (5940fb82e: 6 files, 24 hunks).  The evidence node bound is 81,920 in all three copies after this merge (the gc-port line's inline 131072 reached the template and the test while the symbols lane kept 81,920 in the host serializer: the copies disagreed at the lane tips).
+cmd: bash tools/ai/integ-wh-check.sh merged gc-port
+** S1.10 eval/callpath-perf-20261021 at fd4f1d3a0 (inline poll, E1+E2) is merged
+cmd: bash tools/ai/integ-wh-check.sh merged callpath
 
 * S2 Verify on the dynamic build
 ** S2.1 target/final-verify/checks.sh: 11 groups, 0 failures (the dynamic binary fills the STATIC slot, so the four thread groups run on dynamic)
@@ -69,12 +85,12 @@ cmd: bash tools/ai/integ-wh-check.sh log standalone
 cmd: bash tools/ai/integ-wh-check.sh sanity
 ** S2.4 End to end: anvil-standalone on the merged binary lists 40 tools
 cmd: bash tools/ai/integ-wh-check.sh log mcp
+** S2.5 Batch F's fixture checks on the merged binary (19 checks: boot, gnu x7, casefold, e-fixtures, closures, syntax-rt, four fixture pins, casetab, census, codegen-align, marker-arith, guard)
+cmd: bash tools/ai/integ-wh-check.sh log fchecks
+** S2.6 gc-port's light set (gc-stats, budget, vm-poll) passes on the merged binary
+cmd: bash tools/ai/integ-wh-check.sh log gcport
 
 * S3 Later merges and platforms (not in this dry run)
-** S3.1 The gc-port tip is merged
-pending
-** S3.2 The callpath-perf tip is merged
-pending
 ** S3.3 The codegen tip is merged
 pending
 ** S3.4 The static build passes the same checks

@@ -5,7 +5,8 @@
 # /usr/local/bin/emacs (GNU_EMACS overrides).  Every NeLisp and GNU run is capped
 # at 8 GiB of address space.  Exit 0 iff the check passes.
 #
-#   merged NAME   codegen-wh | base | strings | hashtab | gc-port: the lane tip is the second
+#   merged NAME   codegen-wh | base | strings | hashtab | f-final | gc-port | callpath: the lane
+#                 tip is the second
 #                 parent of a first-parent merge commit between batch F and HEAD
 #   hygiene       no conflict markers in tracked files; every Elisp file listed in
 #                 tools/ai/integ-wh-resolved.txt (the hand-resolved ones) passes
@@ -49,8 +50,10 @@ case ${1:-} in
       base)       rev=702ccc8d7 ;;
       strings)    rev=375939a85 ;;
       hashtab)    rev=76f7c484a ;;
+      f-final)    rev=b994d7227 ;;
       gc-port)    rev=7b8916b7f ;;
-      *) fail "usage: merged codegen-wh|base|strings|hashtab|gc-port" ;;
+      callpath)   rev=fd4f1d3a0 ;;
+      *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath" ;;
     esac
     git merge-base --is-ancestor $rev HEAD || fail "$2: $rev is not an ancestor of HEAD"
     git log --first-parent --merges --format='%P' "$BASE"..HEAD | awk '{print $2}' | grep -q "^$rev" ||
@@ -79,13 +82,15 @@ case ${1:-} in
     bounds=""
     for f in lisp/nelisp-native-rooted-startup-evidence.el templates/nelisp-native-rooted-abi-proof.el.in \
              test/nelisp-native-compiler-startup-evidence-test.el; do
-      b=$(grep -o -E '\(unless \(and \(<= nodes [0-9]+\) \(<= depth 64\)\)' "$f" | sort -u | grep -o -E '[0-9]+' | head -1)
+      b=$(grep -o -E '\(unless \(and \(<= nodes [0-9]+\) \(<= (depth|deepest) 64\)\)' "$f" | sort -u | grep -o -E '[0-9]+' | head -1)
       [ -n "$b" ] || fail "no root-evidence node bound in $f"
       bounds="$bounds $b"
     done
     [ "$(printf '%s\n' $bounds | sort -u | wc -l)" = 1 ] || fail "node bounds disagree:$bounds"
-    n=$(grep -c "'(keymap--check key-parse key-valid-p keymap-set define-keymap" scripts/nelisp-standalone-build.el)
+    n=$(grep -c "'(keymap--check keymap--compile-check key-parse key-valid-p keymap-set" scripts/nelisp-standalone-build.el)
     [ "$n" = 1 ] || fail "the keymap extraction list occurs $n times in scripts/nelisp-standalone-build.el"
+    grep -q -x "      define-keymap--compile define-keymap))" scripts/nelisp-standalone-build.el ||
+      fail "the keymap extraction list lost its define-keymap--compile line"
     body=$(sed -n '/(defun wf_bytecode_w_lean_event_p/,/(defun wf_bytecode_w_lean_unbind/p' scripts/nelisp-standalone-build.el)
     [ -n "$body" ] || fail "wf_bytecode_w_lean_event_p is missing"
     printf '%s\n' "$body" | grep -q -E 'ptr-read-u64|heap-read-u64' && fail "the lean-event test still reads a header"
@@ -111,8 +116,8 @@ case ${1:-} in
     say "PASS built ($rev, HEAD's tree)" ;;
   boot)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
-    got=$(capped timeout 120 "$DYN" --eval '(princ (+ 1 2))' 2>&1)
-    [ "$got" = 3 ] || fail "(+ 1 2) printed '$got'"
+    # --eval echoes its return value after princ's output; batch F's boot check knows.
+    out=$(BATCH_F_DYN=$DYN BATCH_F_STATIC=$DYN bash tools/ai/batch-f-check.sh boot 2>&1) || fail "boot: $out"
     say "PASS boot" ;;
   sanity)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
