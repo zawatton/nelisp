@@ -4892,22 +4892,22 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                                (if (= r 3) (nl_so_flags_set b 197376 0) 0))
                            (extern-call nl_val_clone_into v (+ b 8))))))))
                1))))))
-    ;; GNU's (wrong-type-argument integerp VAL), stashed as a signal (the
-    ;; tag at 268435480, the data at 268435512, the flag and the mutation
-    ;; epoch); answers 0, the slow store's "signalled".
+    ;; GNU's (wrong-type-argument integerp VAL), raised as a signal through
+    ;; the pending-exit values (`nl_exit_signal_w'); answers 0, the slow
+    ;; store's "signalled".
     (defun nl_sym_signal_wta_integerp (val)
-      (let* ((bytes (alloc-bytes 24 1)) (pred (alloc-bytes 32 8))
-             (tail (alloc-bytes 32 8)))
+      (let* ((bytes (alloc-bytes 24 1)) (tag (alloc-bytes 32 8))
+             (pred (alloc-bytes 32 8)) (tail (alloc-bytes 32 8))
+             (data (alloc-bytes 32 8)))
         (seq (ptr-write-u64 bytes 0 8751669898145395319)
              (ptr-write-u64 bytes 8 7887324063363589488)
              (ptr-write-u64 bytes 16 7630437)
-             (nl_alloc_symbol bytes 19 268435480)
+             (nl_alloc_symbol bytes 19 tag)
              (ptr-write-u64 bytes 0 8102650174351109737)
              (nl_alloc_symbol bytes 8 pred)
              (nelisp_cons_construct val 3 tail)
-             (nelisp_cons_construct pred tail 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nelisp_cons_construct pred tail data)
+             (nl_exit_signal_w tag data)
              0)))
     ;; GNU find_symbol_value's in-line cases (data.c:1619): the value WORD of
     ;; ENTRY when its redirect is PLAINVAL or FORWARDED (the unbound marker
@@ -26450,11 +26450,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= obj 0) 0
           (if (= (nl_sym_redirect obj) 3) 1 0))))
     ;; GNU set_internal (data.c:1678): "Built-in variable may not be unbound".
-    ;; Stashes (error "Built-in variable may not be unbound : NAME") and
-    ;; answers 1, the stashed-signal status.
+    ;; Raises (error "Built-in variable may not be unbound : NAME") through the
+    ;; pending-exit values and answers 1, the signalled status.
     (defun nl_sym_signal_unbind_builtin (sym)
       (let* ((n (str-len sym)) (buf (alloc-bytes (+ 40 n) 1))
-             (msg (alloc-bytes 32 8)) (tag (alloc-bytes 8 8)))
+             (msg (alloc-bytes 32 8)) (ebytes (alloc-bytes 8 8))
+             (tag (alloc-bytes 32 8)) (data (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 buf 0 7955940194784998722)
          (ptr-write-u64 buf 8 7809911809332311584)
@@ -26463,11 +26464,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 buf 32 9071110053066095)
          (nl_alloc_str_copy_loop (str-bytes-ptr sym) (+ buf 39) 0 n)
          (nl_alloc_str buf (+ 39 n) msg)
-         (ptr-write-u64 tag 0 491496043109)
-         (nl_alloc_symbol tag 5 268435480)
-         (nelisp_cons_construct msg 3 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (ptr-write-u64 ebytes 0 491496043109)
+         (nl_alloc_symbol ebytes 5 tag)
+         (nelisp_cons_construct msg 3 data)
+         (nl_exit_signal_w tag data)
          1)))
     (defun bf_symbol_value_w (args env _pad)
   (let* ((sym (wf_arg_ptr args 0)) (w (nl_sym_find_value_w env sym 0)))
