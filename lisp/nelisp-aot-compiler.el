@@ -22471,6 +22471,135 @@ position is rejected too.  Every path executes at most one barrier."
       (tail body))
     (and ok barriers)))
 
+(defun nelisp-aot-compiler--x86-terminal-caller-store-p (node)
+  "Prove NODE takes a folded store arm without implicit RDX scratch.
+--emit-ptr-write-x86 loads an unpromoted leaf value into RDX, and
+its general fallback also uses RDX.  Both paths are excluded here."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (offset (nelisp-aot-compiler--ir-get node :offset))
+         (value (nelisp-aot-compiler--ir-get node :val))
+         (width (cdr (assq (nelisp-aot-compiler--ir-kind node)
+                           nelisp-aot-compiler--x86-ptr-widths)))
+         (vo (nelisp-aot-compiler--x86-leaf-operand value))
+         (po (nelisp-aot-compiler--x86-leaf-operand ptr))
+         (disp (nelisp-aot-compiler--imm-disp32 offset))
+         (ix (and (not disp) (nelisp-aot-compiler--x86-index-form offset)))
+         (affine (nelisp-aot-compiler--x86-affine-address-plan ptr offset))
+         (stable (or affine (and po (or disp ix))
+                     (and disp (eq (nelisp-aot-compiler--ir-kind ptr) 'data-addr)
+                          (eq nelisp-aot-compiler--os 'linux)))))
+    (and stable
+         (if vo
+             (or (eq (car vo) :reg)
+                 (and (eq (car vo) :imm)
+                      (or (< width 64) (nelisp-aot-compiler--x86-imm32-p (cadr vo)))))
+           ;; The complex folded arm computes its pure value into RAX.
+           ;; Mirror its stricter stable-address admission exactly.
+           (and (nelisp-aot-compiler--x86-no-assign-p value)
+                (or affine (and po (or disp ix)))
+                (nelisp-aot-compiler--x86-memory-tree-info value))))))
+
+(defun nelisp-aot-compiler--x86-terminal-caller-body-p (body barriers pairs)
+  "Prove a closed GP emitter subset preserves RDX/RCX until BARRIERS.
+Direct arithmetic, fixed shifts, read/address and branch emitters use
+RAX/R10/R11/RDI/RSI.  Stores need operand-sensitive proof.  Boolean
+values and ordinary value-if selections are excluded conservatively;
+condition-position tests use direct jumps.  Barrier operands execute
+only after the existing flush has ended the map, so are not inspected."
+  (let ((nelisp-aot-compiler--promoted-slots pairs))
+    (cl-labels
+        ((has-barrier (n)
+           (let ((found nil))
+             (nelisp-aot-compiler--walk-ir n (lambda (x) (when (memq x barriers) (setq found t))))
+             found))
+         (safe (n context)
+           (or (memq n barriers)
+               (and (not (nelisp-aot-compiler--ir-get n :root-p))
+                    (memq (nelisp-aot-compiler--ir-get n :class) '(nil gp))
+                    (memq (nelisp-aot-compiler--ir-get n :cls) '(nil gp))
+                    (pcase (nelisp-aot-compiler--ir-kind n)
+                      ('imm (nelisp-aot-compiler--imm-int-p n))
+                      ('ref (nelisp-aot-compiler--x86-ref-leaf-p n))
+                      ('data-addr (and (nelisp-aot-compiler--ir-get n :name)
+                                       (symbolp (nelisp-aot-compiler--ir-get n :name))))
+                      ('arith (and (memq (nelisp-aot-compiler--ir-get n :op) '(+ - * logand logior logxor))
+                                   (safe (nelisp-aot-compiler--ir-get n :a) 'value)
+                                   (safe (nelisp-aot-compiler--ir-get n :b) 'value)))
+                      ('shift (and (memq (nelisp-aot-compiler--ir-get n :op) '(shl shr sar))
+                                   (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get n :b))
+                                   (safe (nelisp-aot-compiler--ir-get n :a) 'value)))
+                      ('cmp (and (eq context 'condition)
+                                 (assq (nelisp-aot-compiler--ir-get n :op) nelisp-aot-compiler--cmp-true-jcc)
+                                 (cl-every
+                                  (lambda (operand)
+                                    ;; TAGGEDP fusion requires a direct LOGAND
+                                    ;; operand; explicit tag primitives are
+                                    ;; outside the closed value grammar too.
+                                    (and (not (and (eq (nelisp-aot-compiler--ir-kind operand) 'arith)
+                                                   (eq (nelisp-aot-compiler--ir-get operand :op) 'logand)))
+                                         (safe operand 'value)))
+                                  (list (nelisp-aot-compiler--ir-get n :a) (nelisp-aot-compiler--ir-get n :b)))))
+                      ('if (and (if (eq context 'condition)
+                                    (or (nelisp-aot-compiler--branch-structured-result-p
+                                         (nelisp-aot-compiler--ir-get n :then))
+                                        (nelisp-aot-compiler--branch-structured-result-p
+                                         (nelisp-aot-compiler--ir-get n :else)))
+                                  (or (not (eq context 'value)) (has-barrier n)))
+                                (safe (nelisp-aot-compiler--ir-get n :test) 'condition)
+                                (safe (nelisp-aot-compiler--ir-get n :then) context)
+                                (safe (nelisp-aot-compiler--ir-get n :else) context)))
+                      ('logic (and (eq context 'condition)
+                                   (memq (nelisp-aot-compiler--ir-get n :op) '(and or))
+                                   (cl-every (lambda (x) (safe x 'condition))
+                                             (nelisp-aot-compiler--ir-get n :forms))))
+                      ('while (and (safe (nelisp-aot-compiler--ir-get n :test) 'condition)
+                                   (cl-every (lambda (x) (safe x 'effect))
+                                             (nelisp-aot-compiler--ir-get n :body))))
+                      ('value-seq (let ((forms (nelisp-aot-compiler--ir-get n :forms)))
+                                    (and forms
+                                         (cl-every (lambda (x) (safe x 'effect)) (butlast forms))
+                                         (safe (car (last forms)) context))))
+                      ('let-rt (and (safe (nelisp-aot-compiler--ir-get n :value-ir) 'value)
+                                    (safe (nelisp-aot-compiler--ir-get n :body) context)))
+                      ('let-rt-n (and (cl-every (lambda (b) (safe (nth 2 b) 'value))
+                                                (nelisp-aot-compiler--ir-get n :bindings))
+                                      (safe (nelisp-aot-compiler--ir-get n :body) context)))
+                      ('setq-local (safe (nelisp-aot-compiler--ir-get n :value-ir) 'value))
+                      ((or 'ptr-read-u8 'ptr-read-u16 'ptr-read-u32 'ptr-read-u64)
+                       (and (safe (nelisp-aot-compiler--ir-get n :ptr) 'value)
+                            (safe (nelisp-aot-compiler--ir-get n :offset) 'value)))
+                      ((or 'ptr-write-u8 'ptr-write-u16 'ptr-write-u32 'ptr-write-u64)
+                       (and (safe (nelisp-aot-compiler--ir-get n :ptr) 'value)
+                            (safe (nelisp-aot-compiler--ir-get n :offset) 'value)
+                            (safe (nelisp-aot-compiler--ir-get n :val) 'value)
+                            (nelisp-aot-compiler--x86-terminal-caller-store-p n)))
+                      (_ nil))))))
+      (safe body 'value))))
+
+(defun nelisp-aot-compiler--x86-terminal-caller-plan (ir state)
+  "Remap selected callee slots only in a proven terminal-barrier STATE.
+GNU comp.c:2409-2418 exposes incoming mvars to GCC; its root-frame
+translation uses caller registers before a terminal helper.  Keep the
+original slot ordering, ABI parallel forwarding and flush/end mapping."
+  (let* ((pairs (plist-get state :promotions))
+         (available (cl-remove-if (lambda (r) (memq r (mapcar #'cdr pairs))) '(rdx rcx)))
+         (changed nil)
+         (remapped (mapcar (lambda (pair)
+                             (if (and available (memq (cdr pair) '(r12 r13 r14 r15)))
+                                 (prog1 (cons (car pair) (pop available)) (setq changed t))
+                               pair)) pairs)))
+    (if (and changed (plist-get state :terminal-barriers)
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not (and nelisp-aot-compiler--native-emit-enabled (fboundp 'nl-jit-call-out-2)))
+             (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p)
+             (nelisp-aot-compiler--x86-terminal-caller-body-p
+              (nelisp-aot-compiler--ir-get ir :body) (plist-get state :terminal-barriers) remapped))
+        (plist-put (copy-sequence state) :promotions remapped)
+      state)))
+
 (defun nelisp-aot-compiler--x86-terminal-entry-plan (ir)
   "Allocate only until a terminal barrier; never across a call.
 GNU comp.el:2530-2540 joins incoming mvars at PHIs; comp.c:2036-2047
@@ -22479,7 +22608,9 @@ mapping before the unchanged barrier emitter reads its operands."
   (unless (nelisp-aot-compiler--ir-get ir :self-tco-raw)
     (let ((barriers (nelisp-aot-compiler--x86-terminal-barriers
                      (nelisp-aot-compiler--ir-get ir :body))))
-      (when barriers (nelisp-aot-compiler--x86-body-entry-plan ir barriers)))))
+      (when barriers
+        (let ((state (nelisp-aot-compiler--x86-body-entry-plan ir barriers)))
+          (and state (nelisp-aot-compiler--x86-terminal-caller-plan ir state)))))))
 
 (defun nelisp-aot-compiler--flush-promoted-slots-x86 (buf)
   "Materialize current slot values, with the innermost dynamic alias first."
