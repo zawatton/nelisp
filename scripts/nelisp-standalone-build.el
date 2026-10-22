@@ -19545,15 +19545,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; PLAINVAL and FORWARDED cases are in line (`nl_ent_plain_value'),
       ;; the rest is `nl_sym_find_value_w' (VARALIAS chains, LOCALIZED and
       ;; Doc 199 workers through the general path).
-      (let* ((entry (if (= (nl_sym_direct_env_p env) 1)
-                        (nelisp_mirror_lookup_entry_owned (+ env 0) name) 0))
-             (w (if (= entry 0) 0 (nl_ent_plain_value entry))))
-        (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
-            (seq (ptr-write-u64 dst 0 w) 0)
-          (let* ((value (nl_sym_find_value_w env name 0)))
-            (if (= value 0) 1
-              (if (= value 2) (seq (nl_stash_void_variable env name) 1)
-                (seq (ptr-write-u64 dst 0 value) 0)))))))
+      ;; GNU bytecode.c:638-646: a symbol whose redirect is SYMBOL_PLAINVAL and whose
+      ;; value is not Qunbound is read in line, anything else goes to Fsymbol_value.
+      ;; `nl_gv_fast' is that test on the symbol object (the interpreter's variable read
+      ;; shares it: an interned symbol object, redirect 0, no worker, no root-pin capture),
+      ;; so the common case skips the mirror lookup and the worker, direct-env and
+      ;; unbound checks; -1 (any other shape) and 2 (the unbound marker) take the path
+      ;; below, which also signals void-variable.
+      (let* ((g (extern-call nl_gv_fast env name)))
+        (if (if (= g -1) 1 (= g 2))
+            (let* ((entry (if (= (nl_sym_direct_env_p env) 1)
+                              (nelisp_mirror_lookup_entry_owned (+ env 0) name) 0))
+                   (w (if (= entry 0) 0 (nl_ent_plain_value entry))))
+              (if (if (= w 0) 0 (if (= (wf_bytecode_w_unbound_p env w) 1) 0 1))
+                  (seq (ptr-write-u64 dst 0 w) 0)
+                (let* ((value (nl_sym_find_value_w env name 0)))
+                  (if (= value 0) 1
+                    (if (= value 2) (seq (nl_stash_void_variable env name) 1)
+                      (seq (ptr-write-u64 dst 0 value) 0))))))
+          (seq (ptr-write-u64 dst 0 g) 0))))
     (defun wf_bytecode_w_memq (mem sp scratch)
       (let* ((x (heap-read-u64 (+ mem (* (- sp 2) 8)) 0))
              (l (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
