@@ -2249,7 +2249,7 @@ twice appears twice; readers keep the last occurrence of each unit."
                 (nelisp-asm-x86_64-make-buffer resolved-abi)))
          ;; A fresh unit owns this label set. Keep duplicate checking O(1)
          ;; without changing the public assembler buffer or its label order.
-         (nelisp-asm-x86_64--label-index
+         (nelisp-asm-x86_64-label-index
           (unless (eq arch 'aarch64) (cons buf (make-hash-table :test 'eq)))))
     (when nelisp-aot-compiler-tco-enabled
       (message "nelisp-tco: %d rewrite(s) in unit %s"
