@@ -16850,6 +16850,9 @@ only when A is an immediate or B assigns no local
   '((< . >) (> . <) (<= . >=) (>= . <=) (= . =) (/= . /=))
   "Comparison op with its operands exchanged.")
 
+(defvar nelisp-aot-compiler--x86-affine-loop-state nil
+  "Exact derived-expression descriptor, live only inside its AB hot span.")
+
 (defun nelisp-aot-compiler--emit-compare-x86 (a b buf &optional op)
   "x86-64: set the flags of A - B for a signed comparison OP.
 Return non-nil when the flags describe B - A instead (the caller swaps
@@ -16858,6 +16861,15 @@ compared with an immediate compares in memory (CG4)."
   (let ((ao (nelisp-aot-compiler--x86-leaf-operand a))
         (bo (nelisp-aot-compiler--x86-leaf-operand b)))
     (cond
+     ((and (eq op '=)
+           (eq a (plist-get nelisp-aot-compiler--x86-affine-loop-state :lhs))
+           (eq b (plist-get nelisp-aot-compiler--x86-affine-loop-state :expression)))
+      ;; Keep the original memory read and comparison direction.
+      (nelisp-aot-compiler--x86-op
+       buf t (unibyte-string #x39)
+       (plist-get nelisp-aot-compiler--x86-affine-loop-state :reg)
+       (nelisp-aot-compiler--x86-slot-mem
+        (nelisp-aot-compiler--ir-get a :slot))) nil)
      ((nelisp-aot-compiler--x86-mem-compare a b buf op) nil)
      ((and (nelisp-aot-compiler--imm-int-p a)
            (nelisp-aot-compiler--x86-mem-compare
@@ -16978,12 +16990,24 @@ that lives in memory.  The value is not left in rax."
 
 (defun nelisp-aot-compiler--emit-effect (node buf)
   "Emit NODE's effects, keeping profitable call-free raw regions in registers."
+  (when (and nelisp-aot-compiler--x86-affine-loop-state
+             (eq node (plist-get nelisp-aot-compiler--x86-affine-loop-state :mismatch)))
+    ;; Equality already proves RAX equals the RHS; only mismatch needs repair.
+    (nelisp-asm-x86_64-mov-reg-reg
+     buf 'rax (plist-get nelisp-aot-compiler--x86-affine-loop-state :reg)))
   (if (assq node nelisp-aot-compiler--x86-trace-loop-exits)
       (nelisp-asm-x86_64-jmp-rel32
        buf (cdr (assq node nelisp-aot-compiler--x86-trace-loop-exits)))
     (nelisp-aot-compiler--emit-call-free-region
      node buf (lambda ()
-                (nelisp-aot-compiler--emit-effect-unpromoted node buf)))))
+                (nelisp-aot-compiler--emit-effect-unpromoted node buf))))
+  (when (and nelisp-aot-compiler--x86-affine-loop-state
+             (eq node (plist-get nelisp-aot-compiler--x86-affine-loop-state :update)))
+    ;; The original canonical IV update and its flags have already happened.
+    (let ((reg (plist-get nelisp-aot-compiler--x86-affine-loop-state :reg)))
+      (nelisp-aot-compiler--x86-op
+       buf t (unibyte-string #x8D) reg
+       (list :mem reg nil 1 (plist-get nelisp-aot-compiler--x86-affine-loop-state :coefficient))))))
 
 (defun nelisp-aot-compiler--emit-effect-unpromoted (node buf)
   "Emit NODE for its effects only; its value is discarded.
@@ -25074,6 +25098,114 @@ Names alone cannot distinguish separately parsed units with identical exports."
          (equal names (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) ds))
          (= (length names) (length (delete-dups (copy-sequence names)))))))
 
+(defvar nelisp-aot-compiler--x86-affine-loops t
+  "Cache one proven modulo64 affine use in an existing closed AB loop.")
+
+(defun nelisp-aot-compiler--x86-affine-loop-plan (node head scope original pairs pool fact)
+  "Describe one affine recurrence, or reject before emitting bytes.
+Adapt GCC14 tree-ssa-loop-ivopts.cc:17-52: retain the original IV and
+rank/pool, but replace one derived use by a separately maintained IV.
+The complete AB owner and implicit-effect proof is a prerequisite."
+  (catch 'affine-loop-no
+    (cl-labels
+        ((no () (throw 'affine-loop-no nil))
+         (g (n key) (nelisp-aot-compiler--ir-get n key))
+         (k (n) (nelisp-aot-compiler--ir-kind n))
+         (imm (n v) (and (eq (k n) 'imm) (eql (g n :value) v)))
+         (ref (n slot) (and (eq (k n) 'ref) (eq (g n :class) 'gp)
+                            (not (g n :root-p)) (eql (g n :slot) slot)))
+         (raw (n) (eq (g n :repr) 'raw-i64))
+         (direct-test (n)
+           ;; Its first emitted instruction writes FLAGS before any use.
+           (and (eq (k n) 'cmp) (raw n)
+                (assq (g n :op) nelisp-aot-compiler--cmp-true-jcc)
+                (ref (g n :a) (g (g n :a) :slot))
+                (assq (g (g n :a) :slot) pairs)
+                (or (and (nelisp-aot-compiler--imm-int-p (g n :b))
+                         (nelisp-aot-compiler--x86-imm32-p (g (g n :b) :value)))
+                    (and (ref (g n :b) (g (g n :b) :slot))
+                         (assq (g (g n :b) :slot) pairs))))))
+      (unless (and nelisp-aot-compiler--x86-affine-loops
+                   (equal pool '(rbx r8 r9)) (= (length pairs) 2)
+                   (integerp (plist-get fact :arity))
+                   (<= 0 (plist-get fact :arity) 4)) (no))
+      ;; K has exactly nine completed-plan operations.  Its only destination
+      ;; registers are RAX/R10/R11; ABI leaves are read-only.  Recheck this
+      ;; closed contract so an alternate handler cannot silently use R9.
+      (let ((code (plist-get fact :guarded-body)) (ticks 0))
+        (unless (and (consp code) (proper-list-p code) (<= (length code) 8192)) (no))
+        (cl-labels
+            ((gp (r) (unless (memq r '(rax r10 r11 rdi rsi rdx rcx)) (no)))
+             (shape (x n) (unless (and (proper-list-p x) (= (length x) n)) (no)))
+             (operand (x)
+               (when (> (cl-incf ticks) 8192) (no))
+               (pcase (car-safe x)
+                 (:reg (shape x 2) (gp (cadr x)))
+                 (:imm (shape x 2) (unless (integerp (cadr x)) (no)))
+                 (:mem (shape x 5) (when (nth 1 x) (gp (nth 1 x)))
+                       (unless (and (null (nth 2 x)) (eql (nth 3 x) 1)
+                                    (integerp (nth 4 x))
+                                    (nelisp-aot-compiler--x86-imm32-p (nth 4 x))) (no)))
+                 (_ (no)))))
+          (dolist (insn code)
+            (when (> (cl-incf ticks) 8192) (no))
+            (unless (proper-list-p insn) (no))
+            (pcase (car insn)
+              ((or :mov :load)
+               (shape insn 3) (unless (memq (nth 1 insn) '(rax r10 r11)) (no))
+               (operand (nth 2 insn)))
+              (:alu (shape insn 4)
+                    (unless (and (memq (nth 1 insn) '(+ - logand logior logxor))
+                                 (memq (nth 2 insn) '(rax r10 r11))) (no))
+                    (operand (nth 3 insn)))
+              (:cmp (shape insn 3) (gp (nth 1 insn)) (operand (nth 2 insn)))
+              (:store (shape insn 3) (operand (nth 1 insn)) (operand (nth 2 insn)))
+              (:jcc (shape insn 3)
+                    (unless (and (memq (nth 1 insn) '(e ne l le g ge b be a ae))
+                                 (symbolp (nth 2 insn)) (nth 2 insn)) (no)))
+              ((or :jmp :label) (shape insn 2) (unless (and (symbolp (nth 1 insn)) (nth 1 insn)) (no)))
+              (:fallback (shape insn 1))
+              (_ (no))))))
+      (let* ((tail (g head :body)) (cmp (g tail :test))
+             (lhs (g cmp :a)) (expr (g cmp :b)) (mul (g expr :b))
+             (base (g (g expr :a) :slot)) (iv (g (g mul :a) :slot))
+             (coefficient (g (g mul :b) :value))
+             (update (g tail :then)) (add (g update :value-ir))
+             (miss (g tail :else)) (test (g node :test))
+             (initialized (cl-remove-if-not
+                           (lambda (p) (assq (car p) scope)) (car original)))
+             (rank (mapcar #'car initialized)) (count 0) (iv-writes 0))
+        (unless (and (eq (k tail) 'if) (eq (k cmp) 'cmp) (eq (g cmp :op) '=) (raw cmp)
+                     (ref lhs (g head :slot)) (not (assq (g head :slot) pairs))
+                     (eq (k expr) 'arith) (eq (g expr :op) '+) (raw expr)
+                     (eq (k mul) 'arith) (eq (g mul :op) '*) (raw mul)
+                     (integerp base) (integerp iv) (/= base iv)
+                     (ref (g expr :a) base) (ref (g mul :a) iv)
+                     (eq (k (g mul :b)) 'imm) (integerp coefficient)
+                     (/= coefficient 0) (nelisp-aot-compiler--x86-imm32-p coefficient)
+                     (= (length rank) (length (delete-dups (copy-sequence rank))))
+                     (equal (cl-subseq rank 0 (min 3 (length rank)))
+                            (append (mapcar #'car pairs) (list base)))
+                     (assq base scope) (assq iv pairs)
+                     (eq (k update) 'setq-local) (eql (g update :slot) iv) (raw update)
+                     (eq (k add) 'arith) (eq (g add :op) '+) (raw add)
+                     (ref (g add :a) iv) (imm (g add :b) 1)
+                     ;; Both arms are nonleaf; existing if-conversion cannot bypass edges.
+                     (eq (k miss) 'setq-local) (raw miss) (imm (g miss :value-ir) 0)
+                     (not (eql (g miss :slot) iv)) (assq (g miss :slot) pairs)
+                     (eq (k test) 'if) (direct-test (g test :test))
+                     (direct-test (g test :then)) (imm (g test :else) 0)) (no))
+        (nelisp-aot-compiler--walk-ir
+         node (lambda (n)
+                (when (> (cl-incf count) 8192) (no))
+                (when (eq (k n) 'setq-local)
+                  (when (eql (g n :slot) base) (no))
+                  (when (eql (g n :slot) iv)
+                    (cl-incf iv-writes) (unless (eq n update) (no))))))
+        (unless (= iv-writes 1) (no))
+        (list :expression expr :lhs lhs :base base :iv iv :coefficient coefficient
+              :update update :mismatch miss :reg 'r9)))))
+
 (defun nelisp-aot-compiler--x86-deferred-loop-plan (node)
   "Plan an initialized mutable-home subset of one closed K hot loop.
 Adapt GNU comp.el SSA definitions and GCC regional allocation to E's
@@ -25149,7 +25281,19 @@ are excluded, so original result stores and first-fallback state remain."
                      (nelisp-aot-compiler--x86-direct-call-args-p call))
                    (not (cl-intersection (mapcar #'cdr pairs)
                                          (cl-subseq '(rdi rsi rdx rcx r8 r9) 0 (length args)))))
-          (list :plan (cons pairs (mapcar #'car pairs)) :call call :head head :result (nelisp-aot-compiler--ir-get head :slot) :fact fact)))))))
+          (list :plan (cons pairs (mapcar #'car pairs)) :call call :head head
+                :result (nelisp-aot-compiler--ir-get head :slot) :fact fact
+                :affine (nelisp-aot-compiler--x86-affine-loop-plan
+                         node head scope original pairs pool fact))))))))
+
+(defun nelisp-aot-compiler--emit-affine-loop-reload (affine pairs buf)
+  "Rebuild the private expression from fresh canonical homes, without RAX.
+The proven initial header and cold continuation both write FLAGS before use."
+  (let ((reg (plist-get affine :reg)))
+    (nelisp-asm-x86_64-mov-reg-reg buf reg (cdr (assq (plist-get affine :iv) pairs)))
+    (nelisp-aot-compiler--x86-imul buf reg (list :imm (plist-get affine :coefficient)))
+    (nelisp-aot-compiler--x86-alu
+     buf '+ reg (nelisp-aot-compiler--x86-slot-mem (plist-get affine :base)))))
 
 (defun nelisp-aot-compiler--emit-deferred-loop-x86 (node buf trace)
   "Emit a closed hot trace, ending its two-way home cache before calls.
@@ -25159,6 +25303,7 @@ emitted once; a cold return reloads fresh homes before joining it."
   (let* ((nelisp-aot-compiler--x86-trace-unit-names (plist-get (plist-get trace :fact) :unit-names))
          (plan (plist-get trace :plan)) (pairs (car plan)) (written (cdr plan))
          (head (plist-get trace :head)) (call (plist-get trace :call))
+         (affine (plist-get trace :affine))
          (depth nelisp-aot-compiler--rsp-temp-depth)
          (body (nelisp-aot-compiler--x86-trace-label node "deferred-body"))
          (cont (nelisp-aot-compiler--x86-trace-label node "deferred-cont"))
@@ -25173,7 +25318,10 @@ emitted once; a cold return reloads fresh homes before joining it."
                    (nelisp-aot-compiler--emit-promotion-cleanup-x86 pairs written nil buf)
                    (cl-assert (= depth nelisp-aot-compiler--rsp-temp-depth))))
       (reload)
+      (when affine
+        (nelisp-aot-compiler--emit-affine-loop-reload affine pairs buf))
       (let ((nelisp-aot-compiler--promoted-slots pairs)
+            (nelisp-aot-compiler--x86-affine-loop-state affine)
             (nelisp-aot-compiler--x86-deferred-loop-cut (cons call cold))
             (nelisp-aot-compiler--x86-interval-leaf-p t))
         (nelisp-asm-x86_64-jmp-rel32 buf test)
@@ -25189,6 +25337,7 @@ emitted once; a cold return reloads fresh homes before joining it."
       (nelisp-asm-x86_64-jmp-rel32 buf done)
       (nelisp-asm-x86_64-define-label buf cold)
       (let ((nelisp-aot-compiler--promoted-slots nil)
+            (nelisp-aot-compiler--x86-affine-loop-state nil)
             (nelisp-aot-compiler--x86-deferred-loop-cut nil)
             (nelisp-aot-compiler--x86-trace-write-through nil)
             (nelisp-aot-compiler--x86-trace-loop-exits nil))
@@ -25200,6 +25349,8 @@ emitted once; a cold return reloads fresh homes before joining it."
         (nelisp-aot-compiler--emit-frame-slot-store-from-value
          buf (nelisp-aot-compiler--ir-get head :slot))
         (reload)
+        (when affine
+          (nelisp-aot-compiler--emit-affine-loop-reload affine pairs buf))
         (nelisp-asm-x86_64-jmp-rel32 buf cont))
       (nelisp-asm-x86_64-define-label buf done))))
 
