@@ -514,6 +514,13 @@ overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vecto
   compiler's call and stack-slot overhead, which the code-generation lane owns.  =test/gc-port-cons-vector-check.el=
   (291 cases: every kind of element word as car, cdr and fill) is identical on GNU and on this build, as it was on the
   build before.
+- =make-vector= (alloc.c =make_vector=): =vector-make= leaves every slot Nil, and the builtin then stored INIT with a
+  recursive function (=bf_mv_fill=: one call, and one =nl_vector_set_slot= call through the =nl_val_clone_into=
+  keystone, a slot): 2,658 instructions for 16 slots against =Fmake_vector= with =allocate_vectorlike= and
+  =setup_on_free_list= at 215.  The keystone stores a word whose low three bits are not 000 as it is, so such an INIT
+  is stored in a loop over the vector's slots, and Nil (what the allocator wrote) not at all; a legacy-view INIT keeps
+  the old path.  1,234 instructions: two =nl_alloc_bytes= calls on a fresh heap (the 32-byte view slot and the block,
+  346 each; the steady state pops from =nl_alloc_pop_fast= instead) and the allocator's own Nil pass.
 
 ** Bytecode VM safepoints (maybe_gc)
 
