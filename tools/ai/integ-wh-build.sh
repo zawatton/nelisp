@@ -12,6 +12,8 @@
 # BUILD_SEED=DIR seeds the unit cache (target/standalone-units, keyed by content and
 # toolchain digest) from an earlier snapshot's, so only changed units compile.
 # HEAVY_RUN and GNU_EMACS override the heavy-run.sh and Emacs paths.
+# BUILD_OUT=PATH writes the binary to PATH (relative to the worktree root) and its log to PATH.log,
+# so an intermediate build does not replace target/integ/nelisp-dyn.
 cd "$(dirname "$0")/../.." || exit 1
 root=$PWD
 H=${HEAVY_RUN:-}
@@ -25,6 +27,8 @@ fi
 [ -x "$H" ] || { echo "heavy-run.sh not found; set HEAVY_RUN"; exit 2; }
 EMACS_BIN=${GNU_EMACS:-/usr/local/bin/emacs}
 rev=$(git rev-parse --verify "${1:-HEAD}^{commit}") || exit 2
+out=${BUILD_OUT:-target/integ/nelisp-dyn}
+case $out in /*) ;; *) out=$root/$out ;; esac
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "tracked changes in the worktree: commit first"; exit 2; }
 avail=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
 [ "$avail" -ge 50 ] || { echo "DISK LOW: ${avail}G"; exit 3; }
@@ -42,11 +46,11 @@ s=$(date +%s)
   export TMPDIR=$snap/target/tmp XDG_CACHE_HOME=$snap/target/xdg-cache LC_ALL=C
   exec "$H" bash -c 'ulimit -v 8388608; exec timeout 3000 env "$@"' _ \
     NELISP_READER_DYNAMIC=1 NELISP_VERSION="$ver" NELISP_SOURCE_REVISION="$rev" \
-    NELISP_STANDALONE_READER_OUTPUT="$root/target/integ/nelisp-dyn" \
+    NELISP_STANDALONE_READER_OUTPUT="$out" \
     nice -n 10 "$EMACS_BIN" --batch -Q -L lisp -L src -L scripts \
     --eval '(setq load-prefer-newer t)' -l nelisp-standalone-build -f nelisp-standalone-build-reader
-) > target/integ/build-dyn.log 2>&1
+) > "${out}.log" 2>&1
 rc=$?
-echo "dyn rc=$rc $(( $(date +%s) - s ))s $(stat -c %s target/integ/nelisp-dyn 2>/dev/null) $( (ulimit -v 8388608; target/integ/nelisp-dyn --version 2>/dev/null) | head -1)"
+echo "dyn rc=$rc $(( $(date +%s) - s ))s $(stat -c %s "$out" 2>/dev/null) $( (ulimit -v 8388608; "$out" --version 2>/dev/null) | head -1)"
 [ "$rc" = 0 ] || exit 1
-sha256sum target/integ/nelisp-dyn | cut -c1-16,65-
+sha256sum "$out" | cut -c1-16,65-
