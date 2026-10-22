@@ -10373,8 +10373,11 @@ argument (reachability + in-arena bounds checks).")
         ;; against-the-bug proof (RED before this fix, GREEN after).
         ;; W is the result WORD (0 = signal): the backtrace capture sees rc 1.
         (defun nelisp_eval_call_recorded_done_w (w form_ptr env _pad rec_cur rec_cur_addr pushed)
-          (seq (nl_thread_park_safepoint env)
-               (nl_bt_maybe_capture (if (= w 0) 1 0))
+          ;; maybe_quit is a load and a test (eval.c:2602): the worker park question is
+          ;; asked in line, as `nelisp_eval_call_done' asks it, and the backtrace
+          ;; capture only has something to do for a signal.
+          (seq (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_park_safepoint env))
+               (if (= w 0) (nl_bt_maybe_capture 1) 0)
                (if (= pushed 1) (nl_gc_ctx_pop) 0)
                (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) w)))
         (defun nelisp_eval_call_stash_excessive_lisp_nesting (_env rec_max)
