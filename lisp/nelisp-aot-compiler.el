@@ -15328,44 +15328,78 @@ register.  GNU comp.el:1932-1949 likewise traces a copy's original mvar."
 (defvar nelisp-aot-compiler--x86-index-forward-frame-sensitive-p nil)
 
 (defun nelisp-aot-compiler--x86-forward-load-offset (node)
-  "Forward a single-use pure index binding to its immediate raw load.
-GNU bytecode.c uses indexed stack loads directly.  Preserve the virtual
-frame and CG3 plan; only the lexical temporary's store/load disappears.
-No code is emitted until the complete effective address is preflighted."
-  (when (and nelisp-aot-compiler--x86-call-containing-defun-p
+  "Forward a single-use pure GP let chain to its final raw load.
+GNU bytecode.c:1784-1793 reads indexed values directly; GCC eliminates
+pure SSA temporaries.  Preserve virtual slots and the original CG3 plan.
+Only address expressions are expanded, after validating the whole chain;
+no loads move across control flow or another load."
+  (when (and (eq (nelisp-aot-compiler--ir-kind node) 'let-rt)
+             nelisp-aot-compiler--x86-call-containing-defun-p
              (eq nelisp-aot-compiler--arch 'x86_64)
              (eq nelisp-aot-compiler--abi 'sysv)
              (not nelisp-aot-compiler--checked-arith)
              (not (nelisp-aot-compiler--lisp-values-p))
-             (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p))
-    (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
-           (value (nelisp-aot-compiler--ir-get node :value-ir))
-           (body (nelisp-aot-compiler--ir-get node :body))
-           (ptr (nelisp-aot-compiler--ir-get body :ptr))
-           (offset (nelisp-aot-compiler--ir-get body :offset)))
-      (when (and (not (nelisp-aot-compiler--ir-get node :root-p))
-                 (not (nelisp-aot-compiler--ir-get offset :root-p))
-                 (memq (nelisp-aot-compiler--ir-kind body)
-                        '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
-                 (eq (nelisp-aot-compiler--ir-kind offset) 'ref)
-                 (eql slot (nelisp-aot-compiler--ir-get offset :slot))
-                 (memq (nelisp-aot-compiler--ir-kind value) '(arith shift))
-                 (or (nelisp-aot-compiler--x86-ref-leaf-p ptr)
-                     (nelisp-aot-compiler--imm-int-p ptr))
-                 (not (and (eq (nelisp-aot-compiler--ir-kind ptr) 'ref)
-                           (eql slot (nelisp-aot-compiler--ir-get ptr :slot))))
-                 (not (cl-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
-                               nelisp-aot-compiler--promoted-slots)))
-        (let ((self nil))
+             (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p)
+             (not (cl-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
+                           nelisp-aot-compiler--promoted-slots)))
+    (let ((body node) (bindings nil) (targets nil) (valid t))
+      (while (eq (nelisp-aot-compiler--ir-kind body) 'let-rt)
+        (let* ((slot (nelisp-aot-compiler--ir-get body :slot))
+               (value (nelisp-aot-compiler--ir-get body :value-ir))
+               (tail (nelisp-aot-compiler--ir-get body :body))
+               (uses 0))
+          (unless (and (integerp slot) (<= 0 slot) (not (memq slot targets)))
+            (setq valid nil))
           (nelisp-aot-compiler--walk-ir
            value (lambda (n)
-                   (when (or (nelisp-aot-compiler--ir-get n :root-p)
-                             (and (eq (nelisp-aot-compiler--ir-kind n) 'ref)
-                                  (eql slot (nelisp-aot-compiler--ir-get n :slot))))
-                     (setq self t))))
-          (when (and (not self)
-                     (nelisp-aot-compiler--x86-affine-address-plan ptr value))
-            (nelisp-aot-compiler--ir-with body :offset value)))))))
+                   (when (and (eq (nelisp-aot-compiler--ir-kind n) 'ref)
+                              (eql slot (nelisp-aot-compiler--ir-get n :slot)))
+                     (setq valid nil))))
+          (nelisp-aot-compiler--walk-ir
+           tail (lambda (n)
+                  (when (and (eq (nelisp-aot-compiler--ir-kind n) 'ref)
+                             (eql slot (nelisp-aot-compiler--ir-get n :slot)))
+                    (setq uses (1+ uses)))))
+          (unless (= uses 1) (setq valid nil))
+          (push slot targets)
+          (push (cons slot value) bindings)
+          (setq body tail)))
+      (nelisp-aot-compiler--walk-ir
+       node (lambda (n)
+              (when (or (nelisp-aot-compiler--ir-get n :root-p)
+                        (not (memq (nelisp-aot-compiler--ir-get n :class) '(nil gp)))
+                        (not (memq (nelisp-aot-compiler--ir-get n :cls) '(nil gp))))
+                (setq valid nil))))
+      (when (and valid
+                 (memq (nelisp-aot-compiler--ir-kind body)
+                       '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64)))
+        (cl-labels
+            ((expand-address
+              (expr env)
+              (pcase (nelisp-aot-compiler--ir-kind expr)
+                ('ref (let* ((slot (nelisp-aot-compiler--ir-get expr :slot))
+                             (bound (assq slot env)))
+                        (cond (bound (cdr bound))
+                              ((memq slot targets) (setq valid nil) nil)
+                              (t expr))))
+                ('imm (and (nelisp-aot-compiler--imm-int-p expr) expr))
+                ((or 'arith 'shift)
+                 (let ((a (expand-address (nelisp-aot-compiler--ir-get expr :a) env))
+                       (b (expand-address (nelisp-aot-compiler--ir-get expr :b) env)))
+                   (and a b (nelisp-aot-compiler--ir-with
+                             (nelisp-aot-compiler--ir-with expr :a a) :b b)))))))
+          (let ((env nil))
+            (dolist (binding (nreverse bindings))
+              (let ((value (expand-address (cdr binding) env)))
+                (unless (and value (nelisp-aot-compiler--x86-affine-form value))
+                  (setq valid nil))
+                (push (cons (car binding) value) env)))
+            (let ((ptr (expand-address (nelisp-aot-compiler--ir-get body :ptr) env))
+                  (offset (expand-address (nelisp-aot-compiler--ir-get body :offset) env)))
+              (when (and valid ptr offset
+                         (nelisp-aot-compiler--x86-affine-address-plan ptr offset))
+                (nelisp-aot-compiler--ir-with
+                 (nelisp-aot-compiler--ir-with body :ptr ptr) :offset offset)))))))))
 
 (defun nelisp-aot-compiler--emit-let-rt-x86 (node buf emit-body)
   "Emit NODE's binding, then invoke EMIT-BODY on its body.
@@ -16669,6 +16703,9 @@ can enter this tree.  This preflight emits no bytes."
     (when (and (memq (nelisp-aot-compiler--ir-get node :cls) '(nil gp))
                (memq (nelisp-aot-compiler--ir-get node :class) '(nil gp)))
       (cond
+       ((eq kind 'let-rt)
+        (let ((load (nelisp-aot-compiler--x86-forward-load-offset node)))
+          (and load (nelisp-aot-compiler--x86-memory-tree-info load))))
        ((or (nelisp-aot-compiler--imm-int-p node)
             (nelisp-aot-compiler--x86-leaf-operand node))
         (cons 1 nil))
@@ -16712,6 +16749,10 @@ rdi/rsi.  No general emit-value helper or call is used."
          (kind (nelisp-aot-compiler--ir-kind node))
          (leaf (nelisp-aot-compiler--x86-leaf-operand node)))
     (cond
+     ((eq kind 'let-rt)
+      (nelisp-aot-compiler--emit-memory-tree-x86
+       (or (nelisp-aot-compiler--x86-forward-load-offset node)
+           (error "Unpreflighted load-only let chain")) buf registers))
      (leaf (nelisp-aot-compiler--x86-load buf dst leaf))
      ((nelisp-aot-compiler--imm-int-p node)
       (nelisp-aot-compiler--emit-imm-to-reg
