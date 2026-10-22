@@ -10262,28 +10262,27 @@ argument (reachability + in-arena bounds checks).")
     ;; signal captures its own innermost frames.  Clearing on any rc=0
     ;; return instead would be wrong: arithmetic dispatch clears the flag
     ;; while an `unwind-protect' cleanup runs mid-propagation.
-    (defun nl_bt_capture_frames_from (ring_start count i)
+    (defun nl_bt_capture_frames_from (state start count i)
       (if (>= i count) 0
         (nl_seq2
          (ptr-write-u64 (+ (data-addr nl_bt_snapshot) (+ 16 (* i 8))) 0
-                        (heap-read-u64
-                         (+ (data-addr nl_gc_loop_ctx)
-                            (+ 64 (* (+ ring_start i) 56)))
-                         8))
-         (nl_bt_capture_frames_from ring_start count (+ i 1)))))
-    (defun nl_bt_capture_now ()
-      (let* ((depth (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
+                        (heap-read-u64 (+ state (+ 64 (* (+ start i) 160))) 0))
+         (nl_bt_capture_frames_from state start count (+ i 1)))))
+    ;; The innermost twenty activation records' functions (the chunk of ENV's N4 state).
+    (defun nl_bt_capture_now (env)
+      (let* ((state (heap-read-u64 env 176))
+             (depth (if (= state 0) 0 (heap-read-u64 state 0)))
              (n (if (< depth 20) depth 20))
-             (ring_start (- depth n)))
+             (start (- depth n)))
         (seq
          (ptr-write-u64 (data-addr nl_bt_snapshot) 0 1)
          (ptr-write-u64 (data-addr nl_bt_snapshot) 8 n)
-         (nl_bt_capture_frames_from ring_start n 0)
+         (nl_bt_capture_frames_from state start n 0)
          0)))
-    (defun nl_bt_maybe_capture (rc)
+    (defun nl_bt_maybe_capture (env rc)
       (if (= rc 0) 0
         (if (= (heap-read-u64 (data-addr nl_bt_snapshot) 0) 1) 0
-          (nl_bt_capture_now))))
+          (nl_bt_capture_now env))))
     ;; Doc 180 Phase 2 item 3: render the captured snapshot.  A frame's own
     ;; `form_ptr' is the whole form being evaluated, not a function name --
     ;; when it is a call shape (Sexp tag 7 = Cons), the operator in car is
@@ -10297,7 +10296,7 @@ argument (reachability + in-arena bounds checks).")
       (if (= form_ptr 0)
           (let* ((nilslot (alloc-bytes 32 8)))
             (nl_seq2 (wf_write_nil nilslot) nilslot))
-        (if (= (heap-sexp-tag-byte form_ptr) 7) (let* ((cw (nl_cons_car_word form_ptr))) (if (= (logand cw 1) 0) cw (nl_cons_car_ptr form_ptr))) form_ptr)))
+        form_ptr))
     (defun nl_bt_print_frame (i form_ptr)
       (let* ((idx_slot (alloc-bytes 32 8))
              (idx_ms (alloc-bytes 32 8)) (idx_repr (alloc-bytes 32 8))
@@ -10354,32 +10353,6 @@ argument (reachability + in-arena bounds checks).")
            ;; safepoint has nothing to do: the question is asked here, in line.
            (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_park_safepoint env))
            (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) rc)))
-        ;; fix/gc-ctx-pop-desync (Doc 180 Phase 2 item 1): PUSHED must gate the
-        ;; pop the same way the depth cap gated the push.  `nl_gc_eval_ctx_push'
-        ;; silently no-ops (returns 0, does not touch depth@+0) once depth >=
-        ;; `nl_gc_ctx_max_depth' -- but this function used to call
-        ;; `nl_gc_ctx_pop' UNCONDITIONALLY on every call, regardless of whether
-        ;; its own paired push actually stored a frame.  Once recursion passed
-        ;; the ring's capacity, every further-nested call's return "borrowed" a
-        ;; decrement its own push never earned: depth@+0 walked down to 0 while
-        ;; real, still-live frames (the ones that DID push, still on the native
-        ;; call stack, not yet returned) were still owed their place in the
-        ;; window `nl_gc_mark_recorded_contexts' considers live.  A mid-form
-        ;; collect firing in that window would mark only `[0, depth)' of the
-        ;; ring and miss those frames' roots.  PUSHED (nl_gc_eval_ctx_push's
-        ;; own 1/0 return, now threaded through instead of discarded) makes
-        ;; the pop exactly as conditional as the push it is undoing.  See
-        ;; `nelisp-standalone--reader-frame-stack-pop-desync-smoke' for the
-        ;; against-the-bug proof (RED before this fix, GREEN after).
-        ;; W is the result WORD (0 = signal): the backtrace capture sees rc 1.
-        (defun nelisp_eval_call_recorded_done_w (w form_ptr env _pad rec_cur rec_cur_addr pushed)
-          ;; maybe_quit is a load and a test (eval.c:2602): the worker park question is
-          ;; asked in line, as `nelisp_eval_call_done' asks it, and the backtrace
-          ;; capture only has something to do for a signal.
-          (seq (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_park_safepoint env))
-               (if (= w 0) (nl_bt_maybe_capture 1) 0)
-               (if (= pushed 1) (nl_gc_ctx_pop) 0)
-               (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) w)))
         (defun nelisp_eval_call_stash_excessive_lisp_nesting (_env rec_max)
           (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag_buf (alloc-bytes 24 1)))
             (seq
@@ -10443,15 +10416,8 @@ argument (reachability + in-arena bounds checks).")
                  (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
                (seq
                 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
-                (if (= (nl_gc_frame_record_armed_p) 1)
-                    (let* ((pushed (nl_gc_eval_ctx_push env form_ptr out 0))
-                           (rc (nl_eval_inner form_ptr env out 0)))
-                      (seq (nl_thread_park_safepoint env)
-                           (nl_bt_maybe_capture rc)
-                           (if (= pushed 1) (nl_gc_ctx_pop) 0)
-                           (ptr-write-u64 rec_cur_addr 0 rec_cur) rc))
-                  (nelisp_eval_call_done (nl_eval_inner form_ptr env out 0)
-                                        env rec_cur rec_cur_addr)))))))
+                (nelisp_eval_call_done (nl_eval_inner form_ptr env out 0)
+                                       env rec_cur rec_cur_addr))))))
         (defun nelisp_eval_call_w (form_ptr env _pad)
           ;; A top-level form still needs a lexical declaration context.
           ;; Nested calls use their existing frames; the temporary root is
@@ -10483,26 +10449,13 @@ argument (reachability + in-arena bounds checks).")
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
-                   (if (= (nl_gc_frame_record_armed_p) 1)
-                       (let* ((form_ptr (wf_word_view form))
-                              (pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
-                        (nelisp_eval_call_recorded_done_w
-                         (nelisp_eval_call_record_result
-                          (nl_eval_inner_w form env 0 0) pushed)
-                         form_ptr env 0 rec_cur rec_cur_addr pushed))
-                     (nelisp_eval_call_done
-                      (nl_eval_inner_w form env 0 0)
-                      env rec_cur rec_cur_addr))))))))
-        (defun nelisp_eval_call_record_result (w pushed)
-          (seq (if (= pushed 1)
-                   (if (= (logand w 1) 0)
-                       (ptr-write-u64
-                        (+ (data-addr nl_gc_loop_ctx)
-                           (+ 64 (* (- (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 1) 56)))
-                        16 w)
-                     0)
-                 0)
-               w))))
+                   ;; The forms in flight are the activation records' (function and
+                   ;; arguments, marked by `nl_n4_mark_env'): GNU's record_in_backtrace
+                   ;; is the only record eval_sub makes (eval.c:2630).  The context
+                   ;; stack keeps the driver's frames.
+                   (nelisp_eval_call_done
+                    (nl_eval_inner_w form env 0 0)
+                    env rec_cur rec_cur_addr)))))))))
 
 (defun nelisp-standalone--name-u64 (s)
   "Pack STRING S (<=8 ASCII bytes) little-endian into a u64 for symbol-name match."
@@ -53180,7 +53133,10 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                       (nelisp_eval_call_w cached env 0)))))
           ;; The unbind of the entry, and its debug-on-exit (eval.c:2700), in line.
           (if (= n4-frame 0) w
-            (let* ((r (if (= w 0) 0
+            (let* ((r (if (= w 0)
+                          ;; The bounded backtrace of an uncaught error is the innermost
+                          ;; entries, captured while the failing one is still on the stack.
+                          (seq (if (= (nl_gc_frame_record_armed_p) 1) (nl_bt_maybe_capture env 1) 0) 0)
                         (if (= (heap-read-u64 n4-frame 120) 0) w (nl_n4_exit_debug_w w env))))
                    (st (heap-read-u64 env 176)))
               (seq (ptr-write-u64 st 0 (- (heap-read-u64 st 0) 1)) r)))))
@@ -56176,42 +56132,31 @@ the saved stack top instead of leaking a root entry."
   (message "[standalone-reader] stage3 rootstack smoke PASS"))
 
 (defun nelisp-standalone--reader-frame-stack-pop-desync-smoke ()
-  "Doc 180 Phase 2 item 1: against-the-bug proof for the gc-context frame
-stack's pop/depth-cap desync (`nl_gc_eval_ctx_push' / `nelisp_eval_call_
-recorded_done' in `scripts/nelisp-standalone-build.el').
+  "Doc 180 Phase 2 item 1: the gc-context frame stack's depth stays honest
+under deep recursion.
 
-Arms the frame stack (`(nelisp--debug-switch 5)'), then runs a self-
-recursive, non-tail (so it has real post-recursive-call work to hang a
-mid-unwind checkpoint on) function 3000 levels deep -- three times the
-ring's own 1024-frame capacity (`nl_gc_ctx_max_depth').  The checkpoint
-fires from inside the function's own body, when the unwind has returned
-exactly 1000 of the deepest frames (all of them past the ring's capacity,
-so none of their own pushes ever touched the recorded depth) -- roughly
-2000 shallower frames, pushed early enough during the descent that their
-pushes DID succeed, are still genuinely open on the native call stack at
-that moment, not yet returned.
+History: `nelisp_eval_call_recorded_done' popped the context of every
+evaluation unconditionally, whether or not its own push had stored a frame
+(the ring holds `nl_gc_ctx_max_depth' = 1024 of them), so a recursion deeper
+than the ring "borrowed" decrements and walked the recorded depth down while
+live frames were still open.  Measured against-the-bug: DEPTH=5 at the
+checkpoint of a 3000-deep recursion, 1024 after the fix.
 
-A correct implementation reports the ring still at its capacity, 1024,
-unchanged since none of the 1000 already-returned frames ever incremented
-it and (post-fix) none of their pops decrement it either.  The pre-fix bug
--- `nelisp_eval_call_recorded_done' popped unconditionally, whether or not
-its own paired push had actually stored a frame -- \"borrows\" a decrement
-for every one of those 1000 never-pushed frames too, walking the recorded
-depth down to (empirically, on the unfixed tree) single digits while
-~2000 genuinely still-open frames remain unaccounted for.  A mid-form
-collect firing in that window would mark only `[0, depth)' of the ring
-and miss those live frames' env/result/out roots -- this smoke measures
-the counter directly rather than trying to race an actual collection,
-since the corruption is in the bookkeeping itself and does not depend on
-one firing.
-
-Measured against-the-bug (merge-base eb4eb81f3, before this phase's fix):
-DEPTH=5 at the checkpoint.  After the fix (conditional pop, gated on the
-matching push's own 1/0 return): DEPTH=1024."
+The evaluator no longer pushes a context per evaluation: the forms in flight
+are the activation records' (function and arguments, marked by
+`nl_n4_mark_env'), as GNU's backtrace entries are, and the ring keeps the
+driver's frames only.  What stays to check is the invariant itself: arm the
+frame stack (`(nelisp--debug-switch 5)'), run a self-recursive, non-tail
+function 3000 levels deep, and read the recorded depth from inside it, at
+the checkpoint where 1000 of the deepest frames have returned (about 2000
+are still open).  It must equal the depth read before the recursion began
+(the driver's frames): deep recursion neither adds to the ring nor takes
+from it."
   (let* ((total-depth 3000)
          (checkpoint 1000)
          (src (concat
                "(nelisp--debug-switch 5)\n"
+               "(princ (format \"DEPTH0=%s;\" (nth 6 (nelisp--debug-switch 0))))\n"
                "(defun nelisp-doc180-h (n)\n"
                "  (if (= n 0)\n"
                "      0\n"
@@ -56229,16 +56174,19 @@ matching push's own 1/0 return): DEPTH=1024."
             (setq rc (call-process nelisp-standalone--reader-out nil
                                     (list t nil) nil "--load" load-file))
             (setq out (buffer-string)))
-          (unless (string-match "DEPTH=\\([0-9]+\\);" out)
-            (error "frame-stack pop-desync smoke: no DEPTH= line: exit=%S stdout=%S"
+          (unless (and (string-match "DEPTH0=\\([0-9]+\\);" out)
+                       (string-match "DEPTH=\\([0-9]+\\);" out))
+            (error "frame-stack pop-desync smoke: no DEPTH lines: exit=%S stdout=%S"
                    rc out))
-          (let ((observed (string-to-number (match-string 1 out))))
-            (unless (= observed 1024)
+          (let ((before (progn (string-match "DEPTH0=\\([0-9]+\\);" out)
+                               (string-to-number (match-string 1 out))))
+                (observed (progn (string-match "DEPTH=\\([0-9]+\\);" out)
+                                 (string-to-number (match-string 1 out)))))
+            (unless (= observed before)
               (error (concat "frame-stack pop-desync smoke: depth=%d at the "
-                              "checkpoint (want 1024 -- ~2000 genuinely-open "
-                              "frames are still live at this point in the "
-                              "unwind; see nelisp_eval_call_recorded_done)")
-                     observed))))
+                              "checkpoint, %d before the recursion (a recursion "
+                              "must leave the recorded depth alone)")
+                     observed before))))
       (ignore-errors (delete-file load-file))))
   (message "[standalone-reader] frame-stack pop-desync smoke PASS"))
 
