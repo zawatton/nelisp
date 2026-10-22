@@ -3250,6 +3250,16 @@ it shares with cons and symbol blocks.")
                       0)))
                (seq (setq e (+ e 24)) (setq i (+ i 1)))))
            owner)))
+      ;; 1 when ADDR lies in the strings of a restored cold image: the header
+      ;; area and the sdata block, up to the footer (`nl_string_image_attach').  A
+      ;; string lives there, outside the packed layout, which the dump rewrites
+      ;; from the pool and that area alike (`nl_dump_string_write'); a raw pointer
+      ;; into it, such as a legacy view's data pointer, is neither included nor
+      ;; counted against the dump, as a pointer into the pool is not.
+      (defun nl_dump_in_string_image (addr)
+        (let ((ss (data-addr nl_strings_state)))
+          (if (< addr (heap-read-u64 ss 160)) 0
+            (if (< addr (heap-read-u64 ss 232)) 1 0))))
       ;; Pass 1: include the block ADDR points into.  A legacy block gets
       ;; mark 4 (alive, not yet traversed: `nl_gc_mark_block' still upgrades
       ;; it and recurses); an image object gets a bit in the separate boot
@@ -3258,6 +3268,7 @@ it shares with cons and symbol blocks.")
         (let* ((st (data-addr nl_typed_alloc)) (blo (heap-read-u64 st 200)))
           (if (= (logand addr 7) 0)
               (if (> (nl_typed_find addr) 0) 0
+                (if (= (nl_dump_in_string_image addr) 1) 0
                 (if (if (>= addr blo) (if (< addr (heap-read-u64 st 208))
                                           (= (nl_dump_hole_p addr) 0) 0) 0)
                     (let* ((o (nl_dump_boot_owner addr)) (g (sar (- o blo) 3))
@@ -3269,7 +3280,7 @@ it shares with cons and symbol blocks.")
                       (if (= o 0) 0
                         (if (= (logand (heap-read-u64 h 0) 7) 0)
                             (ptr-write-u64 h 0 (+ (logand (heap-read-u64 h 0) 4294967288) 4))
-                          0))))))
+                          0)))))))
             0)))
       ;; Index of the last entry of the [header, offset] array whose word
       ;; at FIELD (0 = header, 8 = offset) is <= KEY, or -1.
@@ -3285,7 +3296,8 @@ it shares with cons and symbol blocks.")
            ans)))
       (defun nl_dump_excluded (addr)
         (let ((st (data-addr nl_typed_alloc)))
-          (seq (if (if (> (nl_typed_find addr) 0) 1 (nl_dump_in_heap addr))
+          (seq (if (if (= (nl_dump_in_string_image addr) 1) 0
+                     (if (> (nl_typed_find addr) 0) 1 (nl_dump_in_heap addr)))
                    (ptr-write-u64 st 384 (+ (heap-read-u64 st 384) 1)) 0)
                -1)))
       ;; Doc 226 D9: image offset of ADDR inside a symbol_block cell: the
