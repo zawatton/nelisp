@@ -17827,6 +17827,43 @@ is 0), one instruction shorter than and + cmp when X is a register."
 ;; or a box carrying tag byte 0.  t (1) and Int (2) keep the general
 ;; four-way tag: every other odd word reads as t or Int there.
 
+(defvar nelisp-aot-compiler--x86-literal-word-tags t
+  "Fold known encoding bits in RAW fused tag tests, retaining header reads.")
+
+(defun nelisp-aot-compiler--emit-literal-word-tag-test-x86
+    (test tag-node k-node k buf label want-equal)
+  "Use only an exact untyped RAW GP literal's known 64-bit WORD encoding.
+Adapt GCC bit-CCP's known scalar bits at manual tag lowering.  GCC14's
+option documents the mechanism; the inspected BIT_AND source is master.
+Header content stays dynamic and its original guarded read stays here."
+  (let ((x (nelisp-aot-compiler--ir-get tag-node :ptr)))
+    (when (and nelisp-aot-compiler--x86-literal-word-tags
+               (not (nelisp-aot-compiler--lisp-values-p))
+               (not nelisp-aot-compiler--checked-arith)
+               (nelisp-aot-compiler--x86-frame-alias-keys-p test '(:op :a :b :repr))
+               (memq (nelisp-aot-compiler--ir-get test :repr) '(nil raw-i64 raw-bool))
+               (= (length tag-node) 3) (eq (aref tag-node 1) :ptr)
+               (cl-every (lambda (n)
+                           (and (vectorp n) (= (length n) 3)
+                                (eq (aref n 0) 'imm) (eq (aref n 1) :value)
+                                (integerp (aref n 2)))) (list x k-node))
+               (= 0 (logand (nelisp-aot-compiler--ir-get x :value) 1)))
+      (let* ((word (logand (nelisp-aot-compiler--ir-get x :value) #xffffffffffffffff))
+             (bits (logand word 7)))
+        (if (= bits 2)
+            ;; Direct cons WORDs have tag7 and no header byte, even at WORD2.
+            (when (eq (= k nelisp-sexp--tag-cons) want-equal)
+              (nelisp-asm-x86_64-jmp-rel32 buf label))
+          ;; The compile-time010/110 tests precede every pointer WORD load.
+          (let* ((base (if (= bits 6) (- word 6) word))
+                 (signed (if (>= base #x8000000000000000) (- base #x10000000000000000) base)))
+            (nelisp-aot-compiler--emit-imm-to-reg signed 'rdi buf)
+            (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+            (nelisp-aot-compiler--x86-alu-imm buf 'logand '(:reg rax) 63)
+            (nelisp-aot-compiler--x86-alu-imm buf 'cmp '(:reg rax) k)
+            (nelisp-asm-x86_64-jcc-rel32 buf (if want-equal 'je 'jne) label)))
+        t))))
+
 (defun nelisp-aot-compiler--emit-tag-test-jump-x86 (test buf label jump-if-true)
   "Branch on `(= (sexp-tag X) K)' / `/=' with fused tests, or return nil."
   (let* ((op (nelisp-aot-compiler--ir-get test :op))
@@ -17840,7 +17877,9 @@ is 0), one instruction shorter than and + cmp when X is a register."
                  (nelisp-aot-compiler--imm-int-p k-node)
                  (nelisp-aot-compiler--ir-get k-node :value))))
     (when (and (memq op '(= /=)) k (or (<= 3 k 255) (= k 0)))
-      (let* ((x (nelisp-aot-compiler--ir-get tag-node :ptr))
+      (or (nelisp-aot-compiler--emit-literal-word-tag-test-x86
+           test tag-node k-node k buf label (eq jump-if-true (eq op '=)))
+          (let* ((x (nelisp-aot-compiler--ir-get tag-node :ptr))
              (xo (nelisp-aot-compiler--x86-leaf-operand x))
              (r (if (eq (car xo) :reg)
                     (cadr xo)
@@ -17885,7 +17924,7 @@ is 0), one instruction shorter than and + cmp when X is a register."
           (nelisp-asm-x86_64-define-label buf cons-lbl)
           (nelisp-asm-x86_64-jmp-rel32 buf (if (= k nelisp-sexp--tag-cons) on-equal on-differ)))
         (nelisp-asm-x86_64-define-label buf skip)
-        t))))
+        t)))))
 
 (defun nelisp-aot-compiler--emit-binary-operands (a b buf)
   "Emit A and B into rax/r10 or x0/x9, preserving observable source order.
