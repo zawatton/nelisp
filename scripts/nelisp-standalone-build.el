@@ -3427,7 +3427,7 @@ it shares with cons and symbol blocks.")
            (ptr-write-u64 st 424 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,scell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) num_used))
              0)
@@ -3602,7 +3602,7 @@ it shares with cons and symbol blocks.")
            (ptr-write-u64 st 32 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,cell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 32
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) num_used))
              0)
@@ -6109,7 +6109,7 @@ REPL-facing module it feeds."
            (if (= old 0) 0 (nl_os_free_chunk old (* cap 32))) 1))))
     (defun nl_gc_typed_add (kind key aux countoff amount)
       (let* ((st (data-addr nl_gc_typed_state)))
-        (if (= (heap-read-u64 st 0) 1)
+        (if (if (= (heap-read-u64 st 0) 1) 1 (if (= (heap-read-u64 st 0) 4) 1 0))
             (if (if (= (heap-read-u64 st 16) 0) (= (nl_gc_typed_grow) 0)
                   (if (>= (* (+ (heap-read-u64 st 24) 1) 4)
                           (* (heap-read-u64 st 16) 3))
@@ -6144,7 +6144,7 @@ REPL-facing module it feeds."
               (if (or (= tag 6) (= tag 15))
                   (if (= (heap-read-u64 sp 8) (heap-read-u64 st 80))
                       (ptr-write-u8 sp 0 15) 0) 0))
-          (if (= mode 1)
+          (if (if (= mode 1) 1 (if (= mode 4) 1 0))
               ;; Doc 223, GNU gcstat: cons-block cells are counted by
               ;; sweep_conses, and image objects are not counted, as GNU
               ;; never counts pdumper objects (they live outside its
@@ -6193,6 +6193,39 @@ REPL-facing module it feeds."
         ;; nil and t are immediate symbols, with no name allocation needed.
         (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                        (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) 2)) 0))
+    ;; One explicit collection that leaves the six `garbage-collect' counts at
+    ;; nl_gc_typed_state+32.  MODE 4 counts at the first mark (and the typed sweeps, and the intern
+    ;; table's occupancy, cached by the arena's bump pointer, which only an interning moves);
+    ;; MODE 1 is the reference census, an identity set over the marked edges and a walk of the table.
+    ;; Answers 1, or 0 after an out-of-memory in the identity set.
+    (defun nl_gc_stats_run (mode)
+      (let* ((state (data-addr nl_gc_typed_state)) (i 0))
+        (seq
+         (while (< i 112) (ptr-write-u64 state i 0) (setq i (+ i 8)))
+         (ptr-write-u64 state 0 mode)
+         (nl_gc_collect_from_recorded_roots 0)
+         (nl_gc_explicit_rearm)
+         (if (= mode 1)
+             (nl_gc_typed_interns (alloc-bytes 32 8))
+           (let ((key (+ (heap-read-u64 268436296 0) (heap-read-u64 268436288 0))))
+             (seq
+              (if (= (heap-read-u64 state 112) key) 0
+                (let ((cursor 0) (n 0) (slot (alloc-bytes 32 8)))
+                  (seq
+                   (while (>= cursor 0)
+                     (seq (setq cursor (nl_intern_next cursor slot))
+                          (if (< cursor 0) 0 (setq n (+ n 1)))))
+                   (ptr-write-u64 state 112 key)
+                   (ptr-write-u64 state 120 n))))
+              ;; nil and t are immediate symbols, with no name in the table.
+              (ptr-write-u64 state 40
+                (+ (+ (heap-read-u64 state 40) (heap-read-u64 state 120)) 2)))))
+         (if (= (heap-read-u64 state 8) 0) 0
+           (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
+         (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0) (ptr-write-u64 state 24 0)
+         (if (= (heap-read-u64 state 0) 3)
+             (seq (ptr-write-u64 state 0 0) 0)
+           (seq (ptr-write-u64 state 0 0) 1)))))
     ;; Chunk-aware membership.  During Doc 140 Stage 3 only chunk 0 is active,
     ;; but the walk already follows the descriptor list introduced in Stage 2.
     ;; Membership is restricted to [data-start, base+cursor) so fixed control
@@ -6488,8 +6521,11 @@ REPL-facing module it feeds."
                         (setq chunk 0)))))
                  found))))
         0)))
-    ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
+    ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
+    ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
+    ;; image block.  The counters of an explicit `garbage-collect' count on 2
+    ;; (GNU counts only what lives in its own blocks, never a pdumper object).
     (defun nl_gc_mark_block (obj)
       ;; Doc155 §8.12 sound-GC: recurse on mark 0 (unmarked) OR mark 4
       ;; (conserv-PINNED-not-recursed).  A pinned block was kept alive by the
@@ -6531,7 +6567,7 @@ REPL-facing module it feeds."
           (if (= (sar raw 32) 0)
               (let ((m (nl_hdr_mark hdr)))
                 (if (if (= m 0) 1 (if (= m 4) 1 0))
-                    (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
+                    (nl_seq2 (nl_hdr_set_mark hdr 1) 2)
                   0))
             0))))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
@@ -6598,28 +6634,41 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_vectorlike (box)
       (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
           (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 3) (nl_symbol_mark_cell box)
-      (if (= (nl_gc_mark_block box) 0) 0
+      (let ((mr (nl_gc_mark_block box)))
+       (if (= mr 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
-          (nl_gc_typed_vectorlike box kind n)
+          (nl_gc_typed_vectorlike box kind n mr)
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
             (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))))
-    (defun nl_gc_typed_vectorlike (box kind n)
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))))
+    (defun nl_gc_typed_vectorlike (box kind n mr)
       (let* ((state (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 state 0))
              (before (heap-read-u64 state 64)))
-        (if (if (= kind 3) 0
-              (if (= kind 13) 0
-                (if (= kind 11) 0
-                  (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0))))
-            (seq (nl_gc_typed_add 5 box 0 64 1)
-                 (if (> (heap-read-u64 state 64) before)
-                     (ptr-write-u64 state 72
-                       (+ (heap-read-u64 state 72)
-                          (if (= kind 8) n
-                            (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0)) 0)))
+        (if (if (= kind 3) 0 (if (= kind 13) 0 (if (= kind 11) 0 1)))
+            (if (= mode 4)
+                ;; A heap vector, record, char-table or closure marked for the first time.
+                (if (= mr 2)
+                    (seq (ptr-write-u64 state 64 (+ before 1))
+                         (ptr-write-u64 state 72
+                           (+ (heap-read-u64 state 72)
+                              (if (= kind 8) n
+                                (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))))
+                  0)
+              (if (= mode 1)
+                  (if (= (nl_gc_is_boot box) 0)
+                      (seq (nl_gc_typed_add 5 box 0 64 1)
+                           (if (> (heap-read-u64 state 64) before)
+                               (ptr-write-u64 state 72
+                                 (+ (heap-read-u64 state 72)
+                                    (if (= kind 8) n
+                                      (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0))
+                    0)
+                0))
+          0)))
     ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool GC arms.  The pool
     ;; is no longer a GC-managed Sexp::Vector; it is a flat cap*32B buffer
     ;; whose `cap' is stashed @268436448 (`nl_gc_pool_cap').  Mark = mark the
@@ -6669,9 +6718,22 @@ REPL-facing module it feeds."
         (seq (while (= go 1)
           (seq (setq go 0)
             (let ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8))))
-              (if (= (logand sp 7) 2) 0 (nl_gc_typed_slot sp 7))
-              (if (= (nl_gc_mark_cons_payload box) 0) 0
-                (seq (nl_gc_mark_word (heap-read-u64 box 0))
+              (if (= (logand sp 7) 2) 0
+                (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
+                  (nl_gc_typed_slot sp 7)))
+              (let ((r (nl_gc_mark_cons_payload box)))
+               (if (= r 0) 0
+                (seq
+                  ;; A legacy heap cons marked for the first time (a cons-block cell is counted
+                  ;; by sweep_conses, an image cons never).
+                  (if (= r 2)
+                      (if (= (logand sp 7) 2) 0
+                        (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                            (ptr-write-u64 (data-addr nl_gc_typed_state) 32
+                              (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) 1))
+                          0))
+                    0)
+                  (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
                       (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
@@ -6680,7 +6742,7 @@ REPL-facing module it feeds."
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))
-                              (nl_gc_mark_slot dw)))))))))))) 0)))
+                              (nl_gc_mark_slot dw)))))))))))) 0))))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
@@ -6726,8 +6788,15 @@ REPL-facing module it feeds."
                (nl_gc_mark_buf extra)
                (nl_gc_mark_char_table_slots extra 0 extra_len 32 0)))))
     (defun nl_gc_mark_bool_vector_box (box)
-      (if (= (nl_gc_mark_block box) 0) 0
-        (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))
+      (let ((r (nl_gc_mark_block box)))
+        (if (= r 0) 0
+          (seq (if (= r 2)
+                   (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                       (ptr-write-u64 (data-addr nl_gc_typed_state) 64
+                         (+ (heap-read-u64 (data-addr nl_gc_typed_state) 64) 1))
+                     0)
+                 0)
+               (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))))
     ;; Canonical symbol-name strings live in an external sidecar and are
     ;; explicit collector edges. Intern entries stay live with the permanent
     ;; intern table; tag-16 entries are live only when reached this epoch.
@@ -6891,11 +6960,20 @@ REPL-facing module it feeds."
         0)))
     ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
     (defun nl_gc_mark_legacy_slot (sp)
-      (let ((tag (heap-read-u8 sp 0)))
-        (nl_gc_typed_slot sp tag)
+      (let* ((tag (heap-read-u8 sp 0))
+             (st (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 st 0)))
+        ;; The identity-set census runs in modes 1 and 2 only; mode 4 counts at the first mark.
+        (if (= (logand mode 3) 0) 0 (nl_gc_typed_slot sp tag))
         (if (= tag 19)
-            (let ((box (heap-read-u64 sp 8)))
-              (if (= (nl_gc_mark_block box) 0) 0 (nl_gc_mark_slot box)))
+            (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+              (if (= r 0) 0
+                (seq (if (= r 2)
+                         (if (= mode 4)
+                             (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
+                           0)
+                       0)
+                     (nl_gc_mark_slot box))))
         (if (= tag 7)
             (nl_gc_mark_cons sp)
           (if (= tag 8)
@@ -6913,14 +6991,47 @@ REPL-facing module it feeds."
                         (nl_gc_mark_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     ;; MutStr/UnibyteMutStr: NlStr*@sp+8 (ptr@box+8).
-                    (let ((box (heap-read-u64 sp 8)))
-                      (if (= (nl_gc_mark_block box) 0) 0
-                        (nl_gc_mark_buf (heap-read-u64 box 8))))
+                    (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+                      (if (= r 0) 0
+                        (seq (if (= r 2)
+                                 (if (= mode 4)
+                                     (if (< (nl_hdr_bt (- box 8)) 40) 0
+                                       (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                            (ptr-write-u64 st 56
+                                              (+ (heap-read-u64 st 56) (heap-read-u64 box 16)))))
+                                   0)
+                               0)
+                             (nl_gc_mark_buf (heap-read-u64 box 8)))))
                   (if (or (= tag 5) (= tag 14))
-                      (nl_gc_mark_buf (heap-read-u64 sp 16)) ; Str/UnibyteStr
+                      (let ((r (nl_gc_mark_block (heap-read-u64 sp 16)))) ; Str/UnibyteStr
+                        (if (= r 2)
+                            (if (= mode 4)
+                                (let* ((p (heap-read-u64 sp 16)) (len (heap-read-u64 sp 24)))
+                                  (if (< len 0) 0
+                                    (if (> len (- (nl_hdr_bt (- p 8)) 8)) 0
+                                      (if (= len 0)
+                                          ;; GNU shares one empty string; so does the census.
+                                          (if (= (heap-read-u64 st 104) 0)
+                                              (seq (ptr-write-u64 st 104 1)
+                                                   (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1)))
+                                            0)
+                                        (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                             (ptr-write-u64 st 56 (+ (heap-read-u64 st 56) len)))))))
+                              0)
+                          0))
                     (if (or (= tag 4) (= tag 16))
                         (nl_seq2
-                         (nl_gc_mark_buf (heap-read-u64 sp 16))
+                         (let ((r (nl_gc_mark_block (heap-read-u64 sp 16))))
+                           ;; A symbol named by a block (an uninterned or per-occurrence name) is
+                           ;; counted when the block is first marked; a name in the intern region
+                           ;; is in the table's count; a tag-16 symbol's identity is not a block, so
+                           ;; the identity set counts those.
+                           (if (= tag 16)
+                               (if (= mode 4) (nl_gc_typed_slot sp 16) 0)
+                             (if (= r 0) 0
+                               (if (= mode 4)
+                                   (ptr-write-u64 st 40 (+ (heap-read-u64 st 40) 1))
+                                 0))))
                          (nl_gc_symname_mark_one
                           (if (= tag 4) 1 2)
                           (if (= tag 4) (heap-read-u64 sp 16)
@@ -11762,8 +11873,39 @@ leave symbols unresolved at link time."
                 0 (setq ok 0))
             (setq i (+ i 1))))
          (+ (* ok 4) 1))))
+    (defun nl_gc_stats_check_w (_pad)
+      (let* ((state (data-addr nl_gc_typed_state))
+             (k0 0) (k1 0) (k2 0) (k3 0) (k4 0) (k5 0)
+             (c0 0) (c1 0) (c2 0) (c3 0) (c4 0) (c5 0) (mask 0) (lst 3))
+        (if (= (nl_gc_stats_run 1) 0) (+ (* -1 4) 1)
+          (seq
+           (setq k0 (heap-read-u64 state 32)) (setq k1 (heap-read-u64 state 40))
+           (setq k2 (heap-read-u64 state 48)) (setq k3 (heap-read-u64 state 56))
+           (setq k4 (heap-read-u64 state 64)) (setq k5 (heap-read-u64 state 72))
+           (if (= (nl_gc_stats_run 4) 0) (+ (* -2 4) 1)
+             (seq
+              (setq c0 (heap-read-u64 state 32)) (setq c1 (heap-read-u64 state 40))
+              (setq c2 (heap-read-u64 state 48)) (setq c3 (heap-read-u64 state 56))
+              (setq c4 (heap-read-u64 state 64)) (setq c5 (heap-read-u64 state 72))
+              (setq mask (+ (+ (+ (if (= c0 k0) 0 1) (if (= c1 k1) 0 2))
+                               (+ (if (= c2 k2) 0 4) (if (= c3 k3) 0 8)))
+                            (+ (if (= c4 k4) 0 16) (if (= c5 k5) 0 32))))
+              (setq lst (nelisp_cons_construct_w (+ (* k5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k0 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c0 4) 1) lst 0))
+              (nelisp_cons_construct_w (+ (* mask 4) 1) lst 0)))))))
     (defun nl_symbol_selftest_w (args)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 49) (nl_gc_stats_check_w 0)
         (if (= op 48) (nl_boot_selftest_synth 0)
         (if (= op 47) (+ (* (nl_boot_selftest_holes 0) 4) 1)
         (if (= op 46) (+ (* (nl_boot_selftest_state 0) 4) 1)
@@ -11782,7 +11924,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0)))))))))))
+             0))))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -11957,7 +12099,7 @@ leave symbols unresolved at link time."
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 48) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 49) 0)
           (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -14747,35 +14889,22 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     (defun bf_garbage_collect_snapshot_w (env _pad)
   (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
          (args-root (nl_root_word env)) (i 0))
-    (seq
-     (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
-     (ptr-write-u64 state 0 1)
-     (nl_gc_collect_from_recorded_roots 0)
-     (nl_gc_explicit_rearm)
-     ;; The census walk's symbol view is scratch, made after the collection.
-     (nl_gc_typed_interns (alloc-bytes 32 8))
-     (ptr-write-u64 state 0 (if (= (heap-read-u64 state 0) 3) 3 0))
-     (if (= (heap-read-u64 state 0) 3)
-         (seq (if (= (heap-read-u64 state 8) 0) 0
-                (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-              (ptr-write-u64 state 0 0) (nl_root_release env mark)
-              (nl_abi_fail (bf_signal_memory_full) 0))
-       (let* ((snapshot-word (nl_w_vector_make 6 0))
-              (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
-         (seq
-          ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
-          ;; vector's actual WORD header.
-          (ptr-write-u64 args-root 0 args-word)
-          (setq i 0)
-          (while (< i 6)
-            (vector-slot-set (nl_cons_car_word args-word) i
-                             (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
-            (setq i (+ i 1)))
-          (if (= (heap-read-u64 state 8) 0) 0
-            (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-          (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
-          (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
-            (seq (nl_root_release env mark) word))))))))
+    (if (= (nl_gc_stats_run 4) 0)
+        (seq (nl_root_release env mark)
+             (nl_abi_fail (bf_signal_memory_full) 0))
+      (let* ((snapshot-word (nl_w_vector_make 6 0))
+             (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
+        (seq
+         ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
+         ;; vector's actual WORD header.
+         (ptr-write-u64 args-root 0 args-word)
+         (setq i 0)
+         (while (< i 6)
+           (vector-slot-set (nl_cons_car_word args-word) i
+                            (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
+           (setq i (+ i 1)))
+         (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
+           (seq (nl_root_release env mark) word)))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))

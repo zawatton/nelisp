@@ -118,7 +118,8 @@ itself is the cell address plus 2 and =CONS_BLOCK= applies directly.
 - Statistics: =nelisp--arena-stats= appends the cons block count and the live
   and free conses of the last sweep. An explicit =garbage-collect= counts
   block conses from the sweep and skips image objects, as GNU's gcstat skips
-  pdumper objects; only legacy heap objects still go through the census.
+  pdumper objects; the legacy heap objects are counted at their first mark
+  (see "garbage-collect's counters").
 - Images: =nelisp--arena-dump-image-stream= appends one converted region after
   the coalesced chunks, one 32-byte legacy block per cell (=nl_dump_cons_*=).
   Cells the image walk reached are live payloads, the rest are free blocks.
@@ -436,6 +437,48 @@ Here, for the float objects of word-heap S5 (class 110, kind 3):
   is a float_block cell.  =tools/ai/gc-port-float-blocks.py= runs the allocation,
   sweep and reuse cases, a dump and restore, and a second-generation dump and
   restore on both linkages (ledger S1.13).
+
+** garbage-collect's counters (F1 of the speed unit)
+
+GNU's =Fgarbage_collect= reports the totals its sweeps accumulate: =sweep_conses=,
+=sweep_strings= and =sweep_vectors= each touch every object once and add to =gcstat=.
+NeLisp's strings and vectors live in the general heap, which has no per-type sweep
+(S1.2 is still open for them), and the explicit =garbage-collect= took its numbers
+from an identity-set census of the marked edges.  Every legacy slot the marker
+reached was classified (=nl_gc_typed_slot=, about 128 instructions a call) and
+inserted into a hash table in an mmap'd scratch region, and then the whole intern
+table was walked (=nl_intern_next=, 1,048,576 slots of 16 bytes) to count the interned
+symbols: 37M of the 174M instructions of a steady-state collection of the churn
+workload, and the cache and page-fault cost of the table besides.
+
+The counts now come from the marker's first visit of each object, the nearest NeLisp
+event to GNU's sweep visit.  =nl_gc_mark_block= answers 2 for a newly marked heap
+block, 1 for a newly marked image block and 0 for a block already marked or not
+one, and the marker's own branches count on the 2: a string at its character buffer
+(=nl_gc_mark_legacy_slot=, tags 5 and 14), a mutable string at its box (6, 15), a
+vector, record, char-table or closure at its box (=nl_gc_typed_vectorlike=, the word
+vectors and tags 8, 9, 12, 17, 18, 19), a bool-vector at its box and a legacy cons at
+its payload (=nl_gc_mark_cons=).  Cons-block, symbol-block and float cells are counted by
+their sweeps, as before.  An image block is never counted (GNU never counts a pdumper
+object).  A symbol is counted at its name block when that is a heap or image block, and
+the interned symbols are the intern table's occupancy, walked once and cached under the
+arena's bump pointer, which only an interning moves.  A tag-16 symbol (=make-symbol=) has
+an identity that is not a block, so it alone still goes through the identity set.  The
+empty string is one string, as in GNU.  Counting is on only in mode 4 of
+=nl_gc_typed_state=, which =nl_gc_stats_run= sets for an explicit =garbage-collect=; the
+other collections do not pay for it, and =nl_gc_typed_slot= is no longer called on the
+marking path outside the census (mode 1) and the alias rewrite of =clear-string= (mode 2).
+
+The census stays as the reference: =(nelisp--debug-switch 49)= collects once with
+the identity set and once with the counters and answers =(MASK C0..C5 K0..K5)=, the
+counters and then the census, MASK bit I set when row I differs.
+=tools/ai/gc-port-gc-stats.py= (ledger S1.18) checks MASK = 0 after each of a dozen
+scenarios on both linkages, and across a dump and a restore, where the image population
+is not counted and the heap objects stored into it are.  With the conservative scan on, the
+two collections pin different stack words and a few cells may differ (the check allows 64).
+Two differences from the census are accepted: a string whose buffer another string with a
+different length also names counts once (the census counted it twice), and an
+uninterned symbol in the image is still counted, as the census always did.
 
 ** Bytecode VM safepoints (maybe_gc)
 
