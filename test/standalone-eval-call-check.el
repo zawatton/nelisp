@@ -289,4 +289,83 @@
          (list (ec-err (lambda () (eval '(let* ((a (ec-note 1)) (:k 2) (b (ec-note 3))) b) t)))
                (reverse ec-log))))
 
+;; Flet and FletX (eval.c:1075-1194).  `let' takes the list's length first (list_length:
+;; wrong-type-argument listp for an improper end), then evaluates every value form in order
+;; (`Fcdr (Fcdr (elt))' must be nil, else the one-value-form error), then binds each variable
+;; (symbolp is checked there, and a constant is refused there, after every initialiser ran).
+;; `let*' evaluates and binds one element at a time and checks the end of the list last.
+(defmacro ec-logged (form)
+  `(progn (setq ec-log nil) (list (ec-err (lambda () (eval ',form t))) (reverse ec-log))))
+(ec-case let-extra-value (eval '(let ((a 1 2)) a) t))
+(ec-case let-extra-value-improper (eval '(let ((a 1 . 2)) a) t))
+(ec-case let-extra-value-late (ec-logged (let ((a (ec-note 1)) (b 1 2)) a)))
+(ec-case letstar-extra-value (eval '(let* ((a 1 2)) a) t))
+(ec-case letstar-extra-value-late (ec-logged (let* ((a (ec-note 1)) (b (ec-note 2) 3)) a)))
+(ec-case let-dotted-binding (eval '(let ((a . 1)) a) t))
+(ec-case letstar-dotted-binding (eval '(let* ((a . 1)) a) t))
+(ec-case let-improper-list (ec-logged (let ((a (ec-note 1)) . 2) a)))
+(ec-case letstar-improper-list (ec-logged (let* ((a (ec-note 1)) . 2) a)))
+(ec-case let-not-a-list (eval '(let 1 3) t))
+(ec-case let-string-list (eval '(let "ab" 3) t))
+(ec-case letstar-not-a-list (eval '(let* 1 3) t))
+(ec-case let-not-a-list-element (eval '(let (1) 3) t))
+(ec-case letstar-not-a-list-element (eval '(let* (1) 3) t))
+(ec-case let-not-a-symbol (eval '(let ((1 2)) 3) t))
+(ec-case let-not-a-symbol-init-first (ec-logged (let ((1 (ec-note 2))) 3)))
+(ec-case letstar-not-a-symbol-init-first (ec-logged (let* ((1 (ec-note 2))) 3)))
+(ec-case let-cons-variable (eval '(let (((a) 1)) 2) t))
+(ec-case let-nil-init-first (ec-logged (let ((nil (ec-note 1))) 2)))
+(ec-case let-t-init-first (ec-logged (let ((t (ec-note 1))) 2)))
+(ec-case let-nil-second (ec-logged (let ((a (ec-note 1)) (nil (ec-note 2))) 2)))
+(ec-case letstar-nil-first (ec-logged (let* ((a (ec-note 1)) (nil (ec-note 2)) (b (ec-note 3))) 2)))
+(ec-case let-nil-bare (eval '(let (nil) 2) t))
+(ec-case let-empty-element (eval '(let (()) 2) t))
+(ec-case let-nil-element (eval '(let ((nil)) 2) t))
+(ec-case let-body-dotted (eval '(let ((a 1)) a . 2) t))
+(ec-case let-variable-named-like-a-function (eval '(let ((ec-note 1)) 3) t))
+(ec-case let-empty-list (eval '(let () 1) t))
+(ec-case let-values-before-bindings (eval '(let ((a 1) (b 2)) (let ((a b) (b a)) (list a b))) t))
+(ec-case letstar-sequential (eval '(let* ((a 1) (b (+ a 1)) (c (* b 2))) (list a b c)) t))
+
+;; GNU's C-level constants (make_symbol_constant: data.c most-positive-fixnum and
+;; most-negative-fixnum, buffer.c enable-multibyte-characters, font.c font-weight-table,
+;; font-slant-table and font-width-table; lread.c nil and t) refuse every write with
+;; setting-constant (data.c set_internal), `let' included, even with their own value; a
+;; function parameter of that name is an ordinary lexical binding.
+(ec-case const-let (eval '(let ((most-positive-fixnum 1)) 2) t))
+(ec-case const-letstar (eval '(let* ((most-negative-fixnum 1)) 2) t))
+(ec-case const-let-own-value (eval '(let ((most-positive-fixnum most-positive-fixnum)) 2) t))
+(ec-case const-set (eval '(set 'most-positive-fixnum 1) t))
+(ec-case const-setq (eval '(setq most-positive-fixnum 1) t))
+(ec-case const-setq-negative (eval '(setq most-negative-fixnum 1) t))
+(ec-case const-set-default (eval '(set-default 'most-positive-fixnum 1) t))
+(ec-case const-setq-default (eval '(setq-default most-positive-fixnum 1) t))
+(ec-case const-defconst (eval '(defconst most-positive-fixnum 1) t))
+(ec-case const-makunbound (eval '(makunbound 'most-positive-fixnum) t))
+(ec-case const-defvar-keeps-value (eval '(list (defvar most-positive-fixnum 1) most-positive-fixnum) t))
+(ec-case const-watcher (eval '(add-variable-watcher 'most-positive-fixnum #'ignore) t))
+(ec-case const-alias (eval '(defvaralias 'most-positive-fixnum 'ec-alias-base) t))
+(ec-case const-values (list most-positive-fixnum most-negative-fixnum))
+(ec-case const-multibyte (list (ec-err (lambda () (eval '(setq enable-multibyte-characters nil) t)))
+                               (ec-err (lambda () (eval '(let ((enable-multibyte-characters nil)) 1) t)))))
+(ec-case const-font-tables
+  (list (ec-err (lambda () (eval '(setq font-weight-table 1) t)))
+        (ec-err (lambda () (eval '(let ((font-slant-table 1)) 2) t)))
+        (ec-err (lambda () (eval '(set 'font-width-table 1) t)))))
+(ec-case const-set-buffer-multibyte
+  (with-temp-buffer
+    (list enable-multibyte-characters
+          (progn (set-buffer-multibyte nil) enable-multibyte-characters)
+          (progn (set-buffer-multibyte t) enable-multibyte-characters))))
+(ec-case const-parameter (eval '(funcall (lambda (most-positive-fixnum) most-positive-fixnum) 3) t))
+
+;; defvar of a symbol that is bound to itself (nil, t, a keyword) evaluates nothing and
+;; returns the symbol (eval.c defvar: Fdefault_boundp is t).
+(ec-case defvar-keyword (eval '(defvar :k 1) t))
+(ec-case defvar-keyword-not-evaluated (ec-logged (defvar :k (ec-note 1) "doc")))
+(ec-case defvar-nil (eval '(defvar nil 1) t))
+(ec-case defvar-t (eval '(defvar t 1) t))
+(ec-case defvar-nil-not-evaluated (ec-logged (defvar nil (ec-note 1))))
+(ec-case defvar-non-symbol (eval '(defvar 1 2) t))
+
 (kill-emacs 0)

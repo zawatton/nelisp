@@ -11825,7 +11825,13 @@ never an error, for any integer argument."
   (defun set-buffer-multibyte (flag)
   "Set the current buffer's multibyte flag and return FLAG."
   (let ((old (nelisp--buffer-multibyte-p (current-buffer))))
-    (set (make-local-variable 'enable-multibyte-characters) (and flag t))
+    ;; enable-multibyte-characters is a constant (GNU buffer.c:5279) that only
+    ;; this function changes, as GNU's C code does: the mark is lifted around its
+    ;; own write.
+    (unwind-protect
+        (progn (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters nil)
+               (set (make-local-variable 'enable-multibyte-characters) (and flag t)))
+      (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters t))
     (unless (eq old (and flag t))
       (set (make-local-variable 'buffer-undo-list) nil)))
   flag))
@@ -23112,6 +23118,21 @@ comment above this definition for how that value was measured."))
   (defconst most-negative-fixnum -2305843009213693952
     "Smallest value that is a valid fixnum in this runtime.  See
 `most-positive-fixnum'."))
+
+;; GNU's C-level constants (make_symbol_constant, lisp.h): data.c:4377 and :4383
+;; (most-positive-fixnum, most-negative-fixnum), buffer.c:5279
+;; (enable-multibyte-characters), font.c:5989, :5996 and :6003 (font-weight-table,
+;; font-slant-table, font-width-table); lread.c:5209 and :5214 make nil and t
+;; constant, which they are here from the start.  A symbol marked so refuses
+;; `set', `setq', `let', `defconst', `makunbound' and the like with
+;; setting-constant (data.c set_internal).  The three font tables are unbound
+;; here; the mark is on the symbol, so a later `boundp' is unchanged.
+(let ((nelisp--constants '(most-positive-fixnum most-negative-fixnum
+                           enable-multibyte-characters font-weight-table
+                           font-slant-table font-width-table)))
+  (while nelisp--constants
+    (nelisp--env-globals-op 'set-constant (car nelisp--constants) t)
+    (setq nelisp--constants (cdr nelisp--constants))))
 
 ;; A3: native `equal' never compared vectors element-wise.  Capture native
 ;; `equal' for the atom/string/number leaves and recurse over cons + vector.

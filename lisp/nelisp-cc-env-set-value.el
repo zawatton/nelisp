@@ -210,7 +210,8 @@
                     (if (= (nl_so_p entry) 1)
                         (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
                       (= (nl_val_tag (nl_ent_w entry 3)) 1)))
-                  1
+                  ;; set_internal (data.c) on a NOWRITE symbol: setting-constant.
+                  (bf_setting_constant name-ptr)
                 (let* ((local-p (if (= entry 0) 0
                                   (if (> (nl_ent_n entry) 5)
                                       (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
@@ -298,7 +299,8 @@
                     (if (= (nl_so_p entry) 1)
                         (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
                       (= (nl_val_tag (nl_ent_w entry 3)) 1)))
-                  1
+                  ;; set_internal (data.c) on a NOWRITE symbol: setting-constant.
+                  (bf_setting_constant name-ptr)
                 (let* ((local-p (if (= entry 0) 0
                                   (if (> (nl_ent_n entry) 5)
                                       (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))

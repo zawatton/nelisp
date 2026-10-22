@@ -34068,6 +34068,11 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
          (let* ((name_ptr (nl_cons_car_ptr args))
                 (rest_ptr (nl_cons_cdr_word args)))
            (if (= (sexp-tag rest_ptr) 7)
+               ;; nil, t and a keyword are bound to themselves and declared special from the
+               ;; start (GNU defvar, eval.c: Fdefault_boundp is t, so the value form is not
+               ;; evaluated and nothing is set): only the symbol comes back.
+               (if (if (< (sexp-tag name_ptr) 2) 1 (= (bf_keyword_raw name_ptr) 1))
+                   (seq (nl_sexp_clone_into name_ptr out) 0)
                (let* ((declaration_rc (bf_declare_special env name_ptr)))
                  (if (= declaration_rc 0)
                      (let* ((mode (bf_defvar_init_mode env name_ptr out)))
@@ -34079,7 +34084,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                          (if (= rc 0)
                              (bf_set_defvar_value env name_ptr val_slot out mode)
                            rc))))
-                   declaration_rc))
+                   declaration_rc)))
              ;; No VALUE: affect the current lexical environment only.
              (bf_declare_local_value env name_ptr out)))
        1)))
@@ -48670,16 +48675,30 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                          (seq (nl_let_bad_name b_ptr) 0)))))
                 out))
          ((eq name 'nl_let_bind_walk)
-          ;; GNU interns a keyword as declared_special (lread.c intern_sym), so `let'
-          ;; binds it through specbind, whose set_internal (data.c) refuses a constant:
-          ;; setting-constant, except when the value is the keyword itself.  A bind
-          ;; answers 0 for a failure, with the signal stashed.
-          (push '(defun nl_let_bind_one (env name value)
-                   (if (= (bf_keyword_raw name) 1)
-                       (if (= (wf_bytecode_w_eqw name value) 1)
-                           (nl_logic_bind_local env name value)
-                         (seq (bf_setting_constant name) 0))
-                     (nl_logic_bind_local env name value))) out)
+          ;; GNU specbind (eval.c) of VAR to VALUE: CHECK_TYPE (BARE_SYMBOL_P (var), Qsymbolp)
+          ;; (Flet, eval.c:1175), then, for a symbol that is not lexical, set_internal
+          ;; (data.c), which refuses a constant: setting-constant for nil, t, any symbol
+          ;; whose trapped_write is NOWRITE, and a keyword unless VALUE is the keyword
+          ;; itself.  GNU interns a keyword as declared_special (lread.c intern_sym).
+          ;; Answers 0 for a failure, with the signal stashed.
+          (push '(defun nl_let_symbolp (x)
+                   (let* ((tag (nl_val_tag x)))
+                     (if (< tag 2) 1 (if (= tag 4) 1 (if (= tag 16) 1 0))))) out)
+          (push '(defun nl_let_nowrite_p (env var)
+                   (if (= (logand var 7) 6)
+                       (if (= (logand (sar (ptr-read-u64 (- var 6) 0) 10) 3) 1) 1 0)
+                     (nelisp_mirror_is_constant env var))) out)
+          (push '(defun nl_let_constant_p (env var value)
+                   (if (< (nl_val_tag var) 2) 1
+                     (if (= (bf_keyword_raw var) 1)
+                         (if (= (wf_bytecode_w_eqw var value) 1) 0 1)
+                       (nl_let_nowrite_p env var)))) out)
+          (push '(defun nl_let_bind_one (env var value)
+                   (if (= (nl_let_symbolp var) 0)
+                       (seq (bf_wrong_type_symbolp (wf_word_view var)) 0)
+                     (if (= (nl_let_constant_p env var value) 1)
+                         (seq (bf_setting_constant (wf_word_view var)) 0)
+                       (nl_logic_bind_local env var value)))) out)
           (push '(defun nl_let_bind_walk (pairs_ptr env)
                    (if (= (nl_val_tag pairs_ptr) 7)
                        (let* ((pair (nl_cons_car_word pairs_ptr))
@@ -48689,47 +48708,116 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            (nl_let_bind_walk (nl_cons_cdr_word pairs_ptr) env)))
                      0)) out))
          ((eq name 'nl_let_setup)
+          ;; GNU Flet (eval.c:1141-1194): list_length of the variable list first, then
+          ;; every value form in order (a symbol binds nil, `Fcdr (Fcdr (elt))' must be
+          ;; nil, the value is eval_sub of `Fcar (Fcdr (elt))'), then the binding loop.
+          ;; The values wait in one rooted frame, GNU's `temps'.  FletX (eval.c:1075-1131)
+          ;; evaluates and binds one element at a time and checks the list's end last.
+          ;; A failure answers 1 with the signal stashed and nothing left pushed.
+          (push '(defun nl_let_fcdr_w (x)
+                   (if (= x 3) 3
+                     (if (= (nl_val_tag x) 7) (nl_cons_cdr_word x)
+                       (seq (bf_wrong_type_listp (wf_word_view x)) 0)))) out)
+          (push '(defun nl_let_fcar_w (x)
+                   (if (= x 3) 3
+                     (if (= (nl_val_tag x) 7) (nl_cons_car_word x)
+                       (seq (bf_wrong_type_listp (wf_word_view x)) 0)))) out)
+          ;; signal_error (eval.c) with ELT: (error MESSAGE . ELT), or (error MESSAGE ELT)
+          ;; when ELT is not a proper list.
+          (push '(defun nl_let_signal_one_value (elt)
+                   (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8))
+                          (ebuf (alloc-bytes 8 1)) (msg (alloc-bytes 32 8))
+                          (buf (alloc-bytes 48 1)) (tail (alloc-bytes 32 8))
+                          (nil-slot (alloc-bytes 32 8)))
+                     (seq
+                      (ptr-write-u64 ebuf 0 491496043109)
+                      (nl_alloc_symbol ebuf 5 sig-tag)
+                      (ptr-write-u64 buf 0 7593667275528694880)
+                      (ptr-write-u64 buf 8 7142835897080833134)
+                      (ptr-write-u64 buf 16 2334402142592331361)
+                      (ptr-write-u64 buf 24 7308901430535679599)
+                      (ptr-write-u64 buf 32 7362652520824534560)
+                      (ptr-write-u64 buf 40 7172719)
+                      (nl_alloc_str buf 43 msg)
+                      (if (>= (nl_sp_nargs elt) 0)
+                          (nelisp_cons_construct msg (wf_word_view elt) sig-val)
+                        (seq (wf_write_nil nil-slot)
+                             (nelisp_cons_construct (wf_word_view elt) nil-slot tail)
+                             (nelisp_cons_construct msg tail sig-val)))
+                      (nl_exit_signal_w sig-tag sig-val)
+                      1))) out)
+          (push '(defun nl_let_value_w (elt env)
+                   (if (= (nl_let_symbolp elt) 1) 3
+                     (let* ((d1 (nl_let_fcdr_w elt)))
+                       (if (= d1 0) 0
+                         (let* ((d2 (nl_let_fcdr_w d1)))
+                           (if (= d2 0) 0
+                             (if (/= d2 3) (seq (nl_let_signal_one_value elt) 0)
+                               (let* ((form (nl_let_fcar_w d1)))
+                                 (if (= form 0) 0
+                                   (if (= (logand form 1) 1) form
+                                     (nelisp_eval_call_w form env 0))))))))))) out)
+          ;; GNU list_length (fns.c): the number of conses, (wrong-type-argument listp
+          ;; TAIL) when the list ends in an atom other than nil; -1 for the signal.
+          (push '(defun nl_let_list_length (varlist)
+                   (let* ((n 0) (cur varlist))
+                     (seq (while (= (nl_val_tag cur) 7)
+                            (seq (setq n (+ n 1)) (setq cur (nl_cons_cdr_word cur))))
+                          (if (= (nl_val_tag cur) 0) n
+                            (seq (bf_wrong_type_listp (wf_word_view cur)) -1))))) out)
+          (push '(defun nl_let_eval_values (varlist env base)
+                   (let* ((cur varlist) (i 0) (rc 0))
+                     (seq
+                      (while (if (= rc 0) (= (nl_val_tag cur) 7) 0)
+                        (let* ((w (nl_let_value_w (nl_cons_car_word cur) env)))
+                          (seq (if (= w 0) (setq rc 1) (ptr-write-u64 (+ base (* i 8)) 0 w))
+                               (setq cur (nl_cons_cdr_word cur))
+                               (setq i (+ i 1)))))
+                      rc))) out)
+          (push '(defun nl_let_bind_values (varlist env base)
+                   (let* ((cur varlist) (i 0) (rc 0))
+                     (seq
+                      (while (if (= rc 0) (= (nl_val_tag cur) 7) 0)
+                        (let* ((elt (nl_cons_car_word cur))
+                               (var (if (= (nl_let_symbolp elt) 1) elt (nl_cons_car_word elt))))
+                          (seq (if (= (nl_let_bind_one env var (ptr-read-u64 (+ base (* i 8)) 0)) 0)
+                                   (setq rc 1) 0)
+                               (setq cur (nl_cons_cdr_word cur))
+                               (setq i (+ i 1)))))
+                      rc))) out)
           (push '(defun nl_let_setup (bindings_list env sequential)
                    (let* ((frames_ptr (+ env 32)) (push_scratch (alloc-bytes 32 8)))
                      (if (= sequential 0)
-                         (let* ((mark (nl_root_mark env))
-                                (collected (nl_let_collect_walk bindings_list env)))
-                           (if (= collected 1)
-                               (nl_cons_root_finish env mark 1)
-                             ;; No callback can run between this check and
-                             ;; the unguarded binding loop. Initializers may
-                             ;; change the flag; inspect it after collection.
-                             (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
-                                 (seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
-                                       (nl_frame_push_sym1_ptr) push_scratch)
-                                      (if (= (nl_let_bind_walk collected env) 0) 0
-                                        (seq (nl_env_pop_frame env) 1)))
-                               ;; Doc 216 S6.2: the collected pairs are one
-                               ;; WORD root while the binding loop runs.
-                               (let* ((pairs (nl_root_word env)) (rc 1))
-                                 (seq (ptr-write-u64 pairs 0 collected)
-                                      (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
-                                       (nl_frame_push_sym1_ptr) push_scratch)
-                                      (if (= (nl_let_bind_walk (heap-read-u64 pairs 0) env) 0)
-                                          (setq rc 0)
-                                        (nl_env_pop_frame env))
-                                      (nl_cons_root_finish env mark rc))))))
+                         (let* ((n (nl_let_list_length bindings_list)))
+                           (if (< n 0) 1
+                             (let* ((mark (nl_root_mark env)) (base (nl_root_frame env (+ n 1))))
+                               (if (= base 0)
+                                   (nl_cons_root_finish env mark (seq (wf_bytecode_root_exhausted) 1))
+                                 (if (/= (nl_let_eval_values bindings_list env base) 0)
+                                     (nl_cons_root_finish env mark 1)
+                                   (seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
+                                         (nl_frame_push_sym1_ptr) push_scratch)
+                                        (if (= (nl_let_bind_values bindings_list env base) 0)
+                                            (nl_cons_root_finish env mark 0)
+                                          (seq (nl_env_pop_frame env)
+                                               (nl_cons_root_finish env mark 1)))))))))
                        (seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                               (nl_frame_push_sym1_ptr) push_scratch)
-                            (nl_let_star_walk bindings_list env frames_ptr))))) out))
+                            (nl_let_star_walk bindings_list env frames_ptr bindings_list))))) out))
          ((eq name 'nl_let_star_walk)
-          (push '(defun nl_let_star_walk (bindings_ptr env frames_ptr)
-                   (if (= (nl_val_tag bindings_ptr) 7)
-                       (let* ((binding (nl_cons_car_word bindings_ptr))
-                              (name (nl_let_parse_name binding)))
-                         (if (= name 0) (seq (nl_env_pop_frame env) 1)
-                           (let* ((word (nl_let_parse_val_w binding env 0)))
-                             (if (= word 0) (seq (nl_env_pop_frame env) 1)
-                               (if (= (nl_let_bind_one env name word) 0)
-                                   (seq (nl_env_pop_frame env) 1)
-                                 (nl_let_star_walk (nl_cons_cdr_word bindings_ptr)
-                                                   env frames_ptr))))))
-                     0)) out))
+          (push '(defun nl_let_star_walk (cur env frames_ptr orig)
+                   (if (= (nl_val_tag cur) 7)
+                       (let* ((elt (nl_cons_car_word cur))
+                              (isym (nl_let_symbolp elt))
+                              (var (if (= isym 1) elt (nl_let_fcar_w elt))))
+                         (if (= var 0) (seq (nl_env_pop_frame env) 1)
+                           (let* ((w (if (= isym 1) 3 (nl_let_value_w elt env))))
+                             (if (= w 0) (seq (nl_env_pop_frame env) 1)
+                               (if (= (nl_let_bind_one env var w) 0) (seq (nl_env_pop_frame env) 1)
+                                 (nl_let_star_walk (nl_cons_cdr_word cur) env frames_ptr orig))))))
+                     (if (= (nl_val_tag cur) 0) 0
+                       (seq (bf_wrong_type_listp (wf_word_view orig))
+                            (nl_env_pop_frame env) 1)))) out))
          ((memq name '(nl_sf_let_ret nl_sf_let_star_ret))
           (push `(defun ,name ,(caddr form) (if (= pop-rc -1) 1 body-rc)) out))
          ((eq name 'nl_ali_done)
