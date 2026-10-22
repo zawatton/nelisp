@@ -67,7 +67,7 @@ this stage (the blocking NeLisp layer is named). GNU source:
 | mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan starts at the spilled callee-saved registers (=nl_gc_scan_regs=) and checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
 | Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects are never freed or swept, mark through a separate boot bitmap and are validated by a start bitmap built once per watermark. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | ported: the separate mark bitmap, its clearing in the sweep and the never-swept dump; adapted: the start table is a bitmap built by one header walk after restore, and the image's free blocks (hole runs) are still swept because the dump copies whole chunks | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
 | GC threshold | alloc.c:5704 =consing_threshold=, alloc.c:5732 =bump_consing_until_gc=, alloc.c:5769 =maybe_garbage_collect= | Block allocations charge =nl_gc_stats+0= exactly as general allocations do; sweeps add live cell bytes to =nl_gc_stats+16=; =nl_gc_debt_rearm= keeps =max(floor, live * pct)= | adapted: the existing debt trigger already has GNU's shape (threshold from live bytes times a percentage); its policy belongs to the gc-cadence lane | none |
-| Safepoints (=maybe_gc=) | eval.c:2602 =eval_sub=, eval.c:3206 =Ffuncall=, bytecode.c:797 =Bcall=, bytecode.c:861-866 backward branches | =nl_gc_midform_collect= at the =while= back edge and in the native-bytecode poll; =nl_gc_vm_poll= is the entry a bytecode VM calls, with a force hook (debug switch 70) | adapted: GNU tests =consing_until_gc= at these sites, NeLisp tests the reservation and debt triggers there. The interpreted =while= and the native poll poll; the bytecode interpreter does not yet (see "Bytecode VM safepoints") | callpath (its VM), the F integrator (the older VM) |
+| Safepoints (=maybe_gc=) | eval.c:2602 =eval_sub=, eval.c:3206 =Ffuncall=, bytecode.c:797 =Bcall=, bytecode.c:861-866 backward branches | =nl_gc_midform_collect= at the =while= back edge and in the native-bytecode poll; =nl_gc_vm_poll= is the entry a bytecode VM calls, with a force hook (debug switch 70) | adapted: GNU tests =consing_until_gc= at these sites; the NeLisp allocators subtract their bytes from =nl_gc_until=, a VM poll site tests it for a negative value, and =nl_gc_vm_poll= decides with the reservation and debt triggers (see "Bytecode VM safepoints"). The interpreted =while= and the native poll test the triggers directly | callpath (its VM), the F integrator (the older VM) |
 
 * Interaction with the word heap (Doc 216)
 
@@ -519,10 +519,37 @@ The contract this line provides:
 
 - =nl_gc_vm_poll= (scripts/nelisp-standalone-build.el, after
   =nl_gc_midform_collect=): runs a mid-form collection when the growth or
-  debt trigger is due, as the =while= back edge does, and returns 0.  With
-  nothing due it costs two loads and the gate (the armed flag, the
-  reservation against the trigger, the debt test); on the funcall workload the
-  polls are below the noise (9.0 s with 9 collections against 9.5 s without).
+  debt trigger is due, as the =while= back edge does, derives the budget
+  again (next bullet) and returns 0.  Calling it unconditionally costs two
+  loads and the gate (the armed flag, the reservation against the trigger,
+  the debt test), about 51 instructions; a poll site should test the budget
+  first.
+- The budget, GNU's =consing_until_gc= (alloc.c, tested by =maybe_gc= in
+  lisp.h).  =nl_gc_until= is a signed 64-bit word in the driver BSS (a
+  linker symbol, =(data-addr nl_gc_until)=; =nl_gc_until_base=, 8 bytes
+  after it, is the value it was last set to).  Every allocation fast path
+  subtracts its bytes from it: the free-list and run paths of
+  =nl_alloc_bytes= (strings, vectors, bignum limbs, boxes, large blocks) and
+  the cons, symbol and float cells.  **A poll site is
+  =(if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (nl_gc_vm_poll) 0)=,
+  one load and a compare, at every =Bcall= and every 256th backward
+  branch.**  A nonnegative word proves that none of the triggers can be due:
+  it is a slice of the headroom before the debt reaches its limit (64 MiB
+  before the trigger arms, which is the backstop), at most 4 MiB, less one;
+  it is set to -1 when the force hook is on or the reservation has reached
+  the mid-form trigger, and a chunk mapping (the only thing that raises the
+  reservation) and the hook make it -1 at once.  A negative word means
+  "decide now": =nl_gc_vm_poll= decides exactly as before, collecting when a
+  trigger is due, and refills.  The threshold policy is unchanged and stays
+  the gc-cadence lane's (=nl_gc_debt_limit_for=); the budget only reads it, in
+  =nl_gc_budget_refill=.  The debt is =nl_gc_stats+0= (folded at each refill)
+  plus the slice spent, =nl_gc_debt_now=; =nelisp--arena-stats=, the pressure
+  reading and the collection total use the exact figure, a raw reader of
+  =nl_gc_stats+0= sees it only as of the last refill (at most 4 MiB behind).
+  Debug switches: 76 answers the word, 77 its base, 78 the exact debt.
+  =tools/ai/gc-port-budget.py= (ledger S1.19) checks all of it on a VM that
+  polls this way.  A VM may sample, as callpath's did before this, but an
+  inline test at every call is now cheaper than sampling.
 - Call sites, GNU's: at =Bcall= entry before the callee is entered
   (bytecode.c:797), and when a counter of backward branches (a PC lower than
   the previous instruction's, plus the branches a fused fast loop reports)
@@ -557,6 +584,12 @@ The contract this line provides:
   backward-branch poll and the backstop), =force= (the corpus under the hook,
   at least 100 forced collections: a VM without polls, or a binary without
   the hook, answers 0) and =check= (all three on both linkages).
+
+With the inline test the same reference polls cost less than the call they
+replace: on the 18.3M-call funcall workload, paired on CPU 8, the inline test
+takes 0.947 of the time of the unconditional =(nl_gc_vm_poll)= at each =Bcall=
+(8.46 s against 8.97 s), with the same 9 and 13 collections, 151 and 121 MiB
+peaks and 6,710 forced collections (the cadence is unchanged).
 
 Verified on a reference build, this line plus the two polls in this line's VM
 (=tools/ai/gc-port-vm-poll-reference.patch=, kept for the VM's owners; the VM

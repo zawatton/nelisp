@@ -609,6 +609,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      16
      ;; `nl_float_state': Doc 223 typed float blocks.
      128
+     ;; `nl_gc_until' and `nl_gc_until_base': the allocation budget (Doc 223).
+     64
      ;; `nl_cold_chunk0_domain'.
      16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
@@ -991,6 +993,15 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_float_state"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16)
                               :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": GNU's consing_until_gc.  +0 is the word the allocation
+    ;; fast paths subtract their bytes from and a poll site tests for a negative value; +8 is the
+    ;; value it was last set to, so the bytes spent are base - until.
+    (list (nelisp-link-symbol "nl_gc_until"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_until_base"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
                               :section 'bss :bind 'global :type 'object))
@@ -1272,8 +1283,8 @@ cross-unit call) before the freed payload is poisoned."
                                  (bit (shl 1 (/ (- want 16) 8)))
                                  (o 0) (pair-limit (- want 16)))
                             (seq
-                             (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                            (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+                             (ptr-write-u64 (data-addr nl_gc_until) 0
+                                            (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                              (ptr-write-u64 head 0 next)
                              (ptr-write-u64 (data-addr nl_freelist_small_mask) 0
                                             (if (= next 0)
@@ -1306,8 +1317,8 @@ cross-unit call) before the freed payload is poisoned."
                    (obj (+ r 8))
                    (o 0) (pair-limit (- want 16)))
               (seq
-               (ptr-write-u64 (data-addr nl_gc_stats) 0
-                              (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+               (ptr-write-u64 (data-addr nl_gc_until) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                (ptr-write-u64 r 0 want)
                (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
                (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
@@ -2929,8 +2940,8 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u64 268435624 0) 1) 0
               (let ((p (heap-read-u64 st 0)))
                 (seq
-                 (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,cell))
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,cell))
                  (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) 1))
                  (if (> p 0)
                      (seq (ptr-write-u64 st 0 (heap-read-u64 p 8)) p)
@@ -3016,8 +3027,8 @@ it shares with cons and symbol blocks.")
                  (if (= g 0) 0 (nl_symbol_zero g)))
              (let ((p (heap-read-u64 st 392)))
                (seq
-                (ptr-write-u64 (data-addr nl_gc_stats) 0
-                               (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,scell))
+                (ptr-write-u64 (data-addr nl_gc_until) 0
+                               (- (heap-read-u64 (data-addr nl_gc_until) 0) ,scell))
                 (if (> p 0)
                     (seq (ptr-write-u64 st 392 (heap-read-u64 p 40)) (nl_symbol_zero p))
                   (let ((i (heap-read-u64 st 408)) (b (heap-read-u64 st 400)))
@@ -3053,8 +3064,8 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u64 268435624 0) 1) 0
               (let ((p (heap-read-u64 fst 0)))
                 (seq
-                 (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,fcell))
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,fcell))
                  (ptr-write-u64 fst 48 (+ (heap-read-u64 fst 48) 1))
                  (if (> p 0)
                      (seq (ptr-write-u64 fst 0 (heap-read-u64 p 8)) p)
@@ -4777,6 +4788,7 @@ it shares with cons and symbol blocks.")
              (ptr-write-u64 268436168 0 desc)
              (ptr-write-u64 268436176 0 (+ (heap-read-u64 268436176 0) 1))
              (ptr-write-u64 268436184 0 (+ (heap-read-u64 268436184 0) size))
+             (nl_gc_budget_poke)
              desc)))))
     (defun nl_chunk_try_alloc (chunk want)
       (let* ((base (heap-read-u64 (+ chunk 0) 0))
@@ -4815,8 +4827,8 @@ it shares with cons and symbol blocks.")
         ;; add and a store on the hot path; plain (not atomic) on purpose --
         ;; a lost update under Doc 199 workers only delays a trigger.
         (nl_seq2
-         (ptr-write-u64 (data-addr nl_gc_stats) 0
-                        (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+         (ptr-write-u64 (data-addr nl_gc_until) 0
+                        (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
         ;; 1) try exact-fit free-list reuse (sweep populates the list).
         ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
         (let ((reused (if (= (heap-read-u64 268435624 0) 1) 0
@@ -7563,9 +7575,48 @@ REPL-facing module it feeds."
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (ptr-write-u64 (data-addr nl_gc_stats) 8
-                     (nl_gc_debt_limit_for
-                      (heap-read-u64 (data-addr nl_gc_stats) 16))))
+      (seq (ptr-write-u64 (data-addr nl_gc_stats) 8
+                          (nl_gc_debt_limit_for
+                           (heap-read-u64 (data-addr nl_gc_stats) 16)))
+           (nl_gc_budget_refill)))
+    (defun nl_gc_debt_now ()
+      ;; The bytes allocated since the last collection: the debt folded at the last refill plus
+      ;; the slice spent since (the budget's base less what is left of it).
+      (+ (heap-read-u64 (data-addr nl_gc_stats) 0)
+         (- (heap-read-u64 (data-addr nl_gc_until_base) 0)
+            (heap-read-u64 (data-addr nl_gc_until) 0))))
+    ;; The budget a poll site tests (GNU's consing_until_gc, alloc.c): negative means decide now.
+    ;; It is a slice of the headroom before a trigger can fire: the debt against its limit (64 MiB
+    ;; before the trigger arms, the poll's backstop), at most 4 MiB at a time, less one so that a
+    ;; nonnegative word proves debt < limit; -1 when the force hook is set or the reservation has
+    ;; reached the mid-form trigger.  The debt is folded into nl_gc_stats+0 here.
+    (defun nl_gc_budget_refill ()
+      (let* ((st (data-addr nl_gc_stats))
+             (debt (nl_gc_debt_now))
+             (rem (if (< (heap-read-u64 st 24) 2)
+                      (- 67108864 debt)
+                    (if (= (heap-read-u64 st 8) 0) 4194304
+                      (- (heap-read-u64 st 8) debt))))
+             (u (if (< rem 4194304) rem 4194304))
+             (until (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) -1
+                      (if (<= u 0) -1
+                        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                            (if (>= (heap-read-u64 268436184 0)
+                                    (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                                -1 (- u 1))
+                          (- u 1))))))
+        (seq (ptr-write-u64 st 0 debt)
+             (ptr-write-u64 (data-addr nl_gc_until_base) 0 until)
+             (ptr-write-u64 (data-addr nl_gc_until) 0 until)
+             0)))
+    ;; Make the budget negative without losing the debt spent so far: the base moves with it.
+    (defun nl_gc_budget_poke ()
+      (let ((u (heap-read-u64 (data-addr nl_gc_until) 0)))
+        (if (< u 0) 0
+          (seq (ptr-write-u64 (data-addr nl_gc_until_base) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until_base) 0) (+ u 1)))
+               (ptr-write-u64 (data-addr nl_gc_until) 0 -1)
+               0))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
@@ -7574,9 +7625,11 @@ REPL-facing module it feeds."
        (ptr-write-u64 268435576 0 live)
        (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
        (ptr-write-u64 (data-addr nl_gc_stats) 32
-                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32)
-                         (heap-read-u64 (data-addr nl_gc_stats) 0)))
+                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32) (nl_gc_debt_now)))
        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+       (nl_gc_budget_refill)
        0))
     (defun nl_gc_debt_rearm ()
       (seq
@@ -7587,7 +7640,7 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_due ()
       (if (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
         (if (= (heap-read-u64 (data-addr nl_gc_stats) 8) 0) 0
-        (if (< (heap-read-u64 (data-addr nl_gc_stats) 0)
+        (if (< (nl_gc_debt_now)
                (heap-read-u64 (data-addr nl_gc_stats) 8))
             0 1))))
     ;; The form-boundary test: growth watermark (unchanged) OR debt.
@@ -9367,10 +9420,11 @@ REPL-facing module it feeds."
       (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
                (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
              (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
-                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0
+                 (if (< (nl_gc_debt_now) 67108864) 0
                    (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
                0))
            (nl_gc_midform_collect)
+           (nl_gc_budget_refill)
            0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
@@ -9381,6 +9435,7 @@ REPL-facing module it feeds."
         (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56 r)
              (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                             (+ r (if (< 16777216 (/ r 2)) (/ r 2) 16777216)))
+             (nl_gc_budget_refill)
              0)))
     ;; After an explicit `garbage-collect', re-arm both growth triggers the
     ;; way the automatic paths do (the form-boundary watermark at
@@ -12083,9 +12138,9 @@ leave symbols unresolved at link time."
     (defun nl_vm_poll_switch_w (args)
       (seq
        (if (= (wf_argval args 0) 70)
-           (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1)
+           (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1) (nl_gc_budget_poke))
          (if (= (wf_argval args 0) 71)
-             (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0)
+             (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0) (nl_gc_budget_refill))
            0))
        (if (= (wf_argval args 0) 73)
            (+ (* (nl_gc_regs_probe 0) 4) 1)
@@ -12093,9 +12148,15 @@ leave symbols unresolved at link time."
              (+ (* (nl_gc_regs_probe 1) 4) 1)
            (if (= (wf_argval args 0) 75)
                (+ (* (heap-read-u64 (data-addr nl_gc_regs_calls) 0) 4) 1)
-             (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))))))
+             (if (= (wf_argval args 0) 76)
+                 (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until) 0))
+               (if (= (wf_argval args 0) 77)
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until_base) 0))
+                 (if (= (wf_argval args 0) 78)
+                     (wf_write_int_w 0 (nl_gc_debt_now))
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))))))))
     (defun bf_debug_switch_w (args _pad)
-      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 75) 0)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
@@ -12118,7 +12179,8 @@ leave symbols unresolved at link time."
                                         (heap-read-u64 268436184 0))
                          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                                         (+ (heap-read-u64 268436184 0) 16777216))
-                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))
+                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)
+                         (nl_gc_budget_refill))
                   (if (= (wf_argval args 0) 6)
                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 0)
                     (if (= (wf_argval args 0) 7)
@@ -12225,8 +12287,8 @@ leave symbols unresolved at link time."
       (let* ((st (data-addr nl_gc_stats))
              (lim (heap-read-u64 st 8))
              (debt (if (if (< (heap-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
-                       (/ (* (heap-read-u64 st 0) 100) 16777216)
-                     (/ (* (heap-read-u64 st 0) 100) lim)))
+                       (/ (* (nl_gc_debt_now) 100) 16777216)
+                     (/ (* (nl_gc_debt_now) 100) lim)))
              (base (heap-read-u64 (data-addr nl_gc_loop_ctx) 56))
              (mark (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
              (now (heap-read-u64 268436184 0))
@@ -45773,6 +45835,8 @@ correctly."
         ;; from its measured live set.
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
         ;; Doc 152 Stage 5: mid-form collection is ON by default, but only
         ;; after the permanent-generation watermark above has made collection
         ;; sound.  `nl_arena_init' seeded chunk-bytes-reserved@268436184 and
@@ -45817,6 +45881,9 @@ correctly."
               'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+        (nl_gc_budget_refill)
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
