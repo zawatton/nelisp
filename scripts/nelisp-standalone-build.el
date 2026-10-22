@@ -5051,16 +5051,48 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; frames and the mirror hash by), bits 20-31 its static symbol id, bits
     ;; 0-19 its slot in the intern table (a stable index, relocated with the
     ;; table).  0 when the name has no live slot.
-    (defun nl_symobj_meta (view buf n)
+    ;; The slot of the intern table whose buffer is BUF, probing from IDX; 0 when
+    ;; there is none.  The table's own probe compares the name's bytes; the
+    ;; canonical buffer is known here, so the pointer is compared.
+    (defun nl_intern_slot_of (table idx buf k)
+      (if (< 1048575 k) 0
+        (let* ((slot (+ table (* idx 16))))
+          (if (= (heap-read-u64 slot 0) 0) 0
+            (if (= (heap-read-u64 slot 8) buf) slot
+              (nl_intern_slot_of table (logand (+ idx 1) 1048575) buf (+ k 1)))))))
+    (defun nl_symobj_meta_h (buf h)
       (let* ((base (heap-read-u64 268436288 0))
-             (slot (if (= base 0) 0
-                     (nl_intern_probe base (logand (nl_intern_hash buf 0 n 2166136261) 1048575)
-                                      buf n 0))))
+             (slot (if (= base 0) 0 (nl_intern_slot_of base (logand h 1048575) buf 0))))
         (if (= slot 0) 0
-          (if (/= (heap-read-u64 slot 8) buf) 0
-            (logior (shl (nelisp_fnv1a view) 32)
-                    (logior (shl (logand (sar (heap-read-u64 (- buf 8) 0) 32) 4095) 20)
-                            (sar (- slot base) 4)))))))
+          (logior (shl h 32)
+                  (logior (shl (logand (sar (heap-read-u64 (- buf 8) 0) 32) 4095) 20)
+                          (sar (- slot base) 4))))))
+    (defun nl_symobj_meta (view buf n)
+      (nl_symobj_meta_h buf (nl_intern_hash buf 0 n 2166136261)))
+    ;; The mirror's name-keyed table gets (NAME . OBJ) at the head of the
+    ;; bucket of hash H and counts it, as `nelisp_mirror_prepend_install' does
+    ;; for the entry writers, without their scratch boxes and the second
+    ;; hashing of the name.  NAME is the Str of the symbol's name.
+    (defun nl_symobj_link (mp name obj h)
+      (let* ((ht (nl_record_slot_word mp 0))
+             (bk (nl_record_slot_word ht 1))
+             (idx (logand h (- (nl_word_payload (nl_record_slot_word ht 0)) 1)))
+             (outer (nelisp_cons_construct_w (nelisp_cons_construct_w name obj 0)
+                                             (nl_vector_slot_word bk idx) 0)))
+        (seq (nl_vector_set_slot (nl_word_payload bk) idx outer)
+             (nl_record_set_slot (nl_word_payload ht) 2
+                                 (+ (* (+ (nl_word_payload (nl_record_slot_word ht 2)) 1) 4) 1))
+             1)))
+    ;; The object's cell in the cells vector (`nl_symcell_refresh' without the
+    ;; lookup of the entry it was just given).
+    (defun nl_symobj_cell_store (mp buf n obj)
+      (let* ((idx (nl_symcell_assign buf n)))
+        (if (= idx 0) 0
+          (if (= (nl_symcell_reserve mp idx) 0) 0
+            (seq (nl_vector_set_slot
+                  (nl_word_payload (nl_record_slot_word (nl_record_slot_word mp 0) 3))
+                  idx obj)
+                 1)))))
     (defun nl_symobj_for_view (view)
       (let* ((mp (nl_symcells_mirror)))
         (if (= mp 0) 0
@@ -5097,7 +5129,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                       (let* ((b (nl_symbol_alloc)))
                         (if (= b 0) 0
                           (let* ((name (alloc-bytes 32 8))
-                                 (vec (alloc-bytes 32 8)))
+                                 (h (nl_intern_hash buf 0 n 2166136261)))
                             (seq
                              ;; Everything allocated here is linked into the
                              ;; mirror: keep the top-level boundary from
@@ -5109,11 +5141,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                              ;; +40: the name's hash, its static symbol id (GNU's
                              ;; lispsym index, which the builtin dispatch reads) and
                              ;; its intern table slot (`nl_symobj_meta').
-                             (ptr-write-u64 b 40 (nl_symobj_meta view buf n))
+                             (ptr-write-u64 b 40 (nl_symobj_meta_h buf h))
                              (if (= (nl_symname_make buf n name) 0) 0
                                (ptr-write-u64 b 8 name))
-                             (nl_env_scratch_vec_sexp (nl_alloc_vector 1) vec)
-                             (nelisp_mirror_bucket_prepend_unchecked mp view (+ b 6) vec)
+                             (nl_symobj_link mp name (+ b 6) h)
+                             (nl_symobj_cell_store mp buf n (+ b 6))
                              (+ b 6))))))))))))))
     ;; The reader's and `intern''s hook: W is the WORD they answer.  An
     ;; interned symbol's view gets its object here, so the symbol is complete
