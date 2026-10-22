@@ -192,6 +192,40 @@ immutable String objects. Necessary copies into independent values remain.
 Runtime semantic/layout evidence and paired timings are still required;
 source inspection alone does not establish the acceptance criteria.
 
+* Public producers and text properties
+
+concat, substring and format are native subrs that follow GNU's shape
+(fns.c:833-1026 concat_to_string, fns.c:1577-1668 Fsubstring, editfns.c
+styled_format): one pass sums characters and bytes, the result is allocated
+once at its final size, spans are copied with the word copier. A call the fast
+path declines (a list or vector argument, a unibyte string with raw bytes
+joining multibyte text, negative or missing indices, wide characters, width,
+precision, flags, floats, %S, every error) goes to the former Lisp engine,
+renamed nelisp--substring-slow and nelisp--format-slow, through the
+wf_append_slow_w delegation pattern; the old arms remain as the internal subrs
+nelisp--native-substring and nelisp--native-format, which also answer a
+declined call before the prelude has defined the slow layer.
+
+Text properties live in a Lisp identity table (nelisp--tp-string-properties).
+GNU keeps them in =Lisp_String.intervals= (lisp.h:4035) and concat_to_string
+tests =string_intervals (arg)= inside its copy loop (fns.c:951) before it calls
+add_text_properties_from_list (fns.c:1003-1021); Fsubstring reaches
+copy_text_properties (fns.c:1607, 1660), which returns at once for a source
+without intervals (textprop.c:1970). The header's intervals slot (+16) holds
+the immediate marker 1 exactly while the table has an entry for the string (an
+immediate, not a list pointer: the legacy compactor does not know string
+headers and a pointer there would dangle). Every table write goes through
+nelisp--tp-set-intervals, which sets or clears the marker through
+nelisp--string-mark-intervals. The native concat and substring arms test the
+marker of their sources and call nelisp--tp-cat-props or nelisp--tp-sub-props
+(with the result rooted across the call) only for a flagged source. A string
+without properties pays no Lisp call, and concat and substring stay the native
+subrs for every caller.
+
+An earlier design installed interpreted concat and substring lambdas the first
+time any string received a property (bootstrap does): 167034 ns/call for concat
+against 13079 for the base.
+
 * Implicit grammar receivers
 
 The source census also includes implicit field reads in =str-eq=,
