@@ -18985,7 +18985,8 @@ ipa-split motivates retaining a large fallback while exposing a closed arm."
 FALLBACK must preserve the plan's established ABI and stack assumptions."
   (let ((labels (make-hash-table :test #'eq)))
     (cl-labels ((label (x) (or (gethash x labels)
-                              (puthash x (make-symbol "guarded-call-label") labels))))
+                              (puthash x (nelisp-aot-compiler--x86-trace-label
+                                          (vector 'private-label :id "guarded-call") "label") labels))))
       (dolist (i plan)
         (pcase (car i)
           (:mov (let ((v (nth 2 i)) (dst (nth 1 i)))
