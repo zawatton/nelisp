@@ -8,11 +8,17 @@
 ;; GNU data.c:Fsymbol_value and eval.c:defvar compare against Qunbound by
 ;; object identity. The marker must not alias an ordinary interned name.
 ;; Keep this single constructor adjustment separate from the generated body.
+;; Doc 226 D9 keeps one shared marker for the void cells of symbol objects
+;; (`nl_sym_unbound', an uninterned tag-16 view with a boot-stable identity);
+;; the environment's marker is a copy of it, so a fresh symbol's cells are
+;; unbound by the same identity test the lookups make.
 (require 'cl-lib)
-(setq nelisp-cc-evalport-bootstrap--source
-      (cl-subst '(nl_alloc_uninterned_symbol ubuf 22
-                     (nl_next_symbol_identity) unbound_out)
-                '(nl_alloc_symbol ubuf 22 unbound_out)
-                nelisp-cc-evalport-bootstrap--source :test #'equal))
+(let ((patched (cl-subst '(nl_sexp_clone_into (nl_sym_unbound) unbound_out)
+                         '(nl_alloc_symbol ubuf 22 unbound_out)
+                         nelisp-cc-evalport-bootstrap--source :test #'equal)))
+  ;; A substitution that finds nothing leaves the interned, name-compared marker.
+  (when (equal patched nelisp-cc-evalport-bootstrap--source)
+    (error "nelisp-cc-evalport-bootstrap: the unbound-marker substitution did not apply"))
+  (setq nelisp-cc-evalport-bootstrap--source patched))
 
 (provide (quote nelisp-cc-evalport-bootstrap))

@@ -5417,16 +5417,10 @@ it shares with cons and symbol blocks.")
                     0))
              (v (if (= fwd 0) val
                   (if (if (= (logand val 7) 0)
-                          (if (= (heap-read-u8 val 0) 4)
-                              (if (= (heap-read-u64 val 24) 22)
-                                  (let* ((p (heap-read-u64 val 16)))
-                                    (if (= (heap-read-u64 p 0) 3255381746650998126)
-                                        (if (= (heap-read-u64 p 8) 3270860680036773493)
-                                            (= (logand (heap-read-u64 p 16) 281474976710655)
-                                               125779919921517)
-                                          0)
-                                      0))
-                                0)
+                          (if (= (heap-read-u8 val 0) 16)
+                              (let* ((u (heap-read-u64 268436336 0)))
+                                (if (= u 0) 0
+                                  (= (heap-read-u64 val 8) (heap-read-u64 u 8))))
                             0)
                         0)
                       val
@@ -5523,17 +5517,23 @@ it shares with cons and symbol blocks.")
         0))
     ;; Doc 226 D9: a symbol's value and function cells start as GNU's
     ;; Qunbound (alloc.c:3660 init_symbol).  NeLisp's unbound marker is
-    ;; the interned `nelisp--unbound-marker', recognized by name, so every
-    ;; object shares one view of it, made on first use and kept at
-    ;; 268436336 beside the shared symentry (268436328); the collector
-    ;; marks and moves both.
+    ;; batch F's: an uninterned tag-16 symbol compared by identity, never
+    ;; an interned name (gnu-semantics 3b1706d44: a variable bound to the
+    ;; symbol `nelisp--unbound-marker' is bound).  It stays a legacy view
+    ;; whose identity is the first `nl_next_symbol_identity' of a boot, the
+    ;; same in the process that dumps an image and in one that restores it,
+    ;; so the cells of a restored image and the environment's marker (a copy
+    ;; of this view, `nl_bootstrap_make_mirror') agree.  Every object shares
+    ;; one view of it, made on first use and kept at 268436336 beside the
+    ;; shared symentry (268436328); the collector marks and moves both.
     (defun nl_sym_unbound ()
       (if (= (heap-read-u64 268436336 0) 0)
           (let* ((ubuf (alloc-bytes 24 1)) (box (alloc-bytes 32 8)))
             (seq (ptr-write-u64 ubuf 0 3255381746650998126)
                  (ptr-write-u64 (+ ubuf 8) 0 3270860680036773493)
                  (ptr-write-u64 (+ ubuf 16) 0 125779919921517)
-                 (nl_alloc_symbol ubuf 22 box)
+                 (nl_uninterned_symbol_write ubuf 22 (nl_next_symbol_identity) box
+                                             (alloc-bytes 24 1))
                  (ptr-write-u64 268436336 0 box)
                  box))
         (heap-read-u64 268436336 0)))
@@ -5783,7 +5783,7 @@ it shares with cons and symbol blocks.")
     ;; (`nl_symobj_note'), and one without its name string (a lazily made
     ;; one) is not handed out, since a consumer reads the name from it.
     ;; The unbound marker stays a view: a cell holding it is void, and every
-    ;; test for it is a name compare.  A view derived from an object (tag 4,
+    ;; test for it is an identity compare.  A view derived from an object (tag 4,
     ;; the object's address as its identity, the name string's bytes) is its
     ;; object.
     (defun nl_symview_object (view)
