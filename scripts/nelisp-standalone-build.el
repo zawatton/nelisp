@@ -2400,13 +2400,15 @@ entries carry explicit hex-encoded byte sections."
                   "-"))
               (nelisp-standalone--dep-files) "\n")))))
 
-(defconst nelisp-standalone--direct-only-reader-defuns '(bf_identity_hash m5_length)
+(defconst nelisp-standalone--direct-only-reader-defuns
+  '(bf_identity_hash m5_length nl_ht_reindex nl_ht_identity_key_hash)
   "Reader defuns that keep direct branches although their unit uses jump tables.
 The authenticated F1 prelink closure admits direct control flow only.  The
-word-heap call path reaches these two through `nl_native_frame_v2' ->
-`nl_n3_bind' -> `bf_declared_special_p' -> `nl_ht_find_table_h' (hash bucket
-index and key equality); the rest of the applyfn unit, the bytecode VM
-included, keeps dense lowering.  Bound to
+word-heap call path reaches them through `nl_native_frame_v2' ->
+`nl_n3_bind' -> `bf_declared_special_p' / `nl_n4_bind_declared' -> the hash
+table lookup, identity sync and key hashing (bucket index, key equality,
+reindexing and identity hashing); the rest of the applyfn unit, the bytecode
+VM included, keeps dense lowering.  Bound to
 `nelisp-aot-compiler--x86-direct-only-defuns' while that unit is compiled.
 tools/ai/integ-wh-f1-indirect.py lists every function the closure reaches
 that still has indirect control flow.")
