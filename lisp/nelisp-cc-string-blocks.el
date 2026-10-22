@@ -368,11 +368,14 @@
 			 (ptr-write-u64 s 24 (+ data 8))
 			 (ptr-write-u64 st 136 s)
 			 (ptr-write-u8 (+ data 8) nbytes 0)
-			 (ptr-write-u64 (data-addr nl_gc_stats) 0
-					(+
-					 (heap-read-u64
-					  (data-addr nl_gc_stats) 0)
-					 (+ 32 needed)))
+			 ;; The allocation budget (Doc 223): the word the VM polls test, as
+			 ;; every other allocation fast path charges it.  The old debt counter
+			 ;; (nl_gc_stats+0) moved the debt but not the word, so a string of
+			 ;; 150 MB left the next poll nothing to see and a loop that only
+			 ;; made strings never polled its way to a collection.
+			 (ptr-write-u64 (data-addr nl_gc_until) 0
+					(- (heap-read-u64 (data-addr nl_gc_until) 0)
+					   (+ 32 needed)))
 			 (ptr-write-u64 st 88
 					(+ (heap-read-u64 st 88)
 					   (+ 32 needed)))
