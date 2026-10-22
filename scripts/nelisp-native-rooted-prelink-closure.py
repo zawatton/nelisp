@@ -77,12 +77,12 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
                   else tuple(evaluator_boundary or ()))
     if not set(boundaries) <= {"nl_apply_function", "nl_apply_function_w"}:
         raise ValueError("Unknown evaluator boundary")
-    if max_functions not in (128, 192, 200, 272, 280, 288, 296):
+    if max_functions not in (128, 192, 200, 272, 280, 288, 296, 304, 320):
         raise ValueError("Unknown direct helper count policy")
-    if max_functions in (200, 272, 280, 288, 296) and "nl_native_frame_v2" not in roots:
+    if max_functions in (200, 272, 280, 288, 296, 304, 320) and "nl_native_frame_v2" not in roots:
         raise ValueError("Frame closure bound requires the authenticated frame root")
     owners = _owner.unit_owners(metadata, directory)
-    if max_functions in (288, 296) and not all(name in owners for name in
+    if max_functions in (288, 296, 304, 320) and not all(name in owners for name in
                                         ("nl_n4_mark_env", "nl_n4_record", "nl_n3_notify")):
         raise ValueError("C-core F1 closure requires activation and watcher owners")
     units = json.loads(_owner.bounded_read(metadata, 4 * 1024 * 1024))
@@ -119,7 +119,14 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
         owner = owners[name]
         start, end = owner["start"], owner["end"]
         size = end - start
-        if not 0 < size <= 65536 or total + size > 512 * 1024:
+        # 640 KiB: the F1 closure measures 530,615 B on Win64 (296 functions,
+        # call-path merge 915e1a17a plus the Schannel arity fix), 538,922 B at
+        # the symbols-lane tip, and 450,361 B (295) / 441,058 B (300) on
+        # Linux; the largest helper is nl_native_frame_v2 (50,690 B Win64,
+        # 47,664 B Linux).  The growth is GNU structures added on purpose:
+        # symbol cells, cons blocks and the typed-block registry, and the
+        # WORD-frame call path.
+        if not 0 < size <= 65536 or total + size > 640 * 1024:
             raise ValueError("Direct helper text size bound")
         normalized = bytearray(owner["text"][start:end])
         relocations = {}

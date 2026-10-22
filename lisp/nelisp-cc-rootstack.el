@@ -120,25 +120,81 @@
     (defun nl_thread_registry_find (env)
       (nl_thread_registry_find_from
        env 0 (heap-read-u64 (data-addr nl_thread_registry) 0)))
-    ;; Catchable mirror-write refusal.  TAG/VAL/flag use the established M6
-    ;; signal stash.  Build VAL as (NAME), so the uncaught diagnostic names the
+    ;; GNU hands a nonlocal exit's values to its handler as Lisp_Object
+    ;; values: signal_or_quit unwinds with Fcons (error_symbol, data)
+    ;; (eval.c:1943, 1952, 2064), Fthrow with the value (eval.c:1464,
+    ;; 1476-1478), unwind_to_catch stores it in the catch's val
+    ;; (eval.c:1423, 1432), and internal_catch and
+    ;; internal_lisp_condition_case read handlerlist->val (eval.c:1399,
+    ;; 1659).  NeLisp leaves by return code, so a pending exit waits for its
+    ;; handler in one place: its kind (@268435472: 1 signal, 2 throw, 0
+    ;; none) and its two values, the condition symbol and its data or the
+    ;; throw's tag and value, as WORDs in `nl_exit_values' (+0, +8).  The
+    ;; values outlive the exit (only the kind is cleared), the collector
+    ;; marks them (`nl_gc_mark_rootstack'), and 0, before the first exit,
+    ;; reads as nil.  A raise site hands over WORDs or 32-byte views, stored
+    ;; as a cons cell stores its car (`nl_val_clone_into': a cons or a
+    ;; vectorlike keeps its identity), and the mutation epoch (@268435544)
+    ;; moves because the values escape.
+    (defun nl_exit_signal_w (sym data)
+      (seq (extern-call nl_val_clone_into sym (data-addr nl_exit_values))
+           (extern-call nl_val_clone_into data (+ (data-addr nl_exit_values) 8))
+           (ptr-write-u64 268435472 0 1)
+           (atomic-fetch-add 268435544 1)
+           0))
+    ;; The same with an explicit kind (1 signal, 2 throw): a throw, or a
+    ;; frame that caught an exit and passes it on.
+    (defun nl_exit_raise_w (kind tag val)
+      (seq (extern-call nl_val_clone_into tag (data-addr nl_exit_values))
+           (extern-call nl_val_clone_into val (+ (data-addr nl_exit_values) 8))
+           (ptr-write-u64 268435472 0 kind)
+           (atomic-fetch-add 268435544 1)
+           0))
+    ;; The exit's two values for its handler (handlerlist->val).
+    (defun nl_exit_tag_w ()
+      (let ((w (heap-read-u64 (data-addr nl_exit_values) 0))) (if (= w 0) 3 w)))
+    (defun nl_exit_val_w ()
+      (let ((w (heap-read-u64 (data-addr nl_exit_values) 8))) (if (= w 0) 3 w)))
+    ;; GNU signal_or_quit's Fcons (error_symbol, data) (eval.c:1952): the
+    ;; value a condition-case variable receives, built into OUT.
+    (defun nl_exit_condition_into (out)
+      (extern-call nelisp_cons_construct (nl_exit_tag_w) (nl_exit_val_w) out))
+    ;; GNU runs unwind-protect cleanups inside unbind_to while the catch
+    ;; holds the exit's value (unwind_to_catch, eval.c:1432, 1445-1454).  Here a cleanup that
+    ;; returns normally must leave a pending exit as it found it: save the
+    ;; two WORDs in a WORD frame on ENV's root stack, which keeps them alive
+    ;; while the cleanup runs, and put them back afterwards.  The caller
+    ;; releases the frame with a mark taken before the save.  0: no room.
+    (defun nl_exit_save (env)
+      (let ((frame (nl_root_frame env 2)))
+        (if (= frame 0) 0
+          (seq (ptr-write-u64 frame 0 (nl_exit_tag_w))
+               (ptr-write-u64 (+ frame 8) 0 (nl_exit_val_w))
+               frame))))
+    (defun nl_exit_restore (frame)
+      (seq (ptr-write-u64 (data-addr nl_exit_values) 0 (heap-read-u64 frame 0))
+           (ptr-write-u64 (data-addr nl_exit_values) 8 (heap-read-u64 (+ frame 8) 0))
+           0))
+    ;; Catchable mirror-write refusal, recorded through `nl_exit_signal_w'.
+    ;; Build VAL as (NAME), so the uncaught diagnostic names the
     ;; attempted global and a condition-case handler can inspect `(cadr err)'.
     (defun nl_thread_mirror_mutation_signal_at
         (name-ptr tag-buf nil-slot _pad)
-      (seq
-       (ptr-write-u64 tag-buf 0 8587643705457665390)
-       (ptr-write-u64 (+ tag-buf 8) 0 7596778115794956911)
-       (ptr-write-u64 (+ tag-buf 16) 0 8391733522635649650)
-       (ptr-write-u64 (+ tag-buf 24) 0 474315584609)
-       (extern-call nl_alloc_symbol tag-buf 29 268435480)
-       (ptr-write-u64 nil-slot 0 0)
-       (ptr-write-u64 (+ nil-slot 8) 0 0)
-       (ptr-write-u64 (+ nil-slot 16) 0 0)
-       (ptr-write-u64 (+ nil-slot 24) 0 0)
-       (extern-call nelisp_cons_construct name-ptr nil-slot 268435512)
-       (ptr-write-u64 268435472 0 1)
-       (atomic-fetch-add 268435544 1)
-       1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 tag-buf 0 8587643705457665390)
+         (ptr-write-u64 (+ tag-buf 8) 0 7596778115794956911)
+         (ptr-write-u64 (+ tag-buf 16) 0 8391733522635649650)
+         (ptr-write-u64 (+ tag-buf 24) 0 474315584609)
+         (extern-call nl_alloc_symbol tag-buf 29 sig-tag)
+         (ptr-write-u64 nil-slot 0 0)
+         (ptr-write-u64 (+ nil-slot 8) 0 0)
+         (ptr-write-u64 (+ nil-slot 16) 0 0)
+         (ptr-write-u64 (+ nil-slot 24) 0 0)
+         (extern-call nelisp_cons_construct name-ptr nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
+         1)))
     (defun nl_thread_mirror_mutation_signal (name-ptr)
       (nl_thread_mirror_mutation_signal_at
        name-ptr (alloc-bytes 32 1) (alloc-bytes 32 8) 0))
@@ -367,6 +423,73 @@
          0)))
     (defun nl_root_release (env marker)
       (nl_root_release_at env (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) marker))
+    ;; WORD frames (word-heap S6.3), after GNU's bytecode stack: a bc_frame
+    ;; header followed by its data stack (bytecode.c:366-376), traced by
+    ;; mark_bytecode (bytecode.c:396-428).  A frame is one 32-byte header
+    ;; entry -- +0 the marker 1464226381 (no Sexp tag is that large), +8 the
+    ;; slot count N, +16 and +24 zero -- followed by N WORD slots padded to
+    ;; whole 32-byte entries, so every later entry stays aligned.  The walkers
+    ;; below trace the N slots with `nl_gc_mark_word' and step over the
+    ;; padding.  Every slot starts as nil (3), never 0, which the WORD marker
+    ;; would take for a block.  A frame belongs to the same LIFO stack as the
+    ;; Sexp slots: `nl_root_release' to a mark taken before it pops it, on
+    ;; the main thread and in a Tier-3b worker's private region alike.
+    ;; Answers the address of slot 0, or 0 when the region cannot hold it.
+    (defun nl_root_frame_at (env entry n)
+      (let* ((top (if (= entry 0) (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                    (heap-read-u64 env 120)))
+             (base (if (= entry 0) (data-addr nl_rootstack_region) (+ env 4096)))
+             (end (if (= entry 0) (nl_rootstack_end) (+ env 1052672)))
+             (next (+ top (+ 32 (logand (+ (* n 8) 31) -32))))
+             (i 0))
+        (if (if (< top base) 1
+              (if (> next end) 1
+                (if (/= (logand (- top base) 31) 0) 1 0)))
+            0
+          (seq
+           (ptr-write-u64 top 0 1464226381)
+           (ptr-write-u64 top 8 n)
+           (ptr-write-u64 top 16 0)
+           (ptr-write-u64 top 24 0)
+           (while (< i n)
+             (seq (ptr-write-u64 (+ top (+ 32 (* i 8))) 0 3)
+                  (setq i (+ i 1))))
+           (if (= entry 0)
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+             (seq (ptr-write-u64 env 120 next)
+                  (nl_thread_registry_store_top entry next)))
+           (+ top 32)))))
+    ;; The evaluator's normal state, the main thread with no worker
+    ;; registered and its stack set up, takes the frame inline: one bounds
+    ;; check, the header and the nil slots, as GNU's frame push is a few
+    ;; stores (bytecode.c:510-525).  Anything else goes through
+    ;; `nl_root_frame_at'.
+    (defun nl_root_frame (env n)
+      (let* ((top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+             (next (+ top (+ 32 (logand (+ (* n 8) 31) -32)))))
+        (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                (if (= top 0) 0 (<= next (nl_rootstack_end))) 0)
+            (let* ((slot (+ top 32)) (end (+ slot (* n 8))))
+              (seq
+               (ptr-write-u64 top 0 1464226381)
+               (ptr-write-u64 top 8 n)
+               (ptr-write-u64 top 16 0)
+               (ptr-write-u64 top 24 0)
+               (while (< slot end)
+                 (seq (ptr-write-u64 slot 0 3)
+                      (setq slot (+ slot 8))))
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+               (+ top 32)))
+          (nl_root_frame_slow env n))))
+    (defun nl_root_frame_slow (env n)
+      (let* ((entry (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                      (nl_thread_registry_find env))))
+        (seq
+         (if (= entry 0)
+             (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0)
+                 (nl_rootstack_init) 0)
+           0)
+         (nl_root_frame_at env entry n))))
     ;; Native loader roots live in a separate driver-owned BSS region.  The
     ;; evaluator restores its ordinary root top after every interpreted call,
     ;; so a loader frame must never borrow that stack.  Pinning is single-owner:
@@ -724,7 +847,7 @@
     ;; did); an immediate is written as its storage form (tag 0 nil, 1 t,
     ;; 2 fixnum) without allocating.  Returns 0 (success status).
     (defun nl_native_store_word_v2 (output w)
-      (if (or (= (logand w 1) 1) (= (logand w 7) 6))
+      (if (/= (logand w 7) 0)
           (seq (nl_sexp_clone_into w output) 0)
         (seq (ptr-write-u64 output 0 (heap-read-u64 w 0))
              (ptr-write-u64 output 8 (heap-read-u64 w 8))
@@ -786,16 +909,26 @@
                     (if (= cdr-word 0) 2
                       (nl_native_store_word_v2 output cdr-word)))
                 1))))))
-    ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
+    ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root;
+    ;; a WORD frame (`nl_root_frame_at') marks its N slots as WORDs, as
+    ;; GNU's mark_bytecode marks a frame's data stack (bytecode.c:396-428).
     (defun nl_gc_mark_rootstack_walk (p end)
       (if (>= p end) 0
+        (if (= (heap-read-u64 p 0) 1464226381)
+            (let* ((n (heap-read-u64 p 8)) (i 0))
+              (seq
+               (while (< i n)
+                 (seq (extern-call nl_gc_mark_word (heap-read-u64 (+ p (+ 32 (* i 8))) 0))
+                      (setq i (+ i 1))))
+               (nl_gc_mark_rootstack_walk (+ p (+ 32 (logand (+ (* n 8) 31) -32))) end)))
           (seq (extern-call nl_gc_mark_slot p)
-               (nl_gc_mark_rootstack_walk (+ p 32) end))))
-    ;; The non-local exit stash is a root too.  TAG @268435480 and VAL
-    ;; @268435512 keep the last thrown or signalled tag and value after the
-    ;; exit completes (the flag @268435472 is cleared, the slots are not),
-    ;; and `nl_n3_notify', `unwind-protect' and the bytecode handlers save
-    ;; and restore them on every pass, cloning whatever they hold.  Unrooted,
+               (nl_gc_mark_rootstack_walk (+ p 32) end)))))
+    ;; The nonlocal exit's values are a root too.  `nl_exit_values' keeps
+    ;; the last thrown or signalled tag and value after the exit completes
+    ;; (the flag @268435472 is cleared, the values are not), as GNU marks
+    ;; each handler's val (thread.c:679, mark_one_thread); the cleanups that
+    ;; keep a pending exit save and restore the two WORDs.  (History: the
+    ;; 32-byte stash slots this replaced were cloned on every pass.)  Unrooted,
     ;; a thrown cons dies once its catcher drops it and those clones then
     ;; bump the refcount word of whatever reuses the block.  Once cold-image
     ;; holes became collectable, the (FORM . END) cons that
@@ -809,8 +942,13 @@
          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
                                     (heap-read-u64 (data-addr nl_rootstack_top) 0)))
        (nl_gc_mark_pinned_roots)
-       (extern-call nl_gc_mark_slot 268435480)
-       (extern-call nl_gc_mark_slot 268435512)))
+       ;; Doc 226 D9 stage 3: the mirror record (BSS `nl_symcells_root').
+       (let* ((mirror (heap-read-u64 (data-addr nl_symcells_root) 0)))
+         (if (= mirror 0) 0 (extern-call nl_gc_mark_word mirror)))
+       (let* ((tag (heap-read-u64 (data-addr nl_exit_values) 0))
+              (val (heap-read-u64 (data-addr nl_exit_values) 8)))
+         (seq (if (= tag 0) 0 (extern-call nl_gc_mark_word tag))
+              (if (= val 0) 0 (extern-call nl_gc_mark_word val))))))
     (defun nl_gc_mark_pinned_roots ()
       (let* ((base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add

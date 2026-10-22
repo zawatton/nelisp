@@ -90,7 +90,7 @@
   (let* ((common (cl-loop for f in '(val-load sexp-clone-into nlconsbox-alloc nlconsbox-set-car nlconsbox-set-cdr nlconsbox-clone nlvector-clone nlstr-clone nlchartable-clone nlboolvector-clone nlcell-clone nlrecord-clone nlrecord-slot-ptr jit-cons-car-ptr jit-cons-cdr-ptr) append (let ((x (symbol-value (intern (format "nelisp-cc-%s--source" f))))) (if (eq (car x) 'seq) (cdr x) (list x)))))
          (source `(seq ,binder ,dispatcher ,legacy ,legacy-dispatch ,nelisp-cc-cons-construct--source ,@common
            ,@(mapcar #'od-def '(wf_bytecode_slot wf_bytecode_copy wf_copy32 wf_write_nil wf_bytecode_build_args wf_bytecode_arglist_shape wf_bytecode_optional_marker_p wf_bytecode_rest_marker_p wf_bytecode_copy_arg_tail))
-           (defun nl_bind_clone_force_flag () 0) (defun nl_gc_in_arena (p) 0) (defun nl_gc_is_boot (p) 0)
+           (defun nl_bind_clone_force_flag () 0) (defun nl_cons_alloc () 0) (defun nl_gc_in_arena (p) 0) (defun nl_gc_is_boot (p) 0)
            (defun nl_alloc_str (a b c) (syscall-direct 60 199 0 0 0 0 0)) (defun nl_alloc_symbol (a b c) (syscall-direct 60 199 0 0 0 0 0))
            (defun wf_dirty () (ptr-write-u64 ,base 8 (+ (ptr-read-u64 ,base 8) 1)))
            (defun nl_root_mark (env) (ptr-read-u64 ,base 48))

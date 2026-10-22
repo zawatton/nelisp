@@ -662,14 +662,23 @@ not modelled)."
       `(nelisp-asm-x86_64-mov-mem-reg-disp8
         ,buf-form ,base-form ,disp-form ,src-form))))
 
+(defvar nelisp-asm-x86_64-label-index nil
+  "Optional (BUFFER . EQ-HASH) for a fresh compiler-owned buffer.
+The compiler binds this over one unit's emission. Other callers retain
+alist duplicate detection and the existing seven-slot buffer layout.")
+
 (defun nelisp-asm-x86_64-define-label (buf name)
   "Mark NAME as resolved at BUF's current byte position.
 Signals `nelisp-asm-x86_64-error' on duplicate label — silent
 shadow would mask codegen bugs."
-  (when (assq name (aref buf 2))
-    (signal 'nelisp-asm-x86_64-error
-            (list :duplicate-label name)))
-  (aset buf 2 (cons (cons name (aref buf 1)) (aref buf 2)))
+  (let ((index (and nelisp-asm-x86_64-label-index
+                    (eq buf (car nelisp-asm-x86_64-label-index))
+                    (cdr nelisp-asm-x86_64-label-index))))
+    (when (if index (gethash name index) (assq name (aref buf 2)))
+      (signal 'nelisp-asm-x86_64-error
+              (list :duplicate-label name)))
+    (aset buf 2 (cons (cons name (aref buf 1)) (aref buf 2)))
+    (when index (puthash name t index)))
   buf)
 
 (defun nelisp-asm-x86_64-emit-fixup (buf slot-offset label)

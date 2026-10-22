@@ -190,8 +190,10 @@
             (outer-slot (alloc-bytes 32 8))
             (count-slot (alloc-bytes 32 8)))
         (and
-         ;; Step 1: materialise fresh `Sexp::Str(NAME)' KEY into key-slot.
-         (if (= (sexp-tag sym-ptr) 16)
+         ;; Symbol names already have an owner. GNU data.c:set_internal
+         ;; retains the Symbol, rather than copying its name to a String.
+         ;; Keep the old independent-name copy for private String callers.
+         (if (or (= (sexp-tag sym-ptr) 4) (= (sexp-tag sym-ptr) 16))
              (extern-call nl_sexp_clone_into sym-ptr key-slot)
            (sexp-write-str key-slot
                            (str-bytes-ptr sym-ptr)
@@ -233,7 +235,11 @@
                            1))
          (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
                           2
-                          count-slot))))
+                          count-slot)
+         ;; Doc 221 M02: the key's symbol cell now names this new first
+         ;; entry of its chain (`nl_symcell_refresh').  Its 0 answer for
+         ;; keys without a cell is not a failure.
+         (seq (extern-call nl_symcell_refresh mirror-ptr sym-ptr) 1))))
     (defun nelisp_mirror_bucket_prepend
         (mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)
       (if (= (extern-call nl_thread_mirror_mutation_guard

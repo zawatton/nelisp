@@ -24,7 +24,7 @@
 ;;   4 Symbol(String) — deep copy: read bytes-ptr@16 + len@24, nl_alloc_symbol.
 ;;   5 Str(String)  — deep copy: read bytes-ptr@16 + len@24, nl_alloc_str.
 ;;   6 MutStr(NlStrRef) — boxed, refcount bump via nelisp_nlstr_clone.
-;;   7 Cons(NlConsBoxRef) — boxed, refcount bump via nelisp_nlconsbox_clone.
+;;   7 Cons(NlConsBoxRef) — boxed; no count (Doc 216 S2.2, 16-byte cell).
 ;;   8 Vector       — boxed, refcount bump via nelisp_nlvector_clone.
 ;;   9 CharTable    — boxed, refcount bump via nelisp_nlchartable_clone.
 ;;  10 BoolVector   — boxed, refcount bump via nelisp_nlboolvector_clone.
@@ -96,7 +96,7 @@
     ;; dispatch to the per-type clone (each bumps rc + returns box-ptr).
     ;; tag 6 MutStr holds NlStrRef -> nelisp_nlstr_clone (NOT a deep copy).
     (defun nl_sci_bump (tag box)
-      (if (= tag 7)  (nelisp_nlconsbox_clone box)
+      (if (= tag 7)  box     ; Doc 216 S2.2: cons cells carry no count
         (if (or (= tag 6) (= tag 15)) (nelisp_nlstr_clone box)
           (if (= tag 8)  (nelisp_nlvector_clone box)
             (if (= tag 9)  (nelisp_nlchartable_clone box)
@@ -171,7 +171,19 @@
           (seq (ptr-write-u64 dst_ptr 0 1) (ptr-write-u64 dst_ptr 8 0)
                (ptr-write-u64 dst_ptr 16 0) (ptr-write-u64 dst_ptr 24 0) dst_ptr))))
     (defun nl_sexp_clone_into (src dst_ptr)
+  (let*
+      ((header
+	(if (= (logand src 7) 4) (- src 4)
+	  (if (= (logand src 7) 0) (nl_string_view_header src) 0))))
+    (if (/= header 0) (nl_string_store_view (+ header 4) dst_ptr)
       (if (= (logand src 1) 1) (nl_sci_store_imm src dst_ptr)
+        (if (= (logand src 7) 2)
+            ;; Doc 216 S2.1: a direct cons WORD (payload | 2) as a view.
+            (nl_sci_prog2
+             (and (ptr-write-u64 dst_ptr 0 7)
+                  (ptr-write-u64 dst_ptr 8 (- src 2))
+                  (ptr-write-u64 dst_ptr 16 0)
+                  (ptr-write-u64 dst_ptr 24 0)) dst_ptr)
         (if (= (logand src 7) 6)
             (let ((base (- src 6)))
               (nl_sci_prog2
@@ -179,7 +191,7 @@
                     (ptr-write-u64 dst_ptr 8 base)
                     (ptr-write-u64 dst_ptr 16 0)
                     (ptr-write-u64 dst_ptr 24 0)) dst_ptr))
-          (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0))))))
+          (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))))
   "AOT source for nl_sexp_clone_into.
 
 Re-provides the deleted Rust clone entry point from

@@ -227,7 +227,7 @@
            (nelisp_reader_p_zero_slots pool high-start (+ parse-cap 1)))
          0)))
     (defun nelisp_reader_p_stash_excessive_nesting (max-depth _pad)
-      (let* ((tag-buf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 24 1)))
         (seq
          ;; "excessive-lisp-nesting" (22 bytes) -- the same condition
          ;; symbol the eval-side guard raises, so both land in one
@@ -235,13 +235,12 @@
          (ptr-write-u64 tag-buf 0 8532477908489566309)
          (ptr-write-u64 (+ tag-buf 8) 0 7939125359116299621)
          (ptr-write-u64 (+ tag-buf 16) 0 113723913302885)
-         (nl_alloc_symbol tag-buf 22 268435480)
-         (ptr-write-u64 268435512 0 2)
-         (ptr-write-u64 (+ 268435512 8) 0 max-depth)
-         (ptr-write-u64 (+ 268435512 16) 0 0)
-         (ptr-write-u64 (+ 268435512 24) 0 0)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol tag-buf 22 sig-tag)
+         (ptr-write-u64 sig-val 0 2)
+         (ptr-write-u64 (+ sig-val 8) 0 max-depth)
+         (ptr-write-u64 (+ sig-val 16) 0 0)
+         (ptr-write-u64 (+ sig-val 24) 0 0)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
 
     ;; Doc 215 word ABI: when a reader failure left no signal stashed (the
@@ -252,7 +251,7 @@
         (seq (bf_read_syntax_error str-ptr) 0)))
 
     (defun nelisp_reader_p_stash_raw_byte_unrepresentable ()
-      (let* ((tag-buf (alloc-bytes 32 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 32 1)))
         (seq
          ;; "nelisp-raw-byte-unrepresentable" (31 bytes), the same condition
          ;; used by concat/format/string-to-multibyte in the runtime.
@@ -260,13 +259,12 @@
          (ptr-write-u64 (+ tag-buf 8) 0 3271148769041545057)
          (ptr-write-u64 (+ tag-buf 16) 0 8315178114073390709)
          (ptr-write-u64 (+ tag-buf 24) 0 28548142445391461)
-         (nl_alloc_symbol tag-buf 31 268435480)
-         (ptr-write-u64 268435512 0 0)
-         (ptr-write-u64 (+ 268435512 8) 0 0)
-         (ptr-write-u64 (+ 268435512 16) 0 0)
-         (ptr-write-u64 (+ 268435512 24) 0 0)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol tag-buf 31 sig-tag)
+         (ptr-write-u64 sig-val 0 0)
+         (ptr-write-u64 (+ sig-val 8) 0 0)
+         (ptr-write-u64 (+ sig-val 16) 0 0)
+         (ptr-write-u64 (+ sig-val 24) 0 0)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
 
     ;; ===========================================================
@@ -329,11 +327,22 @@
     (defun nelisp_reader_p_symbol_name_kind (source name)
       ;; Symbol names inherit the reader input's representation, including
       ;; multibyte ASCII. Set it before the canonical name is registered.
-      (if (or (= (heap-read-u8 source 0) 14) (= (heap-read-u8 source 0) 15))
-          (ptr-write-u8 name 0 14)
-        (seq (ptr-write-u8 name 0 5)
-             (ptr-write-u64 name 8
-               (logior (heap-read-u64 name 8) 4611686018427387904)))))
+      (let* ((tag (sexp-tag source))
+             (unibyte (if (or (= tag 14) (= tag 15)) 1 0))
+             (header (nl_string_view_header name)))
+        (if (/= header 0)
+            (let* ((bytes (nl_string_nbytes header)))
+              ;; This is an explicit representation change on a fresh
+              ;; token, not a stale ABI view changing its owner's flags.
+              (ptr-write-u64 header 0
+                             (if (= unibyte 1) bytes
+                               (nl_string_char_count (ptr-read-u64 header 24) bytes)))
+              (ptr-write-u64 header 8 (if (= unibyte 1) -1 bytes))
+              (nl_string_store_view (+ header 4) name) 1)
+          (if (= unibyte 1) (ptr-write-u8 name 0 14)
+            (seq (ptr-write-u8 name 0 5)
+                 (ptr-write-u64 name 8
+                                (logior (heap-read-u64 name 8) 4611686018427387904)))))))
 
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
       ;; The direct allocator also installs a stable name-Sexp edge for the
@@ -358,7 +367,7 @@
                dest-slot
                (heap-read-u64 src-str-slot 16)
                (heap-read-u64 src-str-slot 24))))
-        (if (= (heap-read-u8 src-str-slot 0) 14)
+        (if (= (sexp-tag src-str-slot) 14)
             (nelisp_reader_p_prog2
              (ptr-write-u8 dest-slot 0 14)
              written)
@@ -739,8 +748,9 @@
     ;; ===========================================================
     ;; Quote-family head-symbol byte writers.  Each push the
     ;; canonical name into a (freshly-reset) SCRATCH MutStr.  The
-    ;; caller then `mut-str-finalize's into a slot and overwrites
-    ;; the tag byte to convert Sexp::Str -> Sexp::Symbol.
+    ;; caller interns the byte span with the existing Symbol allocator.
+    ;; A pooled GNU String cannot be retagged as a legacy Symbol: that
+    ;; would discard its header's GC ownership edge.
     ;; ===========================================================
 
     (defun nelisp_reader_p_push_quote_bytes (scratch)
@@ -786,33 +796,32 @@
        ((= tag-byte 113)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_quote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             ;; SEXP_TAG_SYMBOL = 4.
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 98)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_backquote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 99)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_comma_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 100)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_comma_at_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        ((= tag-byte 102)
         (and (nelisp_reader_p_reset_scratch scratch-slot)
              (nelisp_reader_p_push_function_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
+             (sexp-write-symbol head-slot (str-bytes-ptr scratch-slot)
+                                (extern-call nl_mut_str_len scratch-slot))
              1))
        (t 0)))
 
@@ -1054,12 +1063,12 @@
       (if (= tag 5) 1 (if (= tag 6) 1 (if (= tag 14) 1 (if (= tag 15) 1 0)))))
 
     (defun nelisp_reader_p_bv_str_ptr (s)
-      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+      (if (if (= (sexp-tag s) 6) 1 (if (= (sexp-tag s) 15) 1 0))
           (heap-read-u64 (heap-read-u64 s 8) 8)
         (heap-read-u64 s 16)))
 
     (defun nelisp_reader_p_bv_str_len (s)
-      (if (if (= (heap-read-u64 s 0) 6) 1 (if (= (heap-read-u64 s 0) 15) 1 0))
+      (if (if (= (sexp-tag s) 6) 1 (if (= (sexp-tag s) 15) 1 0))
           (heap-read-u64 (heap-read-u64 s 8) 16)
         (heap-read-u64 s 24)))
 
@@ -1213,7 +1222,7 @@
     (cond
      ((= km (if (>= km 200) 304 102)) (heap-read-u64 head-slot 0))
      ((= km 110)
-      (if (= (heap-read-u64 head-slot 0) 3)
+      (if (= (sexp-tag head-slot) 3)
           (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
         (nelisp_reader_p_seq_dot_w str-ptr cursor-slot 0 slot-pool depth 0)))
      ((= (- km (if (>= km 200) 300 100)) -2)
@@ -1228,7 +1237,7 @@
                                                (- km (if (>= km 200) 300 100)))))
         (if (or (= item 0) (= item 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
           (let* ((node (nelisp_cons_construct_w item 3 0)))
-            (if (= (heap-read-u64 head-slot 0) 3)
+            (if (= (sexp-tag head-slot) 3)
                 (nelisp_reader_p_word_slot_set head-slot node)
               (cons-set-cdr (heap-read-u64 tail-slot 0) node))
             (nelisp_reader_p_word_slot_set tail-slot node)

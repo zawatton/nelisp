@@ -70,7 +70,7 @@
   (let* ((common (cl-loop for f in '(val-load sexp-clone-into nlconsbox-alloc nlconsbox-set-car nlconsbox-set-cdr nlconsbox-clone nlvector-clone nlstr-clone nlchartable-clone nlboolvector-clone nlcell-clone nlrecord-clone nlrecord-slot-ptr) append (cdr (symbol-value (intern (format "nelisp-cc-%s--source" f))))))
          (source `(seq ,helper ,wrapper ,nelisp-cc-cons-construct--source ,@common
           ,@(mapcar #'af-def '(wf_bytecode_slot wf_bytecode_copy wf_copy32 wf_write_nil wf_bytecode_build_args))
-          (defun nl_bind_clone_force_flag () 0) (defun nl_gc_in_arena (p) 0) (defun nl_gc_is_boot (p) 0)
+          (defun nl_bind_clone_force_flag () 0) (defun nl_cons_alloc () 0) (defun nl_gc_in_arena (p) 0) (defun nl_gc_is_boot (p) 0)
           (defun nl_alloc_str (a b c) (syscall-direct 60 199 0 0 0 0 0)) (defun nl_alloc_symbol (a b c) (syscall-direct 60 199 0 0 0 0 0))
           ;; The source loop's list-only branch is exercised by the production
           ;; cold corpus; these stubs fail loudly if a frame test enters it.

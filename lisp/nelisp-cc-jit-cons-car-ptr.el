@@ -33,9 +33,14 @@
   '(defun nl_cons_car_ptr (arg)
       (if (= (nl_val_tag arg) 7)
           (let ((word (heap-read-u64 (nl_word_payload arg) 0)))
-            (if (and (= (logand word 1) 0) (/= (logand word 7) 6)) word
+            ;; Doc 216: a legacy view (000) and a direct cons (010) pass through
+            ;; unchanged -- no transient box that could not cross an eval;
+            ;; immediates and vectorlikes still materialise.
+            (if (= (logand word 5) 0) word
               (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))) 0))
   "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
+Doc 216 S2.1: a direct cons WORD (payload | 2) is returned as it is,
+like a legacy view; callers read it through the semantic accessors.
 
 Returns a 32B-slot VIEW of the cons CAR when arg is Sexp::Cons (tag 7),
 else 0 (null).  Derefs the Sexp::Cons payload at arg+8 to the NlConsBox,

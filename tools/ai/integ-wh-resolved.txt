@@ -14,3 +14,9 @@ test/nelisp-shadow-differential-cases.el
 tools/ns-inventory-baseline.txt
 # Edited outside the conflict set to follow the merge decisions
 test/nelisp-aot-s5-lowering-test.el
+
+# Merge 3: eval/strings-20261021 375939a85 (4 conflicted files, 9 hunks)
+lisp/nelisp-aot-compiler.el
+lisp/nelisp-cc-env-lookup-function.el
+scripts/nelisp-standalone-build.el
+test/nelisp-aot-compiler-test.el

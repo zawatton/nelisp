@@ -941,6 +941,26 @@
       (should (= (aref bytes 2) #x89))        ; mov r/m, r
       (should (= (aref bytes (1- (length bytes))) #xC3))))) ; ret
 
+(ert-deftest nelisp-asm-x86_64-compiler-label-index ()
+  "The compiler cache preserves duplicate checks, buffer isolation and bytes."
+  (let* ((indexed (nelisp-asm-x86_64-make-buffer))
+         (plain (nelisp-asm-x86_64-make-buffer))
+         (nelisp-asm-x86_64-label-index
+          (cons indexed (make-hash-table :test 'eq))))
+    (dolist (buf (list indexed plain))
+      (nelisp-asm-x86_64-define-label buf 'entry)
+      (nelisp-asm-x86_64-jmp-rel32 buf 'done)
+      (nelisp-asm-x86_64-define-label buf 'done))
+    (should (= (hash-table-count (cdr nelisp-asm-x86_64-label-index)) 2))
+    ;; Position zero and nil names must be detected as duplicates too.
+    (should-error (nelisp-asm-x86_64-define-label indexed 'entry)
+                  :type 'nelisp-asm-x86_64-error)
+    (nelisp-asm-x86_64-define-label indexed nil)
+    (should-error (nelisp-asm-x86_64-define-label indexed nil)
+                  :type 'nelisp-asm-x86_64-error)
+    (should (equal (nelisp-asm-x86_64-resolve-fixups indexed)
+                   (nelisp-asm-x86_64-resolve-fixups plain)))))
+
 (provide 'nelisp-asm-x86_64-test)
 
 ;;; nelisp-asm-x86_64-test.el ends here

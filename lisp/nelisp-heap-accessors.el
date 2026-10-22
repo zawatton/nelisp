@@ -9,10 +9,11 @@
 ;; legacy storage views and direct vectorlike values share one semantic API.
 ;; These remain compiler forms, not reader builtins.
 ;;
-;; Raw heap-read/native/extern operations below still address explicit storage:
-;; backing objects, allocator metadata, foreign buffers or physical views.
-;; They do not decode an arbitrary tagged WORD. Only the logical heap-sexp
-;; forms dispatch immediate/legacy/direct representations.
+;; Explicit storage APIs retain physical reads. Generic legacy consumers also
+;; accept validated direct string WORDs (Doc 227), mapping their former inline
+;; fields without allocating a view. Allocation/GC/value transport APIs decode
+;; WORDs before storage reads; their physical mode never applies that mapping.
+;; Native/extern raw pointer operations keep their physical contract.
 ;;
 ;; We deliberately centralize a superset of header reads: all storage loads,
 ;; including non-object memory. Thus the census needs no optimistic pointer
@@ -26,6 +27,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-asm-arm64)
 (require 'nelisp-sexp-layout)
@@ -56,6 +58,143 @@ storage reads below retain their exact load widths and calling conventions.")
   "Storage accessor forms and their exact S1 lowering prefixes.
 Keep direct/native/explicit-extern calls distinct: their old ABI is retained.")
 
+(defun nelisp-heap-accessors--string-raw-base-p (form)
+  "Whether FORM explicitly denotes storage, rather than a Lisp WORD."
+  (or (numberp form)
+      (and (consp form)
+           (or (memq (car form) '(data-addr alloc-bytes heap-sexp-payload nl_word_payload))
+               (and (memq (car form) '(+ -))
+                    (cl-every #'nelisp-heap-accessors--string-raw-base-p (cdr form)))
+               (equal form '(heap-read-u64 (data-addr nl_arena_base) 0))))))
+
+(defun nelisp-heap-accessors--computed-address-p (form)
+  "Whether FORM is a byte-offset sum with a variable term.
+`(+ DATA INDEX)' addresses a position inside a buffer, never a Lisp WORD;
+`(+ SLOT 24)' names a field of a value and keeps the String-aware read."
+  (and (consp form) (memq (car form) '(+ -))
+       (or (cl-some (lambda (term) (not (integerp term))) (cddr form))
+           (nelisp-heap-accessors--computed-address-p (cadr form)))))
+
+(defconst nelisp-heap-accessors-record-bases
+  '(env state st fr frame frames-data chunk acc hbuf env_ptr hdr active-record active
+    entry scratch resw link abase roots nlstr control head cin base resume node next
+    cnblk cwf vptr mark_chunk addr address fw nl_sb nl_sw out-slot walk pending dst wtmp
+    rootslot cout faddr reach total cmis cb cby cf cl cok out cursor-addr oldbase
+    head_slot flag-value bytes pool free-node gbox crel old-root count_slot magptr_slot
+    sum_sign_slot sign_slot r1 r2 qslot rbuf dbuf buf top binding-state record statusp
+    box boxa boxb)
+  "Variables that hold runtime records, stack cells or buffers, never a Lisp value.
+A generic slot read through one of them addresses runtime memory, so it keeps
+its physical load instead of the String-aware read. The list comes from the
+Doc 227 audit of every String-aware read site in the reader units
+(tools/ai/strings-check.py audit lists the bases that remain).")
+
+(defconst nelisp-heap-accessors-record-accessors
+  '(nl_eln_callback_record_at nl_thread_registry_entry nl_tty_slot_fd
+    nl_tty_slot_saved_flag nl_chunk_cursor_addr nl_n4_state nl_ct_head_slot)
+  "Calls that answer a runtime record pointer.")
+
+(defun nelisp-heap-accessors--record-base-p (form)
+  "Whether FORM names a runtime record: a record variable, a constant offset
+from one, or a call to a record accessor."
+  (cond ((symbolp form) (and (memq form nelisp-heap-accessors-record-bases) t))
+        ((and (consp form) (memq (car form) '(+ -)))
+         (and (nelisp-heap-accessors--record-base-p (cadr form))
+              (cl-every #'integerp (cddr form))))
+        ((consp form) (and (memq (car form) nelisp-heap-accessors-record-accessors) t))
+        (t nil)))
+
+(defconst nelisp-heap-accessors-guarded-functions
+  '(nl_apply_sym_eq_w nl_apply_sym_eq_bytes nl_apply_name_classify nelisp_fnv1a
+    nl_ht_test_mode m5_push_str_promoted m5_forced_multibyte_p nl_str_aref_byte_off
+    nl_str_sub_byte_off bf_keyword_raw nl_positioned_flag m5_fmt_loop)
+  "Value readers on hot paths. Their String-aware slot reads test the WORD tag
+inline and call nl_string_read64 only for a String WORD.")
+
+(defvar nelisp-heap-accessors--string-guarded nil
+  "Non-nil inside a function listed in `nelisp-heap-accessors-guarded-functions'.")
+
+(defvar nelisp-heap-accessors--string-physical nil
+  "Non-nil inside a storage API whose caller has already decoded WORDs.")
+
+(defun nelisp-heap-accessors--lower-string-eq (left right)
+  "Compare byte spans in GNU headers or legacy String/Symbol views.
+The old grammar emitter reads physical fields implicitly. Decode here so
+ordinary representation work does not require changing a machine emitter."
+  (let ((a (make-symbol "string-eq-a")) (b (make-symbol "string-eq-b"))
+        (ap (make-symbol "string-eq-ap")) (bp (make-symbol "string-eq-bp"))
+        (an (make-symbol "string-eq-an")) (bn (make-symbol "string-eq-bn"))
+        (i (make-symbol "string-eq-i")) (ok (make-symbol "string-eq-ok")))
+    (cl-labels
+        ((bytes (v)
+           `(if (= (logand ,v 7) 4)
+                (let* ((n (ptr-read-u64 (- ,v 4) 8)))
+                  (if (< n 0)
+                      (logand (ptr-read-u64 (- ,v 4) 0) 9223372036854775807) n))
+              (ptr-read-u64 ,v 24)))
+         (data (v)
+           `(if (= (logand ,v 7) 4) (ptr-read-u64 (- ,v 4) 24)
+              (ptr-read-u64 ,v 16))))
+      `(let* ((,a ,(nelisp-heap-accessors-lower left))
+              (,b ,(nelisp-heap-accessors-lower right)))
+         ;; Legacy Symbol/name slots retain the existing byte-comparison
+         ;; primitive. Only GNU header WORDs need the representation bridge.
+         (if (and (/= (logand ,a 7) 4) (/= (logand ,b 7) 4))
+             (str-eq ,a ,b)
+           (let* ((,an ,(bytes a)) (,bn ,(bytes b)) (,i 0) (,ok 1))
+             (if (/= ,an ,bn) 0
+               (let* ((,ap ,(data a)) (,bp ,(data b)))
+                 (seq
+                  (while (and (< ,i ,an) (= ,ok 1))
+                    (if (/= (ptr-read-u8 ,ap ,i) (ptr-read-u8 ,bp ,i))
+                        (setq ,ok 0) 0)
+                    (setq ,i (+ ,i 1)))
+                  ,ok)))))))))
+
+(defun nelisp-heap-accessors--lower-string-tag (operand)
+  "Use the canonical WORD tag accessor, including GNU strings."
+  ;; Share the existing accessor instead of expanding its complete
+  ;; immediate/vector/String classification at every compatibility read.
+  (list 'extern-call 'nl_val_tag (nelisp-heap-accessors-lower operand)))
+
+(defun nelisp-heap-accessors--lower-string-name-eq (operand literal)
+  "Keep allocation-free literal comparisons for GNU and legacy strings."
+  (let* ((v (make-symbol "string-name-value"))
+         (tag (make-symbol "string-name-tag"))
+         (n (make-symbol "string-name-length"))
+         (p (make-symbol "string-name-data"))
+         (nb (make-symbol "string-name-size-byte"))
+         (bytes (encode-coding-string literal 'utf-8 t))
+         (index 0) comparisons)
+    ;; Compare complete native words without reading beyond the string.
+    ;; All supported standalone targets are little endian. The remaining
+    ;; tail bytes keep the original literal comparison's exact bounds.
+    (while (<= (+ index 8) (length bytes))
+      (let ((word 0))
+        (dotimes (j 8)
+          (setq word (logior word (ash (aref bytes (+ index j)) (* j 8)))))
+        (when (>= word (expt 2 63)) (setq word (- word (expt 2 64))))
+        (push `(= (ptr-read-u64 ,p ,index) ,word) comparisons))
+      (setq index (+ index 8)))
+    (while (< index (length bytes))
+      (push `(= (ptr-read-u8 ,p ,index) ,(aref bytes index)) comparisons)
+      (setq index (1+ index)))
+    `(let* ((,v ,(nelisp-heap-accessors-lower operand))
+            (,tag (if (= (logand ,v 7) 4) 5 (ptr-read-u8 ,v 0))))
+       (if (or (= ,tag 4) (= ,tag 5) (= ,tag 14))
+           (let* ((,n (if (= (logand ,v 7) 4)
+                          (let* ((,nb (ptr-read-u64 (- ,v 4) 8)))
+                            (if (< ,nb 0)
+                                (logand (ptr-read-u64 (- ,v 4) 0) 9223372036854775807)
+                              ,nb))
+                        (ptr-read-u64 ,v 24))))
+             (if (/= ,n ,(length bytes)) 0
+               (let* ((,p (if (= (logand ,v 7) 4)
+                              (ptr-read-u64 (- ,v 4) 24)
+                            (ptr-read-u64 ,v 16))))
+                 ,(if comparisons (cons 'and (nreverse comparisons)) 1))))
+         0))))
+
 (defun nelisp-heap-accessors-lower (source)
   "Lower semantic fields and physical storage access in SOURCE.
 Do not touch quoted Lisp data.
@@ -68,18 +207,85 @@ Every operand is retained exactly once; dotted data is preserved."
              (field (and (symbolp (car source))
                          (assq (car source) nelisp-heap-accessors-sexp-fields))))
         (cond
+         ;; Doc 227: the string kernel describes physical GNU structures.
+         ;; Its ptr operations must not be interpreted as legacy Sexp fields.
+         ((and (eq (car source) 'defun)
+               (or (string-prefix-p "nl_string_" (symbol-name (cadr source)))
+                   (memq (cadr source) '(nl_sweep_strings nl_compact_small_strings))))
+          (let ((nelisp-heap-accessors--string-physical t))
+            (append (list 'defun (cadr source) (caddr source))
+                    (nelisp-heap-accessors--lower-tail (cdddr source)))))
+         ;; Allocator, collector, image and symbol-cell internals (including the
+         ;; GNU block families of Doc 223/226) address raw memory, never a
+         ;; Lisp value that could be a String WORD: they keep physical reads.
+         ((and (eq (car source) 'defun)
+               (or (memq (cadr source) '(bf_special_registry bf_eq2 wf_key_eq_depth wf_copy32 wf_word_store_out nl_abi_word_to_rc nl_sexp_clone_into nl_cons_car_word nl_cons_cdr_word nelisp_symbol_key_equal nl_n3_cell_set nl_str_bytes_ptr nl_str_charlen nl_str_charlen_c nl_str_char_count nelisp_mirror_walk_bucket nelisp_frame_stack_find_walk_bucket nelisp_env_lookup_value nelisp_env_lookup_function))
+                   (string-match-p
+                "\\`\\(?:nl_gc_\\|nelisp_env_\\|nelisp_mirror_\\|nelisp_frame_stack_\\|nl_bignum_\\|nl_native_\\|nl_intern_\\|nl_cell_\\|nl_lookup_fn_autoload\\|nl_symname_\\|nl_symbol_name_\\|nl_record_\\|nl_vector_\\|nl_frame_stack_\\|nl_root_\\|nl_hdr_\\|nl_chunk_\\|nl_alloc_\\|nl_freelist_\\|nl_word_\\|nl_vci_\\|nl_vl_\\|nl_sci_\\|nl_val_\\|nl_ablock_\\|nl_boot_\\|nl_sweep_\\|nl_cons_alloc\\|nl_cons_mark\\|nl_cons_unmark\\|nl_cons_dead\\|nl_symbol_\\|nl_symcell_\\|nl_sym_\\|nl_typed_\\|nl_live_\\|nl_dump_\\|nl_fa_\\|nl_os_\\|nl_conserv_\\|nl_aref_cache_\\|nl_fvcache_\\|nl_mxcache_\\|nl_compact_\\|nl_tty_\\|nl_neln_\\|m5_fx_\\|nl_name_is_\\|bf_load_abs_p\\)"
+                (symbol-name (cadr source)))))
+          (let ((nelisp-heap-accessors--string-physical t))
+            (append (list 'defun (cadr source) (caddr source))
+                    (nelisp-heap-accessors--lower-tail (cdddr source)))))
+         ((and (eq (car source) 'defun)
+               (memq (cadr source) nelisp-heap-accessors-guarded-functions))
+          (let ((nelisp-heap-accessors--string-guarded t))
+            (append (list 'defun (cadr source) (caddr source))
+                    (nelisp-heap-accessors--lower-tail (cdddr source)))))
+         ((eq (car source) 'sexp-tag)
+          (nelisp-heap-accessors--lower-string-tag (cadr source)))
+         ((memq (car source) '(nl_val_tag nl_word_tag64))
+          (nelisp-heap-accessors--lower-string-tag (cadr source)))
+         ((eq (car source) 'sexp-name-eq)
+          (nelisp-heap-accessors--lower-string-name-eq (cadr source) (caddr source)))
+         ((eq (car source) 'str-eq)
+          (nelisp-heap-accessors--lower-string-eq (cadr source) (caddr source)))
+         ((eq (car source) 'str-len)
+          ;; This grammar op's contract is String/Symbol, while the
+          ;; generic Sexp length accessor also handles vectorlike flags.
+          (let ((p (make-symbol "string-length-value")))
+            `(let* ((,p ,(nelisp-heap-accessors-lower (cadr source))))
+               (if (= (logand ,p 7) 4)
+                   (let* ((n (ptr-read-u64 (- ,p 4) 8)))
+                     (if (< n 0) (logand (ptr-read-u64 (- ,p 4) 0) 9223372036854775807) n))
+                 (ptr-read-u64 ,p 24)))))
+         ((eq (car source) 'str-bytes)
+          (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
+         ((eq (car source) 'str-byte-at)
+          (list 'ptr-read-u8
+                (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source)))
+                (nelisp-heap-accessors-lower (caddr source))))
+         ((and (not nelisp-heap-accessors--string-physical)
+               (memq (car source) '(heap-read-u64 heap-read-u8))
+               (if (eq (car source) 'heap-read-u8) (eql (nth 2 source) 0)
+                 (memq (nth 2 source) '(0 8 16 24)))
+               (not (nelisp-heap-accessors--string-raw-base-p (cadr source)))
+               (not (nelisp-heap-accessors--computed-address-p (cadr source)))
+               (not (nelisp-heap-accessors--record-base-p (cadr source))))
+          (let* ((u64 (eq (car source) 'heap-read-u64))
+                 (off (if u64 (nth 2 source) -1)))
+            (if nelisp-heap-accessors--string-guarded
+                ;; Only a String WORD reaches the call; every other operand
+                ;; (a slot pointer, a buffer address) is one load, as before.
+                (let ((g (make-symbol "string-read-base")))
+                  `(let* ((,g ,(nelisp-heap-accessors-lower (cadr source))))
+                     (if (= (logand ,g 7) 4)
+                         (nl_string_read64 ,g ,off)
+                       ,(if u64 `(ptr-read-u64 ,g ,off) `(ptr-read-u8 ,g 0)))))
+              (list 'nl_string_read64 (nelisp-heap-accessors-lower (cadr source)) off))))
          (field
           ;; These operands denote Lisp values, unlike the raw storage
           ;; accessors below. Preserve legacy views while accepting direct
           ;; vectorlike WORDs. The primitive helpers use storage loads, so
           ;; this lowering cannot recurse into itself.
-          (list (pcase (car field)
+          (if (memq (car field) '(heap-sexp-tag-byte heap-sexp-tag-word))
+              (nelisp-heap-accessors--lower-string-tag (cadr source))
+            (list (pcase (car field)
                   ('heap-sexp-tag-byte 'nl_val_tag)
                   ('heap-sexp-tag-word 'nl_word_tag64)
                   ('heap-sexp-payload 'nl_word_payload)
                   ('heap-sexp-data 'nl_word_data)
                   ('heap-sexp-length 'nl_word_length))
-                (nelisp-heap-accessors-lower (cadr source))))
+                (nelisp-heap-accessors-lower (cadr source)))))
          (entry
           (append (cdr entry) (nelisp-heap-accessors--lower-tail (cdr source))))
          (t

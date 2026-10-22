@@ -18001,7 +18001,8 @@ byte-offset (unique per emit site within a function buffer)."
          (int-lbl  (intern (format "stag%d_int" id)))
          (nil-lbl  (intern (format "stag%d_nil" id)))
          (done-lbl (intern (format "stag%d_done" id)))
-         (legacy-lbl (intern (format "stag%d_legacy" id))))
+         (legacy-lbl (intern (format "stag%d_legacy" id)))
+         (cons-lbl (intern (format "stag%d_cons" id))))
     (nelisp-aot-compiler--emit-value ptr buf)          ; rax = value word V
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)      ; rdi = V (preserved)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
@@ -18025,6 +18026,9 @@ byte-offset (unique per emit site within a function buffer)."
     (nelisp-asm-x86_64-define-label buf slot-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    ;; Doc 216 S2.1: a direct cons WORD (payload | 2) is a Cons.
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2)
+    (nelisp-asm-x86_64-jz-rel32 buf cons-lbl)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
     (nelisp-asm-x86_64-jnz-rel32 buf legacy-lbl)
     (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
@@ -18032,6 +18036,9 @@ byte-offset (unique per emit site within a function buffer)."
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-mov-imm32 buf 'rdi 63)
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf cons-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax nelisp-sexp--tag-cons)
     (nelisp-asm-x86_64-define-label buf done-lbl)))
 
 (defun nelisp-aot-compiler--emit-f64-to-i64-trunc (node buf)
@@ -18240,6 +18247,55 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
 
 ;; ---- Doc 101 §101.B Cons read ops emit ----
 
+(defun nelisp-aot-compiler--emit-unless-view (buf reg tmp label)
+  "Emit a jump to LABEL unless REG is a legacy view pointer (low bits 000).
+Doc 216: immediates, direct conses (010) and vectorlikes (110) are never
+symbol or string views, so a raw tag-byte read must not see them."
+  (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
+  (nelisp-asm-x86_64-and-reg-reg buf tmp reg)
+  (nelisp-asm-x86_64-cmp-imm32 buf tmp 0)
+  (nelisp-asm-x86_64-jnz-rel32 buf label))
+
+(defun nelisp-aot-compiler--emit-unless-view-arm64 (buf reg tmp label)
+  "Emit a branch to LABEL unless REG is a legacy view pointer (aarch64)."
+  (nelisp-asm-arm64-mov-imm64 buf tmp 7)
+  (nelisp-asm-arm64-and-reg-reg buf tmp reg tmp)
+  (nelisp-asm-arm64-cmp-imm buf tmp 0)
+  (nelisp-asm-arm64-b-cond buf 'ne label))
+
+(defun nelisp-aot-compiler--emit-cons-payload (buf dst src tmp)
+  "Emit DST = the cons payload of SRC, a cons view or a direct cons WORD.
+Doc 216 S2.1: a direct WORD is the payload | 2; a legacy view holds the
+payload at +8.  TMP is clobbered; DST may equal SRC."
+  (let* ((id (nelisp-aot-compiler--gensym "cons-payload"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
+    (nelisp-asm-x86_64-and-reg-reg buf tmp src)
+    (nelisp-asm-x86_64-cmp-imm32 buf tmp 2)
+    (nelisp-asm-x86_64-jnz-rel32 buf view)
+    (unless (eq dst src) (nelisp-asm-x86_64-mov-reg-reg buf dst src))
+    (nelisp-asm-x86_64-sub-imm32 buf dst 2)
+    (nelisp-asm-x86_64-jmp-rel32 buf done)
+    (nelisp-asm-x86_64-define-label buf view)
+    (nelisp-heap-accessors-x86_64-sexp-payload buf dst src)
+    (nelisp-asm-x86_64-define-label buf done)))
+
+(defun nelisp-aot-compiler--emit-cons-payload-arm64 (buf dst src tmp)
+  "Emit DST = the cons payload of SRC for aarch64 (see the x86_64 twin)."
+  (let* ((id (nelisp-aot-compiler--gensym "cons-payload-a64"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-asm-arm64-mov-imm64 buf tmp 7)
+    (nelisp-asm-arm64-and-reg-reg buf tmp src tmp)
+    (nelisp-asm-arm64-cmp-imm buf tmp 2)
+    (nelisp-asm-arm64-b-cond buf 'ne view)
+    (nelisp-asm-arm64-sub-imm buf dst src 2)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf view)
+    (nelisp-heap-accessors-arm64-sexp-payload buf dst src)
+    (nelisp-asm-arm64-define-label buf done)))
+
 (defun nelisp-aot-compiler--emit-cons-null-p (node buf)
   "Return whether NODE's WORD denotes nil, including compact pointer classes."
   (nelisp-aot-compiler--emit-sexp-tag node buf)
@@ -18273,8 +18329,7 @@ Caller must guarantee PTR points at `Sexp::Cons(_)'."
     (nelisp-aot-compiler--emit-temp-pop buf 'rsi)        ; rsi = slot (dst)
     (nelisp-aot-compiler--emit-temp-pop buf 'rdi)        ; rdi = ptr (Sexp::Cons)
     ;; r10 = NlConsBox* ; rdi = the 8-byte tagged WORD at box+field-off.
-    (nelisp-heap-accessors-x86_64-sexp-payload
-     buf 'r10 'rdi)
+    (nelisp-aot-compiler--emit-cons-payload buf 'r10 'rdi 'r11)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf 'rdi 'r10 field-off)
     ;; nl_sexp_clone_into(word, slot): SysV rdi=word, rsi=slot already
     ;; in place; win64 rcx=word, rdx=slot.  Preserve slot across the
@@ -18317,14 +18372,12 @@ values."
          (from-box (nelisp-aot-compiler--ir-get node :from-box))
          (id (nelisp-aot-compiler--gensym "cons-cdr-raw"))
          (nil-lbl (intern (format "%s-nil" id)))
+         (direct-lbl (intern (format "%s-direct" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
-    (if from-box
-        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-      (progn
-        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-        (nelisp-heap-accessors-x86_64-sexp-payload
-         buf 'rdi 'rdi)))
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (unless from-box
+      (nelisp-aot-compiler--emit-cons-payload buf 'rdi 'rdi 'rax))
     ;; r11 = cdr WORD @ [box + offset-cdr].
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'r11 'rdi nelisp-nlconsbox--offset-cdr)
@@ -18334,9 +18387,12 @@ values."
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdx)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 1)
     (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)
-    ;; r11 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
+    ;; r11 is a pointer WORD: a direct cons (payload | 2), a vectorlike or
+    ;; an 8-aligned 32B child Sexp box (check tag@+0).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r11)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2)
+    (nelisp-asm-x86_64-jz-rel32 buf direct-lbl)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
     (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'r11)
@@ -18345,6 +18401,10 @@ values."
     ;; child is a Cons -> next NlConsBox* = child payload @ +8.
     (nelisp-heap-accessors-x86_64-sexp-payload
      buf 'rax 'r11)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf direct-lbl)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'r11)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rax 2)
     (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
     (nelisp-asm-x86_64-define-label buf nil-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
@@ -18358,11 +18418,14 @@ safe to use as the loop seed in the length walker."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (id (nelisp-aot-compiler--gensym "sexp-payload-ptr"))
          (zero-lbl (intern (format "%s-zero" id)))
+         (direct-lbl (intern (format "%s-direct" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2)
+    (nelisp-asm-x86_64-jz-rel32 buf direct-lbl)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
     (nelisp-asm-x86_64-jz-rel32 buf zero-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
@@ -18370,6 +18433,10 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
     (nelisp-heap-accessors-x86_64-sexp-payload
      buf 'rax 'rdi)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf direct-lbl)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rax 2)
     (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
     (nelisp-asm-x86_64-define-label buf zero-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
@@ -18390,6 +18457,8 @@ deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
     (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2)   ; a direct cons is no record
+    (nelisp-asm-x86_64-jz-rel32 buf zero-lbl)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 6)
     (nelisp-asm-x86_64-jnz-rel32 buf legacy-lbl)
     (nelisp-asm-x86_64-sub-imm32 buf 'rdi 6)
@@ -19231,6 +19300,7 @@ literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax false-lbl)
     ;; Tag check: byte [rdi] == Sexp::Symbol tag (= 4).
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
@@ -19284,6 +19354,7 @@ differs (adds one cmp+jnz for the Str arm)."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax false-lbl)
     ;; Tag check: byte [rdi] == 4 (Symbol) → bytes_check
     ;;            byte [rdi] == 5 (Str)    → bytes_check
     ;;            byte [rdi] == 14 (UnibyteStr) → bytes_check
@@ -19331,6 +19402,8 @@ differs (adds one cmp+jnz for the Str arm)."
     (nelisp-aot-compiler--emit-temp-push buf 'rax)
     (nelisp-aot-compiler--emit-temp-pop buf 'rsi)
     (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
+    (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax tag-false-lbl)
+    (nelisp-aot-compiler--emit-unless-view buf 'rsi 'rax tag-false-lbl)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
     (nelisp-asm-x86_64-jnz-rel32 buf tag-false-lbl)
@@ -20163,7 +20236,7 @@ helper, and return the original handle in x0 (matches the x86_64 ABI)."
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; x1 = val-ptr (arg2)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = handle
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; preserve handle for return
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0) ; x0 = box (arg1)
+  (nelisp-aot-compiler--emit-cons-payload-arm64 buf 'x0 'x0 'x9) ; x0 = box (arg1)
   (nelisp-asm-arm64-bl buf helper-sym)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0))         ; x0 = handle (return)
 
@@ -20257,7 +20330,7 @@ word).  x0 = slot on return."
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push slot (preserve for return)
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = slot (peek, keep on stack)
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'sp 16)          ; x0 = ptr (peek)
-  (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0) ; x0 = box
+  (nelisp-aot-compiler--emit-cons-payload-arm64 buf 'x0 'x0 'x9) ; x0 = box
   (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 field-off)   ; x0 = the 8B tagged WORD
   (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)      ; nl_sexp_clone_into(word, slot)
   (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = slot (pop, return)
@@ -20324,17 +20397,23 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   "Emit `sexp-payload-ptr' for aarch64 — Cons -> box ptr, else 0."
   (let* ((id (nelisp-aot-compiler--gensym "sexp-payload-ptr-a64"))
          (zero-lbl (intern (format "%s-zero" id)))
+         (direct-lbl (intern (format "%s-direct" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value
      (nelisp-aot-compiler--ir-get node :ptr) buf)
     (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
     (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 2)
+    (nelisp-asm-arm64-b-cond buf 'eq direct-lbl)
     (nelisp-asm-arm64-cmp-imm buf 'x9 6)
     (nelisp-asm-arm64-b-cond buf 'eq zero-lbl)
     (nelisp-heap-accessors-arm64-ldrb-imm buf 'x1 'x0 0)        ; tag byte
     (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
     (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf direct-lbl)
+    (nelisp-asm-arm64-sub-imm buf 'x0 'x0 2)
     (nelisp-asm-arm64-b buf end-lbl)
     (nelisp-asm-arm64-define-label buf zero-lbl)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
@@ -20359,12 +20438,13 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
 (= the next `NlConsBox*'), else 0."
   (let* ((id (nelisp-aot-compiler--gensym "cons-cdr-raw-a64"))
          (nil-lbl (intern (format "%s-nil" id)))
+         (direct-lbl (intern (format "%s-direct" id)))
          (end-lbl (intern (format "%s-end" id)))
          (from-box (nelisp-aot-compiler--ir-get node :from-box)))
     (nelisp-aot-compiler--emit-value
      (nelisp-aot-compiler--ir-get node :ptr) buf)
     (unless from-box
-      (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0))
+      (nelisp-aot-compiler--emit-cons-payload-arm64 buf 'x0 'x0 'x9))
     ;; x1 = cdr WORD @ [box + offset-cdr=8].
     (nelisp-heap-accessors-arm64-ldr-imm buf 'x1 'x0 nelisp-nlconsbox--offset-cdr)
     ;; Immediate test: x3 = x1 & 1; if non-zero (immediate) -> nil.
@@ -20372,9 +20452,12 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
     (nelisp-asm-arm64-and-reg-reg buf 'x3 'x1 'x2)
     (nelisp-asm-arm64-cmp-imm buf 'x3 1)
     (nelisp-asm-arm64-b-cond buf 'eq nil-lbl)
-    ;; x1 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
+    ;; x1 is a pointer WORD: a direct cons (payload | 2), a vectorlike or
+    ;; an 8-aligned 32B child Sexp box (check tag@+0).
     (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
     (nelisp-asm-arm64-and-reg-reg buf 'x9 'x1 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 2)
+    (nelisp-asm-arm64-b-cond buf 'eq direct-lbl)
     (nelisp-asm-arm64-cmp-imm buf 'x9 6)
     (nelisp-asm-arm64-b-cond buf 'eq nil-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x2 'x1)
@@ -20382,6 +20465,9 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
     (nelisp-asm-arm64-b-cond buf 'ne nil-lbl)
     ;; child is a Cons -> next NlConsBox* = child payload @ +8.
     (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x1)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf direct-lbl)
+    (nelisp-asm-arm64-sub-imm buf 'x0 'x1 2)
     (nelisp-asm-arm64-b buf end-lbl)
     (nelisp-asm-arm64-define-label buf nil-lbl)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
@@ -20397,6 +20483,8 @@ a 32B child Sexp box — if its tag is Cons, return the child's payload
      (nelisp-aot-compiler--ir-get node :ptr) buf)
     (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
     (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 2)          ; a direct cons is no record
+    (nelisp-asm-arm64-b-cond buf 'eq zero-lbl)
     (nelisp-asm-arm64-cmp-imm buf 'x9 6)
     (nelisp-asm-arm64-b-cond buf 'ne legacy-lbl)
     (nelisp-asm-arm64-sub-imm buf 'x0 'x0 6)
@@ -20668,6 +20756,7 @@ immediate WORD 3, so load the full word (not a tag byte) and compare to 3."
          (legacy (intern (format "%s-legacy" id)))
          (integer (intern (format "%s-integer" id)))
          (nil-value (intern (format "%s-nil" id)))
+         (cons-value (intern (format "%s-cons" id)))
          (done (intern (format "%s-done" id))))
     (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
     (nelisp-asm-arm64-mov-imm64 buf 'x9 1)
@@ -20691,6 +20780,9 @@ immediate WORD 3, so load the full word (not a tag byte) and compare to 3."
     (nelisp-asm-arm64-define-label buf pointer)
     (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
     (nelisp-asm-arm64-and-reg-reg buf 'x9 'x0 'x9)
+    ;; Doc 216 S2.1: a direct cons WORD (payload | 2) is a Cons.
+    (nelisp-asm-arm64-cmp-imm buf 'x9 2)
+    (nelisp-asm-arm64-b-cond buf 'eq cons-value)
     (nelisp-asm-arm64-cmp-imm buf 'x9 6)
     (nelisp-asm-arm64-b-cond buf 'ne legacy)
     (nelisp-asm-arm64-sub-imm buf 'x0 'x0 6)
@@ -20698,6 +20790,9 @@ immediate WORD 3, so load the full word (not a tag byte) and compare to 3."
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x0)
     (nelisp-asm-arm64-mov-imm64 buf 'x9 63)
     (nelisp-asm-arm64-and-reg-reg buf 'x0 'x0 'x9)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf cons-value)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-sexp-int-unwrap-arm64 (node buf)
@@ -20803,6 +20898,7 @@ result (zero-extended byte) in x0."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
@@ -20832,6 +20928,7 @@ result (zero-extended byte) in x0."
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'eq bytes-lbl)
@@ -20868,6 +20965,8 @@ result (zero-extended byte) in x0."
      (nelisp-aot-compiler--ir-get node :b) buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
     (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)
+    (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 tag-false-lbl)
+    (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x2 'x9 tag-false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'ne tag-false-lbl)
@@ -21292,11 +21391,9 @@ original handle pointer in rax."
     (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
-          (nelisp-heap-accessors-x86_64-sexp-payload
-           buf 'rcx 'rdi)
+          (nelisp-aot-compiler--emit-cons-payload buf 'rcx 'rdi 'r11)
           (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
-      (nelisp-heap-accessors-x86_64-sexp-payload
-       buf 'rdi 'rdi))
+      (nelisp-aot-compiler--emit-cons-payload buf 'rdi 'rdi 'r11))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf (symbol-name helper-name) -4 'text)

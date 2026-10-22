@@ -37,7 +37,7 @@
              (and (sexp-int-make out (str-char-count arg)) 0)
            (if (= (sexp-tag arg) 10)
                (and (sexp-int-make
-                     out (heap-read-u64 (heap-read-u64 arg 8) 0))
+                     out (heap-read-u64 (nl_word_payload arg) 0))
                     0)
              1)))))
   "AOT source for the §120.D `nl_jit_access_length' swap.
