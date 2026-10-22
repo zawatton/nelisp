@@ -309,20 +309,85 @@ initially use 110, rather than consuming a new immediate encoding.
 Route to GNU's 8-byte float (recorded 2026-10-22; tracked by gc-port ledger
 S1.10 "float8"). GNU's Lisp_Float is a bare 8-byte cell in a float_block
 (alloc.c:2431, swept by sweep_floats at alloc.c:6894) whose pointer class is
-the Lisp_Float tag. A 110 float cannot reach that: its kind header is 8 bytes,
-so the smallest cell is 16 bytes (double plus header) in a typed float block,
-twice GNU's. No pointer pattern is free while the legacy Sexp views exist: 001
-is fixnum, 011 is only nil and 111 is only t, 010 is the direct cons, 100 the
-string, 110 the vectorlike, and 000 the 32-byte view with the sentinels 0 and
-2. The route is therefore in three steps. First a header-less float object in
-class 110 (transitional layout: kind header, then the double, 24 bytes from the
-generic allocator, whose pointer still doubles as a legacy view while readers
-migrate). Then a single accessor for the double (the XFLOAT_DATA analogue) and
-a 16-byte cell in typed float blocks with a side mark bitmap. Finally, when
-word-heap S6.1 retires the 000 views, 000 becomes the dedicated float tag and a
-float becomes a bare 8-byte cell with a mark bit, as in GNU. S1.10 measures the
-retained slope per float against 9 bytes and stays known-red until then; it
-is not to be downgraded to pending or dropped to raise the meter.
+the Lisp_Float tag. A 110 float cannot reach that: its kind word is 8 bytes,
+so the smallest cell is 16 bytes (kind word plus double) in a typed float
+block, twice GNU's. No pointer pattern is free while the legacy Sexp views
+exist: 001 is fixnum, 011 is only nil and 111 is only t, 010 is the direct
+cons, 100 the string, 110 the vectorlike, and 000 the 32-byte view with the
+sentinels 0 and 2. The route is therefore in steps. (b) One accessor for the
+double, nl_float_bits (the XFLOAT_DATA analogue): it reads the bits at +8 of
+the box, which is W - (W & 6), so it serves a legacy view and a float object
+alike, and the readers that take a WORD (number order, eq) use it. (a) A
+float becomes a 16-byte object [kind word 3 | double] from the general
+allocator, WORD = box | 6: 24 bytes retained instead of 40. The conversion
+sits in the cold legacy clone path (nl_val_clone_legacy) and a view
+materialised from the object carries its bits (nl_sexp_clone_into); the hot
+accessors stay untouched, because a float test in nl_word_payload (about 280
+call sites) or a float branch in nl_val_clone_into (every store) measured 9-10%
+on every basic row. (c) Landed 2026-10-22: 16-byte cells in typed float
+blocks (2046 per 32 KiB block, Doc 223 "Float blocks"), the mark in bit 24 of
+the kind word as for symbol cells instead of a side bitmap: 16 bytes retained
+instead of 24. (d) When word-heap S6.1 retires the 000 views, 000 becomes the
+dedicated float tag and a float becomes a bare 8-byte cell with a mark bit, as
+in GNU. S1.10 measures the retained slope per float against 9 bytes and stays
+known-red until then; it is not to be downgraded to pending or dropped to
+raise the meter.
+
+Bignum as an object (recorded 2026-10-22; gc-port ledger S1.5). A Bignum is
+[header | 32-bit limbs] from the general allocator, WORD = box | 6, with the
+header 13 | sign << 6 | limb count << 8 and the limbs at box + 8, padded to
+eight bytes: an integer of two limbs retains 24 bytes (the 16-byte object and
+its vector slot) instead of 64. The sign, the limb address and the count are
+read through nl_big_sign, nl_big_limbs and nl_big_count, which serve an object
+and a legacy view alike (a view keeps its limbs at +16); eq compares
+nl_big_identity, the object's address; the number-order readers and the
+arithmetic helpers use the accessors. A Bignum view stored into a container
+becomes its object (nl_val_clone_legacy, nl_big_word); a view materialised
+from an object (nl_sexp_clone_into) points its limbs at box + 8, which is how
+nl_big_word recognises the view of an object it already has. The collector
+marks the block (a Bignum has no children) and the dump's typed accounting
+skips it. wf_word_view passes pointer WORDs through unchanged, except that it
+materialises a Bignum object as a view, because the limb readers
+(nl_bignum_prep_operand, the small-divisor helpers) take views.
+
+Marker as a two-field record (recorded 2026-10-22; gc-port ledger S1.5). A
+marker was a three-slot record (buffer, position, insertion type), 48 bytes
+retained.  GNU keeps the insertion type in one bit of the marker; here it is the
+record's type: a marker that stays put when text is inserted at its position is
+a nelisp-marker, one that advances is a nelisp-marker-ins (a child struct that
+includes nelisp-marker, so nelisp-marker-p accepts both), and
+set-marker-insertion-type retypes the record by setting its slot 0.  A marker is
+then a record of two fields, 40 bytes retained, and the native number reader
+(wf_numeric_marker_p) accepts a record of length 2 named by either type.
+
+Scalar views as immediates (recorded 2026-10-22; gc-port ledger S1.5).  A nil, t
+or Int view stored into a container is its immediate WORD (nil 3, t 7, (n << 2) | 1
+for a fixnum-range Int) -- nl_vci_scalar in the cold clone path nl_val_clone_legacy;
+only an Int outside the fixnum range keeps an owned 32-byte box.  The cold path used
+to rebox every scalar slot (commit 692dc8a09, a micro-optimization, not a semantic
+rule), which left 71 integer, 157 nil and 431 t views in the image, almost all
+referenced by cons cells and records.  The hot accessors and nl_val_clone_into are
+untouched.
+
+Cells and vector views as WORDs (recorded 2026-10-22; gc-port ledger S1.5).  A
+Cell (the box of a captured variable that is assigned) was a 16-byte box
+[value WORD | refcount] reached through a 32-byte tag-11 view; 80 such views were in
+the image.  It is now a header-first object [header | value WORD]: the header's low
+bits are kind 11, bit 8 marks N3's pair-backed cells (a legacy view still carries that
+flag in its word 16 as 13107), and the WORD is box | 6.  Only two constants of the
+layout move (nelisp-nlcell--offset-value 0 -> 8, --offset-refcount 8 -> 0); the
+compiler's cell-make, cell-value and cell-set-value emitters read the layout constants
+and are untouched.  The count is gone (the collector traces a cell), clone and drop are
+no-ops, nl_cell_set_w stores a WORD, and the call sites that handed the compiler's
+cell-set-value op a WORD (the environment setters, the variable alias and the frame
+lookup) use nl_cell_set_w / nl_cell_pair_p instead.  A Cell view stored into a container
+is its object (nl_val_clone_legacy, nl_cell_word).  The collector marks kind 11 and the
+slot at +8, compaction relocates the slot, and the dump walks it as a vectorlike object.
+A vector view stored into a container is likewise the WORD of its vector object (payload
+| 6): nl_val_clone_legacy does it for the stores through nl_val_clone_into, and
+nl_word_canon -- the canonical WORD the fast cons writers store, such as the setcar and
+setcdr primitives of the fast evaluator -- does it for the rest.  Twelve views of vectors
+reached the image through those writers.
 
 100 and 110 still require a kind-word load when their subtype is needed;
 only cons and the broad pointer classes can be recognized entirely from WORD

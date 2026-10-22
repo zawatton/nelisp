@@ -123,17 +123,8 @@
      ;; before the outer 16-byte allocation is freed.  Matches
      ;; `nlrc_drop_box!' ordering.
     (defun nelisp_nlcell_drop (box-ptr)
-      (if (= (atomic-fetch-add (+ box-ptr 8) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Drop interior
-          ;; value WORD child then free the 16-byte outer allocation.
-          ;; Doc 147 Phase 1: rc @ box+8, size 16 (was rc@32, size 40).
-          (nelisp_nlcell_drop_prog2
-           (extern-call nl_cell_drop_inner box-ptr)
-           (dealloc-bytes box-ptr 16 8))
-        ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
-        ;; the dealloc-bytes arm's return convention so the caller
-        ;; sees a uniform `i64 = 1' on both branches.
-        1)))
+      ;; Doc 216 S5: nothing to release, the collector owns the cell.
+      1))
   "AOT source for the Doc 124 §124.I NlCell Drop kernel.
 
 Two-entry `(seq DEFUN ...)' manifest mirroring §124.G/H:

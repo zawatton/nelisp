@@ -8,7 +8,7 @@
 ;; string in the name cell, the key in its bucket chain and the cell in the
 ;; cells vector).
 ;;
-;; (nelisp--debug-switch 45 SYM) answers what SYM has in the mirror: 0 no
+;; (nelisp--debug-switch 50 SYM) answers what SYM has in the mirror: 0 no
 ;; object, 1 an interned object with its name string, 2 an object with a nil
 ;; name cell, 3 an entry that is not an interned symbol object.  A fresh
 ;; name must answer 1 however it was interned (`intern', the reader, a quoted
@@ -24,7 +24,7 @@
     (setq seoc-failures (1+ seoc-failures))
     (princ (format "SEOC FAIL %s\n" label))))
 
-(defun seoc-state (sym) (nelisp--debug-switch 45 sym))
+(defun seoc-state (sym) (nelisp--debug-switch 50 sym))
 
 ;; The probe itself: it must see an object that exists, and not invent one.
 (seoc-check (eql (seoc-state nil) 0) "nil has no object")

@@ -9,16 +9,25 @@
 ;;   (nelisp--debug-switch 60)        the cells vector computed from the root,
 ;;                                    nil when there is none;
 ;;   (nelisp--debug-switch 61 N)      a mirror-shaped table kept only by the
-;;                                    root: the mirror record, the table, a
+;;                                    root (the mirror record, the table, a
 ;;                                    buckets vector and a cells vector of N
-;;                                    fixnums each;
+;;                                    fixnums each), two collections, and the
+;;                                    answer: how many buckets and cells still
+;;                                    hold their values (2 N intact), or a
+;;                                    negative code when a record or vector is
+;;                                    gone;
 ;;   (nelisp--debug-switch 62 N)      the same with the root word's low bit
 ;;                                    set, so the collector reads an
 ;;                                    immediate (the negative control);
-;;   (nelisp--debug-switch 63)        how many buckets and cells of that table
-;;                                    still hold their values (2 N intact), or
-;;                                    a negative code when a record or vector
-;;                                    is gone;
+;;   (nelisp--debug-switch 63 (list N PATH))
+;;                                    the table of 61 around an image dump to
+;;                                    PATH: the same answer, -101 when the dump
+;;                                    failed (the builtin takes one argument
+;;                                    after the code, hence the list);
+;; Arms 61-63 restore the root before they return.  The evaluator reads the
+;; root (symbol compares, the store canonicalization, interning) once
+;; interned symbols are objects, so no evaluator work may run while it names a
+;; table that is not the globals record: the whole window is one native call.
 ;;   (nelisp--debug-switch 64)        1 when the root is the record of the
 ;;                                    evaluator's globals, else 0, -1 outside
 ;;                                    a form;
@@ -46,9 +55,9 @@
     (setq gcsc-failures (1+ gcsc-failures))
     (princ (format "GCSC FAIL %s\n" label))))
 (defun gcsc-cells () (nelisp--debug-switch 60))
-(defun gcsc-make (n) (nelisp--debug-switch 61 n))
-(defun gcsc-hide (n) (nelisp--debug-switch 62 n))
-(defun gcsc-good () (nelisp--debug-switch 63))
+(defun gcsc-survive (n) (nelisp--debug-switch 61 n))
+(defun gcsc-hidden (n) (nelisp--debug-switch 62 n))
+(defun gcsc-dump (n path) (nelisp--debug-switch 63 (list n path)))
 (defun gcsc-same () (nelisp--debug-switch 64))
 (defun gcsc-attach () (nelisp--debug-switch 65))
 (defun gcsc-clear () (nelisp--debug-switch 66))
@@ -61,20 +70,15 @@
       (setq i (1+ i)))))
 (defun gcsc-survival (tag)
   ;; The conservative scan is off, so no stale native word can keep the table:
-  ;; only the root does.
+  ;; only the root does.  Each arm builds the table, collects twice and
+  ;; restores the root natively; the checks run with the real root.
   (nelisp--debug-switch 28)
-  (gcsc-check (= (gcsc-make 3000) 3000) (format "%s: a table kept only by the root" tag))
-  (gcsc-gc)
-  (gcsc-check (= (gcsc-good) 6000)
-              (format "%s: its record, table, buckets and cells survive two collections" tag))
-  (gcsc-attach)
+  (gcsc-check (= (gcsc-survive 3000) 6000)
+              (format "%s: a table kept only by the root: its record, table, buckets and cells survive two collections" tag))
   (gcsc-check (= (gcsc-same) 1) (format "%s: the root is re-derived" tag))
   ;; Control: the same table, hidden from the collector, is not kept.
-  (gcsc-hide 3000)
-  (gcsc-gc)
-  (gcsc-check (/= (gcsc-good) 6000)
+  (gcsc-check (/= (gcsc-hidden 3000) 6000)
               (format "%s: control, the hidden table does not survive" tag))
-  (gcsc-attach)
   (gcsc-check (= (gcsc-same) 1) (format "%s: the root is re-derived after the control" tag))
   (nelisp--debug-switch 29))
 
@@ -118,10 +122,8 @@
     ;; The dump runs with a table only the root keeps: its marking and its
     ;; relocation walk must agree, and the image must load.
     (nelisp--debug-switch 28)
-    (gcsc-check (= (gcsc-make 500) 500) "a table kept only by the root before the dump")
-    (gcsc-check (> (nelisp--arena-dump-image-stream (getenv "GCSC_IMAGE")) 0) "image dump")
-    (gcsc-check (= (gcsc-good) 1000) "the root's table is intact after the dump")
-    (gcsc-attach)
+    (gcsc-check (= (gcsc-dump 500 (getenv "GCSC_IMAGE")) 1000)
+                "a table kept only by the root: the image dump succeeds and the table is intact after it")
     (nelisp--debug-switch 29)
     (gcsc-check (= (gcsc-same) 1) "the root is re-derived after the dump")
     (gcsc-gc)

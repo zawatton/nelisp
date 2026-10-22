@@ -302,7 +302,7 @@
                           ;; follows a watcher-retargeted alias afterwards.
                           (nl_pa_watched_default_w env name value 0)
                         (seq (wf_dirty)
-                             (if (/= cell 0) (cell-set-value cell value)
+                             (if (/= cell 0) (nl_cell_set_w cell value)
                                (nelisp_env_setv_mirror_lazy env canonical value (+ env 64)))
                              value))))
                 (if (= void 1)
@@ -326,7 +326,7 @@
                       (if (= (nl_thread_mirror_mutation_guard env canonical) 1) 0
                         (seq (wf_dirty)
                              (if (= (if (/= cell 0)
-                                        (seq (cell-set-value cell (+ roots 32)) 0)
+                                        (seq (nl_cell_set_w cell (+ roots 32)) 0)
                                       (nelisp_env_setv_mirror_lazy env canonical (+ roots 32) (+ env 64))) 0)
                                  (nl_val_clone_into (+ roots 32) result) 0)))))) 0)))
          (nl_root_release env mark)

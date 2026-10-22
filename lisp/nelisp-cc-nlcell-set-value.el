@@ -48,7 +48,12 @@
     ;;     32B box and stores its 8-aligned pointer as the word at cell+0.
     ;; NOT a 4xu64 inline copy — the value field is now 8 bytes.
     (defun nl_cell_set_value (cell val)
-      (extern-call nl_val_clone_into val cell)))
+      ;; CELL is the raw NlCell*; Doc 216 S5: the value WORD is at box+8.
+      (extern-call nl_val_clone_into val (+ cell 8)))
+    ;; The same for a Cell view or a Cell WORD, the form the evaluator's frame
+    ;; lookups answer (the compiler's cell-set-value op reads a view's payload).
+    (defun nl_cell_set_w (cell val)
+      (extern-call nl_val_clone_into val (+ (nl_cell_box cell) 8))))
   "AOT source for the `nl_cell_set_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

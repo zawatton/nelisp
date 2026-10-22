@@ -41,7 +41,7 @@ The results (or errors) must be equal; BODY must not mention the other one."
   `(let* ((sowc-n (format "sowc-case-%s" ',label))
           (run (lambda (use-object)
                  (let* ((s (sowc-fresh sowc-n))
-                        (x (if use-object (nelisp--debug-switch 44 s) s)))
+                        (x (if use-object (nelisp--debug-switch 49 s) s)))
                    (sowc-norm
                     (condition-case err
                         (list 'ok (progn ,@body) (symbol-value s) (get s 'q))
@@ -54,7 +54,7 @@ The results (or errors) must be equal; BODY must not mention the other one."
 
 ;; The object WORD really is one: not the view, same symbol.
 (let* ((s (sowc-fresh "sowc-ident"))
-       (o (nelisp--debug-switch 44 s)))
+       (o (nelisp--debug-switch 49 s)))
   (setq sowc-checks (1+ sowc-checks))
   (unless (and (symbolp o) (eq o s) (eq s o) (equal o s) (eql o s)
                (eq (symbol-name o) (symbol-name s)))

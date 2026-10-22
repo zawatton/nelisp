@@ -1,0 +1,66 @@
+diff --git a/scripts/nelisp-standalone-build.el b/scripts/nelisp-standalone-build.el
+index 5c3df65ba..a848f6517 100644
+--- a/scripts/nelisp-standalone-build.el
++++ b/scripts/nelisp-standalone-build.el
+@@ -18481,6 +18481,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
+       ;; Bcall.  A bytecode callee runs on the caller's argument words
+       ;; directly; anything else goes through the shared interpreted
+       ;; gateway on staged views.  The value replaces the function word.
++      ;; GNU bytecode.c:797: maybe_gc () before the call is made.  The
++      ;; arguments sit in MEM (the frame vector, a root); nothing else is live.
++      (seq (nl_gc_vm_poll)
+       (let* ((fi (- sp (+ argc 1))))
+         (if (< fi 0)
+             2
+@@ -18508,7 +18511,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
+                 (if (if (and (= argc 3) (= lookup 0))
+                         (wf_bytecode_flat_path_int_cell cell) 0)
+                     (wf_bytecode_w_call_views env fview mem fi argc out)
+-                  (wf_bytecode_w_call_words env fw mem fi argc out))))))))
++                  (wf_bytecode_w_call_words env fw mem fi argc out)))))))))
+     (defun wf_bytecode_w_call_views (env fview mem fi argc out)
+       (let* ((mark (nl_root_mark env))
+                      (st (wf_bytecode_w_stage env mem (+ fi 1) argc)))
+@@ -19469,7 +19472,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
+                                                              (setq pc (+ pc 1)))
+                                                       (seq (setq failed 1) (setq go 0)))))))
+                                            (seq (setq go 0)))))))))))))))))
+-        (if (= failed 1) -1 (+ (shl pc 17) sp))))
++        (if (= failed 1) -1 (+ (+ (shl pc 17) sp) (shl (- 256 back) 48)))))
+ 
+ 
+     (defun wf_bytecode_execute_frame (code constants depth env out initial-args
+@@ -19510,7 +19513,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
+              (arg-cursor initial-args) (arg-index 0)
+              (pc 0) (sp initial-slots) (done (if (= roots 0) 5 0)) (bindings 0)
+              (unwind-rc 0)
+-             (bad-op 255) (bad-offset 0) (i 0))
++             (bad-op 255) (bad-offset 0) (i 0)
++             (quit 0) (prev 0))
+         (if (= roots 0)
+             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
+           (seq
+@@ -19614,6 +19618,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
+                   ;; above retains its independent resume-PC check.
+                   (= done 0)))
+            (seq
++            ;; GNU bytecode.c:861-866: maybe_gc () once per 256 backward
++            ;; branches.  A branch back is a smaller PC than the previous
++            ;; iteration's; the fast run reports the ones it took itself.
++            (if (< pc prev) (setq quit (+ quit 1)) 0)
++            (setq prev pc)
++            (if (>= quit 256) (seq (setq quit 0) (nl_gc_vm_poll)) 0)
+             (if (and (<= code-len 2147483647) (>= sp 0) (<= sp depth))
+                 (let* ((first-op (heap-read-u8 code-data pc)))
+                   ;; Skip an unsupported batch starter without changing PC/SP.
+@@ -19630,7 +19640,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
+                         ;; -1: a call made from the fast loop signalled; the
+                         ;; pending exit then unwinds as after the full Bcall arm.
+                         (if (< state 0) (setq done 4)
+-                          (seq (setq pc (sar state 17)) (setq sp (logand state 131071))))) 0)) 0)
++                          (seq (setq pc (logand (sar state 17) 2147483647))
++                               (setq sp (logand state 131071))
++                               (setq quit (+ quit (logand (sar state 48) 511)))))) 0)) 0)
+            (let* ((offset pc) (raw (heap-read-u8 code-data pc))
+                   (base raw) (operand 0) (width 0)
+                   (top (+ mem (* (- sp 1) 8)))

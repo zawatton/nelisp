@@ -253,12 +253,12 @@ car WORD (8) + cdr WORD (8) + refcount (8)."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest nelisp-sexp-layout--nlcell-offset-value ()
-  "NlCell::value WORD is at byte offset 0."
-  (should (= nelisp-nlcell--offset-value 0)))
+  "NlCell::value WORD is at byte offset 8 (Doc 216 S5: one WORD past the header)."
+  (should (= nelisp-nlcell--offset-value 8)))
 
 (ert-deftest nelisp-sexp-layout--nlcell-offset-refcount ()
-  "NlCell::refcount is at byte offset 8 (Doc 147: one WORD past value)."
-  (should (= nelisp-nlcell--offset-refcount 8)))
+  "The word that was the refcount is at byte offset 0 and is now the header."
+  (should (= nelisp-nlcell--offset-refcount 0)))
 
 (ert-deftest nelisp-sexp-layout--nlcell-size ()
   "NlCell total size is 16 bytes (Doc 147 Phase 1: 8B value WORD + 8B rc)."

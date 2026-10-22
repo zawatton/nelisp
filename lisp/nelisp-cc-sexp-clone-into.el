@@ -187,9 +187,23 @@
                   (nl_sym_view_into src dst_ptr)
                 (nl_sci_prog2
                  (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
-                      (ptr-write-u64 dst_ptr 8 base)
-                      (ptr-write-u64 dst_ptr 16 0)
-                      (ptr-write-u64 dst_ptr 24 0)) dst_ptr)))
+                      ;; Doc 216 S5: the view of a float carries its bits, the
+                      ;; view of a Bignum its sign, the address of its limbs
+                      ;; (box + 8) and their count.
+                      (ptr-write-u64 dst_ptr 8 (if (= (logand (heap-read-u8 base 0) 63) 3)
+                                                   (heap-read-u64 base 8)
+                                                 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                     (logand (shr (heap-read-u64 base 0) 6) 1)
+                                                   base)))
+                      ;; A Cell's view carries N3's pair-backed flag in word 16.
+                      (ptr-write-u64 dst_ptr 16 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                    (+ base 8)
+                                                  (if (= (logand (heap-read-u8 base 0) 63) 11)
+                                                      (if (= (logand (shr (heap-read-u64 base 0) 8) 1) 1)
+                                                          13107 0)
+                                                    0)))
+                      (ptr-write-u64 dst_ptr 24 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                    (shr (heap-read-u64 base 0) 8) 0))) dst_ptr)))
           (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))
   "AOT source for nl_sexp_clone_into.
 
