@@ -14766,7 +14766,9 @@ eval applyfn.")
                                 0
                               (setq ok 0))
                             (if (or (= ta 2) (= ta 16))
-                              (if (= (wf_word_int a) (wf_word_int b))
+                              ;; An uninterned symbol is its object's address
+                              ;; (the view keeps it at +8, the WORD is it).
+                              (if (= (nl_word_payload a) (nl_word_payload b))
                                   0
                                 (setq ok 0))
                             (if (= ta 4)

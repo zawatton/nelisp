@@ -129,7 +129,8 @@ value form using the `ptr-read-u64' grammar op in nested position.")
            (heap-read-u64 (heap-sexp-payload sexp) 8)
          (if (or (= kind 5) (= kind 14))
              (heap-read-u64 sexp 16)
-           (if (= kind 4) (heap-read-u64 sexp 16) 0)))))
+           ;; Doc 226 D9 stage 3.2: an interned symbol may be its object's WORD.
+           (if (= kind 4) (heap-sexp-data sexp) 0)))))
     ;; Raw-pointer byte access shared by AOT consumers whose source files are
     ;; deliberately kept out of the raw-memory kernel inventory.
     (defun nl_bytes_byte_at (bytes i)
