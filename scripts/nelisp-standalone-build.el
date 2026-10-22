@@ -17463,14 +17463,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; own WORD, as `nl_fx_lookup_in' reads the VM's table.  An immediate
     ;; (nil, t) is looked up through a view, as `wf_arg_ptr' gave one.
     (defun wf_bytecode_plist_of (tbl sym)
+      ;; Hashtab's storage (Doc 228): `nl_ht_find_in' syncs identity hashes and
+      ;; answers an entry number (0 when absent) that `nl_ht_entry_value' reads.
       (if (/= (nl_word_tag64 tbl) 7) 3
-        (let* ((key (if (= (logand sym 1) 1) (wf_word_view sym) sym)))
-          (seq
-           (nl_ht_identity_sync tbl)
-           (let* ((mode (nl_ht_test_mode tbl))
-                  (entry (nl_ht_find_table_h (nl_cons_cdr_word tbl) key mode
-                                             (nl_ht_hash_mode tbl mode))))
-             (if (= entry 0) 3 (nl_cons_cdr_word entry)))))))
+        (let* ((key (if (= (logand sym 1) 1) (wf_word_view sym) sym))
+               (entry (nl_ht_find_in tbl key)))
+          (if (= entry 0) 3 (nl_ht_entry_value tbl entry)))))
     (defun wf_bytecode_switch (mem sp code-len scratch)
       ;; GNU byte-switch consumes KEY then TABLE.  A hit contains the absolute
       ;; byte offset to resume at; a miss falls through to the following
@@ -24172,30 +24170,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_make_char_table_w (args env _pad)
       (if (= (nl_val_tag args) 7)
-          (let* ((mark (nl_root_mark env))
-                 (subtype (nl_root_reserve env))
-                 (property (nl_root_reserve env))
-                 (extra-count (nl_root_reserve env)))
-            (seq
-             (wf_bytecode_copy subtype (wf_arg_ptr args 0))
-             (wf_bytecode_copy property 'char-table-extra-slots)
-             (let* ((rc (wf_bytecode_get_box env subtype property extra-count)))
-               (if (= rc 0)
-                   (if (or (= (sexp-tag extra-count) 0)
-                           (and (= (sexp-tag extra-count) 2)
-                                (>= (ptr-read-u64 extra-count 8) 0)))
-                       (let* ((count (if (= (sexp-tag extra-count) 0) 0
-                                       (ptr-read-u64 extra-count 8)))
-                              (rest (nl_cons_cdr_word args))
-                              ;; Doc 225 S3: cell 0 holds the slot vector.
-                              (result (nl_char_table_alloc_count_w
-                                       (nl_cons_car_word args)
-                                       (if (= (nl_val_tag rest) 7)
-                                           (nl_cons_car_word rest) 3) (+ count 1))))
-                         (seq (nl_root_release env mark) result))
-                     (seq (bf_wrong_type_wholenump extra-count)
-                          (nl_root_release env mark) 0))
-                 (seq (nl_root_release env mark) 0)))))
+          ;; The plist read answers 0 after it stashed a signal (the plist
+          ;; table unbound), else the property's WORD: nil, a fixnum, or a bad
+          ;; value (the call-path line's WORD form of `wf_bytecode_get_box').
+          (let* ((extra (wf_bytecode_get_word env (nl_cons_car_word args)
+                                              'char-table-extra-slots 1)))
+            (if (= extra 0) 0
+              (if (or (= extra 3)
+                      (and (= (nl_val_tag extra) 2) (>= (nl_word_payload extra) 0)))
+                  (let* ((count (if (= extra 3) 0 (nl_word_payload extra)))
+                         (rest (nl_cons_cdr_word args)))
+                    ;; Doc 225 S3: cell 0 holds the slot vector.
+                    (nl_char_table_alloc_count_w
+                     (nl_cons_car_word args)
+                     (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3)
+                     (+ count 1)))
+                (seq (bf_wrong_type_wholenump extra) 0))))
         (nl_abi_rc_nil (bf_wrong_number_of_args_make_char_table) 0)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_subtype_w (args _pad)

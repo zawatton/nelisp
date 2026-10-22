@@ -5,7 +5,7 @@
 # /usr/local/bin/emacs (GNU_EMACS overrides).  Every NeLisp and GNU run is capped
 # at 8 GiB of address space.  Exit 0 iff the check passes.
 #
-#   merged NAME   codegen-wh | base | strings | hashtab: the lane tip is the second
+#   merged NAME   codegen-wh | base | strings | hashtab | gc-port: the lane tip is the second
 #                 parent of a first-parent merge commit between batch F and HEAD
 #   hygiene       no conflict markers in tracked files; every Elisp file listed in
 #                 tools/ai/integ-wh-resolved.txt (the hand-resolved ones) passes
@@ -20,6 +20,7 @@
 #   boot          the dynamic binary evaluates (+ 1 2)
 #   sanity        fib, a cons-heavy loop and a string-heavy loop print GNU's bytes
 #   log KIND      pipeline evidence newer than the dynamic binary: checks standalone mcp
+#                 fchecks (batch F's fixture checks) gcport (gc-port's light set)
 cd "$(dirname "$0")/../.." || exit 2
 ROOT=$PWD
 DYN=${INTEG_WH_DYN:-$ROOT/target/integ/nelisp-dyn}
@@ -48,7 +49,8 @@ case ${1:-} in
       base)       rev=702ccc8d7 ;;
       strings)    rev=375939a85 ;;
       hashtab)    rev=76f7c484a ;;
-      *) fail "usage: merged codegen-wh|base|strings|hashtab" ;;
+      gc-port)    rev=7b8916b7f ;;
+      *) fail "usage: merged codegen-wh|base|strings|hashtab|gc-port" ;;
     esac
     git merge-base --is-ancestor $rev HEAD || fail "$2: $rev is not an ancestor of HEAD"
     git log --first-parent --merges --format='%P' "$BASE"..HEAD | awk '{print $2}' | grep -q "^$rev" ||
@@ -130,6 +132,10 @@ case ${1:-} in
                   grep -q 'GATE-COUNT: 11 cases, 0 failures' "$f" 2>/dev/null || fail "checks.sh not 11/0 in $f" ;;
       standalone) f=target/final-verify/checks-integ-wh/standalone-checks.log
                   grep -qx 'STANDALONE-CHECKS PASS' "$f" 2>/dev/null || fail "test/perf/standalone-checks.sh not PASS in $f" ;;
+      fchecks)    f=target/final-verify/integ-wh-fchecks.log
+                  tail -n 1 "$f" 2>/dev/null | grep -q '^FCHECKS PASS ' || fail "batch F's fixture checks not all PASS in $f" ;;
+      gcport)     f=target/final-verify/integ-wh-gcport.log
+                  [ "$(grep -c '^GC-PORT-[A-Z-]* PASS' "$f" 2>/dev/null)" = 3 ] || fail "gc-port's light set not 3 PASS in $f" ;;
       mcp)        f=target/final-verify/integ-wh-mcp.log
                   sed -n 2p "$f" 2>/dev/null | grep -qx '2 tools=40' || fail "MCP not 40 tools in $f" ;;
       *) fail "unknown log kind ${2:-}" ;;
