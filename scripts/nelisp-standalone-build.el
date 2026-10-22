@@ -20674,12 +20674,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (seq (setq mem fp2)
                   (setq depth d2)
                   (setq foot f2)
-                  ;; The code string: a String WORD gives its data and length through
-                  ;; the string accessors (GNU's SDATA and SCHARS), anything else
-                  ;; keeps the view's fields.
+                  ;; The code string, as GNU's setup_frame and Breturn read it (SDATA, bytecode.c:511,
+                  ;; 925): a String WORD by direct loads, its header at WORD - 4 (size at +0, size_byte
+                  ;; at +8, data pointer at +24), which is `nl_word_data' and `nl_word_length' without
+                  ;; their calls; the WORD came from a closure's code slot, so it is a Lisp string and
+                  ;; needs no validation.  Anything else keeps the view's fields.
                   (if (= (logand cw 7) 4)
-                      (seq (setq data (heap-sexp-data cw))
-                           (setq length (heap-sexp-length cw)))
+                      (let* ((sb (ptr-read-u64 (+ cw 4) 0)))
+                        (seq (setq data (ptr-read-u64 (+ cw 20) 0))
+                             (setq length (if (< sb 0)
+                                              (logand (ptr-read-u64 (- cw 4) 0) 9223372036854775807)
+                                            sb))))
                     (let* ((ct (heap-read-u8 cw 0)))
                       (if (if (= ct 5) 1 (= ct 14))
                           (seq (setq data (heap-read-u64 cw 16))
@@ -20955,12 +20960,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (seq (setq mem fp2)
                                         (setq depth d2)
                                         (setq foot f2)
-                                        ;; The code string: a String WORD gives its data and length through
-                                        ;; the string accessors (GNU's SDATA and SCHARS), anything else
-                                        ;; keeps the view's fields.
+                                        ;; The code string, as GNU's setup_frame and Breturn read it (SDATA, bytecode.c:511,
+                                        ;; 925): a String WORD by direct loads, its header at WORD - 4 (size at +0, size_byte
+                                        ;; at +8, data pointer at +24), which is `nl_word_data' and `nl_word_length' without
+                                        ;; their calls; the WORD came from a closure's code slot, so it is a Lisp string and
+                                        ;; needs no validation.  Anything else keeps the view's fields.
                                         (if (= (logand cw 7) 4)
-                                            (seq (setq data (heap-sexp-data cw))
-                                                 (setq length (heap-sexp-length cw)))
+                                            (let* ((sb (ptr-read-u64 (+ cw 4) 0)))
+                                              (seq (setq data (ptr-read-u64 (+ cw 20) 0))
+                                                   (setq length (if (< sb 0)
+                                                                    (logand (ptr-read-u64 (- cw 4) 0) 9223372036854775807)
+                                                                  sb))))
                                           (let* ((ct (heap-read-u8 cw 0)))
                                             (if (if (= ct 5) 1 (= ct 14))
                                                 (seq (setq data (heap-read-u64 cw 16))
