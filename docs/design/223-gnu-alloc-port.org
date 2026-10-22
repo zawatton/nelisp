@@ -632,6 +632,29 @@ Result of step 3 (back to back): 13.3M -> 11.7M cycles a collection, 25.2M -> 21
 5.71 -> 5.23 ms; gc3 ratios x1.38/x1.33/x1.32 -> x1.27/x1.24/x1.21 (11 paired rounds, with a step 2 control and a repeat
 of the step 3 build in the same window: x1.42/x1.37/x1.38 and x1.28/x1.21/x1.21).
 
+Step 4, a loop for the pdumper case.  =nl_gc_mark_cons= was still half of a collection's instructions (127 for a cons
+iteration).  About 20 of them served what a cons WORD in the image does not need: a second decode of the tag, the r code
+that told apart the census and counter paths, the census branch.  =nl_gc_mark_cons= is now the pdumper case alone (the
+tag, the range, the bit, the car through the inlined =nl_gc_mark_word=, the cdr, which continues the loop for a cons);
+a cons outside the image and a legacy view take =nl_gc_mark_cons_view=, the old function unchanged.  A cdr that is a
+legacy view takes =nl_gc_mark_cdr_view=.
+
+GNU's =mark_object= sets the mark bit of a dumped symbol or vector (=pdumper_set_marked=) where it finds it clear and
+goes on to the children.  Here =nl_gc_mark_word= found the bit clear, and then =nl_gc_mark_symbol= or
+=nl_gc_mark_vectorlike= tested and set it again through =nl_gc_mark_vbox= or =nl_gc_mark_block= (range, alignment, start
+bit, mark bit: 70 to 100 instructions and a read of the start bitmap), =nl_gc_block_elem_cap= checked the extent
+against the arena and =nl_gc_typed_vectorlike= had its mode tested.  =nl_gc_mark_vl_img= sets the bit and takes the
+children: a precise word names an object start, an image header is trusted, and an image object is never counted or put
+in the census (=nl_gc_mark_vectorlike_img=, =nl_gc_mark_symbol_slots=, =nl_gc_mark_slots=).
+
+Measured before writing it: of 104,877 cdr steps a collection that continue with another cons, 0.1% go to the adjacent
+16 bytes and 86% land within 512 bytes (an image cons is a 40-byte block with other objects between the cells of a list),
+so a bitmap word cannot be reused along a chain and the loop recomputes it.
+
+Result (callgrind, the gc3 workload, a steady-state collection): 45.6M -> 41.0M instructions (nl_gc_mark_cons with its
+view 22.9M -> 20.3M, nl_gc_mark_block 2.27M -> 1.34M); hardware counters, alternating with GNU, 24.7M -> 22.2M instructions
+and task clock 5.81 -> 5.56 ms against GNU's 4.71; gc3 ratios x1.28/x1.27/x1.27 -> x1.23/x1.15/x1.15.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls

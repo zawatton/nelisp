@@ -3374,11 +3374,13 @@ it shares with cons and symbol blocks.")
       ;; traced; `next' (+40) is raw.  The `let' keeps this out of the
       ;; inlined mark helpers' copies.
       (defun nl_gc_mark_symbol (box)
-        (let ((i 8))
-          (if (= (nl_gc_mark_vbox box) 0) 0
-            (seq (while (< i 40)
-                   (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
-                 0))))
+        (if (= (nl_gc_mark_vbox box) 0) 0 (nl_gc_mark_symbol_slots box)))
+    (defun nl_gc_mark_symbol_slots (box)
+      ;; The value, function, plist and name slots of a symbol whose mark bit is set.
+      (let ((i 8))
+        (seq (while (< i 40)
+               (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
+             0)))
       ;; Clear every symbol_block cell's gcmarkbit (a mark phase without a
       ;; sweep).  An image dump's rank bits stay.
       (defun nl_symbol_unmark_all ()
@@ -7169,6 +7171,35 @@ REPL-facing module it feeds."
           (while (< k n)
             (seq (nl_gc_mark_word (heap-read-u64 (+ data_ptr (* k 8)) 0))
                  (setq k (+ k 1)))) 0)))
+    (defun nl_gc_mark_vl_img (box)
+      ;; BOX is a symbol or vectorlike in the image whose mark bit nl_gc_mark_word found clear.  GNU mark_object
+      ;; sets it (pdumper_set_marked) and goes on to the children.  A precise word names an object start, an image
+      ;; header is trusted, and an image object is never counted or put in the census, so there is no
+      ;; start-bitmap read, no capacity check and no typed hook.  The plain `let' keeps this a function.
+      (let ((k (logand (heap-read-u64 box 0) 63)))
+        (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+               (wi (* (sar g 6) 8)))
+          (seq
+           (ptr-write-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi
+                          (logior (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi)
+                                  (shl 1 (logand g 63))))
+           (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol_slots box) (nl_gc_mark_vectorlike_img box))))))
+    (defun nl_gc_mark_vectorlike_img (box)
+      ;; The children of an image vector, record, closure, cell or char-table: the slots are read in place,
+      ;; their extent from the image header.
+      (let ((header (heap-read-u64 box 0)))
+        (let* ((kind (logand header 63)) (n (sar header 8)))
+          (if (= kind 8) (nl_gc_mark_slots box 1 n)
+            (if (= kind 11) (nl_gc_mark_slots box 1 1)
+              (if (or (= kind 12) (= kind 17) (= kind 18)) (nl_gc_mark_slots box 1 (+ n 1))
+                (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
+    (defun nl_gc_mark_slots (owner offset n)
+      (let* ((i offset) (end (+ offset n)))
+        (seq (while (< i end)
+               (seq (let* ((w (heap-read-u64 owner (* i 8))))
+                      (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
+                    (setq i (+ i 1))))
+             0)))
     (defun nl_gc_mark_vl (box)
       ;; The work after the bit test missed: read the header once and take the symbol or the vectorlike
       ;; path.  A plain `let' keeps this a function; spliced three times it would make nl_gc_mark_word too
@@ -7187,7 +7218,7 @@ REPL-facing module it feeds."
                     (if (= (logand (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) (* (sar g 6) 8))
                                    (shl 1 (logand g 63)))
                            0)
-                        (nl_gc_mark_vl box)
+                        (nl_gc_mark_vl_img box)
                       0)))))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
@@ -7306,6 +7337,40 @@ REPL-facing module it feeds."
     ;; SP is a cons view or a direct cons WORD (payload | 2, Doc 216).  The
     ;; cdr chain is followed iteratively in both representations.
     (defun nl_gc_mark_cons (sp)
+      ;; GNU process_mark_stack, case Lisp_Cons, for a cons WORD in the image (the pdumper case): one bit in
+      ;; the mark bitmap (pdumper_marked_p, pdumper_set_marked), then the car is expanded and the cdr continues
+      ;; the loop.  A precise cons WORD names a cons start, so neither the start bitmap nor a typed-block
+      ;; lookup is consulted.  Any other cons (a heap cell, a legacy view) takes nl_gc_mark_cons_view.
+      (if (= (logand sp 7) 2)
+          (let ((go 1))
+            (seq
+             (while (= go 1)
+               (seq
+                (setq go 0)
+                (let* ((box (- sp 2)))
+                  (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) (nl_gc_mark_cons_view sp)
+                    (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) (nl_gc_mark_cons_view sp)
+                      (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                             (wi (* (sar g 6) 8))
+                             (m (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi))
+                             (bit (shl 1 (logand g 63))))
+                        (if (/= (logand m bit) 0) 0
+                          (seq
+                           (ptr-write-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi (logior m bit))
+                           (nl_gc_mark_word (heap-read-u64 box 0))
+                           (let* ((dw (heap-read-u64 box 8)))
+                             (if (= (logand dw 1) 1) 0
+                               (if (= (logand dw 7) 2)
+                                   (seq (setq sp dw) (setq go 1))
+                                 (if (= (logand dw 7) 6) (nl_gc_mark_word dw)
+                                   (nl_gc_mark_cdr_view dw)))))))))))))
+             0))
+        (nl_gc_mark_cons_view sp)))
+    (defun nl_gc_mark_cdr_view (dw)
+      ;; A cons cdr that is a legacy view: its own block first; a cons view continues the chain, any other view is a slot.
+      (if (= (nl_gc_mark_block dw) 0) 0
+        (if (= (nl_val_tag dw) 7) (nl_gc_mark_cons_view dw) (nl_gc_mark_slot dw))))
+    (defun nl_gc_mark_cons_view (sp)
       ;; GNU process_mark_stack, case Lisp_Cons: a cons marked already ends the walk, else the
       ;; car is expanded and the cdr continues the loop.  A cons WORD inside the image is the
       ;; pdumper case, one bit in the mark bitmap (pdumper_marked_p, pdumper_set_marked); it
