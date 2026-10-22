@@ -50,3 +50,85 @@ dotted-car (wrong-type-argument listp 1)
 dotted-if (wrong-type-argument listp 1)
 arg-error (error "boom")
 macro-head 2
+few-let (wrong-number-of-arguments let 0)
+few-letstar (wrong-number-of-arguments let* 0)
+few-while (wrong-number-of-arguments while 0)
+few-prog1 (wrong-number-of-arguments prog1 0)
+few-condition-case (wrong-number-of-arguments condition-case 0)
+few-condition-case-x (wrong-number-of-arguments condition-case 1)
+few-unwind-protect (wrong-number-of-arguments unwind-protect 0)
+few-catch (wrong-number-of-arguments catch 0)
+few-function (wrong-number-of-arguments function 0)
+few-defvar (wrong-number-of-arguments defvar 0)
+few-prog2 (wrong-number-of-arguments (2 . 2) 0)
+few-prog2-1 (wrong-number-of-arguments (2 . 2) 1)
+few-if (wrong-number-of-arguments if 0)
+few-if-t (wrong-number-of-arguments if 1)
+few-defconst (wrong-number-of-arguments defconst 0)
+few-defconst-a (wrong-number-of-arguments defconst 1)
+few-quote (wrong-number-of-arguments quote 0)
+improper-let-dot-1 (wrong-type-argument listp 1)
+improper-letstar-dot-1 (wrong-type-argument listp 1)
+improper-while-dot-1 (wrong-type-argument listp 1)
+improper-cond-dot-1 (wrong-type-argument listp 1)
+improper-and-dot-1 (wrong-type-argument listp 1)
+improper-or-dot-1 (wrong-type-argument listp 1)
+improper-progn-dot-1 (wrong-type-argument listp 1)
+improper-prog1-dot-1 (wrong-type-argument listp 1)
+improper-prog2-dot-1 (wrong-type-argument listp 1)
+improper-condition-case-dot-1 (wrong-type-argument listp 1)
+improper-unwind-protect-dot-1 (wrong-type-argument listp 1)
+improper-catch-dot-1 (wrong-type-argument listp 1)
+improper-save-excursion-dot-1 (wrong-type-argument listp 1)
+improper-save-restriction-dot-1 (wrong-type-argument listp 1)
+improper-save-current-buffer-dot-1 (wrong-type-argument listp 1)
+improper-function-dot-1 (wrong-type-argument listp 1)
+improper-defvar-dot-1 (wrong-type-argument listp 1)
+improper-if-dot-1 (wrong-type-argument listp 1)
+improper-setq-dot-1 (wrong-type-argument listp 1)
+improper-quote-dot-1 (wrong-type-argument listp 1)
+improper-defconst-dot-1 (wrong-type-argument listp 1)
+improper-progn-1-dot-2 (wrong-type-argument listp 2)
+improper-and-t-dot-2 (wrong-type-argument listp 2)
+improper-or-nil-dot-2 (wrong-type-argument listp 2)
+improper-cond-t-1-dot-2 (wrong-type-argument listp 2)
+improper-prog1-1-dot-2 (wrong-type-argument listp 2)
+improper-let-nil-dot-2 (wrong-type-argument listp 2)
+improper-letstar-nil-dot-2 (wrong-type-argument listp 2)
+improper-while-nil-dot-2 (wrong-type-argument listp 2)
+improper-catch-x-dot-2 (wrong-type-argument listp 2)
+improper-unwind-protect-1-dot-2 (wrong-type-argument listp 2)
+improper-condition-case-nil-1-dot-2 (wrong-type-argument listp 2)
+improper-save-excursion-1-dot-2 (wrong-type-argument listp 2)
+improper-function-f-dot-2 (wrong-type-argument listp 2)
+improper-defvar-ec-v-1-dot-2 (wrong-type-argument listp 2)
+improper-if-t-1-dot-2 (wrong-type-argument listp 2)
+improper-setq-ec-v-1-dot-2 (wrong-type-argument listp 2)
+many-function-f-g (wrong-number-of-arguments function 2)
+many-defvar-ec-v-1-d-4 (error "Too many arguments")
+many-defconst-ec-c-1-d-4 (error "Too many arguments")
+ok-let-nil nil
+ok-letstar-nil nil
+ok-while-nil nil
+ok-prog1-1 1
+ok-prog2-1-2 2
+ok-condition-case-nil-1 1
+ok-unwind-protect-1 1
+ok-catch-x nil
+ok-save-excursion nil
+ok-save-restriction nil
+ok-and t
+ok-or nil
+ok-progn nil
+ok-cond nil
+ok-quote-x x
+ok-defvar-ec-v2 ec-v2
+ok-function-car car
+macro-when (wrong-number-of-arguments (1 . 1) 0)
+macro-unless (wrong-number-of-arguments (1 . 1) 0)
+macro-dolist (wrong-number-of-arguments (1 . 1) 0)
+macro-defun (wrong-number-of-arguments (2 . 2) 0)
+macro-defun-f (wrong-number-of-arguments (2 . 2) 1)
+macro-defmacro (wrong-number-of-arguments (2 . 2) 0)
+macro-when-dot-1 (wrong-type-argument listp 1)
+macro-dolist-dot-1 (wrong-type-argument listp 1)
