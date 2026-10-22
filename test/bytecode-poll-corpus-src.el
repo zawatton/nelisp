@@ -149,7 +149,47 @@
       (setq i (1+ i)))
     acc))
 
+;; What lexical closures share, compiled by GNU (a mutated captured variable
+;; becomes a cons box the closures and their creator share): the same shapes as
+;; test/standalone-closure-sharing-check.el, run through the VM with a
+;; collection at every safepoint.
+(defun bpc-reader2 () bpc-dyn)
+(defun bpc-make-counter ()
+  (let ((n 0)) (cons (lambda () (setq n (1+ n))) (lambda () n))))
+(defun bpc-clos-counters ()
+  (let* ((c (bpc-make-counter)) (a (car c)) (b (cdr c)))
+    (funcall a) (funcall a)
+    (let ((c2 (bpc-make-counter)))
+      (funcall (car c2))
+      (list (funcall b) (funcall (cdr c2))))))
+(defun bpc-clos-loops (n)
+  (let (fs ws (k 0))
+    (dotimes (i n) (let ((j i)) (push (lambda () (setq j (1+ j))) fs)))
+    (while (< k n) (let ((m k)) (push (lambda () (setq m (+ m 10))) ws)) (setq k (1+ k)))
+    (list (mapcar #'funcall fs) (mapcar #'funcall fs)
+          (mapcar #'funcall ws) (mapcar #'funcall ws))))
+(defun bpc-clos-share (n)
+  (let* ((x 1) (f (lambda () x)) (g (lambda (v) (setq x v))))
+    (let ((r1 (funcall f)))
+      (setq x n)
+      (let ((r2 (funcall f)))
+        (funcall g (* n 2))
+        (list r1 r2 (funcall f) x)))))
+(defun bpc-clos-dyn ()
+  (let ((lex 'lexical) (bpc-dyn (list 'bound)))
+    (let ((f (lambda () (list lex bpc-dyn (bpc-reader2)))))
+      (list (funcall f) (let ((bpc-dyn (list 'rebound))) (funcall f))))))
+(defun bpc-clos-exit ()
+  (let ((log nil) (x 1))
+    (condition-case err
+        (unwind-protect (progn (setq x 2) (error "boom %d" x))
+          (push (list 'cleanup x) log)
+          (setq x (1+ x)))
+      (error (push (list 'handler (car err) x (cdr err)) log)))
+    (list x (reverse log))))
+
 (defconst bpc-cases
   '((bpc-args 12) (bpc-acc 12) (bpc-spin 600) (bpc-rec 12) (bpc-deep 150) (bpc-slow 12)
     (bpc-bind 12) (bpc-catch 12) (bpc-ccase 12) (bpc-unwind 12)
-    (bpc-mapcar 12) (bpc-sort 12) (bpc-maphash 12) (bpc-mapconcat 10) (bpc-apply 12)))
+    (bpc-mapcar 12) (bpc-sort 12) (bpc-maphash 12) (bpc-mapconcat 10) (bpc-apply 12)
+    (bpc-clos-counters) (bpc-clos-loops 6) (bpc-clos-share 5) (bpc-clos-dyn) (bpc-clos-exit)))

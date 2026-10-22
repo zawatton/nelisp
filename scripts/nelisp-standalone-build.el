@@ -10210,13 +10210,10 @@ argument (reachability + in-arena bounds checks).")
         ;; below) has only ever passed the one argument.
         (defun nl_env_pop_frame (env)
           (if (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
-              (let* ((frames_ptr (+ env 32)) (scratch_slot (alloc-bytes 32 8)))
-                (nelisp_frame_pop frames_ptr scratch_slot))
+              (nelisp_frame_pop (+ env 32) 0)
             (nl_n3_pop env)))
         (defun nl_n3_pop_raw (env)
-          (let* ((frames_ptr (+ env 32))
-                 (scratch_slot (alloc-bytes 32 8)))
-            (nelisp_frame_pop frames_ptr scratch_slot)))
+          (nelisp_frame_pop (+ env 32) 0))
         (defun nelisp_eval_call_root_done (rc env)
           (seq (nl_env_pop_frame env) rc))
         ;; Doc 215 word ABI: the value WORD, or 0 with the signal stashed.
@@ -50641,9 +50638,17 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 
     (defun nl_n4_state (env)
       (if (= (heap-read-u64 env 176) 0)
-          (let* ((state (nl_os_alloc_chunk 5242944)))
+          (let* ((state (nl_os_alloc_chunk 5243968)))
             (seq (ptr-write-u64 env 176 state) state))
         (heap-read-u64 env 176)))
+    ;; 1 KiB of per-env scratch for the call path (a frame bind's cell view and
+    ;; cons staging slots), kept after the N4 records so a call allocates
+    ;; nothing for it: GNU has no such objects.  One operation at a time uses it
+    ;; (no Lisp runs, nothing collects, between its first write and last read),
+    ;; and an env belongs to one thread.  The chunk is mapped zero-filled; a user
+    ;; zeroes the slots it reads before it writes them.
+    (defun nl_call_scratch (env)
+      (+ (nl_n4_state env) 5242944))
     (defun nl_n4_record (state index)
       (+ state (+ 64 (* index 160))))
     (defun nl_n4_internal_p (function)
@@ -51529,7 +51534,11 @@ tails run against a private box), and the (rc, OUT) adapter F."
       (let* ((name (m5_fx_builtin_name fn 0))
              (argc (if (= name 0) 0 (m5_fx_form_count tail 0)))
              (id (if (< argc 1) 0 (m5_fx_primitive_id name argc))))
-        (if (= id 0) 2
+        (if (= id 0)
+            ;; `apply' has its own WORD path, `nl_eic_apply_w'.
+            (if (if (>= argc 2) (= (sexp-name-eq name "apply") 1) 0)
+                (nl_eic_apply_w tail env argc fn fw call_name)
+              2)
         (if (= id 13)
             (nl_eic_funcall_w tail env argc fn fw call_name)
           (let* ((base (nl_root_frame env (+ argc 1))))
@@ -51612,6 +51621,79 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  (if (= n 0) 0 (ptr-write-u64 lslot 0 args))
                  (nl_n4_finish_w (nl_apply_closure_or_lambda_w def kind args env 0)
                                  env 0 frame))))))))
+    ;; GNU Fapply (eval.c:2803-2870) on the WORDs eval_sub evaluated:
+    ;; (apply F A... LIST).  F and its arguments go into one WORD frame with
+    ;; three more slots: the resolved definition, the callee's argument list
+    ;; and the result.  An interpreted closure or lambda runs under its own
+    ;; activation (Fapply calls Ffuncall, which records one, eval.c:3204)
+    ;; on the list the caller gave: for (apply F LIST) the list is the callee's
+    ;; argument list as it is, as Fapply hands funcall_lambda the vector it spread
+    ;; from LIST, and only the leading arguments are consed in front of it.  A
+    ;; builtin, a VM-covered function, an improper or circular list, an arity
+    ;; GNU checks first: 2, and the ordinary `apply' builtin takes the same
+    ;; evaluated WORDs (nothing has happened yet).
+    (defun nl_eic_apply_w (tail env argc fn fw call_name)
+      (let* ((base (nl_root_frame env (+ argc 3))))
+        (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
+          (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
+            (seq
+             (m5_fx_frame_lazy env base argc 0)
+             (let* ((w (nl_eic_apply_words base argc env)))
+               (if (= w 2)
+                   (nl_eic_after_args_w (m5_fx_slot_list base argc)
+                                        env fw call_name)
+                 w)))))))
+    ;; 1 when W is a proper, finite list (Floyd: GNU's list_length signals
+    ;; for a dotted or circular one, which the ordinary path does).
+    (defun nl_eic_apply_list_ok (w)
+      (let* ((slow w) (fast w) (ok 1) (turn 0))
+        (seq
+         (while (if (= ok 1) (if (= (logand fast 1) 0) (= (nl_val_tag fast) 7) 0) 0)
+           (seq
+            (setq fast (nl_cons_cdr_word fast))
+            (setq turn (- 1 turn))
+            (if (= turn 0)
+                (seq (setq slow (nl_cons_cdr_word slow))
+                     (if (= slow fast)
+                         (if (= (nl_val_tag fast) 7) (setq ok 0) 0)
+                       0))
+              0)))
+         (if (= ok 1) (if (= (nl_val_tag fast) 0) 1 0) 0))))
+    (defun nl_eic_apply_words (base argc env)
+      ;; GNU measures the spread list before FUNCTION is resolved (eval.c:2811),
+      ;; so an invalid one must not autoload it.
+      (let* ((last (heap-read-u64 base (* (- argc 1) 8))))
+        (if (= (nl_eic_apply_list_ok last) 0) 2
+          (nl_eic_apply_words_1 base argc env last))))
+    (defun nl_eic_apply_words_1 (base argc env last)
+      (let* ((fw (heap-read-u64 base 0))
+             (tag (nl_val_tag fw))
+             (def (if (or (= tag 4) (= tag 16))
+                      (nl_lookup_fn_autoload_w env (+ env 64) fw 0)
+                    fw))
+             (dslot (+ base (* argc 8)))
+             (lslot (+ base (* (+ argc 1) 8))))
+        (if (or (= def 0) (= def 2) (= def 3)) 2
+            (let* ((head (if (= (m5_fx_word_cons_p def 0) 1) (nl_cons_car_word def) 3))
+                   (kind (if (/= (nl_val_tag head) 4) 2
+                           (if (= (nl_apply_name_eq_closure head) 1) 1
+                             (if (= (nl_apply_name_eq_lambda head) 1) 0 2)))))
+              (if (= kind 2) 2
+                (seq
+                 (ptr-write-u64 dslot 0 def)
+                 (let* ((args last) (k (- argc 2)))
+                   (seq
+                    (while (>= k 1)
+                      (seq (setq args (nelisp_cons_construct_w
+                                       (nl_word_canon (heap-read-u64 base (* k 8)))
+                                       args 0))
+                           (setq k (- k 1))))
+                    (ptr-write-u64 lslot 0 args)
+                    (let* ((frame (nl_n4_push env fw args 1)))
+                      (if (= frame 0) 2
+                        (nl_n4_finish_w
+                         (nl_apply_closure_or_lambda_w def kind args env 0)
+                         env 0 frame)))))))))))
     ;; The evaluated list stays rooted in FW through arity callbacks and the
     ;; apply.  The call form's activation (the top one, as
     ;; `nl_n4_direct_apply' assumes) records it as its argument WORD, as

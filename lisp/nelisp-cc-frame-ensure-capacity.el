@@ -176,7 +176,9 @@
       (if (< (vector-len (record-slot-ref-ptr frames-ptr 0)) needed)
             (nelisp_frame_stack_ensure_capacity_grow
              frames-ptr
-             scratch-slot
+             ;; A caller may pass 0 (the call path does, to allocate nothing per
+             ;; push): the grow, which is rare, makes its own slot.
+             (if (= scratch-slot 0) (alloc-bytes 32 8) scratch-slot)
              (nelisp_frame_stack_ensure_capacity_compute_cap
               (nelisp_frame_stack_ensure_capacity_initial
                (vector-len (record-slot-ref-ptr frames-ptr 0)))
