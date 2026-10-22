@@ -7061,19 +7061,18 @@ REPL-facing module it feeds."
     ;; bit and the mark bit share the granule index.  -1 for a block outside the image, else the
     ;; mark answer (1 newly marked, 0 already marked).  Small enough to be spliced into its callers.
     (defun nl_gc_mark_image (obj)
-      (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200)))
-        (if (< obj lo) -1
-          (if (>= obj (heap-read-u64 st 208)) -1
-            (if (/= (logand obj 7) 0) -1
-              (let* ((g (sar (- obj lo) 3))
-                     (wi (* (sar g 6) 8))
-                     (bit (shl 1 (logand g 63))))
-                (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
-                  (let* ((wa (+ (heap-read-u64 st 216) wi))
-                         (m (heap-read-u64 wa 0)))
-                    (if (= (logand m bit) 0)
-                        (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
-                      0)))))))))
+      (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
+        (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
+          (if (/= (logand obj 7) 0) -1
+            (let* ((g (sar (- obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                   (wi (* (sar g 6) 8))
+                   (bit (shl 1 (logand g 63))))
+              (if (= (logand (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 224) wi) bit) 0) -1
+                (let* ((wa (+ (heap-read-u64 (data-addr nl_typed_alloc) 216) wi))
+                       (m (heap-read-u64 wa 0)))
+                  (if (= (logand m bit) 0)
+                      (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                    0))))))))
     ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
@@ -7158,22 +7157,26 @@ REPL-facing module it feeds."
           (while (< k n)
             (seq (nl_gc_mark_word (heap-read-u64 (+ data_ptr (* k 8)) 0))
                  (setq k (+ k 1)))) 0)))
+    (defun nl_gc_mark_vl (box)
+      ;; The work after the bit test missed: read the header once and take the symbol or the vectorlike
+      ;; path.  A plain `let' keeps this a function; spliced three times it would make nl_gc_mark_word too
+      ;; big to splice into its own callers.
+      (let ((k (logand (heap-read-u64 box 0) 63)))
+        (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box))))
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 6)
             ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
             ;; bit is set needs neither the header read nor a call.
             (let* ((box (- word 6)))
-              (if (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 0
-                    (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) 0
-                      (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3)))
-                        (/= (logand (heap-read-u64 (+ (heap-read-u64 (data-addr nl_typed_alloc) 216)
-                                                      (* (sar g 6) 8)) 0)
-                                    (shl 1 (logand g 63)))
-                            0))))
-                  0
-                (let* ((k (logand (heap-read-u64 box 0) 63)))
-                  (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box)))))
+              (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) (nl_gc_mark_vl box)
+                (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) (nl_gc_mark_vl box)
+                  (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3)))
+                    (if (= (logand (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) (* (sar g 6) 8))
+                                   (shl 1 (logand g 63)))
+                           0)
+                        (nl_gc_mark_vl box)
+                      0)))))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
             (let* ((r (nl_gc_mark_image word)))
@@ -7185,7 +7188,8 @@ REPL-facing module it feeds."
              (end (+ offset n)))
         (if (> end cap) 0
           (while (< i end)
-            (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
+            (seq (let* ((w (heap-read-u64 owner (* i 8))))
+                   (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
       (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
@@ -7194,7 +7198,11 @@ REPL-facing module it feeds."
        (if (= mr 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
-          (nl_gc_typed_vectorlike box kind n mr)
+          ;; Mode 1 (the census) takes every vectorlike, mode 4 (the counters) a newly marked heap block.
+          (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1) (nl_gc_typed_vectorlike box kind n mr)
+            (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
+              0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
             (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
@@ -7306,9 +7314,10 @@ REPL-facing module it feeds."
                   (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
-                        (if (= (logand dw 7) 2)
-                            (seq (setq sp dw) (setq go 1))
+                      (if (= (logand dw 7) 2)
+                          (seq (setq sp dw) (setq go 1))
+                        (if (= (logand dw 7) 6)
+                            (nl_gc_mark_word dw)
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))

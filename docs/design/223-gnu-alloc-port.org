@@ -584,6 +584,24 @@ argument was decoded four times.
 Result: 20.1M -> 16.5M cycles a collection (IPC 1.73 -> 1.75, instructions 34.7M -> 28.9M); the paired gc3 ratio to
 GNU x1.69, x1.63, x1.61 -> x1.44, x1.42, x1.42.
 
+Step 2, the dispatch (the instruction profile after step 1):
+- =nl_gc_mark_vectorlike= called =nl_gc_mark_word= 300,000 times a collection, one per slot of a vector, record or
+  closure, and nearly every slot is an immediate (26 instructions a call plus 10 of loop).  The slot loop of
+  =nl_gc_mark_inline_words= now tests the low bit in line and calls only for a pointer: the calls fall from 1.2M to
+  232,000 over the four collections of the profile.
+- =nl_gc_typed_vectorlike= (spliced in, about 60 instructions of argument shuffling) does nothing unless the mode is 1
+  (the census) or 4 (the counters) with a newly marked heap block; it is called only then.
+- The mark-bit test of a vectorlike or symbol WORD (1.18 a cons iteration, 94% of them already marked) is a chain of
+  branches with the bitmap read by base and index; the work after a miss is a helper, =nl_gc_mark_vl=, kept a real
+  function by its plain =let= so that the inliner does not splice three copies into =nl_gc_mark_word=, which would take it past
+  80 nodes and make every caller a call.
+- The cdr of a cons that is a vectorlike or symbol goes through =nl_gc_mark_word= like the car (it took the unfiltered
+  path: two header reads and a call), and the cons case is tested first.
+- =nl_gc_mark_image= reads the image bounds and bitmaps in place.
+
+Result (back to back): 14.7M -> 13.9M cycles a collection, 30.4M -> 26.6M instructions, task clock 6.19 -> 5.70 ms;
+gc3 ratios x1.44, x1.42, x1.42 -> x1.35, x1.32, x1.33.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls
