@@ -19665,31 +19665,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; any call that can run Lisp.  A poll site is an instruction boundary: the
     ;; frame holds every value the VM uses afterwards, and the code and
     ;; constants are kept by the frame's footer.
-    ;; GNU's maybe_gc is one load and compare (`consing_until_gc < 0').  The
-    ;; allocator keeps no such budget, so the decision is read here without a
-    ;; call: 1 when `nl_gc_vm_poll' could collect, the same test as its force
-    ;; hook, its backstop before the debt trigger arms (stats+24 < 2, 64 MiB)
-    ;; and `nl_gc_midform_collect''s gate (armed, reservation against the
-    ;; trigger, the debt test).  A call that finds nothing due pays loads and
-    ;; branches only.  Even that is too much for the call path (51 Ir against a
-    ;; call of about 950), so the fast loop asks only on every 16th call of an
-    ;; activation, or on every call while the force hook is set: a call
-    ;; allocates a few words, and the collection it postpones is one of a 16 MiB
-    ;; growth step.  The full loop asks on every call.
-    (defun wf_bytecode_poll_due ()
-      (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) 1
-        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-            (if (< (heap-read-u64 268436184 0) (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
-                    (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0 1)
-                  (nl_gc_debt_due))
-              1)
-          0)))
+    ;; GNU's maybe_gc is `if (consing_until_gc < 0) maybe_garbage_collect ()'
+    ;; (lisp.h): one load and compare.  The allocators keep that budget in
+    ;; `nl_gc_until' (Doc 223 "The budget"; a signed word, negative meaning
+    ;; "decide now") and it covers everything the old poll read: the force hook,
+    ;; the 64 MiB backstop, the armed flag, the mid-form reservation and the
+    ;; debt.  `nl_gc_vm_poll' decides and refills the word.
     (defun wf_bytecode_poll ()
-      (if (= (wf_bytecode_poll_due) 0) 0
-        (let* ((before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))
-          (seq (nl_gc_vm_poll)
-               (if (= before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)) 0 1)))))
+      (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0)
+          (let* ((before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))
+            (seq (nl_gc_vm_poll)
+                 (if (= before (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)) 0 1)))
+        0))
     ;; The count reached the limit: start again from 0 and poll.
     (defun wf_bytecode_back_poll (cell)
       (seq (ptr-write-u64 cell 0 1)
@@ -20238,9 +20225,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (last-slots 0) (last-name -1) (last-entry 0) (last-value 0)
            (go 128) (raw 0) (a 0) (b 0) (target 0) (word 0) (fused 0)
            (ref 0) (cmp 0) (branch 0) (failed 0)
-           (back (- 255 (sar (heap-read-u64 cell 0) 2))) (prev pc)
-           (qc (sar (heap-read-u64 cell 32) 2))
-           (qmask (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) 0 15)))
+           (back (- 255 (sar (heap-read-u64 cell 0) 2))) (prev pc))
         (while (> go 0)
           (seq
            (if (< pc prev)
@@ -20988,12 +20973,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                              ;; A signal ends the run with -1.
                                              (let* ((argc (- raw 32)))
                                                (if (< sp (+ argc 1)) (setq go 0)
-                                                 (let* ((polled (seq (setq qc (+ qc 1))
-                                                                     (if (= (logand qc qmask) 0)
-                                                                         (if (= (wf_bytecode_poll) 1)
-                                                                             (seq (setq last-name -1) 0)
-                                                                           0)
-                                                                       0)))
+                                                 (let* ((polled (if (= (wf_bytecode_poll) 1)
+                                                                    (seq (setq last-name -1) 0)
+                                                                  0))
                                                         (fi (- sp (+ argc 1)))
                                                         (isp (wf_bytecode_call_enter
                                                               env cell mem fi argc
@@ -21038,7 +21020,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            (seq (setq go 0))))))))))))))))))
         (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
              (ptr-write-u64 cell 0 (+ (shl (- 255 back) 2) 1))
-             (ptr-write-u64 cell 32 (+ (shl (logand qc 15) 2) 1))
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
 
 
@@ -21068,21 +21049,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; views; a frame gets them as an aux block (`wf_bytecode_frame_aux') the
       ;; first time it pushes a handler, binds or unwinds, and a frame that
       ;; never does has none.
-      ;; Below the activation's first frame is a five-WORD frame, the
+      ;; Below the activation's first frame is a four-WORD frame, the
       ;; activation cell (CURFP): +0 the backward branches taken since the
       ;; last poll (GNU's quitcounter), +8 the frame the fast loop
       ;; stopped in (fixnum-coded address), +16 t when a frame was pushed or
       ;; popped, +24 the 128-byte scratch of four 32-byte views for the
       ;; helpers that take a view of a word (`wf_bytecode_scratch', allocated
-      ;; on first use), +32 the calls the fast loop made since its last poll
-      ;; (it polls every 16th, see `wf_bytecode_poll_due').  The activation
-      ;; reserves no Sexp root slot.
+      ;; on first use).  The activation reserves no Sexp root slot.
       (let* ((code-len (m5_strlen code))
              (code-data (nl_bi_strptr code))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
              (mark (nl_root_mark env))
-             (cellf (if (or (< depth 0) (> depth 131063)) 0 (nl_root_frame env 5)))
+             (cellf (if (or (< depth 0) (> depth 131063)) 0 (nl_root_frame env 4)))
              (fp (if (= cellf 0) 0 (nl_root_frame env (+ depth 7))))
              (mem fp)
              (foot (+ mem (* (+ depth 1) 8)))
