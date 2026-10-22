@@ -37,7 +37,7 @@
       ;; the `(and X 1)' chain reliably returns 1 after the write.
       (if (= entry-ptr 0)
           0
-        (and (record-slot-set entry-ptr 3 flag-ptr) 1)))
+        (and (nl_ent_set entry-ptr 3 flag-ptr) 1)))
     (defun nelisp_mirror_set_constant (mirror-ptr sym-ptr flag-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record.
       ;; sym-ptr:    *const Sexp pointing at the Sexp::Symbol / Str.

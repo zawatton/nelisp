@@ -24,18 +24,16 @@
       valid))
 
 (defun nelisp-native-rooted-startup-evidence--data-bytes (value)
-  "Serialize bounded acyclic evidence without graph labels or truncation."
+  "Serialize bounded acyclic evidence without graph labels or truncation.
+The walk counts every node and the deepest car nesting before it checks the
+bounds, so a refusal names the evidence's actual size;
+NELISP_ROOT_EVIDENCE_REPORT logs the size of accepted evidence too."
   (let ((work (list (cons value 0))) (seen (make-hash-table :test #'eq))
-        (nodes 0) (bytes 0))
+        (nodes 0) (bytes 0) (deepest 0))
     (while work
       (let* ((item (pop work)) (object (car item)) (depth (cdr item)))
         (setq nodes (+ nodes 1))
-        ;; 131072 nodes: the F1 closure's evidence serializes to about 65,000
-        ;; (309 functions, 1,473 relocations, 1,712 direct edges at 63,300 for
-        ;; the function records alone), and each closure function adds about
-        ;; 200; the 320-function policy therefore needs about 70,000.
-        (unless (and (<= nodes 131072) (<= depth 64))
-          (error "Root evidence node/depth bound exceeded"))
+        (when (> depth deepest) (setq deepest depth))
         (cond
          ((consp object)
           (when (gethash object seen) (error "Cyclic/shared root evidence rejected"))
@@ -48,6 +46,11 @@
             (error "Root evidence string bound exceeded")))
          ((or (symbolp object) (integerp object)) nil)
          (t (error "Invalid root evidence type")))))
+    (when (getenv "NELISP_ROOT_EVIDENCE_REPORT")
+      (message "[root-evidence] nodes=%d depth=%d" nodes deepest))
+    (unless (and (<= nodes 81920) (<= deepest 64))
+      (error "Root evidence node/depth bound exceeded: %d nodes (bound 81920), depth %d (bound 64)"
+             nodes deepest))
     (let ((print-circle nil) (print-length nil) (print-level nil)
           (print-escape-newlines t) (print-escape-control-characters t)
           (print-escape-nonascii nil) (print-escape-multibyte nil)

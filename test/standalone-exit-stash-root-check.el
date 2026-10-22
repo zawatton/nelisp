@@ -15,8 +15,9 @@
 ;; With the conservative native-stack scan switched off (`nelisp--debug-
 ;; switch' 28; 29 restores it), only precise roots keep a value alive, so
 ;; live bytes after two collections (`nelisp--arena-stats' field 4) must
-;; still count a dropped 20000-element list that was thrown last (about
-;; 2 MB), and must stop counting it once an immediate replaces it.  Each
+;; still count a dropped 80000-element list that was thrown last (about
+;; 1.3 MB: a cons cell is 16 bytes), and must stop counting it once an
+;; immediate replaces it.  Each
 ;; step is its own top-level form so no evaluator frame still holds the
 ;; list.  Prints one EXIT-STASH line and exits non-zero on failure.
 
@@ -27,9 +28,12 @@
   (catch 'exit-stash (throw 'exit-stash value))
   nil)
 (defun exit-stash--throw-list (n)
-  (exit-stash--throw (make-list n 'exit-stash-payload))
+  ;; Each element is a boxed float: a symbol element is one word in the
+  ;; list (the symbol's own object), which would make the list too small to
+  ;; tell "held" from "released" by live bytes.
+  (exit-stash--throw (make-list n 1.5))
   nil)
-(defvar exit-stash--n 20000)
+(defvar exit-stash--n 80000)
 (defvar exit-stash--base nil)
 (defvar exit-stash--held nil)
 (defvar exit-stash--released nil)

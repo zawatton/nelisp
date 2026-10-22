@@ -129,7 +129,8 @@ value form using the `ptr-read-u64' grammar op in nested position.")
            (heap-read-u64 (heap-sexp-payload sexp) 8)
          (if (or (= kind 5) (= kind 14))
              (heap-read-u64 sexp 16)
-           (if (= kind 4) (heap-read-u64 sexp 16) 0)))))
+           ;; Doc 226 D9 stage 3.2: an interned symbol may be its object's WORD.
+           (if (= kind 4) (heap-sexp-data sexp) 0)))))
     ;; Raw-pointer byte access shared by AOT consumers whose source files are
     ;; deliberately kept out of the raw-memory kernel inventory.
     (defun nl_bytes_byte_at (bytes i)
@@ -472,11 +473,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (/= (nl_uninterned_symbol_write bytes-ptr n identity result-slot char-buf) 0)
             result-slot
           (nl_abi_fail 1 0))))
+    ;; Doc 226 D9: uninterned symbols are direct objects (GNU Fmake_symbol,
+    ;; alloc.c:3675).  The C-ABI writers below build the object and write
+    ;; its view into RESULT-SLOT; IDENTITY is no longer used (the object's
+    ;; address is the identity).
     (defun nl_alloc_uninterned_symbol (bytes-ptr n identity result-slot)
-      (if (> identity 0)
-          (nl_uninterned_symbol_write bytes-ptr n identity result-slot
-                                      (alloc-bytes (if (= n 0) 1 n) 1))
-        0))
+      (let* ((name (alloc-bytes 32 8)))
+        (seq (nl_alloc_str bytes-ptr n name)
+             (let* ((w (nl_sym_make_uninterned name 0)))
+               (if (= w 0) 0 (seq (nl_sym_view_into w result-slot) 1))))))
     (defun nl_uninterned_symbol_equal (left right)
       (if (= (sexp-tag left) 16)
           (if (= (sexp-tag right) 16)
@@ -495,17 +500,21 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; set up (base 0) `nl_alloc_symbol_pos' falls back to the plain allocator.
     ;; No-let style (AOT alloc/ptr-read values can't be `let'-bound): values
     ;; thread through tail-recursive helper args, like the copy loop.
+    ;; The two byte loops below are `while' loops over `let*' locals instead
+    ;; (the AOT compiler makes a real call of a self tail call: 40 instructions
+    ;; a byte, 19% of a new name's reader cost): FNV-1a is the same function.
     (defun nl_intern_hash (p i n h)
-      (if (< i n)
-          (nl_intern_hash p (+ i 1) n
-                          (logand (* (logxor h (heap-read-u8 p i)) 16777619) 4294967295))
-        h))
+      (let* ((hh h) (ii i))
+        (seq (while (< ii n)
+               (seq (setq hh (logand (* (logxor hh (heap-read-u8 p ii)) 16777619) 4294967295))
+                    (setq ii (+ ii 1))))
+             hh)))
     (defun nl_intern_eq (a b i n)
-      (if (= i n)
-          1
-        (if (= (heap-read-u8 a i) (heap-read-u8 b i))
-            (nl_intern_eq a b (+ i 1) n)
-          0)))
+      (let* ((ii i) (same 1))
+        (seq (while (if (= same 1) (< ii n) 0)
+               (seq (if (= (heap-read-u8 a ii) (heap-read-u8 b ii)) 0 (setq same 0))
+                    (setq ii (+ ii 1))))
+             same)))
     (defun nl_intern_slotmatch (slot p n)
       (if (= (heap-read-u64 slot 0) (+ n 1))
           (nl_intern_eq p (heap-read-u64 slot 8) 0 n)
@@ -710,23 +719,24 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
     ;; that updated Sexp only after the destination buffer has been allocated.
     (defun nl_alloc_uninterned_symbol_named (bytes-ptr n identity name-slot result-slot)
-      (if (<= identity 0) 0
-        (let* ((alloc-n (if (= n 0) 1 n))
-               (char-buf (alloc-bytes alloc-n 1)))
-          (if (= (nl_uninterned_symbol_write
-                  (str-bytes-ptr name-slot) n identity result-slot char-buf) 0) 0
-            (nl_symbol_name_register 2 identity n name-slot)))))
+      (let* ((w (nl_sym_make_uninterned name-slot 0)))
+        (if (= w 0) 0 (seq (nl_sym_view_into w result-slot) 1))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_alloc_uninterned_symbol_named' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_alloc_uninterned_symbol_named_w (bytes-ptr n identity name-slot _pad)
-      (let* ((result-slot (alloc-bytes 32 8)))
-        (if (/= (nl_alloc_uninterned_symbol_named bytes-ptr n identity name-slot result-slot) 0)
-            result-slot
-          (nl_abi_fail 1 0))))
+      (let* ((w (nl_sym_make_uninterned name-slot 0)))
+        (if (= w 0) (nl_abi_fail 1 0) w)))
 
     ;; Return the canonical original name Sexp for a symbol, lazily creating
     ;; it for symbols produced by the reader's byte-only construction path.
     (defun nl_symbol_name_value (env symbol-slot out)
+      ;; Doc 226 D9: a symbol object (or the view of one) holds its name.
+      ;; Answers 1 after writing OUT, as the C-ABI forms below do.
+      (if (= (logand symbol-slot 7) 6)
+          (seq (nl_sexp_clone_into (heap-read-u64 (- symbol-slot 6) 8) out) 1)
+      (if (if (= (heap-read-u8 symbol-slot 0) 16)
+              (> (heap-read-u64 symbol-slot 8) 65535) 0)
+          (seq (nl_sexp_clone_into (heap-read-u64 (heap-read-u64 symbol-slot 8) 8) out) 1)
       (let* ((tag (heap-read-u64 symbol-slot 0)))
         (if (= tag 4)
             (let* ((key (heap-read-u64 symbol-slot 16))
@@ -743,7 +753,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
                 (if (/= entry 0)
                     (nl_symbol_name_copy_out entry out)
                   (nl_symbol_name_value_create env symbol-slot out)))
-            0))))
+            0))))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_value' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_value_w (env symbol-slot _pad)
@@ -927,8 +937,18 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Only the mirror's entry writers call this, never a reader.
     ;; The header's low 32 bits hold the cell index, its high 32 bits the
     ;; static symbol id (`nl_sym_set_sid').
+    ;; Doc 226 D6: a key whose bytes are a canonical buffer (a symbol view
+    ;; or a key string sharing it) is its own symbol: use that buffer's
+    ;; header, not the name's current table entry, which after a global
+    ;; `unintern' names a different symbol.  Other keys map by name.
     (defun nl_symcell_assign (bytes-ptr n)
-      (let* ((buf (nl_intern_canonical_buf bytes-ptr n)))
+      (let* ((base (heap-read-u64 268436288 0))
+             (buf (if (if (= base 0) 0
+                        (if (> bytes-ptr (+ base 16777224))
+                            (< bytes-ptr (heap-read-u64 268436296 0))
+                          0))
+                      bytes-ptr
+                    (nl_intern_canonical_buf bytes-ptr n))))
         (if (= buf 0) 0
           (let* ((hdr (heap-read-u64 (- buf 8) 0))
                  (idx (logand hdr 4294967295)))
@@ -967,6 +987,8 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (while (and (< scan 1048576) (= word 0))
           (setq slot (+ table (* scan 16)))
           (setq word (heap-read-u64 slot 0))
+          ;; A removed name (`nl_intern_remove') is not enumerated.
+          (if (/= (logand word 4611686018427387904) 0) (setq word 0) 0)
           (if (= word 0) (setq scan (+ scan 1)) 0))
         (if (= word 0)
             -1
@@ -974,6 +996,24 @@ lifetime of a Sexp value.  No `let' binding needed.")
            (nl_intern_write_sexp
             dest-slot (heap-read-u64 slot 8) (- word 1))
            (+ scan 1)))))
+    ;; GNU lread.c:4858 Funintern on the initial obarray (Doc 226 D6).  The
+    ;; name's slot becomes a tombstone: its length word gains bit 62, which
+    ;; no probe matches and which keeps probe chains intact.  A later intern
+    ;; of the name makes a new canonical buffer, a new symbol, while the
+    ;; removed symbol keeps its buffer, its object and its cells.  BUF is
+    ;; the symbol's canonical buffer; 1 when it was the interned one.
+    (defun nl_intern_remove (buf n)
+      (if (= (heap-read-u64 268436288 0) 0) 0
+        (let* ((slot (nl_intern_probe
+                      (heap-read-u64 268436288 0)
+                      (logand (nl_intern_hash buf 0 n 2166136261) 1048575)
+                      buf n 0)))
+          (if (= slot 0) 0
+            (if (= (heap-read-u64 slot 0) 0) 0
+              (if (/= (heap-read-u64 slot 8) buf) 0
+                (seq (ptr-write-u64 slot 0 (logior (heap-read-u64 slot 0)
+                                                   4611686018427387904))
+                     1)))))))
     (defun nl_intern_next (cursor dest-slot)
       (if (or (< cursor 0) (>= cursor 1048576)
               (= (heap-read-u64 268436288 0) 0))

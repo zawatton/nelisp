@@ -388,9 +388,10 @@
       ;; first requested, using the immutable symbol bytes as fallback.
       (let* ((tag (sexp-tag s))
              (kind (if (= tag 16) 2 1))
-             (key (if (= tag 16) (heap-read-u64 s 8) (heap-read-u64 s 16)))
-             (name-ptr (heap-read-u64 s 16))
-             (name-len (heap-read-u64 s 24))
+             ;; Doc 226 D9: a symbol object prints from the name it holds.
+             (key (if (= tag 16) (nl_word_payload s) (nl_word_data s)))
+             (name-ptr (nl_word_data s))
+             (name-len (nl_word_length s))
              (entry (nl_symbol_name_entry_for kind key name-len)))
         (if (= entry 0)
             (nl_fmt_sexp_write_symbol_bytes name-ptr 0 name-len buf)
