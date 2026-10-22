@@ -739,84 +739,45 @@
                     scratch-slot)))
 
     ;; ===========================================================
-    ;; Quote-family head-symbol byte writers.  Each push the
-    ;; canonical name into a (freshly-reset) SCRATCH MutStr.  The
-    ;; caller then `mut-str-finalize's into a slot and overwrites
-    ;; the tag byte to convert Sexp::Str -> Sexp::Symbol.
-    ;; ===========================================================
-
-    (defun nelisp_reader_p_push_quote_bytes (scratch)
-      ;; "quote" = q u o t e
-      (nelisp_reader_p_prog2 (mut-str-push-byte scratch 113)
-       (nelisp_reader_p_prog2 (mut-str-push-byte scratch 117)
-        (nelisp_reader_p_prog2 (mut-str-push-byte scratch 111)
-         (nelisp_reader_p_prog2 (mut-str-push-byte scratch 116)
-                                (mut-str-push-byte scratch 101))))))
-
-    (defun nelisp_reader_p_push_backquote_bytes (scratch)
-      ;; "`"
-      (mut-str-push-byte scratch 96))
-
-    (defun nelisp_reader_p_push_comma_bytes (scratch)
-      ;; ","
-      (mut-str-push-byte scratch 44))
-
-    (defun nelisp_reader_p_push_comma_at_bytes (scratch)
-      ;; ",@"
-      (nelisp_reader_p_prog2 (mut-str-push-byte scratch 44)
-                             (mut-str-push-byte scratch 64)))
-
-    (defun nelisp_reader_p_push_function_bytes (scratch)
-      ;; "function"
-      (nelisp_reader_p_prog2 (mut-str-push-byte scratch 102)
-       (nelisp_reader_p_prog2 (mut-str-push-byte scratch 117)
-        (nelisp_reader_p_prog2 (mut-str-push-byte scratch 110)
-         (nelisp_reader_p_prog2 (mut-str-push-byte scratch 99)
-          (nelisp_reader_p_prog2 (mut-str-push-byte scratch 116)
-           (nelisp_reader_p_prog2 (mut-str-push-byte scratch 105)
-            (nelisp_reader_p_prog2 (mut-str-push-byte scratch 111)
-                                   (mut-str-push-byte scratch 110))))))))) ; n
-
-    ;; Build a fresh Sexp::Symbol whose name is one of the
-    ;; quote-family heads, written into HEAD-SLOT.  TAG-BYTE
-    ;; selects: 113 quote, 98 backquote, 99 comma, 100 comma-at,
-    ;; 102 function.  Side effects: scratch is reset + drained.
-    ;; Returns 1 on success, 0 on unknown TAG-BYTE.
+    ;; Build the Sexp::Symbol of one of the quote-family heads into HEAD-SLOT.
+    ;; TAG-BYTE selects: 113 quote, 98 backquote, 99 comma, 100 comma-at,
+    ;; 102 function.  Doc 226 D9 stage 3.4: GNU reads these as the interned
+    ;; Qquote, Qbackquote, Qcomma, Qcomma_at and Qfunction, so the head is the
+    ;; interned symbol's canonical view (find-or-insert in the intern table,
+    ;; as for a leaf), whose object exists (`nl_symobj_note') and which every
+    ;; store turns into its WORD.  A fresh string-backed view had no canonical
+    ;; name buffer, so it stayed a view in 4,515 places of the cold image.
+    ;; SCRATCH-SLOT is unused.  Returns 1 on success, 0 on unknown TAG-BYTE.
     (defun nelisp_reader_p_build_head_symbol
         (head-slot scratch-slot tag-byte)
-      (cond
-       ((= tag-byte 113)
-        (and (nelisp_reader_p_reset_scratch scratch-slot)
-             (nelisp_reader_p_push_quote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             ;; SEXP_TAG_SYMBOL = 4.
-             (ptr-write-u8 head-slot 0 4)
-             1))
-       ((= tag-byte 98)
-        (and (nelisp_reader_p_reset_scratch scratch-slot)
-             (nelisp_reader_p_push_backquote_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
-             1))
-       ((= tag-byte 99)
-        (and (nelisp_reader_p_reset_scratch scratch-slot)
-             (nelisp_reader_p_push_comma_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
-             1))
-       ((= tag-byte 100)
-        (and (nelisp_reader_p_reset_scratch scratch-slot)
-             (nelisp_reader_p_push_comma_at_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
-             1))
-       ((= tag-byte 102)
-        (and (nelisp_reader_p_reset_scratch scratch-slot)
-             (nelisp_reader_p_push_function_bytes scratch-slot)
-             (mut-str-finalize scratch-slot head-slot)
-             (ptr-write-u8 head-slot 0 4)
-             1))
-       (t 0)))
+      (let* ((bytes (alloc-bytes 8 1)))
+        (cond
+         ((= tag-byte 113)
+          (seq (ptr-write-u64 bytes 0 435745158513)            ; quote
+               (nl_alloc_symbol bytes 5 head-slot)
+               (extern-call nl_symobj_note head-slot)
+               1))
+         ((= tag-byte 98)
+          (seq (ptr-write-u64 bytes 0 96)                       ; `
+               (nl_alloc_symbol bytes 1 head-slot)
+               (extern-call nl_symobj_note head-slot)
+               1))
+         ((= tag-byte 99)
+          (seq (ptr-write-u64 bytes 0 44)                       ; ,
+               (nl_alloc_symbol bytes 1 head-slot)
+               (extern-call nl_symobj_note head-slot)
+               1))
+         ((= tag-byte 100)
+          (seq (ptr-write-u64 bytes 0 16428)                    ; ,@
+               (nl_alloc_symbol bytes 2 head-slot)
+               (extern-call nl_symobj_note head-slot)
+               1))
+         ((= tag-byte 102)
+          (seq (ptr-write-u64 bytes 0 7957695015192261990)      ; function
+               (nl_alloc_symbol bytes 8 head-slot)
+               (extern-call nl_symobj_note head-slot)
+               1))
+         (t 0))))
 
     ;; ===========================================================
     ;; Read labels (`#N=' / `#N#').  Slot 3 stores the entry count.  Two

@@ -10808,8 +10808,10 @@ by name pending that follow-up; this paragraph is the record of why."
   '("builtin" "lambda" "closure" "macro" "autoload" "symbol-value" "set"
     "funcall" "apply" "eval" "quote" "function" "throw" "signal"
     "symbol-function" "fset" "consp" "not" "null" "nth" "nthcdr" "setcar"
-    "setcdr" "string<" "<" "car" "cdr" "eq")
-  "Static names beyond the builtin dispatch table (heads and name tests).")
+    "setcdr" "string<" "<" "car" "cdr" "eq" "`" "," ",@")
+  "Static names beyond the builtin dispatch table (heads and name tests).
+The last three are the reader's backquote, comma and comma-at heads: GNU reads
+them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.")
 
 (defvar nelisp-standalone--static-symbol-index nil
   "Hash table NAME -> static symbol id, built once from the builtin tables.")

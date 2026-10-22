@@ -62,6 +62,17 @@
 (setq scsc-global3 'scsc-o)
 (scsc-check (eql (scsc-class scsc-global3) 104) "defvar-less setq of a quoted symbol")
 
+;; The reader's quote-family heads are the interned symbols, as objects.
+(let* ((f1 (car (read-from-string "'x"))) (f2 (car (read-from-string "#'x")))
+       (f3 (car (read-from-string "`(a ,b ,@c)")))
+       (inner (cadr f3)) (comma (nth 1 inner)) (comma-at (nth 2 inner)))
+  (scsc-check (and (eq (car f1) 'quote) (eql (scsc-class (car f1)) 104)) "the head of 'x is the quote object")
+  (scsc-check (and (eq (car f2) 'function) (eql (scsc-class (car f2)) 104)) "the head of #'x is the function object")
+  (scsc-check (and (eq (car f3) (intern "`")) (eql (scsc-class (car f3)) 104)) "the head of a backquote form is an object")
+  (scsc-check (and (eq (car comma) (intern ",")) (eql (scsc-class (car comma)) 104)) "the head of a comma form is an object")
+  (scsc-check (and (eq (car comma-at) (intern ",@")) (eql (scsc-class (car comma-at)) 104)) "the head of a comma-at form is an object")
+  (scsc-check (equal f1 '(quote x)) "and 'x still reads as (quote x)"))
+
 ;; The unbound marker, nil and t stay what they were.
 (scsc-check (eq (car (list nil)) nil) "nil in a list is nil")
 (scsc-check (eq (car (list t)) t) "t in a list is t")
