@@ -3250,6 +3250,16 @@ it shares with cons and symbol blocks.")
                       0)))
                (seq (setq e (+ e 24)) (setq i (+ i 1)))))
            owner)))
+      ;; 1 when ADDR lies in the strings of a restored cold image: the header
+      ;; area and the sdata block, up to the footer (`nl_string_image_attach').  A
+      ;; string lives there, outside the packed layout, which the dump rewrites
+      ;; from the pool and that area alike (`nl_dump_string_write'); a raw pointer
+      ;; into it, such as a legacy view's data pointer, is neither included nor
+      ;; counted against the dump, as a pointer into the pool is not.
+      (defun nl_dump_in_string_image (addr)
+        (let ((ss (data-addr nl_strings_state)))
+          (if (< addr (heap-read-u64 ss 160)) 0
+            (if (< addr (heap-read-u64 ss 232)) 1 0))))
       ;; Pass 1: include the block ADDR points into.  A legacy block gets
       ;; mark 4 (alive, not yet traversed: `nl_gc_mark_block' still upgrades
       ;; it and recurses); an image object gets a bit in the separate boot
@@ -3258,6 +3268,7 @@ it shares with cons and symbol blocks.")
         (let* ((st (data-addr nl_typed_alloc)) (blo (heap-read-u64 st 200)))
           (if (= (logand addr 7) 0)
               (if (> (nl_typed_find addr) 0) 0
+                (if (= (nl_dump_in_string_image addr) 1) 0
                 (if (if (>= addr blo) (if (< addr (heap-read-u64 st 208))
                                           (= (nl_dump_hole_p addr) 0) 0) 0)
                     (let* ((o (nl_dump_boot_owner addr)) (g (sar (- o blo) 3))
@@ -3269,7 +3280,7 @@ it shares with cons and symbol blocks.")
                       (if (= o 0) 0
                         (if (= (logand (heap-read-u64 h 0) 7) 0)
                             (ptr-write-u64 h 0 (+ (logand (heap-read-u64 h 0) 4294967288) 4))
-                          0))))))
+                          0)))))))
             0)))
       ;; Index of the last entry of the [header, offset] array whose word
       ;; at FIELD (0 = header, 8 = offset) is <= KEY, or -1.
@@ -3285,7 +3296,8 @@ it shares with cons and symbol blocks.")
            ans)))
       (defun nl_dump_excluded (addr)
         (let ((st (data-addr nl_typed_alloc)))
-          (seq (if (if (> (nl_typed_find addr) 0) 1 (nl_dump_in_heap addr))
+          (seq (if (if (= (nl_dump_in_string_image addr) 1) 0
+                     (if (> (nl_typed_find addr) 0) 1 (nl_dump_in_heap addr)))
                    (ptr-write-u64 st 384 (+ (heap-read-u64 st 384) 1)) 0)
                -1)))
       ;; Doc 226 D9: image offset of ADDR inside a symbol_block cell: the
@@ -5550,10 +5562,17 @@ it shares with cons and symbol blocks.")
             (seq (ptr-write-u64 b 0 16)
                  (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
                  (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                 ;; SHARE stores the caller's box itself only when every word of it
+                 ;; lies in the arena (a legacy box, which the image dump relocates).
+                 ;; A view of a canonical String points into the string blocks: the
+                 ;; keystone stores that String's WORD, GNU's name object, which the
+                 ;; dump relocates as a WORD field.
                  (if (if (= share 1)
                          (if (= (logand name 7) 0)
                              (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
-                                 (nl_gc_in_arena name) 0)
+                                 (if (= (nl_string_view_header name) 0)
+                                     (nl_gc_in_arena name) 0)
+                               0)
                            0)
                        0)
                      (ptr-write-u64 b 8 name)
@@ -5633,15 +5652,23 @@ it shares with cons and symbol blocks.")
     ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
     ;; The environment-free form of `nl_symbol_name_value_create'.
     (defun nl_symname_make (buf n out)
-      (let* ((entry (nl_symbol_name_entry_for 1 buf n)))
-        (if (/= entry 0) (nl_symbol_name_copy_out entry out)
+      (let* ((entry (nl_symbol_name_entry_for 1 buf n))
+             (vh (if (/= entry 0) (nl_string_view_header (+ entry 40)) 0)))
+        ;; An entry made for `symbol-name' holds a view of a canonical String
+        ;; (outside the arena chunks): the object's persistent name box must not
+        ;; copy that, so it gets a legacy box over arena bytes and the entry stays.
+        (if (if (/= entry 0) (= vh 0) 0)
+            (nl_symbol_name_copy_out entry out)
           (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
-                 (name-tag 14) (i 0))
-            (seq (while (< i n)
-                   (seq (if (>= (heap-read-u8 buf i) 128) (setq name-tag 5) 0)
-                        (setq i (+ i 1))))
-                 (if (= (nl_alloc_str_write_tag buf n alloc-n out data name-tag) 0) 0
-                   (nl_symbol_name_register 1 buf n out)))))))
+                 ;; The box is of the kind of the String it stands for: that of the
+                 ;; entry's canonical String (a raw byte keeps a unibyte name, a
+                 ;; multibyte ASCII name stays multibyte); without an entry, the
+                 ;; kind `nl_alloc_str_write_tag' gives these bytes -- unibyte
+                 ;; unless they are a multibyte sequence.
+                 (name-tag (if (/= vh 0) (nl_string_kind vh)
+                             (if (= (nl_string_char_count buf n) n) 14 5))))
+            (if (= (nl_alloc_str_write_legacy buf n alloc-n out data name-tag) 0) 0
+              (nl_symbol_name_register 1 buf n out))))))
     ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
     ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol
     ;; as the mirror's entry writers make it -- void value and function, empty
@@ -15419,7 +15446,11 @@ leave symbols unresolved at link time."
               ;; table still costs address space, which `ulimit -v' caps.
               (if (= cok 1)
                   (let* ((nf (heap-read-u64 (+ (data-addr nl_float_state) 88) 0))
-                         (cap2 (+ (+ nf (/ nf 16)) 4096))
+                         ;; The strings' own entries (two per reached string,
+                         ;; `nl_dump_string_table') follow the walk's and are not
+                         ;; counted by pass 1; pass 2 has numbered the strings.
+                         (cap2 (+ (+ (+ nf (/ nf 16)) 4096)
+                                  (* 2 (heap-read-u64 (data-addr nl_strings_state) 176))))
                          (bytes2 (+ 16 (* cap2 8)))
                          (base2 (nl_os_alloc_chunk bytes2)))
                     (if (= base2 0) (setq cok 0)
@@ -25622,13 +25653,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (or (= tag 4) (= tag 16))
             (let* ((entry (nl_symbol_name_entry_for (if (= tag 4) 1 2)
                             (if (= tag 4) (nl_word_data a) (nl_word_payload a))
-                            (nl_word_length a))))
+                            (nl_word_length a)))
+                   ;; A symbol object holds its name: GNU's u.s.name, here a String
+                   ;; WORD for a symbol made by make-symbol, which has no sidecar
+                   ;; entry (the multibyte flag of an ASCII name lives in that
+                   ;; String, not in the bytes).
+                   (own (if (= (logand a 7) 6) (heap-read-u64 (- a 6) 8) 0)))
               ;; Read the existing canonical SYMBOL_NAME. Reader-created ASCII
               ;; names need no sidecar or view for a non-identity conversion.
               ;; Other misses belong to the cold symbol-name layer.
-              (if (= entry 0)
-                  (if (= (m5_ascii_bytes_p a 0 (m5_strlen a)) 1) a 0)
-                (nl_string_from_view (+ entry 40))))
+              (if (= (logand own 7) 4) own
+                (if (= entry 0)
+                    (if (= (m5_ascii_bytes_p a 0 (m5_strlen a)) 1) a 0)
+                  (nl_string_from_view (+ entry 40)))))
           (if (or (= tag 0) (= tag 1))
               (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
                               (data-addr nl_symbol_name_t))))
@@ -30033,7 +30070,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= tg 0) 0
            (if (= tg 1) 1
              (if (= tg 2) (nl_word_payload p)
-               (if (= tg 3) (nl_word_payload p)
+               (if (= tg 3) (nl_float_bits p)
                  (if (= tg 4) (nl_ht_str_hash p)
                    (if (or (= tg 5) (= tg 14) (= tg 13))
                        (if (= (nl_word_length p) 0)
@@ -31075,15 +31112,15 @@ into that constant unconditionally is what broke every aarch64 build."
                                       (tg (sexp-tag s)))
                               (if (or (= tg 4) (= tg 16))
                                   (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_value env s b) 1) b
+                                    (if (= (nl_symbol_name_value env s b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                 (if (= tg 0)
                                     (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_immediate env 0 b) 1) b
+                                    (if (= (nl_symbol_name_immediate env 0 b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                   (if (= tg 1)
                                       (let ((b (alloc-bytes 32 8)))
-                                    (if (= (nl_symbol_name_immediate env 1 b) 1) b
+                                    (if (= (nl_symbol_name_immediate env 1 b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
                                     (nl_abi_fail (bf_wrong_type_symbolp s) 0))))))
     ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).

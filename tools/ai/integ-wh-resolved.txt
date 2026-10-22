@@ -44,6 +44,16 @@ scripts/nelisp-standalone-build.el
 templates/nelisp-native-rooted-abi-proof.el.in
 test/nelisp-native-compiler-startup-evidence-test.el
 
+# Post-merge fixes 7-18 (gc-port stage): the Elisp files they touch
+lisp/nelisp-bytecode-buffer.el
+lisp/nelisp-cc-evalport-bootstrap.el
+lisp/nelisp-cc-frame-stack-find.el
+lisp/nelisp-cc-nlstr-direct-ops.el
+lisp/nelisp-cc-string-blocks.el
+lisp/nelisp-heap-accessors.el
+scripts/nelisp-standalone-build.el
+test/standalone-bytecode-library-arith-check.el
+
 # Merge 7: eval/callpath-perf-20261021 e4755b52f (2 conflicted files, 8 hunks)
 scripts/nelisp-standalone-build.el
 test/standalone-vm-special-form-head-check.el

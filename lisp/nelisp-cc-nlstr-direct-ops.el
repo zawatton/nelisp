@@ -201,6 +201,24 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= word 0) 0 (nl_string_store_view word result-slot))))
     (defun nl_alloc_str_write (bytes-ptr n alloc-n dest-slot char-buf)
       (nl_alloc_str_write_tag bytes-ptr n alloc-n dest-slot char-buf 5))
+    ;; A legacy name box over the caller's own buffer: tag, capacity, CHAR-BUF
+    ;; (arena bytes the caller allocated) and length.  The name of an interned
+    ;; symbol object is kept so (Doc 226 D9): the box is persistent -- the object's
+    ;; name cell and the side table point at it -- and, unlike the view of a
+    ;; canonical String that `nl_alloc_str_write_tag' stores, every word of it
+    ;; lies in the arena, so the image dump relocates it.
+    (defun nl_alloc_str_write_legacy
+        (bytes-ptr n alloc-n result-slot char-buf tag)
+      (and (nl_alloc_str_copy_loop bytes-ptr char-buf 0 n)
+           (ptr-write-u64 result-slot 0 tag)
+           ;; Bit 62 of the capacity word marks a multibyte string: a legacy box
+           ;; cannot say otherwise that its ASCII bytes are multibyte (the reader
+           ;; sets it the same way, nelisp_reader_p_symbol_name_kind).
+           (ptr-write-u64 result-slot 8
+                          (if (= tag 5) (logior alloc-n 4611686018427387904) alloc-n))
+           (ptr-write-u64 result-slot 16 char-buf)
+           (ptr-write-u64 result-slot 24 n)
+           result-slot))
 
     ;; Alloc + write with n >= 0 already normalised.
     (defun nl_alloc_str_pos (bytes-ptr n dest-slot)
@@ -731,6 +749,17 @@ lifetime of a Sexp value.  No `let' binding needed.")
                     (nl_symbol_name_copy_out entry out)
                   (nl_symbol_name_value_create env symbol-slot out)))
             0))))))
+    ;; The value `symbol-name' answers for the Sexp slot OUT it filled: the WORD of
+    ;; the canonical String when OUT holds a view of one, else the slot itself (a
+    ;; legacy name box).  The evaluator keeps a builtin's result as it is in the
+    ;; argument list of its caller, so `(list (symbol-name S) 1)' held a 32-byte
+    ;; box whose edge points at a String header in the pool; an image dump has no
+    ;; relocation for that edge (a view is not a WORD field), and the restored
+    ;; image's first collection followed it into the dead pool.  The String WORD is
+    ;; what the string builtins answer, and what the dump relocates.
+    (defun nl_symbol_name_result (out)
+      (let* ((h (nl_string_view_header out)))
+        (if (= h 0) out (+ h 4))))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_value' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_value_w (env symbol-slot _pad)

@@ -1,0 +1,73 @@
+;;; integ-wh-image-golden.el --- symbol names across an image dump and restore -*- lexical-binding: t; -*-
+
+;; BIN --load integ-wh-image-golden.el                       (IG_MODE=dump IG_IMAGE=PATH)
+;;   makes the symbols below, checks them, dumps PATH.
+;; BIN --cold-load-from PATH --load integ-wh-image-golden.el (IG_MODE=verify)
+;;   the restored heap answers the same names; IG_MODE=dump2 dumps a second generation.
+;; Prints "IG MODE checks=N failures=F PASS|FAIL" last.
+;; setq, not defvar: a restored image already holds these from the run that dumped it.
+(defvar ig-mode nil)
+(defvar ig-checks 0)
+(defvar ig-failures 0)
+(setq ig-mode (or (getenv "IG_MODE") "dump") ig-checks 0 ig-failures 0)
+(defun ig-check (ok label)
+  (setq ig-checks (1+ ig-checks))
+  (unless ok
+    (setq ig-failures (1+ ig-failures))
+    (princ (format "IG FAIL %s\n" label))))
+
+(defun ig-assert-names ()
+  ;; GNU: an interned symbol's name is one string object, so two calls are eq.
+  (ig-check (eq (symbol-name 'ab) (symbol-name 'ab)) "(eq (symbol-name 'ab) (symbol-name 'ab))")
+  (ig-check (equal (symbol-name 'ab) "ab") "interned name")
+  (ig-check (eq ig-ab 'ab) "intern built from concat is the symbol")
+  (ig-check (equal (symbol-name ig-ab) "ab") "interned name through the variable")
+  (ig-check (eq (symbol-name ig-ab) (symbol-name ig-ab)) "eq names of the restored interned symbol")
+  (ig-check (equal (symbol-name ig-x) "x") "uninterned name")
+  (ig-check (eq (symbol-name ig-x) (symbol-name ig-x)) "eq names of the uninterned symbol")
+  (ig-check (null (intern-soft "ig-uninterned-only")) "make-symbol did not intern")
+  (ig-check (equal (symbol-name ig-lone) "ig-uninterned-only") "the lone uninterned name")
+  (ig-check (not (eq ig-x 'x)) "uninterned is not the interned x")
+  (ig-check (eq (symbol-name ig-sym) ig-str) "(eq (symbol-name (make-symbol S)) S)")
+  (ig-check (equal ig-str "gen-erated") "the shared string")
+  (ig-check (equal (symbol-name ig-multi) "é-λ-名") "multibyte uninterned name")
+  (ig-check (equal (symbol-name 'ig-multi-interned-é) "ig-multi-interned-é") "multibyte interned name")
+  (ig-check (eq (intern "ig-late-ab") (intern "ig-late-ab")) "intern after the restore is stable")
+  (ig-check (equal (get 'ab 'ig-prop) '(1 2 3)) "plist of the interned symbol")
+  (ig-check (eq (symbol-value 'ig-ab-value) 'ab) "a variable holding the interned symbol"))
+
+(cond
+ ((equal ig-mode "dump")
+  (defvar ig-ab (intern (concat "a" "b")))
+  (defvar ig-x (make-symbol "x"))
+  (defvar ig-lone (make-symbol "ig-uninterned-only"))
+  (defvar ig-str (copy-sequence "gen-erated"))
+  (defvar ig-sym (make-symbol ig-str))
+  (defvar ig-multi (make-symbol (copy-sequence "é-λ-名")))
+  (defvar ig-ab-value 'ab)
+  (intern "ig-multi-interned-é")
+  (put 'ab 'ig-prop (list 1 2 3))
+  (garbage-collect)
+  (ig-assert-names)
+  (ig-check (> (nelisp--arena-dump-image-stream (getenv "IG_IMAGE")) 0) "dump"))
+ ((equal ig-mode "verify")
+  (garbage-collect)
+  (ig-assert-names)
+  (garbage-collect)
+  (ig-assert-names))
+ ((equal ig-mode "dump2")
+  (garbage-collect)
+  (ig-assert-names)
+  (put 'ab 'ig-second t)
+  (setq ig-x2 (make-symbol "second-generation"))
+  (garbage-collect)
+  (ig-check (> (nelisp--arena-dump-image-stream (getenv "IG_IMAGE")) 0) "second-generation dump"))
+ ((equal ig-mode "verify2")
+  (garbage-collect)
+  (ig-assert-names)
+  (ig-check (get 'ab 'ig-second) "second-generation plist")
+  (ig-check (equal (symbol-name ig-x2) "second-generation") "second-generation uninterned name")))
+
+(princ (format "IG %s checks=%d failures=%d %s\n" ig-mode ig-checks ig-failures
+               (if (= ig-failures 0) "PASS" "FAIL")))
+(kill-emacs (if (= ig-failures 0) 0 1))

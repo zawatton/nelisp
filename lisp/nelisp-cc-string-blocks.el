@@ -179,6 +179,9 @@
                 (if (or (> lo hi) (> hi f) (/= (logand lo 31) 0)) 0
                   (if (= (nl_string_register_mapping lo hi 6) 0) 0
                     (seq (ptr-write-u64 st 160 lo) (ptr-write-u64 st 168 hi)
+                         ;; the string area ends at the footer: the header area,
+                         ;; then the sdata block (`nl_dump_in_string_image')
+                         (ptr-write-u64 st 232 f)
                          (if (or (= (heap-read-u64 st 96) 0) (< lo (heap-read-u64 st 96)))
                              (ptr-write-u64 st 96 lo) 0)
                          (if (> hi (heap-read-u64 st 104)) (ptr-write-u64 st 104 hi) 0)
