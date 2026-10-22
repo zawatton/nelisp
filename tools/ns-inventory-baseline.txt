@@ -1820,3 +1820,11 @@ pinned-collision ns-collision-divergent	indirect-variable	packages/nelisp-emacs-
 pinned-collision ns-collision-divergent	internal-delete-indirect-variable	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	a3973f3ad4af
 # Same t initializer, guarded on native-provider / library startup respectively.
 pinned-collision ns-collision	enable-multibyte-characters	lisp/nelisp-buffer-local.el packages/nelisp-emacs-foundation/src/emacs-parity-core-vars.el
+# gc-port merge (7b8916b7f), dry run: the prelude gained its own copies of the marker record
+# helpers (f4b02c8be, same definitions as src/nelisp-buffer.el) and of two GNU internals the
+# symbols lane stages (internal--define-uninitialized-variable, internal-make-var-non-special).
+pinned-collision ns-collision	nelisp-marker--make	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
+pinned-collision ns-collision	nelisp-marker--set-insertion-type	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
+pinned-collision ns-collision	nelisp-marker-insertion-type	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
+pinned-collision ns-collision-divergent	internal--define-uninitialized-variable	packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	02c8acacb368
+pinned-collision ns-collision-divergent	internal-make-var-non-special	packages/nelisp-emacs-foundation/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	7ca3ce2a9e4b

@@ -1,0 +1,18 @@
+# ERT tests that are red on the lane tips themselves, so the dry run does not count them
+# (tools/ai/integ-wh-check.sh codegen-ert fails only on a failure that is not listed here).
+# Format: test name, one per line; # starts a comment.
+
+# Red at the word-heap base 702ccc8d7 itself.
+nelisp-aot-compiler/frame-stack-find-uses-borrowed-words
+
+# Red at the strings tip: since 20b1ee832 the strings lane lowers (sexp-tag X) to a call of
+# nl_val_tag, so the old byte-pattern and arity assertions of the sexp-tag lowering no longer
+# hold (and batch F's CG5 fused tag tests no longer fire for runtime code).
+nelisp-aot-compiler/sexp-abi-ops-reject-bad-arity
+nelisp-aot-compiler/sexp-tag-emit-bytes
+nelisp-aot-compiler/sexp-tag-parse-shape
+nelisp-aot-codegen/tag-tests
+
+# Red at the strings tip: the host-side native-exec-general extern whitelist does not know
+# nl_word_data, which the strings lane's string accessors call ("unsupported externs").
+nelisp-artifact/native-exec-general-string-args

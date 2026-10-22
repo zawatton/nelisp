@@ -99,15 +99,24 @@ case ${1:-} in
   ns)
     bash tools/ai/batch-f-check.sh ns ;;
   codegen-ert)
+    # A suite may fail only on the tests listed in tools/ai/integ-wh-ert-known-red.txt, which
+    # are red on the lane tips themselves.
+    known=$(grep -v '^#' tools/ai/integ-wh-ert-known-red.txt | grep -v '^$')
+    nred=0; total=0
     for t in nelisp-aot-compiler-test nelisp-aot-codegen-test nelisp-aot-s5-lowering-test \
              nelisp-codegen-alignment-test nelisp-artifact-native-exec-test nelisp-artifact-test \
              nelisp-static-linker-test; do
       [ -f test/$t.el ] || fail "missing test/$t.el"
       capped timeout 900 "$GNU" --batch -Q -L lisp -L src -L scripts -L test --eval '(setq load-prefer-newer t)' \
-        -l ert -l test/$t.el -f ert-run-tests-batch-and-exit > "$OUT/ert-$t.log" 2>&1 ||
-        fail "$t: $(grep -E '^(Ran|   FAILED)' "$OUT/ert-$t.log" | head -3 | tr '\n' ' ')"
+        -l ert -l test/$t.el -f ert-run-tests-batch-and-exit > "$OUT/ert-$t.log" 2>&1
+      total=$((total + 1))
+      grep -q '^Ran ' "$OUT/ert-$t.log" || fail "$t: no ERT summary: $(tail -n 3 "$OUT/ert-$t.log" | tr '\n' ' ')"
+      for name in $(grep -E '^   FAILED  [^ ]+$' "$OUT/ert-$t.log" | awk '{print $2}'); do
+        if printf '%s\n' "$known" | grep -qx "$name"; then nred=$((nred + 1))
+        else fail "$t: $name is red and not in tools/ai/integ-wh-ert-known-red.txt"; fi
+      done
     done
-    say "PASS codegen-ert" ;;
+    say "PASS codegen-ert ($total suites; $nred known-red tests, all listed)" ;;
   built)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
     v=$(capped "$DYN" --version 2>/dev/null | head -1)
