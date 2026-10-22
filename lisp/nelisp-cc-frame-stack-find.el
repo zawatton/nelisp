@@ -76,11 +76,16 @@
           0
           ;; A canonical String is already a name. Other names retain
           ;; their existing aligned Symbol/String-view representation.
+          ;; Doc 226 D9: a symbol object's WORD (class 110, kind 4 or 16) is
+          ;; a name too; the header is the check.
           (if (= (logand word 7) 4) 1
             (if (= (logand word 7) 0)
                 (let* ((tag (heap-read-u8 word 0)))
                   (if (or (= tag 4) (= tag 16) (= tag 5) (= tag 14)) 1 0))
-              0)))))
+              (if (= (logand word 7) 6)
+                  (let* ((kind (logand (heap-read-u8 (- word 6) 0) 63)))
+                    (if (or (= kind 4) (= kind 16)) 1 0))
+                0))))))
 
     (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
       ;; Walk bucket and pair NlConsBox words directly.  No accessor
