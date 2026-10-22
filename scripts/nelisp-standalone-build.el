@@ -960,6 +960,12 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_symcells_root"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 480)
                               :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": the test hook that makes every
+    ;; `nl_gc_vm_poll' collect (one WORD inside `nl_typed_alloc', +488; +496
+    ;; and +504 stay free).
+    (list (nelisp-link-symbol "nl_vm_poll_force"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 488)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
@@ -8886,6 +8892,46 @@ REPL-facing module it feeds."
                (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                               (+ (heap-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
         0))
+
+    ;; Doc 223 "Bytecode VM safepoints".  GNU's maybe_gc for the bytecode
+    ;; interpreter: bytecode.c:797 polls at every Bcall and bytecode.c:861-866
+    ;; on every 256th backward branch.  `nl_gc_vm_poll' runs a mid-form
+    ;; collection when the allocator's growth or debt trigger is due (the gate
+    ;; of the `while' back edge, `nl_gc_midform_collect') and returns 0.  Cost
+    ;; with nothing due: two loads, then the gate (the armed flag, the
+    ;; reservation against the trigger, the debt test).  A call site must be a
+    ;; VM instruction boundary where
+    ;;   1. every heap value the VM uses after the poll is reachable from the GC
+    ;;      root stack (the VM frame's roots), a recorded evaluator frame, a
+    ;;      heap object reachable from those, or a native stack slot (the
+    ;;      conservative scan pins pointers, interior ones included, found in
+    ;;      [sp, stack top));
+    ;;   2. no such value lives only in a callee-saved register (the scan does
+    ;;      not read registers; DSL locals live across a call are in stack
+    ;;      slots, register promotion being limited to call-free loops);
+    ;;   3. caches of heap addresses (mirror entries, frame cursors) are
+    ;;      dropped afterwards, as after any call that can run Lisp: the
+    ;;      collector never moves objects, but a swept block is reused.
+    ;; The gate also refuses while the collector runs and parks parallel
+    ;; workers around a collection, so a worker thread needs no extra check.
+    ;; Backstop: the typed blocks (cons, symbol, vector) are mapped outside the
+    ;; arena chunks, so before the debt trigger arms (two collections after
+    ;; boot) a loop that allocates only typed cells never crosses the growth
+    ;; watermark and nothing would collect it.  Until then one chunk (64 MiB)
+    ;; of debt opens the gate, as a mapped chunk would; once armed the debt
+    ;; trigger counts typed bytes itself.  Debug switch 70 sets
+    ;; `nl_vm_poll_force': every poll then collects (the trigger is zeroed
+    ;; before the gate), 71 clears it, 72 answers the number of mid-form
+    ;; collections so far.
+    (defun nl_gc_vm_poll ()
+      (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
+             (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
+                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0
+                   (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
+               0))
+           (nl_gc_midform_collect)
+           0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
     ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
@@ -11417,7 +11463,21 @@ leave symbols unresolved at link time."
                   (if (= op 65)
                       (seq (if (= ctx 0) 0 (nl_symcells_attach ctx)) 5)
                     (seq (nl_symcells_set 0) 5)))))))))
+        ;; (nelisp--debug-switch 70): every bytecode VM safepoint collects;
+    ;; 71: back to the allocator's triggers; 72: the number of mid-form
+    ;; collections so far (the same counter on every path, so a forced run is
+    ;; checked by its difference).  Doc 223 "Bytecode VM safepoints".
+    (defun nl_vm_poll_switch_w (args)
+      (seq
+       (if (= (wf_argval args 0) 70)
+           (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1)
+         (if (= (wf_argval args 0) 71)
+             (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0)
+           0))
+       (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))
     (defun bf_debug_switch_w (args _pad)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 72) 0)
+          (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
       (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
@@ -11527,7 +11587,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
