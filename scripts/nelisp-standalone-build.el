@@ -48379,14 +48379,18 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 ;; object like GNU.
 (defconst nelisp-standalone--autoload-lookup-helpers
   '((defun nl_autoload_cell_p (cell)
-      ;; These two predicates accept the base's physical cons and symbol
-      ;; slots only. A canonical String WORD is never an autoload symbol.
-      (if (and (= (logand cell 7) 0) (= (ptr-read-u8 cell 0) 7))
-          (let* ((head (nl_cons_car_ptr cell)))
-            (if (and (= (logand head 7) 0) (= (ptr-read-u8 head 0) 4))
-                (nl_apply_sym_eq_w head 7233184988050781537 0 0 0 8 1 0)
-              0))
-        0))
+      ;; A cons is a slot pointer or a direct cons WORD (010) and its head
+      ;; symbol a slot or a vectorlike WORD (110), which `sexp-tag' decodes. A
+      ;; canonical String WORD (100) is never an autoload cell or symbol, and
+      ;; `sexp-tag' does not decode it, so it is excluded before any tag read.
+      (if (= (logand cell 7) 4) 0
+        (if (= (sexp-tag cell) 7)
+            (let* ((head (nl_cons_car_ptr cell)))
+              (if (= (logand head 7) 4) 0
+                (if (= (sexp-tag head) 4)
+                    (nl_apply_sym_eq_w head 7233184988050781537 0 0 0 8 1 0)
+                  0)))
+          0)))
     (defun nl_lookup_fn_autoload_load_cell_w (mirror unbound sym cell)
   ;; Doc 216 S6.2: one frame of three WORD roots: the loader's name, the
   ;; function and the argument list.
