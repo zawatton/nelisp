@@ -18294,6 +18294,33 @@ Hidden Lisp boundaries retain their existing storage and ownership path."
                      (nelisp-aot-compiler--ir-get node :args)))
        (nelisp-aot-compiler--x86-direct-call-args-p node t)))
 
+(defvar nelisp-aot-compiler--x86-direct-stack-push t
+  "Push earlier pure stack-tail operands inside the original admission.")
+
+(defun nelisp-aot-compiler--emit-direct-stack-tail-push-x86 (arg buf)
+  "Push preflighted ARG's original GP leaf, or return nil before emitting.
+Only earlier tail arguments use this helper; the last keeps the original
+RAX preparation.  Canonical frame aliases and mapped sources are resolved
+by the same operand helper as the original value-into path."
+  (when nelisp-aot-compiler--x86-direct-stack-push
+    (let ((operand (nelisp-aot-compiler--x86-leaf-operand arg)))
+      (pcase (car operand)
+        (:imm
+         ;; PUSH imm32 sign-extends, exactly like the original signed MOV.
+         (let ((v (cadr operand)))
+           (nelisp-asm-x86_64-emit-bytes
+            buf (if (<= -128 v 127) (unibyte-string #x6A (logand v #xFF))
+                  (concat (unibyte-string #x68) (nelisp-aot-compiler--disp32-bytes v))))
+           (cl-incf nelisp-aot-compiler--rsp-temp-depth) t))
+        (:reg
+         (when (memq (cadr operand) '(rbx r10 r11 r12 r13 r14 r15))
+           (nelisp-aot-compiler--emit-temp-push buf (cadr operand)) t))
+        (:mem
+         ;; FF /6 is a full64 PUSH without REX.W.  The source read precedes
+         ;; the same original8-byte stack write; no tag/header is read.
+         (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 6 operand)
+         (cl-incf nelisp-aot-compiler--rsp-temp-depth) t)))))
+
 (defun nelisp-aot-compiler--emit-direct-gp-stack-call-x86 (node buf extern-p)
   "Place preflighted NODE's first six GP args and outgoing stack tail.
 Only outgoing words are pushed, in reverse order, with any alignment
@@ -18303,11 +18330,15 @@ in a new register; the ordinary caller frame still owns all arguments."
   (let* ((args (nelisp-aot-compiler--ir-get node :args))
          (name (nelisp-aot-compiler--ir-get node :name))
          (stack-count (- (length args) 6))
+         (remaining stack-count)
          (pad (= (logand (+ nelisp-aot-compiler--rsp-temp-depth stack-count) 1) 1)))
     (when pad (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     (dolist (arg (reverse (nthcdr 6 args)))
-      (nelisp-aot-compiler--emit-value-into-x86 arg buf 'rax)
-      (nelisp-aot-compiler--emit-temp-push buf 'rax))
+      (cl-decf remaining)
+      (unless (and (> remaining 0)
+                   (nelisp-aot-compiler--emit-direct-stack-tail-push-x86 arg buf))
+        (nelisp-aot-compiler--emit-value-into-x86 arg buf 'rax)
+        (nelisp-aot-compiler--emit-temp-push buf 'rax)))
     (cl-mapc (lambda (arg reg)
                (nelisp-aot-compiler--emit-value-into-x86 arg buf reg))
              (cl-subseq args 0 6) '(rdi rsi rdx rcx r8 r9))
