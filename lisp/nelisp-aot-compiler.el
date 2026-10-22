@@ -15325,20 +15325,66 @@ register.  GNU comp.el:1932-1949 likewise traces a copy's original mvar."
              (setq written t))))
         (and (not written) reg)))))
 
+(defvar nelisp-aot-compiler--x86-index-forward-frame-sensitive-p nil)
+
+(defun nelisp-aot-compiler--x86-forward-load-offset (node)
+  "Forward a single-use pure index binding to its immediate raw load.
+GNU bytecode.c uses indexed stack loads directly.  Preserve the virtual
+frame and CG3 plan; only the lexical temporary's store/load disappears.
+No code is emitted until the complete effective address is preflighted."
+  (when (and nelisp-aot-compiler--x86-call-containing-defun-p
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p))
+    (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
+           (value (nelisp-aot-compiler--ir-get node :value-ir))
+           (body (nelisp-aot-compiler--ir-get node :body))
+           (ptr (nelisp-aot-compiler--ir-get body :ptr))
+           (offset (nelisp-aot-compiler--ir-get body :offset)))
+      (when (and (not (nelisp-aot-compiler--ir-get node :root-p))
+                 (not (nelisp-aot-compiler--ir-get offset :root-p))
+                 (memq (nelisp-aot-compiler--ir-kind body)
+                        '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))
+                 (eq (nelisp-aot-compiler--ir-kind offset) 'ref)
+                 (eql slot (nelisp-aot-compiler--ir-get offset :slot))
+                 (memq (nelisp-aot-compiler--ir-kind value) '(arith shift))
+                 (or (nelisp-aot-compiler--x86-ref-leaf-p ptr)
+                     (nelisp-aot-compiler--imm-int-p ptr))
+                 (not (and (eq (nelisp-aot-compiler--ir-kind ptr) 'ref)
+                           (eql slot (nelisp-aot-compiler--ir-get ptr :slot))))
+                 (not (cl-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
+                               nelisp-aot-compiler--promoted-slots)))
+        (let ((self nil))
+          (nelisp-aot-compiler--walk-ir
+           value (lambda (n)
+                   (when (or (nelisp-aot-compiler--ir-get n :root-p)
+                             (and (eq (nelisp-aot-compiler--ir-kind n) 'ref)
+                                  (eql slot (nelisp-aot-compiler--ir-get n :slot))))
+                     (setq self t))))
+          (when (and (not self)
+                     (nelisp-aot-compiler--x86-affine-address-plan ptr value))
+            (nelisp-aot-compiler--ir-with body :offset value)))))))
+
 (defun nelisp-aot-compiler--emit-let-rt-x86 (node buf emit-body)
   "Emit NODE's binding, then invoke EMIT-BODY on its body.
 A readonly promoted copy uses its source register only inside that body;
 the surrounding CG3 allocation and all slot lifetimes stay unchanged."
   (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
-         (reg (nelisp-aot-compiler--x86-copy-let-source-register node)))
-    (if reg
+         (reg (nelisp-aot-compiler--x86-copy-let-source-register node))
+         (forward (nelisp-aot-compiler--x86-forward-load-offset node)))
+    (cond
+     (forward (funcall emit-body forward))
+     (reg
         (let ((nelisp-aot-compiler--promoted-slots
                (cons (cons slot reg) nelisp-aot-compiler--promoted-slots)))
-          (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))
+          (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))
+     (t
       (nelisp-aot-compiler--emit-value
        (nelisp-aot-compiler--ir-get node :value-ir) buf)
       (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)
-      (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))))
+      (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))))
 
 (defun nelisp-aot-compiler--emit-value (node buf)
   "Emit NODE, keeping profitable call-free raw regions in registers."
@@ -22506,6 +22552,16 @@ return reg, untouched by epilogue)."
              body (lambda (n)
                     (when (memq (nelisp-aot-compiler--ir-kind n) '(call extern-call))
                       (setq found t))))
+            found))
+         (nelisp-aot-compiler--x86-index-forward-frame-sensitive-p
+          (let ((found (nelisp-aot-compiler--ir-get defun-ir :gc-root-slots)))
+            (nelisp-aot-compiler--walk-ir
+             body (lambda (n)
+                    (let ((k (nelisp-aot-compiler--ir-kind n)))
+                      (when (or (string-prefix-p "aot-" (symbol-name k))
+                                (string-prefix-p "va-" (symbol-name k))
+                                (memq k '(addr-of syscall syscall-direct raw-syscall)))
+                        (setq found t)))))
             found))
          (rt-slot-count (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (param-slot-rounded (if (zerop (logand (length param-regs) 1))
