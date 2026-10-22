@@ -6312,7 +6312,8 @@ REPL-facing module it feeds."
     (defun nl_gc_typed_vectorlike (box kind n)
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
-        (if (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)
+        (if (if (= kind 3) 0
+              (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0))
             (seq (nl_gc_typed_add 5 box 0 64 1)
                  (if (> (heap-read-u64 state 64) before)
                      (ptr-write-u64 state 72
@@ -12644,15 +12645,15 @@ leave symbols unresolved at link time."
     ;; arch safe (no syscall).  Note: `round' (banker's rounding) and `float-time'
     ;; (needs a per-arch clock_gettime OS helper) are deferred.
     (defun wf_ftrunc (p)
-      (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p))))
+      (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p))))
     (defun wf_ffloor (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-lt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-lt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (- t0 1)
           t0)))
     (defun wf_fceil (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-gt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (+ t0 1)
           t0)))
     ;; float-time wrapper: the nl_os_float_time extern must be called from a
@@ -20171,7 +20172,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (m5_wdig buf w (- D 1))
              (if (= (if (< DE -4) 1 (if (>= DE 15) (if (>= q 1) 1 0) 0)) 1) (m5_emit_sci2 ms buf D DE) (m5_emit_fixed ms buf D DE)))))
     (defun m5_push_float (ms vptr)
-      (let* ((bits (sexp-float-unwrap vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
+      (let* ((bits (nl_float_bits vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
         (seq
          (if (= (logand (sar bits 63) 1) 1) (mut-str-push-byte ms 45) 0)
          (if (= ef 2047)

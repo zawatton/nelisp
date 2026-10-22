@@ -183,7 +183,10 @@
             (let ((base (- src 6)))
               (nl_sci_prog2
                (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
-                    (ptr-write-u64 dst_ptr 8 base)
+                    ;; Doc 216 S5: the view of a float carries its bits.
+                    (ptr-write-u64 dst_ptr 8 (if (= (logand (heap-read-u8 base 0) 63) 3)
+                                                 (heap-read-u64 base 8)
+                                               base))
                     (ptr-write-u64 dst_ptr 16 0)
                     (ptr-write-u64 dst_ptr 24 0)) dst_ptr))
           (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))
