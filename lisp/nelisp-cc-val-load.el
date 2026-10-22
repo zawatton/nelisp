@@ -170,6 +170,13 @@
               (if (= (heap-read-u8 src_slot 0) 13)
                   ;; Doc 216 S5: a Bignum view is stored as its object.
                   (nl_vci_float (nl_big_word src_slot) dst_word_ptr)
+              (if (= (heap-read-u8 src_slot 0) 11)
+                  ;; Doc 216 S5: a Cell view is stored as its object.
+                  (nl_vci_float (nl_cell_word src_slot) dst_word_ptr)
+              (if (if (= (heap-read-u8 src_slot 0) 8)
+                      (= (logand (heap-read-u8 (heap-read-u64 src_slot 8) 0) 63) 8) 0)
+                  ;; Doc 216 S5: a vector view is stored as the WORD of its object.
+                  (nl_vci_float (+ (heap-read-u64 src_slot 8) 6) dst_word_ptr)
               ;; Membership only chooses the shallow symbol/string path.
               ;; Every other tag takes the same fresh clone on either side
               ;; of that test, so avoid walking the chunk chain for it.
@@ -180,7 +187,7 @@
                   (if (extern-call nl_gc_is_boot src_slot)
                       (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)
                     (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
-                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))))
+                (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))))))
     ;; Doc 216 S5: a float is a header-less vectorlike object, not a 32-byte
     ;; Sexp view: 16 bytes, the kind word (3) at +0 and the double's bits at
     ;; +8, the WORD being box|6 (GNU's Lisp_Float, alloc.c:2431, with the
@@ -223,6 +230,23 @@
         (if (= (heap-read-u64 (- limbs 8) 0) (+ 13 (+ (* sign 64) (* cnt 256))))
             (+ (- limbs 8) 6)
           (nl_bignum_write_w sign limbs cnt 0))))
+    ;; Doc 216 S5: a Cell is a header-first object [header | value WORD] (kind 11;
+    ;; header bit 8 is N3's pair-backed flag, which a legacy view keeps in its word
+    ;; 16 as 13107), WORD = box | 6.  nl_cell_box answers the object's address for a
+    ;; Cell WORD or a legacy view; nl_cell_pair_p the flag; nl_cell_word turns a view
+    ;; into its object's WORD, moving the flag into the header.
+    (defun nl_cell_box (w)
+      (if (= (logand w 7) 6) (- w 6) (heap-read-u64 w 8)))
+    (defun nl_cell_pair_p (w)
+      (if (= (logand w 7) 6)
+          (logand (shr (heap-read-u64 (- w 6) 0) 8) 1)
+        (if (= (heap-read-u64 w 16) 13107) 1 0)))
+    (defun nl_cell_word (v)
+      (let ((box (heap-read-u64 v 8)))
+        (seq (if (= (heap-read-u64 v 16) 13107)
+                 (ptr-write-u64 box 0 (logior (heap-read-u64 box 0) 256))
+               0)
+             (+ box 6))))
     (defun nl_val_clone_into (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)

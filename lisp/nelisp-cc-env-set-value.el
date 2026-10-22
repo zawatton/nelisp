@@ -74,7 +74,7 @@
     ;;
     ;; Arity 2 (even) ✓.
     (defun nelisp_env_setv_cell_hit (cell-ptr val-ptr)
-      (and (cell-set-value cell-ptr val-ptr) 0))
+      (and (nl_cell_set_w cell-ptr val-ptr) 0))
 
     ;; nelisp_env_setv_mirror
     ;;

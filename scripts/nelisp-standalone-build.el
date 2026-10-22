@@ -4670,7 +4670,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       (let* ((s (alloc-bytes (* n 8) 8)) (i 0))
         (seq (while (< i n) (seq (ptr-write-u64 s (* i 8) 3) (setq i (+ i 1)))) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
-    ;; cons view without metadata becomes its direct WORD (payload | 2);
+    ;; cons view without metadata becomes its direct WORD (payload | 2), and
+    ;; (Doc 216 S5) a vector view the WORD of its object (payload | 6);
     ;; anything else is returned unchanged.  Inlinable (no let).
     (defun nl_word_canon (w)
       (if (= (logand w 7) 0)
@@ -4678,7 +4679,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (if (= (heap-read-u8 w 0) 7)
                 ;; Only the special-form marker (13108) is metadata.
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
-              w))
+              (if (= (heap-read-u8 w 0) 8)
+                  (if (= (logand (heap-read-u8 (heap-read-u64 w 8) 0) 63) 8)
+                      (+ (heap-read-u64 w 8) 6)
+                    w)
+                w)))
         w))
     ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
     ;; for nil, t and a cons (a list).  Any other view comes back as V;
@@ -6312,15 +6317,17 @@ REPL-facing module it feeds."
                (n (sar header 8)))
           (nl_gc_typed_vectorlike box kind n)
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
+            (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_typed_vectorlike (box kind n)
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
         (if (if (= kind 3) 0
               (if (= kind 13) 0
-                (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)))
+                (if (= kind 11) 0
+                  (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0))))
             (seq (nl_gc_typed_add 5 box 0 64 1)
                  (if (> (heap-read-u64 state 64) before)
                      (ptr-write-u64 state 72
@@ -6610,14 +6617,13 @@ REPL-facing module it feeds."
             (if (or (= tag 12) (= tag 17) (= tag 18))
                 (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
               (if (= tag 11)
-                  ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged),
-                  ;; rc @ box+8, size 16.  Mark the NlCell box, then the
-                  ;; value WORD: immediate (low bit 1) -> no child; else
-                  ;; mark/recurse the 32B child box it points at (mirrors
-                  ;; the Vector/Record pointer-edge handling).
+                  ;; Cell (Doc 216 S5): header @ box+0, value WORD @ box+8,
+                  ;; size 16.  Mark the NlCell box, then the value WORD:
+                  ;; immediate (low bit 1) -> no child; else mark/recurse the
+                  ;; child it points at (mirrors the Vector/Record handling).
                   (let ((box (heap-read-u64 sp 8)))
                     (if (= (nl_gc_mark_block box) 0) 0
-                      (let ((vw (heap-read-u64 box 0)))
+                      (let ((vw (heap-read-u64 box 8)))
                         (nl_gc_mark_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     ;; MutStr/UnibyteMutStr: NlStr*@sp+8 (ptr@box+8).
@@ -8335,9 +8341,10 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
+            (if (= kind 11) (nl_compact_rw_vec_slots (+ box 8) 0 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
-              (if (= kind 9) (nl_compact_rw_char_table box) 0)))))))
+              (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
     (defun nl_compact_rw_char_table (box)
       (seq (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 8)))
            (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 16)))
@@ -8417,7 +8424,7 @@ REPL-facing module it feeds."
                   ;; value word dangled after the child moved + munmap.)
                   (let ((old (nl_compact_rw_edge (+ sp 8))))
                     (if (= (nl_compact_rw_block old) 0) 0
-                      (let ((vw (nl_compact_rw_word_edge old)))
+                      (let ((vw (nl_compact_rw_word_edge (+ old 8))))
                         (nl_compact_rw_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     (let ((old (nl_compact_rw_edge (+ sp 8))))
@@ -13711,12 +13718,14 @@ leave symbols unresolved at link time."
       (if (= tag 8)
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
+        (if (= tag 11)
+            (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
                              ds span dest cin cout dir)
           (if (= tag 9)
               (nl_fa_char_table_fields box ds span dest cin cout dir)
-            0)))))
+            0))))))
     (defun nl_fa_slot (sp ds span dest cin cout dir)
       (let ((tag (nl_val_tag sp)))
         (if (= (logand sp 7) 6)
@@ -13737,7 +13746,7 @@ leave symbols unresolved at link time."
                     (let ((box (heap-read-u64 sp 8)))
                       (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                         (if (= (nl_gc_mark_block box) 0) 0
-                          (nl_fa_vec_slots box 0 1 ds span dest cin cout dir))))
+                          (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir))))
                   (if (or (= tag 6) (= tag 15))
                       (let ((box (heap-read-u64 sp 8)))
                         (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
@@ -18704,8 +18713,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((carw (nl_cons_car_word event)))
         (if (= carw 0) 0
           (if (= (logand carw 1) 1) 0
-            (if (or (= (sexp-tag carw) 4)
-                    (= (sexp-tag carw) 11)) 1 0)))))
+            (if (or (= (nl_val_tag carw) 4)
+                    (= (nl_val_tag carw) 11)) 1 0)))))
     (defun wf_bytecode_w_lean_unbind (env event scratch)
       ;; A migrated event's private Cell ceases to be visible when the caller
       ;; removes this event from UNWINDS. It must never restore the mirror.
@@ -25731,7 +25740,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (nelisp_env_setv_mirror_lazy env sym val (+ env 64))
                      (nelisp_env_setv_alias_or_mirror
                       (+ env 0) (+ env 32) sym val 0 (+ env 64) 1 0))
-                 (seq (cell-set-value cell val) 0)))))))
+                 (seq (nl_cell_set_w cell val) 0)))))))
     (defun bf_set_declared_default_w (env sym val _pad)
   (if (= (logand (heap-read-u64 env 112) 1048576) 0)
       (nl_n3_declared_default_raw_w env sym val 0)
@@ -45852,12 +45861,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
   '(seq
     (defun nl_n3_cell_set (cell value)
       ;; Pair-backed cells retain the original cons as an ordinary traced
-      ;; Cell.value, and mark the Sexp view's otherwise unused word 16.
+      ;; Cell.value, and flag the cell (header bit 8, word 16 of a view).
       ;; No interior pointer or new heap layout escapes to GC/image code.
-      (if (= (heap-read-u64 cell 16) 13107)
-          (let* ((pair (heap-read-u64 (nl_word_payload cell) 0)))
+      (if (= (nl_cell_pair_p cell) 1)
+          (let* ((pair (heap-read-u64 (nl_cell_box cell) 8)))
             (seq (nl_consbox_set_cdr (nl_word_payload pair) value) 0))
-        (seq (cell-set-value cell value) 0)))
+        (seq (nl_cell_set_value (nl_cell_box cell) value) 0)))
     (defun nl_n3_eval_bind_pairs (alist frames)
       ;; Reverse installation gives GNU's first duplicate binding precedence.
       (if (= (sexp-tag alist) 7)
@@ -46112,7 +46121,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                     (nl_cell_get_value inner current))
                   (if (= outer 0)
                       (nelisp_env_setv_mirror_lazy (+ env 0) sym current (+ env 64))
-                    (cell-set-value outer current))
+                    (nl_cell_set_w outer current))
                   (setq status 1))))
              (nl_n3_pop_names env (nl_cons_cdr_word names) depth status)))
         status))
@@ -46184,17 +46193,23 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          ((eq name 'nl_apply_do_eval) nil) ; supplied by shim unit
          ((eq name 'nl_cell_get_value)
           (push `(defun ,name ,(caddr form)
-                   (if (= (heap-read-u64 cell-ptr 16) 13107)
-                       (let* ((pair (heap-read-u64 (nl_word_payload cell-ptr) 0)))
+                   (if (= (nl_cell_pair_p cell-ptr) 1)
+                       (let* ((pair (heap-read-u64 (nl_cell_box cell-ptr) 8)))
                          (seq (nl_sexp_clone_into (nl_cons_cdr_ptr pair) out) 0))
                      ,@(cdddr form))) out))
          ((eq name 'nl_cell_get_value_w)
           ;; The WORD producer must have the same shared-cell interpretation
           ;; as the legacy getter above; raw Cell.value is the binding pair.
           (push `(defun ,name ,(caddr form)
-                   (if (= (heap-read-u64 cell-ptr 16) 13107)
+                   (if (= (nl_cell_pair_p cell-ptr) 1)
                        (nl_cons_cdr_word
-                        (heap-read-u64 (nl_word_payload cell-ptr) 0))
+                        (heap-read-u64 (nl_cell_box cell-ptr) 8))
+                     ,@(cdddr form))) out))
+         ((eq name 'nl_cell_set_w)
+          ;; A pair-backed cell stores into its binding pair.
+          (push `(defun ,name ,(caddr form)
+                   (if (= (nl_cell_pair_p cell) 1)
+                       (nl_n3_cell_set cell val)
                      ,@(cdddr form))) out))
          ((eq name 'nelisp_env_set_value_name_ok)
           ;; Clause 2: callback-protected names live in active root slots.

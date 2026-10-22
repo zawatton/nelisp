@@ -563,7 +563,7 @@
                     (if (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
                           (if (= filtered 2)
                               (if (= (nl_val_tag cell) 11)
-                                  (= (heap-sexp-data cell) 13107) 0)
+                                  (= (nl_cell_pair_p cell) 1) 0)
                             (nl_capture_name_allowed filtered filter name)))
                         (nl_capture_emit_one_w name cell acc roots) acc)
                     filtered filter frame roots))
