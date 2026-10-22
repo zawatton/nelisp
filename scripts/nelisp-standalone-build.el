@@ -5550,10 +5550,17 @@ it shares with cons and symbol blocks.")
             (seq (ptr-write-u64 b 0 16)
                  (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
                  (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
+                 ;; SHARE stores the caller's box itself only when every word of it
+                 ;; lies in the arena (a legacy box, which the image dump relocates).
+                 ;; A view of a canonical String points into the string blocks: the
+                 ;; keystone stores that String's WORD, GNU's name object, which the
+                 ;; dump relocates as a WORD field.
                  (if (if (= share 1)
                          (if (= (logand name 7) 0)
                              (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
-                                 (nl_gc_in_arena name) 0)
+                                 (if (= (nl_string_view_header name) 0)
+                                     (nl_gc_in_arena name) 0)
+                               0)
                            0)
                        0)
                      (ptr-write-u64 b 8 name)
