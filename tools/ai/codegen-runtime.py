@@ -385,6 +385,8 @@ def static_study():
     result = {"revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "gcc": gcc, "nl": nl, "externs": lower.externs,
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "gcc_version": run([cc(), "--version"]).stdout.splitlines()[0]}
     save("census.json", result)
     return result
@@ -492,6 +494,8 @@ def wall(name):
     result = {"name": name, "cpu": cpu, "n": N, "repeats": repeats, "rounds": rounds,
               "source_revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0",
               "fixture_input_sha256": {f: sha(SRC / f) for f in
                   ("runtime.nl.el", "pins.json", "dependencies.nl.el", "heap-fields.nl.el",
@@ -519,6 +523,8 @@ def ir(name):
     count = int(os.environ.get("CODEGEN_RUNTIME_IR_N", "1000" if name == "wf_bytecode_w_fast_run" else str(N)))
     result = {"name": name, "diagnostic_only": True, "n": count, "variants": {}, "source_sha256": sha(SRC / "runtime.nl.el"),
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0"}
     for variant, exe in bins.items():
         counts, outputs, owners = [], [], []

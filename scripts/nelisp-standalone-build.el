@@ -1710,6 +1710,13 @@ On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
                    (hash-table-count cands) count)
           out)))))
 
+(defun nelisp-standalone--inline-unit-source (source)
+  "Apply the production within-unit inline policy to SOURCE."
+  (setq source (nelisp-standalone--inline-small-defuns source))
+  (if (equal (nelisp-standalone--inline-level) "2")
+      (nelisp-standalone--inline-small-defuns source)
+    source))
+
 ;; CG7 (Doc 224): the small leaf helpers above are visible to every unit,
 ;; as lisp.h's inline accessors are visible to every GNU translation unit.
 ;; The within-unit pass leaves a call to a helper of ANOTHER unit a call,
@@ -1968,10 +1975,7 @@ twice appears twice; readers keep the last occurrence of each unit."
          (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone-arena-rewrite-source source))
-         (source (nelisp-standalone--inline-small-defuns source))
-         (source (if (equal (nelisp-standalone--inline-level) "2")
-                     (nelisp-standalone--inline-small-defuns source)
-                   source))
+         (source (nelisp-standalone--inline-unit-source source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-aot-compiler--label-counter 0)

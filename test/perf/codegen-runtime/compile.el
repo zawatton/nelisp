@@ -98,6 +98,6 @@
                (unit (nelisp-standalone--compile-to-unit "runtime-fixture" body)))
           (nelisp-link-units (expand-file-name (concat name ".nl") codegen-runtime--out)
                              (list unit (nelisp-standalone--arena-base-slot-unit)) "_start"))
-      (setq source (nelisp-standalone--inline-small-defuns source))
+      (setq source (nelisp-standalone--inline-unit-source source))
       (nelisp-aot-compile-sexp
        source (expand-file-name (concat name ".nl") codegen-runtime--out)))))))
