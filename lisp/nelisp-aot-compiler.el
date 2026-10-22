@@ -22404,11 +22404,22 @@ bytes from instruction censuses.  Emission passes may use distinct buffers.")
                   (nelisp-aot-compiler--ir-get b :value)))
         (cons a (nelisp-aot-compiler--ir-get b :value))))))
 
+(defun nelisp-aot-compiler--x86-sparse-table-profitable-p (count span)
+  "Non-nil when COUNT equality arms justify a bounded SPAN-entry table.
+GCC14 documents case-values-threshold and jump-table growth bounds.  Use
+this backend's conservative size bound: dispatch is at most48 bytes,
+entries cost4 bytes, and each removed64-bit CMP plus rel32 Jcc costs at
+least10 bytes.  Arm bodies and their end jumps are unchanged."
+  (and (eq nelisp-aot-compiler--abi 'sysv)
+       (<= count span 64) (<= span (* 2 count))
+       (< (+ 48 (* 4 span)) (* 10 count))))
+
 (defun nelisp-aot-compiler--x86-dense-if-plan (node)
   "Return (REF MIN MAX ARMS DEFAULT) for a dense raw equality chain.
 Only repeated reads of one GP local qualify: skipping their redundant
 reads cannot change effects or traps.  Require at least four distinct,
-contiguous signed32 keys; other shapes retain their existing lowering."
+signed32 keys.  Preserve contiguous lowering; bounded profitable sparse
+ranges send holes to the original default without reading the key again."
   (when (and nelisp-aot-compiler--x86-jump-tables-enabled
              (eq nelisp-aot-compiler--arch 'x86_64)
              (not (nelisp-aot-compiler--lisp-values-p))
@@ -22426,8 +22437,11 @@ contiguous signed32 keys; other shapes retain their existing lowering."
         (push (cons (cdr pair) (nelisp-aot-compiler--ir-get cursor :then)) arms)
         (setq cursor (nelisp-aot-compiler--ir-get cursor :else)))
       (when (and (not invalid) (>= (length arms) 4))
-        (let ((lo (apply #'min keys)) (hi (apply #'max keys)))
-          (when (and (= (1+ (- hi lo)) (length arms))
+        (let* ((lo (apply #'min keys)) (hi (apply #'max keys))
+               (span (1+ (- hi lo))))
+          (when (and (or (= span (length arms))
+                         (nelisp-aot-compiler--x86-sparse-table-profitable-p
+                          (length arms) span))
                      (nelisp-aot-compiler--x86-imm32-p (- hi lo)))
             (list ref lo hi (nreverse arms) cursor)))))))
 
@@ -22443,11 +22457,14 @@ scratch; arm code starts after the jump and keeps its ordinary contract."
       (let* ((ref (nth 0 plan)) (lo (nth 1 plan)) (hi (nth 2 plan))
              (arms (nth 3 plan)) (default (nth 4 plan))
              (id (nelisp-aot-compiler--ir-get node :id))
-             (table (intern (format "%s-table" id)))
-             (fallback (intern (format "%s-default" id)))
-             (end (intern (format "%s-end" id))) labels)
+             ;; New sparse labels are private identities even if a source
+             ;; function has the same printed name.  Dense labels stay exact.
+             (label (if (= (length arms) (1+ (- hi lo))) #'intern #'make-symbol))
+             (table (funcall label (format "%s-table" id)))
+             (fallback (funcall label (format "%s-default" id)))
+             (end (funcall label (format "%s-end" id))) labels)
         (dolist (arm arms)
-          (push (cons (car arm) (intern (format "%s-case-%d" id (car arm)))) labels))
+          (push (cons (car arm) (funcall label (format "%s-case-%d" id (car arm)))) labels))
         (nelisp-aot-compiler--emit-value ref buf)
         ;; A modulo-2^64 subtraction plus unsigned bound rejects every
         ;; out-of-range signed value, including the two int64 extrema.
@@ -22470,10 +22487,11 @@ scratch; arm code starts after the jump and keeps its ordinary contract."
         (dotimes (i (1+ (- hi lo)))
           (let ((slot (nelisp-asm-x86_64-buffer-pos buf)))
             (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 0 0 0 0))
-            (nelisp-asm-x86_64-emit-fixup buf slot (cdr (assq (+ lo i) labels)))))
+            (nelisp-asm-x86_64-emit-fixup
+             buf slot (or (cdr (assq (+ lo i) labels)) fallback))))
         (run-hook-with-args 'nelisp-aot-compiler--x86-inline-data-hook
                             buf (cdr (assq table (nelisp-asm-x86_64-buffer-labels buf)))
-                            (* 4 (length arms)))
+                            (* 4 (1+ (- hi lo))))
         (dolist (arm arms)
           (nelisp-asm-x86_64-define-label buf (cdr (assq (car arm) labels)))
           (nelisp-aot-compiler--emit-value (cdr arm) buf)
