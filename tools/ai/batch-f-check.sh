@@ -21,7 +21,17 @@
 #   syntax-rt         batch E's syntax-rt semantics and char-table fixtures
 #   bridge-test       the buffer-bridge lane's simulated-library test and its
 #                     interpreted save-current-buffer extension
+#   fixture NAME LOC  test/fixtures/NAME.el: GNU still prints the pin
+#                     (NAME.LOC.gnu-31.1.expected, else NAME.gnu-31.1.expected)
+#                     and both linkages print it byte for byte, empty stderr
+#                     (batch-f-doc-closure, batch-f-skip-load, ...)
 #   all-fixtures      every fixture check above, in one run
+#   vm-memory         2.5M bytecode funcalls stay under 1 GiB; E's build does not
+#   vm-stress         a collection at every VM poll, conservative scan off: the
+#                     GNU bytecode corpus passes; E's build fails the check
+#   vm-loop           the codegen lane's 18.3M funcall workload and a 100000-iteration
+#                     bytecode with-current-buffer loop complete under the 8 GiB cap;
+#                     E's build exits 88 on both
 #   codegen-ert       codegen's ERT suites on host Emacs, on the merged tree
 #   codegen-align     linked function entries and hot loop targets of the
 #                     dynamic build are 16-byte aligned
@@ -163,6 +173,22 @@ for line in open(report, encoding='utf-8'):
 for row in missing:
     print('NO CAUSE:', row)
 sys.exit(1 if missing else 0)
+PY
+            ;;
+    timing-vm) f=target/integ/timing-F/report.txt
+            python3 - "$f" <<'PY' || fail "bytecode funcall or while loop above 1.03 (or missing) in $f"
+import re, sys
+want = {'bc-funcall.el': None, 'bc-while.el': None}
+probe = None
+for line in open(sys.argv[1], encoding='utf-8'):
+    if line.startswith('== '):
+        probe = line[3:].strip(); continue
+    m = re.match(r'\s*(S#-WORK .*?): ratio median ([0-9.]+) ', line)
+    if m and probe in want and want[probe] is None:
+        want[probe] = float(m.group(2))
+for name, ratio in want.items():
+    print(name, ratio)
+sys.exit(0 if all(r is not None and r <= 1.03 for r in want.values()) else 1)
 PY
             ;;
     *) fail "unknown log kind $kind" ;;
@@ -324,8 +350,82 @@ EOF
     for item in buffer error shadow variables load printer syntax; do
       ( "$0" gnu $item ) || exit 1
     done
-    for k in casefold e-fixtures closures syntax-rt bridge-test; do ( "$0" $k ) || exit 1; done
+    for k in casefold e-fixtures closures syntax-rt; do ( "$0" $k ) || exit 1; done
+    for f in batch-f-doc-closure batch-f-skip-load; do ( "$0" fixture $f C.UTF-8 ) || exit 1; done
+    ( "$0" bridge-test ) || exit 1
     say "PASS all fixtures" ;;
+  fixture) check_fixture "${2:?fixture name}" "${3:-C.UTF-8}" ;;
+  vm-memory)
+    t=test/standalone-vm-gc-poll-memory-check
+    [ -f $t.el ] && [ -f $t.expected ] || fail "missing $t"
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      [ -x "$bin" ] || fail "missing $tag binary"
+      capped timeout 600 "$bin" --load $t.el > "$OUT/vm-memory.$tag.out" 2> "$OUT/vm-memory.$tag.err"; rc=$?
+      if [ $rc != 0 ] || [ -s "$OUT/vm-memory.$tag.err" ] || ! cmp -s $t.expected "$OUT/vm-memory.$tag.out"; then
+        fail "$t on $tag: rc=$rc $(head -c 160 "$OUT/vm-memory.$tag.out" | tr '\n' ' ') $(head -c 100 "$OUT/vm-memory.$tag.err" | tr '\n' ' ')"
+      fi
+    done
+    # Negative control: batch E's build (no poll in the VM) must not pass.
+    base=$ROOT/target/integ/base/nelisp-dyn
+    [ -x "$base" ] || fail "negative control needs batch E's build at $base"
+    capped timeout 600 "$base" --load $t.el > "$OUT/vm-memory.base.out" 2> "$OUT/vm-memory.base.err"; rc=$?
+    if [ $rc = 0 ] && cmp -s $t.expected "$OUT/vm-memory.base.out"; then fail "negative control: batch E's build passes $t"; fi
+    say "PASS vm-memory (both linkages; batch E's build: rc=$rc, $(head -c 80 "$OUT/vm-memory.base.out" | tr '\n' ' '))" ;;
+  vm-stress)
+    # A full collection at every poll takes about five minutes a linkage: the two run side by side.
+    t=test/vm-gc-poll-stress
+    [ -f $t.el ] && [ -f $t.expected ] || fail "missing $t"
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      [ -x "$bin" ] || fail "missing $tag binary"
+      ( capped timeout 580 "$bin" --load $t.el > "$OUT/vm-stress.$tag.out" 2> "$OUT/vm-stress.$tag.err"; echo $? > "$OUT/vm-stress.$tag.rc" ) &
+    done
+    wait
+    for tag in dyn static; do
+      rc=$(cat "$OUT/vm-stress.$tag.rc" 2>/dev/null)
+      if [ "$rc" != 0 ] || [ -s "$OUT/vm-stress.$tag.err" ] || ! cmp -s $t.expected "$OUT/vm-stress.$tag.out"; then
+        fail "$t on $tag: rc=$rc $(head -c 200 "$OUT/vm-stress.$tag.out" | tr '\n' ' ') $(head -c 100 "$OUT/vm-stress.$tag.err" | tr '\n' ' ')"
+      fi
+    done
+    # Negative control: batch E's build has no hook and no poll, so no collection runs and the check fails.
+    base=$ROOT/target/integ/base/nelisp-dyn
+    [ -x "$base" ] || fail "negative control needs batch E's build at $base"
+    capped timeout 580 "$base" --load $t.el > "$OUT/vm-stress.base.out" 2> "$OUT/vm-stress.base.err"; rc=$?
+    if [ $rc = 0 ] && cmp -s $t.expected "$OUT/vm-stress.base.out"; then fail "negative control: batch E's build passes $t"; fi
+    say "PASS vm-stress (both linkages; batch E's build: rc=$rc, $(tail -n 1 "$OUT/vm-stress.base.out" | head -c 90))" ;;
+  vm-loop)
+    # The two end-to-end loops, each run on both linkages side by side; batch E's build exits 88.
+    for name in batch-f-vm-funcall-18m batch-f-vm-buffer-loop; do
+      fx=test/fixtures/$name
+      [ -f $fx.el ] && [ -f $fx.gnu-31.1.expected ] || fail "missing $fx"
+      run_gnu $fx.el C.UTF-8 "$OUT/$name.gnu.out" || fail "GNU on $name: $?"
+      cmp -s $fx.gnu-31.1.expected "$OUT/$name.gnu.out" || fail "GNU no longer prints the pin of $name"
+    done
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      [ -x "$bin" ] || fail "missing $tag binary"
+      rm -f "$OUT/vm-loop.$tag.rc"
+      ( for name in batch-f-vm-funcall-18m batch-f-vm-buffer-loop; do
+          run_nelisp "$bin" test/fixtures/$name.el C.UTF-8 "$OUT/$name.$tag.out" "$OUT/$name.$tag.err"
+          echo "$name $? " >> "$OUT/vm-loop.$tag.rc"
+        done ) &
+    done
+    wait
+    for tag in dyn static; do
+      for name in batch-f-vm-funcall-18m batch-f-vm-buffer-loop; do
+        grep -q "^$name 0 " "$OUT/vm-loop.$tag.rc" 2>/dev/null &&
+          cmp -s test/fixtures/$name.gnu-31.1.expected "$OUT/$name.$tag.out" ||
+          fail "$name on $tag: $(grep "^$name " "$OUT/vm-loop.$tag.rc" 2>/dev/null) $(head -c 100 "$OUT/$name.$tag.err" | tr '\n' ' ')"
+      done
+    done
+    base=$ROOT/target/integ/base/nelisp-dyn
+    [ -x "$base" ] || fail "negative control needs batch E's build at $base"
+    for name in batch-f-vm-funcall-18m batch-f-vm-buffer-loop; do
+      run_nelisp "$base" test/fixtures/$name.el C.UTF-8 "$OUT/$name.base.out" "$OUT/$name.base.err"; rc=$?
+      [ $rc = 88 ] || fail "negative control: batch E's build exited $rc on $name, want 88 (the 8 GiB cap)"
+    done
+    say "PASS vm-loop (both linkages complete both loops; batch E's build exits 88 on both)" ;;
   codegen-ert)
     for t in nelisp-aot-compiler-test nelisp-aot-s5-lowering-test nelisp-codegen-alignment-test \
              nelisp-artifact-native-exec-test nelisp-artifact-test nelisp-static-linker-test; do

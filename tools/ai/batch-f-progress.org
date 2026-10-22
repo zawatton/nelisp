@@ -12,10 +12,11 @@
 # GNU 31.1 (/usr/local/bin/emacs) pins every fixture.  Paired timing runs
 # against batch E's own build (tree of 1aa530d09) on CPU 11.
 #
-# 2026-10-22: 38 defined criteria; S5 is the library owner's census and is
-# pending by design.  The bridge lane's hash is pinned in batch-f-check.sh
-# (BRIDGE_REV) when the coordinator hands it over; until then S1.4 and
-# S2.10 fail.
+# 2026-10-22: 44 defined criteria in six stages (the first draft had 38: S2.12,
+# S2.13 and S5 were added when the coordinator asked for the :documentation fix,
+# the eager-load skip fix and the bytecode VM GC poll; the census is now S6 and
+# is pending by design).  The bridge lane's tip, 6ccf1362a, is pinned in
+# batch-f-check.sh (BRIDGE_REV).
 
 * S1 Merge
 ** S1.1 eval/gnu-semantics-20261022 (a00f45cdf) is merged
@@ -70,7 +71,15 @@ cmd: bash tools/ai/batch-f-check.sh closures && bash tools/ai/batch-f-check.sh s
 #+NOTE: Two tests, each with a GNU 31.1 oracle, run on both linkages: the bridge lane's test/standalone-buffer-function-cell-check.el (its interpreted side uses the library's own save-current-buffer macro) and this batch's test/standalone-save-current-buffer-cell-check.el, the EQUIVALENCE GUARD for the interpreter: it keeps the runtime's save-current-buffer special form (gnu-semantics' Lisp implementation behind the special object, GNU editfns.c:843-853), fsets only set-buffer and current-buffer to recording closures, and requires the interpreter's hook sequence to equal the bytecode path's for the six GNU-compiled cases, with a non-vacuity check (the interpreter must have recorded calls).  Negative controls on the merged partial build: without the bridge both tests fail (the bytecode path records nothing); a special form that bypasses the cells fails all six cases of the second test; batch E's build fails both.  Coordinator, 2026-10-22: option A, the interpreter and the bytecode path keep separate implementations because the test proves identical behaviour at no speed cost; routing the interpreter through the bridge's cell wrappers would cost +18% (211 to 247 us per call) and through the shared cleanup factory +45% (308 us).
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh bridge-test
-** S2.12 End to end: every fixture above passes on both linkages in one run
+** S2.12 A lambda's leading (:documentation FORM) becomes the closure's docstring slot and is never macroexpanded away: OClosure type, docstring and make-interpreted-closure, file-loaded under eager expansion and through eval, GNU golden
+#+NOTE: Cause 1 of the fileio-2 failure.  The prelude defined :documentation as a no-op macro, so eager macroexpansion of a loaded file (GNU lread.c readevalloop_eager_expand_eval) erased the form from every lambda body before `function' could keep it, and every OClosure lost its type slot (advice-add failed with args-out-of-range).  GNU consumes the form in Ffunction (eval.c:594) and nothing macroexpands it.  This runtime keeps the form in the closure body, where the native slot view reads it (nl_closure_docmark_p), so the fix makes :documentation a FUNCTION: macroexpand and macroexpand-all, the runtime's and any library's, leave it alone.  Coordinator, 2026-10-22: GNU's way (Ffunction consuming the form) would need a native closure representation change; the function shim was the agreed fallback.  Per-call cost, measured on CPU 11: a closure call with a leading (:documentation 'x) takes 9.7 us under the old macro (E), 8.2 us as a function, 7.1 us without the form.  The fixture fails on e62a2be5a (aref of the file-loaded closure: args-out-of-range) and passes on E's build except for macroexpand-all, which E also got wrong.  oclosure-define and advice-add themselves need cl-preloaded, which only the library image has, so the OClosure type is tested through oclosure.el's own predicate over the slot (bfd-oclosure-type, nadvice.el's advice--p).
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh fixture batch-f-doc-closure C.UTF-8
+** S2.13 load evaluates every form of a file under the eager-load skip marker and after it, GNU golden (a defun or defmacro with declare, then the rest of the file, twice)
+#+NOTE: Cause 3 of the fileio-2 failure, found by the library owner.  With (skip) as the first element of macroexp--pending-eager-loads, internal-macroexpand-for-load answers the form unexpanded, as GNU's does, and the eager driver then evaluated a top-level macro call whose expansion the evaluator caches by the address of the driver's rooted scratch slot, the same address for every form: all later forms hit the stale row and `load' silently re-ran the first form's expansion (and every later load in the process did the same).  nl_load_eager_eval_w now evicts that row before it evaluates (nl_mxcache_evict, as bf_load_eval_loop already did for RESULT).  Switching the macroexpansion cache off with (nelisp--debug-switch 13) made the bug disappear, which located it.  The fixture fails on e62a2be5a and passes on E's build.
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh fixture batch-f-skip-load C.UTF-8
+** S2.14 End to end: every fixture above passes on both linkages in one run
 #+TIMEOUT: 600
 cmd: bash tools/ai/batch-f-check.sh all-fixtures
 
@@ -104,6 +113,7 @@ cmd: bash tools/ai/batch-f-check.sh log sweep
 #+TIMEOUT: 300
 cmd: bash tools/ai/batch-f-check.sh casetab
 ** S4.7 fileio-2 passes on both linkages with notes-65's char-table-flip library bundle
+#+NOTE: KNOWN RED with the bundle E used (ccore-resume-20261002).  gnu-semantics' GNU-faithful eager macroexpansion exposed three incompatibilities.  Runtime side, fixed in this batch: S2.12 (the :documentation form) and S2.13 (load under the skip marker).  Library side, with the library owner (cause 2 fixed in the library at b3322a5e, with a rebuilt bundle; BATCH_F_LIBRARY names the library tree): nemacs-bootstrap.el redefines the cl-defstruct accessors of nelisp-ec-buffer with alist-based standalone fallbacks without clearing their compiler-macro property, so GNU-faithful eager expansion (which applies compiler macros, macroexp.el) inlines the record accessors (aref buf 8) into nelisp-ec--check-live, which then runs on an alist buffer (wrong-type-argument arrayp).  On the partial F binary with the :documentation function the bundle load reaches that failure; the E build and the gnu-semantics binary alone show the same pair.  The census decides the rebuilt bundle.
 cmd: bash tools/ai/batch-f-check.sh log fileio
 ** S4.8 ns-inventory: no unpinned collision beyond the parents' 1290
 #+TIMEOUT: 300
@@ -115,10 +125,33 @@ cmd: bash tools/ai/batch-f-check.sh log timing
 ** S4.11 End to end: every pipeline result is newer than the binaries and passes
 cmd: bash tools/ai/batch-f-check.sh pipeline
 
-* S5 Library census (the library owner's, on the binary this batch hands over)
-** S5.1 notes-65's ccore census on a library image built on batch F
+* S5 Bytecode VM garbage-collection poll (GNU bytecode.c maybe_gc)
+# Coordinator, 2026-10-22: the bytecode VM never polled for GC.  nl_gc_midform_collect ran only at the
+# interpreted `while' back edge and in the native-bytecode poll; wf_bytecode_execute_frame and
+# wf_bytecode_call never called it.  GNU polls at Bcall entry (bytecode.c:797) and at every 256th
+# backward branch (:861-866, quitcounter).  Ported (not adapted): nl_gc_vm_poll in
+# scripts/nelisp-standalone-build.el calls the existing gated collector at those two points; a local
+# counter per frame is the quitcounter.  `(nelisp--debug-switch 32)' collects at every poll, 5 restores.
+** S5.1 Bounded memory: 2.5 million GNU-compiled bytecode funcalls (the Bcall poll) and 30 million iterations of a call-free consing loop (the backward-branch poll) each finish under a 1 GiB peak resident set on both linkages, and batch E's build (1aa530d09) fails the same test
+#+NOTE: test/standalone-vm-gc-poll-memory-check.el reads its own VmHWM after each workload.  Measured: batch E's build allocates about 0.67 KB per funcall (peak 1942 MB at 2.5 million calls; 433 MB at 300k, 837 MB at 900k) and about 65 B per loop iteration (937 MB at 10 million, 2210 to 2334 MB at 30 million); with the polls both peak at 631 MB, the idle process (about 290 MB) plus one collection window.  The loop is covered by eval/core's growth trigger (reserved chunk bytes), so gc-port's typed-block debt backstop is not needed here.  The check script runs E's build as the negative control.  The shape of the checks follows gc-port's tools/ai/gc-port-vm-poll.py leak and loop; the ceiling is 1 GiB and not their 400 MiB because eval/core's idle process is larger.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh vm-memory
+** S5.2 Every poll is GC-safe: with a full collection forced at the polls of the GNU bytecode corpus and of an allocating loop, and the conservative stack scan off, every answer still matches GNU (145/145) on both linkages, and the collections really ran
+#+NOTE: test/vm-gc-poll-stress.el.  The hook is (nelisp--debug-switch 32 N): force the next N VM polls, all of them without N; (nelisp--debug-switch 28) turns the conservative native-stack scan off so that only the precise roots keep a value alive across a poll.  The criterion sets N=100 before each of the 145 cases (a recursive fib polls 1972 times and would take 144 of the 181 seconds a linkage needs for every poll of every case) and forces every poll of a 5000-iteration allocating loop; it requires at least 200 collections (nelisp--gc-diag element 7), so a build without the hook cannot pass, and the check script confirms that batch E's build fails it.  The pipeline's vm-stress-full unit runs the same file with VM_POLL_BUDGET=all, a collection at EVERY poll of every case (2459 collections), and its result is in the report.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh vm-stress
+** S5.3 Paired timing against 1aa530d09 on CPU 11 (median of 7 alternating rounds, a full GC inside each window): the bytecode funcall loop and the bytecode while loop are at or below 1.03
+#+NOTE: Rows bc-funcall.el and bc-while.el of the S4.10 report (the codegen lane's frozen GNU 31.1 byte code).  TCO is on by default in codegen's build (E's was built without it), so these ratios include it.
+cmd: bash tools/ai/batch-f-check.sh log timing-vm
+** S5.4 End to end: the codegen lane's 18.3 million funcall workload and a GNU-compiled bytecode with-current-buffer loop of 100000 iterations (exit 88 at the 8 GiB cap on 1aa530d09 for both) complete under the cap on both linkages
+#+NOTE: Separate finding, not fixed in F: the bare runtime's set-buffer allocates about 17 KB per call and a bytecode with-current-buffer iteration about 92 KB, where GNU allocates nothing (buffer.c set_buffer_internal switches a pointer).  Measured 2026-10-22 on E's build: 20000 iterations peak at 1.9 GB, 40000 at 3.7 GB; an explicit garbage-collect every 1000 iterations keeps it at 348 MB.  The VM poll makes the loop finish; the allocation itself belongs to the buffer layer's port.
+#+TIMEOUT: 600
+cmd: bash tools/ai/batch-f-check.sh vm-loop
+
+* S6 Library census (the library owner's, on the binary this batch hands over)
+** S6.1 notes-65's ccore census on a library image built on batch F
 pending
-** S5.2 The library's set-buffer and current-buffer function cells own the VM's buffer opcodes in the census image
+** S6.2 The library's set-buffer and current-buffer function cells own the VM's buffer opcodes in the census image
 pending
-** S5.3 End to end: the batch F library image passes notes-65's census gates
+** S6.3 End to end: the batch F library image passes notes-65's census gates
 pending
