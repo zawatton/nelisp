@@ -5193,18 +5193,16 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; The unbound marker stays a view: a cell holding it is void, and every
     ;; test for it is a name compare.  A view derived from an object (tag 4,
     ;; the object's address as its identity, the name string's bytes) is its
-    ;; object.  Flag 268436352 = 1 turns the whole thing off (a debug switch
-    ;; for A/B runs of one binary).
+    ;; object.
     (defun nl_symview_object (view)
-      (if (/= (heap-read-u64 268436352 0) 0) 0
-        (let* ((mp (nl_symcells_mirror)))
-          (if (= mp 0) 0
-            (let* ((e (nl_symcell_entry mp view)))
-              (if (<= e 1) 0
-                (if (= (heap-read-u64 (- e 6) 8) 3) 0
-                  (let* ((u (heap-read-u64 268436336 0)))
-                    (if (= u 0) e
-                      (if (= (heap-read-u64 view 16) (heap-read-u64 u 16)) 0 e))))))))))
+      (let* ((mp (nl_symcells_mirror)))
+        (if (= mp 0) 0
+          (let* ((e (nl_symcell_entry mp view)))
+            (if (<= e 1) 0
+              (if (= (heap-read-u64 (- e 6) 8) 3) 0
+                (let* ((u (heap-read-u64 268436336 0)))
+                  (if (= u 0) e
+                    (if (= (heap-read-u64 view 16) (heap-read-u64 u 16)) 0 e)))))))))
     ;; VIEW's object WORD, else VIEW itself.
     (defun nl_symview_canon (view)
       (let* ((o (nl_symview_object view)))
@@ -11986,7 +11984,6 @@ leave symbols unresolved at link time."
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
           (if (= op 45) (+ (* (nl_symobj_state (wf_arg_word args 1)) 4) 1)
           (if (= op 46) (nl_word_int_word (nl_word_class (wf_arg_word args 1)))
-          (if (= op 47) (seq (ptr-write-u64 268436352 0 (if (= (wf_argval args 1) 0) 0 1)) 3)
           (if (= op 44) (nl_symobj_word env (wf_arg_word args 1))
           (if (= op 48)
               (let ((pair (wf_arg_word args 1)))
@@ -12000,7 +11997,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0)))))))))))
+             0))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
