@@ -16860,6 +16860,28 @@ register convention without changing the operation's meaning."
       (nelisp-asm-x86_64-mov-imm32 buf reg v)
     (nelisp-asm-x86_64-mov-imm64 buf reg v)))
 
+(defun nelisp-aot-compiler--emit-power2-div-x86 (op a b buf)
+  "Emit truncating signed A / constant power-of-two B, or return nil.
+GNU data.c Fquo uses C signed division for fixnums.  The sign-derived
+bias preserves its truncation toward zero for negative dividends, as
+GCC -O2 lowers the same expression; a bare SAR would round down."
+  (let ((d (and (eq op '/) (nelisp-aot-compiler--imm-int-p b)
+                (nelisp-aot-compiler--ir-get b :value))))
+    (when (and d (>= d 2) (<= d (ash 1 62))
+               (= (logand d (1- d)) 0))
+      (let ((k 0) (n d))
+        (while (> n 1) (setq n (ash n -1) k (1+ k)))
+        ;; Evaluate A once before using scratch registers.  B has no effects.
+        (nelisp-aot-compiler--emit-value a buf)
+        (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+        (nelisp-asm-x86_64-sar-reg-imm8 buf 'r10 63)
+        (nelisp-aot-compiler--x86-op
+         buf t (unibyte-string #xC1) 5 '(:reg r10)
+         (unibyte-string (- 64 k)))
+        (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
+        (nelisp-asm-x86_64-sar-reg-imm8 buf 'rax k))
+      t)))
+
 (defun nelisp-aot-compiler--emit-arith (node buf)
   "Emit runtime arithmetic, with A in rax/x0 and B in r10/x9.
 Operand sequencing is shared with shifts and comparisons; observable effects
@@ -16892,8 +16914,9 @@ run left to right.  The saved operand uses the stack across nested calls."
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-arith-op op)))))
-      (if (and (memq op '(+ - * logand logior logxor))
-               (nelisp-aot-compiler--emit-binop-x86 op a b buf))
+      (if (or (nelisp-aot-compiler--emit-power2-div-x86 op a b buf)
+              (and (memq op '(+ - * logand logior logxor))
+                   (nelisp-aot-compiler--emit-binop-x86 op a b buf)))
           (when (memq op '(+ - *))
             (nelisp-aot-compiler--emit-checked-arith-guard-x86_64 buf))
       (nelisp-aot-compiler--emit-binary-operands a b buf)

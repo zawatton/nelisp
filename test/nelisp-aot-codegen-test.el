@@ -416,6 +416,30 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
              (exit (logand (q ,n) 255))))
           (logand expected 255))))))
 
+(ert-deftest nelisp-aot-codegen/signed-power2-division ()
+  "Signed quotients match GNU, including boundaries and generic fallbacks."
+  (let ((xs (list (- (expt 2 63)) (1+ (- (expt 2 63)))
+                  -1025 -1024 -1023 -9 -8 -7 -1 0 1 7 8 9
+                  1023 1024 1025 (1- (expt 2 63))))
+        (ds (list 2 8 1024 (expt 2 62) 3 -8 1))
+        (defs nil) (checks nil))
+    (dolist (d ds)
+      (let ((name (intern (format "quotient-%s" d))))
+        (push `(defun ,name (x) (/ x ,d)) defs)
+        (dolist (x xs)
+          (push `(seq (ptr-write-u64 p 0 ,x)
+                      (if (= (,name (ptr-read-u64 p 0)) ,(/ x d)) 0
+                        (setq errors (+ errors 1)))) checks))))
+    (should
+     (equal
+      (nelisp-aot-codegen-test--run
+       `(seq ,@(nreverse defs)
+             (defun main ()
+               (let ((p (syscall-direct 9 0 4096 3 34 -1 0)) (errors 0))
+                 ,@(nreverse checks) errors))
+             (exit (main))))
+      0))))
+
 (provide 'nelisp-aot-codegen-test)
 
 ;;; nelisp-aot-codegen-test.el ends here
