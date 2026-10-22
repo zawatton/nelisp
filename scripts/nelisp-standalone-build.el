@@ -7794,8 +7794,16 @@ REPL-facing module it feeds."
               (if (or (= key_live 1) (= value_live 1)) 1 0)
             (if (and (= key_live 1) (= value_live 1)) 1 0)))))
     (defun nl_gc_weak_mark_word (word)
+      ;; A class-110 WORD can be a symbol object (kind 4 or 16), whose name,
+      ;; value, function and plist are its children.  `nl_gc_mark_vectorlike'
+      ;; marks only the block (or the typed cell) and has no symbol arm, so a
+      ;; symbol reached first through a table's metadata -- the test symbol
+      ;; `eq' of a weak table is one -- kept its mark with its slots untraced,
+      ;; and the later `nl_gc_mark_symbol' of the same cell, finding it
+      ;; marked, skipped them: the name box was swept and reused (fix 20).
+      ;; `nl_gc_mark_slot' takes the symbol arm for kinds 4 and 16.
       (if (= (logand word 7) 6)
-          (let ((live (nl_gc_weak_owner_live (- word 6)))) (seq (extern-call nl_gc_mark_vectorlike (- word 6)) (if (= live 1) 0 1)))
+          (let ((live (nl_gc_weak_owner_live (- word 6)))) (seq (extern-call nl_gc_mark_slot word) (if (= live 1) 0 1)))
         (if (= (logand word 1) 1) 0
         (let ((changed (extern-call nl_gc_mark_block word)))
           (seq (extern-call nl_gc_mark_slot word) changed)))))
