@@ -284,7 +284,7 @@ Layout (ported, 48 bytes):
 | +16 | val | PLAINVAL value or the unbound marker; VARALIAS target symbol; LOCALIZED blv; FORWARDED value |
 | +24 | function | function cell |
 | +32 | plist | property list |
-| +40 | next | raw, 0: the initial obarray is the native intern table (D6) |
+| +40 | next | raw: 0 for an object that is not interned; for an interned object this lane's meta word (stage 3: the name's FNV-1a hash in bits 32-63, its static symbol id in bits 20-31, its intern table slot in bits 0-19); the initial obarray is the native intern table (D6) |
 
 For kinds 4 and 16 the header bits above 7 are flags, not a length; the
 collector's walkers use the fixed layout.  =val=, =function= and =plist=
@@ -322,6 +322,10 @@ Stages.
    =sexp-name-eq= emitters (on this branch, coordinator routing).
 3. Interned symbols' WORDs become direct once the reader and the intern
    table hand them out; =eq= is then a pointer compare everywhere.
+   Implemented in five steps (stages 3.0 to 3.4, below).  An interned
+   symbol keeps its place in the native intern table (D6): the table's
+   canonical name buffer is what a legacy view points at, and the object
+   is reached from it, or from the object's WORD, without hashing.
 
 * LOCALIZED interop with buffer-native
 
@@ -428,11 +432,62 @@ times the globals probe on CPU 13 and commits with the numbers.
   (=nl_pa_uninterned_alias_pairs= over the arena's =nl_symbol_block_first=,
   =nl_symbol_block_next= and =nl_symbol_block_cells=).  =make-symbol=
   costs 48 B per symbol, GNU's sizeof (struct Lisp_Symbol).
+- Stage 3 (D9 stage 3, direct interned WORDs; coordinator-approved
+  2026-10-22, steps 3.0 to 3.4, each verified on its own build).
+  - 3.0 An interned symbol's object is reached from a legacy view without
+    the hash: the view's name buffer is the intern table's canonical
+    buffer, whose header holds the symbol's index in the mirror's cells
+    vector (=nl_symcell_entry=).  An object made for a name carries its
+    meta word at +40 (hash, static id, intern slot) so that a view can be
+    derived from the object (=nl_sym_view_into=) with the canonical buffer,
+    and the builtin dispatch reads the static id from the object.
+  - 3.1 The object is made when the name is interned (GNU's
+    intern_c_string_1, lread.c, makes the Lisp_Symbol with its name): the
+    reader's leaf symbols, =intern= and =intern-soft= misses call
+    =nl_symobj_for_view=, which allocates the cell from the symbol blocks,
+    fills the name cell with the canonical name string (the box the side
+    table keeps, so every =symbol-name= answer is =eq=), the void value and
+    function (the shared unbound view), the empty plist and the meta word,
+    and registers it: the chain pair in the mirror's bucket
+    (=nl_symobj_link=) and the cell in the cells vector
+    (=nl_symobj_cell_store=).  Everything it allocates in the arena is
+    linked into the mirror, so it bumps the mutation epoch (=wf_dirty=):
+    the top-level boundary reclaim would otherwise rewind the arena over
+    it.  It makes no object in a parallel section (the mirror is read-only
+    there); such a symbol keeps its view.
+  - 3.2 Every store of a view whose symbol has an object stores the
+    object's WORD (=nl_val_clone_into=, =nl_word_canon=, =nl_symview_canon=):
+    cons cells, vector and record slots, variable cells, plists, closures,
+    the reader's forms and argument lists.  A view of an object is
+    canonical (the intern table's buffer) so it hops back to the same
+    object.  The cons accessors pass an object's WORD through
+    (=nl_cons_car_ptr=, =nl_cons_cdr_ptr=), so a symbol is not copied into
+    a 32-byte view for every consumer; the consumers that read a symbol's
+    name read it through =heap-sexp-data=, =heap-sexp-length= and the
+    =str-*= emitters, which follow a symbol object's name cell.  Identity:
+    two objects are =eq= when their WORDs are; an object and a view are
+    =eq= when the view's entry is that object (=nl_symbol_word_eq=); hash
+    functions of an object answer the meta word's hash
+    (=nelisp_fnv1a=).  The collector needs no new root: an interned symbol
+    stays reachable through the mirror, which gc-port's =nl_symcells_root=
+    marks, dumps and relocates.
+  - 3.3 The remaining comparison and dispatch sites take the WORD
+    directly (eq of two objects, the frame key compare, the special-form
+    prefilter).
+  - 3.4 The reader and =intern= / =intern-soft= answer the object WORD
+    (=nl_symobj_of=), so a symbol read or interned is never a view; the
+    reader's quote-family heads are the interned symbols (Qquote,
+    Qfunction, Qbackquote, Qcomma, Qcomma_at; the last three become static
+    names so they exist from boot).  A new interned name is registered
+    without the legacy mirror writers' scratch boxes and repeated hashing.
+  - Left as views: the heads =closure= and =builtin= that native code
+    builds (the closure of a =lambda=, the =(builtin NAME)= definitions),
+    the shared unbound marker and its copies, and views made for
+    non-canonical names.  The cold image counts them (census
+    =tools/ai/word-heap-census.py=, gc-port b7ee9ef1b): legacy symbol
+    views fell from 120,446 (stage 3.0) to 6,030 (stage 3.2).
+  - LOCALIZED stays on its existing path (the interop plan above).
 - Not reached in this lane:
-  - D9 stage 3, direct interned WORDs.  An interned symbol WORD is still
-    a 32-byte view (tag 4) copied per occurrence, reaching its object
-    through the name's cell index (=nl_symcell_entry=); an interned
-    object's =name= cell is filled lazily, on the first =symbol-name=.
   - S2.1 own cost at GNU's level: an interned access still goes view ->
     name buffer -> header index -> cell, plus the builtin's
     classification, against GNU's single load.
