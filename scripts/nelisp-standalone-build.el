@@ -52335,19 +52335,16 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; not a builtin to call on evaluated arguments.
       (defun nl_eic_builtin_name (fn)
         (if (= (logand fn 7) 6) 0
-          ;; The usual cell is a direct cons whose car is the symbol object `builtin':
-          ;; read in line, -1 for any other shape (a legacy view, a special-form
-          ;; subr), which the general test below decides.
+          ;; The usual cell is a direct cons whose car is the symbol `builtin' (a legacy
+          ;; view or the object): read in line, -1 for any other shape (a legacy cons
+          ;; view, a special-form subr), which the general test below decides.
           (let* ((r (if (= (logand fn 7) 2)
                         (let* ((c (heap-read-u64 (- fn 2) 0)))
-                          (if (= (logand c 7) 6)
-                              (if (= (logand (heap-read-u64 (- c 6) 0) 63) 4)
-                                  (if (= (logand (sar (heap-read-u64 (- c 6) 40) 20) 4095) ,sid-builtin)
-                                      (let* ((tl (heap-read-u64 (- fn 2) 8)))
-                                        (if (= (logand tl 7) 2) (heap-read-u64 (- tl 2) 0) -1))
-                                    0)
-                                0)
-                            -1))
+                          (if (= (logand c 1) 1) 0
+                            (if (= (nl_sym_sid c) ,sid-builtin)
+                                (let* ((tl (heap-read-u64 (- fn 2) 8)))
+                                  (if (= (logand tl 7) 2) (heap-read-u64 (- tl 2) 0) -1))
+                              0)))
                       -1)))
             (if (/= r -1) r
               (if (= (m5_fx_word_cons_p fn 0) 0) 0
@@ -52551,7 +52548,21 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       (cond
        ((= (logand form 1) 1) form)
        ((= (sexp-tag form) 7)
-        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_word form) form env 0))
+        ;; eval_sub's body for a cons: the activation record, the macroexpansion
+        ;; cache, the form (a direct cons' car and cdr are read in line).
+        (let* ((direct (= (logand form 7) 2))
+               (car-ptr (if direct (heap-read-u64 (- form 2) 0) (extern-call nl_cons_car_word form)))
+               (cdr-ptr (if direct
+                            (let* ((d (heap-read-u64 (- form 2) 8)))
+                              (if (= (logand d 7) 2) d (extern-call nl_cons_cdr_ptr form)))
+                          (extern-call nl_cons_cdr_ptr form)))
+               (n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
+          (nl_n4_finish_w
+           (let* ((cached (extern-call nl_mxcache_lookup form)))
+             (if (= cached 0)
+                 (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
+               (nelisp_eval_call_w cached env 0)))
+           env 0 n4-frame)))
        ((= (nl_kw_is_keyword form) 1) form)
        ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
