@@ -7157,31 +7157,51 @@ REPL-facing module it feeds."
     ;; the former current chunk can become releasable.  Bump ctx+32 for each
     ;; fire.  MIDFORM uses recorded frames plus the conservative scan (mode 0),
     ;; never compaction.
+    (defun nl_gc_midform_collect_now ()
+      (let ((before (ptr-read-u64 (data-addr nl_gc_stats) 24)))
+        (seq
+         (nl_gc_collect_from_recorded_roots 0)
+         ;; Inhibit was cleared on return. Only a completed sweep has
+         ;; rebuilt the lists; failed index/OOM/park paths cannot use
+         ;; the single-bin empty-chunk shortcut.
+         (if (= (nl_os_empty_chunk_reclaim_p) 1)
+             (if (> (ptr-read-u64 (data-addr nl_gc_stats) 24) before)
+                 (nl_gc_reclaim_swept_chunks
+                  (ptr-read-u64 268436160 0)
+                  (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
+               (nl_gc_reclaim_empty_chunks
+                (ptr-read-u64 268436160 0)
+                (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0)))
+           0)
+         (nl_gc_growth_rearm)
+         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
+                        (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
     (defun nl_gc_midform_collect ()
       (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
           (if (if (< (ptr-read-u64 268436184 0)
                      (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
                   (if (= (nl_gc_debt_due) 0) 1 0) 0)
               0
-            (let ((before (ptr-read-u64 (data-addr nl_gc_stats) 24)))
-              (seq
-               (nl_gc_collect_from_recorded_roots 0)
-               ;; Inhibit was cleared on return. Only a completed sweep has
-               ;; rebuilt the lists; failed index/OOM/park paths cannot use
-               ;; the single-bin empty-chunk shortcut.
-               (if (= (nl_os_empty_chunk_reclaim_p) 1)
-                   (if (> (ptr-read-u64 (data-addr nl_gc_stats) 24) before)
-                       (nl_gc_reclaim_swept_chunks
-                        (ptr-read-u64 268436160 0)
-                        (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
-                     (nl_gc_reclaim_empty_chunks
-                      (ptr-read-u64 268436160 0)
-                      (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0)))
-                 0)
-               (nl_gc_growth_rearm)
-               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
-                              (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
+            (nl_gc_midform_collect_now))
         0))
+    ;; GNU bytecode.c `maybe_gc': the bytecode VM's safepoint, taken at Bcall
+    ;; entry (bytecode.c:797) and at every 256th backward branch (:861-866),
+    ;; with every live value on the VM stack.  It is the interpreter's gated
+    ;; mid-form collector.  `(nelisp--debug-switch 32)' sets ctx+8 to 2, which
+    ;; collects at EVERY VM poll (the interpreter's `while' edge sees "not
+    ;; armed" then); `(nelisp--debug-switch 5)' re-arms the normal mode.
+    ;; ctx+8 above 1 is a budget: MODE-1 polls remain to be forced, and the
+    ;; poll that spends the last one re-arms the normal mode itself.
+    ;; `(nelisp--debug-switch 32 N)' forces the next N polls; without N all of
+    ;; them (2^60).
+    (defun nl_gc_vm_poll ()
+      (let ((mode (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8)))
+        (if (= mode 1) (nl_gc_midform_collect)
+          (if (> mode 1)
+              (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8
+                                  (if (= mode 2) 1 (- mode 1)))
+                   (nl_gc_midform_collect_now))
+            0))))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
     ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
@@ -9501,7 +9521,19 @@ leave symbols unresolved at link time."
                                   (data-addr nl_gc_stats) 48
                                   (if (< value 0) 0 value))
                                  (nl_seq2 (nl_gc_debt_refresh_limit) 0)))
-                            0))))))))))))
+                            ;; 32 [N]: collect at the next N bytecode VM polls,
+                            ;; all of them without N (see `nl_gc_vm_poll'); 5
+                            ;; restores the normal mode at once.
+                            (if (= (wf_argval args 0) 32)
+                                (nl_seq2
+                                 (ptr-write-u64
+                                  (data-addr nl_gc_loop_ctx) 8
+                                  (if (= (bf_require_arg_present_p args 1) 1)
+                                      (let ((count (wf_argval args 1)))
+                                        (if (< count 1) 1 (+ count 1)))
+                                    1152921504606846976))
+                                 0)
+                              0)))))))))))))
     ;; Doc 215 builtin word ABI: bf_debug_switch_w returns the result WORD (0 = signal stashed); bf_debug_switch keeps the (rc, OUT) ABI.
     (defun bf_debug_switch_w (args _pad)
       (seq
@@ -16419,6 +16451,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (initial-slots (+ initial-maxargs initial-rest))
              (arg-cursor initial-args) (arg-index 0)
              (pc 0) (sp initial-slots) (done (if (= roots 0) 5 0)) (bindings 0)
+             (qc 1)
              (unwind-rc 0)
              (bad-op 255) (bad-offset 0) (i 0))
         (if (= roots 0)
@@ -16568,7 +16601,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                            (setq sp (+ sp 1)))
                     (if (= base 131)
                         (if (= (wf_bytecode_w_nilp (ptr-read-u64 top 0)) 1)
-                            (seq (setq sp (- sp 1)) (setq pc operand))
+                            (seq (setq sp (- sp 1))
+                                 (if (< operand pc)
+                                  (seq (setq qc (logand (+ qc 1) 255))
+                                       (if (= qc 0) (seq (setq qc 1) (nl_gc_vm_poll)) 0))
+                                0)
+                                 (setq pc operand))
                           (setq sp (- sp 1)))
                       (if (= base 135)
                           (seq (ptr-write-u64 resw 0 (ptr-read-u64 top 0))
@@ -16576,7 +16614,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (if (= base 136)
                             (setq sp (- sp 1))
                           (if (= base 130)
-                              (setq pc operand)
+                              (seq (if (< operand pc)
+                                  (seq (setq qc (logand (+ qc 1) 255))
+                                       (if (= qc 0) (seq (setq qc 1) (nl_gc_vm_poll)) 0))
+                                0)
+                                   (setq pc operand))
                     (cond
                      ;; Fixnum arithmetic and comparison on the words
                      ;; themselves: 83 sub1, 84 add1, 85 =, 86 >, 87 <,
@@ -16659,19 +16701,30 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      ((or (= base 132) (= base 134))
                       (if (= (wf_bytecode_w_nilp (ptr-read-u64 top 0)) 0)
                           (seq (if (= base 132) (setq sp (- sp 1)) 0)
+                               (if (< operand pc)
+                                  (seq (setq qc (logand (+ qc 1) 255))
+                                       (if (= qc 0) (seq (setq qc 1) (nl_gc_vm_poll)) 0))
+                                0)
                                (setq pc operand))
                         (setq sp (- sp 1))))
                      ((= base 133)
                       (if (= (wf_bytecode_w_nilp (ptr-read-u64 top 0)) 1)
-                          (setq pc operand)
+                          (seq (if (< operand pc)
+                                  (seq (setq qc (logand (+ qc 1) 255))
+                                       (if (= qc 0) (seq (setq qc 1) (nl_gc_vm_poll)) 0))
+                                0)
+                               (setq pc operand))
                         (setq sp (- sp 1))))
                      ((= base 32)
-                      (let* ((rc (wf_bytecode_call env mem sp operand bx)))
-                        (if (= rc 0)
-                            (setq sp (- sp operand))
-                          (if (= rc 2)
-                              (seq (setq bad-op raw) (setq done 2))
-                            (setq done 4)))))
+                      ;; GNU bytecode.c:797 maybe_gc at Bcall entry: the function
+                      ;; and its arguments are on the VM stack.
+                      (seq (nl_gc_vm_poll)
+                           (let* ((rc (wf_bytecode_call env mem sp operand bx)))
+                             (if (= rc 0)
+                                 (setq sp (- sp operand))
+                               (if (= rc 2)
+                                   (seq (setq bad-op raw) (setq done 2))
+                                 (setq done 4))))))
                      ((and (or (= base 83) (= base 84) (= base 92) (= base 95)
                                (and (>= base 85) (<= base 90)))
                            (= (wf_bytecode_small_arithmetic mem sp base) 0))
