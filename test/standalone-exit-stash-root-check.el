@@ -27,7 +27,10 @@
   (catch 'exit-stash (throw 'exit-stash value))
   nil)
 (defun exit-stash--throw-list (n)
-  (exit-stash--throw (make-list n 'exit-stash-payload))
+  ;; Each element is a boxed float: a symbol element is one word in the
+  ;; list (the symbol's own object), which would make the list too small to
+  ;; tell "held" from "released" by live bytes.
+  (exit-stash--throw (make-list n 1.5))
   nil)
 (defvar exit-stash--n 20000)
 (defvar exit-stash--base nil)

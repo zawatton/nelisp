@@ -4921,13 +4921,23 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (let* ((view (if (= oa 1) b a)) (obj (if (= oa 1) a b)))
               (if (= (logand view 7) 0)
                   (if (= (heap-read-u8 view 0) 4)
-                      (let* ((n (nl_word_length obj)) (i 0) (same 1)
-                             (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
-                        (if (/= n (heap-read-u64 view 24)) 0
-                          (seq (while (if (= same 1) (< i n) 0)
-                                 (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
-                                      (setq i (+ i 1))))
-                               same)))
+                      ;; The symbol of a view is the one its canonical buffer
+                      ;; (or the object address it was derived from) names:
+                      ;; the same symbol as OBJ when that is OBJ's cell.  A
+                      ;; name that was uninterned and interned again is a new
+                      ;; symbol with the old name.  Only a view with no cell
+                      ;; at all (a plain overflow name) is compared by name.
+                      (let* ((mp (nl_symcells_mirror))
+                             (e (if (= mp 0) 1 (nl_symcell_entry mp view))))
+                        (if (> e 1) (if (= e obj) 1 0)
+                          (if (= e 0) 0
+                            (let* ((n (nl_word_length obj)) (i 0) (same 1)
+                                   (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
+                              (if (/= n (heap-read-u64 view 24)) 0
+                                (seq (while (if (= same 1) (< i n) 0)
+                                       (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
+                                            (setq i (+ i 1))))
+                                     same))))))
                     0)
                 0))))))
     ;; Doc 226 D9 stage 3.1.  The code that makes a symbol's object has no
@@ -4985,8 +4995,16 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (seq (if (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0)
                          (seq (if (= (heap-read-u64 (- e 6) 8) 3)
                                   (let* ((name (alloc-bytes 32 8)))
-                                    (if (= (nl_symname_make buf n name) 0) 0
-                                      (nl_val_clone_into name (+ (- e 6) 8))))
+                                    ;; The string is allocated in the arena the
+                                    ;; top-level boundary may rewind unless
+                                    ;; the mutation epoch moved (wf_dirty).
+                                    (seq (wf_dirty)
+                                         (if (= (nl_symname_make buf n name) 0) 0
+                                           ;; The box itself is the name: it shares
+                                           ;; the side table's bytes, so every
+                                           ;; `symbol-name' answer is `eq' and an
+                                           ;; `aset' shows through all of them.
+                                           (ptr-write-u64 (- e 6) 8 name))))
                                 0)
                               (if (= (heap-read-u64 (- e 6) 40) 0)
                                   (ptr-write-u64 (- e 6) 40 (sar (heap-read-u64 (- buf 8) 0) 32))
@@ -5002,6 +5020,10 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                           (let* ((name (alloc-bytes 32 8))
                                  (vec (alloc-bytes 32 8)))
                             (seq
+                             ;; Everything allocated here is linked into the
+                             ;; mirror: keep the top-level boundary from
+                             ;; rewinding the arena over it (wf_dirty).
+                             (wf_dirty)
                              (ptr-write-u64 b 0 8196)
                              (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
                              (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
@@ -5009,7 +5031,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                              ;; lispsym index), which the builtin dispatch reads.
                              (ptr-write-u64 b 40 (sar (heap-read-u64 (- buf 8) 0) 32))
                              (if (= (nl_symname_make buf n name) 0) 0
-                               (nl_val_clone_into name (+ b 8)))
+                               (ptr-write-u64 b 8 name))
                              (nl_env_scratch_vec_sexp (nl_alloc_vector 1) vec)
                              (nelisp_mirror_bucket_prepend_unchecked mp view (+ b 6) vec)
                              (+ b 6))))))))))))))
@@ -14823,8 +14845,10 @@ eval applyfn.")
             (if (< (vector-len meta_ptr) 3)
                 0
               (let* ((sy (vector-ref-ptr meta_ptr 2)))
-                (if (= (heap-read-u64 sy 0) 4)
-                    (let* ((n (heap-read-u64 sy 24)) (p (heap-read-u64 sy 16)))
+                (if (= (sexp-tag sy) 4)
+                    ;; Doc 226 D9 stage 3.2: the test symbol of a table is an
+                    ;; object WORD, whose name is its name string's.
+                    (let* ((n (heap-sexp-length sy)) (p (heap-sexp-data sy)))
                       (if (= n 2)
                           (if (= (heap-read-u8 p 0) 101)
                               (if (= (heap-read-u8 p 1) 113) 1 0)
