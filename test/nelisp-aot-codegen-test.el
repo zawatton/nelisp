@@ -553,6 +553,197 @@
           (should (= 0 (call-process binary nil nil nil))))
       (dolist (path (list object source binary)) (delete-file path)))))
 
+(defun nelisp-aot-codegen-test--terminal-string-form ()
+  '(defun late_equal (left right mode)
+     (let ((alias left))
+       (if (and (= (sexp-tag left) 5) (= (sexp-tag right) 5)
+                (= alias left) (= left alias) (= alias left) (= left alias))
+           (if (> mode 0) (str-eq alias right) mode)
+         mode))))
+
+(ert-deftest nelisp-aot-codegen/terminal-barrier-loops-mutation-full-word ()
+  "Pure loop branches and terminal argument mutations preserve all result bits."
+  (let ((barriers 0) (calls 0)
+        (emit (symbol-function 'nelisp-aot-compiler--emit-terminal-barrier-x86))
+        (call (symbol-function 'nelisp-aot-compiler--emit-call)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-terminal-barrier-x86)
+               (lambda (ir buf) (setq barriers (1+ barriers)) (funcall emit ir buf)))
+              ((symbol-function 'nelisp-aot-compiler--emit-call)
+               (lambda (ir buf) (setq calls (1+ calls))
+                 (should-not nelisp-aot-compiler--promoted-slots) (funcall call ir buf))))
+      (dolist (n '(-1 0 1 7))
+        (dolist (pair '((11 17) (-9223372036854775808 9223372036854775807)))
+          (let* ((x (car pair)) (y (+ (cadr pair) 7)) (old x) (acc (+ x (cadr pair)))
+                 (expected (if (> n 0) (+ acc (* n old) y old)
+                             (setq x (+ x y)) (+ x (* (+ old x) 3) (* (+ acc y) 5)))))
+            (setq expected (logand expected (1- (ash 1 64))))
+            (when (>= expected (ash 1 63)) (setq expected (- expected (ash 1 64))))
+            (should (= 0 (nelisp-aot-codegen-test--run
+                          `(seq
+                            (defun finish (a b c) (+ a (+ (* b 3) (* c 5))))
+                            (defun choose (n x y)
+                              (let* ((old x) (acc (+ x y)))
+                                (seq (setq y (+ y 7))
+                                     (if (> n 0)
+                                         (seq (while (> n 0) (setq acc (+ acc old)) (setq n (- n 1)))
+                                              (+ acc (+ y old)))
+                                       (finish (setq x (+ x y)) (+ old x) (+ acc y))))))
+                            (exit (if (= (choose ,n ,(car pair) ,(cadr pair)) ,expected) 0 1))))))))))
+    (should (> barriers 0)) (should (> calls 0))))
+
+(ert-deftest nelisp-aot-codegen/terminal-barrier-dynamic-alias-flush ()
+  "Flush each actual slot once, using its innermost alias register."
+  (let ((aliases 0) (flush (symbol-function 'nelisp-aot-compiler--flush-promoted-slots-x86))
+        (op (symbol-function 'nelisp-aot-compiler--x86-op)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--flush-promoted-slots-x86)
+               (lambda (buf)
+                 (let* ((map nelisp-aot-compiler--promoted-slots)
+                        (slots (delete-dups (mapcar #'car map))) (stores nil))
+                   (when (< (length slots) (length map)) (setq aliases (1+ aliases)))
+                   (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-op)
+                              (lambda (b w opcode reg rm &rest rest)
+                                (when (equal opcode (unibyte-string #x89))
+                                  (let ((slot (cl-find-if
+                                               (lambda (s) (equal rm (nelisp-aot-compiler--x86-slot-mem s)))
+                                               slots)))
+                                    (should (integerp slot))
+                                    (should (eq reg (cdr (assq slot map))))
+                                    (push slot stores)))
+                                (apply op b w opcode reg rm rest))))
+                     (funcall flush buf))
+                   (should (= (length stores) (length slots)))
+                   (should (= (length stores) (length (delete-dups stores))))))))
+      (let* ((terms (append (make-list 9 'a) (make-list 8 'alias) (make-list 7 'b)))
+             (sum (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t)))
+        (should (= 183 (nelisp-aot-codegen-test--run
+                       `(seq (defun finish (a b c) (+ a (+ (* b 3) (* c 5))))
+                             (defun choose (a b)
+                               (let ((alias a))
+                                 (if (> ,sum 0) (finish alias a b) 0)))
+                             (exit (choose 17 23))))))))
+    (should (> aliases 0))))
+
+(ert-deftest nelisp-aot-codegen/terminal-barrier-late-string-word-guards ()
+  "String fallback stays behind WORD tag guards and ends the register map."
+  (let ((strings 0) (emit (symbol-function 'nelisp-aot-compiler--emit-str-eq)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-str-eq)
+               (lambda (ir buf) (setq strings (1+ strings))
+                 (should-not nelisp-aot-compiler--promoted-slots) (funcall emit ir buf))))
+      (should
+       (= 0 (nelisp-aot-codegen-test--run
+             `(seq ,(nelisp-aot-codegen-test--terminal-string-form)
+               (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+               (defun run (mem)
+                 (let ((left (+ mem 32)) (right (+ mem 64)) (a (+ mem 128)) (b (+ mem 160)))
+                   (seq
+                    (ptr-write-u8 left 0 5) (ptr-write-u64 left 8 3)
+                    (ptr-write-u64 left 16 a) (ptr-write-u64 left 24 3)
+                    (ptr-write-u8 right 0 5) (ptr-write-u64 right 8 3)
+                    (ptr-write-u64 right 16 b) (ptr-write-u64 right 24 3)
+                    (ptr-write-u8 a 0 97) (ptr-write-u8 a 1 98) (ptr-write-u8 a 2 99)
+                    (ptr-write-u8 b 0 97) (ptr-write-u8 b 1 98) (ptr-write-u8 b 2 99)
+                    (ptr-write-u8 mem 0 73) (ptr-write-u8 mem 6 5)
+                    (if (= (late_equal left right 1) 1)
+                        (seq (ptr-write-u8 b 1 120)
+                             (if (= (late_equal left right 1) 0)
+                                 (if (= (late_equal 2 right -9223372036854775808) -9223372036854775808)
+                                     (if (= (late_equal (+ mem 6) right 9223372036854775807) 9223372036854775807)
+                                         (if (= (late_equal left 2 -9223372036854775808) -9223372036854775808) 0 5)
+                                       4) 3) 2))
+                      1))))
+               (exit (run (mmap-page))))))))
+    (should (> strings 0))))
+
+(ert-deftest nelisp-aot-codegen/terminal-barrier-position-and-protected-fallback ()
+  "Only structural terminal positions qualify; protected/raw-call protocols reject."
+  (let* ((nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
+         (nelisp-aot-compiler--checked-arith nil)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (nelisp-aot-compiler--x86-loop-regs '(rbx r8 r9 r12 r13 r14 r15))
+         (plain (nelisp-aot-compiler--parse
+                 '(defun f (x) (if (> (+ x (+ x (+ x x))) 0) (extern-call sink x) x)))))
+    (should (nelisp-aot-compiler--x86-terminal-entry-plan plain))
+    (should (nelisp-aot-compiler--x86-terminal-entry-plan
+             (nelisp-aot-compiler--parse
+              '(defun f (x) (cond ((> (+ x (+ x (+ x x))) 0)
+                                   (let ((y (+ x 1))) (extern-call sink y))) (t x))))))
+    (dolist (body '((if (extern-call sink x) (+ x x) x)
+                    (let ((y (extern-call sink x))) (+ x (+ x (+ x y))))
+                    (seq (extern-call sink x) (+ x (+ x x)))
+                    (+ x (+ x (+ x (extern-call sink x))))
+                    (seq (while (> x 0) (extern-call sink x) (setq x (- x 1))) x)))
+      (should-not (nelisp-aot-compiler--x86-terminal-entry-plan
+                   (nelisp-aot-compiler--parse `(defun f (x) ,body)))))
+    (dolist (field '((:self-tco-raw . t) (:gc-root-slots . (0)) (:internal-entry . t)
+                    (:variadic . t) (:optional-count . 1) (:rest-p . t) (:param-class . f64)))
+      (should-not (nelisp-aot-compiler--x86-terminal-entry-plan
+                   (nelisp-aot-compiler--ir-with plain (car field) (cdr field)))))
+    (let ((nelisp-aot-compiler--checked-arith t))
+      (should-not (nelisp-aot-compiler--x86-terminal-entry-plan plain)))
+    (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
+      (should-not (nelisp-aot-compiler--x86-terminal-entry-plan plain)))
+    (let* ((call (car (nelisp-aot-compiler--x86-terminal-barriers
+                      (nelisp-aot-compiler--ir-get plain :body))))
+           (shared (nelisp-aot-compiler--make-ir 'value-seq :forms (list call call))))
+      (should-not (nelisp-aot-compiler--x86-terminal-barriers shared))
+      (dolist (field '((:internal-boundary-disp . -8) (:fn-value . t)
+                      (:ret-class . f64) (:arg-classes . (f64)) (:varargs-p . t)))
+        (should-not (nelisp-aot-compiler--x86-terminal-barriers
+                     (nelisp-aot-compiler--ir-with call (car field) (cdr field))))))))
+
+(ert-deftest nelisp-aot-codegen/terminal-barrier-native-callee-saves ()
+  "An odd save count aligns ordinary calls and both barriers preserve the C ABI."
+  (skip-unless (and (executable-find "gcc") (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let* ((object (make-temp-file "nelisp-terminal-" nil ".o"))
+         (source (make-temp-file "nelisp-terminal-" nil ".c"))
+         (binary (make-temp-file "nelisp-terminal-"))
+         (terms (append (make-list 6 'a) (make-list 5 'b) (make-list 4 'c)
+                        (make-list 4 'd) (make-list 4 'e) (make-list 4 'f)))
+         (sum (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
+         (odd-saves 0) (strings 0)
+         (leaf (symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86))
+         (ext (symbol-function 'nelisp-aot-compiler--emit-extern-call)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86)
+                     (lambda (ir buf)
+                       (let* ((state nelisp-aot-compiler--x86-leaf-entry-state)
+                              (kinds (mapcar #'nelisp-aot-compiler--ir-kind
+                                             (plist-get state :terminal-barriers))))
+                         (when (memq 'extern-call kinds)
+                           (should (= 1 (logand 1 (cl-count-if
+                                                  (lambda (p) (memq (cdr p) '(r12 r13 r14 r15)))
+                                                  (plist-get state :promotions)))))
+                           (setq odd-saves (1+ odd-saves)))
+                         (when (memq 'str-eq kinds) (setq strings (1+ strings))))
+                       (funcall leaf ir buf)))
+                    ((symbol-function 'nelisp-aot-compiler--emit-extern-call)
+                     (lambda (ir buf)
+                       (should-not nelisp-aot-compiler--promoted-slots) (funcall ext ir buf))))
+            (nelisp-aot-compile-to-object
+             `(seq (defun route (a b c d e f)
+                     (if (> ,sum 0) (extern-call sink (setq a (+ a 1)) (+ b a) c d e f) (- 0 ,sum)))
+                   ,(nelisp-aot-codegen-test--terminal-string-form)) object))
+          (should (> odd-saves 0)) (should (> strings 0))
+          (with-temp-file source
+            (insert "#include <stdint.h>\n#include <xmmintrin.h>\n"
+                    "extern long route(long,long,long,long,long,long);\nextern long late_equal(void*,void*,long);\n"
+                    "__attribute__((noinline)) long sink(long a,long b,long c,long d,long e,long f) { volatile __m128 v=_mm_set1_ps(1); __asm__ volatile(\"\" : \"+m\"(v)); return a+3*b+5*c+7*d+11*e+13*f+(int)v[0]; }\n"
+                    "struct S { unsigned char tag,pad[7]; uint64_t cap; const char *ptr; uint64_t len; };\n"
+                    "int main(void) { struct S x={5,{0},3,\"abc\",3}, y={5,{0},3,\"abc\",3};\n"
+                    " register long b __asm__(\"rbx\")=101,c __asm__(\"r12\")=102,d __asm__(\"r13\")=103,\n"
+                    " e __asm__(\"r14\")=104,f __asm__(\"r15\")=105,g __asm__(\"rbp\")=106;\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f),\"+r\"(g));\n"
+                    " long v=route(1,2,3,4,5,6),w=route(-1,-1,-1,-1,-1,-1),s=late_equal(&x,&y,1);\n"
+                    " y.ptr=\"axc\"; long t=late_equal(&x,&y,1),u=late_equal(&x,&y,INT64_MIN);\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f),\"+r\"(g));\n"
+                    " return v!=191||w!=27||s!=1||t!=0||u!=INT64_MIN||b!=101||c!=102||d!=103||e!=104||f!=105||g!=106; }\n"))
+          (should (= 0 (call-process "gcc" nil nil nil "-O2" "-fomit-frame-pointer" source object "-o" binary)))
+          (should (= 0 (call-process binary nil nil nil))))
+      (dolist (path (list object source binary)) (delete-file path)))))
+
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/conditions
   "and/or chains in if, while and cond, rotated loops with zero trips."
   (seq

@@ -15420,14 +15420,19 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
       (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)
       (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))))
 
+(defvar nelisp-aot-compiler--x86-leaf-entry-state)
+
 (defun nelisp-aot-compiler--emit-value (node buf)
   "Emit NODE, keeping profitable call-free raw regions in registers."
-  (if (and nelisp-aot-compiler--x86-tco-entry-state
-           (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :outer)))
-      (nelisp-aot-compiler--emit-self-tco-body-x86 buf)
-    (nelisp-aot-compiler--emit-call-free-region
-     node buf (lambda ()
-                (nelisp-aot-compiler--emit-value-unpromoted node buf)))))
+  (cond
+   ((and nelisp-aot-compiler--promoted-slots
+         (memq node (plist-get nelisp-aot-compiler--x86-leaf-entry-state :terminal-barriers)))
+    (nelisp-aot-compiler--emit-terminal-barrier-x86 node buf))
+   ((and nelisp-aot-compiler--x86-tco-entry-state
+         (eq node (plist-get nelisp-aot-compiler--x86-tco-entry-state :outer)))
+    (nelisp-aot-compiler--emit-self-tco-body-x86 buf))
+   (t (nelisp-aot-compiler--emit-call-free-region
+       node buf (lambda () (nelisp-aot-compiler--emit-value-unpromoted node buf))))))
 
 (defun nelisp-aot-compiler--emit-value-unpromoted (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -22032,11 +22037,12 @@ Their x86-64 code neither calls, allocates, exits non-locally, reads rsp
 nor touches rbx, r8, r9 or r12-r15, so no collection, unwinding or
 callee can observe a frame slot while its variable lives in a register.")
 
-(defun nelisp-aot-compiler--x86-promotion-plan (node)
+(defun nelisp-aot-compiler--x86-promotion-plan (node &optional terminal-barriers)
   "Return (PAIRS . WRITTEN) for promoting the variables of while NODE.
 PAIRS is an alist (SLOT . REGISTER), most used slots first; WRITTEN lists
 the slots the loop assigns.  Nil when the loop contains anything outside
-`--x86-promotable-kinds', when no registers are available, or when an
+`--x86-promotable-kinds' or the proven TERMINAL-BARRIERS, when no
+registers are available, or when an
 enclosing loop already promoted.  CG3 (Doc 224) reproduces GCC's
 allocation of loop variables to registers, restricted to call-free
 loops: NeLisp's collector scans the machine stack conservatively
@@ -22058,7 +22064,8 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
          (lambda (n)
            (let ((kind (nelisp-aot-compiler--ir-kind n)))
              (cond
-              ((not (memq kind nelisp-aot-compiler--x86-promotable-kinds))
+              ((not (or (memq kind nelisp-aot-compiler--x86-promotable-kinds)
+                        (memq n terminal-barriers)))
                (setq ok nil))
               ((eq kind 'ref)
                (if (memq (or (nelisp-aot-compiler--ir-get n :class) 'gp) '(gp nil))
@@ -22201,11 +22208,17 @@ frame observers, calls, loops, roots, floats and implicit clobbers."
     ok))
 
 (defun nelisp-aot-compiler--x86-leaf-entry-plan (ir)
-  "Place acyclic raw leaf values in the existing CG3 register plan.
+  "Return the existing placement plan for an acyclic call-free raw leaf."
+  (nelisp-aot-compiler--x86-body-entry-plan ir nil))
+
+(defun nelisp-aot-compiler--x86-body-entry-plan (ir terminal-barriers)
+  "Place raw values in the CG3 plan until TERMINAL-BARRIERS.
+An empty barrier list retains the acyclic call-free leaf restriction.
 GNU comp.c:2409-2418 passes incoming params to mvars; comp.el:2530
 connects branch PHIs to their incoming values.  Here each IR slot gets
 one CG3 register for the whole body, so assignments at branch joins
-already meet in that register.  No frame observer or call may occur."
+already meet in that register.  No frame observer is allowed; terminal
+barriers end the mapping before their operands and emitter execute."
   (when (and (eq nelisp-aot-compiler--arch 'x86_64)
              (eq nelisp-aot-compiler--abi 'sysv)
              (not (nelisp-aot-compiler--lisp-values-p))
@@ -22222,13 +22235,14 @@ already meet in that register.  No frame observer or call may occur."
              (<= (length (nelisp-aot-compiler--ir-get ir :param-regs)) 6))
     (let* ((body (nelisp-aot-compiler--ir-get ir :body))
            (arity (length (nelisp-aot-compiler--ir-get ir :param-regs)))
-           (plan (nelisp-aot-compiler--x86-promotion-plan body))
-           (safe t) (counts nil) (pairs nil) (forward nil) (gain 0))
+           (plan (nelisp-aot-compiler--x86-promotion-plan body terminal-barriers))
+           (safe t) (has-loop nil) (counts nil) (barrier-uses nil) (pairs nil) (forward nil) (gain 0))
       (when plan
         (nelisp-aot-compiler--walk-ir
          body (lambda (n)
                 (let ((k (nelisp-aot-compiler--ir-kind n)))
-                  (when (or (memq k '(while recur))
+                  (when (eq k 'while) (setq has-loop t))
+                  (when (or (eq k 'recur) (and (eq k 'while) (null terminal-barriers))
                             (and (eq k 'value-seq)
                                  (null (nelisp-aot-compiler--ir-get n :forms)))
                             (eq (nelisp-aot-compiler--ir-get n :class) 'f64)
@@ -22242,6 +22256,19 @@ already meet in that register.  No frame observer or call may occur."
                     (let ((cell (assq slot counts)))
                       (if cell (setcdr cell (1+ (cdr cell)))
                         (push (cons slot 1) counts)))))))
+        ;; Barrier operands execute with the mapping ended.  Their
+        ;; accesses do not earn register-placement credit.
+        (dolist (barrier terminal-barriers)
+          (nelisp-aot-compiler--walk-ir
+           barrier (lambda (n)
+                     (let ((k (nelisp-aot-compiler--ir-kind n)))
+                       (dolist (slot (cond ((memq k '(ref setq-local let-rt))
+                                           (list (nelisp-aot-compiler--ir-get n :slot)))
+                                          ((eq k 'let-rt-n)
+                                           (mapcar #'cadr (nelisp-aot-compiler--ir-get n :bindings)))))
+                         (let ((cell (assq slot barrier-uses)))
+                           (if cell (setcdr cell (1+ (cdr cell)))
+                             (push (cons slot 1) barrier-uses))))))))
         (dolist (p (car plan))
           (let* ((slot (car p)) (reg (cdr p))
                  (param (and (< slot arity) (nth slot '(rdi rsi rdx rcx r8 r9))))
@@ -22249,19 +22276,99 @@ already meet in that register.  No frame observer or call may occur."
                  ;; A promoted parameter loses its prologue store as well
                  ;; as body accesses, but pays at most one incoming move.
                  (cost (+ (if (and param (not (eq param reg))) 1 0)
+                          (if terminal-barriers 1 0)
                           (if (memq reg '(r12 r13 r14 r15)) 2 0)))
-                 (saving (- (+ (cdr (assq slot counts)) (if param 1 0)) cost)))
-            (when (> saving 0)
+                 (saving (- (+ (cdr (assq slot counts)) (if param 1 0)) cost
+                            (or (cdr (assq slot barrier-uses)) 0))))
+            ;; A whole-body map must preserve CG3's loop registers:
+            ;; filtering a low static count would block inner promotion.
+            (when (or has-loop (> saving 0))
               (push p pairs)
               (when param (push (list slot slot param) forward))
               (setq gain (+ gain saving)))))
         (when (and safe pairs (>= gain 3))
           (setq pairs (nreverse pairs))
           (list :promotions pairs :forward forward :gain gain
-                :frameless (nelisp-aot-compiler--x86-leaf-frame-free-p body pairs)))))))
+                :terminal-barriers terminal-barriers
+                :frameless (and (null terminal-barriers)
+                                (nelisp-aot-compiler--x86-leaf-frame-free-p body pairs))))))))
+
+(defun nelisp-aot-compiler--x86-terminal-barriers (body)
+  "Return proven terminal call/extern-call/str-eq nodes in BODY.
+Conditions, initializers, earlier sequence values and all other operand
+positions must contain no barrier.  A shared IR node used in a non-tail
+position is rejected too.  Every path executes at most one barrier."
+  (let ((ok t) (barriers nil))
+    (cl-labels
+        ((plain (n)
+           (nelisp-aot-compiler--walk-ir
+            n (lambda (child)
+                (when (memq (nelisp-aot-compiler--ir-kind child) '(call extern-call str-eq))
+                  (setq ok nil)))))
+         (tail (n)
+           (pcase (nelisp-aot-compiler--ir-kind n)
+             ((or 'call 'extern-call 'str-eq)
+              (if (eq (nelisp-aot-compiler--ir-kind n) 'str-eq)
+                  (progn (plain (nelisp-aot-compiler--ir-get n :a))
+                         (plain (nelisp-aot-compiler--ir-get n :b)))
+                (unless (and (nelisp-aot-compiler--ir-get n :name)
+                             (not (nelisp-aot-compiler--ir-get n :fn-value))
+                             (not (nelisp-aot-compiler--ir-get n :internal-boundary-disp))
+                             (memq (nelisp-aot-compiler--ir-get n :ret-class) '(nil gp))
+                             (not (memq 'f64 (nelisp-aot-compiler--ir-get n :arg-classes)))
+                             (not (nelisp-aot-compiler--ir-get n :varargs-p))
+                             (<= (length (nelisp-aot-compiler--ir-get n :args)) 6))
+                  (setq ok nil))
+                (dolist (arg (nelisp-aot-compiler--ir-get n :args)) (plain arg)))
+              (push n barriers))
+             ('if (plain (nelisp-aot-compiler--ir-get n :test))
+                  (tail (nelisp-aot-compiler--ir-get n :then))
+                  (tail (nelisp-aot-compiler--ir-get n :else)))
+             ('cond (dolist (c (nelisp-aot-compiler--ir-get n :clauses))
+                      (unless (eq (car c) 'always) (plain (car c))) (tail (cdr c))))
+             ('let-rt (plain (nelisp-aot-compiler--ir-get n :value-ir))
+                      (tail (nelisp-aot-compiler--ir-get n :body)))
+             ('let-rt-n (dolist (b (nelisp-aot-compiler--ir-get n :bindings)) (plain (nth 2 b)))
+                        (tail (nelisp-aot-compiler--ir-get n :body)))
+             ('value-seq
+              (let ((forms (nelisp-aot-compiler--ir-get n :forms)))
+                (dolist (form (butlast forms)) (plain form))
+                (when forms (tail (car (last forms))))))
+             (_ (plain n)))))
+      (tail body))
+    (and ok barriers)))
+
+(defun nelisp-aot-compiler--x86-terminal-entry-plan (ir)
+  "Allocate only until a terminal barrier; never across a call.
+GNU comp.el:2530-2540 joins incoming mvars at PHIs; comp.c:2036-2047
+reads current mvars for call arguments.  Materialize our current slot
+mapping before the unchanged barrier emitter reads its operands."
+  (unless (nelisp-aot-compiler--ir-get ir :self-tco-raw)
+    (let ((barriers (nelisp-aot-compiler--x86-terminal-barriers
+                     (nelisp-aot-compiler--ir-get ir :body))))
+      (when barriers (nelisp-aot-compiler--x86-body-entry-plan ir barriers)))))
+
+(defun nelisp-aot-compiler--flush-promoted-slots-x86 (buf)
+  "Materialize current slot values, with the innermost dynamic alias first."
+  (let (seen)
+    (dolist (p nelisp-aot-compiler--promoted-slots)
+      (unless (memq (car p) seen)
+        (push (car p) seen)
+        (nelisp-aot-compiler--x86-op
+         buf t (unibyte-string #x89) (cdr p)
+         (nelisp-aot-compiler--x86-slot-mem (car p)))))))
+
+(defun nelisp-aot-compiler--emit-terminal-barrier-x86 (node buf)
+  "End allocation before the ordinary terminal NODE emitter runs.
+Readonly copies may shadow plan pairs; flush the actual dynamic map.
+The unchanged str-eq byte loop clobbers caller-saved registers only;
+its argument pushes balance and all exits return a GP value in RAX."
+  (nelisp-aot-compiler--flush-promoted-slots-x86 buf)
+  (let ((nelisp-aot-compiler--promoted-slots nil))
+    (nelisp-aot-compiler--emit-value-unpromoted node buf)))
 
 (defun nelisp-aot-compiler--emit-leaf-body-x86 (node buf)
-  "Emit the acyclic leaf NODE using its verified whole-body plan."
+  "Emit NODE using its verified plan, ending allocation at any barrier."
   (let* ((state nelisp-aot-compiler--x86-leaf-entry-state)
          (pairs (plist-get state :promotions))
          (saved (cl-remove-if-not
@@ -22274,7 +22381,7 @@ already meet in that register.  No frame observer or call may occur."
              (plist-get state :forward)) buf)
     (let ((nelisp-aot-compiler--promoted-slots pairs))
       (nelisp-aot-compiler--emit-value node buf))
-    ;; No call, address exposure or successor can observe these slots.
+    ;; Terminal barriers have already materialized and ended the map.
     ;; RAX retains the result while the callee-saved registers are popped.
     (dolist (r (reverse saved)) (nelisp-aot-compiler--emit-temp-pop buf r))))
 
@@ -22807,7 +22914,8 @@ return reg, untouched by epilogue)."
          (nelisp-aot-compiler--x86-tco-entry-state
           (nelisp-aot-compiler--x86-self-tco-entry-plan defun-ir))
          (nelisp-aot-compiler--x86-leaf-entry-state
-          (nelisp-aot-compiler--x86-leaf-entry-plan defun-ir)))
+          (or (nelisp-aot-compiler--x86-leaf-entry-plan defun-ir)
+              (nelisp-aot-compiler--x86-terminal-entry-plan defun-ir))))
     (when variadic
       ;; Only the SysV AMD64 GP register surface is supported for defined
       ;; varargs (= the save-area layout above).  Win64 / aarch64 / f64
