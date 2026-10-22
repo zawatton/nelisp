@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 import re
 import statistics
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -703,6 +704,104 @@ def check_s63alloc():
     print("s63alloc PASS")
 
 
+# Stage S5: the interpreted builtin call against GNU eval_sub (eval.c:2540-2800).
+EVALROWS = OUT / "evalrows"
+EVALCALL_FIXTURE = ROOT / "test/standalone-eval-call-check.el"
+EVALCALL_EXPECTED = ROOT / "test/standalone-eval-call-check.expected"
+
+
+def evalrows_tool():
+    spec = importlib.util.spec_from_file_location("callpath_perf_evalrows", ROOT / "tools/ai/callpath-perf-evalrows.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def evalrows_report(tag):
+    """The report TAG of tools/ai/callpath-perf-evalrows.py with every Ir recomputed from its callgrind files."""
+    tool = evalrows_tool()
+    report = read(EVALROWS / tag / "report.json")
+    need(report.get("schema") == 2 and report["n"] == [tool.N1, tool.N2], "unqualified evalrows protocol")
+    need(report["source"] == source_identity(), "the evalrows report is stale")
+    for key in ("binary", "gnu", "producer"):
+        auth(report[key])
+    need(Path(report["gnu"]["path"]).name in ("emacs", "emacs-31.1"), "GNU reference is not emacs 31.1")
+    per = {}
+    for engine in ("nelisp", "gnu"):
+        per[engine] = {}
+        for row, expr in tool.ROWS.items():
+            ir = {}
+            for n in (tool.N1, tool.N2):
+                entry = report["files"][f"{engine}-{row}-{n}"]
+                need(auth(entry["src"]).read_text() == tool.program(expr, n), f"{engine} {row} {n}: not the tool's program")
+                ir[n] = callgrind_total(auth(entry["cg"]))
+            per[engine][row] = (ir[tool.N2] - ir[tool.N1]) / (tool.N2 - tool.N1)
+    return report, per
+
+
+def callgrind_total(path):
+    total = None
+    for line in Path(path).read_text().splitlines()[-40:]:
+        if line.startswith(("summary:", "totals:")):
+            total = int(line.split()[1])
+    need(total is not None, "no callgrind total in " + str(path))
+    return total
+
+
+def check_evalrow(row, factor, tag="result"):
+    """S5.1-S5.3: Ir per iteration of an interpreted builtin call, above the loop's control row, at most
+    FACTOR times GNU 31.1's.  The final receipt (tag result) must come from the wall-clock result build."""
+    report, per = evalrows_report(tag)
+    if tag == "result":
+        need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
+    mine = per["nelisp"][row] - per["nelisp"]["control"]
+    gnu = per["gnu"][row] - per["gnu"]["control"]
+    need(gnu > 0, f"{row}: GNU row not above its control")
+    print(f"evalrow {row} nelisp={mine:.0f} gnu={gnu:.0f} ratio={mine / gnu:.2f}x cap={factor}x")
+    need(mine <= factor * gnu, f"{row}: {mine / gnu:.2f}x GNU's Ir per iteration, above the {factor}x cap")
+    print(f"evalrow {row} PASS")
+
+
+def bounded_run(cmd):
+    import resource
+
+    def limit():
+        resource.setrlimit(resource.RLIMIT_AS, (MAX_ADDRESS_SPACE, MAX_ADDRESS_SPACE))
+    proc = subprocess.run(cmd, preexec_fn=limit, capture_output=True, text=True, timeout=900)
+    return proc.returncode, proc.stdout
+
+
+def check_evalcall(binary=None):
+    """S5.4: GNU-golden evaluator call fixture (arity errors, special forms shadowed or aliased, funcall and apply
+    of special forms): the expected file is GNU 31.1's own output, and the result build must print the same."""
+    expected = EVALCALL_EXPECTED.read_text()
+    rc, out = bounded_run(["/usr/local/bin/emacs", "-Q", "--batch", "-l", str(EVALCALL_FIXTURE)])
+    need(rc == 0 and out == expected, "the expected file is not GNU 31.1's output of the fixture")
+    if binary is None:
+        s63_result_build()
+        binary = auth(read(WALL / "result-dynamic" / "floors.json")["engines"]["candidate"])
+    rc, out = bounded_run([str(binary), "--load", str(EVALCALL_FIXTURE)])
+    lines, want = out.splitlines(), expected.splitlines()
+    for i in range(max(len(lines), len(want))):
+        got = lines[i] if i < len(lines) else "<missing>"
+        exp = want[i] if i < len(want) else "<extra>"
+        if got != exp:
+            print(f"evalcall line {i + 1}: nelisp {got[:150]!r} gnu {exp[:150]!r}")
+            break
+    need(rc == 0 and out == expected, f"evalcall differs from GNU (rc={rc}, {len(lines)}/{len(want)} lines)")
+    print(f"evalcall PASS {len(want)} cases")
+
+
+def check_s5e2e():
+    """S5.5: on the current source's wall-clock result build, the final verification passes, the evaluator call
+    fixture matches GNU, and the three evalrows are measured on that very build."""
+    check_final()
+    check_evalcall()
+    report, _ = evalrows_report("result")
+    need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
+    print("s5e2e PASS")
+
+
 STASH_SLOTS = re.compile(r"\b(268435480|268435512)\b")
 
 
@@ -768,8 +867,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="check", required=True)
     for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e",
-                 "stash"):
+                 "stash", "s5e2e"):
         sub.add_parser(name)
+    p = sub.add_parser("evalcall")
+    p.add_argument("--binary", help="run this binary instead of the wall-clock result build (development)")
+    p = sub.add_parser("evalrow")
+    p.add_argument("row", choices=("plus", "cons", "makevec"))
+    p.add_argument("factor", type=float)
+    p.add_argument("--tag", default="result", help="evalrows report tag; the final receipt is `result'")
     p = sub.add_parser("s63census")
     p.add_argument("kind", choices=("roots", "materialisers"))
     p = sub.add_parser("wallfuncall")
@@ -805,10 +910,15 @@ def main():
             check_focused(args.tag)
         elif args.check == "s63census":
             check_s63census(args.kind)
+        elif args.check == "evalrow":
+            check_evalrow(args.row, args.factor, args.tag)
+        elif args.check == "evalcall":
+            check_evalcall(Path(args.binary).resolve() if args.binary else None)
         else:
             {"portplan": check_portplan, "arity": check_arity,
              "noregress": check_noregress, "final": check_final,
-             "s63alloc": check_s63alloc, "s63e2e": check_s63e2e, "stash": check_stash}[args.check]()
+             "s63alloc": check_s63alloc, "s63e2e": check_s63e2e, "stash": check_stash,
+             "s5e2e": check_s5e2e}[args.check]()
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("FAIL " + str(error))
         return 1

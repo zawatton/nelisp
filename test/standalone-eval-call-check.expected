@@ -1,0 +1,52 @@
+car-0 (wrong-number-of-arguments car 0)
+car-2 (wrong-number-of-arguments car 2)
+cons-1 (wrong-number-of-arguments cons 1)
+cons-3 (wrong-number-of-arguments cons 3)
+make-vector-1 (wrong-number-of-arguments make-vector 1)
+substring-0 (wrong-number-of-arguments substring 0)
+funcall-car-0 (wrong-number-of-arguments #<subr car> 0)
+funcall-cons-1 (wrong-number-of-arguments #<subr cons> 1)
+apply-cons-1 (wrong-number-of-arguments #<subr cons> 1)
+apply-car-nil (wrong-number-of-arguments #<subr car> 0)
+eval-car-0 (wrong-number-of-arguments car 0)
+if-0 (wrong-number-of-arguments if 0)
+setq-odd (wrong-number-of-arguments setq 1)
+quote-2 (wrong-number-of-arguments quote 2)
+order (1 2 3)
+order-log (1 2 3)
+plus-many 55
+list-nine (1 2 3 4 5 6 7 8 9)
+list-ten (1 2 3 4 5 6 7 8 9 10)
+concat-3 "abc"
+max-3 5
+format-2 "3-x"
+substring-optional ("bcde" "bc")
+nested 18
+wrong-type-plus (wrong-type-argument number-or-marker-p a)
+wrong-type-car (wrong-type-argument listp 1)
+alias-if (1 2)
+alias-quote (a b c)
+alias-and (3 nil t)
+funcall-if (invalid-function #<subr if>)
+funcall-if-obj (invalid-function #<subr if>)
+apply-quote (invalid-function #<subr quote>)
+apply-while (invalid-function #<subr while>)
+funcall-setq (invalid-function #<subr setq>)
+shadow-prog1 (shadowed (3 7))
+prog1-restored 3
+shadow-subr (my-string-bytes ("abc"))
+subr-restored 3
+later-defined (later 5)
+later-void (void-function ec-later)
+var-named-if (1 a 5 6 7)
+flet-if (local-if 1 2 3)
+labels-while done
+void-fn (void-function ec-no-such-function)
+invalid-int (invalid-function 1)
+invalid-str (invalid-function "s")
+lambda-head 42
+dotted-plus (wrong-type-argument listp 2)
+dotted-car (wrong-type-argument listp 1)
+dotted-if (wrong-type-argument listp 1)
+arg-error (error "boom")
+macro-head 2
