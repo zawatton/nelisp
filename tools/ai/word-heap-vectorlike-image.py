@@ -78,7 +78,7 @@ def trailer(path):
         stream.seek(64 + count * 8 + span + intern)
         raw = stream.read(48)
     magic, version = struct.unpack("<2Q", raw[:16])
-    need(magic == 1195655758 and version == 1 and any(raw[16:]),
+    need(magic == 1195655758 and version in (1, 2) and any(raw[16:]),
          "Missing or unstamped build-digest trailer")
     return {"span": span, "intern_bytes": intern, "relocations": count,
             "tag6_relocations": direct, "build_digest": raw[16:].hex()}

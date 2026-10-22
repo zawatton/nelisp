@@ -1,18 +1,17 @@
 diff --git a/scripts/nelisp-standalone-build.el b/scripts/nelisp-standalone-build.el
-index 5c3df65ba..a848f6517 100644
 --- a/scripts/nelisp-standalone-build.el
 +++ b/scripts/nelisp-standalone-build.el
-@@ -18481,6 +18481,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -19085,6 +19085,9 @@
        ;; Bcall.  A bytecode callee runs on the caller's argument words
        ;; directly; anything else goes through the shared interpreted
        ;; gateway on staged views.  The value replaces the function word.
 +      ;; GNU bytecode.c:797: maybe_gc () before the call is made.  The
 +      ;; arguments sit in MEM (the frame vector, a root); nothing else is live.
-+      (seq (nl_gc_vm_poll)
++      (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (nl_gc_vm_poll) 0)
        (let* ((fi (- sp (+ argc 1))))
          (if (< fi 0)
              2
-@@ -18508,7 +18511,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -19112,7 +19115,7 @@
                  (if (if (and (= argc 3) (= lookup 0))
                          (wf_bytecode_flat_path_int_cell cell) 0)
                      (wf_bytecode_w_call_views env fview mem fi argc out)
@@ -21,7 +20,7 @@ index 5c3df65ba..a848f6517 100644
      (defun wf_bytecode_w_call_views (env fview mem fi argc out)
        (let* ((mark (nl_root_mark env))
                       (st (wf_bytecode_w_stage env mem (+ fi 1) argc)))
-@@ -19469,7 +19472,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -20073,7 +20076,7 @@
                                                               (setq pc (+ pc 1)))
                                                        (seq (setq failed 1) (setq go 0)))))))
                                             (seq (setq go 0)))))))))))))))))
@@ -30,7 +29,7 @@ index 5c3df65ba..a848f6517 100644
  
  
      (defun wf_bytecode_execute_frame (code constants depth env out initial-args
-@@ -19510,7 +19513,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -20114,7 +20117,8 @@
               (arg-cursor initial-args) (arg-index 0)
               (pc 0) (sp initial-slots) (done (if (= roots 0) 5 0)) (bindings 0)
               (unwind-rc 0)
@@ -40,7 +39,7 @@ index 5c3df65ba..a848f6517 100644
          (if (= roots 0)
              (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
            (seq
-@@ -19614,6 +19618,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -20218,6 +20222,12 @@
                    ;; above retains its independent resume-PC check.
                    (= done 0)))
             (seq
@@ -49,11 +48,11 @@ index 5c3df65ba..a848f6517 100644
 +            ;; iteration's; the fast run reports the ones it took itself.
 +            (if (< pc prev) (setq quit (+ quit 1)) 0)
 +            (setq prev pc)
-+            (if (>= quit 256) (seq (setq quit 0) (nl_gc_vm_poll)) 0)
++            (if (>= quit 256) (seq (setq quit 0) (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (nl_gc_vm_poll) 0)) 0)
              (if (and (<= code-len 2147483647) (>= sp 0) (<= sp depth))
                  (let* ((first-op (heap-read-u8 code-data pc)))
                    ;; Skip an unsupported batch starter without changing PC/SP.
-@@ -19630,7 +19640,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
+@@ -20234,7 +20244,9 @@
                          ;; -1: a call made from the fast loop signalled; the
                          ;; pending exit then unwinds as after the full Bcall arm.
                          (if (< state 0) (setq done 4)

@@ -19,14 +19,16 @@
   (unless ok
     (setq gcregs-failures (1+ gcregs-failures))
     (princ (format "GCREGS FAIL %s\n" label))))
-(let ((spill (nelisp--debug-switch 73)))
+;; The control runs first: the spilled probe leaves its sentinels in dead stack words, and a control read
+;; at the same depth afterwards can find them (it did once a caller's frame grew by a word), which says
+;; nothing about the scan.  Before any probe has run no sentinel is in memory.
+(let* ((ctl (nelisp--debug-switch 74)) (spill (nelisp--debug-switch 73)))
   (if (equal spill -1)
       (progn (setq gcregs-checks (1+ gcregs-checks) gcregs-failures (1+ gcregs-failures))
              (princ "GCREGS FAIL no register self-test on this target\n"))
     (gcregs-check (equal spill 5) (format "the spilled window shows %S of 5 sentinel registers" spill))
     (gcregs-check (equal (nelisp--debug-switch 73) 5) "and again")
-    (let ((ctl (nelisp--debug-switch 74)))
-      (gcregs-check (equal ctl 0) (format "the window without the spill shows %S sentinels, not 0" ctl)))
+    (gcregs-check (equal ctl 0) (format "the window without the spill shows %S sentinels, not 0" ctl))
     ;; the production collection goes through the stub; the probes are not collections.
     ;; An allocation-triggered collection between two reads would move the count, so the
     ;; equality gets three tries.

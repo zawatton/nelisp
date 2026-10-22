@@ -609,6 +609,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      16
      ;; `nl_float_state': Doc 223 typed float blocks.
      128
+     ;; `nl_gc_until' and `nl_gc_until_base': the allocation budget (Doc 223).
+     64
      ;; `nl_cold_chunk0_domain'.
      16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
@@ -991,6 +993,15 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_float_state"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16)
                               :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": GNU's consing_until_gc.  +0 is the word the allocation
+    ;; fast paths subtract their bytes from and a poll site tests for a negative value; +8 is the
+    ;; value it was last set to, so the bytes spent are base - until.
+    (list (nelisp-link-symbol "nl_gc_until"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_until_base"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
                               :section 'bss :bind 'global :type 'object))
@@ -1272,8 +1283,8 @@ cross-unit call) before the freed payload is poisoned."
                                  (bit (shl 1 (/ (- want 16) 8)))
                                  (o 0) (pair-limit (- want 16)))
                             (seq
-                             (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                            (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+                             (ptr-write-u64 (data-addr nl_gc_until) 0
+                                            (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                              (ptr-write-u64 head 0 next)
                              (ptr-write-u64 (data-addr nl_freelist_small_mask) 0
                                             (if (= next 0)
@@ -1306,8 +1317,8 @@ cross-unit call) before the freed payload is poisoned."
                    (obj (+ r 8))
                    (o 0) (pair-limit (- want 16)))
               (seq
-               (ptr-write-u64 (data-addr nl_gc_stats) 0
-                              (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+               (ptr-write-u64 (data-addr nl_gc_until) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
                (ptr-write-u64 r 0 want)
                (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
                (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
@@ -2939,8 +2950,8 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u64 268435624 0) 1) 0
               (let ((p (heap-read-u64 st 0)))
                 (seq
-                 (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,cell))
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,cell))
                  (ptr-write-u64 st 88 (+ (heap-read-u64 st 88) 1))
                  (if (> p 0)
                      (seq (ptr-write-u64 st 0 (heap-read-u64 p 8)) p)
@@ -3026,8 +3037,8 @@ it shares with cons and symbol blocks.")
                  (if (= g 0) 0 (nl_symbol_zero g)))
              (let ((p (heap-read-u64 st 392)))
                (seq
-                (ptr-write-u64 (data-addr nl_gc_stats) 0
-                               (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,scell))
+                (ptr-write-u64 (data-addr nl_gc_until) 0
+                               (- (heap-read-u64 (data-addr nl_gc_until) 0) ,scell))
                 (if (> p 0)
                     (seq (ptr-write-u64 st 392 (heap-read-u64 p 40)) (nl_symbol_zero p))
                   (let ((i (heap-read-u64 st 408)) (b (heap-read-u64 st 400)))
@@ -3072,8 +3083,8 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u64 268435624 0) 1) 0
               (let ((p (heap-read-u64 fst 0)))
                 (seq
-                 (ptr-write-u64 (data-addr nl_gc_stats) 0
-                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,fcell))
+                 (ptr-write-u64 (data-addr nl_gc_until) 0
+                                (- (heap-read-u64 (data-addr nl_gc_until) 0) ,fcell))
                  (ptr-write-u64 fst 48 (+ (heap-read-u64 fst 48) 1))
                  (if (> p 0)
                      (seq (ptr-write-u64 fst 0 (heap-read-u64 p 8)) p)
@@ -3334,7 +3345,8 @@ it shares with cons and symbol blocks.")
       ;; side bit with no exact-start probe; a legacy payload (cold image,
       ;; parallel section) keeps its header mark.
       (defun nl_gc_mark_cons_payload (box)
-        (if (= (nl_typed_find box) 1) (nl_cons_mark_cell box)
+        (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_cons_mark_cell box)
           (nl_gc_mark_block box)))
       ;; ---- Doc 226 D9 symbol blocks, collector side ----
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
@@ -3351,7 +3363,8 @@ it shares with cons and symbol blocks.")
       ;; symbol_marked_p, alloc.c:4057, tests the pdumper bitmap for a
       ;; dumped symbol).  1 = newly marked.
       (defun nl_gc_mark_vbox (box)
-        (if (> (nl_typed_find box) 1) (nl_symbol_mark_cell box)
+        (if (> (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_symbol_mark_cell box)
           (nl_gc_mark_block box)))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
@@ -3444,7 +3457,7 @@ it shares with cons and symbol blocks.")
            (ptr-write-u64 st 424 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,scell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) num_used))
              0)
@@ -3619,7 +3632,7 @@ it shares with cons and symbol blocks.")
            (ptr-write-u64 st 32 num_free)
            (ptr-write-u64 (data-addr nl_gc_stats) 16
                           (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,cell)))
-           (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1)
+           (if (/= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 5) 0)
                (ptr-write-u64 (data-addr nl_gc_typed_state) 32
                               (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) num_used))
              0)
@@ -4054,7 +4067,7 @@ it shares with cons and symbol blocks.")
              (ptr-write-u64 st 200 0) (ptr-write-u64 st 208 0)
              (ptr-write-u64 st 216 0) (ptr-write-u64 st 224 0)
              (ptr-write-u64 st 256 0)
-             (if (if (= hmap 0) 1 (<= hi lo)) 0
+             (if (if (= (heap-read-u64 (data-addr nl_boot_hole_map) 16) 0) 1 (<= hi lo)) 0
                (let* ((bytes (nl_align_up (+ (sar (- hi lo) 6) 16) 65536))
                       (marks (nl_os_alloc_chunk bytes))
                       (starts (if (= marks 0) 0 (nl_os_alloc_chunk bytes)))
@@ -4069,7 +4082,7 @@ it shares with cons and symbol blocks.")
                        (setq bt (nl_hdr_bt hdr))
                        (if (= (nl_gc_bt_ok hdr bt hi) 0) (setq ok 0)
                          (seq
-                          (setq hole (nl_boot_hole_p hdr))
+                          (setq hole (if (= hmap 0) 0 (nl_boot_hole_p hdr)))
                           (if (= hole 1)
                               (if (= run 0) (setq run hdr) 0)
                             (seq
@@ -4794,6 +4807,7 @@ it shares with cons and symbol blocks.")
              (ptr-write-u64 268436168 0 desc)
              (ptr-write-u64 268436176 0 (+ (heap-read-u64 268436176 0) 1))
              (ptr-write-u64 268436184 0 (+ (heap-read-u64 268436184 0) size))
+             (nl_gc_budget_poke)
              desc)))))
     (defun nl_chunk_try_alloc (chunk want)
       (let* ((base (heap-read-u64 (+ chunk 0) 0))
@@ -4832,8 +4846,8 @@ it shares with cons and symbol blocks.")
         ;; add and a store on the hot path; plain (not atomic) on purpose --
         ;; a lost update under Doc 199 workers only delays a trigger.
         (nl_seq2
-         (ptr-write-u64 (data-addr nl_gc_stats) 0
-                        (+ (heap-read-u64 (data-addr nl_gc_stats) 0) want))
+         (ptr-write-u64 (data-addr nl_gc_until) 0
+                        (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
         ;; 1) try exact-fit free-list reuse (sweep populates the list).
         ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
         (let ((reused (if (= (heap-read-u64 268435624 0) 1) 0
@@ -6627,7 +6641,7 @@ REPL-facing module it feeds."
            (if (= old 0) 0 (nl_os_free_chunk old (* cap 32))) 1))))
     (defun nl_gc_typed_add (kind key aux countoff amount)
       (let* ((st (data-addr nl_gc_typed_state)))
-        (if (= (heap-read-u64 st 0) 1)
+        (if (if (= (heap-read-u64 st 0) 1) 1 (if (= (heap-read-u64 st 0) 4) 1 0))
             (if (if (= (heap-read-u64 st 16) 0) (= (nl_gc_typed_grow) 0)
                   (if (>= (* (+ (heap-read-u64 st 24) 1) 4)
                           (* (heap-read-u64 st 16) 3))
@@ -6662,7 +6676,7 @@ REPL-facing module it feeds."
               (if (or (= tag 6) (= tag 15))
                   (if (= (heap-read-u64 sp 8) (heap-read-u64 st 80))
                       (ptr-write-u8 sp 0 15) 0) 0))
-          (if (= mode 1)
+          (if (if (= mode 1) 1 (if (= mode 4) 1 0))
               ;; Doc 223, GNU gcstat: cons-block cells are counted by
               ;; sweep_conses, and image objects are not counted, as GNU
               ;; never counts pdumper objects (they live outside its
@@ -6711,6 +6725,39 @@ REPL-facing module it feeds."
         ;; nil and t are immediate symbols, with no name allocation needed.
         (ptr-write-u64 (data-addr nl_gc_typed_state) 40
                        (+ (heap-read-u64 (data-addr nl_gc_typed_state) 40) 2)) 0))
+    ;; One explicit collection that leaves the six `garbage-collect' counts at
+    ;; nl_gc_typed_state+32.  MODE 4 counts at the first mark (and the typed sweeps, and the intern
+    ;; table's occupancy, cached by the arena's bump pointer, which only an interning moves);
+    ;; MODE 1 is the reference census, an identity set over the marked edges and a walk of the table.
+    ;; Answers 1, or 0 after an out-of-memory in the identity set.
+    (defun nl_gc_stats_run (mode)
+      (let* ((state (data-addr nl_gc_typed_state)) (i 0))
+        (seq
+         (while (< i 112) (ptr-write-u64 state i 0) (setq i (+ i 8)))
+         (ptr-write-u64 state 0 mode)
+         (nl_gc_collect_from_recorded_roots 0)
+         (nl_gc_explicit_rearm)
+         (if (= mode 1)
+             (nl_gc_typed_interns (alloc-bytes 32 8))
+           (let ((key (+ (heap-read-u64 268436296 0) (heap-read-u64 268436288 0))))
+             (seq
+              (if (= (heap-read-u64 state 112) key) 0
+                (let ((cursor 0) (n 0) (slot (alloc-bytes 32 8)))
+                  (seq
+                   (while (>= cursor 0)
+                     (seq (setq cursor (nl_intern_next cursor slot))
+                          (if (< cursor 0) 0 (setq n (+ n 1)))))
+                   (ptr-write-u64 state 112 key)
+                   (ptr-write-u64 state 120 n))))
+              ;; nil and t are immediate symbols, with no name in the table.
+              (ptr-write-u64 state 40
+                (+ (+ (heap-read-u64 state 40) (heap-read-u64 state 120)) 2)))))
+         (if (= (heap-read-u64 state 8) 0) 0
+           (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
+         (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0) (ptr-write-u64 state 24 0)
+         (if (= (heap-read-u64 state 0) 3)
+             (seq (ptr-write-u64 state 0 0) 0)
+           (seq (ptr-write-u64 state 0 0) 1)))))
     ;; Chunk-aware membership.  During Doc 140 Stage 3 only chunk 0 is active,
     ;; but the walk already follows the descriptor list introduced in Stage 2.
     ;; Membership is restricted to [data-start, base+cursor) so fixed control
@@ -7006,8 +7053,11 @@ REPL-facing module it feeds."
                         (setq chunk 0)))))
                  found))))
         0)))
-    ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
+    ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
+    ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
+    ;; image block.  The counters of an explicit `garbage-collect' count on 2
+    ;; (GNU counts only what lives in its own blocks, never a pdumper object).
     (defun nl_gc_mark_block (obj)
       ;; Doc155 §8.12 sound-GC: recurse on mark 0 (unmarked) OR mark 4
       ;; (conserv-PINNED-not-recursed).  A pinned block was kept alive by the
@@ -7019,7 +7069,24 @@ REPL-facing module it feeds."
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
       ;; Doc 223: an image object takes its bit in the boot mark bitmap
       ;; (pdumper_set_marked); its header is never written.
-      (if (= (nl_boot_start_p obj) 1) (nl_boot_mark obj)
+      ;; The image test is GNU's pdumper_find_object_type plus pdumper_marked_p and
+      ;; pdumper_set_marked in one pass: the range, the alignment, the start bit
+      ;; and the mark bit share the granule index.  R is -1 for a block outside
+      ;; the image, else the mark answer (1 newly marked, 0 already marked).
+      (let ((r (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
+                 (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
+                   (if (/= (logand obj 7) 0) -1
+                     (let* ((st (data-addr nl_typed_alloc))
+                            (g (sar (- obj (heap-read-u64 st 200)) 3))
+                            (wi (* (sar g 6) 8))
+                            (bit (shl 1 (logand g 63))))
+                       (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
+                         (let* ((wa (+ (heap-read-u64 st 216) wi))
+                                (m (heap-read-u64 wa 0)))
+                           (if (= (logand m bit) 0)
+                               (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                             0)))))))))
+        (if (>= r 0) r
       (if (= (nl_gc_object_start_p obj) 0) 0
         (let* ((hdr (- obj 8))
                (raw (heap-read-u64 hdr 0)))
@@ -7032,9 +7099,9 @@ REPL-facing module it feeds."
           (if (= (sar raw 32) 0)
               (let ((m (nl_hdr_mark hdr)))
                 (if (if (= m 0) 1 (if (= m 4) 1 0))
-                    (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
+                    (nl_seq2 (nl_hdr_set_mark hdr 1) 2)
                   0))
-            0)))))
+            0))))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; ELEMENT CAPACITY of the block whose object pointer is PTR: the payload
@@ -7097,29 +7164,43 @@ REPL-facing module it feeds."
             (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
-      (if (= (nl_typed_find box) 3) (nl_symbol_mark_cell box)
-      (if (= (nl_gc_mark_block box) 0) 0
+      (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+          (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 3) (nl_symbol_mark_cell box)
+      (let ((mr (nl_gc_mark_block box)))
+       (if (= mr 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
-          (nl_gc_typed_vectorlike box kind n)
+          (nl_gc_typed_vectorlike box kind n mr)
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
             (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))))
-    (defun nl_gc_typed_vectorlike (box kind n)
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))))
+    (defun nl_gc_typed_vectorlike (box kind n mr)
       (let* ((state (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 state 0))
              (before (heap-read-u64 state 64)))
-        (if (if (= kind 3) 0
-              (if (= kind 13) 0
-                (if (= kind 11) 0
-                  (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0))))
-            (seq (nl_gc_typed_add 5 box 0 64 1)
-                 (if (> (heap-read-u64 state 64) before)
-                     (ptr-write-u64 state 72
-                       (+ (heap-read-u64 state 72)
-                          (if (= kind 8) n
-                            (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0)) 0)))
+        (if (if (= kind 3) 0 (if (= kind 13) 0 (if (= kind 11) 0 1)))
+            (if (= mode 4)
+                ;; A heap vector, record, char-table or closure marked for the first time.
+                (if (= mr 2)
+                    (seq (ptr-write-u64 state 64 (+ before 1))
+                         (ptr-write-u64 state 72
+                           (+ (heap-read-u64 state 72)
+                              (if (= kind 8) n
+                                (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))))
+                  0)
+              (if (= mode 1)
+                  (if (= (nl_gc_is_boot box) 0)
+                      (seq (nl_gc_typed_add 5 box 0 64 1)
+                           (if (> (heap-read-u64 state 64) before)
+                               (ptr-write-u64 state 72
+                                 (+ (heap-read-u64 state 72)
+                                    (if (= kind 8) n
+                                      (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0))
+                    0)
+                0))
+          0)))
     ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool GC arms.  The pool
     ;; is no longer a GC-managed Sexp::Vector; it is a flat cap*32B buffer
     ;; whose `cap' is stashed @268436448 (`nl_gc_pool_cap').  Mark = mark the
@@ -7169,9 +7250,22 @@ REPL-facing module it feeds."
         (seq (while (= go 1)
           (seq (setq go 0)
             (let ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8))))
-              (if (= (logand sp 7) 2) 0 (nl_gc_typed_slot sp 7))
-              (if (= (nl_gc_mark_cons_payload box) 0) 0
-                (seq (nl_gc_mark_word (heap-read-u64 box 0))
+              (if (= (logand sp 7) 2) 0
+                (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
+                  (nl_gc_typed_slot sp 7)))
+              (let ((r (nl_gc_mark_cons_payload box)))
+               (if (= r 0) 0
+                (seq
+                  ;; A legacy heap cons marked for the first time (a cons-block cell is counted
+                  ;; by sweep_conses, an image cons never).
+                  (if (= r 2)
+                      (if (= (logand sp 7) 2) 0
+                        (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                            (ptr-write-u64 (data-addr nl_gc_typed_state) 32
+                              (+ (heap-read-u64 (data-addr nl_gc_typed_state) 32) 1))
+                          0))
+                    0)
+                  (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
                       (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
@@ -7180,7 +7274,7 @@ REPL-facing module it feeds."
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))
-                              (nl_gc_mark_slot dw)))))))))))) 0)))
+                              (nl_gc_mark_slot dw)))))))))))) 0))))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
@@ -7226,8 +7320,15 @@ REPL-facing module it feeds."
                (nl_gc_mark_buf extra)
                (nl_gc_mark_char_table_slots extra 0 extra_len 32 0)))))
     (defun nl_gc_mark_bool_vector_box (box)
-      (if (= (nl_gc_mark_block box) 0) 0
-        (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))
+      (let ((r (nl_gc_mark_block box)))
+        (if (= r 0) 0
+          (seq (if (= r 2)
+                   (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                       (ptr-write-u64 (data-addr nl_gc_typed_state) 64
+                         (+ (heap-read-u64 (data-addr nl_gc_typed_state) 64) 1))
+                     0)
+                 0)
+               (nl_gc_mark_buf (heap-read-u64 (+ box 8) 0))))))
     ;; Canonical symbol-name strings live in an external sidecar and are
     ;; explicit collector edges. Intern entries stay live with the permanent
     ;; intern table; tag-16 entries are live only when reached this epoch.
@@ -7391,11 +7492,20 @@ REPL-facing module it feeds."
         0)))
     ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
     (defun nl_gc_mark_legacy_slot (sp)
-      (let ((tag (heap-read-u8 sp 0)))
-        (nl_gc_typed_slot sp tag)
+      (let* ((tag (heap-read-u8 sp 0))
+             (st (data-addr nl_gc_typed_state))
+             (mode (heap-read-u64 st 0)))
+        ;; The identity-set census runs in modes 1 and 2 only; mode 4 counts at the first mark.
+        (if (= (logand mode 3) 0) 0 (nl_gc_typed_slot sp tag))
         (if (= tag 19)
-            (let ((box (heap-read-u64 sp 8)))
-              (if (= (nl_gc_mark_block box) 0) 0 (nl_gc_mark_slot box)))
+            (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+              (if (= r 0) 0
+                (seq (if (= r 2)
+                         (if (= mode 4)
+                             (ptr-write-u64 st 64 (+ (heap-read-u64 st 64) 1))
+                           0)
+                       0)
+                     (nl_gc_mark_slot box))))
         (if (= tag 7)
             (nl_gc_mark_cons sp)
           (if (= tag 8)
@@ -7413,16 +7523,49 @@ REPL-facing module it feeds."
                         (nl_gc_mark_word vw))))
                 (if (or (= tag 6) (= tag 15))
                     ;; MutStr/UnibyteMutStr: NlStr*@sp+8 (ptr@box+8).
-                    (let ((box (heap-read-u64 sp 8)))
-                      (if (= (nl_gc_mark_block box) 0) 0
-                        (nl_gc_mark_buf (heap-read-u64 box 8))))
+                    (let* ((box (heap-read-u64 sp 8)) (r (nl_gc_mark_block box)))
+                      (if (= r 0) 0
+                        (seq (if (= r 2)
+                                 (if (= mode 4)
+                                     (if (< (nl_hdr_bt (- box 8)) 40) 0
+                                       (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                            (ptr-write-u64 st 56
+                                              (+ (heap-read-u64 st 56) (heap-read-u64 box 16)))))
+                                   0)
+                               0)
+                             (nl_gc_mark_buf (heap-read-u64 box 8)))))
                   (if (or (= tag 5) (= tag 14))
-                      (nl_gc_mark_buf (heap-read-u64 sp 16)) ; Str/UnibyteStr
+                      (let ((r (nl_gc_mark_block (heap-read-u64 sp 16)))) ; Str/UnibyteStr
+                        (if (= r 2)
+                            (if (= mode 4)
+                                (let* ((p (heap-read-u64 sp 16)) (len (heap-read-u64 sp 24)))
+                                  (if (< len 0) 0
+                                    (if (> len (- (nl_hdr_bt (- p 8)) 8)) 0
+                                      (if (= len 0)
+                                          ;; GNU shares one empty string; so does the census.
+                                          (if (= (heap-read-u64 st 104) 0)
+                                              (seq (ptr-write-u64 st 104 1)
+                                                   (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1)))
+                                            0)
+                                        (seq (ptr-write-u64 st 48 (+ (heap-read-u64 st 48) 1))
+                                             (ptr-write-u64 st 56 (+ (heap-read-u64 st 56) len)))))))
+                              0)
+                          0))
                     (if (or (= tag 4) (= tag 16))
                         (nl_seq2
                          (if (= tag 16) (nl_gc_mark_symview sp) 0)
                         (nl_seq2
-                         (nl_gc_mark_buf (heap-read-u64 sp 16))
+                         (let ((r (nl_gc_mark_block (heap-read-u64 sp 16))))
+                           ;; A symbol named by a block (an uninterned or per-occurrence name) is
+                           ;; counted when the block is first marked; a name in the intern region
+                           ;; is in the table's count; a tag-16 symbol's identity is not a block, so
+                           ;; the identity set counts those.
+                           (if (= tag 16)
+                               (if (= mode 4) (nl_gc_typed_slot sp 16) 0)
+                             (if (= r 0) 0
+                               (if (= mode 4)
+                                   (ptr-write-u64 st 40 (+ (heap-read-u64 st 40) 1))
+                                 0))))
                          (nl_gc_symname_mark_one
                           (if (= tag 4) 1 2)
                           (if (= tag 4) (heap-read-u64 sp 16)
@@ -7618,29 +7761,44 @@ REPL-facing module it feeds."
     ;; Record the free (mark 2) blocks of the loaded image [DS, END) before
     ;; anything reuses them.  A walk desync stops early; unmapped holes stay
     ;; permanent, which only keeps garbage, never frees a boot object.
+    (defun nl_boot_hole_map_fill (map ds hdr end)
+      ;; One bit per 8 bytes of [DS, END) for every free block (mark 2) of the
+      ;; header run [HDR, END).
+      (let ((bt 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
+                                         (sar (- (+ hdr bt) ds) 3))
+                0)
+              (setq hdr (+ hdr bt)))))
+         0)))
     (defun nl_boot_hole_map_build (ds end)
       (let* ((bytes (* (+ (sar (- end ds) 9) 1) 8))
              (map (nl_os_alloc_chunk bytes))
-             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0))
-             (bt 0))
+             (hdr (heap-read-u64 (+ (heap-read-u64 268436160 0) 24) 0)))
         (if (= map 0) 0
           (if (< hdr ds) 0
             (seq
              (nl_os_commit_range map 0 bytes)
-             (while (and (> hdr 0) (< hdr end))
-               (setq bt (nl_hdr_bt hdr))
-               (if (= (nl_gc_bt_ok hdr bt end) 0)
-                   (setq hdr end)
-                 (seq
-                  (if (= (nl_hdr_mark hdr) 2)
-                      (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
-                                             (sar (- (+ hdr bt) ds) 3))
-                    0)
-                  (setq hdr (+ hdr bt)))))
+             (nl_boot_hole_map_fill map ds hdr end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
              (ptr-write-u64 (data-addr nl_boot_hole_map) 0 map)
              0)))))
+    (defun nl_boot_hole_map_none (ds end)
+      ;; The image [DS, END) is loaded and has no hole run: no map, so
+      ;; `nl_boot_hole_p' answers 0 and every block below the watermark is boot
+      ;; (the sweep's `hmap = 0' arm).  The published end is what tells
+      ;; `nl_boot_build' that an image is present.
+      (seq (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
+           (ptr-write-u64 (data-addr nl_boot_hole_map) 0 0)
+           0))
     (defun nl_gc_coalesce_and_rebuild_freelist ()
       (seq
        (nl_alloc_run_reset)
@@ -7939,9 +8097,48 @@ REPL-facing module it feeds."
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (ptr-write-u64 (data-addr nl_gc_stats) 8
-                     (nl_gc_debt_limit_for
-                      (heap-read-u64 (data-addr nl_gc_stats) 16))))
+      (seq (ptr-write-u64 (data-addr nl_gc_stats) 8
+                          (nl_gc_debt_limit_for
+                           (heap-read-u64 (data-addr nl_gc_stats) 16)))
+           (nl_gc_budget_refill)))
+    (defun nl_gc_debt_now ()
+      ;; The bytes allocated since the last collection: the debt folded at the last refill plus
+      ;; the slice spent since (the budget's base less what is left of it).
+      (+ (heap-read-u64 (data-addr nl_gc_stats) 0)
+         (- (heap-read-u64 (data-addr nl_gc_until_base) 0)
+            (heap-read-u64 (data-addr nl_gc_until) 0))))
+    ;; The budget a poll site tests (GNU's consing_until_gc, alloc.c): negative means decide now.
+    ;; It is a slice of the headroom before a trigger can fire: the debt against its limit (64 MiB
+    ;; before the trigger arms, the poll's backstop), at most 4 MiB at a time, less one so that a
+    ;; nonnegative word proves debt < limit; -1 when the force hook is set or the reservation has
+    ;; reached the mid-form trigger.  The debt is folded into nl_gc_stats+0 here.
+    (defun nl_gc_budget_refill ()
+      (let* ((st (data-addr nl_gc_stats))
+             (debt (nl_gc_debt_now))
+             (rem (if (< (heap-read-u64 st 24) 2)
+                      (- 67108864 debt)
+                    (if (= (heap-read-u64 st 8) 0) 4194304
+                      (- (heap-read-u64 st 8) debt))))
+             (u (if (< rem 4194304) rem 4194304))
+             (until (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) -1
+                      (if (<= u 0) -1
+                        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                            (if (>= (heap-read-u64 268436184 0)
+                                    (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                                -1 (- u 1))
+                          (- u 1))))))
+        (seq (ptr-write-u64 st 0 debt)
+             (ptr-write-u64 (data-addr nl_gc_until_base) 0 until)
+             (ptr-write-u64 (data-addr nl_gc_until) 0 until)
+             0)))
+    ;; Make the budget negative without losing the debt spent so far: the base moves with it.
+    (defun nl_gc_budget_poke ()
+      (let ((u (heap-read-u64 (data-addr nl_gc_until) 0)))
+        (if (< u 0) 0
+          (seq (ptr-write-u64 (data-addr nl_gc_until_base) 0
+                              (- (heap-read-u64 (data-addr nl_gc_until_base) 0) (+ u 1)))
+               (ptr-write-u64 (data-addr nl_gc_until) 0 -1)
+               0))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
@@ -7950,9 +8147,11 @@ REPL-facing module it feeds."
        (ptr-write-u64 268435576 0 live)
        (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
        (ptr-write-u64 (data-addr nl_gc_stats) 32
-                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32)
-                         (heap-read-u64 (data-addr nl_gc_stats) 0)))
+                      (+ (heap-read-u64 (data-addr nl_gc_stats) 32) (nl_gc_debt_now)))
        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+       (nl_gc_budget_refill)
        0))
     (defun nl_gc_debt_rearm ()
       (seq
@@ -7963,7 +8162,7 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_due ()
       (if (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
         (if (= (heap-read-u64 (data-addr nl_gc_stats) 8) 0) 0
-        (if (< (heap-read-u64 (data-addr nl_gc_stats) 0)
+        (if (< (nl_gc_debt_now)
                (heap-read-u64 (data-addr nl_gc_stats) 8))
             0 1))))
     ;; The form-boundary test: growth watermark (unchanged) OR debt.
@@ -9777,10 +9976,11 @@ REPL-facing module it feeds."
       (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
                (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
              (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
-                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0
+                 (if (< (nl_gc_debt_now) 67108864) 0
                    (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
                0))
            (nl_gc_midform_collect)
+           (nl_gc_budget_refill)
            0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
@@ -9791,6 +9991,7 @@ REPL-facing module it feeds."
         (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56 r)
              (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                             (+ r (if (< 16777216 (/ r 2)) (/ r 2) 16777216)))
+             (nl_gc_budget_refill)
              0)))
     ;; After an explicit `garbage-collect', re-arm both growth triggers the
     ;; way the automatic paths do (the form-boundary watermark at
@@ -12347,8 +12548,85 @@ leave symbols unresolved at link time."
          (+ (* (nl_float_selftest_hold f 0) 4) 1)
          (nelisp_cons_construct_w (+ (* typed 4) 1) 3 0)
          0)))
+    (defun nl_boot_selftest_state (_pad)
+      ;; Doc 223, image loading.  Bit 0: a hole map exists; bit 1: the boot
+      ;; structures (start and mark bitmaps) are built; bit 2: a cold image is
+      ;; loaded (its end is published).  A live-only image shows 2 + 4 once a
+      ;; collection has built the structures, an older image 1 + 2 + 4.
+      (let ((st (data-addr nl_typed_alloc)) (hm (data-addr nl_boot_hole_map)))
+        (+ (if (= (heap-read-u64 hm 0) 0) 0 1)
+           (+ (if (= (heap-read-u64 st 216) 0) 0 2)
+              (if (= (heap-read-u64 hm 16) 0) 0 4)))))
+    (defun nl_boot_selftest_holes (_pad)
+      ;; How many 8-byte granules of the loaded image the hole map marks free.
+      (let* ((hm (data-addr nl_boot_hole_map)) (map (heap-read-u64 hm 0))
+             (words (if (= map 0) 0 (+ (sar (- (heap-read-u64 hm 16) (heap-read-u64 hm 8)) 9) 1)))
+             (i 0) (n 0) (w 0))
+        (seq
+         (while (< i words)
+           (seq (setq w (heap-read-u64 map (* i 8)))
+                (while (/= w 0)
+                  (seq (setq n (+ n (logand w 1)))
+                       (setq w (logand (sar w 1) 9223372036854775807))))
+                (setq i (+ i 1))))
+         n)))
+    (defun nl_boot_selftest_bit (map g)
+      (logand (sar (heap-read-u64 map (* (sar g 6) 8)) (logand g 63)) 1))
+    (defun nl_boot_selftest_synth (_pad)
+      ;; The hole scan on a synthetic header run: live 48, free 64, live 32,
+      ;; free 32, free 32, live 48 (256 bytes, granules 0-31).  The free blocks
+      ;; are granules 6-13 and 18-25.  Answers 1 when exactly those bits are set.
+      (let* ((buf (alloc-bytes 256 8)) (map (alloc-bytes 64 8)) (i 0) (ok 1))
+        (seq
+         (while (< i 8) (seq (ptr-write-u64 map (* i 8) 0) (setq i (+ i 1))))
+         (ptr-write-u64 buf 0 48) (ptr-write-u64 buf 48 (+ 64 2))
+         (ptr-write-u64 buf 112 32) (ptr-write-u64 buf 144 (+ 32 2))
+         (ptr-write-u64 buf 176 (+ 32 2)) (ptr-write-u64 buf 208 48)
+         (nl_boot_hole_map_fill map buf buf (+ buf 256))
+         (setq i 0)
+         (while (< i 32)
+           (seq
+            (if (= (nl_boot_selftest_bit map i)
+                   (if (and (>= i 6) (< i 14)) 1 (if (and (>= i 18) (< i 26)) 1 0)))
+                0 (setq ok 0))
+            (setq i (+ i 1))))
+         (+ (* ok 4) 1))))
+    (defun nl_gc_stats_check_w (_pad)
+      (let* ((state (data-addr nl_gc_typed_state))
+             (k0 0) (k1 0) (k2 0) (k3 0) (k4 0) (k5 0)
+             (c0 0) (c1 0) (c2 0) (c3 0) (c4 0) (c5 0) (mask 0) (lst 3))
+        (if (= (nl_gc_stats_run 1) 0) (+ (* -1 4) 1)
+          (seq
+           (setq k0 (heap-read-u64 state 32)) (setq k1 (heap-read-u64 state 40))
+           (setq k2 (heap-read-u64 state 48)) (setq k3 (heap-read-u64 state 56))
+           (setq k4 (heap-read-u64 state 64)) (setq k5 (heap-read-u64 state 72))
+           (if (= (nl_gc_stats_run 4) 0) (+ (* -2 4) 1)
+             (seq
+              (setq c0 (heap-read-u64 state 32)) (setq c1 (heap-read-u64 state 40))
+              (setq c2 (heap-read-u64 state 48)) (setq c3 (heap-read-u64 state 56))
+              (setq c4 (heap-read-u64 state 64)) (setq c5 (heap-read-u64 state 72))
+              (setq mask (+ (+ (+ (if (= c0 k0) 0 1) (if (= c1 k1) 0 2))
+                               (+ (if (= c2 k2) 0 4) (if (= c3 k3) 0 8)))
+                            (+ (if (= c4 k4) 0 16) (if (= c5 k5) 0 32))))
+              (setq lst (nelisp_cons_construct_w (+ (* k5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* k0 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c5 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c4 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c3 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c2 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c1 4) 1) lst 0))
+              (setq lst (nelisp_cons_construct_w (+ (* c0 4) 1) lst 0))
+              (nelisp_cons_construct_w (+ (* mask 4) 1) lst 0)))))))
     (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 53) (nl_gc_stats_check_w 0)
+        (if (= op 52) (nl_boot_selftest_synth 0)
+        (if (= op 47) (+ (* (nl_boot_selftest_holes 0) 4) 1)
+        (if (= op 46) (+ (* (nl_boot_selftest_state 0) 4) 1)
         (if (= op 45) (nl_float_selftest_w 0)
         (if (= op 44) (nl_float_stats_w 0)
         (if (= op 43) (nl_conserv_selftest_w 0)
@@ -12370,7 +12648,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))))))))
+             0))))))))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -12529,9 +12807,9 @@ leave symbols unresolved at link time."
     (defun nl_vm_poll_switch_w (args)
       (seq
        (if (= (wf_argval args 0) 70)
-           (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1)
+           (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1) (nl_gc_budget_poke))
          (if (= (wf_argval args 0) 71)
-             (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0)
+             (seq (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0) (nl_gc_budget_refill))
            0))
        (if (= (wf_argval args 0) 73)
            (+ (* (nl_gc_regs_probe 0) 4) 1)
@@ -12539,13 +12817,19 @@ leave symbols unresolved at link time."
              (+ (* (nl_gc_regs_probe 1) 4) 1)
            (if (= (wf_argval args 0) 75)
                (+ (* (heap-read-u64 (data-addr nl_gc_regs_calls) 0) 4) 1)
-             (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))))))
+             (if (= (wf_argval args 0) 76)
+                 (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until) 0))
+               (if (= (wf_argval args 0) 77)
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_until_base) 0))
+                 (if (= (wf_argval args 0) 78)
+                     (wf_write_int_w 0 (nl_gc_debt_now))
+                   (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))))))))
     (defun bf_debug_switch_w (args env)
-      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 75) 0)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 51) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 53) 0)
           (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -12564,7 +12848,8 @@ leave symbols unresolved at link time."
                                         (heap-read-u64 268436184 0))
                          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                                         (+ (heap-read-u64 268436184 0) 16777216))
-                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))
+                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)
+                         (nl_gc_budget_refill))
                   (if (= (wf_argval args 0) 6)
                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 0)
                     (if (= (wf_argval args 0) 7)
@@ -12671,8 +12956,8 @@ leave symbols unresolved at link time."
       (let* ((st (data-addr nl_gc_stats))
              (lim (heap-read-u64 st 8))
              (debt (if (if (< (heap-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
-                       (/ (* (heap-read-u64 st 0) 100) 16777216)
-                     (/ (* (heap-read-u64 st 0) 100) lim)))
+                       (/ (* (nl_gc_debt_now) 100) 16777216)
+                     (/ (* (nl_gc_debt_now) 100) lim)))
              (base (heap-read-u64 (data-addr nl_gc_loop_ctx) 56))
              (mark (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
              (now (heap-read-u64 268436184 0))
@@ -14372,6 +14657,9 @@ leave symbols unresolved at link time."
                  (wf_write_int_w 0 -1))
           (seq
            (nl_build_digest_trailer trl)
+           ;; Version 2: the stream dump writes only included blocks with their
+           ;; marks cleared, so the image has no free block and no hole run.
+           (ptr-write-u64 trl 8 2)
            ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
            (ptr-write-u64 hdr 0 1179407692)
            (ptr-write-u64 hdr 16 isz)
@@ -15332,35 +15620,22 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     (defun bf_garbage_collect_snapshot_w (env _pad)
   (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
          (args-root (nl_root_word env)) (i 0))
-    (seq
-     (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
-     (ptr-write-u64 state 0 1)
-     (nl_gc_collect_from_recorded_roots 0)
-     (nl_gc_explicit_rearm)
-     ;; The census walk's symbol view is scratch, made after the collection.
-     (nl_gc_typed_interns (alloc-bytes 32 8))
-     (ptr-write-u64 state 0 (if (= (heap-read-u64 state 0) 3) 3 0))
-     (if (= (heap-read-u64 state 0) 3)
-         (seq (if (= (heap-read-u64 state 8) 0) 0
-                (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-              (ptr-write-u64 state 0 0) (nl_root_release env mark)
-              (nl_abi_fail (bf_signal_memory_full) 0))
-       (let* ((snapshot-word (nl_w_vector_make 6 0))
-              (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
-         (seq
-          ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
-          ;; vector's actual WORD header.
-          (ptr-write-u64 args-root 0 args-word)
-          (setq i 0)
-          (while (< i 6)
-            (vector-slot-set (nl_cons_car_word args-word) i
-                             (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
-            (setq i (+ i 1)))
-          (if (= (heap-read-u64 state 8) 0) 0
-            (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
-          (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
-          (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
-            (seq (nl_root_release env mark) word))))))))
+    (if (= (nl_gc_stats_run 4) 0)
+        (seq (nl_root_release env mark)
+             (nl_abi_fail (bf_signal_memory_full) 0))
+      (let* ((snapshot-word (nl_w_vector_make 6 0))
+             (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
+        (seq
+         ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
+         ;; vector's actual WORD header.
+         (ptr-write-u64 args-root 0 args-word)
+         (setq i 0)
+         (while (< i 6)
+           (vector-slot-set (nl_cons_car_word args-word) i
+                            (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
+           (setq i (+ i 1)))
+         (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
+           (seq (nl_root_release env mark) word)))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
@@ -44861,7 +45136,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     (defun nl_cold_trailer_valid_p (trl n)
       (if (< n 48) 0
         (if (/= (heap-read-u64 trl 0) 1195655758) 0
-          (if (/= (heap-read-u64 trl 8) 1) 0
+          (if (if (= (heap-read-u64 trl 8) 1) 0 (if (= (heap-read-u64 trl 8) 2) 0 1)) 0
             (if (= (nl_build_digest_stamped_p) 0) 0
               (nl_build_digest_eq (+ trl 16)))))))
     (defun nl_cold_diag_bad_digest ()
@@ -44984,7 +45259,10 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                          ;; table in the chunk-0 scratch; `trl_n' < 48 means
                          ;; the file has no (or a truncated) trailer.
                          (let* ((trl (+ tbl (* tlen 8)))
-                                (trl_n (nl_fa_read_all fd trl 48 0)))
+                                (trl_n (nl_fa_read_all fd trl 48 0))
+                                ;; Trailer version 2 (Doc 223): the stream dump wrote
+                                ;; no free block, no mark and so no hole run.
+                                (liveonly (if (= (heap-read-u64 trl 8) 2) 1 0)))
                            (seq
                             (nl_os_close_handle fd)
                             (if (= (nl_cold_reloc_table_valid_p tbl tlen slen) 0)
@@ -45009,7 +45287,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; ZEROED memory -- matching the fresh-mmap
                             ;; invariant the boot constructors depend on.
                             (nl_cold_zero tbl (+ (* tlen 8) 48))
-                            (nl_cold_clear_marks ds (+ ds slen))
+                            (if (= liveonly 1) 0 (nl_cold_clear_marks ds (+ ds slen)))
                             (ptr-write-u64 base 0 (+ 1024 slen))
                             ;; Keep the chunk-0 descriptor cursor in sync with
                             ;; the legacy bump cursor immediately after
@@ -45027,10 +45305,19 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; pages/chunks (page faults, growth, ~3x slower
                             ;; `--load').  Keep them free and rebuild the free
                             ;; lists from the header walk, as a GC sweep does.
-                            (nl_gc_coalesce_and_rebuild_freelist)
+                            ;; A live-only image has no free block: the two header walks
+                            ;; (coalesce and relink) would find nothing, so only the
+                            ;; allocator's run and bucket state is reset.
+                            (if (= liveonly 1)
+                                (seq (nl_alloc_run_reset) (nl_gc_clear_freelist_buckets 0))
+                              (nl_gc_coalesce_and_rebuild_freelist))
                             ;; Holes are reusable but not permanent: map them
-                            ;; before the first allocation lands in one.
-                            (nl_boot_hole_map_build ds (+ ds slen))
+                            ;; before the first allocation lands in one.  A live-only
+                            ;; image has none (pdumper has no hole map): publish only
+                            ;; where the image is.
+                            (if (= liveonly 1)
+                                (nl_boot_hole_map_none ds (+ ds slen))
+                              (nl_boot_hole_map_build ds (+ ds slen)))
                             ;; image end: lets the pointer-keyed macro/function
                             ;; caches treat image objects as cacheable (see
                             ;; `nl_cache_boot_p').
@@ -46777,6 +47064,8 @@ correctly."
         ;; from its measured live set.
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
         ;; Doc 152 Stage 5: mid-form collection is ON by default, but only
         ;; after the permanent-generation watermark above has made collection
         ;; sound.  `nl_arena_init' seeded chunk-bytes-reserved@268436184 and
@@ -46821,6 +47110,9 @@ correctly."
               'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+        (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+        (nl_gc_budget_refill)
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
