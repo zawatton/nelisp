@@ -108,7 +108,7 @@
     (seoc-check (equal (symbol-name new) "seoc-unintern") "the new one names itself")))
 
 ;; Many names: the cells vector grows from 16 on, the buckets get chains.
-(let ((syms nil) (i 0))
+(let ((syms nil) (i 0) (before (length (nelisp--intern-table-symbols))))
   (while (< i 6000)
     (push (intern (format "seoc-bulk-%d" i)) syms)
     (setq i (1+ i)))
@@ -120,6 +120,14 @@
       (setq j (1- j)))
     (seoc-check ok "6000 interned names all have their objects after a collection")
     (seoc-check named "6000 interned names all keep their names"))
+  (seoc-check (= (- (length (nelisp--intern-table-symbols)) before) 6000)
+              "the intern table lists exactly the 6000 new names")
+  (seoc-check (let ((ok t) (j 0))
+                (while (< j 6000)
+                  (unless (eq (intern-soft (format "seoc-bulk-%d" j)) (nth (- 5999 j) syms)) (setq ok nil))
+                  (setq j (+ j 37)))
+                ok)
+              "intern-soft finds a sample of them, as the same symbols")
   (dolist (sym syms) (set sym 1))
   (garbage-collect)
   (let ((ok t))
