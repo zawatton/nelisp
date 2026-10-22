@@ -5634,13 +5634,17 @@ it shares with cons and symbol blocks.")
     ;; The environment-free form of `nl_symbol_name_value_create'.
     (defun nl_symname_make (buf n out)
       (let* ((entry (nl_symbol_name_entry_for 1 buf n)))
-        (if (/= entry 0) (nl_symbol_name_copy_out entry out)
+        ;; An entry made for `symbol-name' holds a view of a canonical String
+        ;; (outside the arena chunks): the object's persistent name box must not
+        ;; copy that, so it gets a legacy box over arena bytes and the entry stays.
+        (if (if (/= entry 0) (= (nl_string_view_header (+ entry 40)) 0) 0)
+            (nl_symbol_name_copy_out entry out)
           (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
                  (name-tag 14) (i 0))
             (seq (while (< i n)
                    (seq (if (>= (heap-read-u8 buf i) 128) (setq name-tag 5) 0)
                         (setq i (+ i 1))))
-                 (if (= (nl_alloc_str_write_tag buf n alloc-n out data name-tag) 0) 0
+                 (if (= (nl_alloc_str_write_legacy buf n alloc-n out data name-tag) 0) 0
                    (nl_symbol_name_register 1 buf n out)))))))
     ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
     ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol
