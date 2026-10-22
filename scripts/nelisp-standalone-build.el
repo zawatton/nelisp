@@ -11414,10 +11414,13 @@ by name pending that follow-up; this paragraph is the record of why."
     "symbol-function" "fset" "consp" "not" "null" "nth" "nthcdr" "setcar"
     "setcdr" "string<" "<" "car" "cdr" "eq" "make-vector" "aref" "aset"
     "vector" "boundp" "equal" "eql" "get" "fboundp" "save-excursion"
-    "save-restriction" "save-current-buffer" "interactive" "`" "," ",@")
+    "save-restriction" "save-current-buffer" "interactive" "`" "," ",@"
+    "&optional" "&rest")
   "Static names beyond the builtin dispatch table (heads and name tests).
-The last three are the reader's backquote, comma and comma-at heads: GNU reads
-them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.")
+The backquote, comma and comma-at names are the reader's heads: GNU reads
+them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.
+The last two names are GNU's Qand_optional and Qand_rest, which funcall_lambda
+compares with EQ (eval.c:3374-3391).")
 
 ;; The names `nl_apply_name_classify' (lisp/nelisp-cc-evalport-combiner-apply.el)
 ;; sorts out: ids 1 to 11 are the intercepted builtins (class 1), 12 to 18 the
@@ -52422,6 +52425,9 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
 (defun nelisp-standalone--eval-call-defuns ()
   "The interpreter's call of a subr on GNU eval_sub's structure (eval.c:2540-2700)."
   (let* ((sid-builtin (nelisp-standalone--sid "builtin"))
+         (sid-closure (nelisp-standalone--sid "closure"))
+         (sid-opt (nelisp-standalone--sid "&optional"))
+         (sid-rest (nelisp-standalone--sid "&rest"))
          (many (nelisp-standalone--le-chunks "Too many arguments")))
     `(;; The static symbol id of a symbol WORD or view, 0 for none.
       (defun nl_sym_sid (w) ,(nelisp-standalone--sid-read-form 'w))
@@ -52559,7 +52565,110 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                       (if (= st -3)
                           (nl_eic_after_args_w (m5_fx_slot_list base argc) env fw2 call_name)
                         0))))))))))
-      ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
+;; GNU does the debug-on-exit "now, while VALS still exists" (eval.c:2668): the
+      ;; activation's record points at the argument words of the frame that is about
+      ;; to return, so its exit hook runs here, once, before that frame goes.
+      (defun nl_eic_exit_debug_now (r env)
+        (if (= r 0) 0
+          (let* ((state (ptr-read-u64 env 176)))
+            (if (= state 0) r
+              (let* ((nd (ptr-read-u64 state 0)))
+                (if (= nd 0) r
+                  (let* ((frame (nl_n4_record state (- nd 1))))
+                    (if (= (ptr-read-u64 frame 120) 0) r
+                      (let* ((v (nl_n4_exit_debug_w r env)))
+                        (seq (ptr-write-u64 frame 120 0) v))))))))))
+      ;; GNU funcall_lambda (eval.c:3350) for the usual closure.  D = (closure CAPTURED
+      ;; FORMALS . BODY), read from a function cell, called with exactly as many
+      ;; arguments as it has parameters, none of them &optional or &rest (GNU's
+      ;; `EQ (next, Qand_rest)' and `Qand_optional' are the static ids).  The
+      ;; arguments are evaluated in order into a rooted frame (GNU's argvals), a frame
+      ;; of the environment holds the parameters as (NAME . VALUE) pairs
+      ;; (`lexenv = Fcons (Fcons (next, arg), lexenv)', eval.c:3401), the body is Fprogn
+      ;; and the frame goes when it returns.  2: not taken, nothing evaluated.
+      ;; NF is FORMALS' length when it is a proper list of plain symbols, else -1.
+      (defun nl_fl_formals (formals)
+        (let* ((n 0) (cur formals) (ok 1))
+          (seq
+           (while (if (= ok 1) (= (logand cur 7) 2) 0)
+             (let* ((name (ptr-read-u64 (- cur 2) 0)))
+               (if (= (logand name 7) 6)
+                   (if (let* ((k (logand (ptr-read-u64 (- name 6) 0) 63))) (if (= k 4) 1 (= k 16)))
+                       (let* ((sid (nl_sym_sid name)))
+                         (if (if (= sid ,sid-opt) 1 (= sid ,sid-rest))
+                             (setq ok 0)
+                           (seq (setq n (+ n 1))
+                                (setq cur (ptr-read-u64 (- cur 2) 8)))))
+                     (setq ok 0))
+                 (setq ok 0))))
+           (if (if (= ok 1) (= cur 3) 0) n -1))))
+      (defun nl_fl_call_w (d tail env fw call_name)
+        (if (/= (logand d 7) 2) 2
+          (if (/= (nl_sym_sid (ptr-read-u64 (- d 2) 0)) ,sid-closure) 2
+            (let* ((r1 (ptr-read-u64 (- d 2) 8)))
+              (if (/= (logand r1 7) 2) 2
+                (let* ((cap (ptr-read-u64 (- r1 2) 0)) (r2 (ptr-read-u64 (- r1 2) 8)))
+                  (if (if (= cap 3) 1 (/= (logand r2 7) 2)) 2
+                    (let* ((formals (ptr-read-u64 (- r2 2) 0))
+                           (body (ptr-read-u64 (- r2 2) 8))
+                           (nf (nl_fl_formals formals)))
+                      (if (if (< nf 0) 1 (> nf 6)) 2
+                        (if (/= (logand (ptr-read-u64 (+ env 112) 0) 3145728) 0) 2
+                          (if (/= (nl_sp_nargs tail) nf) 2
+                            (nl_fl_run_w cap formals body nf tail env fw call_name))))))))))))
+      (defun nl_fl_run_w (cap formals body nf tail env fw call_name)
+        (let* ((base (nl_root_frame env (+ nf 1))))
+          (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
+            (if (/= (m5_fx_eval_forms tail env base nf) 0) 0
+              (let* ((rec (nl_apply_lambda_fx_rec cap body env 0)))
+                (if (/= rec 0)
+                    ;; The VM covers this closure: the ordinary apply runs it.
+                    (nl_eic_after_args_w (m5_fx_slot_list base nf) env fw call_name)
+                  (seq
+                   (m5_fx_frame_lazy env base nf 0)
+                   (nl_eic_exit_debug_now (nl_fl_apply_w cap formals body base nf env) env))))))))
+      (defun nl_fl_apply_w (cap formals body base nf env)
+        (let* ((frames (+ env 32)) (capflag (if (= (nl_ali_cap_none cap 0) 1) 0 1))
+               ;; A closure with no parameters, capturing nothing, whose body is
+               ;; literals only runs in no frame at all (`nl_apply_lambda_inner_w').
+               (lit (if (= nf 0) (if (= capflag 0) (nl_ali_literal_body_w body 0) 2) 2)))
+          (if (/= lit 2) lit
+           (if (if (= capflag 1) (/= (extern-call nl_env_push_captured env cap) 0) 0) 0
+            (seq
+             (if (= capflag 1) (nelisp_frame_scope_mark frames) 0)
+             (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr) (nl_frame_push_sym1_ptr) 0)
+             (nl_frame_set_flags
+              (nl_vector_slot_word (nl_record_slot_word frames 0)
+                                   (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+              13109)
+             (let* ((cur formals) (i 0))
+               (while (< i nf)
+                 (seq (nl_bind_frame_param frames (ptr-read-u64 (- cur 2) 0)
+                                           (ptr-read-u64 (+ base (* i 8)) 0))
+                      (setq cur (ptr-read-u64 (- cur 2) 8))
+                      (setq i (+ i 1)))))
+             (if (= capflag 0) (nelisp_frame_scope_mark frames) 0)
+             (nl_fl_finish (nl_fl_body_w body env) env capflag))))))
+      ;; Fprogn of the body: the last form's value, nil for none, 0 for a signal.
+      (defun nl_fl_body_w (body env)
+        (let* ((cur body) (v 3) (go 1))
+          (seq
+           (while (if (= go 1) (if (= (logand cur 7) 2) 1 (= (nl_val_tag cur) 7)) 0)
+             (let* ((direct (= (logand cur 7) 2))
+                    (form (if direct (ptr-read-u64 (- cur 2) 0) (nl_cons_car_word cur))))
+               (seq
+                (setq v (if (= (logand form 1) 1) form (nelisp_eval_call_w form env 0)))
+                (if (= v 0) (setq go 0)
+                  (setq cur (if direct (ptr-read-u64 (- cur 2) 8) (nl_cons_cdr_word cur)))))))
+           v)))
+      ;; unbind_to: the parameter frame, then the captured one; a pop that fails fails
+      ;; the call.
+      (defun nl_fl_finish (w env capflag)
+        (let* ((p1 (nl_env_pop_frame env))
+               (st (if (= p1 -1) 1 (if (= w 0) 1 0)))
+               (st2 (if (= capflag 1) (if (= (nl_env_pop_frame env) -1) 1 st) st)))
+          (if (= st2 0) w 0)))
+            ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
       (defun nl_eic_prim2_run (id base argc resw)
         (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
@@ -52637,7 +52746,10 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
               (nl_eic_builtin_call_w d nm tail_ptr env fw call_name)
             (let* ((w (m5_fx_interp_call_w d tail_ptr env 0)))
               (if (= w 2)
-                  (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0) env fw call_name)
+                  (let* ((c (nl_fl_call_w d tail_ptr env fw call_name)))
+                    (if (= c 2)
+                        (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0) env fw call_name)
+                      c))
                 w)))))
       ;; GNU eval_sub reads the car's function cell (eval.c:2634, SYMBOL_FUNCTION in
       ;; place): an interned or uninterned symbol object is its own mirror entry, so a

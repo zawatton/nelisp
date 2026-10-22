@@ -137,3 +137,26 @@ keyword-param 1
 keyword-param-setq 2
 keyword-setq-const (setting-constant :foo)
 keyword-setq-self :foo
+closure-0 zero
+closure-1 5
+closure-2 (1 2)
+closure-3 (3 2 1)
+closure-4 (1 5 4)
+closure-empty-body nil
+closure-literal-body 5
+closure-param-special (10 10)
+closure-sees-dynamic (10 20 10)
+closure-param-setq (4 1)
+closure-nested-args (2 4)
+closure-arg-order (a b c)
+closure-arg-signal (wrong-type-argument (1))
+closure-signal ((error "boom 3") 5)
+closure-throw (9 11)
+closure-redefine-self (3 nil)
+closure-recursion (200 3628800)
+closure-captured (1 2 3)
+closure-captured-param (105 106)
+closure-shared-capture (1 2 2)
+closure-returned-param (7 (2 3))
+closure-wrong-args (wrong-number-of-arguments wrong-number-of-arguments wrong-number-of-arguments)
+closure-in-condition-case (wta number-or-marker-p)
