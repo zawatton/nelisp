@@ -8668,12 +8668,15 @@ REPL-facing module it feeds."
                       (- (heap-read-u64 st 8) debt))))
              (u (if (< rem 4194304) rem 4194304))
              (until (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) -1
+                      ;; Batch F's countdown (debug switch 32): a mode above 1 collects
+                      ;; at every poll, so the budget stays negative while it counts.
+                      (if (> (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1) -1
                       (if (<= u 0) -1
                         (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
                             (if (>= (heap-read-u64 268436184 0)
                                     (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
                                 -1 (- u 1))
-                          (- u 1))))))
+                          (- u 1)))))))
         (seq (ptr-write-u64 st 0 debt)
              (ptr-write-u64 (data-addr nl_gc_until_base) 0 until)
              (ptr-write-u64 (data-addr nl_gc_until) 0 until)
@@ -13033,7 +13036,11 @@ leave symbols unresolved at link time."
                                       (let ((count (wf_argval args 1)))
                                         (if (< count 1) 1 (+ count 1)))
                                     1152921504606846976))
-                                 0)
+                                 ;; The VM polls test the allocation budget (Doc 223):
+                                 ;; make it decide now, or restore it.
+                                 (if (> (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                                     (nl_gc_budget_poke)
+                                   (nl_gc_budget_refill)))
                               0)))))))))))))
     ;; Doc 215 builtin word ABI: bf_debug_switch_w returns the result WORD (0 = signal stashed); bf_debug_switch keeps the (rc, OUT) ABI.
     ;; Doc 226 D9 self-test of the symbol_block allocator and its collector
@@ -49763,7 +49770,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (if (= entry 0) (nl_n3_special_unchecked_w name_ptr args_ptr env_ptr 0)
             (let* ((fn (nl_ent_ptr entry 1)))
               (if (= (nl_n3_special_object fn) 1)
-                  (nl_sp_cell_call_w fn name_ptr args_ptr env_ptr)
+                  (nl_sp_cell_call_w fn name_ptr args_ptr env_ptr 0)
                 2)))))
       (defun nl_n3_special_cell (name_ptr args_ptr env_ptr out)
         (nl_abi_word_to_rc (nl_n3_special_cell_w name_ptr args_ptr env_ptr 0) out))
@@ -53116,8 +53123,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; this call.  FUNC_SLOT holds the first link, a symbol; on 1 it holds
     ;; the final definition, on 3 the final macro (GNU eval_sub tests for a
     ;; macro only after indirect_function, so an alias of a macro expands,
-    ;; whenever the target became one).  A special form at the end, or a
-    ;; chain an internal writer made cyclic, keeps the first link and its
+    ;; whenever the target became one).  A special form's function-cell object at
+    ;; the end answers 4 with the object in FW (GNU runs the UNEVALLED subr); a
+    ;; chain an internal writer made cyclic keeps the first link and its
     ;; existing handling.  0: the chain ends unbound.
     ;; FW holds WORDs: the first link stays in a local (the call form holds
     ;; that symbol), each later link is published in FW as it is reached.
@@ -53161,7 +53169,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
               (if (= resolved 3)
                   (nl_cons_macro_apply_eval_w form_ptr (heap-read-u64 fw 0) tail_ptr env 0)
                 (if (= resolved 4)
-                    (nl_n3_special_call_w (heap-read-u64 fw 0) tail_ptr env form_ptr)
+                    ;; A special form at the end of the chain counts its arguments first,
+                    ;; as one reached through the head's own function cell does.
+                    (nl_sp_cell_call_w (heap-read-u64 fw 0) call_name tail_ptr env form_ptr)
                   (nl_eic_eval_args_w tail_ptr env fw call_name)))))
         w))
     ;; The fx VM answers -3 when it does not take the call; otherwise its
@@ -53534,9 +53544,11 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
               1))))
       ,(nelisp-standalone--special-cell-gate-defun)
       ;; A special form called through its function cell: its count first.
-      (defun nl_sp_cell_call_w (object head args env)
+      ;; FORM_PTR is the whole call form (0 when there is none), as for
+      ;; `nl_n3_special_call_w'.
+      (defun nl_sp_cell_call_w (object head args env form_ptr)
         (if (= (nl_sp_gate_cell head args (nl_apply_list_nth object 1)) 1)
-            (nl_n3_special_call_w object args env 0)
+            (nl_n3_special_call_w object args env form_ptr)
           0))
       (defun nl_eic_dolist_w (tail_ptr env form_ptr _pad)
         (if (= (nl_sp_check_macro tail_ptr 1 1) 1)
@@ -53718,6 +53730,23 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
 
 (defun nelisp-standalone--patch-combiner-cons-word (src)
   "SRC with the legacy evaluator chain replaced by its Doc 215 word forms."
+  (nelisp-standalone--assert-cell-gate
+   (nelisp-standalone--patch-combiner-cons-word-1 src)))
+
+(defun nelisp-standalone--assert-cell-gate (src)
+  "SRC, after checking that `nl_eic_after_lookup_w' calls the special-cell gate.
+The substitution in `nelisp-standalone--patch-combiner-cons-word-1' is a `cl-subst'
+that leaves the form as it was when its pattern no longer matches; a special form
+reached through its function cell would then skip its argument count silently."
+  (unless (cl-some (lambda (form)
+                     (and (eq (car-safe form) 'defun) (eq (cadr form) 'nl_eic_after_lookup_w)
+                          (string-match-p "nl_sp_cell_call_w" (prin1-to-string form))))
+                   (cdr src))
+    (error "nl_eic_after_lookup_w does not call nl_sp_cell_call_w: the special-cell gate patch did not apply"))
+  src)
+
+(defun nelisp-standalone--patch-combiner-cons-word-1 (src)
+  "The substitution and drops of `nelisp-standalone--patch-combiner-cons-word'."
   (cons (car src)
         (append (cl-remove-if
                  (lambda (form)
@@ -53728,8 +53757,8 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                  (lambda (form)
                    (if (and (eq (car-safe form) 'defun) (eq (cadr form) 'nl_eic_after_lookup_w))
                        ;; A special form reached through its function cell counts its arguments.
-                       (cl-subst '(nl_sp_cell_call_w lookup_w head_ptr tail_ptr env)
-                                 '(nl_n3_special_call_w lookup_w tail_ptr env 0)
+                       (cl-subst '(nl_sp_cell_call_w lookup_w head_ptr tail_ptr env form_ptr)
+                                 '(nl_n3_special_call_w lookup_w tail_ptr env form_ptr)
                                  form :test #'equal)
                      form))
                  (cl-remove-if
