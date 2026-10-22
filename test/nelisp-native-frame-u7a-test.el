@@ -157,8 +157,12 @@
       (remove-variable-watcher 'u7a-special watcher))))
 (ert-deftest u7a/gnu31-watcher-ordered-values-and-locality ()
   (skip-unless (equal emacs-version "31.1"))
-  ;; The standalone interpreter lacks watchers. GNU 31.1 is the reference,
-  ;; not evidence that the standalone API or callbacks have been implemented.
+  ;; Establish the localized-symbol state explicitly: global restoration then
+  ;; uses set, even after the local buffer dies. The fresh-process standalone
+  ;; driver also checks the pre-localization unlet operation.
+  (with-temp-buffer
+    (set (make-local-variable 'u7a-special) 'oracle-local))
+  ;; Provider presence alone is not evidence of correct callbacks.
   (should (string-prefix-p "31.1" emacs-version))
   (let ((fn (native-frame-u7a-function 'callback)) (events nil))
     (let ((watcher (lambda (symbol new operation where)

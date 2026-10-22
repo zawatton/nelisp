@@ -59,7 +59,7 @@
      ;;      Use ptr-read-u64 twice: first to dereference the box
      ;;      pointer, second to load the exact bit count.
      (if (= (sexp-tag arg) 10)
-         (and (sexp-int-make out (ptr-read-u64 (ptr-read-u64 arg 8) 0)) 0)
+         (and (sexp-int-make out (heap-read-u64 (heap-read-u64 arg 8) 0)) 0)
        1))
   "AOT source for the §120.B `nl_jit_bool_vector_len' swap.
 

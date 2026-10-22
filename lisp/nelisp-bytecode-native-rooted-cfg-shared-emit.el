@@ -53,7 +53,7 @@
                    (progn
                      ,@(mapcar (lambda (offset)
                                  `(ptr-write-u64 ,destination ,offset
-                                                 (ptr-read-u64 ,source ,offset)))
+                                                 (heap-read-u64 ,source ,offset)))
                                '(0 8 16 24))
                      ,result))))))
     result))
@@ -169,7 +169,7 @@
              operation (plist-get operation :function-root) (plist-get operation :argument-roots)
              `(let ((switch_slot (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
                 (if (= switch_slot 0) 2
-                  (cfg-dispatch (ptr-read-u64 switch_slot 8) ,cases ,default))))))
+                  (cfg-dispatch (heap-read-u64 switch_slot 8) ,cases ,default))))))
          ((memq opcode '(frame-specbind frame-unbind frame-save frame-cleanup handler-catch handler-condition handler-pop))
           (nelisp-native-frame-v2-copy-emit
            (plist-get context :plan) (plist-get operation :frame-action)
@@ -273,7 +273,7 @@
               (nelisp-bytecode-native-rooted-cfg-shared-emit--to
                context id (plist-get (car fall-edges) :target) join path))
              (arm-form `(let ((,status
-                               (if (= (ptr-read-u64 ,slot 0) 0)
+                               (if (= (heap-read-u64 ,slot 0) 0)
                                    ,(if nil-branch taken-form fall-form)
                                  ,(if nil-branch fall-form taken-form))))
                          (if (= ,status 0)
@@ -300,7 +300,7 @@
            (no (nelisp-bytecode-native-rooted-cfg-shared-emit--to context id (plist-get fall :target) nil nil)))
       `(let ((cycle_condition (extern-call nl_root_pin_slot_v2 env ticket ,root 0 0 0)))
          (if (= cycle_condition 0) 2
-           (if (= (ptr-read-u64 cycle_condition 0) 0)
+           (if (= (heap-read-u64 cycle_condition 0) 0)
                ,(if (eq (plist-get operation :taken-if) 'nil) yes no)
              ,(if (eq (plist-get operation :taken-if) 'nil) no yes)))))))
 
@@ -477,7 +477,7 @@
                          (plist-get plan :poll-root) nil
                          `(let ((cycle_poll_slot (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))
                             (if (= cycle_poll_slot 0) 2
-                              (if (= (ptr-read-u64 cycle_poll_slot 0) 0) ,body ,quit-form)))
+                              (if (= (heap-read-u64 cycle_poll_slot 0) 0) ,body ,quit-form)))
                          (and (plist-get plan :handler-bank) plan)))))
               (setq body
                     (if (plist-get plan :banked)
@@ -527,7 +527,7 @@
                                       (if (= ,status 0)
                                           (let ((,target (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))
                                             (if (= ,target 0) 2
-                                              (cfg-dispatch (ptr-read-u64 ,target 8)
+                                              (cfg-dispatch (heap-read-u64 ,target 8)
                                                             ,(mapcar (lambda (pc) (list pc pc)) (plist-get plan :handler-targets))
                                                             ,epilogue)))
                                         (progn (setq ,out ,status) (cfg-edge ,epilogue))))

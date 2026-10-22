@@ -173,7 +173,7 @@
         (vector-make 8 backing-slot)
         ;; Step 9: allocate nelisp-lexframe-stack record (2 slots) into *frames-out.
         (record-make (vector-ref-ptr scratch-ptr 2)  ; nelisp-lexframe-stack type-tag
-                     2
+                     3
                      frames-out)
         ;; Step 10: frames.slot 0 = backing vector.
         (record-slot-set frames-out

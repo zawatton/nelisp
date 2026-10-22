@@ -99,7 +99,7 @@ confused with a fixed base immediate."
           ((rewrite-int
             (n)
             (if (and (integerp n) (<= base n) (< n (+ base span)))
-                `(+ (ptr-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
+                `(+ (heap-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
               n))
            (walk
             (form)

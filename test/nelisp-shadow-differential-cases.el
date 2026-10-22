@@ -45,6 +45,100 @@
 ;;; Code:
 
 (list
+ ;; Bytecode cdr returns the contained WORD, preserving the tail's identity.
+ ;; An address of the cdr slot is not a Lisp value and breaks the next car.
+ (let ((tail-code (make-byte-code 257 (unibyte-string 137 65 135) [] 2))
+       (cadr-code (make-byte-code 257 (unibyte-string 137 65 64 135) [] 2))
+       (safe-code (make-byte-code 257 (unibyte-string 137 163 135) [] 2))
+       (pair (list 'first 'second)))
+   (list (eq (funcall tail-code pair) (cdr pair))
+         (funcall cadr-code pair)
+         (funcall safe-code [])
+         (funcall cadr-code nil)))
+ ;; Doc 216 S4: tagged vectorlikes retain shared children, parent/extra
+ ;; edges and lexical/frame roots across repeated precise collections.
+ ;; Disable conservative native-stack scanning before graph construction;
+ ;; unwind cleanup restores it for the following corpus forms.
+ (progn
+   (put 'whv-parity-table 'char-table-extra-slots 1)
+   (unwind-protect
+       (progn
+         (when (fboundp 'nelisp--debug-switch) (nelisp--debug-switch 28))
+         (eval
+          '(let* ((type (make-symbol "whv-record-type"))
+                  (reader
+                   (let* ((shared (vector (cons 'seed nil) 17))
+                          (object (make-record type 2 nil))
+                          (parent (make-char-table 'whv-parent shared))
+                          (table (make-char-table 'whv-parity-table nil))
+                          (pair (cons shared object)))
+                     (aset object 1 shared)
+                     (aset object 2 table)
+                     (set-char-table-parent table parent)
+                     (set-char-table-extra-slot table 0 (vector object shared))
+                     (aset table 97 shared)
+                     (aset table 144470 pair)
+                     (aset table 200 table)
+                     (lambda (operation)
+                       (when (eq operation 'change)
+                         (aset object 0 17)
+                         (aset object 1 nil)
+                         (unless (and (eq (aref object 0) 17) (null (aref object 1)))
+                           (error "WHV record mutation before GC: %S %S"
+                                  (aref object 0) (aref object 1)))
+                         (garbage-collect)
+                         (unless (and (eq (aref object 0) 17) (null (aref object 1)))
+                           (error "WHV record mutation after GC: %S %S"
+                                  (aref object 0) (aref object 1)))
+                         (aset object 0 type)
+                         (aset object 1 shared)
+                         (aset (aref object 1) 1 29)
+                         (setcar (aref shared 0) 'changed))
+                       (list (eq (aref object 0) type)
+                             (eq (car pair) (aref object 1))
+                             (eq (cdr pair) object)
+                             (eq (aref table 97) shared)
+                             (eq (aref table 98) shared)
+                             (eq (aref table 144470) pair)
+                             (eq (aref table 200) table)
+                             (eq (aref (char-table-extra-slot table 0) 0) object)
+                             (eq (aref (char-table-extra-slot table 0) 1) shared)
+                             (eq (catch 'whv-result (throw 'whv-result shared)) shared)
+                             (eq (apply #'identity (list (aref object 1))) shared)
+                             (funcall (lambda (frame-value)
+                                (garbage-collect)
+                                (eq frame-value pair)) pair)
+                             (aref shared 1) (car (aref shared 0)))))))
+             (dotimes (_ 4) (garbage-collect))
+             (funcall reader 'change)
+             (dotimes (_ 4) (garbage-collect))
+             (list (funcall reader 'read)
+                   (condition-case e (aref (vector 17) 3) (error e))
+                   (condition-case e (make-vector -1 nil) (error e))
+                   (condition-case e (char-table-subtype 17) (error e))
+                   (condition-case e (aref (make-record 'whv-bounds 1 nil) -1) (error e))
+                   (condition-case e (aref (make-record 'whv-bounds 1 nil) 2) (error e))
+                   (condition-case e (unibyte-string []) (error e))
+                   (condition-case e (char-table-range (make-char-table 'x nil) (cons [] 65)) (error e))
+                   (condition-case e (char-table-range (make-char-table 'x nil) (cons 65 [])) (error e))))
+          t)
+         )
+     (when (fboundp 'nelisp--debug-switch) (nelisp--debug-switch 29))))
+ ;; Doc 216 S1: legacy WORDs/views preserve shared identity and mutation
+ ;; across cons, vector and record boundaries, including a collecting form.
+ (let* ((text (copy-sequence "ab"))
+        (symbol (make-symbol "heap-accessor"))
+        (tail (cons 17 nil))
+        (head (cons text tail))
+        (vector (vector head tail symbol))
+        (record (record 'heap-accessor vector 1.25 2305843009213693952)))
+   (setcar tail -17)
+   (aset text 0 122)
+   (garbage-collect)
+   (list (eq (cdr head) tail) (eq (aref vector 1) tail)
+         (eq (aref record 1) vector) (eq (aref vector 2) symbol)
+         (car (cdr head)) (car head) (symbol-name symbol)
+         (aref record 2) (aref record 3)))
  ;; Truth predicates consume the returned WORD after a collecting form.
  (list (if (progn (garbage-collect) nil) 'wrong 'nil-result)
        (if (progn (garbage-collect) 0) 'integer-result 'wrong)
@@ -182,6 +276,15 @@
             0 (unibyte-string 192 49 8 0 193 32 48 135 135)
             (vector 'no-catch (lambda () (throw nil 'missing))) 1)))
    (equal (funcall fn) '(no-catch nil missing)))
+ ;; Native variable redirects preserve constants and uninterned identity.
+ (let ((alias (make-symbol "nil-target")))
+   (list (defvaralias alias nil) (boundp alias) (symbol-value alias)
+         (indirect-variable alias)))
+ (let ((a (make-symbol "same")) (b (make-symbol "same")) (other (make-symbol "same")))
+   (set b 7) (defvaralias a b) (set a 9)
+   (list (eq (indirect-variable a) b) (symbol-value b) (boundp other)
+         (condition-case e (defvaralias b a)
+           (cyclic-variable-indirection (eq (cadr e) a)))))
  ;; U7a: aliases bind the canonical dynamic cell, including a void target.
  (let ((target (intern "u7a-shadow-target"))
        (alias (intern "u7a-shadow-alias")))
@@ -318,6 +421,13 @@
  ;; every result derived: returning a raw-byte string here would compare the
  ;; two printers instead of the string semantics.
  (equal (unibyte-string 227 129 130) "あ")
+ ;; Mixed byte representations use distinct ordering/equality contracts.
+ (let ((u (unibyte-string 233))
+       (r (string-as-multibyte (unibyte-string 233))))
+   (list (compare-strings u nil nil "é" nil nil)
+         (compare-strings u nil nil r nil nil)
+         (string-lessp u "é") (string-lessp "é" u)
+         (string= u r) (string-prefix-p u r)))
  (append (unibyte-string 200 201 202) nil)
  (append "あ" nil)
  (list (multibyte-string-p (unibyte-string 200 201))
@@ -2281,6 +2391,17 @@
 ;; N4 locals must handle the small alist frame as well as promoted tables.
 ((lambda (par-n4-local) (backtrace--locals 1 'backtrace--locals)) 7)
 
+;; Doc 216 S4.2: unevaluated callers own no enclosing activation locals.
+((lambda (par-frame-owner)
+   (list par-frame-owner (backtrace--locals 1 'backtrace--locals))) 17)
+
+;; Recursion errors carry a singleton DATA list, not a dotted condition pair.
+(let ((max-lisp-eval-depth 100))
+  (condition-case par-depth-data
+      ((lambda (self) (funcall self self))
+       (lambda (self) (1+ (funcall self self))))
+    (error par-depth-data)))
+
 ;; Char-table getters preserve canonical children across collection and cycles.
 (progn
   (put 'par-char-word 'char-table-extra-slots 1)
@@ -2425,6 +2546,59 @@
       (list (catch 'done (save-current-buffer (set-buffer other) (throw 'done 7)))
             (eq original (current-buffer)))
     (kill-buffer other)))
+ ;; Literal-only nullary closures preserve heap identity and captured values;
+ ;; executable forms and wrong arity still take the ordinary call path.
+ (eval '(let ((reader (lambda () [1 "callfloor"])) (events nil))
+          (let ((object (funcall reader)))
+            (garbage-collect)
+            (list ((lambda ())) ((lambda () nil t 17))
+                  (funcall (lambda (a &optional b &rest rest) 17) 1)
+                  (funcall (lambda (a &optional b &rest rest) 17) 1 2 3 4)
+                  (eq object (funcall reader))
+                  (let ((captured 23)) (funcall (lambda () captured)))
+                  (funcall (lambda () (push 'executed events) 31)) events
+                  (let ((empty (lambda () nil)))
+                    (condition-case e (funcall empty 1)
+                      (wrong-number-of-arguments (list (car e) (nth 2 e)))))))) t)
+ ;; Sort skips callbacks for singleton keys and preserves list/vector identity
+ ;; according to the GNU 31 keyword and legacy interfaces.
+ (list (sort (list 1) :key 12)
+       (sort [1] :lessp 12 :key 12)
+       (sort (list '(2 a) '(1 b) '(2 c) '(1 d)) :key #'car :reverse t)
+       (let* ((items (list 3 1 2)) (result (sort items #'<)))
+         (list items result (eq items result)))
+       (let* ((items (vector 3 1 2)) (result (sort items :lessp #'<)))
+         (list items result (eq items result)))
+       (condition-case e
+           (sort (list 2 1) (lambda (_a _b) (signal 'arith-error '(sort-predicate))))
+         (error e)))
+ ;; Native sorting retains values through allocating callbacks, and freezes
+ ;; the comparator before the key function can redefine its symbol.
+ (list (sort (list 3 1 2) (lambda (a b) (garbage-collect) (< a b)))
+       (let ((original (symbol-function '<)))
+         (unwind-protect
+             (sort (list 3 1 2) :lessp '<
+                   :key (lambda (x) (fset '< (lambda (_a _b) nil)) x))
+           (fset '< original)))
+       (let* ((source (list 3 1 2)) (copy (copy-sequence source)))
+         (list (equal source copy) (eq source copy)
+               (eq (cdr source) (cdr copy)))))
+
+ ;; Numeric comparison must not round a fixnum through f64 before ordering.
+ (let* ((integer (1+ (ash 1 60))) (floating (float (ash 1 60)))
+        (result (sort (list integer floating))))
+   (list (eq (car result) floating) (eq (cadr result) integer)
+         (> integer floating) (value< floating integer)))
+
+ ;; Integration boundaries accept immediate values before inspecting them.
+ (condition-case e (eval '(setq :prim-integ-keyword 9)) (error e))
+ (condition-case e (sort (list 2 1) 12) (error e))
+ (progn
+   (defvaralias 'prim-integ-optional-constant 't)
+   (eval '(defun prim-integ-optional-formal (&optional prim-integ-optional-constant)
+            'body-must-not-run) nil)
+   (list (condition-case e (prim-integ-optional-formal) (error e))
+         (condition-case e (prim-integ-optional-formal 9) (error e))))
 
 )
 

@@ -59,15 +59,15 @@
       ;; payload: NlBoolVector* (raw i64).  idx: i64.
       ;; val: *const Sexp.  out: *mut Sexp.
       ;; Pure-Elisp box bit length is at offset 0 and packed data at +8.
-      (if (< idx (ptr-read-u64 payload 0))
+      (if (< idx (heap-read-u64 payload 0))
           (and
            (ptr-write-u8
-            (ptr-read-u64 payload 8)
+            (heap-read-u64 payload 8)
             (/ idx 8)
             (if (= (sexp-tag val) 0)
-                (logand (ptr-read-u8 (ptr-read-u64 payload 8) (/ idx 8))
+                (logand (heap-read-u8 (heap-read-u64 payload 8) (/ idx 8))
                         (- 255 (nl_jit_access_aset_bv_bitval (mod idx 8))))
-              (logior (ptr-read-u8 (ptr-read-u64 payload 8) (/ idx 8))
+              (logior (heap-read-u8 (heap-read-u64 payload 8) (/ idx 8))
                       (nl_jit_access_aset_bv_bitval (mod idx 8)))))
            (extern-call nl_sexp_clone_into val out)
            0)

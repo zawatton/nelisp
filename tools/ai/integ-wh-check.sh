@@ -14,7 +14,8 @@
 #                 its three files, the keymap extraction list is intact, and the
 #                 bytecode lean-event test reads the WORD tag, not a header
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
-#   codegen-ert   the AOT compiler and codegen ERT suites on host Emacs
+#   codegen-ert   the AOT compiler, codegen, S5 lowering, alignment, artifact and linker
+#                 ERT suites on host Emacs
 #   built         the dynamic binary exists and names HEAD's tree
 #   boot          the dynamic binary evaluates (+ 1 2)
 #   sanity        fib, a cons-heavy loop and a string-heavy loop print GNU's bytes
@@ -91,7 +92,9 @@ case ${1:-} in
   ns)
     bash tools/ai/batch-f-check.sh ns ;;
   codegen-ert)
-    for t in nelisp-aot-compiler-test nelisp-aot-codegen-test; do
+    for t in nelisp-aot-compiler-test nelisp-aot-codegen-test nelisp-aot-s5-lowering-test \
+             nelisp-codegen-alignment-test nelisp-artifact-native-exec-test nelisp-artifact-test \
+             nelisp-static-linker-test; do
       [ -f test/$t.el ] || fail "missing test/$t.el"
       capped timeout 900 "$GNU" --batch -Q -L lisp -L src -L scripts -L test --eval '(setq load-prefer-newer t)' \
         -l ert -l test/$t.el -f ert-run-tests-batch-and-exit > "$OUT/ert-$t.log" 2>&1 ||

@@ -153,7 +153,7 @@
                             forms :test #'equal)))
     (pcase mutation
       ('current (setq forms (cl-subst '(= chunk 0)
-                                      '(= chunk (ptr-read-u64 268436168 0))
+                                      '(= chunk (heap-read-u64 268436168 0))
                                       forms :test #'equal)))
       ('restore (setq forms (cl-subst '(ptr-write-u64 (+ prev 48) 0 next)
                                       '(ptr-write-u64 (+ prev 48) 0 chunk)
@@ -268,8 +268,9 @@
     (setq form (cl-subst state '(data-addr nl_gc_loop_ctx) form :test #'equal)
           form (cl-subst (+ state 128) '(data-addr nl_gc_stats) form :test #'equal))
     (when broken
-      (setq form (cl-subst '(>= (ptr-read-u64 855638144 24) before)
-                          '(> (ptr-read-u64 855638144 24) before)
+      ;; Production storage loads use the Doc 216 accessor spelling.
+      (setq form (cl-subst '(>= (heap-read-u64 855638144 24) before)
+                          '(> (heap-read-u64 855638144 24) before)
                           form :test #'equal)))
     (nelisp-gc-cadence-test--native
      `(seq

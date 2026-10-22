@@ -62,17 +62,17 @@
                  ;; Emacs -- it used to be byte-payload equality here.
                  ;; Every empty string is `eq' to every other, as in
                  ;; Emacs (one shared empty string object).
-                 (if (= (ptr-read-u64 a 24) (ptr-read-u64 b 24))
-                     (if (= (ptr-read-u64 a 24) 0)
+                 (if (= (heap-read-u64 a 24) (heap-read-u64 b 24))
+                     (if (= (heap-read-u64 a 24) 0)
                          1
-                       (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0))
+                       (if (= (heap-read-u64 a 16) (heap-read-u64 b 16)) 1 0))
                    0)
                (if (= (sexp-tag a) 14)
                    ;; UnibyteStr: same inline layout, same identity test.
-                   (if (= (ptr-read-u64 a 24) (ptr-read-u64 b 24))
-                       (if (= (ptr-read-u64 a 24) 0)
+                   (if (= (heap-read-u64 a 24) (heap-read-u64 b 24))
+                       (if (= (heap-read-u64 a 24) 0)
                            1
-                         (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0))
+                         (if (= (heap-read-u64 a 16) (heap-read-u64 b 16)) 1 0))
                      0)
                (if (= (sexp-tag a) 3)
                    ;; Float: compare raw bits (same layout as Int at offset 8).

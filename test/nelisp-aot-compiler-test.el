@@ -208,7 +208,7 @@ Caller is responsible for `delete-file' on cleanup."
              (nelisp-aot-compiler--fresh-fat-pointer-source-form
              '(let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
                 (nl-ptr-ref-u8 p 7)))
-             '(let ((p (alloc-bytes 64 8))) (ptr-read-u8 p 7))))))
+             '(let ((p (alloc-bytes 64 8))) (heap-read-u8 p 7))))))
 
 (ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-covers-static-loop-reads ()
   "A fresh pointer may be read repeatedly without reintroducing a check."
@@ -224,7 +224,7 @@ Caller is responsible for `delete-file' on cleanup."
              '(let ((p (alloc-bytes 64 8)))
                 (let ((i 0) (acc 0))
                   (while (< i 3)
-                    (setq acc (+ acc (ptr-read-u8 p 0)))
+                    (setq acc (+ acc (heap-read-u8 p 0)))
                     (setq i (+ i 1)))
                   acc))))))
 
@@ -242,7 +242,7 @@ Caller is responsible for `delete-file' on cleanup."
              '(let ((p (alloc-bytes 8 8)))
                 (let ((i 0) (acc 0))
                   (while (< i 8)
-                    (setq acc (+ acc (ptr-read-u8 p i)))
+                    (setq acc (+ acc (heap-read-u8 p i)))
                     (setq i (+ i 1)))
                   acc))))))
 
@@ -283,7 +283,7 @@ Caller is responsible for `delete-file' on cleanup."
              (nelisp-aot-compiler--fresh-fat-pointer-source-form
               '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
                  (nl-ptr-ref-u8 (nl-ptr-slice p 2 3) 1)))
-             '(let ((p (alloc-bytes 8 8))) (ptr-read-u8 p 3)))))
+             '(let ((p (alloc-bytes 8 8))) (heap-read-u8 p 3)))))
   (should (eq
            (plist-get
             (nelisp-aot-compiler--fresh-fat-pointer-analysis
@@ -304,7 +304,7 @@ Caller is responsible for `delete-file' on cleanup."
                      (nl-ptr-ref-u8 q 1)))))
              '(let ((p (alloc-bytes 16 8)))
                 (seq (ptr-write-u8 p 6 42)
-                     (ptr-read-u8 p 6)))))))
+                     (heap-read-u8 p 6)))))))
 
 (ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-proves-derived-slice-loop-index ()
   "A monotone index is proved against the narrowed derived-slice range."
@@ -3853,14 +3853,23 @@ SysV would emit `push rdi' = 57 instead."
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-aot-compiler-test--bytes-contain-p
-             text
-             ;; record/vector-slot-set: R8 = value, RDX = index, RCX = payload.
-             (unibyte-string #x41 #x58 #x5a #x59
-                             #x48 #x8b #x49 #x08
-                             #x48 #x81 #xec #x20 #x00 #x00 #x00
-                             #xe8 #x00 #x00 #x00 #x00
-                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
+    (dolist (op '(record-slot-set vector-slot-set))
+      (let ((setter-text
+             (nelisp-aot-compiler-test--coff-text-for
+              `(defun probe () (,op 4096 0 8192)))))
+        ;; Both compact WORDs and legacy views must retain all three GP args.
+        (should (nelisp-aot-compiler-test--bytes-contain-p
+                 setter-text (unibyte-string #x41 #x58 #x5a #x59)))
+        ;; The legacy arm still loads [RCX+8]; the compact arm strips tag6.
+        (should (nelisp-aot-compiler-test--bytes-contain-p
+                 setter-text (unibyte-string #x48 #x8b #x49 #x08)))
+        (should (nelisp-aot-compiler-test--bytes-contain-p
+                 setter-text (unibyte-string #x48 #x81 #xe9 #x06 #x00 #x00 #x00)))
+        (should (nelisp-aot-compiler-test--bytes-contain-p
+                 setter-text
+                 (unibyte-string #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                 #xe8 #x00 #x00 #x00 #x00
+                                 #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))))
 
 (ert-deftest nelisp-aot-compiler/win64-cons-make-with-clone-uses-gp-args ()
   "Win64 cons-make-with-clone calls clone helper with RCX/RDX."
@@ -4726,12 +4735,16 @@ grammar rather than comments alone."
           (cdr (or source nelisp-cc-frame-stack-find--source)))))
     (let ((walk (defun-form 'nelisp_frame_stack_find_walk_bucket))
           (in-frame (defun-form 'nelisp_frame_stack_find_in_frame))
+          (flags (defun-form 'nl_frame_set_flags))
+          (share (defun-form 'nelisp_frame_try_share_chain))
           (key-equal (defun-form 'nelisp_symbol_key_equal nelisp-cc-fnv1a--source))
           (object (make-temp-file "nelisp-frame-stack-find-" nil ".o")))
       (unwind-protect
           (progn
             (should walk)
             (should in-frame)
+            (should flags)
+            (should share)
             (should key-equal)
             (dolist (form (list walk in-frame key-equal))
               (dolist (forbidden
@@ -4739,12 +4752,27 @@ grammar rather than comments alone."
                          nl_cons_car_ptr nl_cons_cdr_ptr alloc-bytes
                          nl_gc_in_arena))
                 (should-not (contains-p form forbidden))))
-            (should (contains-p in-frame 'ptr-read-u64))
+            ;; Vectorlike children live inline behind the semantic WORD
+            ;; accessors; a raw load here would reinstate the old backing
+            ;; pointer assumptions and skip compact record type slots.
+            (dolist (accessor '(nl_record_type_word nl_record_slot_word
+                                nl_vector_length nl_vector_slot_word))
+              (should (contains-p in-frame accessor)))
+            (should-not (contains-p in-frame 'ptr-read-u64))
+            (should-not (contains-p in-frame 'heap-read-u64))
             (should (contains-p in-frame 'sar))
             (should (contains-p in-frame 'nelisp_frame_stack_find_word_tag_p))
+            (should (contains-p share 'nl_frame_set_flags))
+            (should (contains-p flags 'nl_word_payload))
+            ;; Kind flag bits 6/7 must leave the length above bit 7 intact.
+            (should (contains-p flags -193))
+            (should (contains-p flags 64))
+            (should (contains-p flags 128))
             (should (contains-p walk 'nelisp_symbol_key_equal))
             (should (contains-p key-equal 'str-eq))
-            (should (contains-p key-equal 'ptr-read-u64))
+            (dolist (accessor '(heap-sexp-payload heap-sexp-data heap-sexp-length))
+              (should (contains-p key-equal accessor)))
+            (should-not (contains-p key-equal 'ptr-read-u64))
             (nelisp-aot-compile-to-object
              nelisp-cc-frame-stack-find--source object
              :arch 'x86_64 :format 'elf)

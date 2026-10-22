@@ -16,8 +16,8 @@
               (value (nl_root_pin_slot_v2 env ticket (+ exit-index 2))))
          (if (or (= left 0) (= right 0) (= output 0) (= kind 0) (= tag 0) (= value 0))
              2
-           (if (and (= (ptr-read-u64 left 0) 2) (= (ptr-read-u64 right 0) 2))
-               (let* ((a (ptr-read-s64 left 8)) (b (ptr-read-s64 right 8)))
+           (if (and (= (heap-read-u64 left 0) 2) (= (heap-read-u64 right 0) 2))
+               (let* ((a (heap-read-s64 left 8)) (b (heap-read-s64 right 8)))
                  (if (and (>= a -2305843009213693952) (<= a 2305843009213693951)
                           (>= b -2305843009213693952) (<= b 2305843009213693951))
                      ;; Two GNU fixnums sum within signed i64 before checking

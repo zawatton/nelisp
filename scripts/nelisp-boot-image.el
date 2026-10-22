@@ -175,14 +175,14 @@ memory must be available before the first Lisp form or heap restoration."
                          (image_stat (+ scratch 4384))
                          (exe_status (syscall-direct ,(if arm 80 5) executable exe_stat 0 0 0 0))
                          (image_status (syscall-direct ,(if arm 80 5) image image_stat 0 0 0 0))
-                         (mode (ptr-read-u32 image_stat ,(if arm 16 24)))
+                         (mode (heap-read-u32 image_stat ,(if arm 16 24)))
                          (bad (or (< exe_status 0) (< image_status 0)
                                   (/= (logand mode 61440) 32768)
                                   (/= (logand mode 18) 0)
-                                  (/= ,(if arm '(ptr-read-u32 image_stat 20)
-                                         '(ptr-read-u64 image_stat 16)) 1)
-                                  (/= (ptr-read-u32 exe_stat ,(if arm 24 28))
-                                      (ptr-read-u32 image_stat ,(if arm 24 28))))))
+                                  (/= ,(if arm '(heap-read-u32 image_stat 20)
+                                         '(heap-read-u64 image_stat 16)) 1)
+                                  (/= (heap-read-u32 exe_stat ,(if arm 24 28))
+                                      (heap-read-u32 image_stat ,(if arm 24 28))))))
                     (seq
                      (nl_os_close_handle executable)
                      (if bad
@@ -214,7 +214,7 @@ memory must be available before the first Lisp form or heap restoration."
         (defun nl_boot_image_release (path)
           (if (= path 0) 0
             (let ((scratch (- path 4672)))
-              (seq (nl_os_close_handle (ptr-read-u64 scratch 4640))
+              (seq (nl_os_close_handle (heap-read-u64 scratch 4640))
                    (nl_os_free_chunk scratch 8192))))))))
    (t '((defun nl_boot_image_companion () 0)
         (defun nl_boot_image_release (_path) 0)))))
@@ -232,17 +232,17 @@ memory must be available before the first Lisp form or heap restoration."
             (image_owner (+ scratch 67664)) (defaulted (+ scratch 67672)))
         (if (or (/= (extern-call GetFileType image) 1)
                 (= (extern-call GetFileInformationByHandle image info) 0)
-                (/= (logand (ptr-read-u32 info 0) 1040) 0)
-                (/= (ptr-read-u32 info 40) 1)
+                (/= (logand (heap-read-u32 info 0) 1040) 0)
+                (/= (heap-read-u32 info 40) 1)
                 (= (extern-call GetKernelObjectSecurity executable 1 exe_sd 1024 length) 0)
                 (= (extern-call GetKernelObjectSecurity image 1 image_sd 1024 length) 0)
                 (= (extern-call GetSecurityDescriptorOwner exe_sd exe_owner defaulted) 0)
                 (= (extern-call GetSecurityDescriptorOwner image_sd image_owner defaulted) 0)
-                (= (ptr-read-u64 exe_owner 0) 0)
-                (= (ptr-read-u64 image_owner 0) 0))
+                (= (heap-read-u64 exe_owner 0) 0)
+                (= (heap-read-u64 image_owner 0) 0))
             0
-          (extern-call EqualSid (ptr-read-u64 exe_owner 0)
-                       (ptr-read-u64 image_owner 0)))))
+          (extern-call EqualSid (heap-read-u64 exe_owner 0)
+                       (heap-read-u64 image_owner 0)))))
     (defun nl_boot_image_companion ()
       ;; 32768 UTF-16 units plus metadata. This mapping must survive arena
       ;; restoration; no pathname or handle is allocated inside the heap.
@@ -280,27 +280,27 @@ memory must be available before the first Lisp form or heap restoration."
     (defun nl_boot_image_open_pinned (path)
       (if (>= path 0) (nl_os_open_read path)
         (let* ((scratch (- 0 path))
-               (image (ptr-read-u64 scratch 67680))
+               (image (heap-read-u64 scratch 67680))
                (copy (+ scratch 67688))
                (process (extern-call GetCurrentProcess)))
           ;; The loaders close their input independently. Duplicate the checked
           ;; handle, rewind its shared file position, and never reopen a path.
           (if (or (= (extern-call SetFilePointerEx image 0 0 0) 0)
                   (= (extern-call DuplicateHandle process image process copy 0 0 2) 0))
-              -1 (ptr-read-u64 copy 0)))))
+              -1 (heap-read-u64 copy 0)))))
     (defun nl_boot_image_read_header (path header fd)
       (let ((n (nl_fa_read_all fd header 64 0)))
         (seq
          (if (>= path 0) 0
            (let ((cached (+ (- 0 path) 67712)) (i 0)
-                 (size (ptr-read-u64 header 8))
-                 (globals (ptr-read-u64 header 32)))
+                 (size (heap-read-u64 header 8))
+                 (globals (heap-read-u64 header 32)))
              (seq
               ;; Retain the validated header outside the restored arena. The
               ;; globals install then has no second I/O operation that can
               ;; fail after the arena has already been published.
               (while (< i 64)
-                (ptr-write-u8 cached i (ptr-read-u8 header i))
+                (ptr-write-u8 cached i (heap-read-u8 header i))
                 (setq i (+ i 1)))
               (if (or (/= n 64) (< globals 0) (< size 8) (> globals (- size 8)))
                   (ptr-write-u64 header 0 0) 0))))
@@ -308,7 +308,7 @@ memory must be available before the first Lisp form or heap restoration."
     (defun nl_boot_image_release (path)
       (if (>= path 0) 0
         (let ((scratch (- 0 path)))
-          (seq (nl_os_close_handle (ptr-read-u64 scratch 67680))
+          (seq (nl_os_close_handle (heap-read-u64 scratch 67680))
                (nl_os_free_chunk scratch 73728)))))))
 
 (provide 'nelisp-boot-image)

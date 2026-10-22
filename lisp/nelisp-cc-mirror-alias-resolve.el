@@ -71,7 +71,7 @@
                                (setq scan 0)
                                (setq seen 0)
                                (while (and (< scan count) (= seen 0))
-                                 (if (= (symbol-eq current (ptr-read-u64 visited (* scan 8))) 1)
+                                 (if (= (symbol-eq current (heap-read-u64 visited (* scan 8))) 1)
                                      (setq seen 1)
                                    (setq scan (+ scan 1))))
                                (if (= seen 1)
@@ -99,7 +99,7 @@
                expected-entry-tag-ptr result-address))
         (if (= status 0)
             (extern-call nl_sexp_clone_into
-                         (ptr-read-u64 result-address 0) result-slot)
+                         (heap-read-u64 result-address 0) result-slot)
           0)
         (dealloc-bytes result-address 8 8)
         status)))

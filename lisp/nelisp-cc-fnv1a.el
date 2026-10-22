@@ -73,23 +73,23 @@
     (defun nelisp_symbol_key_equal (left right)
       ;; Frame/mirror keys preserve uninterned identity. Ordinary symbols
       ;; and string keys retain their historical name-based interoperability.
-      (if (= (sexp-tag left) 16)
-          (if (= (sexp-tag right) 16)
-              (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
-            0)
-        (if (= (sexp-tag right) 16) 0
-          ;; Interned symbols share their name buffer, so two tag-4 keys
-          ;; with the same buffer and length name the same symbol: answer
-          ;; without the byte compare.  Any other pair still compares names.
-          (if (if (= (sexp-tag left) 4)
-                  (if (= (sexp-tag right) 4)
-                      (if (= (ptr-read-u64 left 16) (ptr-read-u64 right 16))
-                          (= (ptr-read-u64 left 24) (ptr-read-u64 right 24))
-                        0)
-                    0)
-                0)
-              1
-            (str-eq left right)))))
+      (let* ((left-tag (sexp-tag left)) (right-tag (sexp-tag right)))
+        (if (= left-tag 16)
+            (if (= right-tag 16)
+                (if (= (heap-read-u64 left 8) (heap-read-u64 right 8)) 1 0)
+              0)
+          (if (= right-tag 16) 0
+            ;; Interned symbols share their name buffer. Other string keys
+            ;; retain the existing byte comparison fallback.
+            (if (if (= left-tag 4)
+                    (if (= right-tag 4)
+                        (if (= (heap-read-u64 left 16) (heap-read-u64 right 16))
+                            (= (heap-read-u64 left 24) (heap-read-u64 right 24))
+                          0)
+                      0)
+                  0)
+                1
+              (str-eq left right))))))
     (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the
@@ -182,14 +182,28 @@
       ;; mask `(- (shl 1 32) 1)' is computed once in the caller and
       ;; threaded through both recursions as an explicit arg, avoiding
       ;; the repeated `(shl 1 32)' shift in every inner step.
-      (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
-                          (if (= (sexp-tag str-ptr) 16)
-                              (ptr-read-u64 str-ptr 16)
-                            (str-bytes-ptr str-ptr)) 0
-                          (if (= (sexp-tag str-ptr) 16)
-                              (ptr-read-u64 str-ptr 24)
-                            (str-len str-ptr))
-                          (- (shl 1 32) 1))))
+      ;; Keep the scalar step/step4 definitions above as the reference.
+      ;; The compiler lowers this Lisp loop; one bounded raw load supplies
+      ;; four bytes, avoiding four cross-unit byte-access calls per group.
+      (let* ((kind (sexp-tag str-ptr))
+             ;; These classes have physical inline String fields. Mutable
+             ;; and unsupported kinds retain the existing bytes fallback.
+             (bytes (if (or (= kind 4) (= kind 5) (= kind 14) (= kind 16))
+                        (heap-read-u64 str-ptr 16)
+                      (str-bytes-ptr str-ptr)))
+             (n (heap-read-u64 str-ptr 24))
+             (h (+ (shl 1 31) 18652613)) (mask (- (shl 1 32) 1))
+             (i 0) (quad 0))
+        (seq
+         (while (<= (+ i 4) n)
+           (seq
+            (setq quad (nl_bytes_u32_at bytes i))
+            (setq h (logand (* (logxor h (logand quad 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 8) 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 16) 255)) 16777619) mask))
+            (setq h (logand (* (logxor h (logand (sar quad 24) 255)) 16777619) mask))
+            (setq i (+ i 4))))
+         (nelisp_fnv1a_step h bytes i n mask)))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.
 

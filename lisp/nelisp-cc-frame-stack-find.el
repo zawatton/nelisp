@@ -88,18 +88,18 @@
           0
         (if (= (nelisp_frame_stack_find_word_tag_p cell-ptr 7) 0)
             0
-          (let* ((cell-box (ptr-read-u64 cell-ptr 8)))
-            (let* ((pair-word (ptr-read-u64 cell-box 0))
-                   (next-word (ptr-read-u64 cell-box 8)))
+          (let* ((cell-box (heap-sexp-payload cell-ptr)))
+            (let* ((pair-word (heap-read-u64 cell-box 0))
+                   (next-word (heap-read-u64 cell-box 8)))
               ;; A shared closure environment (`nelisp_frame_try_share_chain')
               ;; also holds bare declarations: skip any non-pair element.
               (if (= (nelisp_frame_stack_find_word_tag_p pair-word 7) 0)
                   (if (= (logand next-word 1) 1)
                       0
                     (nelisp_frame_stack_find_walk_bucket next-word name-ptr))
-                (let* ((pair-box (ptr-read-u64 pair-word 8)))
-                  (let* ((key-word (ptr-read-u64 pair-box 0))
-                         (value-word (ptr-read-u64 pair-box 8)))
+                (let* ((pair-box (heap-sexp-payload pair-word)))
+                  (let* ((key-word (heap-read-u64 pair-box 0))
+                         (value-word (heap-read-u64 pair-box 8)))
                     (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
                         0
                       (if (= (extern-call nelisp_symbol_key_equal key-word name-ptr) 1)
@@ -114,74 +114,44 @@
                            next-word name-ptr))))))))))))
 
     (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
-      ;; Read one known lexframe/table layout through tagged words.  This
-      ;; preserves the ABI and borrowed Cell-pointer result while avoiding
-      ;; record/vector/immediate materialisation in this hot lookup only.
-      ;; Record data pointers are at NlRecord+32.  NlVector's pinned runtime
-      ;; layout has data at +8 and length at +16; both are read after the
-      ;; Sexp tags have been checked.  bucket-count is Int((n << 2) | 1),
-      ;; positive, power of two, and bounded by bucket length.  The private
-      ;; caller's frame/table words are owned by the live frames record, so no
-      ;; GC can move them in this allocation-free routine.
+      ;; Read one validated lexframe/table through semantic WORD accessors.
+      ;; The frame owns the table and bucket chain throughout this
+      ;; allocation-free borrowed lookup.
       (if (= (nelisp_frame_stack_find_word_name_p name-ptr) 0)
           0
         (if (= (nelisp_frame_stack_find_word_tag_p frame-ptr 12) 0)
             0
-          (let* ((frame-box (ptr-read-u64 frame-ptr 8)))
-            (if (/= (sexp-tag frame-box) 4)
-                0
-              (let* ((frame-data (ptr-read-u64 frame-box 32)))
-                (let* ((ht-word (ptr-read-u64 frame-data 0)))
-                  ;; Small frame: slot 0 is nil or an alist, i.e. one
-                  ;; bucket chain (`nelisp_frame_push_direct').
-                  (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
-                      (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
-                          (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
-                        0)
-                    (let* ((ht-box (ptr-read-u64 ht-word 8)))
-                      (if (/= (sexp-tag ht-box) 4)
-                          0
-                        (let* ((ht-data (ptr-read-u64 ht-box 32)))
-                          (let* ((count-word (ptr-read-u64 ht-data 0))
-                                 (buckets-word (ptr-read-u64 ht-data 8)))
-                            (if (/= (logand count-word 3) 1)
+          (if (/= (nl_val_tag (nl_record_type_word frame-ptr)) 4)
+              0
+            (let* ((ht-word (nl_record_slot_word frame-ptr 0)))
+              ;; Small frame: slot 0 is nil or an alist, i.e. one bucket.
+              (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
+                  (if (= (nelisp_frame_stack_find_word_tag_p ht-word 7) 1)
+                      (nelisp_frame_stack_find_walk_bucket ht-word name-ptr)
+                    0)
+                (if (/= (nl_val_tag (nl_record_type_word ht-word)) 4)
+                    0
+                  (let* ((count-word (nl_record_slot_word ht-word 0))
+                         (buckets-word (nl_record_slot_word ht-word 1)))
+                    (if (/= (logand count-word 3) 1)
+                        0
+                      (let* ((bucket-count (sar count-word 2)))
+                        (if (<= bucket-count 0)
+                            0
+                          ;; The mask is sound only for power-of-two tables.
+                          (if (/= (logand bucket-count (- bucket-count 1)) 0)
+                              0
+                            (if (= (nelisp_frame_stack_find_word_tag_p buckets-word 8) 0)
                                 0
-                              (let* ((bucket-count (sar count-word 2)))
-                                (if (<= bucket-count 0)
-                                    0
-                                  ;; The mask below is sound only for
-                                  ;; the power-of-two tables produced by
-                                  ;; frame-push.  Reject malformed counts
-                                  ;; instead of indexing an unrelated bucket.
-                                  (if (/= (logand bucket-count
-                                                  (- bucket-count 1))
-                                          0)
+                              (if (> bucket-count (nl_vector_length buckets-word))
+                                  0
+                                (let* ((idx (logand (extern-call nelisp_fnv1a name-ptr)
+                                                    (- bucket-count 1)))
+                                       (head-word (nl_vector_slot_word buckets-word idx)))
+                                  (if (= (logand head-word 1) 1)
                                       0
-                                    (if (= (nelisp_frame_stack_find_word_tag_p
-                                            buckets-word 8)
-                                           0)
-                                        0
-                                      (let* ((buckets-box
-                                              (ptr-read-u64 buckets-word 8)))
-                                        (let* ((buckets-data
-                                                (ptr-read-u64 buckets-box 8))
-                                               (bucket-len
-                                                (ptr-read-u64 buckets-box 16)))
-                                          (if (> bucket-count bucket-len)
-                                              0
-                                            (let* ((idx
-                                                    (logand
-                                                     (extern-call
-                                                      nelisp_fnv1a name-ptr)
-                                                     (- bucket-count 1)))
-                                                   (head-word
-                                                    (ptr-read-u64
-                                                     (+ buckets-data (* idx 8))
-                                                     0)))
-                                              (if (= (logand head-word 1) 1)
-                                                  0
-                                                (nelisp_frame_stack_find_walk_bucket
-                                                 head-word name-ptr)))))))))))))))))))))))
+                                    (nelisp_frame_stack_find_walk_bucket
+                                     head-word name-ptr)))))))))))))))))
     (defun nelisp_frame_stack_find_descend (backing-ptr i name-ptr)
       ;; Innermost-first walk: descend from i = depth-1 down to 0.
       ;; Returns the first non-zero hit's cell pointer, or 0 if every
@@ -273,7 +243,7 @@
     ;; ROOTS contains canonical WORDs, not cloned storage views. In particular,
     ;; a nil-initialized object must remain the same header while it is filled.
     (defun nl_capture_root_set_word (roots index word)
-      (ptr-write-u64 (+ (ptr-read-u64 (ptr-read-u64 roots 8) 8) (* index 8)) 0 word))
+      (ptr-write-u64 (+ (nl_word_payload roots) 8) (* index 8) word))
 
     (defun nl_capture_emit_one_w (name cell acc roots)
       (let* ((pair (nelisp_cons_construct_w name cell 0)))
@@ -308,9 +278,7 @@
     ;; validated `*const Sexp' view of a Record (same precondition its
     ;; callers already establish for `record-slot-count').
     (defun nelisp_frame_slot_raw_word (rec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
-       0))
+      (nl_record_slot_word rec-ptr idx))
 
     (defun nelisp_frame_binding_dynamic_p (frame-ptr name-ptr)
       ;; Slot 1 is binding-time metadata, independent of later declarations.
@@ -384,10 +352,20 @@
     ;; entries are at most 8 (NAME . CELL) pairs with distinct names, plus
     ;; any bare declarations, already is a frame chain in GNU order: install
     ;; it as the captured frame's cell table instead of rebinding every
-    ;; pair, and mark the frame view (+16 = 13110) so that a later bind into
+    ;; pair, and mark the frame header as shared so that a later bind into
     ;; this frame first copies the chain into a hash table
     ;; (`nelisp_frame_bind_in_frame') and never writes the closure's pairs.
     ;; Answers 1 when installed, 0 to take `nl_push_captured_walk'.
+    (defun nl_frame_set_flags (value flag)
+      ;; Private frame flags occupy kind bits 6/7, below the length field.
+      ;; The semantic kind accessor masks those bits off.
+      (let* ((base (nl_word_payload value))
+             (header (heap-read-u64 base 0)))
+        (ptr-write-u64 base 0
+                       (logior (logand header -193)
+                               (if (= flag 13110) 128
+                                 (if (= flag 13109) 64 0))))))
+
     (defun nelisp_frame_try_share_chain (frames alist)
       (if (= (nelisp_frame_stack_find_word_tag_p alist 7) 0)
           0
@@ -397,7 +375,7 @@
                          (nl_record_slot_word frames 0)
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
             (seq (record-slot-set frame 0 alist)
-                 (ptr-write-u64 frame 16 13110)
+                 (nl_frame_set_flags frame 13110)
                  1)))))
 
     (defun nelisp_frame_chain_shareable (al n)
@@ -498,11 +476,9 @@
             (let* ((frame (vector-ref-ptr (nl_record_slot_word frames-ptr 0)
                                          (- depth 1))))
               (if (> (record-slot-count frame) 2)
-                  ;; Immediate slot reads can be materialized scratch views.
-                  ;; Publish through the record setter, not that borrowed view.
-                  (let* ((marker (alloc-bytes 32 8)))
-                    (seq (sexp-int-make marker 1)
-                         (record-slot-set frame 2 marker) 0))
+                  ;; Publish the fixnum WORD through the ordinary setter.
+                  ;; The scope marker needs no materialized Sexp box.
+                  (seq (record-slot-set frame 2 5) 0)
                 1))
           1)))
 
@@ -546,10 +522,14 @@
           0
         (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
             0
-          (nelisp_frame_stack_find_kind_descend
-           (nl_record_slot_word frames-ptr 0)
-           (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
-           name-ptr dynamic))))
+          (let* ((regular
+                  (nelisp_frame_stack_find_kind_descend
+                   (nl_record_slot_word frames-ptr 0)
+                   (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
+                   name-ptr dynamic)))
+            (if (and (= dynamic 1) (/= (heap-read-u64 (- frames-ptr 32) 168) 0))
+                (nl_thread_dynamic_cell (- frames-ptr 32) name-ptr regular)
+              regular)))))
 
     (defun nelisp_frame_stack_find_value (frames-ptr name-ptr)
       ;; A lexical binding remains authoritative even if a later declaration
@@ -583,7 +563,7 @@
                     (if (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
                           (if (= filtered 2)
                               (if (= (nl_val_tag cell) 11)
-                                  (= (ptr-read-u64 cell 16) 13107) 0)
+                                  (= (heap-sexp-data cell) 13107) 0)
                             (nl_capture_name_allowed filtered filter name)))
                         (nl_capture_emit_one_w name cell acc roots) acc)
                     filtered filter frame roots))
@@ -600,6 +580,7 @@
       (if (= (nelisp_frame_stack_find_word_tag_p w 7) 1) w 0))
 
     (defun nl_capture_walk_frame_w (frame acc filtered filter roots)
+      (let* ((captured
       (if (= filtered 1)
           ;; Explicit eval-alist cells remain visible independently of the filter.
           (nl_capture_walk_frame_w frame
@@ -608,7 +589,11 @@
           (if (= (nl_val_tag bindings) 12)
               (nl_capture_walk_buckets_w (nl_record_slot_word bindings 1) 0
                 (nl_word_payload (nl_record_slot_word bindings 0)) acc filtered filter frame roots)
-            (nl_capture_walk_bucket_w bindings acc filtered filter frame roots)))))
+            (nl_capture_walk_bucket_w bindings acc filtered filter frame roots))))))
+        ;; Capture pairs retain the existing lexical cells. Promote only a
+        ;; frame that actually contributed bindings to this environment.
+        (seq (if (/= captured acc) (nl_frame_stack_promote frame 0) 0)
+             captured)))
 
     (defun nl_capture_walk_frames_w (backing i acc filtered filter roots)
       (if (< i 0) acc

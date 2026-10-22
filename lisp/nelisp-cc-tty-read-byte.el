@@ -79,7 +79,7 @@
     ;; nelisp_tty_raw_enter.  This keeps standalone REPL input on the
     ;; controlling terminal even when fd 0 is the boot file.
     (defun nl_tty_rb_current_fd ()
-      (ptr-read-u64 (extern-call nl_tty_fd_ptr) 0))
+      (heap-read-u64 (extern-call nl_tty_fd_ptr) 0))
 
     ;; ------------------------------------------------------------------
     ;; nl_tty_rb_dispatch: branch on read(2) return count.
@@ -90,7 +90,7 @@
     (defun nl_tty_rb_dispatch (buf n)
       (if (= n 1)
           ;; Success — read the byte then free the buffer.
-          (nl_tty_rb_prog1 (ptr-read-u8 buf 0)
+          (nl_tty_rb_prog1 (heap-read-u8 buf 0)
                            (dealloc-bytes buf 1 1))
         ;; EOF / error — free the buffer and return -1.
         ;; The -1 literal is in the else-branch; its type is inferred

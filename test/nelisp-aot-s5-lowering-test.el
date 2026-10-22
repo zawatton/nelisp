@@ -56,12 +56,15 @@
                               :args (list (nelisp-aot-s5-test--ref 15)
                                           (nelisp-aot-s5-test--ref 16)))))))
 (ert-deftest nelisp-aot-s5/compact-vector-convention-is-explicit ()
-  (should (eq (default-value 'nelisp-aot-compiler--vector-value-convention) 'legacy-view))
-  (let ((nelisp-aot-compiler--vector-value-convention 'compact-word))
+  ;; The merged runtime's vectors are compact (word heap, Doc 216 S4.1), so
+  ;; the default is `compact-word'; a caller compiling for a legacy NlVector
+  ;; host selects `legacy-view', and any other convention is rejected.
+  (should (eq (default-value 'nelisp-aot-compiler--vector-value-convention) 'compact-word))
+  (let ((nelisp-aot-compiler--vector-value-convention 'unknown-convention))
     (should
      (equal (should-error (nelisp-aot-compiler--emit-vector-len-arm64 nil nil)
                           :type 'nelisp-aot-compiler-error)
-            '(nelisp-aot-compiler-error :unsupported-arm64-vector-value-convention compact-word)))))
+            '(nelisp-aot-compiler-error :unsupported-arm64-vector-value-convention unknown-convention)))))
 (ert-deftest nelisp-aot-s5/memory-tree-register-temporaries ()
   (let* ((nelisp-aot-compiler--checked-arith nil)
          (nelisp-aot-compiler--promoted-slots nil)

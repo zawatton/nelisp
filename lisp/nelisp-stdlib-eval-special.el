@@ -148,20 +148,8 @@ of TEST itself is returned."
               (cons (cons 'prog1 (cons form2 rest))
                     nil))))
 
-;;;; --- buffer-state stubs ---------------------------------------------
-
-(defmacro save-excursion (&rest body)
-  "Stub: NeLisp has no buffer concept, so this is just `progn'.
-Reserved for future nemacs layer parity."
-  (cons 'progn body))
-
-(defmacro save-restriction (&rest body)
-  "Stub: NeLisp has no narrowing, so this is just `progn'."
-  (cons 'progn body))
-
-(defmacro save-current-buffer (&rest body)
-  "Stub: NeLisp has no current buffer, so this is just `progn'."
-  (cons 'progn body))
+;; The core prelude supplies real buffer-state macros. Do not replace them
+;; on source reload: later forms may insert text, narrow or switch buffers.
 
 ;;;; --- declarations (no-op in interpreter mode) ------------------------
 
@@ -234,43 +222,43 @@ Reserved for future nemacs layer parity."
     "NeLisp has no buffer-local; equivalent to `setq'."
     (cons 'setq pairs)))
 
-;; GNU declarations are special forms. A source reload must retain their
-;; special objects so GNU macroexp.el also leaves declarations unexpanded.
-(unless (special-form-p 'defvar)
-  (defmacro defvar (name &rest args)
-    "Define NAME as a global variable, set initial VALUE if unbound.
+;; Preserve native declaration cells on reload. GNU's macro expander sees
+;; their special-form identity; fallback macro bodies cannot replace them.
+(unless (and (fboundp 'special-form-p) (special-form-p 'defvar))
+ (defmacro defvar (name &rest args)
+  "Define NAME as a global variable, set initial VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
 declared, NOT bound — matching Emacs `defvar' so that a later
 `(defvar NAME VALUE)' still initializes it.  Distinguishing the
 zero-value form requires `&rest' (arity), not `&optional' (which cannot
 tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
-    (if args
-        (list 'progn
-              (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-              (list 'if (list 'boundp (list 'quote name)) nil
-                    (list 'set (list 'quote name) (car args)))
-              (list 'quote name))
-      (list 'funcall '(quote (builtin nelisp--declare-local-special))
-            (list 'quote name)))))
+  (if args
+      (list 'progn
+            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+            (list 'if (list 'boundp (list 'quote name)) nil
+                  (list 'set (list 'quote name) (car args)))
+            (list 'quote name))
+    (list 'funcall '(quote (builtin nelisp--declare-local-special))
+          (list 'quote name)))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
-(unless (special-form-p 'defconst)
-  (defmacro defconst (name value &optional _docstring)
-    "Define NAME as a constant whose initial value is VALUE.
+(unless (and (fboundp 'special-form-p) (special-form-p 'defconst))
+ (defmacro defconst (name value &optional _docstring)
+  "Define NAME as a constant whose initial value is VALUE.
 DOCSTRING is currently ignored.  Returns NAME.
 
 Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
 set via the `nelisp--env-globals-set-constant' env_shim primitive
 (= Doc 86 §86.3.a surface; routes through the elisp env mirror's
 slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
-    (list 'progn
-          (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-          (list 'set (list 'quote name) value)
-          (list 'nelisp--env-globals-set-constant (list 'quote name) t)
-          (list 'quote name))))
+  (list 'progn
+        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+        (list 'set (list 'quote name) value)
+        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+        (list 'quote name))))
 
 ;; A host without special declaration objects uses the bootstrap fallbacks.
 ;; Keep their identities available to the bootstrap macroexpander on reload.

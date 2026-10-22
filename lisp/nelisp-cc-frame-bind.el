@@ -105,15 +105,11 @@
     ;; same precondition `nelisp_mirror_slot_raw_word' (441aa152c) relies on
     ;; for `ht_rec.slots[0]'.
     (defun nelisp_frame_bind_slot_raw_word (rec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
-       0))
+      (nl_record_slot_word rec-ptr idx))
     ;; Raw tagged WORD of slot IDX of the bucket Vector view VEC-PTR
     ;; (payload box at +8, slot data pointer at box+8).
     (defun nelisp_frame_bind_bucket_word (vec-ptr idx)
-      (ptr-read-u64
-       (+ (ptr-read-u64 (ptr-read-u64 vec-ptr 8) 8) (* idx 8))
-       0))
+      (nl_vector_slot_word vec-ptr idx))
     ;; The bucket head as a walkable view: a pointer WORD is the head
     ;; Cons box itself; an immediate WORD (nil) is 0, the walk's miss.
     (defun nelisp_frame_bind_bucket_view (vec-ptr idx)
@@ -332,13 +328,13 @@
     (defun nelisp_frame_bind_in_frame
         (frame-ptr name-ptr cell-ptr
                    scratch-pair-slot scratch-outer-slot scratch-count-slot)
-      ;; A chain shared with a closure environment (view word +16 = 13110,
+      ;; A chain shared with a closure environment (header flag 13110,
       ;; `nelisp_frame_try_share_chain') is copied into a table first, so
       ;; the closure's pairs are never written.
-      (if (= (ptr-read-u64 frame-ptr 16) 13110)
+      (if (= (heap-sexp-data frame-ptr) 13110)
           (and (nelisp_frame_bind_migrate
                 frame-ptr (nelisp_frame_bind_slot_raw_word frame-ptr 0))
-               (ptr-write-u64 frame-ptr 16 0)
+               (nl_frame_set_flags frame-ptr 0)
                (nelisp_frame_bind_in_ht
                 (record-slot-ref-ptr frame-ptr 0)
                 name-ptr cell-ptr

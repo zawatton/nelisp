@@ -43,9 +43,10 @@ source += [f'#define SCALAR_WORD ((int64_t (*)(int64_t,int64_t,int64_t,int64_t))
            'static int64_t (*scalar_callbacks[])(void) = {' + ','.join(f'abi_scalar{i}' for i in range(5)) + '};',
            'static int64_t scalar_values[] = {' + ','.join(str(v) for v in scalar_values) + '};', r'''
 int64_t abi_scalar_boundary(int64_t env) {
-  uint64_t slots[4] = {3,3,1,3}, header[8] = {0}, object[4] = {18,0,0,0};
+  uint64_t header[6] = {18 | (4 << 8),3,3,3,1,3}, object[4] = {18,0,0,0};
+  uint64_t *slots = header + 2;
   uint64_t args[4] = {0}, out[4] = {0};
-  header[4] = (uintptr_t)slots; header[6] = 4; object[1] = (uintptr_t)header;
+  object[1] = (uintptr_t)header;
   for (int i=0; i<5; i++) {
     uint64_t expected = ((uint64_t)scalar_values[i] << 2) | 1;
     slots[2] = ((uintptr_t)scalar_callbacks[i] << 2) | 1;
@@ -59,7 +60,7 @@ int64_t abi_rooted_metadata(uintptr_t env) {
   int64_t checked = 0;
   for (int boxed=0; boxed<2; boxed++) {
     for (int argc=0; argc<=3; argc += argc == 0 ? 1 : 2) {
-      uint64_t empty_header[3] = {0,0,0};
+      uint64_t empty_header[1] = {8};
       uint64_t empty[4] = {8,(uintptr_t)empty_header,0,0};
       int64_t values[8] = {(intptr_t)abi_rooted_return,argc,argc,argc,argc+1,0,0,-1};
       uint64_t integers[8][4] = {{0}}, slots[9] = {0};
@@ -68,11 +69,11 @@ int64_t abi_rooted_metadata(uintptr_t env) {
         slots[i] = boxed ? (uintptr_t)integers[i] : ((uint64_t)values[i] << 2) | 1;
       }
       slots[5] = slots[6] = (uintptr_t)empty; slots[8] = 3;
-      uint64_t vector_header[3] = {9,(uintptr_t)slots,9};
+      uint64_t vector_header[10] = {8 | (9 << 8)};
+      for (int i=0; i<9; i++) vector_header[i+1] = slots[i];
       uint64_t vector[4] = {8,(uintptr_t)vector_header,0,0};
-      uint64_t record_slots[4] = {3,(uintptr_t)vector,1,3};
-      uint64_t record_header[8] = {0}, record[4] = {18,(uintptr_t)record_header,0,0};
-      record_header[4] = (uintptr_t)record_slots; record_header[6] = 4;
+      uint64_t record_header[6] = {18 | (4 << 8),3,3,(uintptr_t)vector,1,3};
+      uint64_t record[4] = {18,(uintptr_t)record_header,0,0};
       uint64_t args[3][4] = {{2,17,0,0},{2,18,0,0},{2,19,0,0}};
       uint64_t result = ROOTED_FRAME((uintptr_t)record,(uintptr_t)args,argc,env,0);
       if (!result || (result & 3) || *(uint64_t*)(uintptr_t)result != 0)

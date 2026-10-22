@@ -72,11 +72,11 @@
           (if (= remaining 0)
               ;; At target char: cp was written to out+8.  Finalize out
               ;; as Sexp::Int and return OK.
-              (and (sexp-int-make out (ptr-read-u64 (+ out 8) 0)) 0)
+              (and (sexp-int-make out (heap-read-u64 (+ out 8) 0)) 0)
             ;; Not at target yet: advance byte-idx by codepoint width.
             (nl_jit_str_codepoint_at_walk
              arg
-             (+ byte-idx (ptr-read-u64 (+ out 16) 0))
+             (+ byte-idx (heap-read-u64 (+ out 16) 0))
              (- remaining 1)
              out))
         ;; str-codepoint-at failed: invalid index or end of string → ERR.

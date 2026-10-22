@@ -60,7 +60,7 @@
     ;; alignment workaround.  Walks one byte at a time via §122.E
     ;; `ptr-read-u8'.
     (defun nelisp_bi_getenv_cstrlen (ptr i)
-      (if (= (ptr-read-u8 ptr i) 0)
+      (if (= (heap-read-u8 ptr i) 0)
           i
         (nelisp_bi_getenv_cstrlen ptr (+ i 1))))
 

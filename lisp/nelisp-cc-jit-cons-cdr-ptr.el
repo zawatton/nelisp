@@ -35,26 +35,10 @@
 
 (defconst nelisp-cc-jit-cons-cdr-ptr--source
   '(defun nl_cons_cdr_ptr (arg)
-     ;; arg: *const Sexp.  Returns a 32B-slot VIEW of the cdr, or 0 when
-     ;; arg is not a Cons (tag != 7).
-     ;;
-     ;; Doc 147 Phase 3 — the NlConsBox cdr is now an 8-byte tagged WORD
-     ;; @ box+8 (was a 32B inline Sexp @ box+32).  MATERIALISE a 32B-slot
-     ;; VIEW exactly like `nl_cons_car_ptr' / `nl_vector_slot_ptr':
-     ;;   box   = *(u64*)(arg + 8)        // Sexp::Cons payload (NlConsBox*)
-     ;;   word  = *(u64*)(box + 8)        // the 8B tagged cdr WORD
-     ;;   - pointer WORD (low bit 0): return it directly (32B child box).
-     ;;   - immediate WORD (low bit 1): alloc a FRESH 32B box and
-     ;;     materialise via `nl_val_load(word, box)' (one box per call ->
-     ;;     no shared-scratch clobber under list-walk recursion where the
-     ;;     cdr-ptr result is held across the recursive descent).
-     (if (= (logand arg 1) 1) 0
-     (if (= (sexp-tag arg) 7)
-         (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 8)))
-           (if (= (logand word 1) 0)
-               word
-             (extern-call nl_val_load word (alloc-bytes 32 8))))
-       0)))
+      (if (= (nl_val_tag arg) 7)
+          (let ((word (heap-read-u64 (nl_word_payload arg) 8)))
+            (if (and (= (logand word 1) 0) (/= (logand word 7) 6)) word
+              (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))) 0))
   "AOT source for `nl_cons_cdr_ptr' (Doc 147 Phase 3 materialiser).
 
 Returns a 32B-slot VIEW of the cons CDR when arg is Sexp::Cons (tag 7),

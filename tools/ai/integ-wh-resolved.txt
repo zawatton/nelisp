@@ -2,3 +2,15 @@
 # word-heap line onto batch F (tools/ai/integ-wh-progress.org).  One path per line;
 # `integ-wh-check.sh hygiene' runs check-parens on every *.el listed here.  Lines
 # starting with # are comments.  Non-Elisp files are listed for the record.
+
+# Merge 2: the word-heap base 702ccc8d7 (8 conflicted files, 41 hunks)
+lisp/nelisp-aot-compiler.el
+lisp/nelisp-cc-evalport-nonenv-char-table.el
+lisp/nelisp-stdlib-eval-special.el
+scripts/nelisp-standalone-build.el
+scripts/nelisp-stdlib-prelude.el
+test/nelisp-aot-compiler-test.el
+test/nelisp-shadow-differential-cases.el
+tools/ns-inventory-baseline.txt
+# Edited outside the conflict set to follow the merge decisions
+test/nelisp-aot-s5-lowering-test.el

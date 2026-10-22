@@ -147,7 +147,7 @@
             1)
         ;; Still have bytes: check if byte[i] is alphanumeric.
         (if (= (nl_jit_split_is_alnum
-                (ptr-read-u8 (str-bytes-ptr str-arg) i))
+                (heap-read-u8 (str-bytes-ptr str-arg) i))
                1)
             ;; Alphanumeric: extend current word (advance i only).
             (nl_jit_split_walk str-arg omit-nil-p out wstart (+ i 1) sslot)

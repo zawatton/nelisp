@@ -200,18 +200,18 @@
     (defun nl_sha256_load (bytes byte-off buf)
       (and
        (ptr-write-u64 buf 656 0)
-       (or (while (< (ptr-read-u64 buf 656) 16)
+       (or (while (< (heap-read-u64 buf 656) 16)
              (ptr-write-u64 buf
-               (* (ptr-read-u64 buf 656) 8)
+               (* (heap-read-u64 buf 656) 8)
                (nl_h32_mask
                 (logior
-                 (shl (ptr-read-u8 bytes (+ byte-off (* (ptr-read-u64 buf 656) 4))) 24)
+                 (shl (heap-read-u8 bytes (+ byte-off (* (heap-read-u64 buf 656) 4))) 24)
                  (logior
-                  (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 656) 4) 1))) 16)
+                  (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 656) 4) 1))) 16)
                   (logior
-                   (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 656) 4) 2))) 8)
-                   (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 656) 4) 3))))))))
-             (ptr-write-u64 buf 656 (+ (ptr-read-u64 buf 656) 1)))
+                   (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 656) 4) 2))) 8)
+                   (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 656) 4) 3))))))))
+             (ptr-write-u64 buf 656 (+ (heap-read-u64 buf 656) 1)))
            1)))
 
     ;; ---- SHA256 message schedule expansion w[16..63] --------------------
@@ -220,17 +220,17 @@
     (defun nl_sha256_expand (buf)
       (and
        (ptr-write-u64 buf 656 16)
-       (or (while (< (ptr-read-u64 buf 656) 64)
+       (or (while (< (heap-read-u64 buf 656) 64)
              (ptr-write-u64 buf
-               (* (ptr-read-u64 buf 656) 8)
+               (* (heap-read-u64 buf 656) 8)
                (nl_h32_mask
                 (+ (nl_sha256_sigma1
-                    (ptr-read-u64 buf (* (- (ptr-read-u64 buf 656) 2) 8)))
-                   (+ (ptr-read-u64 buf (* (- (ptr-read-u64 buf 656) 7) 8))
+                    (heap-read-u64 buf (* (- (heap-read-u64 buf 656) 2) 8)))
+                   (+ (heap-read-u64 buf (* (- (heap-read-u64 buf 656) 7) 8))
                       (+ (nl_sha256_sigma0
-                          (ptr-read-u64 buf (* (- (ptr-read-u64 buf 656) 15) 8)))
-                         (ptr-read-u64 buf (* (- (ptr-read-u64 buf 656) 16) 8)))))))
-             (ptr-write-u64 buf 656 (+ (ptr-read-u64 buf 656) 1)))
+                          (heap-read-u64 buf (* (- (heap-read-u64 buf 656) 15) 8)))
+                         (heap-read-u64 buf (* (- (heap-read-u64 buf 656) 16) 8)))))))
+             (ptr-write-u64 buf 656 (+ (heap-read-u64 buf 656) 1)))
            1)))
 
     ;; ---- SHA256 64-round compression ------------------------------------
@@ -240,86 +240,86 @@
     (defun nl_sha256_compress (buf)
       (and
        ;; Init working vars from H
-       (ptr-write-u64 buf 512 (ptr-read-u64 buf 576))
-       (ptr-write-u64 buf 520 (ptr-read-u64 buf 584))
-       (ptr-write-u64 buf 528 (ptr-read-u64 buf 592))
-       (ptr-write-u64 buf 536 (ptr-read-u64 buf 600))
-       (ptr-write-u64 buf 544 (ptr-read-u64 buf 608))
-       (ptr-write-u64 buf 552 (ptr-read-u64 buf 616))
-       (ptr-write-u64 buf 560 (ptr-read-u64 buf 624))
-       (ptr-write-u64 buf 568 (ptr-read-u64 buf 632))
+       (ptr-write-u64 buf 512 (heap-read-u64 buf 576))
+       (ptr-write-u64 buf 520 (heap-read-u64 buf 584))
+       (ptr-write-u64 buf 528 (heap-read-u64 buf 592))
+       (ptr-write-u64 buf 536 (heap-read-u64 buf 600))
+       (ptr-write-u64 buf 544 (heap-read-u64 buf 608))
+       (ptr-write-u64 buf 552 (heap-read-u64 buf 616))
+       (ptr-write-u64 buf 560 (heap-read-u64 buf 624))
+       (ptr-write-u64 buf 568 (heap-read-u64 buf 632))
        ;; Init round counter
        (ptr-write-u64 buf 656 0)
        ;; 64-round loop
-       (or (while (< (ptr-read-u64 buf 656) 64)
+       (or (while (< (heap-read-u64 buf 656) 64)
              ;; T1 = h + Sigma1(e) + Ch(e,f,g) + K[i] + w[i]
              (ptr-write-u64 buf 640
                (nl_h32_mask
-                (+ (ptr-read-u64 buf 568)
-                   (+ (nl_sha256_Sigma1 (ptr-read-u64 buf 544))
+                (+ (heap-read-u64 buf 568)
+                   (+ (nl_sha256_Sigma1 (heap-read-u64 buf 544))
                       (+ (nl_sha256_ch
-                          (ptr-read-u64 buf 544)
-                          (ptr-read-u64 buf 552)
-                          (ptr-read-u64 buf 560))
-                         (+ (ptr-read-u64 buf (+ 744 (* (ptr-read-u64 buf 656) 8)))
-                            (ptr-read-u64 buf (* (ptr-read-u64 buf 656) 8))))))))
+                          (heap-read-u64 buf 544)
+                          (heap-read-u64 buf 552)
+                          (heap-read-u64 buf 560))
+                         (+ (heap-read-u64 buf (+ 744 (* (heap-read-u64 buf 656) 8)))
+                            (heap-read-u64 buf (* (heap-read-u64 buf 656) 8))))))))
              ;; T2 = Sigma0(a) + Maj(a,b,c)
              (ptr-write-u64 buf 648
                (nl_h32_mask
-                (+ (nl_sha256_Sigma0 (ptr-read-u64 buf 512))
+                (+ (nl_sha256_Sigma0 (heap-read-u64 buf 512))
                    (nl_sha256_maj
-                    (ptr-read-u64 buf 512)
-                    (ptr-read-u64 buf 520)
-                    (ptr-read-u64 buf 528)))))
+                    (heap-read-u64 buf 512)
+                    (heap-read-u64 buf 520)
+                    (heap-read-u64 buf 528)))))
              ;; Rotate: h=g, g=f, f=e, e=d+T1, d=c, c=b, b=a, a=T1+T2
-             (ptr-write-u64 buf 568 (ptr-read-u64 buf 560))
-             (ptr-write-u64 buf 560 (ptr-read-u64 buf 552))
-             (ptr-write-u64 buf 552 (ptr-read-u64 buf 544))
-             (ptr-write-u64 buf 544 (nl_h32_mask (+ (ptr-read-u64 buf 536) (ptr-read-u64 buf 640))))
-             (ptr-write-u64 buf 536 (ptr-read-u64 buf 528))
-             (ptr-write-u64 buf 528 (ptr-read-u64 buf 520))
-             (ptr-write-u64 buf 520 (ptr-read-u64 buf 512))
-             (ptr-write-u64 buf 512 (nl_h32_mask (+ (ptr-read-u64 buf 640) (ptr-read-u64 buf 648))))
+             (ptr-write-u64 buf 568 (heap-read-u64 buf 560))
+             (ptr-write-u64 buf 560 (heap-read-u64 buf 552))
+             (ptr-write-u64 buf 552 (heap-read-u64 buf 544))
+             (ptr-write-u64 buf 544 (nl_h32_mask (+ (heap-read-u64 buf 536) (heap-read-u64 buf 640))))
+             (ptr-write-u64 buf 536 (heap-read-u64 buf 528))
+             (ptr-write-u64 buf 528 (heap-read-u64 buf 520))
+             (ptr-write-u64 buf 520 (heap-read-u64 buf 512))
+             (ptr-write-u64 buf 512 (nl_h32_mask (+ (heap-read-u64 buf 640) (heap-read-u64 buf 648))))
              ;; i++
-             (ptr-write-u64 buf 656 (+ (ptr-read-u64 buf 656) 1)))
+             (ptr-write-u64 buf 656 (+ (heap-read-u64 buf 656) 1)))
            1)
        ;; H += working vars
-       (ptr-write-u64 buf 576 (nl_h32_mask (+ (ptr-read-u64 buf 576) (ptr-read-u64 buf 512))))
-       (ptr-write-u64 buf 584 (nl_h32_mask (+ (ptr-read-u64 buf 584) (ptr-read-u64 buf 520))))
-       (ptr-write-u64 buf 592 (nl_h32_mask (+ (ptr-read-u64 buf 592) (ptr-read-u64 buf 528))))
-       (ptr-write-u64 buf 600 (nl_h32_mask (+ (ptr-read-u64 buf 600) (ptr-read-u64 buf 536))))
-       (ptr-write-u64 buf 608 (nl_h32_mask (+ (ptr-read-u64 buf 608) (ptr-read-u64 buf 544))))
-       (ptr-write-u64 buf 616 (nl_h32_mask (+ (ptr-read-u64 buf 616) (ptr-read-u64 buf 552))))
-       (ptr-write-u64 buf 624 (nl_h32_mask (+ (ptr-read-u64 buf 624) (ptr-read-u64 buf 560))))
-       (ptr-write-u64 buf 632 (nl_h32_mask (+ (ptr-read-u64 buf 632) (ptr-read-u64 buf 568))))))
+       (ptr-write-u64 buf 576 (nl_h32_mask (+ (heap-read-u64 buf 576) (heap-read-u64 buf 512))))
+       (ptr-write-u64 buf 584 (nl_h32_mask (+ (heap-read-u64 buf 584) (heap-read-u64 buf 520))))
+       (ptr-write-u64 buf 592 (nl_h32_mask (+ (heap-read-u64 buf 592) (heap-read-u64 buf 528))))
+       (ptr-write-u64 buf 600 (nl_h32_mask (+ (heap-read-u64 buf 600) (heap-read-u64 buf 536))))
+       (ptr-write-u64 buf 608 (nl_h32_mask (+ (heap-read-u64 buf 608) (heap-read-u64 buf 544))))
+       (ptr-write-u64 buf 616 (nl_h32_mask (+ (heap-read-u64 buf 616) (heap-read-u64 buf 552))))
+       (ptr-write-u64 buf 624 (nl_h32_mask (+ (heap-read-u64 buf 624) (heap-read-u64 buf 560))))
+       (ptr-write-u64 buf 632 (nl_h32_mask (+ (heap-read-u64 buf 632) (heap-read-u64 buf 568))))))
 
     ;; ---- Process full 64-byte blocks (SHA256) ----------------------------
     ;; buf[664] = ctr_blk outer counter (avoids clobbering buf[656]).
     (defun nl_sha256_full_blocks (bytes num-blocks buf)
       (and
        (ptr-write-u64 buf 664 0)
-       (or (while (< (ptr-read-u64 buf 664) num-blocks)
+       (or (while (< (heap-read-u64 buf 664) num-blocks)
              (and
-              (nl_sha256_load bytes (* (ptr-read-u64 buf 664) 64) buf)
+              (nl_sha256_load bytes (* (heap-read-u64 buf 664) 64) buf)
               (nl_sha256_expand buf)
               (nl_sha256_compress buf))
-             (ptr-write-u64 buf 664 (+ (ptr-read-u64 buf 664) 1)))
+             (ptr-write-u64 buf 664 (+ (heap-read-u64 buf 664) 1)))
            1)))
 
     ;; ---- Copy rem bytes + zero-fill into scratch[680..743] ---------------
     (defun nl_sha256_scratch_fill (bytes offset rem buf)
       (and
        (ptr-write-u64 buf 656 0)
-       (or (while (< (ptr-read-u64 buf 656) rem)
+       (or (while (< (heap-read-u64 buf 656) rem)
              (ptr-write-u8 buf
-               (+ 680 (ptr-read-u64 buf 656))
-               (ptr-read-u8 bytes (+ offset (ptr-read-u64 buf 656))))
-             (ptr-write-u64 buf 656 (+ (ptr-read-u64 buf 656) 1)))
+               (+ 680 (heap-read-u64 buf 656))
+               (heap-read-u8 bytes (+ offset (heap-read-u64 buf 656))))
+             (ptr-write-u64 buf 656 (+ (heap-read-u64 buf 656) 1)))
            1)
        (ptr-write-u64 buf 672 rem)
-       (or (while (< (ptr-read-u64 buf 672) 64)
-             (ptr-write-u8 buf (+ 680 (ptr-read-u64 buf 672)) 0)
-             (ptr-write-u64 buf 672 (+ (ptr-read-u64 buf 672) 1)))
+       (or (while (< (heap-read-u64 buf 672) 64)
+             (ptr-write-u8 buf (+ 680 (heap-read-u64 buf 672)) 0)
+             (ptr-write-u64 buf 672 (+ (heap-read-u64 buf 672) 1)))
            1)))
 
     ;; ---- Write 8-byte big-endian bit-length into scratch[56..63] --------
@@ -425,22 +425,22 @@
           (nl_sha256_final_block buf)
           ;; Zero-fill scratch again
           (ptr-write-u64 buf 672 0)
-          (or (while (< (ptr-read-u64 buf 672) 64)
-                (ptr-write-u8 buf (+ 680 (ptr-read-u64 buf 672)) 0)
-                (ptr-write-u64 buf 672 (+ (ptr-read-u64 buf 672) 1)))
+          (or (while (< (heap-read-u64 buf 672) 64)
+                (ptr-write-u8 buf (+ 680 (heap-read-u64 buf 672)) 0)
+                (ptr-write-u64 buf 672 (+ (heap-read-u64 buf 672) 1)))
               1)
           (nl_sha256_write_length (* msg-len 8) buf)
           (nl_sha256_final_block buf)))
        ;; Hex-encode H[0..7] (sha256 = 64 chars; sha224 = 56 chars = 7 words)
-       (nl_sha256_hex_word hex-buf 0  (ptr-read-u64 buf 576))
-       (nl_sha256_hex_word hex-buf 8  (ptr-read-u64 buf 584))
-       (nl_sha256_hex_word hex-buf 16 (ptr-read-u64 buf 592))
-       (nl_sha256_hex_word hex-buf 24 (ptr-read-u64 buf 600))
-       (nl_sha256_hex_word hex-buf 32 (ptr-read-u64 buf 608))
-       (nl_sha256_hex_word hex-buf 40 (ptr-read-u64 buf 616))
-       (nl_sha256_hex_word hex-buf 48 (ptr-read-u64 buf 624))
+       (nl_sha256_hex_word hex-buf 0  (heap-read-u64 buf 576))
+       (nl_sha256_hex_word hex-buf 8  (heap-read-u64 buf 584))
+       (nl_sha256_hex_word hex-buf 16 (heap-read-u64 buf 592))
+       (nl_sha256_hex_word hex-buf 24 (heap-read-u64 buf 600))
+       (nl_sha256_hex_word hex-buf 32 (heap-read-u64 buf 608))
+       (nl_sha256_hex_word hex-buf 40 (heap-read-u64 buf 616))
+       (nl_sha256_hex_word hex-buf 48 (heap-read-u64 buf 624))
        (if (= is-sha224 0)
-           (nl_sha256_hex_word hex-buf 56 (ptr-read-u64 buf 632))
+           (nl_sha256_hex_word hex-buf 56 (heap-read-u64 buf 632))
          0)))
 
     ;; ---- SHA256/SHA224 run helpers ---------------------------------------
@@ -686,41 +686,41 @@
     (defun nl_sha512_load (bytes byte-off buf)
       (and
        (ptr-write-u64 buf 784 0)
-       (or (while (< (ptr-read-u64 buf 784) 16)
+       (or (while (< (heap-read-u64 buf 784) 16)
              (ptr-write-u64 buf
-               (* (ptr-read-u64 buf 784) 8)
+               (* (heap-read-u64 buf 784) 8)
                (logior
-                (shl (ptr-read-u8 bytes (+ byte-off (* (ptr-read-u64 buf 784) 8))) 56)
+                (shl (heap-read-u8 bytes (+ byte-off (* (heap-read-u64 buf 784) 8))) 56)
                 (logior
-                 (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 1))) 48)
+                 (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 1))) 48)
                  (logior
-                  (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 2))) 40)
+                  (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 2))) 40)
                   (logior
-                   (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 3))) 32)
+                   (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 3))) 32)
                    (logior
-                    (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 4))) 24)
+                    (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 4))) 24)
                     (logior
-                     (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 5))) 16)
+                     (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 5))) 16)
                      (logior
-                      (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 6))) 8)
-                      (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 784) 8) 7)))))))))))
-             (ptr-write-u64 buf 784 (+ (ptr-read-u64 buf 784) 1)))
+                      (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 6))) 8)
+                      (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 784) 8) 7)))))))))))
+             (ptr-write-u64 buf 784 (+ (heap-read-u64 buf 784) 1)))
            1)))
 
     ;; ---- SHA512 message schedule expansion w[16..79] --------------------
     (defun nl_sha512_expand (buf)
       (and
        (ptr-write-u64 buf 784 16)
-       (or (while (< (ptr-read-u64 buf 784) 80)
+       (or (while (< (heap-read-u64 buf 784) 80)
              (ptr-write-u64 buf
-               (* (ptr-read-u64 buf 784) 8)
+               (* (heap-read-u64 buf 784) 8)
                (+ (nl_sha512_sigma1
-                   (ptr-read-u64 buf (* (- (ptr-read-u64 buf 784) 2) 8)))
-                  (+ (ptr-read-u64 buf (* (- (ptr-read-u64 buf 784) 7) 8))
+                   (heap-read-u64 buf (* (- (heap-read-u64 buf 784) 2) 8)))
+                  (+ (heap-read-u64 buf (* (- (heap-read-u64 buf 784) 7) 8))
                      (+ (nl_sha512_sigma0
-                         (ptr-read-u64 buf (* (- (ptr-read-u64 buf 784) 15) 8)))
-                        (ptr-read-u64 buf (* (- (ptr-read-u64 buf 784) 16) 8))))))
-             (ptr-write-u64 buf 784 (+ (ptr-read-u64 buf 784) 1)))
+                         (heap-read-u64 buf (* (- (heap-read-u64 buf 784) 15) 8)))
+                        (heap-read-u64 buf (* (- (heap-read-u64 buf 784) 16) 8))))))
+             (ptr-write-u64 buf 784 (+ (heap-read-u64 buf 784) 1)))
            1)))
 
     ;; ---- SHA512 80-round compression ------------------------------------
@@ -729,81 +729,81 @@
     ;; T1=768, T2=776, ctr_i=784. K[i] at buf[936 + i*8].
     (defun nl_sha512_compress (buf)
       (and
-       (ptr-write-u64 buf 640 (ptr-read-u64 buf 704))
-       (ptr-write-u64 buf 648 (ptr-read-u64 buf 712))
-       (ptr-write-u64 buf 656 (ptr-read-u64 buf 720))
-       (ptr-write-u64 buf 664 (ptr-read-u64 buf 728))
-       (ptr-write-u64 buf 672 (ptr-read-u64 buf 736))
-       (ptr-write-u64 buf 680 (ptr-read-u64 buf 744))
-       (ptr-write-u64 buf 688 (ptr-read-u64 buf 752))
-       (ptr-write-u64 buf 696 (ptr-read-u64 buf 760))
+       (ptr-write-u64 buf 640 (heap-read-u64 buf 704))
+       (ptr-write-u64 buf 648 (heap-read-u64 buf 712))
+       (ptr-write-u64 buf 656 (heap-read-u64 buf 720))
+       (ptr-write-u64 buf 664 (heap-read-u64 buf 728))
+       (ptr-write-u64 buf 672 (heap-read-u64 buf 736))
+       (ptr-write-u64 buf 680 (heap-read-u64 buf 744))
+       (ptr-write-u64 buf 688 (heap-read-u64 buf 752))
+       (ptr-write-u64 buf 696 (heap-read-u64 buf 760))
        (ptr-write-u64 buf 784 0)
-       (or (while (< (ptr-read-u64 buf 784) 80)
+       (or (while (< (heap-read-u64 buf 784) 80)
              ;; T1 = h + Sigma1(e) + Ch(e,f,g) + K[i] + w[i]
              (ptr-write-u64 buf 768
-               (+ (ptr-read-u64 buf 696)
-                  (+ (nl_sha512_Sigma1 (ptr-read-u64 buf 672))
+               (+ (heap-read-u64 buf 696)
+                  (+ (nl_sha512_Sigma1 (heap-read-u64 buf 672))
                      (+ (nl_sha512_ch
-                         (ptr-read-u64 buf 672)
-                         (ptr-read-u64 buf 680)
-                         (ptr-read-u64 buf 688))
-                        (+ (ptr-read-u64 buf (+ 936 (* (ptr-read-u64 buf 784) 8)))
-                           (ptr-read-u64 buf (* (ptr-read-u64 buf 784) 8)))))))
+                         (heap-read-u64 buf 672)
+                         (heap-read-u64 buf 680)
+                         (heap-read-u64 buf 688))
+                        (+ (heap-read-u64 buf (+ 936 (* (heap-read-u64 buf 784) 8)))
+                           (heap-read-u64 buf (* (heap-read-u64 buf 784) 8)))))))
              ;; T2 = Sigma0(a) + Maj(a,b,c)
              (ptr-write-u64 buf 776
-               (+ (nl_sha512_Sigma0 (ptr-read-u64 buf 640))
+               (+ (nl_sha512_Sigma0 (heap-read-u64 buf 640))
                   (nl_sha512_maj
-                   (ptr-read-u64 buf 640)
-                   (ptr-read-u64 buf 648)
-                   (ptr-read-u64 buf 656))))
+                   (heap-read-u64 buf 640)
+                   (heap-read-u64 buf 648)
+                   (heap-read-u64 buf 656))))
              ;; Rotate
-             (ptr-write-u64 buf 696 (ptr-read-u64 buf 688))
-             (ptr-write-u64 buf 688 (ptr-read-u64 buf 680))
-             (ptr-write-u64 buf 680 (ptr-read-u64 buf 672))
-             (ptr-write-u64 buf 672 (+ (ptr-read-u64 buf 664) (ptr-read-u64 buf 768)))
-             (ptr-write-u64 buf 664 (ptr-read-u64 buf 656))
-             (ptr-write-u64 buf 656 (ptr-read-u64 buf 648))
-             (ptr-write-u64 buf 648 (ptr-read-u64 buf 640))
-             (ptr-write-u64 buf 640 (+ (ptr-read-u64 buf 768) (ptr-read-u64 buf 776)))
-             (ptr-write-u64 buf 784 (+ (ptr-read-u64 buf 784) 1)))
+             (ptr-write-u64 buf 696 (heap-read-u64 buf 688))
+             (ptr-write-u64 buf 688 (heap-read-u64 buf 680))
+             (ptr-write-u64 buf 680 (heap-read-u64 buf 672))
+             (ptr-write-u64 buf 672 (+ (heap-read-u64 buf 664) (heap-read-u64 buf 768)))
+             (ptr-write-u64 buf 664 (heap-read-u64 buf 656))
+             (ptr-write-u64 buf 656 (heap-read-u64 buf 648))
+             (ptr-write-u64 buf 648 (heap-read-u64 buf 640))
+             (ptr-write-u64 buf 640 (+ (heap-read-u64 buf 768) (heap-read-u64 buf 776)))
+             (ptr-write-u64 buf 784 (+ (heap-read-u64 buf 784) 1)))
            1)
        ;; H += working vars (64-bit wrap — i64 wraps naturally)
-       (ptr-write-u64 buf 704 (+ (ptr-read-u64 buf 704) (ptr-read-u64 buf 640)))
-       (ptr-write-u64 buf 712 (+ (ptr-read-u64 buf 712) (ptr-read-u64 buf 648)))
-       (ptr-write-u64 buf 720 (+ (ptr-read-u64 buf 720) (ptr-read-u64 buf 656)))
-       (ptr-write-u64 buf 728 (+ (ptr-read-u64 buf 728) (ptr-read-u64 buf 664)))
-       (ptr-write-u64 buf 736 (+ (ptr-read-u64 buf 736) (ptr-read-u64 buf 672)))
-       (ptr-write-u64 buf 744 (+ (ptr-read-u64 buf 744) (ptr-read-u64 buf 680)))
-       (ptr-write-u64 buf 752 (+ (ptr-read-u64 buf 752) (ptr-read-u64 buf 688)))
-       (ptr-write-u64 buf 760 (+ (ptr-read-u64 buf 760) (ptr-read-u64 buf 696)))))
+       (ptr-write-u64 buf 704 (+ (heap-read-u64 buf 704) (heap-read-u64 buf 640)))
+       (ptr-write-u64 buf 712 (+ (heap-read-u64 buf 712) (heap-read-u64 buf 648)))
+       (ptr-write-u64 buf 720 (+ (heap-read-u64 buf 720) (heap-read-u64 buf 656)))
+       (ptr-write-u64 buf 728 (+ (heap-read-u64 buf 728) (heap-read-u64 buf 664)))
+       (ptr-write-u64 buf 736 (+ (heap-read-u64 buf 736) (heap-read-u64 buf 672)))
+       (ptr-write-u64 buf 744 (+ (heap-read-u64 buf 744) (heap-read-u64 buf 680)))
+       (ptr-write-u64 buf 752 (+ (heap-read-u64 buf 752) (heap-read-u64 buf 688)))
+       (ptr-write-u64 buf 760 (+ (heap-read-u64 buf 760) (heap-read-u64 buf 696)))))
 
     ;; ---- SHA512 process full 128-byte blocks ----------------------------
     ;; buf[792] = ctr_blk outer counter.
     (defun nl_sha512_full_blocks (bytes num-blocks buf)
       (and
        (ptr-write-u64 buf 792 0)
-       (or (while (< (ptr-read-u64 buf 792) num-blocks)
+       (or (while (< (heap-read-u64 buf 792) num-blocks)
              (and
-              (nl_sha512_load bytes (* (ptr-read-u64 buf 792) 128) buf)
+              (nl_sha512_load bytes (* (heap-read-u64 buf 792) 128) buf)
               (nl_sha512_expand buf)
               (nl_sha512_compress buf))
-             (ptr-write-u64 buf 792 (+ (ptr-read-u64 buf 792) 1)))
+             (ptr-write-u64 buf 792 (+ (heap-read-u64 buf 792) 1)))
            1)))
 
     ;; ---- SHA512 scratch fill [808..935] (128 bytes) ----------------------
     (defun nl_sha512_scratch_fill (bytes offset rem buf)
       (and
        (ptr-write-u64 buf 784 0)
-       (or (while (< (ptr-read-u64 buf 784) rem)
+       (or (while (< (heap-read-u64 buf 784) rem)
              (ptr-write-u8 buf
-               (+ 808 (ptr-read-u64 buf 784))
-               (ptr-read-u8 bytes (+ offset (ptr-read-u64 buf 784))))
-             (ptr-write-u64 buf 784 (+ (ptr-read-u64 buf 784) 1)))
+               (+ 808 (heap-read-u64 buf 784))
+               (heap-read-u8 bytes (+ offset (heap-read-u64 buf 784))))
+             (ptr-write-u64 buf 784 (+ (heap-read-u64 buf 784) 1)))
            1)
        (ptr-write-u64 buf 800 rem)
-       (or (while (< (ptr-read-u64 buf 800) 128)
-             (ptr-write-u8 buf (+ 808 (ptr-read-u64 buf 800)) 0)
-             (ptr-write-u64 buf 800 (+ (ptr-read-u64 buf 800) 1)))
+       (or (while (< (heap-read-u64 buf 800) 128)
+             (ptr-write-u8 buf (+ 808 (heap-read-u64 buf 800)) 0)
+             (ptr-write-u64 buf 800 (+ (heap-read-u64 buf 800) 1)))
            1)))
 
     ;; ---- SHA512 write 128-bit (big-endian) bit length at scratch[112..127]
@@ -914,23 +914,23 @@
          (and
           (nl_sha512_final_block buf)
           (ptr-write-u64 buf 800 0)
-          (or (while (< (ptr-read-u64 buf 800) 128)
-                (ptr-write-u8 buf (+ 808 (ptr-read-u64 buf 800)) 0)
-                (ptr-write-u64 buf 800 (+ (ptr-read-u64 buf 800) 1)))
+          (or (while (< (heap-read-u64 buf 800) 128)
+                (ptr-write-u8 buf (+ 808 (heap-read-u64 buf 800)) 0)
+                (ptr-write-u64 buf 800 (+ (heap-read-u64 buf 800) 1)))
               1)
           (nl_sha512_write_length (* msg-len 8) buf)
           (nl_sha512_final_block buf)))
        ;; Hex-encode H[0..7] (sha512=128 chars; sha384=96 chars=6 words)
-       (nl_sha512_hex_word64 hex-buf 0   (ptr-read-u64 buf 704))
-       (nl_sha512_hex_word64 hex-buf 16  (ptr-read-u64 buf 712))
-       (nl_sha512_hex_word64 hex-buf 32  (ptr-read-u64 buf 720))
-       (nl_sha512_hex_word64 hex-buf 48  (ptr-read-u64 buf 728))
-       (nl_sha512_hex_word64 hex-buf 64  (ptr-read-u64 buf 736))
-       (nl_sha512_hex_word64 hex-buf 80  (ptr-read-u64 buf 744))
+       (nl_sha512_hex_word64 hex-buf 0   (heap-read-u64 buf 704))
+       (nl_sha512_hex_word64 hex-buf 16  (heap-read-u64 buf 712))
+       (nl_sha512_hex_word64 hex-buf 32  (heap-read-u64 buf 720))
+       (nl_sha512_hex_word64 hex-buf 48  (heap-read-u64 buf 728))
+       (nl_sha512_hex_word64 hex-buf 64  (heap-read-u64 buf 736))
+       (nl_sha512_hex_word64 hex-buf 80  (heap-read-u64 buf 744))
        (if (= is-sha384 0)
            (and
-            (nl_sha512_hex_word64 hex-buf 96  (ptr-read-u64 buf 752))
-            (nl_sha512_hex_word64 hex-buf 112 (ptr-read-u64 buf 760)))
+            (nl_sha512_hex_word64 hex-buf 96  (heap-read-u64 buf 752))
+            (nl_sha512_hex_word64 hex-buf 112 (heap-read-u64 buf 760)))
          0)))
 
     ;; ---- SHA512/384 run helpers -----------------------------------------
@@ -1060,18 +1060,18 @@
     (defun nl_md5_load (bytes byte-off buf)
       (and
        (ptr-write-u64 buf 200 0)
-       (or (while (< (ptr-read-u64 buf 200) 16)
+       (or (while (< (heap-read-u64 buf 200) 16)
              (ptr-write-u64 buf
-               (* (ptr-read-u64 buf 200) 8)
+               (* (heap-read-u64 buf 200) 8)
                (nl_h32_mask
                 (logior
-                 (ptr-read-u8 bytes (+ byte-off (* (ptr-read-u64 buf 200) 4)))
+                 (heap-read-u8 bytes (+ byte-off (* (heap-read-u64 buf 200) 4)))
                  (logior
-                  (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 200) 4) 1))) 8)
+                  (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 200) 4) 1))) 8)
                   (logior
-                   (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 200) 4) 2))) 16)
-                   (shl (ptr-read-u8 bytes (+ byte-off (+ (* (ptr-read-u64 buf 200) 4) 3))) 24))))))
-             (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1)))
+                   (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 200) 4) 2))) 16)
+                   (shl (heap-read-u8 bytes (+ byte-off (+ (* (heap-read-u64 buf 200) 4) 3))) 24))))))
+             (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1)))
            1)))
 
     ;; ---- MD5 compression function ---------------------------------------
@@ -1094,91 +1094,91 @@
       (and
        (ptr-write-u64 buf 192
          (nl_h32_mask
-          (+ (ptr-read-u64 buf 136)
+          (+ (heap-read-u64 buf 136)
              (nl_md5_rotl
               (nl_h32_mask
-               (+ (ptr-read-u64 buf 128)
-                  (+ (nl_md5_F (ptr-read-u64 buf 136)
-                                (ptr-read-u64 buf 144)
-                                (ptr-read-u64 buf 152))
-                     (+ (ptr-read-u64 buf (* k 8))
-                        (ptr-read-u64 buf (+ 272 (* (ptr-read-u64 buf 200) 8)))))))
+               (+ (heap-read-u64 buf 128)
+                  (+ (nl_md5_F (heap-read-u64 buf 136)
+                                (heap-read-u64 buf 144)
+                                (heap-read-u64 buf 152))
+                     (+ (heap-read-u64 buf (* k 8))
+                        (heap-read-u64 buf (+ 272 (* (heap-read-u64 buf 200) 8)))))))
               s))))
-       (ptr-write-u64 buf 128 (ptr-read-u64 buf 152))
-       (ptr-write-u64 buf 152 (ptr-read-u64 buf 144))
-       (ptr-write-u64 buf 144 (ptr-read-u64 buf 136))
-       (ptr-write-u64 buf 136 (ptr-read-u64 buf 192))
-       (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1))))
+       (ptr-write-u64 buf 128 (heap-read-u64 buf 152))
+       (ptr-write-u64 buf 152 (heap-read-u64 buf 144))
+       (ptr-write-u64 buf 144 (heap-read-u64 buf 136))
+       (ptr-write-u64 buf 136 (heap-read-u64 buf 192))
+       (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1))))
 
     (defun nl_md5_step_G (buf k s)
       (and
        (ptr-write-u64 buf 192
          (nl_h32_mask
-          (+ (ptr-read-u64 buf 136)
+          (+ (heap-read-u64 buf 136)
              (nl_md5_rotl
               (nl_h32_mask
-               (+ (ptr-read-u64 buf 128)
-                  (+ (nl_md5_G (ptr-read-u64 buf 136)
-                                (ptr-read-u64 buf 144)
-                                (ptr-read-u64 buf 152))
-                     (+ (ptr-read-u64 buf (* k 8))
-                        (ptr-read-u64 buf (+ 272 (* (ptr-read-u64 buf 200) 8)))))))
+               (+ (heap-read-u64 buf 128)
+                  (+ (nl_md5_G (heap-read-u64 buf 136)
+                                (heap-read-u64 buf 144)
+                                (heap-read-u64 buf 152))
+                     (+ (heap-read-u64 buf (* k 8))
+                        (heap-read-u64 buf (+ 272 (* (heap-read-u64 buf 200) 8)))))))
               s))))
-       (ptr-write-u64 buf 128 (ptr-read-u64 buf 152))
-       (ptr-write-u64 buf 152 (ptr-read-u64 buf 144))
-       (ptr-write-u64 buf 144 (ptr-read-u64 buf 136))
-       (ptr-write-u64 buf 136 (ptr-read-u64 buf 192))
-       (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1))))
+       (ptr-write-u64 buf 128 (heap-read-u64 buf 152))
+       (ptr-write-u64 buf 152 (heap-read-u64 buf 144))
+       (ptr-write-u64 buf 144 (heap-read-u64 buf 136))
+       (ptr-write-u64 buf 136 (heap-read-u64 buf 192))
+       (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1))))
 
     (defun nl_md5_step_H (buf k s)
       (and
        (ptr-write-u64 buf 192
          (nl_h32_mask
-          (+ (ptr-read-u64 buf 136)
+          (+ (heap-read-u64 buf 136)
              (nl_md5_rotl
               (nl_h32_mask
-               (+ (ptr-read-u64 buf 128)
-                  (+ (nl_md5_H (ptr-read-u64 buf 136)
-                                (ptr-read-u64 buf 144)
-                                (ptr-read-u64 buf 152))
-                     (+ (ptr-read-u64 buf (* k 8))
-                        (ptr-read-u64 buf (+ 272 (* (ptr-read-u64 buf 200) 8)))))))
+               (+ (heap-read-u64 buf 128)
+                  (+ (nl_md5_H (heap-read-u64 buf 136)
+                                (heap-read-u64 buf 144)
+                                (heap-read-u64 buf 152))
+                     (+ (heap-read-u64 buf (* k 8))
+                        (heap-read-u64 buf (+ 272 (* (heap-read-u64 buf 200) 8)))))))
               s))))
-       (ptr-write-u64 buf 128 (ptr-read-u64 buf 152))
-       (ptr-write-u64 buf 152 (ptr-read-u64 buf 144))
-       (ptr-write-u64 buf 144 (ptr-read-u64 buf 136))
-       (ptr-write-u64 buf 136 (ptr-read-u64 buf 192))
-       (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1))))
+       (ptr-write-u64 buf 128 (heap-read-u64 buf 152))
+       (ptr-write-u64 buf 152 (heap-read-u64 buf 144))
+       (ptr-write-u64 buf 144 (heap-read-u64 buf 136))
+       (ptr-write-u64 buf 136 (heap-read-u64 buf 192))
+       (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1))))
 
     (defun nl_md5_step_I (buf k s)
       (and
        (ptr-write-u64 buf 192
          (nl_h32_mask
-          (+ (ptr-read-u64 buf 136)
+          (+ (heap-read-u64 buf 136)
              (nl_md5_rotl
               (nl_h32_mask
-               (+ (ptr-read-u64 buf 128)
-                  (+ (nl_md5_I (ptr-read-u64 buf 136)
-                                (ptr-read-u64 buf 144)
-                                (ptr-read-u64 buf 152))
-                     (+ (ptr-read-u64 buf (* k 8))
-                        (ptr-read-u64 buf (+ 272 (* (ptr-read-u64 buf 200) 8)))))))
+               (+ (heap-read-u64 buf 128)
+                  (+ (nl_md5_I (heap-read-u64 buf 136)
+                                (heap-read-u64 buf 144)
+                                (heap-read-u64 buf 152))
+                     (+ (heap-read-u64 buf (* k 8))
+                        (heap-read-u64 buf (+ 272 (* (heap-read-u64 buf 200) 8)))))))
               s))))
-       (ptr-write-u64 buf 128 (ptr-read-u64 buf 152))
-       (ptr-write-u64 buf 152 (ptr-read-u64 buf 144))
-       (ptr-write-u64 buf 144 (ptr-read-u64 buf 136))
-       (ptr-write-u64 buf 136 (ptr-read-u64 buf 192))
-       (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1))))
+       (ptr-write-u64 buf 128 (heap-read-u64 buf 152))
+       (ptr-write-u64 buf 152 (heap-read-u64 buf 144))
+       (ptr-write-u64 buf 144 (heap-read-u64 buf 136))
+       (ptr-write-u64 buf 136 (heap-read-u64 buf 192))
+       (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1))))
 
     ;; ---- MD5 compress one 64-byte block ----------------------------------
     ;; AA=160,BB=168,CC=176,DD=184. buf[200] reset to 0 before steps.
     (defun nl_md5_compress (buf)
       (and
        ;; Save a,b,c,d
-       (ptr-write-u64 buf 160 (ptr-read-u64 buf 128))
-       (ptr-write-u64 buf 168 (ptr-read-u64 buf 136))
-       (ptr-write-u64 buf 176 (ptr-read-u64 buf 144))
-       (ptr-write-u64 buf 184 (ptr-read-u64 buf 152))
+       (ptr-write-u64 buf 160 (heap-read-u64 buf 128))
+       (ptr-write-u64 buf 168 (heap-read-u64 buf 136))
+       (ptr-write-u64 buf 176 (heap-read-u64 buf 144))
+       (ptr-write-u64 buf 184 (heap-read-u64 buf 152))
        ;; Reset step counter
        (ptr-write-u64 buf 200 0)
        ;; Round 1: F, k=i, s=7,12,17,22 (×4)
@@ -1250,10 +1250,10 @@
        (nl_md5_step_I buf 2  15)
        (nl_md5_step_I buf 9  21)
        ;; a += AA, b += BB, c += CC, d += DD
-       (ptr-write-u64 buf 128 (nl_h32_mask (+ (ptr-read-u64 buf 128) (ptr-read-u64 buf 160))))
-       (ptr-write-u64 buf 136 (nl_h32_mask (+ (ptr-read-u64 buf 136) (ptr-read-u64 buf 168))))
-       (ptr-write-u64 buf 144 (nl_h32_mask (+ (ptr-read-u64 buf 144) (ptr-read-u64 buf 176))))
-       (ptr-write-u64 buf 152 (nl_h32_mask (+ (ptr-read-u64 buf 152) (ptr-read-u64 buf 184))))))
+       (ptr-write-u64 buf 128 (nl_h32_mask (+ (heap-read-u64 buf 128) (heap-read-u64 buf 160))))
+       (ptr-write-u64 buf 136 (nl_h32_mask (+ (heap-read-u64 buf 136) (heap-read-u64 buf 168))))
+       (ptr-write-u64 buf 144 (nl_h32_mask (+ (heap-read-u64 buf 144) (heap-read-u64 buf 176))))
+       (ptr-write-u64 buf 152 (nl_h32_mask (+ (heap-read-u64 buf 152) (heap-read-u64 buf 184))))))
 
     ;; ---- Process full 64-byte MD5 blocks --------------------------------
     ;; Uses buf[208] as outer block counter (scratch64 base, safe before padding).
@@ -1262,11 +1262,11 @@
     (defun nl_md5_full_blocks (bytes num-blocks buf)
       (and
        (ptr-write-u64 buf 208 0)
-       (or (while (< (ptr-read-u64 buf 208) num-blocks)
+       (or (while (< (heap-read-u64 buf 208) num-blocks)
              (and
-              (nl_md5_load bytes (* (ptr-read-u64 buf 208) 64) buf)
+              (nl_md5_load bytes (* (heap-read-u64 buf 208) 64) buf)
               (nl_md5_compress buf))
-             (ptr-write-u64 buf 208 (+ (ptr-read-u64 buf 208) 1)))
+             (ptr-write-u64 buf 208 (+ (heap-read-u64 buf 208) 1)))
            1)))
 
     ;; ---- MD5 scratch fill [scratch base=208..271] ----------------------
@@ -1275,15 +1275,15 @@
     (defun nl_md5_scratch_fill (bytes offset rem buf)
       (and
        (ptr-write-u64 buf 200 0)
-       (or (while (< (ptr-read-u64 buf 200) rem)
+       (or (while (< (heap-read-u64 buf 200) rem)
              (ptr-write-u8 buf
-               (+ 208 (ptr-read-u64 buf 200))
-               (ptr-read-u8 bytes (+ offset (ptr-read-u64 buf 200))))
-             (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1)))
+               (+ 208 (heap-read-u64 buf 200))
+               (heap-read-u8 bytes (+ offset (heap-read-u64 buf 200))))
+             (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1)))
            1)
-       (or (while (< (ptr-read-u64 buf 200) 64)
-             (ptr-write-u8 buf (+ 208 (ptr-read-u64 buf 200)) 0)
-             (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1)))
+       (or (while (< (heap-read-u64 buf 200) 64)
+             (ptr-write-u8 buf (+ 208 (heap-read-u64 buf 200)) 0)
+             (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1)))
            1)))
 
     ;; ---- MD5 write 64-bit little-endian bit-length at scratch[56..63] --
@@ -1352,17 +1352,17 @@
           (nl_md5_final_block buf)
           ;; Zero-fill scratch again
           (ptr-write-u64 buf 200 0)
-          (or (while (< (ptr-read-u64 buf 200) 64)
-                (ptr-write-u8 buf (+ 208 (ptr-read-u64 buf 200)) 0)
-                (ptr-write-u64 buf 200 (+ (ptr-read-u64 buf 200) 1)))
+          (or (while (< (heap-read-u64 buf 200) 64)
+                (ptr-write-u8 buf (+ 208 (heap-read-u64 buf 200)) 0)
+                (ptr-write-u64 buf 200 (+ (heap-read-u64 buf 200) 1)))
               1)
           (nl_md5_write_length (* msg-len 8) buf)
           (nl_md5_final_block buf)))
        ;; Little-endian hex output
-       (nl_md5_hex_word_le hex-buf 0  (ptr-read-u64 buf 128))
-       (nl_md5_hex_word_le hex-buf 8  (ptr-read-u64 buf 136))
-       (nl_md5_hex_word_le hex-buf 16 (ptr-read-u64 buf 144))
-       (nl_md5_hex_word_le hex-buf 24 (ptr-read-u64 buf 152))))
+       (nl_md5_hex_word_le hex-buf 0  (heap-read-u64 buf 128))
+       (nl_md5_hex_word_le hex-buf 8  (heap-read-u64 buf 136))
+       (nl_md5_hex_word_le hex-buf 16 (heap-read-u64 buf 144))
+       (nl_md5_hex_word_le hex-buf 24 (heap-read-u64 buf 152))))
 
     ;; ---- MD5 run helpers ------------------------------------------------
     (defun nl_md5_run (str-ptr msg-len out)

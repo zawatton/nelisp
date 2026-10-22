@@ -28,6 +28,12 @@
                         nelisp--autoload-queue)))
           (setq features (cons feature features)))
         feature))
+;; Doc 216 S4.2: the evaluator caches this special variable's mirror entry.
+;; Define it early so bootstrap does not repeatedly search an absent name.
+(unless (boundp 'max-lisp-eval-depth)
+  (defvar max-lisp-eval-depth 16000
+    "Maximum evaluation nesting; special bindings and assignment affect calls."))
+
 ;; Mirrors GNU Emacs 31.1 src/doc.c:Fdocumentation_stringp at commit
 ;; a360712c9d272d950d8d8255ef74570f7e90b7d9 (SHA-256
 ;; 687aaa28c154570e8ac2a85ce4ecccbac48c60a2c32102f1d89c3f295dd11861).
@@ -1146,6 +1152,7 @@ SUBLIST (compared by `eq') removed, not an approximation."
 
 (defvar nelisp--buffer-multibyte-table (make-hash-table :test 'eq)
   "BUFFER -> multibyte flag (t/nil).  Absent means multibyte (t).")
+(defvar enable-multibyte-characters t)
 
 (defun nelisp--buffer-multibyte-p (buffer)
   "Return BUFFER's multibyte flag, defaulting to t for a new buffer."
@@ -2410,11 +2417,15 @@ Return (FROM . TO).  STR, START, and END are used only for the
              (n1 (- b a))
              (n2 (- d c))
              (n (if (< n1 n2) n1 n2))
+             (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
+             (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
              (i 0)
              (result t))
         (while (and (< i n) (eq result t))
           (let* ((ch1 (aref str1 (+ a i)))
                  (ch2 (aref str2 (+ c i)))
+                 (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
+                 (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
                  (k1 (if ignore-case (upcase ch1) ch1))
                  (k2 (if ignore-case (upcase ch2) ch2)))
             (cond
@@ -5911,14 +5922,9 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
 `aset' mutated the original / a string literal)."
   (cond
    ((null seq) nil)
-   ((consp seq)
-    (let ((acc nil) (cur seq))
-      (while (consp cur)
-        (setq acc (cons (car cur) acc))
-        (setq cur (cdr cur)))
-      (when cur
-        (signal 'wrong-type-argument (list 'listp cur)))
-      (nreverse acc)))
+   ;; Reuse the existing spine copier. Besides avoiding a second reversal,
+   ;; APPEND preserves fresh cons identity and the improper-tail condition.
+   ((consp seq) (append seq nil))
    ((stringp seq) (concat seq))
    ((and (char-table-p seq) (fboundp 'nelisp--copy-char-table))
     (nelisp--copy-char-table seq))
@@ -11559,18 +11565,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; Classification is stored when a binding is created, so later declarations
 ;; cannot reclassify an existing lexical binding.
 (fset 'boundp '(builtin boundp))
-(defun set (sym val)
-    ;; t, nil and every keyword are self-evaluating in Emacs and cannot be
-    ;; assigned; `symbolp' was the wrong complaint (they ARE symbols) and a
-    ;; keyword was assigned outright.
-    (when (or (eq sym t) (null sym) (keywordp sym))
-      (signal 'setting-constant (list sym)))
-    ;; Keep validation at this Lisp-owned semantic boundary without entering
-    ;; a second function scope for the same symbol predicate.
-    (unless (symbolp sym)
-      (signal 'wrong-type-argument (list 'symbolp sym)))
-  (funcall '(builtin set) sym val)
-  val)
+;; The existing symbol-cell entry validates types and constants, including
+;; GNU's keyword self-assignment exception. A second scope here duplicated
+;; validation, rejected that exception and hid the entry from the word VM.
+(fset 'set '(builtin set))
 (unless (fboundp 'defalias)
   (defun defalias (sym def &rest _)
     (when (and (null sym) def) (signal 'setting-constant (list sym)))
@@ -12953,27 +12951,7 @@ this file was committed).")
 (defvar coding-system-for-read nil)
 (unless (boundp 'max-lisp-eval-depth)
   (defvar max-lisp-eval-depth 16000
-    "Emacs's recursion-depth knob, present so that code which BINDS it runs.
-
-Doc 205 P2.  This runtime does have a recursion ceiling -- deep enough
-recursion signals `excessive-lisp-nesting' -- but the ceiling is
-`rec_max', written into the evaluator context at BUILD time as a fixed
-16000 (see `nelisp-standalone-build.el', the two `ptr-write-u64 ctx 104
-16000' sites).  Nothing reads this variable to find it.
-
-So setting or `let'-binding this does NOT move the real limit: measured
-2026-09-18, a self-recursive function still signals at depth 20000 inside
-`(let ((max-lisp-eval-depth 40000)) ...)'.  The value here matches
-`rec_max' so that code reading it is not misled about where the ceiling
-sits.
-
-It exists because `scripts/nelisp-standalone-build.el' binds it four
-times as `(max max-lisp-eval-depth N)' -- which READS it -- and with the
-variable unbound that `let' raised `void-variable' long before any
-recursion got deep.  Doc 205 §1.8 originally filed this as \"not a gap\"
-on the strength of a real build never reaching the ceiling; that was
-measured correctly and answered the wrong question.  Reaching the ceiling
-and binding the name are independent."))
+    "Maximum evaluation nesting, read through the evaluator's special binding."))
 ;; `system-type'/`system-configuration' used to be hardcoded Linux-x86_64
 ;; literals here regardless of what the binary was actually built for (a
 ;; Windows PE build's `system-type' answered `gnu/linux'; real-machine
@@ -17595,34 +17573,99 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (while (consp cursor) (setq cursor (cdr cursor)))
       cursor)))
 
-(defun sort (sequence &rest arguments)
+(defconst nelisp--sort-string-lessp-definition (symbol-function 'string-lessp))
+(defconst nelisp--sort-string<-definition (symbol-function 'string<))
+(defalias 'nelisp--sort-native-string< nelisp--sort-string<-definition)
+
+(defun nelisp--sort-string-lessp (a b)
+  "Compare sort keys through the current native string comparator adapter."
+  (nelisp--sort-native-string< a b))
+
+(defun nelisp--sort-merge-links (left right lessp reverse strings keyed)
+  "Merge private list spines, taking LEFT first on equal keys."
+  (let ((head nil) (tail nil) (node nil))
+    (while (and left right)
+      (let ((a (car right)) (b (car left)))
+        (when keyed (setq a (car a)) (setq b (car b)))
+        (when reverse (let ((saved a)) (setq a b) (setq b saved)))
+        (if (if strings (nelisp--sort-string-lessp a b) (funcall lessp a b))
+            (progn (setq node right) (setq right (cdr right)))
+          (setq node left) (setq left (cdr left))))
+      (if tail (setcdr tail node) (setq head node))
+      (setq tail node))
+    (if tail
+        (progn (setcdr tail (or left right)) head)
+      (or left right))))
+
+(defun nelisp--sort-links (items size lessp reverse strings keyed)
+  "Stable merge sort on a private spine, with no per-merge consing."
+  (if (< size 2) items
+    (if (= size 2)
+        (let ((right (cdr items)))
+          (setcdr items nil)
+          (nelisp--sort-merge-links items right lessp reverse strings keyed))
+      (let* ((half (/ size 2)) (last items) (index 1))
+        (while (< index half) (setq last (cdr last)) (setq index (1+ index)))
+        (let ((right (cdr last)))
+          (setcdr last nil)
+          (nelisp--sort-merge-links
+           (nelisp--sort-links items half lessp reverse strings keyed)
+           (nelisp--sort-links right (- size half) lessp reverse strings keyed)
+           lessp reverse strings keyed))))))
+
+(defun nelisp--sort-before (a b lessp strings keyed)
+  (when keyed (setq a (car a)) (setq b (car b)))
+  (if strings (nelisp--sort-string-lessp a b) (funcall lessp a b)))
+
+(defun nelisp--sort-small (items size lessp strings keyed)
+  "Sort a short private spine in GNU's run and binary insertion order."
+  (if (< size 2) items
+    (let* ((cursor (cdr items)) (previous (car items)) (run 2)
+           (descending (nelisp--sort-before (car cursor) previous lessp strings keyed))
+           (active t))
+      (setq previous (car cursor))
+      (setq cursor (cdr cursor))
+      (while (and active cursor)
+        (let ((order (nelisp--sort-before (car cursor) previous lessp strings keyed)))
+          (if (if descending (not order) order)
+              (setq active nil)
+            (setq run (1+ run))
+            (setq previous (car cursor))
+            (setq cursor (cdr cursor)))))
+      (let ((last (nthcdr (1- run) items)))
+        (setcdr last nil)
+        (when descending (setq items (nreverse items))))
+      (while cursor
+        (let ((node cursor) (left 0) (right run))
+          (setq cursor (cdr cursor))
+          (while (< left right)
+            (let ((middle (/ (+ left right) 2)))
+              (if (nelisp--sort-before (car node) (nth middle items) lessp strings keyed)
+                  (setq right middle)
+                (setq left (1+ middle)))))
+          (if (= left 0)
+              (progn (setcdr node items) (setq items node))
+            (let ((before (nthcdr (1- left) items)))
+              (setcdr node (cdr before))
+              (setcdr before node)))
+          (setq run (1+ run))))
+      items)))
+
+(defun nelisp--sort-reference (sequence &rest arguments)
   "Sort SEQUENCE stably using GNU Emacs 31 keyword or legacy options."
-  (unless (or (listp sequence)
-              (and (vectorp sequence) (not (stringp sequence))))
-    (signal 'wrong-type-argument (list 'list-or-vector-p sequence)))
-  (when (nelisp--sort-circular-list-p sequence)
-    (signal 'circular-list (list sequence)))
-  (when (and (listp sequence) (not (nelisp--sort-proper-list-p sequence)))
-    (signal 'wrong-type-argument
-            (list 'listp (nelisp--sort-improper-list-tail sequence))))
-  (let ((key-function #'identity)
+  (let ((key-function nil)
         (lessp #'value<)
         (reverse nil)
         (in-place nil)
         (options arguments))
     (cond
      ((null options))
-     ((not (keywordp (car options)))
-      (unless (null (cdr options))
-        (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length options)))))
+     ((null (cdr options))
       (setq lessp (or (car options) #'value<))
       (setq in-place t))
-     ((null (cdr options))
-      ;; A lone keyword is the legacy comparator argument.  Calling it during
-      ;; comparison preserves GNU's void-function failure for malformed input.
-      (setq lessp (car options))
-      (setq in-place t))
      (t
+      (when (= (% (length options) 2) 1)
+        (error "Invalid argument list"))
       (while options
         (let ((option (car options)))
           (setq options (cdr options))
@@ -17630,39 +17673,62 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
             (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length arguments)))))
           (let ((value (car options)))
             (setq options (cdr options))
-            (cond ((eq option :key) (setq key-function (or value #'identity)))
+            (cond ((eq option :key) (setq key-function value))
                   ((eq option :lessp) (setq lessp (or value #'value<)))
                   ((eq option :reverse) (setq reverse value))
                   ((eq option :in-place) (setq in-place value))
                   (t (signal 'error (list "Invalid keyword argument" option)))))))))
+    (unless (or (listp sequence)
+                (and (vectorp sequence) (not (stringp sequence))))
+      (signal 'wrong-type-argument (list 'list-or-vector-p sequence)))
+    (when (nelisp--sort-circular-list-p sequence)
+      (signal 'circular-list (list sequence)))
+    (when (and (listp sequence) (not (nelisp--sort-proper-list-p sequence)))
+      (signal 'wrong-type-argument
+              (list 'listp (nelisp--sort-improper-list-tail sequence))))
     (let ((cursor (if (vectorp sequence)
                       (let ((index 0) (items nil))
                         (while (< index (length sequence))
                           (setq items (cons (aref sequence index) items))
                           (setq index (1+ index)))
                         (nreverse items))
-                    sequence)))
-      (let ((decorated nil))
-        (while cursor
-          (let ((item (car cursor)))
+                    (copy-sequence sequence))))
+      (let ((decorated nil) (size (length cursor))
+            (strings (and (memq lessp '(string-lessp string<))
+                          (let ((definition (indirect-function lessp)))
+                            (or (eq definition nelisp--sort-string-lessp-definition)
+                                (eq definition nelisp--sort-string<-definition))))))
+        ;; GNU reverses before computing keys, then reverses the result. This
+        ;; preserves ties and the observable order of key/predicate failures.
+        (when reverse (setq cursor (nreverse cursor)))
+        ;; GNU does not invoke :key, or the predicate, for zero/one item.
+        ;; No-key sorts avoid decorating every value and calling a closure
+        ;; around every comparison. Only known, unchanged string definitions
+        ;; select the adapter; advice and redefinitions keep normal FUNCALL.
+        (if (or (< size 2) (null key-function))
             (setq decorated
-                  (cons (cons (funcall key-function item) item) decorated)))
-          (setq cursor (cdr cursor)))
-        (setq decorated (nreverse decorated))
-        (let ((compare
-               (lambda (left right)
-                 (if reverse
-                     (funcall lessp (car right) (car left))
-                   (funcall lessp (car left) (car right))))))
-          (let ((sorted (nelisp--sort-merge-sort decorated compare))
-                (values nil))
-            (while sorted
-              (setq values (cons (cdr (car sorted)) values))
-              (setq sorted (cdr sorted)))
-            (setq values (nreverse values))
+                  (if (< size 64)
+                      (nelisp--sort-small cursor size lessp strings nil)
+                    (nelisp--sort-links cursor size lessp nil strings nil)))
+          (progn
+            (while cursor
+              (let ((item (car cursor)))
+                (setq decorated
+                      (cons (cons (funcall key-function item) item) decorated)))
+              (setq cursor (cdr cursor)))
+            (setq decorated
+                  (if (< size 64)
+                      (nelisp--sort-small (nreverse decorated) size lessp strings t)
+                    (nelisp--sort-links (nreverse decorated) size lessp nil strings t)))
+            (let ((entry decorated))
+              (while entry
+                (setcar entry (cdr (car entry)))
+                (setq entry (cdr entry))))))
+        (when reverse (setq decorated (nreverse decorated)))
+        (let ((values decorated))
             (cond
              ((vectorp sequence)
-              (let ((result (if in-place sequence (copy-sequence sequence)))
+              (let ((result (if (or in-place (= size 0)) sequence (copy-sequence sequence)))
                     (index 0))
                 (while values
                   (aset result index (car values))
@@ -17676,7 +17742,11 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
                   (setq destination (cdr destination))
                   (setq values (cdr values)))
                 sequence))
-             (t values))))))))
+             (t values)))))))
+
+(unless (fboundp 'sort)
+  (defalias 'sort #'nelisp--sort-reference))
+(defconst nelisp--sort-value<-definition (symbol-function 'value<))
 
 ;; --- Wave-2 (C): define-error ------------------------------------------
 ;; define-error NAME MESSAGE &optional PARENT: register an error symbol.  In
@@ -27750,6 +27820,11 @@ a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
 ;; effect and the interpreter evaluates the call.
 (defvar nelisp--fx-special-gen (vector 0))
 
+(defvar nelisp--fx-alias-hints nil
+  "Names successfully installed by the Lisp alias facade.
+This only selects a compiler optimization. Missing hints keep the normal
+runtime lookup; stale hints still require authoritative alias resolution.")
+
 (defvar nelisp--fx-expand t
   "Nil while compiling a body known to name no macro: `macroexpand-all'
 would return it unchanged, and expanding is most of a compilation's cost.")
@@ -27784,14 +27859,14 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
          (append nelisp--fx-native-macro-environment
                  macroexpand-all-environment))
         (out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
-        (depth 0) (maxdepth 0) (lexlets nil)
+        (depth 0) (maxdepth 0) (lexlets nil) (alias-hints nelisp--fx-alias-hints)
         (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
     (cl-labels
         ((emit (&rest items)
            ;; Track the operand-stack depth along the code as laid out; at a
            ;; label the real depth is never larger, so MAXDEPTH bounds it.
            (let ((op (car items)))
-             (setq depth (+ depth (cond ((memq op '(1 2 12)) 1)
+             (setq depth (+ depth (cond ((memq op '(1 2 12 18)) 1)
                                         ((memq op '(3 9 11 4 5 6 13 14 0)) -1)
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
@@ -27817,7 +27892,17 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
             ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
              (let ((c (assq x vars)))
                (if c (emit 2 (cdr c))
-                 (emit 1 x) (emit 16 'symbol-value 1))))
+                 (if (not (and alias-hints (memq x alias-hints)
+                               (fboundp 'nelisp--env-globals-op)))
+                     (progn (emit 1 x) (emit 16 'symbol-value 1))
+                 (let* ((gen-cell nelisp--fx-special-gen)
+                        (snapshot (aref gen-cell 0))
+                        (base (nelisp--env-globals-op 'indirect-variable x)))
+                   ;; Cache a name, never a cell or value. Every read checks
+                   ;; the generation, including after arbitrary callouts.
+                   (if (or (eq base x) (null base) (eq base t) (keywordp base))
+                       (progn (emit 1 x) (emit 16 'symbol-value 1))
+                     (emit 18 (vector x base gen-cell snapshot))))))))
             ((not (consp x)) (emit 1 x))
             (t
              (let ((op (car x)))
@@ -27914,7 +27999,9 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                 ((and (symbolp op) (fboundp op) (not (macrop op)))
                  (dolist (a (cdr x)) (comp a))
                  (push op nelisp--fx-called)
-                 (emit 16 op (length (cdr x))))
+                 ;; Cache the live function cell, never its value. Rebinding
+                 ;; still takes effect; replacing/growing the table expires it.
+                 (emit 16 (vector op nil nil nil nil) (length (cdr x))))
                 ((and (symbolp op) (not (fboundp op)))
                  (setq nelisp--fx-missing op)
                  (unsupported x))
@@ -28116,6 +28203,13 @@ Defining it as a function compiles them again.")
                 (when (and failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
+                ;; Compiler-private -2 selects the nullary constant path.
+                ;; Ordinary VM calls keep the original executor prologue.
+                (let ((code (car c)))
+                  (when (and (= (cdr c) 0) (= (nth 1 shape) 0)
+                             (= (length code) 6) (= (aref code 0) 17)
+                             (= (aref code 2) 1) (= (aref code 4) 0))
+                    (setcdr c -2)))
                 (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
@@ -28539,6 +28633,8 @@ are skipped.")
               ;; The compiler's garbage stays out of the image.
               (garbage-collect)))
           (nelisp--fx-plain-dump-image-stream path))))
+;; nl-afset is freshly reset at the start of every source reload. Capture
+;; that new raw definition every time, independently of the stable fset cell.
 (when (fboundp 'nl-afset)
   (fset 'nelisp--fx-plain-afset (symbol-function 'nl-afset))
   (fset 'nl-afset
@@ -28567,7 +28663,8 @@ are skipped.")
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
             (nelisp--fx-defer w)))))))
-(when (fboundp 'nl-afset)
+(when (and (fboundp 'nl-afset)
+           (not (fboundp 'nelisp--fx-plain-fset)))
   (fset 'nelisp--fx-plain-fset (symbol-function 'fset))
   (fset 'fset
         (lambda (symbol definition)
@@ -29921,3 +30018,59 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
 (provide 'case-table)
 ;;; case-table.el ends here
 ;; END GENERATED CASETAB SOURCES
+;; Queue only the sort provider, rather than making every prelude definition
+;; a compilation candidate during unrelated library loads.
+(when (nelisp--fx-active-p)
+  (dolist (name '(nelisp--sort-links nelisp--sort-merge-links nelisp--sort-before
+                 nelisp--sort-small nelisp--sort-string-lessp))
+    (nelisp--fx-defer name)))
+;; Policy stays in Lisp; the existing globals operation reaches symbol-entry
+;; redirects. Library compatibility providers must retain these native cells.
+(defvar nelisp--native-variable-aliases (fboundp 'nelisp--native-env))
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'indirect-variable))
+  (defun indirect-variable (object)
+    "Return OBJECT's terminal variable symbol, preserving non-symbols."
+    (nelisp--env-globals-op 'indirect-variable object)))
+
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'defvaralias))
+ (defun defvaralias (new-alias base-variable &optional docstring)
+  "Make NEW-ALIAS refer to BASE-VARIABLE's value cell."
+  (unless (symbolp new-alias)
+    (signal 'wrong-type-argument (list 'symbolp new-alias)))
+  (unless (symbolp base-variable)
+    (signal 'wrong-type-argument (list 'symbolp base-variable)))
+  (when (or (null new-alias) (eq new-alias t) (keywordp new-alias)
+            (nelisp--env-globals-op 'constant-variable-p new-alias))
+    (error "Cannot make a constant an alias: %s" new-alias))
+  (let ((kind (nelisp--env-globals-op 'variable-alias-source-kind new-alias)))
+    (when (eq kind 2)
+      (error "Don’t know how to make a buffer-local variable an alias: %s" new-alias))
+    (when (and (boundp new-alias) (boundp base-variable)
+               (not (eq (symbol-value new-alias) (symbol-value base-variable))))
+      (display-warning (list 'defvaralias 'losing-value new-alias)
+                       (format "Overwriting value of ‘%s’ by aliasing to ‘%s’"
+                               new-alias base-variable)))
+    (when (eq kind 1)
+      (error "Don’t know how to make a let-bound variable an alias: %s" new-alias)))
+  (nelisp--env-globals-op 'variable-alias-set new-alias base-variable)
+  (unless (memq new-alias nelisp--fx-alias-hints)
+    (push new-alias nelisp--fx-alias-hints))
+  (when (boundp 'emacs-parity-misc--variable-watchers)
+    (remhash new-alias emacs-parity-misc--variable-watchers)
+    (emacs-parity-misc--watcher-flag))
+  (put new-alias 'variable-documentation docstring)
+  base-variable))
+
+(when nelisp--native-variable-aliases
+  (defun nelisp--native-variable-alias-pairs ()
+    "Return a fresh alist of native (ALIAS . BASE) redirects."
+    (nelisp--env-globals-op 'variable-aliases nil)))
+
+(unless (or (not nelisp--native-variable-aliases) (fboundp 'internal-delete-indirect-variable))
+  (defun internal-delete-indirect-variable (variable)
+    "Remove VARIABLE's alias redirect and unbind only that variable."
+    (unless (symbolp variable)
+      (signal 'wrong-type-argument (list 'symbolp variable)))
+    (when (eq (indirect-variable variable) variable)
+      (signal 'error (list "Cannot undeclare a variable that is not an alias" variable)))
+    (makunbound variable)))

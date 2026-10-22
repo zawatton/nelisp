@@ -89,7 +89,7 @@
      ;; Raw `u64' read at byte address `*(u64*)(ptr + offset)'.
      ;; Returns the value re-cast to `i64' in rax (= no sign-extension;
      ;; values above 2^63 wrap silently to negative i64).
-     (ptr-read-u64 ptr offset))
+     (heap-read-u64 ptr offset))
   "AOT source for the Doc 122 §122.E `ptr-read-u64' op probe.")
 
 (defconst nelisp-cc-atomic-raw-mem--write-u64-source
@@ -111,7 +111,7 @@
      ;;
      ;; Raw `u8' read at `*(u8*)(ptr + offset)'.  Returns the byte
      ;; zero-extended to `i64' in rax (= 0xFF returns 255, not -1).
-     (ptr-read-u8 ptr offset))
+     (heap-read-u8 ptr offset))
   "AOT source for the Doc 122 §122.E `ptr-read-u8' op probe.")
 
 (defconst nelisp-cc-atomic-raw-mem--write-u8-source

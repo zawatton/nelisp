@@ -157,7 +157,7 @@
       (if (= body-rc 0)
           (let* ((scratch (alloc-bytes 32 8)))
             (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env vslot))
-        (let* ((flag-save (ptr-read-u64 268435472 0))
+        (let* ((flag-save (heap-read-u64 268435472 0))
                (tag-save (alloc-bytes 32 8))
                (val-save (alloc-bytes 32 8)))
           (seq
