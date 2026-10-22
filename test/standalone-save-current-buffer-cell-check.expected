@@ -1,0 +1,7 @@
+SCB-RESULT fbb-with ("fbb-b" 3 "fbb-home")
+SCB-RESULT fbb-normal ("fbb-b" nil "fbb-home")
+SCB-RESULT fbb-throw (17 nil "fbb-home")
+SCB-RESULT fbb-signal ((error "fbb") nil "fbb-home")
+SCB-RESULT fbb-nested ("fbb-b" 9 "fbb-home")
+SCB-RESULT fbb-killed ("fbb-b" nil "fbb-b")
+SCB-CELL 6 cases, 0 failures
