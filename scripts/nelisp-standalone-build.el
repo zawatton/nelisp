@@ -968,6 +968,15 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_vm_poll_force"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 488)
                               :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Scanning callee-saved registers": the probe's buffer (a non-zero
+    ;; WORD makes the next `nl_gc_conserv_scan' copy its window there and scan
+    ;; nothing) and the number of times a collection reached `nl_gc_scan_regs'.
+    (list (nelisp-link-symbol "nl_gc_regs_trace"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 496)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_regs_calls"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 504)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
@@ -7827,7 +7836,20 @@ REPL-facing module it feeds."
       (if (= (nl_gc_conserv_typed w) 1) 0
         (let ((owner (nl_gc_conserv_resolve w)))
           (if (= owner 0) 0 (nl_gc_conserv_pin owner)))))
+    (defun nl_gc_regs_trace_window (p0 top)
+      ;; Probe mode of `nl_gc_conserv_scan' (Doc 223, "Scanning callee-saved
+      ;; registers"): the buffer named by nl_gc_regs_trace receives up to nine
+      ;; words of the window [P0, TOP) and nothing is scanned or marked.
+      (let* ((tr (heap-read-u64 (data-addr nl_gc_regs_trace) 0))
+             (n (/ (- top p0) 8)) (i 0))
+        (seq (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0)
+             (while (and (< i n) (< i 9))
+               (seq (ptr-write-u64 tr (* i 8) (heap-read-u64 p0 (* i 8)))
+                    (setq i (+ i 1))))
+             0)))
     (defun nl_gc_conserv_scan (p0 top)
+      (if (> (heap-read-u64 (data-addr nl_gc_regs_trace) 0) 0)
+          (nl_gc_regs_trace_window p0 top)
       (let* ((index (data-addr nl_gc_start_index))
              (active (heap-read-u64 index 16))
              (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
@@ -7839,7 +7861,7 @@ REPL-facing module it feeds."
           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
               (nl_gc_conserv_word word) 0)
           (setq p (+ p 8)))
-        0))
+        0)))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
              (index (data-addr nl_gc_start_index))
@@ -7929,7 +7951,13 @@ REPL-facing module it feeds."
       (if (= (heap-read-u64 268436464 0) 1)
           (if (= (nl_gc_conserv_begin) 0) 0
             (let ((top (heap-read-u64 268436456 0)))
-              (if (> top 0) (nl_gc_conserv_scan (aot-current-sp) top) 0)
+              ;; nl_gc_scan_regs (gc-regs.o) pushes the callee-saved registers and
+              ;; scans from there: GNU's flush_stack_call_func (alloc.c:5252).
+              (if (> top 0)
+                  (seq (ptr-write-u64 (data-addr nl_gc_regs_calls) 0
+                                      (+ 1 (heap-read-u64 (data-addr nl_gc_regs_calls) 0)))
+                       (nl_gc_scan_regs top))
+                0)
               (nl_gc_conserv_drain)
               (if (= (nl_gc_conserv_failed_p) 1)
                   (seq (nl_gc_conserv_finish) 0)
@@ -11767,6 +11795,33 @@ leave symbols unresolved at link time."
     ;; 71: back to the allocator's triggers; 72: the number of mid-form
     ;; collections so far (the same counter on every path, so a forced run is
     ;; checked by its difference).  Doc 223 "Bytecode VM safepoints".
+        ;; (nelisp--debug-switch 73): how many of the five sentinel registers (rbx
+    ;; r12-r15) the scan window shows after `nl_gc_scan_regs' (5 expected); 74: the
+    ;; same with no spill, a window of the same size at the caller's frame (0
+    ;; expected, the negative control); both answer -1 where gc-regs.o has no
+    ;; self-test.  75: how many times a collection reached `nl_gc_scan_regs'.
+    (defun nl_gc_regs_probe (mode)
+      (let* ((buf (alloc-bytes 80 8)) (i 0) (mask 0) (d 0) (n 0))
+        (seq
+         (while (< i 10)
+           (seq (ptr-write-u64 buf (* i 8) 0) (setq i (+ i 1))))
+         (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 buf)
+         (if (= (nl_gc_regs_selftest mode) 0)
+             (seq (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0) -1)
+           (seq
+            (ptr-write-u64 (data-addr nl_gc_regs_trace) 0 0)
+            (setq i 0)
+            (while (< i 9)
+              (seq
+               (setq d (- (heap-read-u64 buf (* i 8)) 1033294639504818176))
+               (if (and (>= d 1) (<= d 5))
+                   (setq mask (logior mask (shl 1 (- d 1))))
+                 0)
+               (setq i (+ i 1))))
+            (setq i 0)
+            (while (< i 5)
+              (seq (setq n (+ n (logand (shr mask i) 1))) (setq i (+ i 1))))
+            n)))))
     (defun nl_vm_poll_switch_w (args)
       (seq
        (if (= (wf_argval args 0) 70)
@@ -11774,9 +11829,15 @@ leave symbols unresolved at link time."
          (if (= (wf_argval args 0) 71)
              (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0)
            0))
-       (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))
+       (if (= (wf_argval args 0) 73)
+           (+ (* (nl_gc_regs_probe 0) 4) 1)
+         (if (= (wf_argval args 0) 74)
+             (+ (* (nl_gc_regs_probe 1) 4) 1)
+           (if (= (wf_argval args 0) 75)
+               (+ (* (heap-read-u64 (data-addr nl_gc_regs_calls) 0) 4) 1)
+             (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32)))))))
     (defun bf_debug_switch_w (args _pad)
-      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 72) 0)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 75) 0)
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
@@ -33911,6 +33972,146 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
           (heap-read-u64 out_s 8))))))
 
 ;; ===================================================================
+;; gc-regs.o: GNU's flush_stack_call_func for the conservative scan (Doc 223,
+;; "Scanning callee-saved registers").  `nl_gc_conserv_scan' reads [P0, TOP) of
+;; the native stack, so a heap pointer held only in a callee-saved register
+;; (rbx rbp r12-r15 on SysV, plus rdi rsi on Win64, x19-x29 on arm64) was
+;; invisible to it.  Compiled code keeps live values in stack slots, so none was
+;; lost, but register promotion would lose them.  `nl_gc_scan_regs (TOP)' pushes
+;; the callee-saved registers and calls `nl_gc_conserv_scan (rsp, TOP)', so the
+;; scan starts at the spilled values; rcx and r11 are saved too, as in
+;; `nl_os_float_time' (the extern-call model keeps them intact).  On arm64 the
+;; stub only tail-calls the scan from the caller's sp, the old behaviour, until
+;; a spill is written and run on that hardware.
+;; `nl_gc_regs_selftest (MODE)' (x86_64 Linux) loads the sentinels BASE+1..BASE+5
+;; into rbx r12 r13 r14 r15 and, for MODE 0, calls `nl_gc_scan_regs' with a TOP that
+;; ends the scan at the spilled block (nine words: the alignment pad, r11, rcx,
+;; r15..r12, rbp, rbx); for MODE 1 it calls `nl_gc_conserv_scan' over a window of
+;; the same size at its own frame, with no spill.  It answers 1 when it ran and 0
+;; where this target has no self-test.  With nl_gc_regs_trace set the scan copies
+;; its window instead of scanning it, which is how nl_gc_regs_probe counts the
+;; sentinels the window shows.
+;; ===================================================================
+(defun nelisp-standalone--gc-regs-unit ()
+  "Return the raw link unit exporting `nl_gc_scan_regs' and `nl_gc_regs_selftest'."
+  (let* ((target (nelisp-standalone-arena-rewrite-target))
+         (selftest-offset nil) (text nil) (relocs nil))
+    (pcase target
+      ('linux-x86_64
+       (let* ((scan (append
+                     '(#x53                       ; push rbx
+                       #x55                       ; push rbp
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x51                       ; push rcx
+                       #x41 #x53                  ; push r11
+                       #x48 #x83 #xec #x08        ; sub rsp, 8   (16-byte alignment)
+                       #x48 #x89 #xfe             ; mov rsi, rdi (TOP)
+                       #x48 #x89 #xe7             ; mov rdi, rsp (P0: the spilled registers)
+                       #xe8)                      ; call nl_gc_conserv_scan
+                     '(0 0 0 0)
+                     '(#x48 #x83 #xc4 #x08        ; add rsp, 8
+                       #x41 #x5b                  ; pop r11
+                       #x59                       ; pop rcx
+                       #x41 #x5f #x41 #x5e        ; pop r15, r14
+                       #x41 #x5d #x41 #x5c        ; pop r13, r12
+                       #x5d                       ; pop rbp
+                       #x5b                       ; pop rbx
+                       #xc3)))                    ; ret
+              (scan-reloc 24)
+              (pad (make-list (- 48 (length scan)) #xcc))
+              (sentinels
+               (let ((base 1033294639504818176) (out nil))
+                 ;; movabs rbx/r12/r13/r14/r15, BASE+k
+                 (dolist (op '((#x48 #xbb) (#x49 #xbc) (#x49 #xbd) (#x49 #xbe) (#x49 #xbf)))
+                   (setq base (1+ base))
+                   (setq out (append out op
+                                     (let ((v base) (bytes nil))
+                                       (dotimes (_ 8)
+                                         (push (logand v 255) bytes)
+                                         (setq v (ash v -8)))
+                                       (nreverse bytes)))))
+                 out))
+              (head (append
+                     '(#x53                       ; push rbx
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x48 #x89 #xf8)            ; mov rax, rdi (MODE)
+                     sentinels
+                     '(#x85 #xc0                  ; test eax, eax
+                       #x75 #x0c)))               ; jnz control (over the 12-byte spill arm)
+              (spill '(#x48 #x8d #x7c #x24 #xf8   ; lea rdi, [rsp-8]  (TOP: below the stub's return address)
+                       #xe8 0 0 0 0               ; call nl_gc_scan_regs
+                       #xeb #x0d))                ; jmp done (over the 13-byte control arm)
+              (control '(#x48 #x89 #xe7           ; mov rdi, rsp
+                         #x48 #x8d #x74 #x24 #x48 ; lea rsi, [rsp+72]
+                         #xe8 0 0 0 0))           ; call nl_gc_conserv_scan
+              (tail '(#xb8 #x01 #x00 #x00 #x00    ; mov eax, 1
+                      #x41 #x5f #x41 #x5e         ; pop r15, r14
+                      #x41 #x5d #x41 #x5c         ; pop r13, r12
+                      #x5b                        ; pop rbx
+                      #xc3))                      ; ret
+              (self (append head spill control tail))
+              (spill-reloc (+ 48 (length head) 6))
+              (control-reloc (+ 48 (length head) (length spill) 3 5 1)))
+         (setq selftest-offset 48)
+         (setq text (apply #'unibyte-string (append scan pad self)))
+         (setq relocs
+               (list (list :offset scan-reloc :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)
+                     (list :offset spill-reloc :type 'pc32 :symbol "nl_gc_scan_regs"
+                           :addend 0 :section 'text)
+                     (list :offset control-reloc :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)))))
+      ('windows-x86_64
+       (let* ((scan (append
+                     '(#x53 #x55 #x57 #x56        ; push rbx, rbp, rdi, rsi
+                       #x41 #x54 #x41 #x55        ; push r12, r13
+                       #x41 #x56 #x41 #x57        ; push r14, r15
+                       #x48 #x83 #xec #x28        ; sub rsp, 40  (shadow space + alignment)
+                       #x48 #x89 #xca             ; mov rdx, rcx (TOP)
+                       #x48 #x8d #x4c #x24 #x28   ; lea rcx, [rsp+40] (P0: the spilled registers)
+                       #xe8)                      ; call nl_gc_conserv_scan
+                     '(0 0 0 0)
+                     '(#x48 #x83 #xc4 #x28        ; add rsp, 40
+                       #x41 #x5f #x41 #x5e        ; pop r15, r14
+                       #x41 #x5d #x41 #x5c        ; pop r13, r12
+                       #x5e #x5f #x5d #x5b        ; pop rsi, rdi, rbp, rbx
+                       #xc3)))                    ; ret
+              (pad (make-list (- 48 (length scan)) #xcc))
+              (self '(#x31 #xc0                   ; xor eax, eax  (no self-test on this target)
+                      #xc3)))                     ; ret
+         (setq selftest-offset 48)
+         (setq text (apply #'unibyte-string (append scan pad self)))
+         (setq relocs
+               (list (list :offset (+ 4 8 4 3 5 1) :type 'pc32 :symbol "nl_gc_conserv_scan"
+                           :addend 0 :section 'text)))))
+      ((or 'macos-aarch64 'linux-aarch64 'windows-aarch64)
+       (require 'nelisp-asm-arm64)
+       (let* ((buf (nelisp-asm-arm64-make-buffer)) (reloc-off nil))
+         (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)  ; TOP
+         (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)    ; P0 = the caller's sp
+         (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
+         (nelisp-asm-arm64-emit-reloc buf 'b26-pc "nl_gc_conserv_scan")
+         (nelisp-asm-arm64--emit-word buf #x14000000) ; b nl_gc_conserv_scan
+         (setq selftest-offset (nelisp-asm-arm64-buffer-pos buf))
+         (nelisp-asm-arm64-mov-imm64 buf 'x0 0)       ; no self-test on this target
+         (nelisp-asm-arm64--emit-word buf #xd65f03c0) ; ret
+         (nelisp-asm-arm64-resolve-fixups buf)
+         (setq text (nelisp-asm-arm64-buffer-bytes buf))
+         (setq relocs (list (list :offset reloc-off :type 'b26-pc
+                                  :symbol "nl_gc_conserv_scan" :addend 0 :section 'text)))))
+      (other (error "standalone: nl_gc_scan_regs has no body for %S" other)))
+    (nelisp-link-unit-make
+     (nelisp-standalone--target-object-name "gc-regs.o")
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "nl_gc_scan_regs" 0
+                               :section 'text :bind 'global :type 'func)
+           (nelisp-link-symbol "nl_gc_regs_selftest" selftest-offset
+                               :section 'text :bind 'global :type 'func))
+     relocs)))
+
+;; ===================================================================
 ;; Manifest — ORDERED unit list.  Each entry: (NAME KIND SRC).
 ;;   KIND = a feature symbol  -> (require it); SRC = its --source defvar symbol
 ;;        = :glue              -> SRC is a local glue defconst symbol
@@ -33985,6 +34186,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ;; doc comments: AOT syscall<->f64 codegen aborts at runtime).
     ("reader-float.o"     :raw    nelisp-standalone--reader-float-unit)
     ("float-time.o"       :raw    nelisp-standalone--float-time-unit)
+    ("gc-regs.o"          :raw    nelisp-standalone--gc-regs-unit)
     ("trap.o"             :glue   nelisp-standalone--trap-source)
     ;; Core GC/arena primitives (`nl_gc_in_arena'/`_is_boot'/`_mark_slot'/
     ;; `_free_block' &c.), unconditionally needed by several OTHER manifest
@@ -50312,6 +50514,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                          nelisp-standalone--reader-extra-manifest))
          (float-stub (nelisp-standalone--reader-float-unit))
          (float-time-stub (nelisp-standalone--float-time-unit))
+         (gc-regs-stub (nelisp-standalone--gc-regs-unit))
          ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
          ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
          ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
@@ -50448,7 +50651,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
             (nelisp-standalone--rooted-protocol-startup-src
            (append (list start applyfn) helpers
                    (list eval-inner combiner-cons combiner)
-                   extras (list float-stub float-time-stub) real-sf
+                   extras (list float-stub float-time-stub gc-regs-stub) real-sf
                    (list sf-cc capture errstub fileio catch-throw boundary
                          eval-source neln-demo gc arena)
                    (delq nil (list arena-base callsite))))))
@@ -50458,7 +50661,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (driver (nelisp-standalone--reader-driver-unit)))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
-            extras (list float-stub float-time-stub) real-sf
+            extras (list float-stub float-time-stub gc-regs-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
                   eval-source neln-demo gc arena)
             (delq nil (list arena-base callsite)))))

@@ -64,7 +64,7 @@ this stage (the blocking NeLisp layer is named). GNU source:
 | sweep_strings, compact_small_strings | alloc.c:1826 =sweep_strings=, alloc.c:1959 =compact_small_strings=, alloc.c:1405 =struct sblock=, alloc.c:1343 =SBLOCK_SIZE= | none | impossible in this stage: compaction moves each sdata and updates its single owner through the sdata back pointer; NeLisp string headers are copyable 32-byte views that alias one character buffer (Doc 149), so a buffer has no single owner to update. Blocking layer: word-heap S3 (one canonical string header) and S6 (clone_into = 0) | S3/S6 |
 | sweep_vectors, vector blocks, large vectors | alloc.c:3241 =sweep_vectors=, alloc.c:2845 =struct vector_block=, alloc.c:2969 =allocate_vector_from_block=, alloc.c:2826 =struct large_vector=, alloc.c:3353 =allocate_vectorlike= | Tag-110 backings up to =VBLOCK_BYTES_MAX= come from vector blocks with size-class free lists; larger ones stay headered general blocks (the large_vectors analogue) | adapted: the mark bit moves into the kind/length word (GNU's =ARRAY_MARK_FLAG=); vector blocks are 32 KiB ablocks rather than malloc'd 4 KiB blocks | Fits S4.1: the backing address is WORD - 6 |
 | mem_node tree, mem_find, live_*_p | alloc.c:4213 =mem_find=, alloc.c:4236 =mem_insert=, alloc.c:4440 =mem_delete=, alloc.c:4627 =live_cons_holding=, alloc.c:4664 =live_cons_p= | A persistent open-addressing registry keyed by 512 KiB ablocks group; each 32 KiB block records its type in its last word. =nl_live_cons_holding= ports GNU's checks: offset inside the cell array, index below =cons_block_index= in the current block, cell not dead | adapted: hash of aligned groups instead of a red-black tree of arbitrary malloc ranges, because NeLisp controls block alignment; lookup is O(1) and updated only when groups are mapped or unmapped | none |
-| mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
+| mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan starts at the spilled callee-saved registers (=nl_gc_scan_regs=) and checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
 | Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects are never freed or swept, mark through a separate boot bitmap and are validated by a start bitmap built once per watermark. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | ported: the separate mark bitmap, its clearing in the sweep and the never-swept dump; adapted: the start table is a bitmap built by one header walk after restore, and the image's free blocks (hole runs) are still swept because the dump copies whole chunks | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
 | GC threshold | alloc.c:5704 =consing_threshold=, alloc.c:5732 =bump_consing_until_gc=, alloc.c:5769 =maybe_garbage_collect= | Block allocations charge =nl_gc_stats+0= exactly as general allocations do; sweeps add live cell bytes to =nl_gc_stats+16=; =nl_gc_debt_rearm= keeps =max(floor, live * pct)= | adapted: the existing debt trigger already has GNU's shape (threshold from live bytes times a percentage); its policy belongs to the gc-cadence lane | none |
 | Safepoints (=maybe_gc=) | eval.c:2602 =eval_sub=, eval.c:3206 =Ffuncall=, bytecode.c:797 =Bcall=, bytecode.c:861-866 backward branches | =nl_gc_midform_collect= at the =while= back edge and in the native-bytecode poll; =nl_gc_vm_poll= is the entry a bytecode VM calls, with a force hook (debug switch 70) | adapted: GNU tests =consing_until_gc= at these sites, NeLisp tests the reservation and debt triggers there. The interpreted =while= and the native poll poll; the bytecode interpreter does not yet (see "Bytecode VM safepoints") | callpath (its VM), the F integrator (the older VM) |
@@ -487,17 +487,37 @@ Controls: without the polls (c49) the funcall run peaks at 908 MiB, the loop at
 973 and the hook answers 0 collections; with the polls but without the
 backstop the funcall run peaks at 349 MiB and the loop at 975.
 
-** Planned: scanning callee-saved registers (codegen backlog)
+** Scanning callee-saved registers
 
-GNU's =mark_memory= scans the C stack after =flush_stack_call_func=
-has spilled the callee-saved registers (=__builtin_unwind_init= in
-lisp.h:4466, or =setjmp= into a stack buffer; =mark_c_stack= at
-alloc.c:5212, =flush_stack_call_func1= at alloc.c:5252).  So a Lisp_Object that lives only in a
-register at a collection is still found.  NeLisp's conservative scan
-covers only [rsp, stack top).  Native code may therefore keep a heap
-value in a callee-saved register across a call only after the collector
-spills those registers before it scans.  Until then, codegen keeps such
-values in stack slots.  This is planned after word-heap S6.2 and S5.
+GNU's =mark_memory= scans the C stack after =flush_stack_call_func= has spilled
+the callee-saved registers (=__builtin_unwind_init= in lisp.h:4466, or =setjmp=
+into a stack buffer; =mark_c_stack= at alloc.c:5212, =flush_stack_call_func1=
+at alloc.c:5252), so a Lisp_Object that lives only in a register at a
+collection is still found.  =nl_gc_scan_regs (TOP)= does the same for
+=nl_gc_conserv_maybe=.  It is hand-assembled (the raw unit =gc-regs.o=): it
+pushes rbx, rbp, r12-r15 (and rcx and r11, which the extern-call model keeps
+intact; rdi and rsi too on Win64) and calls =nl_gc_conserv_scan= from the pushed
+block up to the stack top, so the scan starts at the spilled values.  The arm64
+targets keep the former behaviour (the scan from the caller's sp) until a spill
+is written and run on that hardware.  Compiled code keeps live values in stack
+slots, so none was lost before; register promotion would have lost them, which
+this prepares for.
+
+A collection cannot test it.  The collector's own frames leave stale copies of
+a register in the slots of the frames the scan covers (a first version kept a
+cons in r12 and collected: it survived with the spill switched off as well).  So
+the test reads the window the stub hands the scan.  =(nelisp--debug-switch 73)=
+runs =nl_gc_regs_selftest=, which loads five sentinels into rbx and r12-r15,
+calls the real =nl_gc_scan_regs= with a TOP that ends the scan at the spilled
+block (nine words: the pad, r11, rcx, r15 down to r12, rbp, rbx), and
+=nl_gc_conserv_scan=, with a buffer named by =nl_gc_regs_trace=, copies that
+window instead of scanning it: the answer is how many sentinels it shows (5).
+74 is the negative control, a window of the same size at the caller's own frame
+with no spill (0), and 75 answers how many times a collection has reached
+=nl_gc_scan_regs=; the test requires =garbage-collect= to raise it.  Where
+=gc-regs.o= has no self-test (Win64 and the arm64 targets) the switches answer -1
+and the check fails.  =tools/ai/gc-port-regs.py= runs it on both linkages
+(ledger S1.15).
 
 * Expected effect and the remaining gap (S2)
 
