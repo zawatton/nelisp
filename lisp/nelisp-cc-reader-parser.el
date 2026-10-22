@@ -703,8 +703,9 @@
               (t (let* ((w (nl_alloc_symbol_named_w
                             (heap-read-u64 payload-slot 16)
                             (heap-read-u64 payload-slot 24) payload-slot 0)))
-                   ;; Doc 226 D9 stage 3.1: the symbol gets its object when it is read.
-                   (if (= w 0) 0 (extern-call nl_symobj_note w))))))
+                   ;; Doc 226 D9 stage 3.1/3.4: the symbol gets its object when it is
+                   ;; read, and the reader answers that object's WORD.
+                   (if (= w 0) 0 (extern-call nl_symobj_of w))))))
        ((= kind 24) (nl_imm_int (nelisp_reader_p_decode_char payload-slot)))
        ((= kind 25) (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))
        ((= kind 21)

@@ -5125,6 +5125,18 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                    (if (= (heap-read-u8 w 0) 4) (nl_symobj_for_view w) 0))
                0))
            w))
+    ;; Doc 226 D9 stage 3.4: W, or the object WORD of the interned symbol W is
+    ;; a view of (made if it has none yet).  What the reader and `intern'
+    ;; answer, as GNU's intern_c_string_1 answers the Lisp_Symbol.  A view
+    ;; without a canonical name buffer (no entry) stays as it is.
+    (defun nl_symobj_of (w)
+      (if (= (nl_symcells_mirror) 0) w
+        (if (= (logand w 7) 0)
+            (if (< w 4096) w
+              (if (= (heap-read-u8 w 0) 4)
+                  (let* ((o (nl_symobj_for_view w))) (if (= o 0) w o))
+                w))
+          w)))
     ;; Doc 226 D9 stage 3.2.  The object WORD an interned symbol's view is
     ;; stored as, or 0 when the symbol stays a view.  It only looks: the
     ;; object is made where the reader and `intern' answer the symbol
@@ -23422,7 +23434,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_w (sx _pad)
   (let* ((w (nl_alloc_symbol_named_w (bf_str_ptr sx) (bf_str_len sx) sx 0)))
-    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) (nl_symobj_note w))))
+    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) (nl_symobj_of w))))
     ;; Doc 163 Phase C: real soft-fail lookup backing elisp `intern-soft''s
     ;; string-argument case (lisp/nelisp-stdlib-misc.el).  `nl_intern_lookup'
     ;; (lisp/nelisp-cc-nlstr-direct-ops.el) probes the SAME open-addressing
@@ -23435,7 +23447,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; ...))) ...)' then never terminated (see Doc 163).
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_soft_w (sx _pad)
-  (nl_intern_lookup_w (bf_str_ptr sx) (bf_str_len sx) 0))
+  ;; Doc 226 D9 stage 3.4: a hit answers the symbol's object WORD.
+  (nl_symobj_of (nl_intern_lookup_w (bf_str_ptr sx) (bf_str_len sx) 0)))
     ;; Every name in the global intern table as a fresh list of symbols, for a
     ;; library `mapatoms' and obarray completion.  One native walk over the
     ;; 2^20 slots (len+1 @+0, buf @+8; 0 = empty), consing from the last slot
@@ -28701,7 +28714,8 @@ into that constant unconditionally is what broke every aarch64 build."
                  (if (= word 3)
                      (if (= (extern-call nl_thread_mirror_mutation_guard (+ env 0) string) 1)
                          0 (bf_intern_w string 0))
-                   word)))))
+                   ;; Doc 226 D9 stage 3.4: a hit answers the object WORD too.
+                   (nl_symobj_of word))))))
        (nl_abi_fail (bf_wrong_type_stringp string) 0)))))
     ;; `intern-soft' natively (2026-09-06).  A symbol (nil and t included)
     ;; answers itself -- name identity is symbol identity here, see Doc 163
