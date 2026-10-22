@@ -2246,7 +2246,11 @@ twice appears twice; readers keep the last occurrence of each unit."
              ir name (nelisp-standalone-arena-rewrite-target))))
          (buf (if (eq arch 'aarch64)
                   (nelisp-asm-arm64-make-buffer)
-                (nelisp-asm-x86_64-make-buffer resolved-abi))))
+                (nelisp-asm-x86_64-make-buffer resolved-abi)))
+         ;; A fresh unit owns this label set. Keep duplicate checking O(1)
+         ;; without changing the public assembler buffer or its label order.
+         (nelisp-asm-x86_64--label-index
+          (unless (eq arch 'aarch64) (cons buf (make-hash-table :test 'eq)))))
     (when nelisp-aot-compiler-tco-enabled
       (message "nelisp-tco: %d rewrite(s) in unit %s"
                (- (length nelisp-aot-compiler--tco-log)
@@ -10392,7 +10396,7 @@ argument (reachability + in-arena bounds checks).")
                                              (wf_string_props_finish_w res args env 1))
                                          res)))))
     ((:lit "format")           :word . (let* ((r (if (= (nl_val_tag args) 7)
-                                              (bf_format_simple_w (wf_arg_ptr args 0) (nl_cons_cdr_ptr args) 0)
+                                              (bf_format_simple_w (wf_arg_word args 0) (nl_cons_cdr_word args) 0)
                                             3)))
                                    (if (/= r 3) r (wf_string_slow_w args env 1))))
     ((:lit "nelisp--native-format") :word . (let* ((fmt (wf_arg_ptr args 0))
@@ -23421,67 +23425,128 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; is also what makes `m5_fmt_loop' safe to call: the loop itself never
     ;; checks that an argument exists, and (nelisp--native-format "%s %s"
     ;; "one") reads the nil tail as a cons and faults.
-    (defun bf_fmt_simple_char_ok (a)
-      (if (= (sexp-tag a) 2)
-          (if (< (heap-read-u64 a 8) 0) 0
-            (if (< 127 (heap-read-u64 a 8)) 0 1))
-        0))
+    ;; GNU editfns.c:3668-3730 inspects Lisp_Object, never a printed view.
+    ;; Keep the argument list and its cars as WORDs through both passes.
+    (defun bf_fmt_arg_w (a)
+      (let* ((tag (nl_val_tag a)))
+        (if (or (= tag 4) (= tag 16))
+            (let* ((entry (nl_symbol_name_entry_for (if (= tag 4) 1 2)
+                            (if (= tag 4) (nl_word_data a) (nl_word_payload a))
+                            (nl_word_length a))))
+              ;; Read the existing canonical SYMBOL_NAME. Reader-created ASCII
+              ;; names need no sidecar or view for a non-identity conversion.
+              ;; Other misses belong to the cold symbol-name layer.
+              (if (= entry 0)
+                  (if (= (m5_ascii_bytes_p a 0 (m5_strlen a)) 1) a 0)
+                (nl_string_from_view (+ entry 40))))
+          (if (or (= tag 0) (= tag 1))
+              (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
+                              (data-addr nl_symbol_name_t))))
+                (if (= (ptr-read-u64 state 0) 14) (nl_string_from_view state) a))
+            a))))
     (defun bf_fmt_simple_arg_ok (d a)
-      (if (and (= (m5_string_tag_p (heap-read-u64 a 0)) 1)
-               (= (m5_raw_high_p a) 1)) 0
+      (let* ((tag (nl_val_tag a)))
         (if (= d 115)
-            ;; Symbol/aggregate princ semantics belong to the Lisp formatter.
-            (let* ((tag (sexp-tag a)))
-              (if (or (= tag 0) (= tag 1) (= tag 2) (= tag 3) (= tag 13)
-                      (= (m5_string_tag_p tag) 1)) 1 0))
-          (if (= d 99) (bf_fmt_simple_char_ok a)
-            (if (= (sexp-tag a) 2) 1 0)))))
+            (if (= (m5_string_tag_p tag) 1)
+                (if (or (= (m5_raw_high_p a) 1)
+                        (/= (ptr-read-u64 (- a 4) 16) 0)) 0 1)
+              (if (or (= tag 0) (= tag 1) (= tag 2) (= tag 3)
+                      (= tag 4) (= tag 16)) 1 0))
+          (if (= tag 2)
+              (if (= d 99)
+                  (if (or (< (nl_word_payload a) 0)
+                          (> (nl_word_payload a) 127)) 0 1)
+                1)
+            0))))
     (defun bf_fmt_simple_conv_p (d)
-      (if (= d 115) 1
-        (if (= d 100) 1
-          (if (= d 105) 1
-            (if (= d 111) 1
-              (if (= d 120) 1
-                (if (= d 88) 1
-                  (if (= d 99) 1 0))))))))
-    (defun bf_fmt_simple_scan (fmt i n argp)
+      (if (or (= d 115) (= d 100) (= d 105) (= d 111)
+              (= d 120) (= d 88) (= d 99)) 1 0))
+    (defun bf_fmt_simple_scan (data i n argp)
       (if (>= i n) 1
-        (if (= (m5_byte_at fmt i) 37)
+        (if (= (ptr-read-u8 data i) 37)
             (if (>= (+ i 1) n) 0
-              (let* ((d (m5_byte_at fmt (+ i 1))))
+              (let* ((d (ptr-read-u8 data (+ i 1))))
                 (if (= d 37)
-                    (bf_fmt_simple_scan fmt (+ i 2) n argp)
+                    (bf_fmt_simple_scan data (+ i 2) n argp)
                   (if (= (bf_fmt_simple_conv_p d) 0) 0
-                    (if (= (heap-sexp-tag-word argp) 7)
-                        (if (= (bf_fmt_simple_arg_ok d (nl_cons_car_ptr argp)) 1)
-                            (bf_fmt_simple_scan fmt (+ i 2) n (nl_cons_cdr_ptr argp))
-                          0)
+                    (if (= (nl_val_tag argp) 7)
+                        (let* ((original (nl_cons_car_word argp))
+                               (a (if (= d 115) (bf_fmt_arg_w original) original)))
+                          (if (= a 0) 0
+                            (if (= (bf_fmt_simple_arg_ok d a) 1)
+                                (let* ((rest (bf_fmt_simple_scan data (+ i 2) n (nl_cons_cdr_word argp))))
+                                  (if (= rest 0) 0
+                                    (if (and (= d 115) (= (m5_string_tag_p (nl_val_tag a)) 1)
+                                             (= (m5_observably_unibyte_p a) 0)) 2 rest)))
+                              0)))
                       0)))))
-          (bf_fmt_simple_scan fmt (+ i 1) n argp))))
+          (bf_fmt_simple_scan data (+ i 1) n argp))))
     (defun bf_format_plain_p (fmt)
-      (let ((i 0) (n (m5_strlen fmt)))
+      (let ((i 0) (n (m5_strlen fmt)) (data (nl_bi_strptr fmt)))
         (seq
-         (while (and (< i n) (if (= (m5_byte_at fmt i) 37) 0 1))
+         (while (and (< i n) (/= (ptr-read-u8 data i) 37))
            (setq i (+ i 1)))
          (if (= i n) 1 0))))
+    (defun bf_fmt_unibyte_p (argp)
+      (if (= (nl_val_tag argp) 7)
+          (let* ((a (nl_cons_car_word argp)) (tag (nl_val_tag a)))
+            (if (if (= (m5_string_tag_p tag) 1)
+                    (m5_observably_unibyte_p a) 1)
+                (bf_fmt_unibyte_p (nl_cons_cdr_word argp)) 0))
+        1))
+    (defun bf_fmt_emit_w (ms d original)
+      (let* ((a (if (= d 115) (bf_fmt_arg_w original) original)))
+      (if (= d 115)
+          (let* ((tag (nl_val_tag a)))
+            (cond
+             ((= tag 0) (m5_push_lit_nil ms))
+             ((= tag 1) (m5_push_lit_t ms))
+             ((= tag 2) (m5_push_dec ms (nl_word_payload a)))
+             ((= tag 3) (m5_push_float ms a))
+             (t (m5_push_str_promoted ms a))))
+        (let* ((value (nl_word_payload a)))
+          (cond ((= d 120) (m5_push_hex ms value))
+                ((= d 88) (m5_push_hex_up ms value))
+                ((= d 111) (m5_push_oct ms value))
+                ((= d 99) (m5_push_char ms value))
+                (t (m5_push_dec ms value)))))))
+    (defun bf_fmt_loop_w (ms data i n argp)
+      (if (>= i n) 1
+        (let* ((c (ptr-read-u8 data i)))
+          (if (= c 37)
+              (let* ((d (ptr-read-u8 data (+ i 1))))
+                (if (= d 37)
+                    (seq (mut-str-push-byte ms 37)
+                         (bf_fmt_loop_w ms data (+ i 2) n argp))
+                  (seq (bf_fmt_emit_w ms d (nl_cons_car_word argp))
+                       (bf_fmt_loop_w ms data (+ i 2) n (nl_cons_cdr_word argp)))))
+            (seq (mut-str-push-byte ms c)
+                 (bf_fmt_loop_w ms data (+ i 1) n argp))))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_format_simple_w (fmt argl _pad)
-  (if (= (m5_string_tag_p (heap-read-u64 fmt 0)) 0) 3
-    (if (= (bf_format_plain_p fmt) 1) fmt
-      (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 0) 37)
-               (= (m5_byte_at fmt 1) 115) (= (nl_val_tag argl) 7)
-               (= (m5_string_tag_p (nl_val_tag (nl_cons_car_word argl))) 1))
-          (nl_cons_car_word argl)
-        (if (= (m5_raw_high_p fmt) 1) 3
-          (if (= (bf_fmt_simple_scan fmt 0 (m5_strlen fmt) argl) 0) 3
-            (let* ((builder (alloc-bytes 32 8))
-                   (unibyte (if (= (m5_observably_unibyte_p fmt) 1)
-                                (m5_concat_all_unibyte_p argl) 0)))
-              (seq (m5_count_builder builder unibyte)
-                   (m5_fmt_loop builder fmt 0 (m5_strlen fmt) argl)
-                   (m5_builder_allocate_string builder unibyte)
-                   (m5_fmt_loop builder fmt 0 (m5_strlen fmt) argl)
-                   (m5_finish_string_w builder 0 (- 1 unibyte))))))))))
+      (if (= (m5_string_tag_p (nl_val_tag fmt)) 0) 3
+        (if (= (bf_format_plain_p fmt) 1) fmt
+          (if (/= (ptr-read-u64 (- fmt 4) 16) 0) 3
+            (let* ((single
+                    (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 1) 115)
+                             (= (nl_val_tag argl) 7))
+                        (let* ((a (nl_cons_car_word argl)) (name (bf_fmt_arg_w a)) (tag (nl_val_tag a)))
+                          (if (= name 0) 3
+                            (if (= (m5_string_tag_p (nl_val_tag name)) 1) name
+                              (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16)) 3 0)))) 0)))
+              (if (/= single 0) single
+                (if (= (m5_raw_high_p fmt) 1) 3
+                  (let* ((data (nl_bi_strptr fmt)) (n (m5_strlen fmt))
+                         (scan (bf_fmt_simple_scan data 0 n argl)))
+                    (if (= scan 0) 3
+                      (let* ((builder (alloc-bytes 32 8))
+                             (unibyte (if (and (= scan 1) (= (m5_observably_unibyte_p fmt) 1))
+                                          (bf_fmt_unibyte_p argl) 0)))
+                        (seq (m5_count_builder builder unibyte)
+                             (bf_fmt_loop_w builder data 0 n argl)
+                             (m5_builder_allocate_string builder unibyte)
+                             (bf_fmt_loop_w builder data 0 n argl)
+                             (m5_finish_string_w builder 0 (- 1 unibyte)))))))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
     ;; the name unchanged and a separate tag-16 identity. It reuses the
     ;; monotonic mutation epoch (whose reset is disabled), as the old
@@ -28426,7 +28491,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; native formatter is known to agree with the prelude `format' layer
     ;; for this call, else nil (see `bf_format_simple').  Called by the
     ;; prelude `format' before its interpreted field-width/type-check layer.
-    ((:lit "nelisp--format-simple") :word . (bf_format_simple_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
+    ((:lit "nelisp--format-simple") :word . (bf_format_simple_w (wf_arg_word args 0) (wf_arg_word args 1) 0))
     ;; A BYTE is 0..255.  Anything else was taken modulo 256 and became a
     ;; different character: (unibyte-string 300) answered "," rather than
     ;; signalling, so a caller building a byte string from computed values

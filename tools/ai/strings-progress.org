@@ -87,3 +87,17 @@ pending
 cmd: python3 tools/ai/strings-check.py image
 
 #+NOTE: 2026-10-22 final meter executed without --no-run: S0 1 PASS; S1 3 PASS; S2 2 FAIL; S3 1 FAIL and 1 PENDING. Overall 4/8 defined criteria measured PASS (50.0%). The brief remains blocked at the unchanged Windows frozen proof and final zero-failure gate; speed criteria remain failed. No completion is claimed.
+
+* S4 WORD format front
+** S4.1 GNU 31.1 format oracle covers conversions, flags, widths, precision, byte representations, properties, bignums, floats and errors on both linkages
+#+NOTE: 2026-10-22 planned before implementation. Adapt GNU editfns.c:3668-3730: inspect Lisp_Object arguments directly, take SYMBOL_NAME for symbols, and defer printing/complex conversions to the cold formatter. Keep WORD arguments through validation, sizing and emission; legacy views belong only in the declined slow path.
+#+NOTE: 2026-10-22 implementation: GNU editfns.c:3668-3730 adapted WORD validation/sizing/emission; no new native entry. Symbols read the existing canonical-name cache, nil/t cached names or literal bytes, and only cold misses create names. GNU oracle red on b1f0ed553 for bignum integer conversions and template properties; repaired Lisp layer adds radix/precision, interval mapping (editfns.c:4310-4400; textprop.c:2123), %S interval serialization and display-column sizing (character.c:344; buffer.h:1708). The 415 non-default width ranges are generated with GNU 31.1 by tools/ai/strings-format-width.el. Persistent REPL: old bignum conversion signals error("format bignum mismatch"), generation 2 reload :status ok/:phase publish, repaired call passes and state 227 survives; target/strings/format-repl.json.
+#+NOTE: 2026-10-22 development-efficiency fix: applyfn-reader compilation showed no progress for 14 minutes; CPU sampling identified linear assq duplicate-label checks. A compiler-scoped eq hash preserves the assembler buffer layout, label order and duplicate errors. 30000 labels: 1.203872 s before / 0.029996 s after; the new control fails on the old function and 223 assembler tests pass. The first successful uncached applyfn-reader unit with the index completes in 69.88 s (target/strings/format-dynamic-build3.log).
+cmd: python3 tools/ai/strings-check.py format
+** S4.2 Seven paired CPU-14 rounds improve format own wall cost against b1f0ed553, lower own callgrind Ir, and keep concat/substring at most 1.03x
+#+NOTE: 2026-10-22 baseline is the existing dynamic build of d54955aa4, unchanged runtime sources at b1f0ed553. The original S2.1 <=1x GNU threshold remains unchanged. This criterion measures the requested incremental regression/improvement guard and reports GNU ratios.
+#+NOTE: 2026-10-22 the b1f0ed553 substring front is already at/below its aset control (S2.1: -205 ns own cost). A ratio of two near-zero/negative own differences is not a regression measurement. The 1.03 guards therefore compare paired total call times for concat/substring; format's improvement and GNU comparisons still use same-shape subtraction. strings-wall.py --base-cost total-guards names this explicitly and preserves the original default own-cost contract.
+cmd: python3 tools/ai/strings-check.py format-speed
+** S4.3 Final dynamic and static builds pass the GNU format oracle, 11 COMMON groups, separate standalone checks and 40-tool MCP smoke
+#+NOTE: 2026-10-22 Windows smoke is handed to the coordinator because Wine cannot run in this sandbox; S3.1 retains its Wine requirement unchanged.
+cmd: python3 tools/ai/strings-check.py format-final

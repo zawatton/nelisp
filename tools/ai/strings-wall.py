@@ -87,14 +87,21 @@ def run(role, command, kind, round_number, pressure=False, in_slot=False):
 
 
 def main():
+    global OUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workload", choices=["producers", "pressure"])
     parser.add_argument("--round", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--kind", choices=["concat", "substring", "format", "pressure"], help=argparse.SUPPRESS)
+    parser.add_argument("--candidate", type=Path, default=ROOT / "target/strings/dynamic/nelisp")
+    parser.add_argument("--base", type=Path, default=ROOT / "target/strings/base/nelisp")
+    parser.add_argument("--output", type=Path, default=OUT)
+    parser.add_argument("--base-cost", choices=["own", "total-guards"], default="own",
+                        help="Use total call costs for concat/substring guards when the base own cost is at the control floor; format always uses own cost")
     args = parser.parse_args()
+    OUT = args.output.resolve()
     OUT.mkdir(parents=True, exist_ok=True)
-    candidate = ROOT / "target/strings/dynamic/nelisp"
-    base = ROOT / "target/strings/base/nelisp"
+    candidate = args.candidate.resolve()
+    base = args.base.resolve()
     gnu = shutil.which(os.environ.get("GNU_EMACS", "emacs"))
     assert candidate.exists() and base.exists() and gnu, "missing timing binaries"
     identities = {name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -118,12 +125,15 @@ def main():
             print(f"start paired round {kind}/{number}", flush=True)
             subprocess.run([str(Path.home() / "Cowork/Notes/bin/heavy-run.sh"),
                             sys.executable, str(Path(__file__).resolve()), args.workload,
-                            "--round", str(number), "--kind", kind], cwd=ROOT, check=True)
+                            "--round", str(number), "--kind", kind,
+                            "--candidate", str(candidate), "--base", str(base), "--output", str(OUT),
+                            "--base-cost", args.base_cost], cwd=ROOT, check=True)
             return json.loads((OUT / f"{kind}-round-{number}.json").read_text())
         if pressure:
             paired_round(-1)
         # Primitive fixtures warm inside each process before the timer.
         ratios, base_ratios, own = [], [], []
+        total_guard = args.base_cost == "total-guards" and kind in ["concat", "substring"]
         for round_number in range(7):
             times = {}
             # Release between rounds; keep candidate/GNU/base close together.
@@ -140,15 +150,20 @@ def main():
                     # then within the noise of a trivial subr call): its ratio is then
                     # zero or negative, which is a pass of every bar here, and the
                     # verdict counts such rounds.
-                    if role != "candidate":
+                    if role == "gnu" or (role == "base" and not total_guard):
                         assert times[role] > 0, f"{role}/{kind} own cost has insufficient signal"
             ratios.append(times["candidate"] / times["gnu"])
-            base_ratios.append(times["candidate"] / times["base"])
+            if total_guard:
+                gross = {r["role"]: r["seconds"] for r in rows if r["kind"] == kind}
+                base_ratios.append(gross["candidate"] / gross["base"])
+            else:
+                base_ratios.append(times["candidate"] / times["base"])
             own.append(times)
         if pressure:
             assert len({s["output"] for s in samples}) == 1, "pressure outputs differ"
         ratio, regression = statistics.median(ratios), statistics.median(base_ratios)
         verdicts[kind] = dict(gnu_ratio=ratio, base_ratio=regression,
+                              base_metric="total call" if total_guard else "own cost",
                               paired_gnu_ratios=ratios, paired_base_ratios=base_ratios,
                               own_seconds=own, passed=(regression < 1 if pressure else ratio <= 1),
                               candidate_rounds_at_or_below_control=(

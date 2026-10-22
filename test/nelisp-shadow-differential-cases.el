@@ -471,6 +471,12 @@
  ;; format
  (format "%s-%d" "x" 7) (format "%S" '(1 . 2)) (format "%5.2f" 1.5)
  (format "%c%%" 65) (format "%-4s|" "ab")
+ (format "%s:%d:%s:%s:%s" "abc" -42 'hello nil t)
+ (format "%#.8x" 18446744073709551617)
+ (let* ((fmt (propertize "a%sZ" 'face 'bold))
+        (value (format fmt (propertize "bcd" 'help-echo "arg"))))
+   (list (substring-no-properties value)
+         (mapcar (lambda (i) (text-properties-at i value)) '(0 1 2 3 4))))
  ;; substring, including the negative and empty edges
  (substring "abcdef" 1 3) (substring "abcdef" -2) (substring "abc" 0 0)
  (substring "abcdef" 2) (substring "abcdef" 0 -3)

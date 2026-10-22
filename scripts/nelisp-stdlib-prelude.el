@@ -23321,7 +23321,7 @@ field-width layer."
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."
-  (let ((text (nelisp--prn-to-string arg nil)))
+  (let ((text (if (symbolp arg) (symbol-name arg) (nelisp--prn-to-string arg nil))))
     (if (or (stringp arg) (symbolp arg)) text
       ;; Aggregate princ omits quotes but serializes nested raw bytes as
       ;; octal. Ordinary Unicode characters retain their representation.
@@ -23345,14 +23345,522 @@ field-width layer."
               (string-as-unibyte result)
             result))))))
 
+;; BEGIN GNU 31.1 format width data; tools/ai/strings-format-width.el
+(defconst nelisp--format-width-ranges
+  [
+   128 159 4
+   768 879 0
+   1155 1161 0
+   1425 1469 0
+   1471 1471 0
+   1473 1474 0
+   1476 1477 0
+   1479 1479 0
+   1536 1541 0
+   1552 1564 0
+   1611 1631 0
+   1648 1648 0
+   1750 1764 0
+   1767 1768 0
+   1770 1773 0
+   1807 1807 0
+   1809 1809 0
+   1840 1866 0
+   1958 1968 0
+   2027 2035 0
+   2070 2083 0
+   2085 2093 0
+   2137 2139 0
+   2260 2306 0
+   2362 2362 0
+   2364 2364 0
+   2369 2376 0
+   2381 2381 0
+   2385 2391 0
+   2402 2403 0
+   2433 2433 0
+   2492 2492 0
+   2497 2500 0
+   2509 2509 0
+   2530 2531 0
+   2561 2562 0
+   2620 2620 0
+   2625 2637 0
+   2641 2641 0
+   2672 2673 0
+   2677 2677 0
+   2689 2690 0
+   2748 2748 0
+   2753 2760 0
+   2765 2765 0
+   2786 2787 0
+   2817 2817 0
+   2876 2876 0
+   2879 2879 0
+   2881 2884 0
+   2893 2902 0
+   2914 2915 0
+   2946 2946 0
+   3008 3008 0
+   3021 3021 0
+   3072 3072 0
+   3134 3136 0
+   3142 3158 0
+   3170 3171 0
+   3201 3201 0
+   3260 3260 0
+   3276 3277 0
+   3298 3299 0
+   3329 3329 0
+   3393 3396 0
+   3405 3405 0
+   3426 3427 0
+   3457 3457 0
+   3530 3530 0
+   3538 3542 0
+   3633 3633 0
+   3636 3642 0
+   3655 3662 0
+   3761 3761 0
+   3764 3772 0
+   3784 3789 0
+   3864 3865 0
+   3893 3893 0
+   3895 3895 0
+   3897 3897 0
+   3953 3966 0
+   3968 3972 0
+   3974 3975 0
+   3981 4028 0
+   4038 4038 0
+   4141 4144 0
+   4146 4151 0
+   4153 4154 0
+   4157 4158 0
+   4184 4185 0
+   4190 4192 0
+   4209 4212 0
+   4226 4226 0
+   4229 4230 0
+   4237 4237 0
+   4253 4253 0
+   4352 4447 2
+   4448 4607 0
+   4957 4959 0
+   5906 5908 0
+   5938 5940 0
+   5970 5971 0
+   6002 6003 0
+   6068 6069 0
+   6071 6077 0
+   6086 6086 0
+   6089 6099 0
+   6109 6109 0
+   6155 6158 0
+   6277 6278 0
+   6313 6313 0
+   6432 6434 0
+   6439 6440 0
+   6450 6450 0
+   6457 6459 0
+   6679 6680 0
+   6683 6683 0
+   6742 6742 0
+   6744 6750 0
+   6752 6752 0
+   6754 6754 0
+   6757 6764 0
+   6771 6780 0
+   6783 6783 0
+   6832 6848 0
+   6912 6915 0
+   6964 6964 0
+   6966 6970 0
+   6972 6972 0
+   6978 6978 0
+   7019 7027 0
+   7040 7041 0
+   7074 7077 0
+   7080 7081 0
+   7083 7085 0
+   7142 7142 0
+   7144 7145 0
+   7149 7149 0
+   7151 7153 0
+   7212 7219 0
+   7222 7223 0
+   7376 7378 0
+   7380 7392 0
+   7394 7400 0
+   7405 7405 0
+   7412 7412 0
+   7416 7417 0
+   7616 7679 0
+   8203 8207 0
+   8234 8238 0
+   8288 8303 0
+   8400 8432 0
+   8986 8987 2
+   9001 9002 2
+   9193 9196 2
+   9200 9200 2
+   9203 9203 2
+   9725 9726 2
+   9748 9749 2
+   9776 9783 2
+   9800 9811 2
+   9855 9855 2
+   9866 9875 2
+   9889 9889 2
+   9898 9899 2
+   9917 9918 2
+   9924 9925 2
+   9934 9934 2
+   9940 9940 2
+   9962 9962 2
+   9970 9971 2
+   9973 9973 2
+   9978 9978 2
+   9981 9981 2
+   9989 9989 2
+   9994 9995 2
+   10024 10024 2
+   10060 10060 2
+   10062 10062 2
+   10067 10069 2
+   10071 10071 2
+   10133 10135 2
+   10160 10160 2
+   10175 10175 2
+   11035 11036 2
+   11088 11088 2
+   11093 11093 2
+   11503 11505 0
+   11647 11647 0
+   11744 11775 0
+   11904 11929 2
+   11931 12019 2
+   12032 12245 2
+   12272 12350 2
+   12353 12438 2
+   12441 12543 2
+   12549 12591 2
+   12593 12773 2
+   12783 12871 2
+   12880 42124 2
+   42128 42182 2
+   42607 42610 0
+   42612 42655 0
+   42736 42737 0
+   43010 43010 0
+   43014 43014 0
+   43019 43019 0
+   43045 43046 0
+   43052 43052 0
+   43204 43205 0
+   43232 43249 0
+   43302 43309 0
+   43335 43345 0
+   43360 43388 2
+   43392 43443 0
+   43446 43449 0
+   43452 43452 0
+   43493 43493 0
+   43561 43566 0
+   43569 43570 0
+   43573 43574 0
+   43587 43587 0
+   43596 43596 0
+   43644 43644 0
+   43696 43696 0
+   43698 43700 0
+   43703 43704 0
+   43710 43711 0
+   43713 43713 0
+   43756 43757 0
+   43766 43766 0
+   44005 44005 0
+   44008 44008 0
+   44013 44013 0
+   44032 55203 2
+   55216 55291 0
+   63744 64255 2
+   64286 64286 0
+   65024 65039 0
+   65040 65049 2
+   65056 65071 0
+   65072 65131 2
+   65279 65279 0
+   65281 65376 2
+   65504 65510 2
+   65529 65531 0
+   66045 66045 0
+   66272 66272 0
+   66422 66426 0
+   68097 68111 0
+   68152 68159 0
+   68325 68326 0
+   68969 68973 0
+   69291 69292 0
+   69372 69375 0
+   69633 69633 0
+   69688 69702 0
+   69759 69761 0
+   69811 69814 0
+   69817 69818 0
+   69821 69821 0
+   69888 69890 0
+   69927 69931 0
+   69933 69940 0
+   70003 70003 0
+   70016 70017 0
+   70070 70078 0
+   70090 70092 0
+   70095 70095 0
+   70191 70193 0
+   70196 70196 0
+   70198 70199 0
+   70206 70206 0
+   70367 70367 0
+   70371 70378 0
+   70400 70401 0
+   70460 70460 0
+   70464 70464 0
+   70502 70508 0
+   70512 70516 0
+   70587 70592 0
+   70606 70606 0
+   70608 70608 0
+   70610 70610 0
+   70625 70626 0
+   70712 70719 0
+   70722 70724 0
+   70726 70726 0
+   70835 70840 0
+   70842 70848 0
+   70850 70851 0
+   71090 71093 0
+   71100 71101 0
+   71103 71104 0
+   71132 71133 0
+   71219 71226 0
+   71229 71229 0
+   71231 71232 0
+   71339 71339 0
+   71341 71341 0
+   71344 71349 0
+   71351 71351 0
+   71453 71455 0
+   71458 71461 0
+   71463 71467 0
+   71995 71996 0
+   71998 71998 0
+   72003 72003 0
+   72752 72758 0
+   72760 72765 0
+   72850 72871 0
+   72874 72880 0
+   72882 72883 0
+   72885 72886 0
+   73562 73562 0
+   78896 78912 0
+   78919 78933 0
+   90398 90409 0
+   90413 90415 0
+   92912 92916 0
+   92976 92982 0
+   94095 94098 0
+   94176 94180 2
+   94192 94198 2
+   94208 100343 2
+   100352 101589 2
+   101631 101662 2
+   101760 101874 2
+   110576 110579 2
+   110581 110587 2
+   110589 110590 2
+   110592 110882 2
+   110898 110898 2
+   110928 110930 2
+   110933 110933 2
+   110948 110951 2
+   110960 111355 2
+   113821 113822 0
+   113824 113827 0
+   118528 118530 0
+   119143 119145 0
+   119155 119170 0
+   119173 119179 0
+   119210 119213 0
+   119362 119364 0
+   119552 119638 2
+   119648 119670 2
+   121344 121398 0
+   121403 121452 0
+   121461 121461 0
+   121476 121476 0
+   121499 121503 0
+   121505 121519 0
+   122880 122886 0
+   122888 122904 0
+   122907 122913 0
+   122915 122916 0
+   122918 122922 0
+   124398 124399 0
+   125136 125142 0
+   125252 125258 0
+   126980 126980 2
+   127183 127183 2
+   127374 127374 2
+   127377 127386 2
+   127405 127405 2
+   127488 127490 2
+   127504 127547 2
+   127552 127560 2
+   127568 127569 2
+   127584 127589 2
+   127744 127776 2
+   127789 127797 2
+   127799 127868 2
+   127870 127891 2
+   127904 127946 2
+   127951 127955 2
+   127968 127984 2
+   127988 127988 2
+   127992 128062 2
+   128064 128064 2
+   128066 128252 2
+   128255 128317 2
+   128331 128334 2
+   128336 128359 2
+   128378 128378 2
+   128405 128406 2
+   128420 128420 2
+   128507 128591 2
+   128640 128709 2
+   128716 128716 2
+   128720 128722 2
+   128725 128728 2
+   128732 128735 2
+   128747 128748 2
+   128756 128764 2
+   128992 129003 2
+   129008 129008 2
+   129292 129338 2
+   129340 129349 2
+   129351 129619 2
+   129632 129645 2
+   129648 129660 2
+   129664 129674 2
+   129678 129734 2
+   129736 129736 2
+   129741 129756 2
+   129759 129770 2
+   129775 129784 2
+   129792 129938 2
+   131072 262143 2
+   917505 917999 0
+   1589248 1598083 2
+   2097536 2097629 2
+   4194176 4194303 4]
+  "GNU 31.1 non-default character widths, in ordered inclusive ranges.")
+;; END GNU 31.1 format width data
+
+(defun nelisp--format-char-width (char)
+  "GNU CHARACTER_WIDTH for the default standalone display policy."
+  (cond ((and (>= char 32) (< char 127)) 1)
+        ((= char 9) (if (and (boundp 'tab-width) (integerp tab-width)
+                             (> tab-width 0) (<= tab-width 1000)) tab-width 8))
+        ((= char 10) 0)
+        ((<= char 127) (if (and (boundp 'ctl-arrow) (null ctl-arrow)) 4 2))
+        ((fboundp 'char-width) (char-width char))
+        (t (let ((lo 0) (hi (/ (length nelisp--format-width-ranges) 3)) (width 1))
+             (while (< lo hi)
+               (let* ((mid (/ (+ lo hi) 2)) (slot (* mid 3)))
+                 (cond ((< char (aref nelisp--format-width-ranges slot)) (setq hi mid))
+                       ((> char (aref nelisp--format-width-ranges (1+ slot))) (setq lo (1+ mid)))
+                       (t (setq width (aref nelisp--format-width-ranges (+ slot 2)) lo hi)))))
+             width))))
+
+(defun nelisp--format-string-width (body precision)
+  "Return (character-limit . columns) as GNU lisp_string_width does."
+  (let ((i 0) (width 0) (n (length body)) (scan (not (eq precision 0))))
+    (while (and scan (< i n))
+      (let ((next (nelisp--format-char-width (aref body i))))
+        (if (and precision (> (+ width next) precision))
+            (setq scan nil)
+          (setq width (+ width next) i (1+ i)))))
+    (cons i width)))
+
+(defun nelisp--format-integer (value conv precision)
+  "Render integer VALUE in CONV's radix, including GNU integer precision."
+  (let* ((base (cond ((= conv 111) 8) ((or (= conv 120) (= conv 88)) 16) (t 10)))
+         (digits (if (= conv 88) "0123456789ABCDEF" "0123456789abcdef"))
+         (negative (< value 0)) (magnitude (abs value)) (body ""))
+    (while (> magnitude 0)
+      (setq body (concat (char-to-string (aref digits (% magnitude base))) body)
+            magnitude (/ magnitude base)))
+    (when (and (= (length body) 0) (not (eq precision 0))) (setq body "0"))
+    (when (and precision (< (length body) precision))
+      (setq body (concat (make-string (- precision (length body)) 48) body)))
+    (if negative (concat "-" body) body)))
+
+(defun nelisp--format-field-properties (body template position &optional source offset)
+  "Map format and argument intervals as GNU styled_format does.
+Only the percent character's properties cover the replacement.  Argument
+intervals override those properties, and an interval ending at the old
+argument end extends over right padding (textprop.c:2123)."
+  (let ((props (text-properties-at position template))
+        (intervals (and source (gethash source nelisp--tp-string-properties))))
+    (when (or props source)
+      (setq body (copy-sequence body))
+      (set-text-properties 0 (length body) props body))
+    (when source
+      (let* ((start (if (gethash template nelisp--tp-string-properties) 0 (or offset 0)))
+             (size (- (length body) start)) (old-size (length source)))
+        (dolist (iv intervals)
+          (let ((lo (nth 0 iv))
+                (hi (if (= (nth 1 iv) old-size) size (min size (nth 1 iv)))))
+            (when (< lo hi)
+              ;; GNU installs argument properties before the remaining format
+              ;; keys.  Preserve that observable plist order as well as values.
+              (let ((combined (copy-sequence (nth 2 iv))) (tail props))
+                (while tail
+                  (unless (plist-member combined (car tail))
+                    (setq combined (append combined (list (car tail) (cadr tail)))))
+                  (setq tail (cddr tail)))
+                (set-text-properties (+ start lo) (+ start hi) combined body))))))))
+  body)
+
+(defun nelisp--format-prin1 (arg)
+  "Serialize a propertized string as GNU's %S does."
+  (let ((intervals (and (stringp arg) (gethash arg nelisp--tp-string-properties))))
+    (if (and intervals (or (not (boundp 'print-text-properties)) print-text-properties))
+        (let ((body (concat "#(" (prin1-to-string (substring-no-properties arg)))))
+          (dolist (iv intervals)
+            (setq body (concat body " " (number-to-string (nth 0 iv))
+                               " " (number-to-string (nth 1 iv))
+                               " " (prin1-to-string (nth 2 iv)))))
+          (concat body ")"))
+      (prin1-to-string arg))))
+
 (defun nelisp--format-full (template args)
   "The full elisp `format' layer over TEMPLATE and the list ARGS; see `format'."
   (nelisp--check-string template)
-  (let ((n (length template)) (i 0) (out "") (argp args))
+  (if (and (string= template "%s") args
+           (not (gethash template nelisp--tp-string-properties)))
+      (nelisp--format-princ (car args))
+  (let ((n (length template)) (i 0) (out "") (argp args)
+        (multibyte (multibyte-string-p template)))
+    ;; GNU editfns.c:3525 considers even unused string arguments before
+    ;; rendering; a conversion can additionally promote its own result.
+    (dolist (argument args)
+      (when (and (stringp argument) (multibyte-string-p argument))
+        (setq multibyte t)))
     (while (< i n)
       (let ((ch (aref template i)))
         (if (= ch 37)                   ; ?%
-            (let ((j (1+ i))
+            (let ((field-start i) (j (1+ i))
                   (f- nil) (f0 nil) (fplus nil) (fspace nil) (fhash nil)
                   (width nil) (prec nil) (scan t))
               (while (and scan (< j n))
@@ -23403,7 +23911,7 @@ field-width layer."
                             (list (concat "Invalid format operation %"
                                           (char-to-string conv)))))
                   (if (= conv 37)        ; ?%
-                      (setq out (concat out "%"))
+                      (setq out (concat out (nelisp--format-field-properties (copy-sequence "%") template field-start)))
                     ;; Emacs signals when the arguments run out; this
                     ;; layer used to read (car nil) and print "nil" in
                     ;; the slot -- (format "%s %s" "one") was "one nil".
@@ -23434,15 +23942,14 @@ field-width layer."
                                    ;; zero like Emacs (native reads the raw bits
                                    ;; otherwise).  Doc 159 §13.
                                     (cond
-                                     ((= conv 83) (prin1-to-string arg))
+                                     ((= conv 83) (nelisp--format-prin1 arg))
                                      ((= conv 115) (nelisp--format-princ arg))
                                      ((= conv 99) (if (symbolp arg) (symbol-name arg) (char-to-string arg)))
-                                     (t (nelisp--native-format
-                                       (concat "%" (char-to-string conv))
-                                       (if (and (floatp arg)
-                                                (or (= conv 100) (= conv 105) (= conv 111)
-                                                    (= conv 120) (= conv 88)))
-                                           (truncate arg) arg)))))))
+                                     (t (nelisp--format-integer
+                                         (if (floatp arg) (truncate arg) arg)
+                                         conv prec)))))
+                           (source-body (and (= conv 115) body))
+                           (leading-pad 0))
                       (setq argp (cdr argp))
                       ;; `#' on %g keeps the trailing zeros %g strips, and
                       ;; keeps the point even when nothing follows it
@@ -23466,15 +23973,22 @@ field-width layer."
                                             (concat (substring str 0 epos) "."
                                                     (substring str epos)))))
                               (setq body str)))))
-                      (when (and prec (or (= conv 115) (= conv 83))   ; s S
-                                 (> (length body) prec))
-                        (setq body (substring body 0 prec)))
+                      (when (and fhash (memq conv '(101 102)) (eq prec 0)
+                                 (not (string-match "\\." body)))
+                        (let ((epos (nelisp--fmt-epos body)))
+                          (setq body (if epos (concat (substring body 0 epos) "." (substring body epos))
+                                       (concat body ".")))))
+                      (let* ((text-conversion (or (= conv 115) (= conv 83)))
+                             (measure (and text-conversion (nelisp--format-string-width body prec))))
+                        (when (and measure (< (car measure) (length body)))
+                          (setq body (substring body 0 (car measure)))))
                       ;; `#' is the alternate form, and it reaches only o/x/X
                       ;; here: Emacs writes "0xa" / "0XFF" / "010", omits the
                       ;; prefix for a zero value, and puts it AFTER the sign
                       ;; ("-0xa").  The native delegate does not implement `#'
                       ;; at all -- it hands back the spec string unchanged --
                       ;; so the prefix has to be built here.
+                      (when (and fhash (= conv 111) (string= body "")) (setq body "0"))
                       (when (and fhash (or (= conv 111) (= conv 120) (= conv 88))
                                  (> (length body) 0))
                         (let* ((neg (= (aref body 0) 45))
@@ -23494,11 +24008,15 @@ field-width layer."
                                  (> (length body) 0) (not (= (aref body 0) 45)))
                         (cond (fplus (setq body (concat "+" body)))
                               (fspace (setq body (concat " " body)))))
-                      (when (and width (< (length body) width))
-                        (let ((pad (- width (length body))))
+                      (let ((body-width (if (or (= conv 115) (= conv 83))
+                                            (cdr (nelisp--format-string-width body nil))
+                                          (length body))))
+                      (when (and width (< body-width width))
+                        (let ((pad (- width body-width)))
+                          (unless f- (setq leading-pad pad))
                           (cond
                            (f- (setq body (concat body (make-string pad 32))))
-                           ((and f0
+                           ((and f0 (not (and prec (memq conv '(100 105 111 120 88))))
                                  ;; d/i/o/x/X always produce digits, so `0'
                                  ;; always applies.  The old guard asked whether
                                  ;; the first character was a DECIMAL digit,
@@ -23537,11 +24055,11 @@ field-width layer."
                                                  (make-string pad 48)
                                                  (substring body k)))))
                            (t (setq body (concat (make-string pad 32) body))))))
-                      (setq out (concat out body)))))))
+                      (setq out (concat out (nelisp--format-field-properties body template field-start source-body leading-pad)))))))))
           ;; Preserve the template's byte representation until concat decides
           ;; whether this literal fragment needs raw-byte promotion.
           (setq out (concat out (substring template i (1+ i))) i (1+ i)))))
-    out))
+    (if multibyte (string-to-multibyte out) out))))
 
 ;; A13: `type-of' is VOID on the bare reader (returns nil for everything), and
 ;; native `functionp' fails to recognise a `(lambda ...)' / `(closure ...)' /

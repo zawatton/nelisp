@@ -325,9 +325,61 @@ def final():
     print("PASS final: 11 groups, standalone checks, 40 MCP tools, Wine smoke")
 
 
+def format_semantics():
+    outputs = {}
+    runtimes = [("gnu", [os.environ.get("GNU_EMACS", "/usr/local/bin/emacs"), "-Q", "--batch"]),
+                ("dynamic", [str(OUT / "format-dynamic/nelisp")]),
+                ("static", [str(OUT / "format-static/nelisp")])]
+    for role, command in runtimes:
+        result = subprocess.run(command + ["--load", "tools/ai/strings-semantics.el"],
+                                cwd=ROOT, capture_output=True, timeout=55)
+        (OUT / f"format-{role}.out").write_bytes(result.stdout)
+        (OUT / f"format-{role}.err").write_bytes(result.stderr)
+        assert result.returncode == 0 and not result.stderr, f"{role} format oracle failed"
+        outputs[role] = [line for line in result.stdout.splitlines() if line.startswith(b"STRINGS-CASE ")]
+        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) >= 28
+    for role in ["dynamic", "static"]:
+        assert outputs[role] == outputs["gnu"], f"{role} GNU oracle differs: see format-{role}.out"
+    identities = {role: hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()
+                  for role, command in runtimes}
+    (OUT / "format-oracle.json").write_text(json.dumps(dict(identities=identities,
+        fixture_sha256=hashlib.sha256((ROOT / "tools/ai/strings-semantics.el").read_bytes()).hexdigest(),
+        cases=len(outputs["gnu"]), format_cases=sum(line.startswith(b"STRINGS-CASE fmt-") for line in outputs["gnu"]), passed=True), indent=2) + "\n")
+    print(f"PASS GNU format oracle: {len(outputs['gnu'])} cases, both linkages")
+
+
+def format_speed():
+    report = json.loads((OUT / "format-timing/producers.json").read_text())
+    assert report["cpu"] == 14 and report["rounds"] == 7
+    assert set(report["verdicts"]) == {"concat", "substring", "format"}
+    for role, path in [("candidate", OUT / "format-dynamic/nelisp"), ("base", OUT / "format-base/nelisp")]:
+        assert report["identities"][role] == hashlib.sha256(path.read_bytes()).hexdigest(), "stale timing binary"
+    for kind, row in report["verdicts"].items():
+        assert len(row["paired_base_ratios"]) == len(row["paired_gnu_ratios"]) == 7
+        assert row["base_ratio"] < (1 if kind == "format" else 1.03), f"{kind} regression"
+        print(f"PASS {kind}: {row['base_ratio']:.4f}x b1f0ed553; {row['gnu_ratio']:.4f}x GNU")
+    ir = json.loads((OUT / "format-ir.json").read_text())
+    assert ir["iterations"] > 0 and ir["candidate_own_ir"] < ir["base_own_ir"]
+    assert ir["identities"]["candidate"] == report["identities"]["candidate"]
+    assert ir["identities"]["base"] == report["identities"]["base"]
+    print(f"PASS format own Ir: {ir['base_own_ir']:.1f} -> {ir['candidate_own_ir']:.1f}")
+
+
+def format_final():
+    report = json.loads((OUT / "format-final.json").read_text())
+    oracle = json.loads((OUT / "format-oracle.json").read_text())
+    assert report["groups"] == 11 and report["failures"] == 0
+    assert report["standalone_checks"] and report["mcp_tools"] == 40
+    for role in ["dynamic", "static"]:
+        identity = hashlib.sha256((OUT / f"format-{role}/nelisp").read_bytes()).hexdigest()
+        assert report["identities"][role] == oracle["identities"][role] == identity, "stale final binary"
+    assert oracle["passed"]
+    print("PASS format final: both linkages, GNU oracle, 11 groups, standalone checks, 40 MCP tools")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=["plan", "layout", "compaction", "semantics", "speed", "image", "final"])
+    parser.add_argument("check", choices=["plan", "layout", "compaction", "semantics", "speed", "image", "final", "format", "format-speed", "format-final"])
     parser.add_argument("workload", nargs="?", choices=["producers", "pressure"])
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -345,6 +397,12 @@ def main():
         image()
     elif args.check == "final":
         final()
+    elif args.check == "format":
+        format_semantics()
+    elif args.check == "format-speed":
+        format_speed()
+    elif args.check == "format-final":
+        format_final()
 
 
 if __name__ == "__main__":

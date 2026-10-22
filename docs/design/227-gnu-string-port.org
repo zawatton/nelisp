@@ -228,6 +228,30 @@ An earlier design installed interpreted concat and substring lambdas the first
 time any string received a property (bootstrap does): 167034 ns/call for concat
 against 13079 for the base.
 
+* WORD format arguments
+
+The format front, its validation scan, sizing pass and emission pass read
+cons cars/cdrs as WORDs (GNU editfns.c:3668-3730, adapted Lisp_Object access).
+Strings retain their canonical headers; fixnums are untagged directly;
+floats use their boxed payload; nil and t use their cached canonical names
+or literal bytes. Symbols read the existing SYMBOL_NAME cache without
+building a view; an uncached reader-created ASCII name can supply its bytes
+directly. Name creation, raw-byte promotion, properties, flags, precision,
+%S, floating conversions and errors stay in the cold Lisp layer. The exact
+%s string/symbol shortcut preserves the canonical string's identity.
+
+The extended GNU oracle exposed two existing cold-layer defects: bignum
+integer conversions read a fixnum field, and format properties were lost.
+The cold formatter now renders integer radix/precision in Lisp and maps
+format intervals from the percent character onto each replacement before
+applying argument intervals, including GNU's trailing-padding extension
+(editfns.c:4310-4400, textprop.c:2123, adapted). It copies the replacement
+before changing properties, preserving the caller's argument. %S serializes
+string intervals. Width and precision count display columns as GNU
+character.c:344 does; tools/ai/strings-format-width.el regenerates the GNU
+31.1 default width ranges used when the optional display library is absent.
+No symbol storage, collector internals or concat dispatch changed.
+
 * Implicit grammar receivers
 
 The source census also includes implicit field reads in =str-eq=,
