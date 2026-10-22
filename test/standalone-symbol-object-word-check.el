@@ -4,7 +4,7 @@
 ;; (class 110, kind 4; GNU's Lisp_Object for a symbol is the pointer to the
 ;; struct Lisp_Symbol).  Today an interned symbol is a 32-byte tag-4 view
 ;; and the object WORD exists only inside the runtime.  (nelisp--debug-switch
-;; 44 SYM) hands Lisp that WORD, so each consumer can be run on both
+;; 49 SYM) hands Lisp that WORD, so each consumer can be run on both
 ;; representations of the same symbol before any producer is switched: the
 ;; results must be equal, errors included, and a change made through one
 ;; must show through the other.
