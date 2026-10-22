@@ -8851,10 +8851,11 @@ REPL-facing module it feeds."
     ;; ===================================================================
     (defun nl_mxcache_hash (form_ptr) (logand (sar form_ptr 4) 65535))
     (defun nl_mxcache_table_init ()
+      ;; 65,536 rows of 24 bytes, then a 64 KB map with one byte per row: set when the row is stored.
       (if (= (heap-read-u64 (data-addr nl_mxcache_table_base) 0) 0)
-          (let ((p (nl_os_alloc_chunk 1572864)))
+          (let ((p (nl_os_alloc_chunk 1638400)))
             (if (= p 0) 0
-              (seq (nl_os_commit_range p 0 1572864)
+              (seq (nl_os_commit_range p 0 1638400)
                    (ptr-write-u64 (data-addr nl_mxcache_table_base) 0 p))))
         0))
     ;; Correctness-gate hook (Doc 156-perf increment 1): MXCACHE_DISABLE_LOOKUP
@@ -8979,6 +8980,8 @@ REPL-facing module it feeds."
       (if (= observed_key 1) 0
         (if (= (atomic-compare-exchange slot observed_key 1) 1)
             (seq
+             (ptr-write-u8 (heap-read-u64 (data-addr nl_mxcache_table_base) 0)
+                           (+ 1572864 (nl_mxcache_hash form_ptr)) 1)
              (ptr-write-u64 (+ slot 8) 0 expansion_ptr)
              (ptr-write-u64 (+ slot 16) 0
                             (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
@@ -9023,13 +9026,22 @@ REPL-facing module it feeds."
     ;; inside the loop's own scope, never a parameter, matching the
     ;; established house style for large/unbounded walks in this file.
     (defun nl_mxcache_mark_all ()
+      ;; Visit the rows whose byte in the map is set (see nl_mxcache_store_claim), eight bytes at a time.
       (let* ((base (heap-read-u64 (data-addr nl_mxcache_table_base) 0)))
         (if (= base 0) 0
-          (let* ((epoch (heap-read-u64 (data-addr nl_mxcache_epoch) 0)) (i 0))
+          (let* ((epoch (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
+                 (map (+ base 1572864)) (w 0) (j 0))
             (seq
-             (while (< i 65536)
-               (nl_seq2 (nl_mxcache_mark_one base i epoch)
-                        (setq i (+ i 1))))
+             (while (< w 8192)
+               (seq
+                (if (= (heap-read-u64 map (* w 8)) 0) 0
+                  (seq
+                   (setq j 0)
+                   (while (< j 8)
+                     (seq (if (= (heap-read-u8 map (+ (* w 8) j)) 0) 0
+                            (nl_mxcache_mark_one base (+ (* w 8) j) epoch))
+                          (setq j (+ j 1))))))
+                (setq w (+ w 1))))
              0)))))
     ;; ROOT-CAUSE FIX #3 (found by re-running the same A/B trace against the
     ;; standalone-reader-test artifact-command smoke, which loads through a

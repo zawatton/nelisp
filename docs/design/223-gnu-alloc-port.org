@@ -618,6 +618,19 @@ conservative scan 6%, the caches and symbol-name roots 3%, the sweeps 2%, the in
   come down from the tail), so every other slot is zero.  =nl_gc_mark_pool= walks those regions with a margin, and the
   whole pool if the extent is out of range.  The pool arm contributes no roots of its own (=bf_pool_root_coverage=
   polices it), so what is marked is what the whole walk marked.
+- =nl_mxcache_mark_all= read every one of the 65,536 rows (24 bytes, 1.5 MB) of the macro-expansion cache at every
+  collection to mark the form and the expansion of the rows whose epoch is current: 2.0M instructions and 24,600
+  cache lines, for a few hundred used rows.  GNU has no such walk.  The table chunk gains a 64 KB map after its rows,
+  one byte per row.  A store sets the byte of the row it claims (a plain byte store, every writer stores 1; the claim protocol
+  and the epoch rule are unchanged) and the mark reads the map by words and visits only the rows whose byte is set.
+  A row that was evicted or expired keeps its byte; the mark finds the key 0 or a stale epoch and does nothing, as
+  before.  The cache is the only reference to an expansion, so a mark that skipped a used row would free an expansion that a
+  later hit returns: =test/gc-port-mxcache-check.el= (ledger S1.20) expands 400 call sites, collects four times with
+  churn that reuses freed memory and calls them again; a build whose =nl_mxcache_mark_all= marks nothing crashes it.
+
+Result of step 3 (back to back): 13.3M -> 11.7M cycles a collection, 25.2M -> 21.0M instructions, task clock
+5.71 -> 5.23 ms; gc3 ratios x1.38/x1.33/x1.32 -> x1.27/x1.24/x1.21 (11 paired rounds, with a step 2 control and a repeat
+of the step 3 build in the same window: x1.42/x1.37/x1.38 and x1.28/x1.21/x1.21).
 
 ** Bytecode VM safepoints (maybe_gc)
 
