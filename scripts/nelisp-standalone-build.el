@@ -24170,22 +24170,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_make_char_table_w (args env _pad)
       (if (= (nl_val_tag args) 7)
-          ;; The plist read answers 0 after it stashed a signal (the plist
-          ;; table unbound), else the property's WORD: nil, a fixnum, or a bad
-          ;; value (the call-path line's WORD form of `wf_bytecode_get_box').
-          (let* ((extra (wf_bytecode_get_word env (nl_cons_car_word args)
-                                              'char-table-extra-slots 1)))
-            (if (= extra 0) 0
-              (if (or (= extra 3)
-                      (and (= (nl_val_tag extra) 2) (>= (nl_word_payload extra) 0)))
-                  (let* ((count (if (= extra 3) 0 (nl_word_payload extra)))
-                         (rest (nl_cons_cdr_word args)))
-                    ;; Doc 225 S3: cell 0 holds the slot vector.
-                    (nl_char_table_alloc_count_w
-                     (nl_cons_car_word args)
-                     (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3)
-                     (+ count 1)))
-                (seq (bf_wrong_type_wholenump extra) 0))))
+          ;; GNU CHECK_SYMBOL (chartab.c Fmake_char_table), as `wf_bytecode_get_box'
+          ;; did; then the plist read answers 0 after it stashed a signal (the
+          ;; plist table unbound), else the property's WORD: nil, a fixnum, or a
+          ;; bad value (the call-path line's WORD form of that function).
+          (let* ((subtype (nl_cons_car_word args)) (tag (nl_val_tag subtype)))
+            (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16))
+                (let* ((extra (wf_bytecode_get_word env subtype 'char-table-extra-slots 1)))
+                  (if (= extra 0) 0
+                    (if (or (= extra 3)
+                            (and (= (nl_val_tag extra) 2) (>= (nl_word_payload extra) 0)))
+                        (let* ((count (if (= extra 3) 0 (nl_word_payload extra)))
+                               (rest (nl_cons_cdr_word args)))
+                          ;; Doc 225 S3: cell 0 holds the slot vector.
+                          (nl_char_table_alloc_count_w
+                           subtype
+                           (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3)
+                           (+ count 1)))
+                      (seq (bf_wrong_type_wholenump extra) 0))))
+              (seq (bf_wrong_type_symbolp subtype) 0)))
         (nl_abi_rc_nil (bf_wrong_number_of_args_make_char_table) 0)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_char_table_subtype_w (args _pad)
