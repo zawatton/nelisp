@@ -471,9 +471,17 @@ times the globals probe on CPU 13 and commits with the numbers.
     (=nelisp_fnv1a=).  The collector needs no new root: an interned symbol
     stays reachable through the mirror, which gc-port's =nl_symcells_root=
     marks, dumps and relocates.
-  - 3.3 The remaining comparison and dispatch sites take the WORD
-    directly (eq of two objects, the frame key compare, the special-form
-    prefilter).
+  - 3.3 Comparison and dispatch take the WORD where they can.  =eq= of
+    two objects is the WORD compare; of an object and a view it compares
+    the view's canonical name buffer with the one the object's meta word
+    names (=nl_symbol_word_eq=), which needs no table.  The apply path
+    sorts the builtins it intercepts out by static id (=nl_apply_name_
+    class_sid=: ids 1 to 18 are those names, the first in the static list),
+    for an interned object with a meta word and for a canonical view such
+    as the NAME of a (builtin NAME) definition; the un-deferred =signal= of
+    the reader build stays a name test.  Not done: the frame key compare
+    (frames keep 32-byte key slots; callpath-perf's environment change is
+    the place) and the special-form prefilter by id.
   - 3.4 The reader and =intern= / =intern-soft= answer the object WORD
     (=nl_symobj_of=), so a symbol read or interned is never a view; the
     reader's quote-family heads are the interned symbols (Qquote,
@@ -488,6 +496,12 @@ times the globals probe on CPU 13 and commits with the numbers.
     views fell from 120,446 (stage 3.0) to 6,030 (stage 3.2).
   - LOCALIZED stays on its existing path (the interop plan above).
 - Not reached in this lane:
-  - S2.1 own cost at GNU's level: an interned access still goes view ->
-    name buffer -> header index -> cell, plus the builtin's
-    classification, against GNU's single load.
+  - S2.1 own cost at GNU's level.  An interned symbol is its object, so
+    the access is the WORD to the cell, GNU's single load; what keeps the
+    criterion red is the call of the builtin around it (a bytecode
+    =boundp= is a generic builtin call, about 570 ns of own cost against
+    GNU's 7; =symbol-value= and =set= are 14x and 23x), which is
+    callpath-perf's path.  The remaining legacy symbol views of the cold
+    image (1,514: baked closure heads, the (builtin NAME) definitions
+    made before the mirror existed, unbound-marker copies) are the same
+    class of leftover.
