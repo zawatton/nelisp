@@ -480,6 +480,191 @@ Two differences from the census are accepted: a string whose buffer another stri
 different length also names counts once (the census counted it twice), and an
 uninterned symbol in the image is still counted, as the census always did.
 
+** Allocation constructors (S2.6)
+
+The loop of every churn row is mostly the evaluator's call dispatch (6,846 instructions for =(+ i 120)= against
+GNU's 362, which belongs to the call-path and eval lanes), but three constructors also did far more work than GNU's.
+=tools/ai/gc-port-ir.py alloc= measures each as the inclusive instructions of its entry point per call, loop
+overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vector= (ledger S2.6);
+=tools/ai/gc-port-alloc-golden.py= checks the results against GNU's, case by case (S2.6's companion).
+
+- =make-string= (alloc.c =Fmake_string=): the arm built the string a byte at a time through the mutable-string
+  builder.  It started at 16 bytes and grew (16 =nl_alloc_bytes= calls for 128 bytes), pushed each byte with
+  =nl_mut_str_push_byte= (66 instructions a byte), finalised into a second buffer and copied, and read its
+  arguments through =wf_arg_ptr= and =nl_cons_car_ptr=, each of which materialises a 32-byte view (about 500
+  instructions): 21,205 instructions for 128 bytes against GNU's 178.  =bf_make_string_w= is now a function of its
+  own: it computes the encoded width of the character (the rules of =nl_u8_encode=), allocates the result buffer
+  once, =nl_u8_fill= writes the first character's bytes and repeats them (eight at a time for a single-byte
+  character, 159 instructions for 128 bytes) and the string view the finaliser wrote is built in place.  It also
+  applies GNU's =CHECK_CHARACTER=: a character is 0..#x3FFFFF, and =(make-string 3 #x400000)= signals
+  =wrong-type-argument= as in GNU instead of building a string (the arm accepted any non-negative number).
+  The arguments are read as WORDs (=wf_arg_word=, =nl_word_payload=): the first version of this builtin read them
+  through =wf_arg_ptr= and =nl_cons_car_ptr=, which materialise a 32-byte view per argument at about 500 instructions
+  each, and cost 4,947 of which 3,900 were those accessors.  1,242 instructions now against GNU's 178 (x7.0): the
+  two =nl_alloc_bytes= calls (the result buffer and the 32-byte view the string still is) are 692 on a fresh heap,
+  =nl_u8_fill= 159, the argument words 112.  Other builtins that still read their arguments as views pay the same
+  per argument; that is a representation change for the whole runtime and is not made here.
+  The arm also exists on =eval/strings-20261021=, unchanged there.
+  =test/gc-port-make-string-check.el= prints 167 cases (unibyte, multibyte and forced-multibyte ASCII, every encoded
+  width from one byte to five and the raw-byte characters, sizes 0 to 4099, mutation after creation, the error
+  cases); the output is identical on GNU 31.1 and on both NeLisp linkages.
+- =cons= (alloc.c =Fcons=): =nelisp_cons_construct_w= went through =nl_alloc_consbox=, which wrote Nil into both
+  words, and then through =nl_consbox_set_car= and =_set_cdr=, calls of the =nl_val_clone_into= keystone that
+  overwrote them: 192 instructions against =Fcons='s 26.  The keystone stores a word whose low three bits are not
+  000 (an immediate, a direct cons or vectorlike, a header-less string) as it is, and converts only a legacy 32-byte
+  view; so the constructor now takes the cell from =nl_cons_alloc= and stores both words in line when neither is a
+  view, and keeps the old path (Nil seed, then the setters) when one is, because cloning a view allocates.  94
+  instructions: =nl_cons_alloc= is 56 of them (the two parallel-section and debug-switch tests, the budget
+  decrement, =cons_cells_consed=, the free-list pop), against =Fcons='s 26 for everything; the rest is this
+  compiler's call and stack-slot overhead, which the code-generation lane owns.  =test/gc-port-cons-vector-check.el=
+  (291 cases: every kind of element word as car, cdr and fill) is identical on GNU and on this build, as it was on the
+  build before.
+- =make-vector= (alloc.c =make_vector=, =allocate_vectorlike=): =bf_make_vector_w= allocated a 32-byte view slot, then
+  =vector-make= (=nl_alloc_vector=: the block, and a loop writing Nil into every slot), decoded its first argument
+  twice, and stored INIT slot by slot with a recursive function (=bf_mv_fill=, one =nl_vector_set_slot= call through
+  the =nl_val_clone_into= keystone a slot): 2,658 instructions for 16 slots against =Fmake_vector= with
+  =allocate_vectorlike= and =setup_on_free_list= at 215.  The keystone stores a word whose low three bits are not 000 as
+  it is, so for such an INIT (and Nil) the builtin allocates the block, writes its header (kind 8, length in bits 8
+  and up, as =nl_alloc_vector= does), fills it with INIT in one pass (Nil is not zero here, so GNU's =clearit= case is a
+  fill too) and answers the vector WORD (box | 6) with no view; a legacy-view INIT keeps the old path.  648
+  instructions (x3.0): one =nl_alloc_bytes= on a fresh heap is 346 of them (the steady state pops from
+  =nl_alloc_pop_fast=, the prim lane's fast path, instead), the argument words 112, the fill 130.
+
+** The marker's edges (S2.7)
+
+GNU's =mark_object= tests =pdumper_object_p= and =pdumper_marked_p= in line and breaks out at an object whose bit
+is set.  Here an edge to an already-marked image symbol went =nl_gc_mark_word= -> =nl_gc_mark_symbol= ->
+=nl_gc_mark_vbox= -> =nl_gc_mark_block=, about 140 instructions to find the bit set, and the 7,400 interned symbols
+take 132,000 such edges per collection (about 18 edges each); a collection made 382,769 calls of =nl_gc_mark_block=.
+- =nl_gc_mark_image= is the image half of =nl_gc_mark_block= (the range, the alignment, the start bit and the mark
+  test-and-set in one pass: -1 outside the image, 1 newly marked, 0 already marked), now a function of its own.
+- =nl_gc_mark_word= tests the mark bit of a vectorlike or symbol word before it reads the header (once, not twice),
+  and takes the image answer for a legacy view and for a cons payload (=nl_gc_mark_cons_payload=) and for a symbol
+  box (=nl_gc_mark_vbox=) without calling =nl_gc_mark_block=.  A set bit is only ever written for a validated block
+  start, so a bit test on any pointer needs no start bit.
+- Inlining decides what this costs.  The within-unit inliner splices a body of at most 80 nodes that uses =let*=
+  and pure operators; a plain =let= makes it a call.  The first version of this change used =let= and
+  =nl_gc_mark_word= became a real function (510,000 calls a collection), so the collection cost 66.4M instead of
+  62.6M.  With =let*= both functions are spliced (checked by running the lowering and the inliner on the unit source).
+
+Result (callgrind, churn workload, steady-state collection): 62.6M -> 58.1M instructions (GNU 47.4M),
+=nl_gc_mark_block= calls 382,769 -> 36,746.  The saving is small because the test now sits in the inlined copies:
+=nl_gc_mark_cons= went from 185 to 364 instructions a call.  What is left is mostly this compiler's code for the
+same logic (a naive stack machine: a dozen operations is 60 to 90 instructions), which the code-generation lane's
+S5 work owns.
+
+** The collection's wall time (S2.8)
+
+The criterion is wall time against GNU, not instructions.  Hardware counters (=perf_event_open=, user space, a
+12-collection delta, five repetitions, CPU 8, the Doc 220 cons churn) split one steady-state collection like this:
+
+| | cycles | instructions | IPC | L1D read misses | branch misses |
+| NeLisp, before | 20.1M | 34.7M | 1.73 | 252k (7.3 per 1000 instr) | 75k |
+| GNU 31.1 | 12.5M | 27.6M | 2.20 | 200k (7.2 per 1000 instr) | 146k |
+
+The cycle ratio x1.60 is the instruction ratio x1.26 times the IPC ratio x0.79; the miss density equals GNU's, so
+the collection is not memory-bound (an earlier reading of 4 instructions per ns came from a loaded machine).  Phase
+timestamps put 88% of a collection in marking from the recorded roots, 6% in the conservative scan, 3% in the cache
+and symbol-name roots and 2% in the sweeps: =nl_sweep_conses=, =nl_sweep_symbols= and =nl_sweep_floats= already
+are GNU's =sweep_conses= (a bitmap word of 64 cells, an all-marked fast path, only freed cells touched), and the
+chunk walk of legacy blocks, which reads every block header as GNU's =sweep_vectors= and =sweep_strings= do, is 76 us.
+
+An instruction profile of =nl_gc_mark_cons= (183,000 iterations a collection, 154 instructions each) showed where
+they went: the image test of a cons WORD ran through =nl_gc_mark_cons_payload= (the typed-block range test, then
+=nl_gc_mark_image= with its alignment and start-bit tests: 113 instructions to find an unmarked bit), every use of a
+=let=-bound =data-addr= cost four instructions where =(heap-read-u64 (data-addr X) K)= is one, and the tag of the
+argument was decoded four times.
+
+- A cons WORD inside the image takes its bit directly, as GNU's =pdumper_marked_p= and =pdumper_set_marked= and
+  nothing else: a precise cons WORD names a cons start, so neither the start bitmap nor the typed-block lookup is
+  consulted.  A cons WORD outside the image and a legacy view keep their old path.
+- =nl_gc_mark_word= reads the image bounds in place and computes the bit position after the range test.
+- =nl_cons_mark_cell= shifts by 4 instead of dividing by the cell size (the generator asserts 16).
+
+Result: 20.1M -> 16.5M cycles a collection (IPC 1.73 -> 1.75, instructions 34.7M -> 28.9M); the paired gc3 ratio to
+GNU x1.69, x1.63, x1.61 -> x1.44, x1.42, x1.42.
+
+Step 2, the dispatch (the instruction profile after step 1):
+- =nl_gc_mark_vectorlike= called =nl_gc_mark_word= 300,000 times a collection, one per slot of a vector, record or
+  closure, and nearly every slot is an immediate (26 instructions a call plus 10 of loop).  The slot loop of
+  =nl_gc_mark_inline_words= now tests the low bit in line and calls only for a pointer: the calls fall from 1.2M to
+  232,000 over the four collections of the profile.
+- =nl_gc_typed_vectorlike= (spliced in, about 60 instructions of argument shuffling) does nothing unless the mode is 1
+  (the census) or 4 (the counters) with a newly marked heap block; it is called only then.
+- The mark-bit test of a vectorlike or symbol WORD (1.18 a cons iteration, 94% of them already marked) is a chain of
+  branches with the bitmap read by base and index; the work after a miss is a helper, =nl_gc_mark_vl=, kept a real
+  function by its plain =let= so that the inliner does not splice three copies into =nl_gc_mark_word=, which would take it past
+  80 nodes and make every caller a call.
+- The cdr of a cons that is a vectorlike or symbol goes through =nl_gc_mark_word= like the car (it took the unfiltered
+  path: two header reads and a call), and the cons case is tested first.
+- =nl_gc_mark_image= reads the image bounds and bitmaps in place.
+
+Result (back to back): 14.7M -> 13.9M cycles a collection, 30.4M -> 26.6M instructions, task clock 6.19 -> 5.70 ms;
+gc3 ratios x1.44, x1.42, x1.42 -> x1.35, x1.32, x1.33.
+
+Step 3, the fixed costs.  A collection spends 12% of its time outside the mark from the roots (phase timestamps: the
+conservative scan 6%, the caches and symbol-name roots 3%, the sweeps 2%, the index 1%).
+- The owner search of =nl_boot_owner= (the object start at or below an interior pointer in the image start bitmap)
+  found the highest set bit of the word one bit at a time from bit 63, about 30 iterations of nine instructions for
+  each of the 3,700 words a collection; =nl_gc_top_bit= finds it in six halvings (the compiler has no count-leading-zeros).
+  =nl_gc_conserv_typed= asked =nl_typed_find= (range tests and a registry hash lookup) up to three times for one word;
+  it asks once.  =nl_gc_block_elem_cap= divided by the element size with an idiv, 14,400 times a collection; the strides in use
+  are 8 and 32, so it shifts.  Together 1.1M instructions a collection (the idiv is a few hundred thousand cycles
+  that the instruction count does not show); the wall time did not move measurably.
+- The reader's parse pool (a raw buffer of 32,768 slots of 32 bytes, 1 MB) was walked in full as roots at every collection:
+  32,768 slots at about 80 instructions, 2.6M a collection, and 1 MB of reads that evict useful lines.  The reader keeps
+  its extent in slot 3, the label count at +8 and the deepest nesting level reached at +16, and zeroes exactly those
+  regions when a read ends (=nelisp_reader_p_clear_used=: the per-depth slots 4 + 4d .. 7 + 4d and the label entries that
+  come down from the tail), so every other slot is zero.  =nl_gc_mark_pool= walks those regions with a margin, and the
+  whole pool if the extent is out of range.  The pool arm contributes no roots of its own (=bf_pool_root_coverage=
+  polices it), so what is marked is what the whole walk marked.
+- =nl_mxcache_mark_all= read every one of the 65,536 rows (24 bytes, 1.5 MB) of the macro-expansion cache at every
+  collection to mark the form and the expansion of the rows whose epoch is current: 2.0M instructions and 24,600
+  cache lines, for a few hundred used rows.  GNU has no such walk.  The table chunk gains a 64 KB map after its rows,
+  one byte per row.  A store sets the byte of the row it claims (a plain byte store, every writer stores 1; the claim protocol
+  and the epoch rule are unchanged) and the mark reads the map by words and visits only the rows whose byte is set.
+  A row that was evicted or expired keeps its byte; the mark finds the key 0 or a stale epoch and does nothing, as
+  before.  The cache is the only reference to an expansion, so a mark that skipped a used row would free an expansion that a
+  later hit returns: =test/gc-port-mxcache-check.el= (ledger S1.20) expands 400 call sites, collects four times with
+  churn that reuses freed memory and calls them again; a build whose =nl_mxcache_mark_all= marks nothing crashes it.
+
+Result of step 3 (back to back): 13.3M -> 11.7M cycles a collection, 25.2M -> 21.0M instructions, task clock
+5.71 -> 5.23 ms; gc3 ratios x1.38/x1.33/x1.32 -> x1.27/x1.24/x1.21 (11 paired rounds, with a step 2 control and a repeat
+of the step 3 build in the same window: x1.42/x1.37/x1.38 and x1.28/x1.21/x1.21).
+
+Step 4, a loop for the pdumper case.  =nl_gc_mark_cons= was still half of a collection's instructions (127 for a cons
+iteration).  About 20 of them served what a cons WORD in the image does not need: a second decode of the tag, the r code
+that told apart the census and counter paths, the census branch.  =nl_gc_mark_cons= is now the pdumper case alone (the
+tag, the range, the bit, the car through the inlined =nl_gc_mark_word=, the cdr, which continues the loop for a cons);
+a cons outside the image and a legacy view take =nl_gc_mark_cons_view=, the old function unchanged.  A cdr that is a
+legacy view takes =nl_gc_mark_cdr_view=.
+
+GNU's =mark_object= sets the mark bit of a dumped symbol or vector (=pdumper_set_marked=) where it finds it clear and
+goes on to the children.  Here =nl_gc_mark_word= found the bit clear, and then =nl_gc_mark_symbol= or
+=nl_gc_mark_vectorlike= tested and set it again through =nl_gc_mark_vbox= or =nl_gc_mark_block= (range, alignment, start
+bit, mark bit: 70 to 100 instructions and a read of the start bitmap), =nl_gc_block_elem_cap= checked the extent
+against the arena and =nl_gc_typed_vectorlike= had its mode tested.  =nl_gc_mark_vl_img= sets the bit and takes the
+children: a precise word names an object start, an image header is trusted, and an image object is never counted or put
+in the census (=nl_gc_mark_vectorlike_img=, =nl_gc_mark_symbol_slots=, =nl_gc_mark_slots=).
+
+Measured before writing it: of 104,877 cdr steps a collection that continue with another cons, 0.1% go to the adjacent
+16 bytes and 86% land within 512 bytes (an image cons is a 40-byte block with other objects between the cells of a list),
+so a bitmap word cannot be reused along a chain and the loop recomputes it.
+
+Result (callgrind, the gc3 workload, a steady-state collection): 45.6M -> 41.0M instructions (nl_gc_mark_cons with its
+view 22.9M -> 20.3M, nl_gc_mark_block 2.27M -> 1.34M); hardware counters, alternating with GNU, 24.7M -> 22.2M instructions
+and task clock 5.81 -> 5.56 ms against GNU's 4.71; gc3 ratios x1.28/x1.27/x1.27 -> x1.23/x1.15/x1.15.
+
+Step 5, the stack scan.  =standalone-gc-conservative-cost-check.el= bounds the conservative stack scan at 1.25 times a
+collection without it.  The marker had become so much cheaper that the scan, unchanged, grew from 1.08 to 1.12 to 1.30 times (the
+final verification of the step 4 head failed it at 1.30).  The native stack is 100 KB here (frames of 0x250 to 0x2c0 bytes): a
+scan sees 12,649 words, 4,234 of them inside the heap bounds, and only 623 distinct values (212 in the image, 411 in the heap), 990 of
+them the same word as the one before; =nl_gc_conserv_word= resolved all 4,234 at about 390 instructions.  A 256-entry
+direct-mapped table of the words already taken (cleared at the start of the scan, 2 KB of BSS: =nl_gc_conserv_seen=) skips the
+repeats; taking a word twice has the effect of taking it once.  The cost ratio of the check is 1.05 to 1.07, and the collection
+is faster by more than the scan's share of instructions suggested because the scan waits on bitmap and registry lines:
+gc3 x1.22/x1.14/x1.15 -> x1.14/x1.07/x1.07 (a repeat x1.19/x1.14/x1.14 -> x1.10/x1.07/x1.07).
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls

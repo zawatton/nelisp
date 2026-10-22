@@ -614,6 +614,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      128
      ;; `nl_gc_until' and `nl_gc_until_base': the allocation budget (Doc 223).
      64
+     ;; `nl_gc_conserv_seen': the stack words the conservative scan has taken (256 direct-mapped words).
+     2048
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -1019,6 +1021,9 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_until_base"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_conserv_seen"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 24)
@@ -3446,7 +3451,7 @@ it shares with cons and symbol blocks.")
     `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
       (defun nl_cons_mark_cell (box)
         (let* ((blk (logand box -32768))
-               (idx (/ (- box blk) ,cell))
+               (idx (sar (- box blk) 4)) ; cell = 16, asserted by the generator
                (w (+ blk (+ ,marks (* (sar idx 6) 8))))
                (bit (shl 1 (logand idx 63)))
                (m (heap-read-u64 w 0)))
@@ -3459,7 +3464,8 @@ it shares with cons and symbol blocks.")
       (defun nl_gc_mark_cons_payload (box)
         (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
           (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_cons_mark_cell box)
-          (nl_gc_mark_block box)))
+          (let* ((r (nl_gc_mark_image box)))
+            (if (>= r 0) r (nl_gc_mark_block box)))))
       ;; ---- Doc 226 D9 symbol blocks, collector side ----
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
       ;; marked.
@@ -3477,18 +3483,21 @@ it shares with cons and symbol blocks.")
       (defun nl_gc_mark_vbox (box)
         (if (> (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
           (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0 (nl_typed_find box))) 1) (nl_symbol_mark_cell box)
-          (nl_gc_mark_block box)))
+          (let* ((r (nl_gc_mark_image box)))
+            (if (>= r 0) r (nl_gc_mark_block box)))))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
       ;; member is a WORD or an immediate (Doc 226 D9), so all four are
       ;; traced; `next' (+40) is raw.  The `let' keeps this out of the
       ;; inlined mark helpers' copies.
       (defun nl_gc_mark_symbol (box)
-        (let ((i 8))
-          (if (= (nl_gc_mark_vbox box) 0) 0
-            (seq (while (< i 40)
-                   (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
-                 0))))
+        (if (= (nl_gc_mark_vbox box) 0) 0 (nl_gc_mark_symbol_slots box)))
+    (defun nl_gc_mark_symbol_slots (box)
+      ;; The value, function, plist and name slots of a symbol whose mark bit is set.
+      (let ((i 8))
+        (seq (while (< i 40)
+               (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
+             0)))
       ;; Clear every symbol_block cell's gcmarkbit (a mark phase without a
       ;; sweep).  An image dump's rank bits stay.
       (defun nl_symbol_unmark_all ()
@@ -4438,6 +4447,17 @@ it shares with cons and symbol blocks.")
       ;; payload holds W, searched back at most 4 KiB of starts (GNU accepts
       ;; only exact starts for dump objects).  0 = W is not in the boot range
       ;; or lies in a hole (use the per-collection index); -1 = no owner.
+      (defun nl_gc_top_bit (x)
+        ;; Index of the highest set bit of X (not 0): six halvings, where a walk down from bit 63 took
+        ;; one iteration per bit.  A word with bit 63 set is negative.
+        (if (< x 0) 63
+          (let* ((b 0) (y x))
+            (seq (if (/= (sar y 32) 0) (seq (setq b (+ b 32)) (setq y (sar y 32))) 0)
+                 (if (/= (sar y 16) 0) (seq (setq b (+ b 16)) (setq y (sar y 16))) 0)
+                 (if (/= (sar y 8) 0) (seq (setq b (+ b 8)) (setq y (sar y 8))) 0)
+                 (if (/= (sar y 4) 0) (seq (setq b (+ b 4)) (setq y (sar y 4))) 0)
+                 (if (/= (sar y 2) 0) (seq (setq b (+ b 2)) (setq y (sar y 2))) 0)
+                 (if (/= (sar y 1) 0) (+ b 1) b)))))
       (defun nl_boot_owner (w)
         (let* ((st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200)))
           (if (< w lo) 0
@@ -4456,10 +4476,7 @@ it shares with cons and symbol blocks.")
                      (seq (setq wi (- wi 1))
                           (setq word (heap-read-u64 starts (* wi 8)))))
                    (if (= word 0) -1
-                     (let* ((bitpos (let ((b 63))
-                                      (seq (while (= (logand (sar word b) 1) 0)
-                                             (setq b (- b 1)))
-                                           b)))
+                     (let* ((bitpos (nl_gc_top_bit word))
                             (start (+ lo (* (+ (* wi 64) bitpos) 8))))
                        (if (< w (+ (- start 8) (nl_hdr_bt (- start 8)))) start -1))))))))))
       ;; nl_gc_index_fill for chunk 0 with boot structures: index only the
@@ -4525,7 +4542,9 @@ it shares with cons and symbol blocks.")
       ;; word inside a live cell marks that cons like mark_object.  1 when W
       ;; lay in a cons block (handled), 0 to continue on the legacy path.
       (defun nl_gc_conserv_typed (w)
-        (if (= (nl_typed_find w) 1)
+        ;; One registry lookup for the word, not one per typed kind.
+        (let ((ty (nl_typed_find w)))
+        (if (= ty 1)
             (let ((c (nl_live_cons_holding w)))
               (seq (if (= c 0) 0
                      (if (= (nl_cons_mark_cell c) 0) 0
@@ -4534,14 +4553,14 @@ it shares with cons and symbol blocks.")
                    1))
           ;; Doc 226 D9: mark_maybe_pointer's MEM_TYPE_SYMBOL case
           ;; (alloc.c:4932) through live_symbol_holding.
-          (if (= (nl_typed_find w) 2)
+          (if (= ty 2)
               (let ((c (nl_live_symbol_holding w)))
                 (seq (if (= c 0) 0 (nl_gc_mark_symbol c)) 1))
             ;; Doc 223: mark_maybe_pointer's MEM_TYPE_FLOAT case (alloc.c:4944).
-            (if (= (nl_typed_find w) 3)
+            (if (= ty 3)
                 (let ((c (nl_live_float_holding w)))
                   (seq (if (= c 0) 0 (nl_symbol_mark_cell c)) 1))
-              0)))))))
+              0))))))))
 
 (defconst nelisp-standalone--arena-source
   (append
@@ -7382,6 +7401,24 @@ REPL-facing module it feeds."
                         (setq chunk 0)))))
                  found))))
         0)))
+    ;; Doc 223: the image half of nl_gc_mark_block.  An image object takes its bit in the boot
+    ;; mark bitmap (pdumper_set_marked); its header is never written.  GNU's pdumper_find_object_type
+    ;; plus pdumper_marked_p and pdumper_set_marked in one pass: the range, the alignment, the start
+    ;; bit and the mark bit share the granule index.  -1 for a block outside the image, else the
+    ;; mark answer (1 newly marked, 0 already marked).  Small enough to be spliced into its callers.
+    (defun nl_gc_mark_image (obj)
+      (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
+        (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
+          (if (/= (logand obj 7) 0) -1
+            (let* ((g (sar (- obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                   (wi (* (sar g 6) 8))
+                   (bit (shl 1 (logand g 63))))
+              (if (= (logand (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 224) wi) bit) 0) -1
+                (let* ((wa (+ (heap-read-u64 (data-addr nl_typed_alloc) 216) wi))
+                       (m (heap-read-u64 wa 0)))
+                  (if (= (logand m bit) 0)
+                      (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                    0))))))))
     ;; Mark a block by OBJECT pointer.  Returns nonzero if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     ;; The answer says which kind of block it was: 2 for a heap block, 1 for an
@@ -7402,19 +7439,7 @@ REPL-facing module it feeds."
       ;; pdumper_set_marked in one pass: the range, the alignment, the start bit
       ;; and the mark bit share the granule index.  R is -1 for a block outside
       ;; the image, else the mark answer (1 newly marked, 0 already marked).
-      (let ((r (if (< obj (heap-read-u64 (data-addr nl_typed_alloc) 200)) -1
-                 (if (>= obj (heap-read-u64 (data-addr nl_typed_alloc) 208)) -1
-                   (if (/= (logand obj 7) 0) -1
-                     (let* ((st (data-addr nl_typed_alloc))
-                            (g (sar (- obj (heap-read-u64 st 200)) 3))
-                            (wi (* (sar g 6) 8))
-                            (bit (shl 1 (logand g 63))))
-                       (if (= (logand (heap-read-u64 (heap-read-u64 st 224) wi) bit) 0) -1
-                         (let* ((wa (+ (heap-read-u64 st 216) wi))
-                                (m (heap-read-u64 wa 0)))
-                           (if (= (logand m bit) 0)
-                               (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
-                             0)))))))))
+      (let ((r (nl_gc_mark_image obj)))
         (if (>= r 0) r
       (if (= (nl_gc_object_start_p obj) 0)
           ;; A data-only owner cannot be repaired by a WORD relocation.
@@ -7449,7 +7474,9 @@ REPL-facing module it feeds."
       (let ((bt (nl_hdr_bt (- ptr 8))))
         (if (< bt 16) 0
           (if (= (nl_gc_in_arena (+ ptr (- bt 9))) 0) 0
-            (/ (- bt 8) stride)))))
+            ;; The strides in use are 8 (vector slots) and 32 (sexp views): a shift, not an idiv.
+            (if (= stride 8) (sar (- bt 8) 3)
+              (if (= stride 32) (sar (- bt 8) 5) (/ (- bt 8) stride)))))))
     ;; Mark every slot of a `len'-element buffer starting at data_ptr.
     ;; Doc 147 Phase 2: each slot is now an 8-byte tagged WORD (stride 8,
     ;; was a 32B inline Sexp).  Per-slot WORD-aware mark, mirroring the
@@ -7481,6 +7508,41 @@ REPL-facing module it feeds."
           (while (< k n)
             (seq (nl_gc_mark_word (heap-read-u64 (+ data_ptr (* k 8)) 0))
                  (setq k (+ k 1)))) 0)))
+    (defun nl_gc_mark_vl_img (box)
+      ;; BOX is a symbol or vectorlike in the image whose mark bit nl_gc_mark_word found clear.  GNU mark_object
+      ;; sets it (pdumper_set_marked) and goes on to the children.  A precise word names an object start, an image
+      ;; header is trusted, and an image object is never counted or put in the census, so there is no
+      ;; start-bitmap read, no capacity check and no typed hook.  The plain `let' keeps this a function.
+      (let ((k (logand (heap-read-u64 box 0) 63)))
+        (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+               (wi (* (sar g 6) 8)))
+          (seq
+           (ptr-write-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi
+                          (logior (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi)
+                                  (shl 1 (logand g 63))))
+           (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol_slots box) (nl_gc_mark_vectorlike_img box))))))
+    (defun nl_gc_mark_vectorlike_img (box)
+      ;; The children of an image vector, record, closure, cell or char-table: the slots are read in place,
+      ;; their extent from the image header.
+      (let ((header (heap-read-u64 box 0)))
+        (let* ((kind (logand header 63)) (n (sar header 8)))
+          (if (= kind 8) (nl_gc_mark_slots box 1 n)
+            (if (= kind 11) (nl_gc_mark_slots box 1 1)
+              (if (or (= kind 12) (= kind 17) (= kind 18)) (nl_gc_mark_slots box 1 (+ n 1))
+                (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
+    (defun nl_gc_mark_slots (owner offset n)
+      (let* ((i offset) (end (+ offset n)))
+        (seq (while (< i end)
+               (seq (let* ((w (heap-read-u64 owner (* i 8))))
+                      (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
+                    (setq i (+ i 1))))
+             0)))
+    (defun nl_gc_mark_vl (box)
+      ;; The work after the bit test missed: read the header once and take the symbol or the vectorlike
+      ;; path.  A plain `let' keeps this a function; spliced three times it would make nl_gc_mark_word too
+      ;; big to splice into its own callers.
+      (let ((k (logand (heap-read-u64 box 0) 63)))
+        (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box))))
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 4)
@@ -7497,16 +7559,30 @@ REPL-facing module it feeds."
                      (if (/= (heap-read-u64 s 16) 0)
                          (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1))))
         (if (= (logand word 7) 6)
-            (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
+            ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
+            ;; bit is set needs neither the header read nor a call.
+            (let* ((box (- word 6)))
+              (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) (nl_gc_mark_vl box)
+                (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) (nl_gc_mark_vl box)
+                  (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3)))
+                    (if (= (logand (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) (* (sar g 6) 8))
+                                   (shl 1 (logand g 63)))
+                           0)
+                        (nl_gc_mark_vl_img box)
+                      0)))))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
-            (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))))
+            (let* ((r (nl_gc_mark_image word)))
+              (if (>= r 0)
+                  (if (= r 0) 0 (nl_gc_mark_slot word))
+                (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))))))
     (defun nl_gc_mark_inline_words (owner offset n)
       (let* ((cap (nl_gc_block_elem_cap owner 8)) (i offset)
              (end (+ offset n)))
         (if (> end cap) 0
           (while (< i end)
-            (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
+            (seq (let* ((w (heap-read-u64 owner (* i 8))))
+                   (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
       (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
@@ -7515,7 +7591,11 @@ REPL-facing module it feeds."
        (if (= mr 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
-          (nl_gc_typed_vectorlike box kind n mr)
+          ;; Mode 1 (the census) takes every vectorlike, mode 4 (the counters) a newly marked heap block.
+          (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 1) (nl_gc_typed_vectorlike box kind n mr)
+            (if (= (heap-read-u64 (data-addr nl_gc_typed_state) 0) 4)
+                (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
+              0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
             (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
@@ -7563,9 +7643,25 @@ REPL-facing module it feeds."
                    (nl_gc_mark_slot slot)))
                (setq k (+ k 1)))) 0))
     (defun nl_gc_mark_pool (base cap)
+      ;; The reader records its extent in slot 3: the label count at +8, the deepest nesting level at +16
+      ;; (nelisp_reader_p_depth_ok_p).  Per-depth working slots are 4 + 4d .. 7 + 4d, label entries come
+      ;; down from the tail, and nelisp_reader_p_clear_used zeroes exactly those regions when a read ends,
+      ;; so every other slot is zero.  Walk the used regions with a margin; an extent that is out of range
+      ;; walks the whole pool.
       (if (= base 0) 0
-        (nl_seq2 (nl_gc_mark_block base)
-                 (nl_gc_mark_pool_slots base 0 cap))))
+        (let* ((lcount (heap-read-u64 base 104))
+               (deepest (heap-read-u64 base 112))
+               (low-end (+ (* deepest 4) 12))
+               (high-start (- cap (+ (* lcount 2) 8))))
+          (nl_seq2 (nl_gc_mark_block base)
+                   (if (if (< lcount 0) 1
+                         (if (> lcount cap) 1
+                           (if (< deepest 0) 1
+                             (if (> deepest cap) 1
+                               (if (>= low-end high-start) 1 0)))))
+                       (nl_gc_mark_pool_slots base 0 cap)
+                     (nl_seq2 (nl_gc_mark_pool_slots base 0 low-end)
+                              (nl_gc_mark_pool_slots base high-start cap)))))))
     ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
     ;; on cdr) so list LENGTH does not bound native mark depth.  SP points
     ;; at a Sexp slot known to be tag 7 (Cons).
@@ -7798,16 +7894,79 @@ REPL-facing module it feeds."
          0)))
     ;; SP is a cons view or a direct cons WORD (payload | 2, Doc 216).  The
     ;; cdr chain is followed iteratively in both representations.
+    (defun nl_gc_weak_note_table (box)
+      ;; The cons BOX of a weak hash table: chain it (nl_gc_weak_head) for the weak pass at the end of
+      ;; the mark phase and keep its storage alive, as nl_gc_mark_cons_view does for a heap table.
+      (let ((meta (heap-read-u64 box 0)) (index (heap-read-u64 box 8)))
+        (seq (ptr-write-u64 (nl_gc_weak_meta_slot meta 10) 0
+                            (+ (* (heap-read-u64 (data-addr nl_gc_weak_head) 0) 4) 1))
+             (ptr-write-u64 (data-addr nl_gc_weak_head) 0 box)
+             (nl_gc_weak_preserve_meta meta)
+             (extern-call nl_gc_mark_block (nl_word_payload index)) 0)))
     (defun nl_gc_mark_cons (sp)
+      ;; GNU process_mark_stack, case Lisp_Cons, for a cons WORD in the image (the pdumper case): one bit in
+      ;; the mark bitmap (pdumper_marked_p, pdumper_set_marked), then the car is expanded and the cdr continues
+      ;; the loop.  A precise cons WORD names a cons start, so neither the start bitmap nor a typed-block
+      ;; lookup is consulted.  Any other cons (a heap cell, a legacy view) takes nl_gc_mark_cons_view.
+      (if (= (logand sp 7) 2)
+          (let ((go 1))
+            (seq
+             (while (= go 1)
+               (seq
+                (setq go 0)
+                (let* ((box (- sp 2)))
+                  (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) (nl_gc_mark_cons_view sp)
+                    (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) (nl_gc_mark_cons_view sp)
+                      (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                             (wi (* (sar g 6) 8))
+                             (m (heap-read-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi))
+                             (bit (shl 1 (logand g 63))))
+                        (if (/= (logand m bit) 0) 0
+                          (seq
+                           (ptr-write-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi (logior m bit))
+                           ;; A weak hash table (the hashtab line: the cons of its meta vector and its index) is
+                           ;; chained for the end of the mark phase instead of being marked through.
+                           (if (if (= (logand (heap-read-u64 box 0) 7) 6) (> (nl_gc_weak_table_mode box) 0) 0)
+                               (nl_gc_weak_note_table box)
+                             (seq
+                              (nl_gc_mark_word (heap-read-u64 box 0))
+                              (let* ((dw (heap-read-u64 box 8)))
+                                (if (= (logand dw 1) 1) 0
+                                  (if (= (logand dw 7) 2)
+                                      (seq (setq sp dw) (setq go 1))
+                                    ;; a String WORD (the strings line) is marked like a vectorlike one
+                                    (if (if (= (logand dw 7) 6) 1 (= (logand dw 7) 4)) (nl_gc_mark_word dw)
+                                      (nl_gc_mark_cdr_view dw)))))))))))))))
+             0))
+        (nl_gc_mark_cons_view sp)))
+    (defun nl_gc_mark_cdr_view (dw)
+      ;; A cons cdr that is a legacy view: its own block first; a cons view continues the chain, any other view is a slot.
+      (if (= (nl_gc_mark_block dw) 0) 0
+        (if (= (nl_val_tag dw) 7) (nl_gc_mark_cons_view dw) (nl_gc_mark_slot dw))))
+    (defun nl_gc_mark_cons_view (sp)
+      ;; GNU process_mark_stack, case Lisp_Cons: a cons marked already ends the walk, else the
+      ;; car is expanded and the cdr continues the loop.  A cons WORD inside the image is the
+      ;; pdumper case, one bit in the mark bitmap (pdumper_marked_p, pdumper_set_marked); it
+      ;; names a cons start, so neither the start bitmap nor a typed-block lookup is consulted.
       (let ((go 1))
         (seq (while (= go 1)
           (seq (setq go 0)
-            (let ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8))))
-              (if (= (logand sp 7) 2) 0
-                (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
-                  (nl_gc_typed_slot sp 7)))
-              (let ((r (nl_gc_mark_cons_payload box)))
-               (if (= r 0) 0
+            (let* ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8)))
+                   (r (if (= (logand sp 7) 2)
+                          (if (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 0
+                                (< box (heap-read-u64 (data-addr nl_typed_alloc) 208)))
+                              (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                                     (wa (+ (heap-read-u64 (data-addr nl_typed_alloc) 216) (* (sar g 6) 8)))
+                                     (m (heap-read-u64 wa 0))
+                                     (bit (shl 1 (logand g 63))))
+                                (if (= (logand m bit) 0)
+                                    (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                                  0))
+                            (nl_gc_mark_cons_payload box))
+                        (seq (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
+                                 (nl_gc_typed_slot sp 7))
+                             (nl_gc_mark_cons_payload box)))))
+              (if (= r 0) 0
                 (seq
                   ;; A legacy heap cons marked for the first time (a cons-block cell is counted
                   ;; by sweep_conses, an image cons never).
@@ -7829,13 +7988,14 @@ REPL-facing module it feeds."
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
                       (if (= (logand dw 7) 4) (nl_gc_mark_word dw)
-                      (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
-                        (if (= (logand dw 7) 2)
-                            (seq (setq sp dw) (setq go 1))
+                      (if (= (logand dw 7) 2)
+                          (seq (setq sp dw) (setq go 1))
+                        (if (= (logand dw 7) 6)
+                            (nl_gc_mark_word dw)
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))
-                              (nl_gc_mark_slot dw))))))))))))))) 0))))
+                              (nl_gc_mark_slot dw)))))))))))))) 0))))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
@@ -9157,16 +9317,26 @@ REPL-facing module it feeds."
              (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
              (lo (if (= active 1) (heap-read-u64 bounds 0) 0))
              (hi (if (= active 1) (heap-read-u64 bounds 8) 0))
-             (p p0) (word 0))
-        (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
-          (setq word (heap-read-u64 p 0))
-          (if (= (nl_string_pin_word word) 1)
-              (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
-                             (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
-          (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
-              (nl_gc_conserv_word word) 0)
-          (setq p (+ p 8)))
-        0)))
+             (p p0) (word 0) (i 0))
+        (seq
+         ;; A native stack of 100 KB holds about 4,000 words inside the heap bounds and about 600 distinct
+         ;; values: taking a word twice has the effect of taking it once, so a 256-entry direct-mapped table of
+         ;; the words already taken skips the repeats.
+         (while (< i 256)
+           (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* i 8) 0)
+                (setq i (+ i 1))))
+         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
+           (setq word (heap-read-u64 p 0))
+           (if (= (nl_string_pin_word word) 1)
+               (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                              (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
+           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+               (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
+                 (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
+                      (nl_gc_conserv_word word)))
+             0)
+           (setq p (+ p 8)))
+         0))))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
              (index (data-addr nl_gc_start_index))
@@ -9362,10 +9532,11 @@ REPL-facing module it feeds."
     ;; ===================================================================
     (defun nl_mxcache_hash (form_ptr) (logand (sar form_ptr 4) 65535))
     (defun nl_mxcache_table_init ()
+      ;; 65,536 rows of 24 bytes, then a 64 KB map with one byte per row: set when the row is stored.
       (if (= (heap-read-u64 (data-addr nl_mxcache_table_base) 0) 0)
-          (let ((p (nl_os_alloc_chunk 1572864)))
+          (let ((p (nl_os_alloc_chunk 1638400)))
             (if (= p 0) 0
-              (seq (nl_os_commit_range p 0 1572864)
+              (seq (nl_os_commit_range p 0 1638400)
                    (ptr-write-u64 (data-addr nl_mxcache_table_base) 0 p))))
         0))
     ;; Correctness-gate hook (Doc 156-perf increment 1): MXCACHE_DISABLE_LOOKUP
@@ -9490,6 +9661,8 @@ REPL-facing module it feeds."
       (if (= observed_key 1) 0
         (if (= (atomic-compare-exchange slot observed_key 1) 1)
             (seq
+             (ptr-write-u8 (heap-read-u64 (data-addr nl_mxcache_table_base) 0)
+                           (+ 1572864 (nl_mxcache_hash form_ptr)) 1)
              (ptr-write-u64 (+ slot 8) 0 expansion_ptr)
              (ptr-write-u64 (+ slot 16) 0
                             (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
@@ -9534,13 +9707,22 @@ REPL-facing module it feeds."
     ;; inside the loop's own scope, never a parameter, matching the
     ;; established house style for large/unbounded walks in this file.
     (defun nl_mxcache_mark_all ()
+      ;; Visit the rows whose byte in the map is set (see nl_mxcache_store_claim), eight bytes at a time.
       (let* ((base (heap-read-u64 (data-addr nl_mxcache_table_base) 0)))
         (if (= base 0) 0
-          (let* ((epoch (heap-read-u64 (data-addr nl_mxcache_epoch) 0)) (i 0))
+          (let* ((epoch (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
+                 (map (+ base 1572864)) (w 0) (j 0))
             (seq
-             (while (< i 65536)
-               (nl_seq2 (nl_mxcache_mark_one base i epoch)
-                        (setq i (+ i 1))))
+             (while (< w 8192)
+               (seq
+                (if (= (heap-read-u64 map (* w 8)) 0) 0
+                  (seq
+                   (setq j 0)
+                   (while (< j 8)
+                     (seq (if (= (heap-read-u8 map (+ (* w 8) j)) 0) 0
+                            (nl_mxcache_mark_one base (+ (* w 8) j) epoch))
+                          (setq j (+ j 1))))))
+                (setq w (+ w 1))))
              0)))))
     ;; ROOT-CAUSE FIX #3 (found by re-running the same A/B trace against the
     ;; standalone-reader-test artifact-command smoke, which loads through a
@@ -25207,6 +25389,88 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_u8_encode ms cp)
             (setq remaining (- remaining 1)))
           0)))
+    ;; Fill BUF with N copies of the character CP, encoded as nl_u8_encode does; answer the byte
+    ;; width of one character.  BUF holds N times that width.
+    (defun nl_u8_fill (buf n cp)
+      (let ((w (if (>= cp 4194176) 2
+                 (if (< cp 128) 1
+                   (if (< cp 2048) 2
+                     (if (< cp 65536) 3
+                       (if (< cp 2097152) 4 5)))))))
+        (seq
+         (if (<= n 0) 0
+           (seq
+            (if (= w 1) (ptr-write-u8 buf 0 cp)
+              (if (>= cp 4194176)
+                  (seq (ptr-write-u8 buf 0 (logior 192 (logand (/ cp 64) 1)))
+                       (ptr-write-u8 buf 1 (logior 128 (logand cp 63))))
+                (if (< cp 2048)
+                    (seq (ptr-write-u8 buf 0 (logior 192 (/ cp 64)))
+                         (ptr-write-u8 buf 1 (logior 128 (logand cp 63))))
+                  (if (< cp 65536)
+                      (seq (ptr-write-u8 buf 0 (logior 224 (/ cp 4096)))
+                           (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 64) 63)))
+                           (ptr-write-u8 buf 2 (logior 128 (logand cp 63))))
+                    (if (< cp 2097152)
+                        (seq (ptr-write-u8 buf 0 (logior 240 (/ cp 262144)))
+                             (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 4096) 63)))
+                             (ptr-write-u8 buf 2 (logior 128 (logand (/ cp 64) 63)))
+                             (ptr-write-u8 buf 3 (logior 128 (logand cp 63))))
+                      (seq (ptr-write-u8 buf 0 248)
+                           (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 262144) 15)))
+                           (ptr-write-u8 buf 2 (logior 128 (logand (/ cp 4096) 63)))
+                           (ptr-write-u8 buf 3 (logior 128 (logand (/ cp 64) 63)))
+                           (ptr-write-u8 buf 4 (logior 128 (logand cp 63)))))))))
+            (if (= w 1)
+                (let ((pat (* (logand cp 255) 72340172838076673)) (k 0))
+                  (seq (while (<= (+ k 8) n)
+                         (seq (ptr-write-u64 buf k pat) (setq k (+ k 8))))
+                       (while (< k n)
+                         (seq (ptr-write-u8 buf k cp) (setq k (+ k 1))))))
+              (let ((i 1) (o w) (j 0))
+                (while (< i n)
+                  (seq (setq j 0)
+                       (while (< j w)
+                         (seq (ptr-write-u8 buf (+ o j) (heap-read-u8 buf j)) (setq j (+ j 1))))
+                       (setq o (+ o w))
+                       (setq i (+ i 1))))))))
+         w)))
+    ;; (make-string LENGTH INIT &optional MULTIBYTE), GNU Fmake_string: allocate the exact size,
+    ;; then fill (memset for a single-byte character, the encoded bytes repeated otherwise).  The
+    ;; arm used to build the string through the mutable-string builder: 128 byte pushes at 66
+    ;; instructions and 16 allocations for 128 bytes.  The result is the string view the builder's
+    ;; finaliser wrote: tag 5 (14 for a unibyte string), the buffer size at +8 with bit 62 set for a
+    ;; multibyte string, the buffer, the byte length.  The character must be 0..#x3FFFFF
+    ;; (CHECK_CHARACTER).
+    (defun bf_make_string_w (args _pad)
+      (let* ((a0 (wf_arg_word args 0))
+             (a1 (wf_arg_word args 1))
+             (n (nl_word_payload a0))
+             (cp (nl_word_payload a1)))
+        (if (if (= (nl_word_tag64 a0) 2) (if (< n 0) 0 1) 0)
+            (if (if (= (nl_word_tag64 a1) 2)
+                    (if (< cp 0) 0 (if (> cp 4194303) 0 1)) 0)
+                (let* ((rest (nl_cons_cdr_word (nl_cons_cdr_word args)))
+                       (forced (if (= (logand rest 7) 2)
+                                   (if (= (wf_arg_word args 2) 3) 0 1) 0))
+                       (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
+                       (w (if (>= cp 4194176) 2
+                            (if (< cp 128) 1
+                              (if (< cp 2048) 2
+                                (if (< cp 65536) 3
+                                  (if (< cp 2097152) 4 5))))))
+                       (total (* n w))
+                       (alloc-n (if (= total 0) 1 total))
+                       (buf (alloc-bytes alloc-n 1))
+                       (sb (alloc-bytes 32 8)))
+                  (seq (nl_u8_fill buf n cp)
+                       (ptr-write-u8 sb 0 (if (= multi 1) 5 14))
+                       (ptr-write-u64 sb 8 (if (= multi 1) (logior alloc-n 4611686018427387904) alloc-n))
+                       (ptr-write-u64 sb 16 buf)
+                       (ptr-write-u64 sb 24 total)
+                       sb))
+              (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
+          (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0))))
     (defun m5_length (p)
       (let* ((tag (heap-sexp-tag-word p)))
         (if (= tag 14) (m5_strlen p)
@@ -26400,14 +26664,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; LENGTH must be a non-negative fixnum (GNU: wrong-type-argument
     ;; wholenump).  Unchecked, any object's payload word was used as the count.
     (defun bf_make_vector_w (args _pad)
-      (let* ((n (nl_word_payload (wf_arg_word args 0)))
+      (let* ((w0 (wf_arg_word args 0))
              (init (wf_arg_word args 1))
-             (out (alloc-bytes 32 8)))
-        (if (if (= (nl_word_tag64 (wf_arg_word args 0)) 2) (if (< n 0) 0 1) 0)
-            (seq (vector-make n out)
-                 (bf_mv_fill out 0 n init)
-                 out)
-          (nl_abi_fail (bf_wrong_type_wholenump (wf_arg_word args 0)) 0))))
+             (n (nl_word_payload w0)))
+        (if (if (= (nl_word_tag64 w0) 2) (if (< n 0) 0 1) 0)
+            (if (/= (logand init 7) 0)
+                ;; GNU make_vector: allocate the block, then fill it with INIT.
+                (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0))
+                  (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
+                       (while (< k n)
+                         (seq (ptr-write-u64 box (+ 8 (* k 8)) init) (setq k (+ k 1))))
+                       (+ box 6)))
+              (let* ((out (alloc-bytes 32 8)))
+                (seq (vector-make n out)
+                     (bf_mv_fill out 0 n init)
+                     out)))
+          (nl_abi_fail (bf_wrong_type_wholenump w0) 0))))
     (defun bf_make_vector (args out)
       (nl_abi_word_to_rc (bf_make_vector_w args 0) out))
     ;; vector &rest -> Vector(tag8) from the arg list.
