@@ -106,17 +106,41 @@ def census(path):
         if addr in blocks:
             owners[addr].add(kind)
 
-    def symbol_name(view):
-        w = read_words(view, 4)
-        if len(w) < 4 or w[0] not in (4, 16) or w[3] > 256:
-            return None
-        ptr, n = w[2], w[3]
+    def text_at(ptr, n):
         if intern_bytes is not None and intern_range[0] <= ptr and ptr + n <= intern_range[1]:
             return bytes(intern_bytes[ptr - intern_range[0]:ptr - intern_range[0] + n]).decode("utf-8", "replace")
         for base, data in segments:
             if base <= ptr and ptr + n <= base + len(data):
                 return bytes(data[ptr - base:ptr - base + n]).decode("utf-8", "replace")
         return None
+
+    def string_text(word):
+        """The text of the string WORD denotes: a String WORD (header: chars +0, size_byte +8,
+        data +24) or a legacy name box (tag 5/14, data +16, length +24)."""
+        if word & 7 == 4:
+            h = read_words(word - 4, 4)
+            if len(h) < 4:
+                return None
+            n = h[0] & 0x7fffffffffffffff if h[1] >= 1 << 63 else h[1]
+            return text_at(h[3], n) if n <= 256 else None
+        if word & 7 == 0:
+            w = read_words(word, 4)
+            if len(w) == 4 and w[0] in (5, 14) and w[3] <= 256:
+                return text_at(w[2], w[3])
+        return None
+
+    def symbol_name(view):
+        """The name of the symbol VIEW denotes: a legacy tag-4/16 view, or (Doc 226 D9) a symbol
+        object WORD, whose name cell +8 holds the name string."""
+        if view & 7 == 6:
+            w = read_words(view - 6, 2)
+            if len(w) < 2 or w[0] & 63 not in (4, 16):
+                return None
+            return string_text(w[1])
+        w = read_words(view, 4)
+        if len(w) < 4 or w[0] not in (4, 16) or w[3] > 256:
+            return None
+        return text_at(w[2], w[3])
 
     def cons_cell(word):
         """The cell a cons WORD denotes: direct (payload | 2) or a 000 view."""
@@ -154,12 +178,15 @@ def census(path):
             recovered.append(dict(delta=delta, adjacent_pairs=adjacency,
                                   valid_pairs=len(targets), samples=targets[:8]))
 
-    # Function cells: slot 1 (+24) of a kind-12 record (a mirror entry).
+    # Function cells: slot 1 (+24) of a kind-12 record (a mirror entry), or, since Doc 226 D9
+    # stage 3 replaced those records with typed symbol cells, the function slot (+24) of a
+    # symbol object (kind 4 interned, 16 uninterned, in the low bits of its flags word; the
+    # 48-byte struct Lisp_Symbol of GNU: flags +0, name +8, value +16, function +24).
     function_cells = set()
     if relfields is not None:
         for field in relfields:
             owner = containing(field)
-            if owner is not None and field - owner == 24 and words[owner][0] & 63 == 12:
+            if owner is not None and field - owner == 24 and words[owner][0] & 63 in (12, 4, 16):
                 function_cells.add(read_words(field, 1)[0])
     candidates = []
     embedded_owners = set()
