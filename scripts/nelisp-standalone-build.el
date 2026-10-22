@@ -2462,6 +2462,19 @@ VM included, keeps dense lowering.  Bound to
 tools/ai/integ-wh-f1-indirect.py lists every function the closure reaches
 that still has indirect control flow.")
 
+(defconst nelisp-standalone--direct-only-unit-defuns
+  '(("arena.o" nl_ent_w_slow))
+  "Defuns of other units that keep direct branches although the unit uses jump tables.
+`nl_ent_w_slow' (Doc 226 D9's symbol entry API) answers a symbol object's slot K
+from a chain of eight comparisons, which the dense-if lowering turns into a jump
+table; the authenticated F1 prelink closure reaches it through
+`nelisp_env_variable_canonicalize' and admits direct control flow only.  Same
+mechanism as `nelisp-standalone--direct-only-reader-defuns', keyed by unit name.")
+
+(defun nelisp-standalone--direct-only-for (name)
+  "The defuns of the unit NAME that keep direct branches (nil for most units)."
+  (cdr (assoc name nelisp-standalone--direct-only-unit-defuns)))
+
 (defun nelisp-standalone--unit-cache-key (source)
   "Content key for SOURCE: what is compiled, plus what compiles it.
 
@@ -36667,7 +36680,9 @@ manifests use.")
                       (u (nelisp-standalone--compile-to-unit name src)))
                  (push name nelisp-standalone--recompiled) u))
       (:glue (let ((nelisp-standalone--inline-import-sources
-                    (nelisp-standalone--unit-inline-imports name)))
+                    (nelisp-standalone--unit-inline-imports name))
+                   (nelisp-aot-compiler--x86-direct-only-defuns
+                    (nelisp-standalone--direct-only-for name)))
                (nelisp-standalone--cached-unit
                 name (nelisp-standalone--glue-source name src)
                 nelisp-standalone--this-file)))
@@ -36677,7 +36692,9 @@ manifests use.")
       (_ ;; feature unit
        (require kind)
        (let ((nelisp-standalone--inline-import-sources
-              (nelisp-standalone--unit-inline-imports name)))
+              (nelisp-standalone--unit-inline-imports name))
+             (nelisp-aot-compiler--x86-direct-only-defuns
+              (nelisp-standalone--direct-only-for name)))
          (nelisp-standalone--cached-unit name (symbol-value src)
                                          (locate-library (symbol-name kind))))))))
 
