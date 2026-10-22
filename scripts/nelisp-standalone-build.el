@@ -25341,13 +25341,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (or (= tag 4) (= tag 16))
             (let* ((entry (nl_symbol_name_entry_for (if (= tag 4) 1 2)
                             (if (= tag 4) (nl_word_data a) (nl_word_payload a))
-                            (nl_word_length a))))
+                            (nl_word_length a)))
+                   ;; A symbol object holds its name: GNU's u.s.name, here a String
+                   ;; WORD for a symbol made by make-symbol, which has no sidecar
+                   ;; entry (the multibyte flag of an ASCII name lives in that
+                   ;; String, not in the bytes).
+                   (own (if (= (logand a 7) 6) (heap-read-u64 (- a 6) 8) 0)))
               ;; Read the existing canonical SYMBOL_NAME. Reader-created ASCII
               ;; names need no sidecar or view for a non-identity conversion.
               ;; Other misses belong to the cold symbol-name layer.
-              (if (= entry 0)
-                  (if (= (m5_ascii_bytes_p a 0 (m5_strlen a)) 1) a 0)
-                (nl_string_from_view (+ entry 40))))
+              (if (= (logand own 7) 4) own
+                (if (= entry 0)
+                    (if (= (m5_ascii_bytes_p a 0 (m5_strlen a)) 1) a 0)
+                  (nl_string_from_view (+ entry 40)))))
           (if (or (= tag 0) (= tag 1))
               (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
                               (data-addr nl_symbol_name_t))))
