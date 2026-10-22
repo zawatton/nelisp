@@ -140,7 +140,10 @@
                           (let ((terminal (extern-call nl_pa_terminal
                                            mirror-ptr entry-ptr name-ptr 0)))
                             (if (= terminal 0)
-                                (if (= (sexp-name-eq 268435480 "cyclic-variable-indirection") 1) 2 1)
+                                (let ((tag (heap-read-u64 (data-addr nl_exit_values) 0)))
+                                  (if (and (= (logand tag 7) 0) (> tag 4095)
+                                           (= (sexp-name-eq tag "cyclic-variable-indirection") 1))
+                                      2 1))
                               (seq (ptr-write-u64 result-address-ptr 0 terminal) 0)))
                         1))
                   1)))))))

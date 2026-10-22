@@ -369,6 +369,102 @@ def cmd_wall(kind):
     return 0
 
 
+BASE02 = Path('/home/madblack-21/Cowork/Notes/dev/nelisp/target/agent-worktrees/'
+              'callpath-perf-20261021/target/callpath-perf/base/nelisp')
+
+
+def while_verdict(ratio):
+    """S2.5 bar: the 1.03 regression guard on paired candidate/base02 ratios."""
+    return ratio <= 1.03
+
+
+def cmd_while_floor():
+    """S2.5 (coordinator 2026-10-22): the word-heap line's `while' floor.  The
+    own cost of `pcf-while' (callpath-perf's floors fixture, GNU-compiled
+    bytecode.el, PCF_MODE bytecode with 5,000,000 iterations and vm with
+    1,000,000) on this line's dynamic binary against callpath-perf's base02:
+    7 alternating rounds on CPU 8 under taskset, setarch -R and the 8 GiB
+    cap (callpath-perf-wall.py's process recipe), median paired ratio per
+    mode at most 1.03."""
+    import importlib.util
+    import re
+    import statistics
+    if while_verdict(1.04) or not while_verdict(1.03):
+        return fail('while-floor: negative control passed')
+    spec = importlib.util.spec_from_file_location('cpw', ROOT / 'tools/ai/callpath-perf-wall.py')
+    cpw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cpw)
+    cpw.CPUS = '8'
+    setup, _ = cpw.fixture('floors')
+    # GCPORT_WHILE_CANDIDATE / GCPORT_WHILE_BASE: other binaries, for the
+    # investigation (the criterion itself measures cur against base02).
+    cand = Path(os.environ.get('GCPORT_WHILE_CANDIDATE') or binaries()[0]).resolve()
+    base = Path(os.environ.get('GCPORT_WHILE_BASE') or BASE02).resolve()
+    if not cand.exists() or not base.exists():
+        return fail(f'while-floor: missing {cand} or {base}')
+    ratios = {}
+    for mode in ('bytecode', 'vm'):
+        n = cpw.ITERATIONS[mode]
+        ratios[mode] = []
+        for r in range(7):
+            order = [('candidate', cand), ('base', base)]
+            if r % 2:
+                order.reverse()
+            own = {}
+            for name, binary in order:
+                proc, _ = cpw.run([str(binary), '--load', str(setup), '--eval',
+                                   cpw.timing_form(['pcf-while'], n)], cpw.mode_env(mode, name))
+                m = re.search(rb'PCF-WALL (.*)\n', proc.stdout)
+                if proc.returncode != 0 or not m:
+                    return fail(f'while-floor: {name} {mode} round {r}: rc={proc.returncode}')
+                secs = dict(kv.split('=') for kv in m.group(1).decode().split())
+                own[name] = float(secs['pcf-while']) / n
+            ratios[mode].append(own['candidate'] / own['base'])
+    med = {mode: statistics.median(v) for mode, v in ratios.items()}
+    line = ('while-floor: candidate/base02 ' +
+            ', '.join(f'{mode} x{v:.3f}' for mode, v in med.items()) +
+            f' (medians of 7 paired rounds, CPU 8; {cand.name})')
+    if not all(while_verdict(v) for v in med.values()):
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
+FLOAT8_LIMIT = 9
+
+
+def float8_verdict(slope):
+    """S1.10 bar: a retained float costs at most GNU's 8-byte Lisp_Float cell
+    plus its mark bit (alloc.c:2431 float_block), 9 B with rounding."""
+    return slope <= FLOAT8_LIMIT
+
+
+def cmd_float8():
+    """S1.10: the retained slope per float (tools/ai/word-heap-objsize.el, the
+    word-heap S5.1 probe) on the dynamic and static candidates.  Until the
+    legacy 000 views retire (word-heap S6.1) and 000 becomes the dedicated
+    float tag, a float is a vectorlike object with an 8-byte kind header: 16 B
+    in a typed float block, twice GNU's 8 B (Doc 216, "Route to GNU's 8 B")."""
+    import importlib.util
+    if float8_verdict(40) or not float8_verdict(8):
+        return fail('float8: negative control passed or the bar rejects 8 B')
+    spec = importlib.util.spec_from_file_location('wsc', ROOT / 'tools/ai/word-heap-stage-check.py')
+    wsc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wsc)
+    control = Path(os.environ.get('GC_PORT_BASE', ROOT / 'target/gc-port/base/nelisp-dyn'))
+    base = wsc.slope(control, wsc.OBJSIZE, 'float')
+    if float8_verdict(base):
+        return fail(f'float8: the control {control.name} measures {base:g} B, within the bar')
+    got = {b.name: wsc.slope(b, wsc.OBJSIZE, 'float') for b in binaries()}
+    line = (f"float8: retained slope per float {', '.join(f'{k} {v:g} B' for k, v in got.items())} "
+            f"(bar {FLOAT8_LIMIT} B = GNU's 8-byte float_block cell plus its mark bit; "
+            f"control {base:g} B)")
+    if not all(float8_verdict(v) for v in got.values()):
+        return fail(line)
+    print('PASS ' + line)
+    return 0
+
+
 def not_ready(name):
     return fail(f'{name}: implementation or acceptance evidence outstanding')
 
@@ -392,7 +488,11 @@ def main(argv):
         return cmd_speed(argv[1])
     if cmd == 'wall' and len(argv) == 2 and argv[1] in ('cons', 'string', 'vector'):
         return cmd_wall(argv[1])
-    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final')
+    if cmd == 'while-floor':
+        return cmd_while_floor()
+    if cmd == 'float8':
+        return cmd_float8()
+    print('usage: gc-port-check.py portplan|conses|all-types|speed KIND|wall KIND|company|final|while-floor|float8')
     return 2
 
 

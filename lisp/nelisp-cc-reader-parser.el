@@ -227,7 +227,7 @@
            (nelisp_reader_p_zero_slots pool high-start (+ parse-cap 1)))
          0)))
     (defun nelisp_reader_p_stash_excessive_nesting (max-depth _pad)
-      (let* ((tag-buf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 24 1)))
         (seq
          ;; "excessive-lisp-nesting" (22 bytes) -- the same condition
          ;; symbol the eval-side guard raises, so both land in one
@@ -235,13 +235,12 @@
          (ptr-write-u64 tag-buf 0 8532477908489566309)
          (ptr-write-u64 (+ tag-buf 8) 0 7939125359116299621)
          (ptr-write-u64 (+ tag-buf 16) 0 113723913302885)
-         (nl_alloc_symbol tag-buf 22 268435480)
-         (ptr-write-u64 268435512 0 2)
-         (ptr-write-u64 (+ 268435512 8) 0 max-depth)
-         (ptr-write-u64 (+ 268435512 16) 0 0)
-         (ptr-write-u64 (+ 268435512 24) 0 0)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol tag-buf 22 sig-tag)
+         (ptr-write-u64 sig-val 0 2)
+         (ptr-write-u64 (+ sig-val 8) 0 max-depth)
+         (ptr-write-u64 (+ sig-val 16) 0 0)
+         (ptr-write-u64 (+ sig-val 24) 0 0)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
 
     ;; Doc 215 word ABI: when a reader failure left no signal stashed (the
@@ -252,7 +251,7 @@
         (seq (bf_read_syntax_error str-ptr) 0)))
 
     (defun nelisp_reader_p_stash_raw_byte_unrepresentable ()
-      (let* ((tag-buf (alloc-bytes 32 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 32 1)))
         (seq
          ;; "nelisp-raw-byte-unrepresentable" (31 bytes), the same condition
          ;; used by concat/format/string-to-multibyte in the runtime.
@@ -260,13 +259,12 @@
          (ptr-write-u64 (+ tag-buf 8) 0 3271148769041545057)
          (ptr-write-u64 (+ tag-buf 16) 0 8315178114073390709)
          (ptr-write-u64 (+ tag-buf 24) 0 28548142445391461)
-         (nl_alloc_symbol tag-buf 31 268435480)
-         (ptr-write-u64 268435512 0 0)
-         (ptr-write-u64 (+ 268435512 8) 0 0)
-         (ptr-write-u64 (+ 268435512 16) 0 0)
-         (ptr-write-u64 (+ 268435512 24) 0 0)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol tag-buf 31 sig-tag)
+         (ptr-write-u64 sig-val 0 0)
+         (ptr-write-u64 (+ sig-val 8) 0 0)
+         (ptr-write-u64 (+ sig-val 16) 0 0)
+         (ptr-write-u64 (+ sig-val 24) 0 0)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
 
     ;; ===========================================================

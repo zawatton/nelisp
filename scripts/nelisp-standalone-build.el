@@ -604,7 +604,11 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
   "Return driver BSS size including roots, loader state and catch head."
   (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96
      ;; Doc 223: `nl_typed_alloc', the GNU typed-block allocator state.
-     512 16
+     512
+     ;; `nl_exit_values': a pending nonlocal exit's tag and value WORDs.
+     16
+     ;; `nl_cold_chunk0_domain'.
+     16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -947,6 +951,17 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_typed_alloc"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96)
+                              :section 'bss :bind 'global :type 'object))
+    ;; A pending nonlocal exit's tag and value WORDs (GNU's handler val), see
+    ;; `nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el.
+    ;; Doc 226 D9 stage 3: the mirror record root, one WORD inside
+    ;; `nl_typed_alloc' (+480, free until now; +464 and +472 are the dump's
+    ;; symbol region).  See `nl_symcells_mirror'.
+    (list (nelisp-link-symbol "nl_symcells_root"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 480)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_exit_values"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -2146,6 +2161,10 @@ twice appears twice; readers keep the last occurrence of each unit."
                    (if (eq (car x) 'extern-call)
                        (head (car-safe (cdr x)))
                      (head (car x)))
+                   ;; The car of a list that is not a call is a form too: the
+                   ;; first binding of a let or let* binding list, a cond
+                   ;; clause's test.  Skipping it hid every site there.
+                   (when (consp (car x)) (walk (car x)))
                    ;; Walk proper and dotted lists alike.
                    (let ((tail (cdr x)))
                      (while (consp tail)
@@ -2888,6 +2907,38 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
       ;; GNU's dead_object marker for free cells.
       (defun nl_cons_dead_word () ,dead)
+    (defun nl_symcells_mirror ()
+        ;; Doc 226 D9 stage 3: the mirror record WORD (the globals record that
+        ;; the evaluator context views), or 0 before a mirror exists.
+        ;; `nl_alloc_symbol' has no env, so it finds the mirror here and walks
+        ;; it: ht (slot 0), buckets (ht slot 1), entry count (ht slot 2),
+        ;; cells vector (ht slot 3).  The collector marks the record beside the
+        ;; root stack (`nl_gc_mark_rootstack'), the image dump walks it
+        ;; (`nl_fa_symcells') and compaction rewrites it
+        ;; (`nl_compact_rw_symcells').  The slot is not an independent image
+        ;; root: it IS the globals record, whose pointer an image already
+        ;; stores and relocates (header goff, applied by
+        ;; `nl_cold_overwrite_globals'), and `nl_symcells_attach' re-derives it
+        ;; after the boot and after a cold load.
+        (heap-read-u64 (data-addr nl_symcells_root) 0))
+    (defun nl_symcells_set (w)
+        (ptr-write-u64 (data-addr nl_symcells_root) 0 w))
+    (defun nl_symcells_get ()
+        ;; The mirror table's cells vector WORD (record slot 3 of the table in
+        ;; the mirror's slot 0), or 0 when there is no mirror or the table has
+        ;; none.  Computed, never cached: the table replaces the vector when it
+        ;; grows (`nl_symcell_reserve').
+        (let ((m (nl_symcells_mirror)))
+          (if (= m 0) 0
+            (let ((ht (nl_record_slot_word m 0)))
+              (if (< (nl_record_length ht) 4) 0
+                (nl_record_slot_word ht 3))))))
+    (defun nl_symcells_attach (globals)
+        ;; Point the root at GLOBALS's record (the globals view: tag at +0, the
+        ;; record box at +8): after the bootstrap, and again after a cold load
+        ;; replaced the globals record.
+        (let ((box (heap-read-u64 globals 8)))
+          (nl_symcells_set (if (= box 0) 0 (+ box 6)))))
       ;; ---- Doc 226 D9 symbol blocks (alloc.c:3616-3700) ----
       ;; A symbol block holds 682 cells of GNU's 48-byte struct Lisp_Symbol
       ;; from offset 0, then the `next' block link at NEXT and the block type
@@ -3186,10 +3237,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; set_symbol_marked (alloc.c:4065) on a symbol_block cell: 1 = newly
       ;; marked.
       (defun nl_symbol_mark_cell (box)
-        (let ((h (heap-read-u64 box 0)))
-          (if (= (logand h ,smark) 0)
-              (seq (ptr-write-u64 box 0 (logior h ,smark)) 1)
-            0)))
+        ;; No `let': inlined into `nl_gc_mark_symbol', so the F1 prelink
+        ;; closure (which holds the GC mark path) gains no record for it.
+        (if (= (logand (heap-read-u64 box 0) ,smark) 0)
+            (seq (ptr-write-u64 box 0 (logior (heap-read-u64 box 0) ,smark)) 1)
+          0))
       ;; The dedup mark of the class-110 object at BOX: a symbol_block cell
       ;; takes its gcmarkbit; anything else -- a legacy vectorlike, an image
       ;; object, a general-heap symbol cell -- its block mark (as
@@ -3209,15 +3261,6 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
             (seq (while (< i 40)
                    (seq (nl_gc_mark_word (heap-read-u64 box i)) (setq i (+ i 8))))
                  0))))
-      ;; A class-110 WORD's backing BOX (a precise edge, so its header is
-      ;; readable): a symbol (kinds 4 and 16, GNU's fixed 48-byte layout
-      ;; whose header bits above 7 are flags, not a length) or any other
-      ;; vectorlike.
-      (defun nl_gc_mark_vword (box)
-        (if (or (= (logand (heap-read-u64 box 0) 63) 4)
-                (= (logand (heap-read-u64 box 0) 63) 16))
-            (nl_gc_mark_symbol box)
-          (nl_gc_mark_vectorlike box)))
       ;; Clear every symbol_block cell's gcmarkbit (a mark phase without a
       ;; sweep).  An image dump's rank bits stay.
       (defun nl_symbol_unmark_all ()
@@ -4632,6 +4675,24 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
 
     ;; A container slot WORD as the value record-slot-ref / vector-ref
     ;; produced: immediates as they are, a heap value cloned into a fresh box.
+    ;; Doc 216 S6.2: one precise WORD root (nil) for the caller's dynamic
+    ;; extent, released with the caller's `nl_root_release' mark -- the
+    ;; WORD frame of `nl_root_frame', as GNU keeps a Lisp_Object on the
+    ;; stack.  On a full root stack, unrooted scratch like
+    ;; `nl_root_reserve''s legacy fallback.
+    (defun nl_root_word (env)
+      (let* ((s (nl_root_frame env 1)))
+        (if (= s 0) (alloc-bytes 8 8) s)))
+    (defun nl_root_words (env n)
+      ;; Doc 216 S6.2: N nil WORD slots for the caller's dynamic extent,
+      ;; released with the caller's `nl_root_release' mark -- one
+      ;; `nl_root_frame'.  On a full root stack, unrooted nil-filled scratch,
+      ;; like `nl_root_word' and `nl_root_reserve''s legacy fallback.
+      (let* ((s (nl_root_frame env n)))
+        (if (= s 0) (nl_root_words_scratch n) s)))
+    (defun nl_root_words_scratch (n)
+      (let* ((s (alloc-bytes (* n 8) 8)) (i 0))
+        (seq (while (< i n) (seq (ptr-write-u64 s (* i 8) 3) (setq i (+ i 1)))) s)))
     ;; Doc 216 S2.1: the canonical WORD to store in a cons cell -- a legacy
     ;; cons view without metadata becomes its direct WORD (payload | 2);
     ;; anything else is returned unchanged.  Inlinable (no let).
@@ -4654,6 +4715,15 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 ;; Stage 3.2: so does an interned symbol's, once it has one.
                 (if (= (heap-read-u8 w 0) 4) (nl_symview_canon w) w))))
         w))
+    ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
+    ;; for nil, t and a cons (a list).  Any other view comes back as V;
+    ;; callers use this only where V holds a list or nil.
+    (defun nl_word_canon_view (v)
+      (if (/= (logand v 7) 0) v
+        (if (< v 4096) v
+          (if (= (heap-read-u8 v 0) 0) 3
+            (if (= (heap-read-u8 v 0) 1) 7
+              (nl_word_canon v))))))
     (defun nl_word_clone (w)
       (if (/= (logand w 7) 0) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
@@ -4953,25 +5023,6 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                                      same))))))
                     0)
                 0))))))
-    ;; Doc 226 D9 stage 3.1.  The code that makes a symbol's object has no
-    ;; evaluator context, so the mirror it registers the object in is named by
-    ;; a root that holds the mirror record WORD (gc-port's `nl_symcells_root'
-    ;; replaces this slot; the accessors keep their names).  The table's slot
-    ;; 3 is the cells vector `nl_symcell_entry' reads.
-    (defun nl_symcells_mirror () (heap-read-u64 268436344 0))
-    (defun nl_symcells_set (rec) (ptr-write-u64 268436344 0 rec))
-    (defun nl_symcells_get ()
-      (let* ((m (nl_symcells_mirror)))
-        (if (= m 0) 0
-          (let* ((ht (nl_record_slot_word m 0)))
-            (if (< (nl_record_length ht) 4) 0 (nl_record_slot_word ht 3))))))
-    ;; The boot calls this with the globals slot (env+0) once the mirror exists
-    ;; (fresh or restored from an image), and makes the shared unbound view
-    ;; the new objects' void cells point at.
-    (defun nl_symcells_attach (globals)
-      (seq (nl_symcells_set (+ (nl_word_payload globals) 6))
-           (nl_sym_unbound)
-           1))
     ;; The canonical string of the interned name BUF/N (the side table's, made
     ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
     ;; The environment-free form of `nl_symbol_name_value_create'.
@@ -6700,7 +6751,7 @@ REPL-facing module it feeds."
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
         (if (= (logand word 7) 6)
-            (nl_gc_mark_vword (- word 6))
+            (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4) (= (logand (heap-read-u64 (- word 6) 0) 63) 16)) (nl_gc_mark_symbol (- word 6)) (nl_gc_mark_vectorlike (- word 6)))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
             (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word))))))
@@ -6784,7 +6835,7 @@ REPL-facing module it feeds."
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
                     (if (= (logand dw 1) 1) 0
-                      (if (= (logand dw 7) 6) (nl_gc_mark_vword (- dw 6))
+                      (if (= (logand dw 7) 6) (if (or (= (logand (heap-read-u64 (- dw 6) 0) 63) 4) (= (logand (heap-read-u64 (- dw 6) 0) 63) 16)) (nl_gc_mark_symbol (- dw 6)) (nl_gc_mark_vectorlike (- dw 6)))
                         (if (= (logand dw 7) 2)
                             (seq (setq sp dw) (setq go 1))
                           (if (= (nl_gc_mark_block dw) 0) 0
@@ -7050,7 +7101,7 @@ REPL-facing module it feeds."
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
     (defun nl_gc_mark_slot (sp)
-      (if (= (logand sp 7) 6) (nl_gc_mark_vword (- sp 6))
+      (if (= (logand sp 7) 6) (if (or (= (logand (heap-read-u64 (- sp 6) 0) 63) 4) (= (logand (heap-read-u64 (- sp 6) 0) 63) 16)) (nl_gc_mark_symbol (- sp 6)) (nl_gc_mark_vectorlike (- sp 6)))
         (if (= (logand sp 7) 2) (nl_gc_mark_cons sp)
           (nl_gc_mark_legacy_slot sp))))
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
@@ -8871,6 +8922,13 @@ REPL-facing module it feeds."
                       (nl_compact_rw_word (nl_compact_rw_word_edge (+ entry 80))))) 0)
                (setq i (+ i 1))))
            (nl_gc_symname_sweep_all)))))
+    (defun nl_compact_rw_symcells ()
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD edge like a
+      ;; vector slot (`nl_compact_rw_vec_slots'): forward it, then its
+      ;; target.  This collector never runs while a cons or symbol cell exists
+      ;; (see `nl_gc_collect'), so the rewrite is for a heap that has neither.
+      (if (= (nl_symcells_mirror) 0) 0
+        (nl_compact_rw_word (nl_compact_rw_word_edge (data-addr nl_symcells_root)))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
       (seq (nl_frame_stack_rewrite 0 0)
       (seq (nl_n4_rewrite_env ctx)
@@ -8883,6 +8941,7 @@ REPL-facing module it feeds."
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
+           (nl_compact_rw_symcells)
            (nl_compact_rw_slot (data-addr nl_symbol_name_nil))
            (nl_compact_rw_slot (data-addr nl_symbol_name_t))
            (nl_compact_rw_symname_entries)
@@ -9713,19 +9772,18 @@ argument (reachability + in-arena bounds checks).")
                (if (= pushed 1) (nl_gc_ctx_pop) 0)
                (nl_seq2 (ptr-write-u64 rec_cur_addr 0 rec_cur) w)))
         (defun nelisp_eval_call_stash_excessive_lisp_nesting (_env rec_max)
-          (let* ((tag_buf (alloc-bytes 24 1)))
+          (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag_buf (alloc-bytes 24 1)))
             (seq
              ;; "excessive-lisp-nesting"; Emacs raises this condition family
              ;; for native eval/binding recursion exhaustion.
              (ptr-write-u64 tag_buf 0 8532477908489566309)
              (ptr-write-u64 (+ tag_buf 8) 0 7939125359116299621)
              (ptr-write-u64 (+ tag_buf 16) 0 113723913302885)
-             (nl_alloc_symbol tag_buf 22 268435480)
+             (nl_alloc_symbol tag_buf 22 sig-tag)
              ;; Signal data is the singleton list (limit+1), as in GNU.
              ;; Both the symbol and result slot are the existing exit roots.
-             (nelisp_cons_construct (+ (* (+ rec_max 1) 4) 1) 3 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nelisp_cons_construct (+ (* (+ rec_max 1) 4) 1) 3 sig-val)
+             (nl_exit_signal_w sig-tag sig-val)
              1)))
         ;; `nl_env_pop_frame' moved in from `nelisp-cc-evalport-env-leaves-
         ;; simple' (Doc 135 Stage 135.C): `nelisp_eval_call_root_done' below
@@ -9772,8 +9830,9 @@ argument (reachability + in-arena bounds checks).")
           (seq
            (nl_rootstack_init)
            (nl_thread_park_safepoint env)
-           (let* ((rec_cur_addr (+ env 96)) (rec_max (nl_frame_stack_limit env 0))
-                  (rec_cur (heap-read-u64 rec_cur_addr 0)))
+           (let* ((rec_cur_addr (+ env 96))
+                  (rec_cur (heap-read-u64 rec_cur_addr 0))
+                  (rec_max (nl_eval_depth_limit env rec_cur)))
              (if (>= rec_cur rec_max)
                  (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
                (seq
@@ -9810,16 +9869,17 @@ argument (reachability + in-arena bounds checks).")
            ;; Doc 199 Tier 3b: every evaluator recursion boundary is a worker
            ;; park safepoint.
            (nl_thread_park_safepoint env)
-           ;; Context/backtrace records still consume views.  The evaluator
-           ;; receives FORM's original WORD, including immediate literals.
-           (let* ((form_ptr (wf_word_view form))
-                  (rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
-             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_frame_stack_limit env 0)))
+           ;; Context/backtrace records still consume views; only an armed
+           ;; record takes one.  The evaluator receives FORM's original
+           ;; WORD, including immediate literals.
+           (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
+             (let* ((rec_cur (heap-read-u64 rec_cur_addr 0)) (rec_max (nl_eval_depth_limit env rec_cur)))
                (if (>= rec_cur rec_max)
                    (nl_abi_fail (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max) 0)
                  (nl_seq2 (ptr-write-u64 rec_cur_addr 0 (+ rec_cur 1))
                    (if (= (nl_gc_frame_record_armed_p) 1)
-                       (let* ((pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
+                       (let* ((form_ptr (wf_word_view form))
+                              (pushed (nl_gc_eval_ctx_push env form_ptr 0 0)))
                         (nelisp_eval_call_recorded_done_w
                          (nelisp_eval_call_record_result
                           (nl_eval_inner_w form env 0 0) pushed)
@@ -10680,8 +10740,9 @@ nelisp--syscall) ...)' JIT-era alias in `nelisp-jit-strategy.el', which
 called deleted-Rust `nl-jit-call-syscall' and which the standalone reader
 never loads -- fell through the unmatched-builtin default that used to
 `nl_os_write_stderr' the bare name and return rc=1 WITHOUT going through the
-signal/unwind protocol (flag@268435472 / TAG@268435480 / VAL@268435512, the
-same stash `bf_signal'/`bf_error'/`nl_cons_stash_void_function' use).  The
+signal/unwind protocol (the pending exit: kind flag@268435472, TAG and VAL
+WORDs in `nl_exit_values', recorded through `nl_exit_signal_w' as
+`bf_signal'/`bf_error'/`nl_cons_stash_void_function' do).  The
 top-level driver then reported \"nelisp: form aborted without signal\" and
 `condition-case' never ran: uncatchable by construction, not by any handler
 bug.  Stashing a real signal here instead of printing makes every call that
@@ -10712,7 +10773,9 @@ by name pending that follow-up; this paragraph is the record of why."
   (let ((tagbuf (make-symbol "unsup-tagbuf"))
         (dataname (make-symbol "unsup-dataname"))
         (nilslot (make-symbol "unsup-nilslot")))
-    `(let* ((,tagbuf (alloc-bytes 32 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (,tagbuf (alloc-bytes 32 1))
             (,dataname (alloc-bytes 32 8))
             (,nilslot (alloc-bytes 32 8)))
        (seq
@@ -10722,13 +10785,12 @@ by name pending that follow-up; this paragraph is the record of why."
          ,tagbuf
          ,(length (encode-coding-string
                    nelisp-standalone--unsupported-primitive-tag 'utf-8 t))
-         268435480)
+         sig-tag)
         (nl_alloc_symbol (heap-read-u64 name_ptr 16) (heap-read-u64 name_ptr 24)
                           ,dataname)
         (wf_write_nil ,nilslot)
-        (nelisp_cons_construct ,dataname ,nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct ,dataname ,nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 ;;; Static symbol ids (Doc 221 M03/M17; GNU lisp.h DEFSYM/lispsym and the
@@ -11032,7 +11094,9 @@ leave symbols unresolved at link time."
                 (if (= (logand d 1) 1) 0 (wf_numeric_has_marker d)))))
         0))
     (defun wf_numeric_detached_marker ()
-      (let* ((buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 32 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
         (seq
          ;; GNU's exact error data, without the marker object.
@@ -11044,10 +11108,9 @@ leave symbols unresolved at link time."
                   (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 builtin word ABI: the one way to answer "failed".  RC is the
     ;; value of the call that stashed the signal (ignored); 0 is returned.
@@ -11065,7 +11128,9 @@ leave symbols unresolved at link time."
           (seq (nl_abi_stash_unstashed) 0)
         0))
     (defun nl_abi_stash_unstashed ()
-      (let* ((buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 56 1)) (msg (alloc-bytes 32 8))
              (args (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 (+ buf 0) 0 2322292198855173486)
@@ -11079,10 +11144,9 @@ leave symbols unresolved at link time."
          (nelisp_cons_construct msg 3 args)
          (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 builtin word ABI: wf_numeric_marker_value_w returns the result WORD (0 = signal stashed); wf_numeric_marker_value keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_value_w (word _pad check)
@@ -11097,14 +11161,15 @@ leave symbols unresolved at link time."
     ;; Doc 215 builtin word ABI: wf_numeric_marker_copy_w returns the result WORD (0 = signal stashed); wf_numeric_marker_copy keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_copy_w (args env _pad)
   (if (= (nl_val_tag args) 7)
-      (let* ((holder_root (nl_root_reserve env))
+      ;; Doc 216 S6.2: the converted operand is one WORD root while the tail
+      ;; is copied.
+      (let* ((slot (nl_root_word env))
              (word (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 1)))
         (if (= word 0) 0
-          (let* ((holder (nelisp_cons_construct_w word 3 0)))
-            (seq (wf_word_store_out holder_root holder)
-                 (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
-                   (if (= tail_word 0) 0
-                     (nelisp_cons_construct_w (nl_cons_car_word holder_root) tail_word 0)))))))
+          (seq (ptr-write-u64 slot 0 word)
+               (let* ((tail_word (wf_numeric_marker_copy_w (nl_cons_cdr_word args) env 0)))
+                 (if (= tail_word 0) 0
+                   (nelisp_cons_construct_w (heap-read-u64 slot 0) tail_word 0))))))
     args))
     (defun wf_numeric_marker_copy (args env out)
       (nl_abi_word_to_rc (wf_numeric_marker_copy_w args env 0) out))
@@ -11117,23 +11182,18 @@ leave symbols unresolved at link time."
     ;; Doc 215 builtin word ABI: wf_numeric_marker_compare_w returns the result WORD (0 = signal stashed); wf_numeric_marker_compare keeps the (rc, OUT) ABI.
     (defun wf_numeric_marker_compare_w (args env mode _pad)
   (if (= (wf_cdr_has_more args) 1)
-      (let* ((mark (nl_root_mark env))
-             (a (nl_root_reserve env)) (b (nl_root_reserve env))
-             (rest (nl_cons_cdr_word args))
-             (rc (wf_numeric_marker_value_word (nl_cons_car_word args) a 0))
-             (w 0))
-        (if (= rc 0)
-            (setq rc (wf_numeric_marker_value_word (nl_cons_car_word rest) b 0)) 0)
-        (if (= rc 0)
-            (setq w
-                  (if (= (wf_num_pairp a b) 0)
-                      (nl_abi_fail (bf_wrong_type_number_or_marker
-                                    (if (= (wf_num_tag_ok (sexp-tag a)) 0) a b)) 0)
-                    (if (= (wf_numeric_marker_relation a b mode) 1)
-                        (if (= mode 5) 3 (wf_numeric_marker_compare_w rest env mode 0))
-                      (if (= mode 5) 7 3))))
-          (setq w (nl_abi_fail rc 0)))
-        (nl_root_release env mark) w)
+      ;; Doc 216 S6.2: the two operands are WORDs (an argument or a marker's
+      ;; position), reachable from ARGS; nothing here can collect.
+      (let* ((rest (nl_cons_cdr_word args))
+             (a (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 0))
+             (b (if (= a 0) 0 (wf_numeric_marker_value_word_w (nl_cons_car_word rest) 0 0))))
+        (if (or (= a 0) (= b 0)) (nl_abi_fail 1 0)
+          (if (= (wf_num_pairp a b) 0)
+              (nl_abi_fail (bf_wrong_type_number_or_marker
+                            (wf_word_view (if (= (wf_num_tag_ok (nl_val_tag a)) 0) a b))) 0)
+            (if (= (wf_numeric_marker_relation a b mode) 1)
+                (if (= mode 5) 3 (wf_numeric_marker_compare_w rest env mode 0))
+              (if (= mode 5) 7 3)))))
     7))
     (defun wf_numeric_marker_compare (args env mode out)
       (nl_abi_word_to_rc (wf_numeric_marker_compare_w args env mode 0) out))
@@ -11470,18 +11530,13 @@ leave symbols unresolved at link time."
     (defun bf_env_capture_roots_w (_pad)
       (let* ((env (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
         (if (= env 0) 3
-          (let* ((mark (nl_root_mark env)) (snapshot (nl_root_reserve env)))
-            (seq
-             (nl_frame_stack_snapshot env snapshot)
-             (let* ((word (nelisp_cons_construct_w (nl_word_clone env)
-                    (nelisp_cons_construct_w (+ (nl_word_payload snapshot) 6)
-                     (nelisp_cons_construct_w (nl_word_clone (+ env 64))
-                      (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
-                       (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0)))
-               ;; The release and the result must stay inside this let*:
-               ;; a free `word' compiles silently as a dynamic variable
-               ;; lookup through uninitialized hidden boundary slots.
-               (seq (nl_root_release env mark) word)))))))
+          ;; Doc 216 S6.2: the snapshot is a WORD (a compact record); the
+          ;; list below is built before anything can collect.
+          (nelisp_cons_construct_w (nl_word_clone env)
+           (nelisp_cons_construct_w (nl_frame_stack_snapshot_w env 0)
+            (nelisp_cons_construct_w (nl_word_clone (+ env 64))
+             (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 104))
+              (nelisp_cons_construct_w (nl_imm_int (heap-read-u64 env 112)) 3 0) 0) 0) 0) 0))))
     (defun bf_env_capture_roots (out)
   (nl_abi_word_to_rc (bf_env_capture_roots_w 0) out))
     ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
@@ -11676,7 +11731,7 @@ leave symbols unresolved at link time."
     ;; holding its index.  (nelisp--debug-switch 41 V): how many cells of V
     ;; still hold exactly that, with no collector bit set.
     ;; (nelisp--debug-switch 42): (LIVE FREE BLOCKS ALLOCATED) symbol cells.
-    ;; (nelisp--debug-switch 43 (SYM . OFFSET)): a stale view's mark, below.
+    ;; (nelisp--debug-switch 48 (SYM . OFFSET)): a stale view's mark, below.
     ;; (nelisp--debug-switch 44 SYM): SYM's kind-4 object WORD, below.
     ;; Never print V's elements: no symbol consumer reads a direct symbol
     ;; WORD on this line.  Native allocation never collects, and every
@@ -11732,7 +11787,7 @@ leave symbols unresolved at link time."
                                       (heap-read-u64 slots (* i 8)) i)))
                   (setq i (+ i 1))))
            good))))
-    ;; (nelisp--debug-switch 43 (SYM . OFFSET)): the collector's view marker on
+    ;; (nelisp--debug-switch 48 (SYM . OFFSET)): the collector's view marker on
     ;; a stale tag-16 view whose +8 is not the start of a live cell.  The
     ;; builtin takes at most two arguments, so the pair is one.  The view
     ;; points OFFSET bytes into SYM's cell (1 to 47), or, for OFFSET -1, at
@@ -11818,8 +11873,33 @@ leave symbols unresolved at link time."
               (if (/= (logand (heap-read-u64 (- e 6) 0) 63) 4) 3
                 (let* ((nm (heap-read-u64 (- e 6) 8)))
                   (if (= (logand nm 7) 0) (if (< nm 4096) 2 1) 2))))))))
+    ;; (nelisp--debug-switch 43): Doc 223 conservative-scan regression.  A
+    ;; cons held only by native frames survives a collection, as
+    ;; mark_maybe_pointer keeps it (alloc.c:4854).  Answers (SURVIVED
+    ;; OUTSIDE): SURVIVED 1 when the cell still holds its car afterwards,
+    ;; OUTSIDE 1 when its typed group lies outside every arena chunk's
+    ;; address range -- the case the scan envelope used to skip.
+    (defun nl_conserv_selftest_hold (c _pad)
+      (seq (nl_gc_collect_from_recorded_roots 0)
+           (if (= (heap-read-u64 (- c 2) 0) 173) 1 0)))
+    (defun nl_conserv_selftest_w (_pad)
+      (let* ((c (nelisp_cons_construct_w 173 3 0))
+             (g (logand c -524288))
+             (chunk (heap-read-u64 268436160 0)) (lo 0) (hi 0) (s 0) (e 0))
+        (seq
+         (while (> chunk 0)
+           (seq (setq s (heap-read-u64 chunk 24))
+                (setq e (nl_gc_chunk_end chunk))
+                (if (if (= lo 0) 1 (< s lo)) (setq lo s) 0)
+                (if (> e hi) (setq hi e) 0)
+                (setq chunk (heap-read-u64 chunk 48))))
+         (nelisp_cons_construct_w
+          (+ (* (nl_conserv_selftest_hold c 0) 4) 1)
+          (nelisp_cons_construct_w (if (if (< g lo) 1 (>= g hi)) 5 1) 3 0)
+          0))))
     (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 43) (nl_conserv_selftest_w 0)
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
               (+ (* (nl_symbol_selftest_check (wf_arg_word args 1)) 4) 1)
@@ -11827,7 +11907,7 @@ leave symbols unresolved at link time."
           (if (= op 46) (nl_word_int_word (nl_word_class (wf_arg_word args 1)))
           (if (= op 47) (seq (ptr-write-u64 268436352 0 (if (= (wf_argval args 1) 0) 0 1)) 3)
           (if (= op 44) (nl_symobj_word env (wf_arg_word args 1))
-          (if (= op 43)
+          (if (= op 48)
               (let ((pair (wf_arg_word args 1)))
                 (nl_symview_selftest (nl_cons_car_word pair) (nl_word_int (nl_cons_cdr_word pair))))
             (nelisp_cons_construct_w
@@ -11839,9 +11919,100 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))))))
+             0)))))))))))
+    (defun nl_symcells_selftest_record (n)
+      ;; A record box of N slots, all nil, with a nil type word.
+      (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 12 (* n 256)))
+             (ptr-write-u64 box 8 3)
+             (while (< i n)
+               (seq (ptr-write-u64 box (+ 16 (* i 8)) 3)
+                    (setq i (+ i 1))))
+             box)))
+    (defun nl_symcells_selftest_make (n hide)
+      ;; A mirror-shaped table that only the root keeps: the mirror record (3
+      ;; slots) holding the table record (4 slots: bucket count, buckets,
+      ;; entry count, cells) whose buckets and cells are vectors of N fixnums
+      ;; (bucket I holds I, cell I holds I+7).  HIDE 1 sets the root word's
+      ;; low bit, so the collector reads an immediate: the negative control.
+      (let* ((b (nl_alloc_vector n)) (c (nl_alloc_vector n))
+             (h (nl_symcells_selftest_record 4))
+             (r (nl_symcells_selftest_record 3)) (i 0))
+        (if (= b 0) 3
+          (if (= c 0) 3
+            (seq
+             (while (< i n)
+               (seq (ptr-write-u64 b (+ 8 (* i 8)) (+ (* i 4) 1))
+                    (ptr-write-u64 c (+ 8 (* i 8)) (+ (* (+ i 7) 4) 1))
+                    (setq i (+ i 1))))
+             (ptr-write-u64 h 16 (+ (* n 4) 1))
+             (ptr-write-u64 h 24 (+ b 6))
+             (ptr-write-u64 h 32 5)
+             (ptr-write-u64 h 40 (+ c 6))
+             (ptr-write-u64 r 16 (+ h 6))
+             (nl_symcells_set (if (= hide 1) (+ r 7) (+ r 6)))
+             (+ (* n 4) 1))))))
+    (defun nl_symcells_selftest_vec (w base)
+      ;; How many elements of the vector WORD W hold their index plus BASE; -1
+      ;; when W is no vector word, -2 when its header is not a vector's, -3
+      ;; when its block was freed.
+      (if (/= (logand w 7) 6) -1
+        (let* ((box (- w 6)) (h (heap-read-u64 box 0)))
+          (if (/= (logand h 63) 8) -2
+            (if (= (nl_hdr_mark (- box 8)) 2) -3
+              (let* ((n (sar h 8)) (i 0) (good 0))
+                (seq
+                 (while (< i n)
+                   (seq (if (= (heap-read-u64 box (+ 8 (* i 8))) (+ (* (+ i base) 4) 1))
+                            (setq good (+ good 1)) 0)
+                        (setq i (+ i 1))))
+                 good)))))))
+    (defun nl_symcells_selftest_check (_pad)
+      ;; The table the root keeps: the count of buckets and cells still
+      ;; holding their values (2 N for a table of N and N), or a negative code
+      ;; when a record or vector is gone (-1 no record word, -2 record header,
+      ;; -3 record block freed, -4 table not a record word, -5 table header,
+      ;; -6 table block freed, -7 a vector gone).
+      (let* ((w (nl_symcells_mirror))
+             (r (if (= (logand w 7) 7) (- w 1) w)))
+        (if (/= (logand r 7) 6) -1
+          (let* ((rb (- r 6)))
+            (if (/= (heap-read-u64 rb 0) (+ 12 (* 3 256))) -2
+              (if (= (nl_hdr_mark (- rb 8)) 2) -3
+                (let* ((hw (heap-read-u64 rb 16)))
+                  (if (/= (logand hw 7) 6) -4
+                    (let* ((hb (- hw 6)))
+                      (if (/= (heap-read-u64 hb 0) (+ 12 (* 4 256))) -5
+                        (if (= (nl_hdr_mark (- hb 8)) 2) -6
+                          (let* ((g1 (nl_symcells_selftest_vec (heap-read-u64 hb 24) 0))
+                                 (g2 (nl_symcells_selftest_vec (heap-read-u64 hb 40) 7)))
+                            (if (< g1 0) -7 (if (< g2 0) -7 (+ g1 g2)))))))))))))))
+    (defun nl_symcells_selftest_ctx (_pad)
+      ;; The evaluator context of the form being evaluated, or 0 outside one.
+      (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 0) 0
+        (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (defun nl_symcells_selftest_w (args)
+      ;; (nelisp--debug-switch 60): `nl_symcells_get', nil when 0;
+      ;; (61 N), (62 N): `nl_symcells_selftest_make', the root visible to the
+      ;; collector, hidden from it; (63): `..._check'; (64): 1 when the root
+      ;; is the record of the evaluator context's globals, else 0, and -1
+      ;; outside a form; (65): re-derive the root from the evaluator context;
+      ;; (66): clear it.  Callers restore the root with 65.
+      (let ((op (wf_argval args 0)) (ctx (nl_symcells_selftest_ctx 0)))
+        (if (= op 60) (if (= (nl_symcells_get) 0) 3 (nl_symcells_get))
+          (if (= op 61) (nl_symcells_selftest_make (wf_argval args 1) 0)
+            (if (= op 62) (nl_symcells_selftest_make (wf_argval args 1) 1)
+              (if (= op 63) (+ (* (nl_symcells_selftest_check 0) 4) 1)
+                (if (= op 64)
+                    (+ (* (if (= ctx 0) -1
+                            (if (= (nl_symcells_mirror) (+ (heap-read-u64 ctx 8) 6)) 1 0)) 4) 1)
+                  (if (= op 65)
+                      (seq (if (= ctx 0) 0 (nl_symcells_attach ctx)) 5)
+                    (seq (nl_symcells_set 0) 5)))))))))
     (defun bf_debug_switch_w (args env)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 47) 0)
+      (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
+          (nl_symcells_selftest_w args)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 48) 0)
           (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -11948,7 +12119,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
@@ -12934,17 +13105,16 @@ leave symbols unresolved at link time."
     ;; use (this file's existing `bf_signal_overflow_error'/`bf_wrong_
     ;; type_named' precedent for hand-packed literal symbol bytes).
     (defun bf_signal_bignum_division_unsupported ()
-      (let* ((sbuf (alloc-bytes 40 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 40 1)))
         (seq
          (ptr-write-u64 sbuf 0 7074434230661178734)
          (ptr-write-u64 (+ sbuf 8) 0 7594244819798353769)
          (ptr-write-u64 (+ sbuf 16) 0 8443526301179144566)
          (ptr-write-u64 (+ sbuf 24) 0 8390891584458421102)
          (ptr-write-u64 (+ sbuf 32) 0 25701)
-         (nl_alloc_symbol sbuf 34 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 34 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; TRUE (1) iff D_PTR is a supported small-fixnum divisor for the two
     ;; functions below: its Sexp tag is Int (2, never Bignum/Float) AND
@@ -13207,7 +13377,9 @@ leave symbols unresolved at link time."
     ;; argument is not a number -- not `numberp'.  Same shape as
     ;; `bf_wrong_type_listp'; the 18-byte predicate name needs three writes.
     (defun bf_wrong_type_named (offender cbuf-w0 cbuf-w1 cbuf-w2 clen)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 24 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -13216,27 +13388,25 @@ leave symbols unresolved at link time."
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 cbuf-w0)
          (ptr-write-u64 (+ cbuf 8) 0 cbuf-w1)
          (ptr-write-u64 (+ cbuf 16) 0 cbuf-w2)
          (nl_alloc_symbol cbuf clen expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_arith_error ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 8243044619624477281)
          (ptr-write-u64 (+ sbuf 8) 0 7499634)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 11 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 11 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 187: fixnum overflow at the native `+'/`-'/`*' dispatch (wf_sum/
     ;; wf_prod/wf_subtail/wf_diff below) signals `overflow-error' the same
@@ -13247,26 +13417,24 @@ leave symbols unresolved at link time."
     ;; stash (matching `(signal 'overflow-error nil)'), raise the THROW
     ;; flag, and bump the mutation epoch.
     (defun bf_signal_overflow_error ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 8606216600190023279)
          (ptr-write-u64 (+ sbuf 8) 0 125822987035949)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 14 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 14 sig-tag)
+         (wf_write_nil sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_signal_memory_full ()
-      (let* ((sbuf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1)))
         (seq
          (ptr-write-u64 sbuf 0 7362674498223301997)
          (ptr-write-u64 (+ sbuf 8) 0 7105653)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 11 268435480)
-         (wf_write_nil 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol sbuf 11 sig-tag)
+         (nl_exit_signal_w sig-tag 3)
          1)))
     ;; Doc 215 word-transport helpers (lane M2).  A WORD is a fixnum
     ;; (n<<2)|1, nil 3, t 7, or a pointer WORD: a legacy physical view or
@@ -13314,7 +13482,9 @@ leave symbols unresolved at link time."
               (wf_word_view a)))
         0))
     (defun bf_wrong_type_number_or_marker (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 24 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -13323,16 +13493,15 @@ leave symbols unresolved at link time."
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 8011185091930584430)   ; "number-o"
          (ptr-write-u64 (+ cbuf 8) 0 8243112831976549746) ; "r-marker"
          (ptr-write-u64 (+ cbuf 16) 0 28717)          ; "-p"
          (nl_alloc_symbol cbuf 18 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     )
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
@@ -14128,11 +14297,26 @@ leave symbols unresolved at link time."
             (nl_seq2 (nl_fa_slot p ds span dest cin cout dir)
                      (nl_fa_rootstack_walk (+ p 32) end ds span dest cin cout dir)))
         0))
+    (defun nl_fa_symcells (ds span dest cin cout dir)
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD root in BSS: walk
+      ;; its target as `nl_fa_rootstack_walk' walks a frame slot, so the dump's
+      ;; marking and its relocation walk agree (a BSS field has no relocation
+      ;; of its own).  The image does not store the root; see
+      ;; `nl_symcells_mirror'.
+      (let ((vw (nl_symcells_mirror)))
+        (if (= vw 0) 0
+          (if (= (logand vw 1) 1) 0
+            (if (= (logand vw 7) 2)
+                (nl_fa_cons vw ds span dest cin cout dir)
+              (if (= (if (= (logand vw 7) 6) (nl_gc_mark_vbox (- vw 6)) (nl_gc_mark_block vw)) 0) 0
+                (nl_fa_slot vw ds span dest cin cout dir)))))))
     (defun nl_fa_rootstack (ds span dest cin cout dir)
-      (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
-        (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
-                              (heap-read-u64 (data-addr nl_rootstack_top) 0)
-                              ds span dest cin cout dir)))
+      (nl_seq2
+       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+         (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
+                               (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                               ds span dest cin cout dir))
+       (nl_fa_symcells ds span dest cin cout dir)))
     (defun nl_fa_symentry (ds span dest cin cout dir)
       (if (= (heap-read-u64 268436328 0) 0) 0
         (if (= (nl_gc_mark_block (heap-read-u64 268436328 0)) 0) 0
@@ -14472,13 +14656,14 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; Doc 215 builtin word ABI: bf_garbage_collect_snapshot_w returns the result WORD (0 = signal stashed).
     (defun bf_garbage_collect_snapshot_w (env _pad)
   (let* ((state (data-addr nl_gc_typed_state)) (mark (nl_root_mark env))
-         (args-root (nl_root_reserve env)) (scratch-root (nl_root_reserve env)) (i 0))
+         (args-root (nl_root_word env)) (i 0))
     (seq
      (while (< i 80) (ptr-write-u64 state i 0) (setq i (+ i 8)))
      (ptr-write-u64 state 0 1)
      (nl_gc_collect_from_recorded_roots 0)
      (nl_gc_explicit_rearm)
-     (nl_gc_typed_interns scratch-root)
+     ;; The census walk's symbol view is scratch, made after the collection.
+     (nl_gc_typed_interns (alloc-bytes 32 8))
      (ptr-write-u64 state 0 (if (= (heap-read-u64 state 0) 3) 3 0))
      (if (= (heap-read-u64 state 0) 3)
          (seq (if (= (heap-read-u64 state 8) 0) 0
@@ -14488,17 +14673,18 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
        (let* ((snapshot-word (nl_w_vector_make 6 0))
               (args-word (nelisp_cons_construct_w snapshot-word 3 0)))
          (seq
-          ;; The argument cons roots the vector's actual WORD header.
-          (wf_word_store_out args-root args-word)
+          ;; Doc 216 S6.2: the argument cons is a WORD root; its car is the
+          ;; vector's actual WORD header.
+          (ptr-write-u64 args-root 0 args-word)
           (setq i 0)
           (while (< i 6)
-            (vector-slot-set (nl_cons_car_word args-root) i
+            (vector-slot-set (nl_cons_car_word args-word) i
                              (wf_write_int_w 0 (heap-read-u64 state (+ 32 (* i 8)))))
             (setq i (+ i 1)))
           (if (= (heap-read-u64 state 8) 0) 0
             (nl_os_free_chunk (heap-read-u64 state 8) (* (heap-read-u64 state 16) 32)))
           (ptr-write-u64 state 8 0) (ptr-write-u64 state 16 0)
-          (let* ((word (bf_n2_call_lisp_gc_w args-root env 0)))
+          (let* ((word (bf_n2_call_lisp_gc_w args-word env 0)))
             (seq (nl_root_release env mark) word))))))))
     (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
@@ -15771,37 +15957,32 @@ eval applyfn.")
             (seq (nelisp_cons_construct (nl_cons_car_word p) acc c)
                  (wf_mapcar_reverse_copy (nl_cons_cdr_ptr p) c)))
         acc))
-    (defun wf_mapcar_step (rest_slot acc_slot fn_slot env)
-      (if (= (heap-sexp-tag-word rest_slot) 7)
-          (let* ((elt (nl_cons_car_word rest_slot))
-                 (nxt 0)
-                 (mark (nl_root_mark env))
-                 (elt_slot (nl_root_reserve env))
-                 (nil_slot (nl_root_reserve env))
-                 (arglist_slot (nl_root_reserve env))
-                 (result_slot (nl_root_reserve env)))
-            (seq
-             (wf_word_store_out elt_slot elt)
-             (wf_write_nil nil_slot)
-             (nelisp_cons_construct (if (= (logand elt 1) 1) elt elt_slot) 3 arglist_slot)
-             (let* ((word (nl_apply_function_w fn_slot arglist_slot env 0)))
-               (if (/= word 0)
-                   (let* ((new_acc acc_slot))
-                     (seq
-                      ;; Keep the callback's original immediate; the root
-                      ;; view protects heap payloads while their owned copy
-                      ;; is made. Macro-generated defaults use this path.
-                      (wf_word_store_out result_slot word)
-                      (nelisp_cons_construct
-                       (if (= (logand word 1) 1) word result_slot) acc_slot new_acc)
-                      0
-                      (wf_word_store_out rest_slot (nl_cons_cdr_word rest_slot))
-                      (nl_root_release env mark)
-                      (wf_mapcar_step rest_slot acc_slot fn_slot env)))
-                 (seq (nl_root_release env mark) 1)))))
-        (if (= (heap-sexp-tag-word rest_slot) 0)
-            0
-          (bf_wrong_type_listp rest_slot))))
+    (defun wf_mapcar_step (roots env)
+      ;; Doc 216 S6.2: ROOTS is one frame of four WORD slots -- the callable
+      ;; (+0), the rest of the list (+8), the reversed accumulator (+16) and
+      ;; the current one-argument call list (+24).  One iteration conses the
+      ;; call list and the accumulator cell, and stores the new rest.
+      ;; Answers 0, or a nonzero rc after a failed call or a dotted list.
+      (let* ((rc 0) (go 1))
+        (seq
+         (while (= go 1)
+           (let* ((rest (heap-read-u64 roots 8)))
+             (if (= (nl_val_tag rest) 7)
+                 (let* ((arglist (nelisp_cons_construct_w (nl_cons_car_word rest) 3 0)))
+                   (seq
+                    (ptr-write-u64 roots 24 arglist)
+                    (let* ((word (nl_apply_function_w (wf_word_view (heap-read-u64 roots 0)) arglist env 0)))
+                      (if (/= word 0)
+                          (seq
+                           (ptr-write-u64 roots 16
+                             (nelisp_cons_construct_w word (heap-read-u64 roots 16) 0))
+                           (ptr-write-u64 roots 8
+                             (nl_cons_cdr_word (heap-read-u64 roots 8))))
+                        (seq (setq rc 1) (setq go 0))))))
+               (seq (setq go 0)
+                    (if (= (nl_val_tag rest) 0) 0
+                      (setq rc (bf_wrong_type_listp (wf_word_view rest))))))))
+         rc)))
     (defun wf_mapcar_slow_w (args env _pad)
       (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
         (seq (ptr-write-u64 buf 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8299415450919395693) (ptr-write-u64 (+ buf 16) 0 7827308) (nl_alloc_symbol buf 19 sym_slot)
@@ -15834,6 +16015,13 @@ eval applyfn.")
               (if (= (sexp-tag fn_slot) 0) 0 1)
             0)
         (seq (nl_sexp_clone_into fn fn_slot) 1)))
+    (defun wf_mapcar_resolve_fn_w (fnw env)
+      ;; The callable FNW denotes, as a WORD, or 0 when it names an unbound
+      ;; or nil function (the cases `wf_mapcar_resolve_fn' answers 0 for).
+      (if (if (= (nl_val_tag fnw) 4) 1 (if (= (nl_val_tag fnw) 16) 1 0))
+          (let* ((fw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) (wf_word_view fnw) 0)))
+            (if (or (= fw 0) (or (= fw 2) (= fw 3))) 0 fw))
+        fnw))
     (defun wf_mapcar_wrong_arity (argc)
       (let* ((bytes (alloc-bytes 8 1)) (name (alloc-bytes 32 8)))
         (seq (ptr-write-u64 bytes 0 125762605703533)
@@ -15843,31 +16031,29 @@ eval applyfn.")
       (let* ((argc (m5_list_len args 0)))
         (if (/= argc 2)
             (nl_abi_fail (wf_mapcar_wrong_arity argc) 0)
-          (let* ((fn (wf_arg_ptr args 0))
-                 (sq (wf_arg_ptr args 1)))
-            (if (or (= fn 0) (= sq 0))
+          (let* ((fnw (wf_arg_word args 0))
+                 (sqw (wf_arg_word args 1)))
+            (if (or (= fnw 0) (= sqw 0))
                 (nl_abi_fail (wf_mapcar_wrong_arity argc) 0)
-              (let* ((sqtag (sexp-tag sq)))
+              (let* ((sqtag (nl_val_tag sqw)))
                 (if (= sqtag 0)
                     3
                   (if (= sqtag 7)
                       (let* ((mark (nl_root_mark env))
-                             (fn_slot (nl_root_reserve env))
-                             (rest_slot (nl_root_reserve env))
-                             (acc_slot (nl_root_reserve env))
-                             (ok (wf_mapcar_resolve_fn fn env fn_slot)))
-                        (if (= ok 1)
+                             (roots (nl_root_words env 4))
+                             (callable (wf_mapcar_resolve_fn_w fnw env)))
+                        (if (/= callable 0)
                             (seq
-                             (wf_copy32 rest_slot sq)
-                             (wf_write_nil acc_slot)
-                             (let* ((rc (wf_mapcar_step rest_slot acc_slot fn_slot env)))
+                             (ptr-write-u64 roots 0 callable)
+                             (ptr-write-u64 roots 8 sqw)
+                             (let* ((rc (wf_mapcar_step roots env)))
                                (if (= rc 0)
                                    ;; The reversed accumulator is the result
                                    ;; WORD; nothing allocates before return.
-                                   (let* ((res (wf_mapcar_reverse_copy acc_slot 3)))
+                                   (let* ((res (wf_mapcar_reverse_copy (heap-read-u64 roots 16) 3)))
                                      (seq (nl_root_release env mark) res))
                                  (seq (nl_root_release env mark) (nl_abi_fail rc 0)))))
-                          (seq (nl_cons_stash_void_function env fn)
+                          (seq (nl_cons_stash_void_function env (wf_word_view fnw))
                                (nl_root_release env mark)
                                (nl_abi_fail 1 0))))
                     (wf_mapcar_slow_w args env 0)))))))))
@@ -16063,13 +16249,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; `memory-full' is the ordinary condition for a frame that cannot fit
       ;; in the registered root region. The caller releases partial reserves
       ;; before entering here, so symbol construction has normal root space.
-      (let* ((sbuf (alloc-bytes 16 1)))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 16 1)))
         (seq (ptr-write-u64 sbuf 0 7362674498223301997)
              (ptr-write-u64 (+ sbuf 8) 0 7105653)
-             (nl_alloc_symbol sbuf 11 268435480)
-             (wf_write_nil 268435512)
-             (ptr-write-u64 268435472 0 1)
-             (atomic-fetch-add 268435544 1)
+             (nl_alloc_symbol sbuf 11 sig-tag)
+             (nl_exit_signal_w sig-tag 3)
              1)))
     (defun wf_bytecode_error (env opcode offset out)
       (let* ((buf (alloc-bytes 56 1))
@@ -16805,23 +16990,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
             0)
         2))
     (defun nl_native_handlers_pop (env ticket state)
-      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env))
-             (tail (nl_root_reserve env)) (rc 2))
-        (if (= (nl_val_tag (nl_vector_slot_word state 4)) 7)
-            (seq (wf_word_store_out entry (nl_cons_car_word (nl_vector_slot_word state 4)))
-                 (wf_word_store_out tail (nl_cons_cdr_word (nl_vector_slot_word state 4)))
-                 (setq rc (nl_native_handlers_retire env ticket entry))
-                 (if (= rc 0) (vector-slot-set state 4 tail) 0)) 0)
-        (seq (nl_root_release env mark) rc)))
+      ;; Doc 216 S6.2: the handler list is reachable from STATE's slot 4
+      ;; until it is replaced by its cdr, so no root is needed.
+      (let* ((lst (nl_vector_slot_word state 4)) (rc 2))
+        (seq
+         (if (= (nl_val_tag lst) 7)
+             (seq (setq rc (nl_native_handlers_retire env ticket (nl_cons_car_word lst)))
+                  (if (= rc 0) (vector-slot-set state 4 (nl_cons_cdr_word lst)) 0)) 0)
+         rc)))
     (defun nl_native_handlers_cross (env ticket state all)
-      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env)) (go 1) (rc 0))
+      (let* ((go 1) (rc 0))
         (seq
          (while (and (= go 1) (= rc 0) (= (nl_val_tag (nl_vector_slot_word state 4)) 7))
-           (seq (wf_word_store_out entry (nl_cons_car_word (nl_vector_slot_word state 4)))
-                (if (or (= all 1) (= (bf_eq2 (vector-ref-ptr entry 4) (vector-ref-ptr state 3)) 1))
-                    (setq rc (nl_native_handlers_pop env ticket state))
-                  (setq go 0))))
-         (nl_root_release env mark) rc)))
+           (let* ((entry (nl_cons_car_word (nl_vector_slot_word state 4))))
+             (if (or (= all 1) (= (bf_eq2 (vector-ref-ptr entry 4) (vector-ref-ptr state 3)) 1))
+                 (setq rc (nl_native_handlers_pop env ticket state))
+               (setq go 0))))
+         rc)))
     (defun nl_native_handlers_land_v2 (env ticket s a r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (state (nl_root_pin_slot_v2 env ticket s))
@@ -16939,7 +17124,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
                          (event (+ roots 416)) (payload (+ roots 448))
                          (saved-tag (+ roots 480)) (saved-value (+ roots 512))
-                         (saved-kind 0) (cleanup-rc 0) (rc 2)
+                         (saved-kind 0) (saved-tag-w 0) (saved-value-w 0) (cleanup-rc 0) (rc 2)
                          (direct 0) (event-count 0) (binding-count 0)
                          (entry 0) (address 0) (hash 0))
                     (seq
@@ -17164,16 +17349,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (seq
                                         (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_word event)))
                                         (setq saved-kind (heap-read-u64 268435472 0))
-                                        (wf_bytecode_copy saved-tag 268435480)
-                                        (wf_bytecode_copy saved-value 268435512)
+                                        ;; The pending exit's WORDs, rooted in the pinned
+                                        ;; slots while the cleanup runs (GNU's unbind_to
+                                        ;; under unwind_to_catch keeps them in the catch).
+                                        (setq saved-tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+                                        (setq saved-value-w (heap-read-u64 (data-addr nl_exit_values) 8))
+                                        (wf_bytecode_copy saved-tag (if (= saved-tag-w 0) 3 saved-tag-w))
+                                        (wf_bytecode_copy saved-value (if (= saved-value-w 0) 3 saved-value-w))
                                         (ptr-write-u64 268435472 0 0)
                                         ;; Payloads are Lisp wrappers, so the
                                         ;; sole native boundary stays APPLY;
                                         ;; forms evaluation belongs to Lisp.
                                         (setq cleanup-rc (wf_bytecode_call_gateway env payload roots 1 0 scratch))
                                         (if (= cleanup-rc 0)
-                                            (seq (wf_bytecode_copy 268435480 saved-tag)
-                                                 (wf_bytecode_copy 268435512 saved-value)
+                                            (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) saved-tag-w)
+                                                          (= (heap-read-u64 (data-addr nl_exit_values) 8) saved-value-w))
+                                                     0
+                                                   (seq (nl_val_clone_into saved-tag (data-addr nl_exit_values))
+                                                        (nl_val_clone_into saved-value (+ (data-addr nl_exit_values) 8))))
                                                  (ptr-write-u64 268435472 0 saved-kind))
                                           (setq rc 1)))
                                      (seq
@@ -17251,8 +17444,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (let* ((kind (heap-read-u64 268435472 0)))
                     (if (or (= kind 1) (= kind 2))
                         (seq
-                         (wf_bytecode_copy result-slot 268435480)
-                         (wf_bytecode_copy value-slot 268435512)
+                         (wf_bytecode_copy result-slot (nl_exit_tag_w))
+                         (wf_bytecode_copy value-slot (nl_exit_val_w))
                          (wf_write_int status-slot kind)
                          1)
                       2))
@@ -17417,17 +17610,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (result (nl_root_reserve env))
              (cursor (nl_root_reserve env))
              (nil-slot (nl_root_reserve env))
-             (saved-tag (nl_root_reserve env))
-             (saved-value (nl_root_reserve env))
              (function-cell (nl_root_reserve env))
              (form (nl_root_reserve env))
              (saved-flag (heap-read-u64 268435472 0))
+             ;; The pending exit's two WORDs, rooted for the cleanup.
+             (saved (nl_exit_save env))
              (lookup-rc 1)
              (is-function 0)
              (rc 0))
+        (if (= saved 0)
+            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
         (seq
-         (wf_bytecode_copy saved-tag 268435480)
-         (wf_bytecode_copy saved-value 268435512)
          (wf_write_nil args)
          (wf_write_nil nil-slot)
          (wf_write_nil lookup-args)
@@ -17467,12 +17660,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; A normally returning cleanup preserves the pending exit.  An
          ;; exit raised by the cleanup remains in the shared stash and wins.
          (if (= rc 0)
-             (seq (wf_bytecode_copy 268435480 saved-tag)
-                  (wf_bytecode_copy 268435512 saved-value)
+             (seq (nl_exit_restore saved)
                   (ptr-write-u64 268435472 0 saved-flag))
            0)
          (nl_root_release env mark)
-         rc)))
+         rc))))
     (defun wf_bytecode_legacy (env mem sp opcode argc)
       ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
       ;; The rooted registry precedes user code; never use a public cell.
@@ -17708,9 +17900,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (c5 (nl_cons_cdr_word c4))
                   (dest (wf_bytecode_w_int (nl_cons_car_word c1))))
              (if (if (>= dest 0)
-                     (if (= (heap-read-u64 268435480 0) 0)
+                     (if (= (nl_val_tag (nl_exit_tag_w)) 0)
                          0
-                       (wf_bytecode_w_eqv 268435480 (heap-read-u64 (heap-sexp-payload cursor) 0)))
+                       (wf_bytecode_w_eqv (nl_exit_tag_w) (heap-read-u64 (heap-sexp-payload cursor) 0)))
                    0)
                  (seq
                   (setq destination dest)
@@ -17762,7 +17954,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (if (< encoded 0)
                  (seq
                   (wf_bytecode_w_load spec-slot (heap-read-u64 (heap-sexp-payload cursor) 0))
-                  (if (if (= (wf_bytecode_condition_matches env 268435480 spec-slot) 1)
+                  (if (if (= (wf_bytecode_condition_matches env (nl_exit_tag_w) spec-slot) 1)
                           (= (heap-read-u64 268435472 0) 1) 0)
                       (seq (setq destination (- (- encoded) 1))
                            (setq saved-sp (wf_bytecode_w_int (nl_cons_car_word c2)))
@@ -17784,7 +17976,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (wf_write_int resume-sp saved-sp)
                    (wf_write_int resume-bindings new-bindings)
                    ;; Bind the full condition object (SIGNAL . DATA).
-                   (nelisp_cons_construct 268435480 268435512 error-object)
+                   (nl_exit_condition_into error-object)
                    (wf_bytecode_w_store mem saved-sp error-object)
                    0)
                 (seq (wf_write_int resume-dest -2)
@@ -17809,7 +18001,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                  resume-dest resume-sp
                                                  resume-bindings pool))
                     (if (= caught 1)
-                        (wf_bytecode_w_store mem (sexp-int-unwrap resume-sp) 268435512) 0))
+                        (wf_bytecode_w_store mem (sexp-int-unwrap resume-sp) (nl_exit_val_w)) 0))
              (if (= kind 1)
                  (wf_bytecode_try_signal env mem handlers bindings unwinds
                                          resume-dest resume-sp resume-bindings pool)
@@ -17847,7 +18039,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq (wf_write_nil out) 0)
             (bf_wrong_type_listp value)))))
     (defun wf_bytecode_circular_list (env value)
-      (let* ((name (alloc-bytes 16 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (name (alloc-bytes 16 1))
              (mark (nl_root_mark env))
              (nil-slot (nl_root_reserve env))
              (args (nl_root_reserve env)))
@@ -17858,12 +18052,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; is only the signal data list. Keeping the whole condition object
          ;; in VAL leaves TAG stale, so an enclosing condition-case cannot
          ;; match this error.
-         (nl_alloc_symbol name 13 268435480)
+         (nl_alloc_symbol name 13 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct value nil-slot args)
-         (wf_bytecode_copy 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (wf_bytecode_copy sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          (nl_root_release env mark)
          1)))
     (defun wf_bytecode_nreverse_list (env value out)
@@ -21768,7 +21961,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; boxed, no variable is looked up by name and no argument list is
     ;; consed on the fast paths.  Opcodes (vector elements; operands follow):
     ;;  1 PUSH elem   2 LOAD slot   3 STORE slot   8 JMP pc   9 JMPNIL pc
-    ;;  11 POP   12 DUP   0 HALT
+    ;;  11 POP   12 DUP   0 HALT   19 VARREF sym (a global variable's value)
     ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
     ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
     ;;  16 CALL sym argc
@@ -22147,13 +22340,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; GNU's eval_sub keeps ARGS_LEFT in a scanned local (eval.c:2686-2691):
     ;; a form that cuts its own argument list cannot free the rest, and N
     ;; bounds the walk if one lengthens it.  A non-cons tail ends it early.
+    ;; A variable is read in place, as GNU's eval_sub returns a symbol's
+    ;; lexical or global value before it counts depth or records a frame
+    ;; (eval.c:2585-2599); self-evaluating scalars and keywords are their
+    ;; own value.  Everything else goes through the evaluator's entry.
     (defun m5_fx_eval_forms (tail env base n)
-      (let* ((cur tail) (k 0) (rc 0) (w 0) (cslot (+ base (* n 8))))
+      (let* ((cur tail) (k 0) (rc 0) (w 0) (tag 0) (cslot (+ base (* n 8))))
         (seq
          (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
            (seq (ptr-write-u64 cslot 0 cur)
                 (setq w (nl_cons_car_word cur))
-                (let* ((ew (if (< (nl_val_tag w) 4) w (nelisp_eval_call_w w env 0))))
+                (setq tag (nl_val_tag w))
+                (let* ((ew (if (< tag 4) w
+                             (if (if (or (= tag 4) (= tag 16)) (= (nl_kw_is_keyword w) 0) 0)
+                                 (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
+                               (nelisp_eval_call_w w env 0)))))
                   (if (= ew 0) (setq rc 1)
                     (ptr-write-u64 (+ base (* k 8)) 0 ew)))
                 (setq k (+ k 1))
@@ -22246,7 +22447,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (if (= status -2) (nl_abi_fail (bf_wrong_type_arrayp code) 0) 0)))))
              (seq (nl_root_release env mark) word))))))
     (defun m5_fx_run (code nlocals env out args nparams argw wout)
-      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (nl_frame_stack_limit env 0)))
+      (let* ((rec (heap-read-u64 (+ env 96) 0)) (rec_max (nl_eval_depth_limit env (+ rec 2))))
         (if (>= (+ rec 2) rec_max)
             (nelisp_eval_call_stash_excessive_lisp_nesting env rec_max)
           (seq (ptr-write-u64 (+ env 96) 0 (+ rec 2))
@@ -22370,6 +22571,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (= op 1)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            ;; 19 VARREF sym: GNU's Bvarref (bytecode.c:636-648) pushes the
+            ;; variable's value read directly, Fsymbol_value only off the
+            ;; plain path; the bytecode VM's varref entry does both, and
+            ;; signals void-variable.  No call of `symbol-value' the
+            ;; function, so no call-out, lookup of it, or kind decode.
+            (if (= op 19)
+                (seq (setq r (wf_bytecode_w_varref env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) resw 0))
+                     (if (/= r 0) (setq status r)
+                       (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
+                            (setq sp (+ sp 1)) (setq pc (+ pc 2)))))
             (if (= op 9)
                 (seq (setq sp (- sp 1))
                      (if (= (nl_val_tag (heap-read-u64 (+ stk (* sp 8)) 0)) 0)
@@ -22434,7 +22645,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (if (/= r 0) (setq status r)
                                   (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
-                (setq status -2))))))))))))))))
+                (setq status -2)))))))))))))))))
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed. Checked root failure
@@ -23455,7 +23666,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_invalid_byte_code_object (out)
       (nl_abi_word_to_rc (bf_invalid_byte_code_object_w 0) out))
     (defun bf_invalid_byte_code_object_w (_pad)
-      (let* ((bytes (alloc-bytes 24 1)) (message (alloc-bytes 32 8))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (bytes (alloc-bytes 24 1)) (message (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8)) (args (alloc-bytes 32 8)))
         (seq (ptr-write-u64 bytes 0 2334106421097295433)
              (ptr-write-u64 (+ bytes 8) 0 7237112172834486626)
@@ -23465,10 +23678,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (nelisp_cons_construct message nil-slot args)
              (let ((tag (alloc-bytes 8 1)))
            (seq (ptr-write-u64 tag 0 491496043109)
-                (nl_alloc_symbol tag 5 268435480)))
-         (wf_copy32 268435512 args)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+                (nl_alloc_symbol tag 5 sig-tag)))
+         (wf_copy32 sig-val args)
+         (nl_exit_signal_w sig-tag sig-val)
          (nl_abi_fail 1 0))))
     (defun bf_make_byte_code_w (args _pad)
       (let* ((count (bf_byte_code_arg_count args 0))
@@ -23701,7 +23913,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; this one guards it.  Verified against host Emacs: `(make-char-table)'
     ;; signals exactly `(wrong-number-of-arguments make-char-table 0)'.
     (defun bf_wrong_number_of_args_make_char_table ()
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (zero (alloc-bytes 32 8))
@@ -23712,16 +23926,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445) ; "mber-of-"
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137) ; "argument"
          (ptr-write-u64 (+ wbuf 24) 0 115) ; "s"
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 7018969065883132269) ; "make-cha"
          (ptr-write-u64 (+ fbuf 8) 0 28548142445374834) ; "r-table"
          (nl_alloc_symbol fbuf 15 fsym)
          (wf_write_int zero 0)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct zero nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Match Emacs's prevention of parent cycles.  The sparse map walker
     ;; follows parent boxes directly, so keep this invariant at mutation time.
@@ -23923,7 +24136,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; the predicate name against host Emacs: `(char-table-parent 5)' signals
     ;; `(wrong-type-argument char-table-p 5)').
     (defun bf_wrong_type_char_table_p (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -23932,15 +24147,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319) ; "wrong-ty"
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488) ; "pe-argum"
          (ptr-write-u64 (+ wbuf 16) 0 7630437) ; "ent"
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7089075026999208035) ; "char-tab"
          (ptr-write-u64 (+ cbuf 8) 0 1882023276) ; "le-p"
          (nl_alloc_symbol cbuf 12 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
     ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
@@ -24630,13 +24844,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; arms sit past the baked-19 cutoff) still call it, now cross-unit.
     ;; Doc 215 word ABI: `signal' only stashes and answers 0.
     (defun bf_signal_w (args _pad)
-      (let* ((sym (wf_arg_ptr args 0))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sym (wf_arg_ptr args 0))
              (data (wf_arg_ptr args 1)))
         (seq
-         (nl_alloc_symbol (heap-sexp-data sym) (heap-sexp-length sym) 268435480)
-         (bf_sig_copy32 268435512 data)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nl_alloc_symbol (heap-sexp-data sym) (heap-sexp-length sym) sig-tag)
+         (bf_sig_copy32 sig-val data)
+         (nl_exit_signal_w sig-tag sig-val)
          0)))
     (defun bf_signal (args out)
       (nl_abi_word_to_rc (bf_signal_w args 0) out))
@@ -24655,12 +24870,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_error_w (args _pad)
     (nl_abi_fail (seq
 
-      (let* ((ebuf (alloc-bytes 8 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (ebuf (alloc-bytes 8 1))
              (fmt (nl_cons_car_ptr args))
              (tg (sexp-tag fmt)))
         (seq
          (ptr-write-u64 ebuf 0 491496043109)              ; "error" packed LE
-         (nl_alloc_symbol ebuf 5 268435480)               ; TAG slot <- Symbol "error"
+         (nl_alloc_symbol ebuf 5 sig-tag)               ; TAG slot <- Symbol "error"
          (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
              (let* ((ms (alloc-bytes 32 8))
                     (msg (alloc-bytes 32 8))
@@ -24669,27 +24886,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (m5_fmt_loop ms fmt 0 (m5_strlen fmt) (nl_cons_cdr_word args))
                     (mut-str-finalize ms msg)
                     (wf_write_nil nil-slot)
-                    (nelisp_cons_construct msg nil-slot 268435512)))
-           (bf_sig_copy32 268435512 args))
-         (ptr-write-u64 268435472 0 1)                    ; raise flag
-         (atomic-fetch-add 268435544 1)
+                    (nelisp_cons_construct msg nil-slot sig-val)))
+           (bf_sig_copy32 sig-val args))
+         (nl_exit_signal_w sig-tag sig-val)
          1))
     ) 0))
     (defun bf_error (args out)
       (nl_abi_word_to_rc (bf_error_w args 0) out))
     (defun bf_raw_byte_unrepresentable ()
-      (let* ((sbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 32 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 8227355735268025710)
          (ptr-write-u64 (+ sbuf 8) 0 3271148769041545057)
          (ptr-write-u64 (+ sbuf 16) 0 8315178114073390709)
          (ptr-write-u64 (+ sbuf 24) 0 28548142445391461)
-         (nl_alloc_symbol sbuf 31 268435480)
+         (nl_alloc_symbol sbuf 31 sig-tag)
          (wf_write_nil nil-slot)
-         (bf_sig_copy32 268435512 nil-slot)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (bf_sig_copy32 sig-val nil-slot)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_cannot_convert_unibyte_w (index _pad)
@@ -24780,7 +24997,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (bf_error_w head 0)))
     ) 0))
     (defun bf_wrong_type_consp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24789,19 +25008,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319) ; "wrong-ty"
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488) ; "pe-argum"
          (ptr-write-u64 (+ wbuf 16) 0 7630437) ; "ent"
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 482972954467) ; "consp"
          (nl_alloc_symbol cbuf 5 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Same shape as `bf_wrong_type_consp', for the two predicates `length'
     ;; needs to name.
     (defun bf_wrong_type_listp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24810,17 +25030,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 482990057836) ; "listp"
          (nl_alloc_symbol cbuf 5 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_sequencep (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24829,22 +25050,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7305804402566194547) ; "sequence"
          (ptr-write-u64 (+ cbuf 8) 0 112)           ; "p"
          (nl_alloc_symbol cbuf 9 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; (args-out-of-range ARRAY INDEX), the error Emacs raises for an index
     ;; outside a sequence.  `bf_aref' answered nil instead, so a read past
     ;; the end was indistinguishable from a slot that genuinely held nil,
     ;; and a `condition-case' on `args-out-of-range' never fired.
     (defun bf_wrong_type_stringp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24853,17 +25075,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 31638921304765555)  ; "stringp"
          (nl_alloc_symbol cbuf 7 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_arrayp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -24872,14 +25095,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 123666628244065)
          (nl_alloc_symbol cbuf 6 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; bf_wrong_type_named, bf_arith_error, bf_wrong_type_int_or_marker,
     ;; bf_first_non_integer and bf_wrong_type_number_or_marker moved to
@@ -24898,31 +25120,33 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Emacs refuses it up front rather than storing a definition nothing
     ;; can call.
     (defun bf_cyclic_function (offender)
-      (let* ((sbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 32 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 7362650270261803363)
          (ptr-write-u64 (+ sbuf 8) 0 3273676477859851893)
          (ptr-write-u64 (+ sbuf 16) 0 8386658473162862185)
          (ptr-write-u64 (+ sbuf 24) 0 7237481)
-         (nl_alloc_symbol sbuf 27 268435480)
+         (nl_alloc_symbol sbuf 27 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_setting_constant (offender)
-      (let* ((sbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 sbuf 0 3271705053512361331)
          (ptr-write-u64 (+ sbuf 8) 0 8389750308618530659)
          (ptr-write-u64 (+ sbuf 16) 0 0)
-         (nl_alloc_symbol sbuf 16 268435480)
+         (nl_alloc_symbol sbuf 16 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_type_numberp (offender)
       (bf_wrong_type_named offender 31650977160197486 0 0 7))
@@ -24942,7 +25166,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; dereferencing an argument slot.  Keep the condition data in the same
     ;; shape as the other standalone errors: (FUNCTION ARGCOUNT).
     (defun bf_wrong_number_of_args_bool_vector (argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (count (alloc-bytes 32 8))
@@ -24953,19 +25179,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 8029744607739470189)
          (ptr-write-u64 (+ fbuf 8) 0 8245937412991495532)
          (nl_alloc_symbol fbuf 16 fsym)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_number_of_args_bool_vector_p (argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (fbuf (alloc-bytes 16 1))
              (fsym (alloc-bytes 32 8))
              (count (alloc-bytes 32 8))
@@ -24976,16 +25203,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (ptr-write-u64 fbuf 0 7162260719867490146)
          (ptr-write-u64 (+ fbuf 8) 0 481798811508)
          (nl_alloc_symbol fbuf 13 fsym)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct fsym data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct fsym data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; ONE walk, in argument order: each byte is type-checked and then
     ;; range-checked before the next is looked at, because Emacs reports
@@ -25004,7 +25230,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (wf_word_view a)))
         0))
     (defun bf_args_out_of_range_byte (offender)
-      (let* ((sbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (sbuf (alloc-bytes 24 1))
              (lo (alloc-bytes 32 8))
              (hi (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -25014,15 +25242,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 sbuf 0 8391735721675158113)
          (ptr-write-u64 (+ sbuf 8) 0 7453001576360603437)
          (ptr-write-u64 (+ sbuf 16) 0 101)
-         (nl_alloc_symbol sbuf 17 268435480)
+         (nl_alloc_symbol sbuf 17 sig-tag)
          (wf_write_int lo 0)
          (wf_write_int hi 255)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct hi nil-slot t2)
          (nelisp_cons_construct lo t2 t1)
-         (nelisp_cons_construct offender t1 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct offender t1 sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; Measured on Emacs 30.1, and POSITION-dependent rather than
     ;; type-dependent: the FIRST argument names `integer-or-marker-p'
@@ -25078,7 +25305,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (bf_wrong_type_number_or_marker nn)))
           (bf_wrong_type_int_or_marker (nl_cons_car_word args)))))
     (defun bf_wrong_type_symbolp (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -25087,14 +25316,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 31644423040104819) ; "symbolp"
          (nl_alloc_symbol cbuf 7 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; `substring' names THREE things in its error data -- the sequence, FROM
     ;; and TO -- where `aref' names two, and TO is reported as it was passed
@@ -25184,7 +25412,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1
           (if (= tg 15) 1 (if (= tg 8) 1 (if (= tg 10) 1 0))))))))
     (defun bf_wrong_type_hash_table (offender)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
              (expected (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
@@ -25193,18 +25423,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8751669898145395319)
          (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
          (ptr-write-u64 (+ wbuf 16) 0 7630437)
-         (nl_alloc_symbol wbuf 19 268435480)
+         (nl_alloc_symbol wbuf 19 sig-tag)
          (ptr-write-u64 cbuf 0 7089075026832613736)   ; "hash-tab"
          (ptr-write-u64 (+ cbuf 8) 0 1882023276)      ; "le-p"
          (nl_alloc_symbol cbuf 12 expected)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
-         (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct expected data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_args_out_of_range3 (arr a b)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8))
              (t3 (alloc-bytes 32 8))
              (t2 (alloc-bytes 32 8)))
@@ -25212,28 +25443,28 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 wbuf 0 8391735721675158113)   ; "args-out"
          (ptr-write-u64 (+ wbuf 8) 0 7453001576360603437) ; "-of-rang"
          (ptr-write-u64 (+ wbuf 16) 0 101)            ; "e"
-         (nl_alloc_symbol wbuf 17 268435480)
+         (nl_alloc_symbol wbuf 17 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct b nil-slot t3)
          (nelisp_cons_construct a t3 t2)
-         (nelisp_cons_construct arr t2 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct arr t2 sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_args_out_of_range (arr idx-box)
-      (let* ((wbuf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8))
              (tail (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 wbuf 0 8391735721675158113)  ; "args-out"
          (ptr-write-u64 (+ wbuf 8) 0 7453001576360603437) ; "-of-rang"
          (ptr-write-u64 (+ wbuf 16) 0 101)           ; "e"
-         (nl_alloc_symbol wbuf 17 268435480)
+         (nl_alloc_symbol wbuf 17 sig-tag)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct idx-box nil-slot tail)
-         (nelisp_cons_construct arr tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct arr tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     ;; length, with the type checks Emacs makes.  `m5_length' answered a
     ;; number for anything: an improper list got the count of its cons cells
@@ -25717,7 +25948,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((nl_abi_w (bf_require_search_w feature dirs 0)))
         (if (= nl_abi_w 3) 0 (seq (nl_abi_word_to_rc nl_abi_w out) 1))))
     (defun bf_require_file_missing (requested)
-      (let* ((buf (alloc-bytes 16 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 16 1))
              (message-bytes (alloc-bytes 24 1))
              (reason-bytes (alloc-bytes 32 1))
              (message (alloc-bytes 32 8))
@@ -25729,7 +25962,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq
          (ptr-write-u64 buf 0 8316298228658891110) ; "file-mis"
          (ptr-write-u32 (+ buf 8) 0 1735289203)    ; "sing"
-         (nl_alloc_symbol buf 12 268435480)
+         (nl_alloc_symbol buf 12 sig-tag)
          ;; GNU Emacs condition data is a proper three-element list.  The old
          ;; dotted `(file-missing . FEATURE)' made `error-message-string'
          ;; replace the useful load failure with `(wrong-type-argument listp
@@ -25749,29 +25982,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil nil-slot)
          (nelisp_cons_construct name nil-slot name-tail)
          (nelisp_cons_construct reason name-tail reason-tail)
-         (nelisp_cons_construct message reason-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct message reason-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_read_syntax_error (what)
       ;; Raised when the reader could not read a form and had not reached the
       ;; end of the input.  Before this the two were one return code, so the
       ;; loops below stopped on both and reported success on both.
-      (let* ((buf (alloc-bytes 24 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (buf (alloc-bytes 24 1))
              (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 buf 0 3270855143590358633)  ; "invalid-"
          (ptr-write-u64 (+ buf 8) 0 7960520455148889458) ; "read-syn"
          (ptr-write-u64 (+ buf 16) 0 7889268)       ; "tax"
-         (nl_alloc_symbol buf 19 268435480)
+         (nl_alloc_symbol buf 19 sig-tag)
          ;; Condition data is always a proper list.  Stashing WHAT directly
          ;; made `(error-message-string e)' treat a source string as a cons
          ;; and replace the useful reader error with `(wrong-type-argument
          ;; listp WHAT)'.
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct what nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct what nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_require_file_readable_p (file)
       (let* ((cpath (nl_bi_make_cpath file))
@@ -26498,23 +26731,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; in this runtime is a flag plus a stash (@268435472), not a stack
     ;; unwind, so `bf_load_readable' returns a code either way and the restore
     ;; below always runs.
-    (defun bf_load_with_lfn_rooted_w (args env old-root loop-root)
+    (defun bf_load_with_lfn_rooted_w (args env old-root)
+  ;; Doc 216 S6.2: OLD-ROOT is a WORD root slot (the caller's frame) holding
+  ;; `load-file-name''s old value across the nested load.  The loop's value
+  ;; view is recorded by the GC context, so it is an arena box made here.
   (let* ((sym (alloc-bytes 32 8)))
     (seq
      (bf_load_file_name_symbol sym)
-     ;; OLD-ROOT is a stable physical input to the setter after nested loads.
-     (if (= (nelisp_env_lookup_value env (+ env 32) sym old-root) 0) 0
-       (wf_write_nil old-root))
+     (ptr-write-u64 old-root 0 (bf_read_load_file_name_w env 0))
      (nl_env_set_value env sym (wf_arg_ptr args 0))
-     (let* ((word (bf_load_readable_rooted_w args env loop-root)))
-       (let* ((restore-name (alloc-bytes 32 8)))
-         (seq
-          (bf_load_file_name_symbol restore-name)
-          (nl_env_set_value env restore-name old-root)
-          word))))))
-    (defun bf_load_inner_rooted_w (args env old-root loop-root)
+     (let* ((out (alloc-bytes 32 8)))
+       (seq
+        (wf_write_nil out)
+        (let* ((word (bf_load_readable_rooted_w args env out)))
+          (let* ((restore-name (alloc-bytes 32 8)))
+            (seq
+             (bf_load_file_name_symbol restore-name)
+             (nl_env_set_value env restore-name (wf_word_view (heap-read-u64 old-root 0)))
+             word))))))))
+    (defun bf_load_inner_rooted_w (args env old-root)
   (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
-      (bf_load_with_lfn_rooted_w args env old-root loop-root)
+      (bf_load_with_lfn_rooted_w args env old-root)
     (bf_load_searched_w args env 0)))
     (defun nl_driver_eval_word_with_recorded_roots (form env result out pool src cursor bsym state)
   (let* ((depth-before (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
@@ -26563,19 +26800,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))))))))
      (if (= more 3) (seq (bf_read_syntax_error src) 0)
        (if (= more 2) 0 (nl_cons_cdr_word state))))))
-    (defun bf_eval_source_string_inner_rooted_w (args env result out state)
+    (defun bf_eval_source_string_inner_rooted_w (args env state)
+  ;; Doc 216 S6.2: STATE is a WORD root slot holding the loop's state cons.
+  ;; The parse result and the value view are recorded by the GC context, like
+  ;; the cursor, pool and BSYM, so they are arena boxes made here.
   (let* ((src (wf_arg_ptr args 0)) (cursor (alloc-bytes 32 8))
          (cap (let* ((n (* 4 (m5_strlen src))))
                 (if (< n 256) 256 (if (> n 32768) 32768 n))))
          (pool (alloc-bytes (* cap 32) 8)) (bsym (alloc-bytes 32 8))
+         (result (alloc-bytes 32 8)) (out (alloc-bytes 32 8))
+         (statew (nelisp_cons_construct_w 3 3 0))
          (prevcap (heap-read-u64 268436448 0)))
     (seq
-     (wf_write_nil bsym)
+     (wf_write_nil bsym) (wf_write_nil result) (wf_write_nil out)
      (ptr-write-u64 268435624 0 0)
      (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-     (wf_word_store_out state (nelisp_cons_construct_w 3 3 0))
+     (ptr-write-u64 state 0 statew)
      (ptr-write-u64 268436448 0 cap)
-     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym state)))
+     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym statew)))
        (seq
         (if (/= word 0) (wf_dirty) 0)
         (ptr-write-u64 268436448 0 prevcap)
@@ -26592,9 +26834,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_load_with_lfn_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_with_lfn_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
-         (loop-root (nl_root_reserve env))
-         (word (bf_load_with_lfn_rooted_w args env old-root loop-root)))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_word env))
+         (word (bf_load_with_lfn_rooted_w args env old-root)))
     (seq (nl_root_release env mark) word)))
     ;; Non-nil when the name carries its own root, so `load-path' must not be
     ;; consulted: a leading `/' or `\\', or a `X:' drive prefix.
@@ -26668,7 +26909,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_load_current_buffer_w env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_current_buffer_w (env _pad)
-  (let* ((mark (nl_root_mark env)) (function-root (nl_root_reserve env))
+  (let* ((mark (nl_root_mark env)) (function-root (nl_root_word env))
          (buf (alloc-bytes 16 1)))
     (seq
      (ptr-write-u64 buf 0 3275364210996049251)
@@ -26677,8 +26918,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (function-word (nelisp_env_lookup_function_w env (+ env 64) sym 0))
             (word (if (or (= function-word 0) (= function-word 2)) 0
                     (seq
-                     (wf_word_store_out function-root function-word)
-                     (nl_apply_function_w function-root (wf_word_view 3) env 0)))))
+                     (ptr-write-u64 function-root 0 function-word)
+                     (nl_apply_function_w (wf_word_view function-word) (wf_word_view 3) env 0)))))
        (seq (nl_root_release env mark) word)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_load_restore_buffer_w (env saved _pad)
@@ -26716,28 +26957,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_w (args env _pad)
   ;; Reserve before creating the lexical file scope (Doc 215 R3).
-  (let* ((mark (nl_root_mark env)) (saved-root (nl_root_reserve env))
-         (old-root (nl_root_reserve env)) (loop-root (nl_root_reserve env))
-         (args-root (nl_root_reserve env)) (saved 0) (word 0))
+  ;; Doc 216 S6.2: one frame of three WORD roots -- the argument list (+0),
+  ;; the saved current-buffer list (+8) and `load-file-name''s old value
+  ;; (+16).
+  (let* ((mark (nl_root_mark env)) (roots (nl_root_words env 3))
+         (saved 0) (word 0))
     (seq
-     (wf_word_store_out args-root args)
+     (ptr-write-u64 roots 0 args)
      (setq saved (bf_load_current_buffer_w env 0))
      (if (/= saved 0)
-         (wf_word_store_out saved-root (nelisp_cons_construct_w saved 3 0)) 0)
+         (ptr-write-u64 roots 8 (nelisp_cons_construct_w saved 3 0)) 0)
      (nelisp_frame_scope_push (+ env 32))
      (setq word (nelisp_eval_call_root_done
-                 (bf_load_inner_rooted_w args-root env old-root loop-root) env))
+                 (bf_load_inner_rooted_w args env (+ roots 16)) env))
      (if (and (/= saved 0) (/= word 0))
-         (bf_load_restore_buffer_w env (nl_cons_car_word saved-root) 0) 0)
+         (bf_load_restore_buffer_w env (nl_cons_car_word (heap-read-u64 roots 8)) 0) 0)
      (nl_root_release env mark)
      word)))
     (defun bf_load_inner (args env out)
   (nl_abi_word_to_rc (bf_load_inner_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_load_inner_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (old-root (nl_root_reserve env))
-         (loop-root (nl_root_reserve env))
-         (word (bf_load_inner_rooted_w args env old-root loop-root)))
+  (let* ((mark (nl_root_mark env)) (old-root (nl_root_word env))
+         (word (bf_load_inner_rooted_w args env old-root)))
     (seq (nl_root_release env mark) word)))
     (defun bf_load_readable_rooted_w (args env out)
       ;; Doc 147 Phase 1.5 Group P — the reader parse pool is now a RAW
@@ -26886,21 +27128,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
   (nl_abi_word_to_rc (bf_eval_source_string_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
-         (out (nl_root_reserve env)) (state (nl_root_reserve env)) (word 0))
+  (let* ((mark (nl_root_mark env)) (state (nl_root_word env)) (word 0))
     (seq
      (nelisp_frame_scope_push (+ env 32))
      (setq word (nelisp_eval_call_root_done
-                 (bf_eval_source_string_inner_rooted_w args env result out state) env))
+                 (bf_eval_source_string_inner_rooted_w args env state) env))
      (nl_root_release env mark)
      word)))
     (defun bf_eval_source_string_inner (args env out)
   (nl_abi_word_to_rc (bf_eval_source_string_inner_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_inner_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (result (nl_root_reserve env))
-         (out (nl_root_reserve env)) (state (nl_root_reserve env))
-         (word (bf_eval_source_string_inner_rooted_w args env result out state)))
+  (let* ((mark (nl_root_mark env)) (state (nl_root_word env))
+         (word (bf_eval_source_string_inner_rooted_w args env state)))
     (seq (nl_root_release env mark) word)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_read_load_file_name_w (env _pad)
@@ -27332,15 +27572,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_wrong_type_plistp (offender)
       (bf_wrong_type_named offender 123645454806128 0 0 6))
     (defun bf_signal_circular_list (plist)
-      (let* ((tagbuf (alloc-bytes 16 1)) (nil-slot (alloc-bytes 32 8)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tagbuf (alloc-bytes 16 1)) (nil-slot (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 tagbuf 0 8241988044500134243)
          (ptr-write-u64 (+ tagbuf 8) 0 500152495149)
-         (nl_alloc_symbol tagbuf 13 268435480)
+         (nl_alloc_symbol tagbuf 13 sig-tag)
          (wf_write_nil nil-slot)
-         (nelisp_cons_construct plist nil-slot 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1) 1)))
+         (nelisp_cons_construct plist nil-slot sig-val)
+         (nl_exit_signal_w sig-tag sig-val) 1)))
     (defun bf_plist_member_walk_w (cur key _pad orig)
       (let* ((c cur) (slow cur) (tick 0) (stop 0) (result 0) (sig 0))
         (seq
@@ -27494,10 +27733,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((tag (alloc-bytes 32 8)))
         (seq
          (nl_bf_err_arity_write_wna_sym tag)
-         (if (= (symbol-eq tag 268435480) 1)
+         (if (= (symbol-eq tag (nl_exit_tag_w)) 1)
              (let* ((name (bf_subr_arity_name body env)))
                (if (= (sexp-tag name) 4)
-                   (cons-set-car 268435512 name)
+                   (cons-set-car (nl_exit_val_w) name)
                  ;; The binder has not entered the body. Its activation still
                  ;; identifies the actual closure, including anonymous calls.
                  ;; GNU reports that closure, rather than the symbol lambda.
@@ -27515,12 +27754,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  op)))
                          (if (and (> function 4096) (= (logand function 1) 0)
                                   (= (nl_val_tag function) 7))
-                             (cons-set-car 268435512 function) 0))
+                             (cons-set-car (nl_exit_val_w) function) 0))
                      0))))
            0)
          1)))
     (defun bf_wrong_number_of_args (name argc)
-      (let* ((wbuf (alloc-bytes 32 1))
+      (let* ((sig-tag (alloc-bytes 32 8))
+             (sig-val (alloc-bytes 32 8))
+             (wbuf (alloc-bytes 32 1))
              (count (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
              (data-tail (alloc-bytes 32 8))
@@ -27541,13 +27782,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
          (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
          (ptr-write-u64 (+ wbuf 24) 0 115)
-         (nl_alloc_symbol wbuf 25 268435480)
+         (nl_alloc_symbol wbuf 25 sig-tag)
          (wf_write_int count argc)
          (wf_write_nil nil-slot)
          (nelisp_cons_construct count nil-slot data-tail)
-         (nelisp_cons_construct reported data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+         (nelisp_cons_construct reported data-tail sig-val)
+         (nl_exit_signal_w sig-tag sig-val)
          1)))
     (defun bf_wrong_number_of_args_list_access (name argc)
       (let* ((bytes (alloc-bytes 8 1)) (symbol (alloc-bytes 32 8)))
@@ -28191,7 +28431,9 @@ reaches this arm for a signature that names `:double'."
          (fn-name "ptr-call-typed")
          (fn-words (nelisp-standalone--name-words fn-name))
          (fn-len (length (encode-coding-string fn-name 'utf-8 t))))
-    `(let* ((tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
             (nbuf (alloc-bytes ,(* 8 (length fn-words)) 1))
             (namesym (alloc-bytes 32 8))
             (nilslot (alloc-bytes 32 8)))
@@ -28201,7 +28443,7 @@ reaches this arm for a signature that names `:double'."
               (push `(ptr-write-u64 tbuf ,(* w 8) ,word) forms)
               (setq w (1+ w)))
             (nreverse forms))
-        (nl_alloc_symbol tbuf ,tag-len 268435480)
+        (nl_alloc_symbol tbuf ,tag-len sig-tag)
         ,@(let ((w 0) (forms nil))
             (dolist (word fn-words)
               (push `(ptr-write-u64 nbuf ,(* w 8) ,word) forms)
@@ -28209,9 +28451,8 @@ reaches this arm for a signature that names `:double'."
             (nreverse forms))
         (nl_alloc_symbol nbuf ,fn-len namesym)
         (wf_write_nil nilslot)
-        (nelisp_cons_construct namesym nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct namesym nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 (defun nelisp-standalone--applyfn-ptr-call-typed-arms ()
@@ -28277,7 +28518,9 @@ into that constant unconditionally is what broke every aarch64 build."
                                (if (if (or (= tg 0) (= tg 1)) 1
                                      (if (= tg 4) 1 (if (= tg 16) 1 0)))
                                    (nl_g4arm_copy_w 0 (if (= tg 0) 3 (if (= tg 1) 7 sym)))
-                                 (let* ((wbuf (alloc-bytes 24 1))
+                                 (let* ((sig-tag (alloc-bytes 32 8))
+                                        (sig-val (alloc-bytes 32 8))
+                                        (wbuf (alloc-bytes 24 1))
                                         (cbuf1 (alloc-bytes 8 1))
                                         (cbuf2 (alloc-bytes 24 1))
                                         (symbolp-name (alloc-bytes 32 8))
@@ -28290,7 +28533,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                     (ptr-write-u64 wbuf 0 8751669898145395319)
                                     (ptr-write-u64 (+ wbuf 8) 0 7887324063363589488)
                                     (ptr-write-u64 (+ wbuf 16) 0 7630437)
-                                    (nl_alloc_symbol wbuf 19 268435480)
+                                    (nl_alloc_symbol wbuf 19 sig-tag)
                                     (ptr-write-u64 cbuf1 0 31644423040104819)
                                     (nl_alloc_symbol cbuf1 7 symbolp-name)
                                     (ptr-write-u64 cbuf2 0 #x772d6c6f626d7973)
@@ -28301,9 +28544,8 @@ into that constant unconditionally is what broke every aarch64 build."
                                     (nelisp_cons_construct symbol-with-pos-name nil-slot pred-tail)
                                     (nelisp_cons_construct symbolp-name pred-tail predicate)
                                     (nelisp_cons_construct sym nil-slot data-tail)
-                                    (nelisp_cons_construct predicate data-tail 268435512)
-                                    (ptr-write-u64 268435472 0 1)
-                                    (atomic-fetch-add 268435544 1)
+                                    (nelisp_cons_construct predicate data-tail sig-val)
+                                    (nl_exit_signal_w sig-tag sig-val)
                                     1) 0)))))
     ;; Doc 190 Phase A: `integerp'/`numberp' accept tag 13 (Bignum) too --
     ;; this is what makes `type-of' (an elisp `cond' over `integerp' et al,
@@ -29227,7 +29469,9 @@ the same symbol)."
          (fn-name "nl-ffi-call")
          (fn-words (nelisp-standalone--name-words fn-name))
          (fn-len (length (encode-coding-string fn-name 'utf-8 t))))
-    `(let* ((tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
+    `(let* ((sig-tag (alloc-bytes 32 8))
+            (sig-val (alloc-bytes 32 8))
+            (tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
             (nbuf (alloc-bytes ,(* 8 (length fn-words)) 1))
             (namesym (alloc-bytes 32 8))
             (nilslot (alloc-bytes 32 8)))
@@ -29237,7 +29481,7 @@ the same symbol)."
               (push `(ptr-write-u64 tbuf ,(* w 8) ,word) forms)
               (setq w (1+ w)))
             (nreverse forms))
-        (nl_alloc_symbol tbuf ,tag-len 268435480)
+        (nl_alloc_symbol tbuf ,tag-len sig-tag)
         ,@(let ((w 0) (forms nil))
             (dolist (word fn-words)
               (push `(ptr-write-u64 nbuf ,(* w 8) ,word) forms)
@@ -29245,9 +29489,8 @@ the same symbol)."
             (nreverse forms))
         (nl_alloc_symbol nbuf ,fn-len namesym)
         (wf_write_nil nilslot)
-        (nelisp_cons_construct namesym nilslot 268435512)
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        (nelisp_cons_construct namesym nilslot sig-val)
+        (nl_exit_signal_w sig-tag sig-val)
         1))))
 
 (defun nelisp-standalone--applyfn-extern-arms-unsupported ()
@@ -31783,11 +32026,22 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; is the previous link, unused +16 is the rooted tag-slot address.  The
     ;; collector ignores those integer metadata words, while the separately
     ;; registered tag remains live.  No arena scratch link survives a GC.
-    (defun nl_ct_target_p (node tag_slot)
+    (defun nl_ct_target_p (node tagw)
       ;; GNU deliberately forbids throwing to nil, including catch nil.
-      (if (if (= (sexp-tag tag_slot) 0) 1 (= node 0)) 0
-        (if (= (nl_ct_tag_eq (heap-read-u64 node 16) tag_slot) 1) 1
-          (nl_ct_target_p (heap-read-u64 node 8) tag_slot))))
+      ;; Doc 216 S6.2: NODE+16 is the catch's tag -- a WORD for a
+      ;; special-form catch, a 32-byte tag slot for a bytecode or native one.
+      (if (if (= (sexp-tag tagw) 0) 1 (= node 0)) 0
+        (if (= (nl_ct_tag_eq_w (heap-read-u64 node 16) tagw) 1) 1
+          (nl_ct_target_p (heap-read-u64 node 8) tagw))))
+    ;; EQ on two tags, each a WORD or a 32-byte tag slot: the same WORD,
+    ;; else the view comparison of `nl_ct_tag_eq' with each side as a view
+    ;; (`nl_val_load' materializes an immediate, direct cons or vectorlike
+    ;; into scratch), so a bytecode catch's fixnum view matches a throw's
+    ;; fixnum WORD and symbol views compare by symbol.
+    (defun nl_ct_tag_eq_w (a b)
+      (if (= a b) 1
+        (nl_ct_tag_eq (nl_val_load a (alloc-bytes 32 8))
+                      (nl_val_load b (alloc-bytes 32 8)))))
     ;; Shared raw-v1 handler ABI for evaluator, VM and U8b native code.
     ;; Push: ENV, rooted TAG_SLOT, integer metadata root NODE (32 bytes).
     ;; Pop: ENV, NODE in strict LIFO order, before releasing either root.
@@ -31803,45 +32057,47 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_ct_active_finish 0 (nl_ct_head_slot env) (heap-read-u64 node 8)))
     (defun nl_ct_active_finish (rc head_slot previous)
       (seq (ptr-write-u64 head_slot 0 previous) rc))
-    (defun nl_ct_active_prepare_w (body tag_slot env _pad head_slot node)
+    (defun nl_ct_active_prepare_w (body tagw env _pad head_slot node)
+      ;; Doc 216 S6.2: NODE is a three-WORD root frame, as GNU's struct
+      ;; handler sits on the C stack (eval.c internal_catch): +0 the fixnum
+      ;; 0, +8 the previous node (a raw root-stack or pool address, which the
+      ;; collector skips), +16 the tag WORD (traced, so the tag lives for the
+      ;; body's extent).
       (seq
-       (sexp-int-make node (heap-read-u64 head_slot 0))
-       (ptr-write-u64 node 16 tag_slot)
+       (ptr-write-u64 node 0 1)
+       (ptr-write-u64 node 8 (heap-read-u64 head_slot 0))
+       (ptr-write-u64 node 16 tagw)
        (ptr-write-u64 head_slot 0 node)
        (nl_ct_active_finish
-        (nl_ct_catch_body_w body tag_slot env 0 0 0)
+        (nl_ct_catch_body_w body tagw env 0 0 0)
         head_slot (heap-read-u64 node 8))))
-    (defun nl_ct_active_body_w (body tag_slot env _pad)
-      (nl_ct_active_prepare_w body tag_slot env 0
-                              (nl_ct_head_slot env) (nl_root_reserve env)))
-    (defun nl_ct_no_catch_publish (env data error_slot name_buf)
-      (seq
-       (ptr-write-u64 name_buf 0 7521983764263432046)
-       (nl_alloc_symbol name_buf 8 error_slot)
-       (cons-make-with-clone error_slot data data)
-       (nl_env_stash_signal env data)))
-    (defun nl_ct_no_catch_build (env tag_slot val_slot nil_slot data error_slot)
-      (seq
-       (cons-make-with-clone val_slot nil_slot data)
-       (cons-make-with-clone tag_slot data data)
-       (nl_ct_no_catch_publish env data error_slot (alloc-bytes 8 1))))
-    (defun nl_ct_no_catch_rooted (env tag_slot val_slot rooted_val)
-      (seq
-       (wf_copy32 rooted_val val_slot)
-       (nl_ct_no_catch_build env tag_slot rooted_val
-                             (nl_root_reserve env) (nl_root_reserve env)
-                             (nl_root_reserve env))))
-    (defun nl_ct_no_catch (env tag_slot val_slot)
-      (nl_ct_no_catch_rooted env tag_slot val_slot (nl_root_reserve env)))
+    (defun nl_ct_no_catch (env tagw valw)
+      ;; (no-catch TAG VALUE), Fthrow's xsignal2 (eval.c), as WORD conses.
+      ;; Native allocation never collects; the throw's frame roots TAGW and
+      ;; VALW.  Answers the stash's 1.
+      (let* ((name_buf (alloc-bytes 8 1)) (error_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 name_buf 0 7521983764263432046)
+         (nl_alloc_symbol name_buf 8 error_slot)
+         (nl_env_stash_signal
+          env
+          (nelisp_cons_construct_w
+           error_slot
+           (nelisp_cons_construct_w tagw (nelisp_cons_construct_w valw 3 0) 0)
+           0)))))
     ;; Validate the complete operand list before evaluating any operand.
     ;; Errors use rooted data and the same signal publication as no-catch.
     ;; KIND 0 is arity (DATUM is a count); KIND 1 is a dotted-tail type error
     ;; (DATUM is a Sexp slot). Runtime values travel in helper arguments.
     (defun nl_ct_arg_error_name (env name_word kind data symbol_slot buffer)
+      ;; (wrong-number-of-arguments NAME VALUE) (KIND 0) or
+      ;; (wrong-type-argument NAME VALUE): DATA is the WORD list (VALUE).
+      ;; Native allocation never collects.  Answers the stash's 1.
       (seq
        (ptr-write-u64 buffer 0 name_word)
        (nl_alloc_symbol buffer 5 symbol_slot)
-       (cons-make-with-clone symbol_slot data data)
+       (setq data (nelisp_cons_construct_w symbol_slot data 0))
+       (setq symbol_slot (alloc-bytes 32 8))
        (if (= kind 0)
            (seq
             (ptr-write-u64 buffer 0 8461750672133419639)
@@ -31853,26 +32109,16 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           (ptr-write-u64 buffer 8 7887324063363589488)
           (ptr-write-u64 buffer 16 7630437)))
        (nl_alloc_symbol buffer (if (= kind 0) 25 19) symbol_slot)
-       (cons-make-with-clone symbol_slot data data)
-       (nl_env_stash_signal env data)))
-    (defun nl_ct_arg_error_build (env name_word kind value nil_slot data)
-      (seq
-       (cons-make-with-clone value nil_slot data)
-       (nl_ct_arg_error_name env name_word kind data
-                             (nl_root_reserve env) (alloc-bytes 32 8))))
-    (defun nl_ct_arg_error_value (env datum name_word kind marker value)
-      (seq
-       (if (= kind 0) (sexp-int-make value datum)
-         (wf_copy32 value datum))
-       (nl_ct_root_finish
-        env marker
-        (nl_ct_arg_error_build env name_word kind value
-                              (nl_root_reserve env) (nl_root_reserve env)))))
-    (defun nl_ct_arg_error_mark (env datum name_word kind marker)
-      (nl_ct_arg_error_value env datum name_word kind
-                            marker (nl_root_reserve env)))
+       (nl_env_stash_signal env (nelisp_cons_construct_w symbol_slot data 0))))
     (defun nl_ct_arg_error (env datum name_word kind)
-      (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
+      ;; DATUM is the argument count (KIND 0) or the offending value, a WORD
+      ;; or a view that may be scratch: a fresh copy goes into the data.
+      (nl_ct_arg_error_name
+       env name_word kind
+       (nelisp_cons_construct_w
+        (if (= kind 0) (+ (* datum 4) 1) (nl_word_canon_view (nl_word_clone datum)))
+        3 0)
+       (alloc-bytes 32 8) (alloc-bytes 32 8)))
     ;; Doc 215 word ABI: catch / throw answer the result WORD (0 = signal
     ;; or throw in flight).  `throw' never returns a value.
     (defun nl_ct_args_done_w (count args env _pad mode)
@@ -31891,56 +32137,46 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           (nl_abi_fail (nl_ct_arg_error env tail 482990057836 1) 0))))
     ;;================= THROW =================
     (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
+      ;; The bytecode VM's throw (`wf_bytecode_call_throw') passes its
+      ;; evaluated operand slots, which it may reuse: their canonical WORDs
+      ;; go to `nl_ct_throw_words'.  Native allocation never collects.
       (if (= rc 0)
-          ;; Detect missing targets before unwinding, so a condition-case
-          ;; surrounding this throw can catch no-catch in the same scope.
-          (if (= (nl_ct_target_p
-                  (heap-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
-              (nl_ct_no_catch env tag_slot val_slot)
-          (seq
-           (wf_copy32 268435480 tag_slot)
-           (wf_copy32 268435512 val_slot)
-           ;; Flag value 2 = `throw' (vs 1 = signal/error).  The shared M6
-           ;; stash is used by BOTH throw and signal; using a distinct value
-           ;; lets `condition-case' trap ONLY signals (flag==1) and `catch'
-           ;; trap ONLY throws (flag==2), so a `throw' no longer matches an
-           ;; `error'/`t' condition-case handler.
-           (ptr-write-u64 268435472 0 2)
-           (atomic-fetch-add 268435544 1)
-           1))
+          (let* ((buf (alloc-bytes 16 8)))
+            (seq (nl_val_clone_into tag_slot buf)
+                 (nl_val_clone_into val_slot (+ buf 8))
+                 (nl_ct_throw_words env (heap-read-u64 buf 0) (heap-read-u64 buf 8))))
         1))
-    (defun nl_ct_throw_after_tag (rc val_form env _pad tag_slot val_slot)
-      (if (= rc 0)
-          (nl_ct_throw_after_val
-           (extern-call nelisp_eval_call val_form env val_slot)
-           val_slot tag_slot env)
-        1))
-    (defun nl_ct_throw_eval_tag (tag_form val_form env _pad tag_slot val_slot)
-      (nl_ct_throw_after_tag
-       (extern-call nelisp_eval_call tag_form env tag_slot)
-       val_form env 0 tag_slot val_slot))
-    (defun nl_ct_throw_got_cdr1 (cdr1 tag_form env _pad tag_slot val_slot)
-      (nl_ct_throw_eval_tag
-       tag_form
-       (extern-call nl_cons_car_ptr cdr1)
-       env 0 tag_slot val_slot))
-    (defun nl_ct_throw_got_tag_form (tag_form args env _pad tag_slot val_slot)
-      (nl_ct_throw_got_cdr1
-       (extern-call nl_cons_cdr_word args)
-       tag_form env 0 tag_slot val_slot))
+    ;; Fthrow (eval.c): the innermost catch for TAGW, else (no-catch TAG
+    ;; VALUE).  Answers 1: an exit or a signal is stashed.
+    (defun nl_ct_throw_words (env tagw valw)
+      (if (= (nl_ct_target_p (heap-read-u64 (nl_ct_head_slot env) 0) tagw) 0)
+          (nl_ct_no_catch env tagw valw)
+        (seq (nl_exit_raise_w 2 tagw valw) 1)))
+    (defun nl_ct_throw_after_tag (tagw args env roots)
+      ;; Doc 216 S6.2: TAG and VALUE are WORDs in ROOTS, a two-WORD frame.
+      (if (= tagw 0) 1
+        (seq
+         (ptr-write-u64 roots 0 tagw)
+         (let* ((valw (nelisp_eval_call_w (nl_cons_car_word (nl_cons_cdr_word args)) env 0)))
+           (if (= valw 0) 1
+             (seq (ptr-write-u64 roots 8 valw)
+                  (nl_ct_throw_words env (heap-read-u64 roots 0) valw)))))))
     ;; TAG_SLOT holds the EVALUATED tag while the value form is evaluated, and
     ;; that evaluation can collect.  As an `alloc-bytes' scratch the tag came
     ;; back blanked, the copy stashed a nil tag, and the throw missed its
     ;; own `catch': `(catch 'tg (throw 'tg (f)))' answered `no-catch: (0 7)'.
     ;; Rooted for the whole of `nl_sf_throw'; VAL_SLOT is written by the eval
     ;; and read immediately after, so it needs no root of its own.
-    (defun nl_sf_throw_run_w (args env _pad tag_slot val_slot root_mark)
-      (nl_ct_root_finish env root_mark
-                         (nl_abi_fail (nl_ct_throw_got_tag_form (nl_cons_car_ptr args)
-                                                                args env 0 tag_slot val_slot)
-                                      0)))
+    (defun nl_sf_throw_run_w (args env roots root_mark)
+      (nl_ct_root_finish
+       env root_mark
+       (if (= roots 0) (nl_abi_fail (bf_signal_memory_full) 0)
+         (nl_abi_fail (nl_ct_throw_after_tag
+                       (nelisp_eval_call_w (nl_cons_car_word args) env 0)
+                       args env roots)
+                      0))))
     (defun nl_sf_throw_mark_w (args env _pad root_mark)
-      (nl_sf_throw_run_w args env 0 (nl_root_reserve env) (alloc-bytes 32 8) root_mark))
+      (nl_sf_throw_run_w args env (nl_root_frame env 2) root_mark))
     (defun nl_sf_throw_w (args env _pad _pad1)
       (nl_ct_args_check_w args 0 args env 0 0))
     (defun nl_sf_throw (args env out _pad)
@@ -31999,16 +32235,17 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; Boxed atoms are valid WORDs too; retain their physical representation
     ;; rather than decoding the copied box into an immediate. No safepoint
     ;; lies between this copy and the return.
-    (defun nl_ct_caught_word (box _pad)
-      (seq (wf_copy32 box 268435512)
-           (ptr-write-u64 268435472 0 0)
+    (defun nl_ct_caught_word (w _pad)
+      ;; internal_catch's landing (eval.c): the exit's value WORD, the exit
+      ;; cleared.
+      (seq (ptr-write-u64 268435472 0 0)
            (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-           box))
-    (defun nl_ct_catch_on_match_w (eqres _p1 _p2 _p3)
-      (if (= eqres 1) (nl_ct_caught_word (alloc-bytes 32 8) 0) 0))
-    (defun nl_ct_catch_caught_w (tag_slot env _pad _p3)
+           w))
+    (defun nl_ct_catch_caught_w (tagw env _pad _p3)
       (if (= (heap-read-u64 268435472 0) 2)
-          (nl_ct_catch_on_match_w (nl_ct_tag_eq 268435480 tag_slot) 0 0 0)
+          (if (= (nl_ct_tag_eq_w (nl_exit_tag_w) tagw) 1)
+              (nl_ct_caught_word (nl_exit_val_w) 0)
+            0)
         0))
     ;; The body list's cdr is taken AFTER the body form's own eval, not before:
     ;; a one-form body ends in Nil, `nl_cons_cdr_ptr' materialises an unrooted
@@ -32016,35 +32253,30 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     ;; walker.  Same shape as the nine walkers closed earlier on this branch.
     ;; The body is a progn; a signal or throw out of it is checked against
     ;; this catch's tag.
-    (defun nl_ct_catch_result_w (w tag_slot env _pad)
-      (if (= w 0) (nl_ct_catch_caught_w tag_slot env 0 0) w))
-    (defun nl_ct_catch_body_w (body tag_slot env _pad _p4 _p5)
-      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tag_slot env 0))
-    (defun nl_ct_catch_after_tag_w (rc body tag_slot env _pad eqres_slot)
-      (if (= rc 0) (nl_ct_active_body_w body tag_slot env 0) (nl_abi_fail rc 0)))
+    (defun nl_ct_catch_result_w (w tagw env _pad)
+      (if (= w 0) (nl_ct_catch_caught_w tagw env 0 0) w))
+    (defun nl_ct_catch_body_w (body tagw env _pad _p4 _p5)
+      (nl_ct_catch_result_w (nl_sf_progn_w body env 0 0) tagw env 0))
     ;; The tag is evaluated into its reserved root slot (it must survive the
     ;; body), through the legacy adapter.
-    (defun nl_ct_catch_got_body_w (body tag_form env _pad tag_slot eqres_slot)
-      (nl_ct_catch_after_tag_w (extern-call nelisp_eval_call tag_form env tag_slot)
-                               body tag_slot env 0 eqres_slot))
-    (defun nl_ct_catch_got_tag_form_w (tag_form args env _pad tag_slot eqres_slot)
-      (nl_ct_catch_got_body_w (extern-call nl_cons_cdr_word args)
-                              tag_form env 0 tag_slot eqres_slot))
     ;; TAG_SLOT holds the evaluated catch tag for the whole body evaluation, so
     ;; it has to be a GC root.  As an `alloc-bytes' scratch a collection inside
     ;; the body freed it, `nl_ct_tag_eq' then compared a `throw' against a
     ;; blanked slot and answered no-match, and the throw escaped its own
     ;; `catch' as `no-catch' -- no crash, just a wrong answer.
-    (defun nl_sf_catch_run_w (args env _pad tag_slot eqres_slot root_mark)
-      (nl_ct_root_finish env root_mark
-                         (nl_ct_catch_got_tag_form_w (nl_cons_car_ptr args)
-                                                     args env 0 tag_slot eqres_slot)))
+    (defun nl_sf_catch_run_w (args env node root_mark)
+      ;; NODE is the catch's three-WORD frame (`nl_ct_active_prepare_w').
+      (nl_ct_root_finish
+       env root_mark
+       (if (= node 0) (nl_abi_fail (bf_signal_memory_full) 0)
+         (let* ((tagw (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
+           (if (= tagw 0) 0
+             (nl_ct_active_prepare_w (nl_cons_cdr_word args) tagw env 0
+                                     (nl_ct_head_slot env) node))))))
     (defun nl_ct_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
-    (defun nl_sf_catch_slots_w (args env _pad root_mark tag_slot)
-      (nl_sf_catch_run_w args env 0 tag_slot (alloc-bytes 32 8) root_mark))
     (defun nl_sf_catch_mark_w (args env _pad root_mark)
-      (nl_sf_catch_slots_w args env 0 root_mark (nl_root_reserve env)))
+      (nl_sf_catch_run_w args env (nl_root_frame env 3) root_mark))
     (defun nl_sf_catch_w (args env _pad _pad1)
       (nl_ct_args_check_w args 0 args env 0 1))
     (defun nl_sf_catch (args env out _pad)
@@ -32728,18 +32960,19 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
   '((defun nl_sf_prog_release_w (w env mark _pad)
       (seq (nl_root_release env mark) w))
 
+    ;; Doc 216 S6.2: HOLDER is a WORD root slot holding prog1's value.
     (defun nl_sf_prog_body_w (body env holder _pad)
-  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (nl_cons_car_word holder)))
+  (if (= (nl_sf_progn_w body env 0 0) 0) 0 (heap-read-u64 holder 0)))
     (defun nl_sf_prog1_slot_w (args env mark vslot)
   (let* ((word (nelisp_eval_call_w (nl_cons_car_word args) env 0)))
     (nl_sf_prog_release_w
      (if (= word 0) 0
-       (let* ((holder (nelisp_cons_construct_w word 3 0)))
-         (seq (wf_word_store_out vslot holder)
-              (nl_sf_prog_body_w (nl_cons_cdr_ptr args) env vslot 0))))
+       (seq (ptr-write-u64 vslot 0 word)
+            (nl_sf_prog_body_w (nl_cons_cdr_word args) env vslot 0)))
      env mark 0)))
+    ;; Like GNU's Fprog1, which keeps VAL on the C stack: one WORD frame.
     (defun nl_sf_prog1_marked_w (args env mark _pad)
-      (nl_sf_prog1_slot_w args env mark (nl_root_reserve env))))
+      (nl_sf_prog1_slot_w args env mark (nl_root_word env))))
   "prog1's rooted value slot (Doc 215 R2).")
 
 (defun nelisp-standalone--sf-word-adapter (name)
@@ -37250,8 +37483,8 @@ u64/i64 has no Lisp printed representation of its own here)."
   "Return error-diagnostic defun forms (Doc 152 DEFECT-2 + REPL visibility;
 Doc 180 Phase 1 form-location).
 `nl_eval_source_print_error' writes a short diagnostic for the top-level M6
-stash (FLAG @268435472, TAG @268435480, VAL @268435512 -- see the catch/throw
-unit's comment block for the stash contract) to stderr.  Uncaught throws
+exit (FLAG @268435472, TAG and VAL WORDs in `nl_exit_values' -- see
+`nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el for the contract) to stderr.  Uncaught throws
 report the condition class `no-catch' instead of using the catch tag as the
 error class.  Doc 180 Phase 1 adds five trailing parameters -- FILE_PTR,
 FILE_LEN (the source name: a real --load path, or a static \"<eval>\"/
@@ -37314,10 +37547,10 @@ no-catch tail above, not this defensive path."
                                           "nelisp: uncaught error: " 'utf-8 t)))
            ,@(nelisp-standalone--eval-source-location-prefix-forms)
            (mut-str-make-empty ,tag-ms 32)
-           (m5_prin1 ,tag-ms 268435480)
+           (m5_prin1 ,tag-ms (nl_exit_tag_w))
            (mut-str-finalize ,tag-ms ,tag-repr)
            (mut-str-make-empty ,val-ms 32)
-           (m5_prin1 ,val-ms 268435512)
+           (m5_prin1 ,val-ms (nl_exit_val_w))
            (mut-str-finalize ,val-ms ,val-repr)
            (if (= (heap-read-u64 268435472 0) 2)
                (seq
@@ -40859,17 +41092,18 @@ banner comment just above for the raw-memory boundary, and
       ;; Unmapped Winsock values retain their real magnitude rather than being
       ;; flattened to an incorrect POSIX errno.
       `(defun nl_socket_signal_error (errno)
-         (let* ((tagbuf (alloc-bytes 24 1))
+         (let* ((sig-tag (alloc-bytes 32 8))
+                (sig-val (alloc-bytes 32 8))
+                (tagbuf (alloc-bytes 24 1))
                 (nilslot (alloc-bytes 32 8))
                 (data (alloc-bytes 32 8)))
            (seq
             ,@(nelisp-standalone--byte-write-forms 'tagbuf "nelisp-socket-error")
-            (nl_alloc_symbol tagbuf 19 268435480)
+            (nl_alloc_symbol tagbuf 19 sig-tag)
             (wf_write_nil nilslot)
             (wf_cons_int errno nilslot data)
-            (bf_sig_copy32 268435512 data)
-            (ptr-write-u64 268435472 0 1)
-            (atomic-fetch-add 268435544 1)
+            (bf_sig_copy32 sig-val data)
+            (nl_exit_signal_w sig-tag sig-val)
             1)))
       ;; nl_socket_bool_arg: read optional arg N of ARGS as a strict 0/1
       ;; boolean -- 0 when the arg is absent (arity backward-compat, Doc 194
@@ -41579,17 +41813,18 @@ belongs to the caller, just as `nelisp-tls-connect' does not open it."
               'buf "Microsoft Unified Security Protocol Provider")
            buf)))
      `(defun nl_tls_signal_error (status)
-        (let* ((tagbuf (alloc-bytes 16 1))
+        (let* ((sig-tag (alloc-bytes 32 8))
+               (sig-val (alloc-bytes 32 8))
+               (tagbuf (alloc-bytes 16 1))
                (nilslot (alloc-bytes 32 8))
                (data (alloc-bytes 32 8)))
           (seq
            ,@(nelisp-standalone--byte-write-forms 'tagbuf "nelisp-tls-error")
-           (nl_alloc_symbol tagbuf 16 268435480)
+           (nl_alloc_symbol tagbuf 16 sig-tag)
            (wf_write_nil nilslot)
            (wf_cons_int status nilslot data)
-           (bf_sig_copy32 268435512 data)
-           (ptr-write-u64 268435472 0 1)
-           (atomic-fetch-add 268435544 1)
+           (bf_sig_copy32 sig-val data)
+           (nl_exit_signal_w sig-tag sig-val)
            1)))
      ;; SecBuffer and SecBufferDesc constructors.  Every field is written
      ;; explicitly; the four-byte hole before each Win64 pointer is zeroed by
@@ -44218,16 +44453,15 @@ correctly."
     (defun nl_cli_read_cap_hit_p (n)
       (>= n ,nelisp-standalone--reader-read-cap))
     (defun nl_cli_stash_source_too_large (what)
-      (let* ((tag-buf (alloc-bytes 24 1)))
+      (let* ((sig-tag (alloc-bytes 32 8)) (sig-val (alloc-bytes 32 8)) (tag-buf (alloc-bytes 24 1)))
         (seq
          ,@(nelisp-standalone--byte-write-forms 'tag-buf "nelisp-file-too-large")
          (nl_alloc_symbol
           tag-buf
           ,(length (encode-coding-string "nelisp-file-too-large" 'utf-8 t))
-          268435480)
-         (bf_sig_copy32 268435512 what)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
+          sig-tag)
+         (bf_sig_copy32 sig-val what)
+         (nl_exit_signal_w sig-tag sig-val)
          -1)))
     (defun nl_cli_load_source (path_ptr fbuf src)
       (let* ((n (nl_os_read_file_cpath
@@ -45107,8 +45341,11 @@ correctly."
         ;; cold path: replace the fresh empty globals with the loaded image's
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
         (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
-        ;; Doc 226 D9 stage 3.1: name the mirror to the code that makes symbol objects.
+        ;; Doc 226 D9 stage 3: the mirror record root names this process's
+        ;; globals record, fresh or restored from the image.
         (nl_symcells_attach globals)
+        ;; Doc 226 D9 stage 3.1: the shared unbound view that new symbol objects' void cells point at.
+        (nl_sym_unbound)
         (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         ;; Doc 221 M03/M17: static symbol ids (GNU lispsym) for dispatch.
         (nl_static_syms_init)
@@ -45929,25 +46166,23 @@ correctly."
     (defun nl_cce_clear (err_out)
       (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
            (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
-    (defun nelisp_eval_call_with_err_w (form env _pad err_out)
+    (defun nelisp_eval_call_with_err_w (form env _pad _err_out)
+      ;; Doc 216 S6.2: no error view is written here.  Answers the value
+      ;; WORD, or 0 when the form signalled (the signal stays stashed, the
+      ;; flag set, for the caller's `nl_exit_condition_into') or aborted
+      ;; otherwise.  A few low-level mirror APIs historically normalise their
+      ;; mutation helper's return value to success.  The physical mirror
+      ;; guard still stashes the signal and performs no write; a registered
+      ;; worker recovers that signal at its catch boundary so it stays
+      ;; catchable instead of becoming a stale flag.
       (let* ((w (nelisp_eval_call_w form env 0)))
         (if (/= w 0)
-            ;; A few low-level mirror APIs historically normalise their
-            ;; mutation helper's return value to success.  The physical
-            ;; mirror guard still stashes the signal and performs no write;
-            ;; recover that signal at the worker's catch boundary so it stays
-            ;; catchable instead of becoming a stale flag.
             (if (= (heap-read-u64 268435472 0) 1)
                 (if (= (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
-                    (seq (nl_cce_clear err_out) w)
-                  (seq (nelisp_cons_construct 268435480 268435512 err_out)
-                       0))
-              (seq (nl_cce_clear err_out) w))
-          (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nelisp_cons_construct 268435480 268435512 err_out)
-                   0)
-            ;; Preserve a non-signal abort without inventing an error.
-            (seq (nl_cce_clear err_out) 0)))))
+                    w
+                  0)
+              w)
+          0)))
     (defun nelisp_eval_call_with_err (form env out err_out)
       ;; Physical-view compatibility entry; do not reverse-adapt its result.
       (let* ((rc (nelisp_eval_call form env out)))
@@ -45955,10 +46190,10 @@ correctly."
             (if (and (= (heap-read-u64 268435472 0) 1)
                      (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                      (/= (nl_thread_registry_find env) 0))
-                (seq (nelisp_cons_construct 268435480 268435512 err_out) 1)
+                (seq (nl_exit_condition_into err_out) 1)
               (seq (nl_cce_clear err_out) 0))
           (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nelisp_cons_construct 268435480 268435512 err_out) rc)
+              (seq (nl_exit_condition_into err_out) rc)
             (seq (nl_cce_clear err_out) rc))))))
   "WAVE-2 condition-case-trapping nelisp_eval_call_with_err (PATCH 1): on a
 signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
@@ -46038,31 +46273,33 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (nl_clx_write_nil nil_slot)
          (nl_env_capture_lexical_with_filter env nil_slot 0 out))))
     (defun nl_env_capture_lexical_filtered_w (env lambda-args _pad _pad2)
-      (let* ((mark (nl_root_mark env)) (roots (nl_root_reserve env)))
-        (if (= roots 0) (nl_abi_fail 1 0)
-          (seq
-           (vector-make 4 roots)
-           (nl_capture_root_set_word roots 2 lambda-args)
-           (let* ((filter
-                   (if (= (nl_fvcache_disabled) 1)
-                       (nl_clx_symbol_filter_walk_raw_w lambda-args 3 roots)
-                     (let* ((cached (nl_fvcache_lookup lambda-args)))
-                       (if (= cached 0)
-                           (let* ((word (nl_clx_build_symbol_filter_w lambda-args roots)))
-                             (if (= (nl_val_tag word) 7) (nl_fvcache_store lambda-args word) 0)
-                             word)
-                         cached))))
-                  (frames (+ env 32))
-                  (backing (nl_record_slot_word frames 0))
-                  (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
-             ;; Reuse the same roots for filtering and capture. Keep the final
-             ;; filter alive when capture replaces its accumulator in slot 0.
-             (nl_capture_root_set_word roots 2 filter)
-             (nl_capture_root_set_word roots 3 backing)
-             (let* ((word (nl_capture_walk_frames_w backing (- depth 1) 3
-                           (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) filter roots)))
-               (nl_root_release env mark)
-               word))))))
+      ;; Doc 216 S6.2: ROOTS is a native 4-slot vector (acc, pair, filter,
+      ;; backing) whose WORD sits in one WORD root.
+      (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
+             (roots (+ (nl_alloc_vector 4) 6)))
+        (seq
+         (ptr-write-u64 root 0 roots)
+         (nl_capture_root_set_word roots 2 lambda-args)
+         (let* ((filter
+                 (if (= (nl_fvcache_disabled) 1)
+                     (nl_clx_symbol_filter_walk_raw_w lambda-args 3 roots)
+                   (let* ((cached (nl_fvcache_lookup lambda-args)))
+                     (if (= cached 0)
+                         (let* ((word (nl_clx_build_symbol_filter_w lambda-args roots)))
+                           (if (= (nl_val_tag word) 7) (nl_fvcache_store lambda-args word) 0)
+                           word)
+                       cached))))
+                (frames (+ env 32))
+                (backing (nl_record_slot_word frames 0))
+                (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+           ;; Reuse the same roots for filtering and capture. Keep the final
+           ;; filter alive when capture replaces its accumulator in slot 0.
+           (nl_capture_root_set_word roots 2 filter)
+           (nl_capture_root_set_word roots 3 backing)
+           (let* ((word (nl_capture_walk_frames_w backing (- depth 1) 3
+                         (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) filter roots)))
+             (nl_root_release env mark)
+             word)))))
     (defun nl_env_capture_lexical_filtered (env lambda-args out _pad)
   (nl_abi_word_to_rc (nl_env_capture_lexical_filtered_w env lambda-args 0 0) out))))
 
@@ -46298,152 +46535,145 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (defun nl_n3_notify (env sym value operation)
       ;; This helper is reached only behind the one flag check at each
       ;; semantic write. Preserve pending signal/throw state during unlet.
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into sym copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (roots (nl_root_reserve_checked env))
-             (name (nl_root_reserve env)) (fn (nl_root_reserve env))
-             (args (nl_root_reserve env)) (tail (nl_root_reserve env))
-             (op (nl_root_reserve env)) (nilp (nl_root_reserve env))
-             (where (nl_root_reserve env))
-             (tag-save (nl_root_reserve env)) (val-save (nl_root_reserve env))
+      ;; Doc 216 S6.2: one frame of five WORD roots replaces the 32-byte
+      ;; view slots: the canonical symbol (+0), the watcher's argument list
+      ;; (+8), the new value (+16), and the pending exit's tag (+24) and
+      ;; value (+32).  SYM and VALUE may be scratch, so the frame takes
+      ;; durable WORDs of them.
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 5))
              (flag (heap-read-u64 268435472 0))
+             ;; The pending exit's WORDs: unchanged after the watcher, they
+             ;; need no restore (the exit fields kept them alive).
+             (tag-w (heap-read-u64 (data-addr nl_exit_values) 0))
+             (val-w (heap-read-u64 (data-addr nl_exit_values) 8))
              ;; Raw pending-binding links hold only pointers to live roots.
              ;; Header +24 is per EvalCtx, separate from lean unwind +16.
              (state (nl_n4_state env)) (pending (alloc-bytes 16 8))
-             (buf (alloc-bytes 32 1)) (result (nl_root_reserve env)) (rc 0))
+             (buf (alloc-bytes 32 1)) (name 0) (where 3) (op 0) (rc 0))
         (seq
-         (nl_sexp_clone_into
-          (if (= operation 5) copies (nl_pa_canonical env copies)) roots)
-         (nl_sexp_clone_into (+ copies 32) result)
+         (nl_val_clone_into value (+ fr 16))
+         (nl_val_clone_into sym fr)
+         (nl_val_clone_into
+          (if (= operation 5) (heap-read-u64 fr 0)
+            (nl_pa_canonical env (heap-read-u64 fr 0)))
+          fr)
          ;; GNU restores a localized variable through `set', even when the
          ;; buffer that originally localized it has since been killed.
          (if (= operation 3)
-             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) roots)))
+             (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) (heap-read-u64 fr 0))))
                (if (= entry 0) 0
                  (if (> (nl_ent_n entry) 5)
                      (if (= (nelisp_env_entry_slot_tag entry 5) 8)
                          (setq operation 1) 0) 0))) 0)
-         (nl_sexp_clone_into 268435480 tag-save)
-         (nl_sexp_clone_into 268435512 val-save)
+         (ptr-write-u64 (+ fr 24) 0 (if (= tag-w 0) 3 tag-w))
+         (ptr-write-u64 (+ fr 32) 0 (if (= val-w 0) 3 val-w))
          (ptr-write-u64 268435472 0 0)
          (ptr-write-u64 buf 0 7021161792682421605) ; emacs-pa
          (ptr-write-u64 (+ buf 8) 0 8316298228994959730) ; rity-mis
          (ptr-write-u64 (+ buf 16) 0 7379557486361914723) ; c--notif
          (ptr-write-u64 (+ buf 24) 0 121) ; y
-         (nl_alloc_symbol buf 25 name)
-         (wf_write_nil nilp)
-         (wf_write_nil where)
+         (setq name (nl_alloc_symbol_w buf 25 0))
          ;; The dispatcher suppresses local-buffer inference for this token,
          ;; then presents GNU's nil WHERE for a default-cell write.
          (if (= operation 6)
              (seq (ptr-write-u64 buf 0 32770348699510116)
-                  (nl_alloc_symbol buf 7 where)) 0) ; default
-         (if (or (= operation 1) (= operation 6))
-             (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol buf 3 op))
-           (if (or (= operation 2) (= operation 7))
-               (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol buf 3 op))
-             (if (= operation 3) (seq (ptr-write-u64 buf 0 499917811317) (nl_alloc_symbol buf 5 op))
-               (if (= operation 5)
-                   (seq (ptr-write-u64 buf 0 7809648991760967012)
-                        (ptr-write-u64 (+ buf 8) 0 7561577)
-                        (nl_alloc_symbol buf 11 op))
-                 (seq (ptr-write-u64 buf 0 8462090451408347501)
-                      (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol buf 10 op))))))
-         (nelisp_cons_construct (if (= operation 6) where 3) 3 tail)
-         (nelisp_cons_construct op tail tail)
-         (nelisp_cons_construct
-          (if (= operation 4) 3 (if (= (logand value 1) 1) value result)) tail tail)
-         (nelisp_cons_construct roots tail args)
+                  (setq where (nl_alloc_symbol_w buf 7 0))) 0) ; default
+         (setq op
+               (if (or (= operation 1) (= operation 6))
+                   (seq (ptr-write-u64 buf 0 7628147) (nl_alloc_symbol_w buf 3 0))
+                 (if (or (= operation 2) (= operation 7))
+                     (seq (ptr-write-u64 buf 0 7628140) (nl_alloc_symbol_w buf 3 0))
+                   (if (= operation 3) (seq (ptr-write-u64 buf 0 499917811317) (nl_alloc_symbol_w buf 5 0))
+                     (if (= operation 5)
+                         (seq (ptr-write-u64 buf 0 7809648991760967012)
+                              (ptr-write-u64 (+ buf 8) 0 7561577)
+                              (nl_alloc_symbol_w buf 11 0))
+                       (seq (ptr-write-u64 buf 0 8462090451408347501)
+                            (ptr-write-u64 (+ buf 8) 0 25710) (nl_alloc_symbol_w buf 10 0)))))))
+         (ptr-write-u64 (+ fr 8) 0
+           (nelisp_cons_construct_w (heap-read-u64 fr 0)
+             (nelisp_cons_construct_w
+               (if (= operation 4) 3 (heap-read-u64 (+ fr 16) 0))
+               (nelisp_cons_construct_w op (nelisp_cons_construct_w where 3 0) 0) 0) 0))
          (ptr-write-u64 pending 0 (heap-read-u64 state 24))
-         (ptr-write-u64 pending 8 roots)
+         (ptr-write-u64 pending 8 (heap-read-u64 fr 0))
          (if (= operation 2) (ptr-write-u64 state 24 pending) 0)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) name fn) 0)
-             (setq rc (nl_apply_function fn args env result)) 0)
+         (let* ((fw (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)))
+           (if (or (= fw 0) (= fw 2)) 0
+             (setq rc (if (= (nl_apply_function_w (wf_word_view fw) (heap-read-u64 (+ fr 8) 0) env 0) 0) 1 0))))
          (if (= operation 2) (ptr-write-u64 state 24 (heap-read-u64 pending 0)) 0)
          (if (= rc 0)
-             (seq (nl_sexp_clone_into tag-save 268435480)
-                  (nl_sexp_clone_into val-save 268435512)
+             (seq (if (and (= (heap-read-u64 (data-addr nl_exit_values) 0) tag-w)
+                           (= (heap-read-u64 (data-addr nl_exit_values) 8) val-w))
+                      0
+                    (seq (ptr-write-u64 (data-addr nl_exit_values) 0 (heap-read-u64 (+ fr 24) 0))
+                         (ptr-write-u64 (data-addr nl_exit_values) 8 (heap-read-u64 (+ fr 32) 0))))
                   (ptr-write-u64 268435472 0 flag)) 0)
          (nl_root_release env mark)
          rc)))
     ;; Evaluator lookup helpers expose reusable scratch views. Root/copy
     ;; operands before declaration lookup and keep them across callbacks.
     (defun nl_n3_bind (env frames name value)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      ;; Doc 216 S6.2: the name (+0) and value (+8) are durable WORDs in one
+      ;; frame, kept across the watcher's callback.
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
          (if (or (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-                 (= (bf_declared_special_p (+ env 0) sym) 1)
-                 (= (nelisp_frame_local_special_p frames sym) 1))
+                 (= (bf_declared_special_p (+ env 0) (heap-read-u64 fr 0)) 1)
+                 (= (nelisp_frame_local_special_p frames (heap-read-u64 fr 0)) 1))
              ;; A watcher may retarget the original alias. Bind the same
              ;; canonical name whose pending binding the watcher observed,
              ;; retaining it in the existing root across the callback.
-             (let ((canonical (nl_pa_binding_name env frames sym)))
+             (let ((canonical (nl_pa_binding_name env frames (heap-read-u64 fr 0))))
                (if (= canonical 0) (setq rc 1)
-                 (seq (nl_sexp_clone_into canonical sym)
-                      (setq rc (nl_n3_notify env sym saved 2))))) 0)
+                 (seq (nl_val_clone_into canonical fr)
+                      (setq rc (nl_n3_notify env (heap-read-u64 fr 0)
+                                             (heap-read-u64 (+ fr 8) 0) 2))))) 0)
          (if (= rc 0)
-             (setq rc (nl_n4_bind_declared env frames sym saved))
+             (setq rc (nl_n4_bind_declared env frames (heap-read-u64 fr 0)
+                                           (heap-read-u64 (+ fr 8) 0)))
            (setq rc 0))
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_dynamic_write (env name value operation)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (setq rc (nl_n3_notify env sym saved operation))
-         (if (= rc 0) (setq rc (nl_n3_set_dynamic_raw env sym saved)) 0)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (setq rc (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) operation))
+         (if (= rc 0)
+             (setq rc (nl_n3_set_dynamic_raw env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0))) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_alias_write_w (name base env _pad)
-  (let* ((copies (alloc-bytes 64 8))
-         (mark (seq (nl_sexp_clone_into name copies)
-                    (nl_sexp_clone_into base (+ copies 32)) (nl_root_mark env)))
-         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0))
-    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
+  (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (w 0))
+    (seq (nl_val_clone_into name fr)
+         (nl_val_clone_into base (+ fr 8))
          ;; Installation owns ordering: migrate the base before notifying
          ;; the former alias watchers, then revalidate before publication.
-         (setq w (nl_n3_defvaralias_raw_w sym val env 0))
+         (setq w (nl_n3_defvaralias_raw_w (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) env 0))
          (nl_root_release env mark) w)))
     (defun nl_n3_alias_write (name base env out)
   (nl_abi_word_to_rc (nl_n3_alias_write_w name base env 0) out))
     (defun nl_n3_default_write_w (env name value _pad)
-  (let* ((copies (alloc-bytes 64 8))
-         (mark (seq (nl_sexp_clone_into name copies)
-                    (nl_sexp_clone_into value (+ copies 32)) (nl_root_mark env)))
-         (sym (nl_root_reserve env)) (val (nl_root_reserve env)) (w 0)
-         (saved (if (= (logand value 1) 1) value val)))
-    (seq (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nl_n3_notify env sym saved 1) 0)
-             (setq w (nl_n3_declared_default_raw_w env sym saved 0)) 0)
+  (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (w 0))
+    (seq (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (if (= (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) 1) 0)
+             (setq w (nl_n3_declared_default_raw_w env (heap-read-u64 fr 0)
+                                                   (heap-read-u64 (+ fr 8) 0) 0)) 0)
          (nl_root_release env mark) w)))
     (defun nl_n3_default_write (env name value out)
   (nl_abi_word_to_rc (nl_n3_default_write_w env name value 0) out))
     (defun nl_n3_setq (env name value)
-      (let* ((copies (alloc-bytes 64 8))
-             (mark (seq (nl_sexp_clone_into name copies)
-                        (nl_sexp_clone_into value (+ copies 32))
-                        (nl_root_mark env)))
-             (sym (nl_root_reserve env))
-             (val (nl_root_reserve env)) (rc 0)
-             (saved (if (= (logand value 1) 1) value val)))
+      (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
-         (nl_sexp_clone_into copies sym) (nl_sexp_clone_into (+ copies 32) val)
-         (if (= (nelisp_frame_stack_find_kind (+ env 32) sym 0 0) 0)
-             (setq rc (nl_n3_notify env sym saved 1)) 0)
-         (if (= rc 0) (setq rc (nl_n3_setq_raw env sym saved)) 0)
+         (nl_val_clone_into name fr)
+         (nl_val_clone_into value (+ fr 8))
+         (if (= (nelisp_frame_stack_find_kind (+ env 32) (heap-read-u64 fr 0) 0 0) 0)
+             (setq rc (nl_n3_notify env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0) 1)) 0)
+         (if (= rc 0)
+             (setq rc (nl_n3_setq_raw env (heap-read-u64 fr 0) (heap-read-u64 (+ fr 8) 0))) 0)
          (nl_cons_root_finish env mark rc))))
     (defun nl_n4_pop_names_raw (env names depth status)
       (if (= (sexp-tag names) 7)
@@ -46651,7 +46881,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (nl_sf_lambda_captured_w
                   (nl_env_capture_lexical_filtered_w env args 0 0) args roots)
                (let* ((sym (alloc-bytes 32 8)) (buf (alloc-bytes 8 1)))
-                 (seq (nl_capture_root_set_word roots 2 sym)
+                 ;; ROOTS is nl_sf_lambda_w's WORD frame (Doc 216 S6.2).
+                 (seq (ptr-write-u64 roots 16 sym)
                       (ptr-write-u64 buf 0 107083775959404)
                       (nl_alloc_symbol buf 6 sym)
                       (nelisp_cons_construct_w sym args 0))))
@@ -46675,21 +46906,22 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           ;; during later initializers; the pair owns a durable value copy.
           (push '(defun nl_let_collect_with_slot
                      (bindings_ptr b_ptr name_ptr env_ptr root_mark val_slot)
+                   ;; Doc 216 S6.2: VAL_SLOT is a WORD root (nl_root_word)
+                   ;; holding the initializer's value while later
+                   ;; initializers run; the pair owns a durable copy.
                    (let* ((word (nl_let_parse_val_w b_ptr env_ptr 0)) (answer 1))
                      (seq
                       (if (= word 0) 0
                         (seq
-                         (wf_word_store_out val_slot word)
+                         (ptr-write-u64 val_slot 0 word)
                          (let* ((rest_pairs (nl_let_collect_walk
                                              (nl_cons_cdr_word bindings_ptr) env_ptr)))
                            (if (= rest_pairs 1) 0
-                             (let* ((pair_slot (alloc-bytes 32 8))
-                                    (node_slot (alloc-bytes 32 8)))
-                               (seq
-                                (nelisp_cons_construct (+ (* name_ptr 4) 1)
-                                  (if (= (logand word 1) 1) word val_slot) pair_slot)
-                                (nelisp_cons_construct pair_slot rest_pairs node_slot)
-                                (setq answer node_slot)))))))
+                             (setq answer
+                                   (nelisp_cons_construct_w
+                                    (nelisp_cons_construct_w (+ (* name_ptr 4) 1)
+                                      (heap-read-u64 val_slot 0) 0)
+                                    rest_pairs 0))))))
                       (if (= (logand (heap-read-u64 (+ env_ptr 112) 0) 1048576) 0)
                           (nl_root_release env_ptr root_mark) 0)
                       answer))) out))
@@ -46752,11 +46984,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                        (nl_frame_push_sym1_ptr) push_scratch)
                                       (if (= (nl_let_bind_walk collected env) 0) 0
                                         (seq (nl_env_pop_frame env) 1)))
-                               (let* ((pairs (nl_root_reserve env)) (rc 1))
-                                 (seq (nl_sexp_clone_into collected pairs)
+                               ;; Doc 216 S6.2: the collected pairs are one
+                               ;; WORD root while the binding loop runs.
+                               (let* ((pairs (nl_root_word env)) (rc 1))
+                                 (seq (ptr-write-u64 pairs 0 collected)
                                       (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
                                        (nl_frame_push_sym1_ptr) push_scratch)
-                                      (if (= (nl_let_bind_walk pairs env) 0) (setq rc 0)
+                                      (if (= (nl_let_bind_walk (heap-read-u64 pairs 0) env) 0)
+                                          (setq rc 0)
                                         (nl_env_pop_frame env))
                                       (nl_cons_root_finish env mark rc))))))
                        (seq (nelisp_frame_push_direct frames_ptr (nl_frame_push_sym0_ptr)
@@ -46977,18 +47212,33 @@ nothing."
 
 (defun nelisp-standalone--special-prefilter-helper (form)
   "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
-match a special-form name tested in FORM."
-  (let ((test 0))
+match a special-form name tested in FORM.
+The test is a balanced decision on the length, then the first bytes of
+the names of that length: a few comparisons, where a chain over every
+name took one pair of comparisons per name for each evaluated call."
+  (let ((by-len (make-hash-table)))
     (dolist (name (nelisp-standalone--special-prefilter-names form))
-      (setq test `(if (= (if (= len ,(length name)) (if (= b0 ,(aref name 0)) 1 0) 0) 1)
-                      1 ,test)))
-    `(defun nl_sp_maybe_special (name_ptr)
-       (if (= (sexp-tag name_ptr) 4)
-           (let* ((len (heap-sexp-length name_ptr)))
-             (if (< len 1) 0
-               (let* ((b0 (heap-read-u8 (heap-sexp-data name_ptr) 0)))
-                 ,test)))
-         0))))
+      (cl-pushnew (aref name 0) (gethash (length name) by-len)))
+    (cl-labels
+        ((first-bytes (bytes)
+           (let ((test 0))
+             (dolist (b (sort (copy-sequence bytes) #'>))
+               (setq test `(if (= b0 ,b) 1 ,test)))
+             test))
+         (tree (lens)
+           (if (null lens) 0
+             (let* ((mid (/ (length lens) 2))
+                    (len (nth mid lens)))
+               `(if (= len ,len) ,(first-bytes (gethash len by-len))
+                  (if (< len ,len) ,(tree (cl-subseq lens 0 mid))
+                    ,(tree (cl-subseq lens (1+ mid)))))))))
+      `(defun nl_sp_maybe_special (name_ptr)
+         (if (= (sexp-tag name_ptr) 4)
+             (let* ((len (heap-sexp-length name_ptr)))
+               (if (< len 1) 0
+                 (let* ((b0 (heap-read-u8 (heap-sexp-data name_ptr) 0)))
+                   ,(tree (sort (hash-table-keys by-len) #'<)))))
+           0)))))
 
 (defun nelisp-standalone--patch-n3-specials (source)
   "Honor GNU special-form function cells and reject evaluated invocation."
@@ -47144,29 +47394,10 @@ match a special-form name tested in FORM."
         (nl_env_stash_write_name_sym name_sym_slot)
         (nl_env_set_value env name_sym_slot signal_slot)
         ;; Formal-binding errors used to write only nelisp--last-signal-data
-        ;; in the Env.  Top-level standalone reporting reads the M6 arena
-        ;; stash, so mirror the same (TAG . VAL) signal there as well.
-        ;; Doc 215: an immediate WORD is written straight into the stash.
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand tag_w 7) 0)
-            (extern-call nl_sexp_clone_into tag_w 268435480)
-          (seq
-           (ptr-write-u64 268435480 0 (heap-read-u64 tag_w 0))
-           (ptr-write-u64 (+ 268435480 8) 0 (heap-read-u64 (+ tag_w 8) 0))
-           (ptr-write-u64 (+ 268435480 16) 0 (heap-read-u64 (+ tag_w 16) 0))
-           (ptr-write-u64 (+ 268435480 24) 0 (heap-read-u64 (+ tag_w 24) 0))))
-        ;; Doc 216: only a legacy 000 WORD is a view to copy raw; an
-        ;; immediate, direct cons or vectorlike materialises.
-        (if (/= (logand val_w 7) 0)
-            (extern-call nl_sexp_clone_into val_w 268435512)
-          (seq
-           (ptr-write-u64 268435512 0 (heap-read-u64 val_w 0))
-           (ptr-write-u64 (+ 268435512 8) 0 (heap-read-u64 (+ val_w 8) 0))
-           (ptr-write-u64 (+ 268435512 16) 0 (heap-read-u64 (+ val_w 16) 0))
-           (ptr-write-u64 (+ 268435512 24) 0 (heap-read-u64 (+ val_w 24) 0))))
-        (ptr-write-u64 268435472 0 1)
-        (atomic-fetch-add 268435544 1)
+        ;; in the Env.  Top-level standalone reporting reads the pending
+        ;; exit, so record the same (TAG . VAL) signal there as well; the
+        ;; cell's car and cdr are WORDs already.
+        (nl_exit_signal_w tag_w val_w)
         1)))
   "M6-visible replacement for env-leaves-bind `nl_env_stash_signal'.")
 
@@ -47317,7 +47548,7 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
             (ptr-write-u64 bytes 8 31084746153094773)
             (nl_alloc_symbol bytes 15 name)
             (bf_wrong_number_of_args name argc)
-            (cons-make-with-clone 268435480 268435512 signal_slot)
+            (nl_exit_condition_into signal_slot)
             (nl_env_stash_signal env signal_slot)
             1)))))
   "Validate symbol-function's fast-path arity/type and return nil on misses.")
@@ -47679,7 +47910,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (ptr-write-u64 bytes 0 7362660191469140339)
          (ptr-write-u64 bytes 8 31084746153094773)
          (bf_wrong_number_of_args (nl_alloc_symbol_w bytes 15 0) count)
-         (cons-make-with-clone 268435480 268435512 signal-slot)
+         (nl_exit_condition_into signal-slot)
          (nl_env_stash_signal env signal-slot) 0)))))
 
 (defun nl_n3_globals_mode_w (args env _pad)
@@ -48352,11 +48583,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                       (seq (wf_copy32 result (+ base (* (- status 512) 32)))
                            (setq word result)))
                   (if (and (>= exit 0) (= status (+ 1024 exit)))
-                      (seq
-                       (wf_copy32 268435480 (+ base (* (+ exit 1) 32)))
-                       (wf_copy32 268435512 (+ base (* (+ exit 2) 32)))
-                       (ptr-write-u64 268435472 0 (heap-read-u64 (+ base (* exit 32)) 8))
-                       (atomic-fetch-add 268435544 1))
+                      (nl_exit_raise_w (heap-read-u64 (+ base (* exit 32)) 8)
+                                       (+ base (* (+ exit 1) 32))
+                                       (+ base (* (+ exit 2) 32)))
                     (if (and (>= status 256) (< status (+ 256 count)))
                         (bf_wrong_type_listp (+ base (* (- status 256) 32)))
                       (nl_apply_stash_invalid_function env func)))))
@@ -48494,23 +48723,26 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               0))
         0))
     (defun nl_lookup_fn_autoload_load_cell_w (mirror unbound sym cell)
-  (let* ((mark (nl_root_mark mirror))
-         (name-root (nl_root_reserve mirror))
-         (function-root (nl_root_reserve mirror))
-         (args-root (nl_root_reserve mirror)) (bytes (alloc-bytes 16 1)))
+  ;; Doc 216 S6.2: one frame of three WORD roots: the loader's name, the
+  ;; function and the argument list.
+  (let* ((mark (nl_root_mark mirror)) (roots (nl_root_words mirror 3))
+         (bytes (alloc-bytes 16 1)))
     (seq (ptr-write-u64 bytes 0 7233184988050781537)
          (ptr-write-u64 bytes 8 7233184986943153197)
-         (nl_alloc_symbol bytes 16 name-root)
-         (wf_word_store_out args-root
+         (ptr-write-u64 roots 0 (nl_alloc_symbol_w bytes 16 0))
+         (ptr-write-u64 roots 16
            (nelisp_cons_construct_w cell (nelisp_cons_construct_w sym 3 0) 0))
-         (let* ((function-word (nelisp_env_lookup_function_w mirror unbound name-root 0))
+         (let* ((function-word (nelisp_env_lookup_function_w mirror unbound
+                                 (heap-read-u64 roots 0) 0))
                 (word
                  (if (= function-word 0) 0
                    (if (= function-word 2)
-                       (nl_abi_fail (nl_cons_stash_void_function mirror name-root) 0)
+                       (nl_abi_fail (nl_cons_stash_void_function mirror
+                                      (heap-read-u64 roots 0)) 0)
                      (seq
-                      (wf_word_store_out function-root function-word)
-                      (let* ((loaded (nl_apply_function_w function-root args-root mirror 0)))
+                      (ptr-write-u64 roots 8 function-word)
+                      (let* ((loaded (nl_apply_function_w (wf_word_view function-word)
+                                       (heap-read-u64 roots 16) mirror 0)))
                         (if (= loaded 0) 0
                           (nl_lookup_fn_autoload_w mirror unbound sym 0))))))))
            (seq (nl_root_release mirror mark) word)))))
@@ -48836,28 +49068,28 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= state 0) frame
           (let* ((base (nl_word_payload frame)) (forward (heap-read-u64 base 48)))
             (if (/= forward 0) forward
-              (let* ((env (heap-read-u64 state 24)) (mark (nl_root_mark env))
-                     (out (nl_root_reserve env)))
+              ;; Doc 216 S6.2: the promoted frame is built as a native record
+              ;; WORD; no root holds it, and nothing between the allocation and
+              ;; the install can collect.
+              (let* ((rec (nl_alloc_record (nl_record_type_word frame) 4)))
                 (seq
-                 (record-make (nl_record_type_word frame) 4 out)
-                 (record-slot-set out 0 (nl_record_slot_word frame 0))
-                 (record-slot-set out 1 (nl_record_slot_word frame 1))
-                 (record-slot-set out 2 (nl_record_slot_word frame 2))
-                 (record-slot-set out 3 (nl_record_slot_word frame 3))
-                 (let* ((word (+ (nl_word_payload out) 6))
+                 (nl_val_clone_into (nl_record_slot_word frame 0) (+ rec 16))
+                 (nl_val_clone_into (nl_record_slot_word frame 1) (+ rec 24))
+                 (nl_val_clone_into (nl_record_slot_word frame 2) (+ rec 32))
+                 (nl_val_clone_into (nl_record_slot_word frame 3) (+ rec 40))
+                 (let* ((word (+ rec 6))
                         (owner (heap-read-u64 state 8))
                         (backing (nl_record_slot_word owner 0))
                         (index (sar (- base (+ state 128)) 6))
                         (control (nl_frame_stack_control)))
                    (seq
-                    (ptr-write-u64 (nl_word_payload word) 0
+                    (ptr-write-u64 rec 0
                       (logior 1036 (logand (heap-read-u64 base 0) 192)))
                     (ptr-write-u64 base 48 word)
                     (ptr-write-u64 (+ (nl_word_payload backing) (+ 8 (* index 8))) 0 word)
                     (if (= (heap-read-u64 control 16) 0) 0
                       (seq (atomic-fetch-add (+ control 40) 1)
                            (atomic-fetch-add (+ control 48) 1)))
-                    (nl_root_release env mark)
                     word)))))))))
     (defun nl_frame_stack_promote_owner (frames _pad)
       (let* ((depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
@@ -48933,20 +49165,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    (if (= (nl_record_slot_word owner 2) (+ (* state 4) 1))
                        (record-slot-set owner 2 3) 0) 0)))
              (setq state (heap-read-u64 state 0))))) 0))
-    (defun nl_frame_stack_snapshot (env out)
-      (let* ((frames (+ env 32)) (mark (nl_root_mark env))
-             (backing (nl_root_reserve env))
-             (depth (sar (nl_record_slot_word frames 1) 2)) (i 0))
+    (defun nl_frame_stack_snapshot_w (env _pad)
+      ;; The frame stack's snapshot record as a WORD, built from a native
+      ;; vector and record (nl_alloc_vector / nl_alloc_record) with nothing
+      ;; that can collect between the allocations and the return.
+      (let* ((frames (+ env 32))
+             (depth (sar (nl_record_slot_word frames 1) 2)) (i 0)
+             (backing 0) (rec 0))
         (seq
          (nl_frame_stack_promote_owner frames 0)
-         (vector-make depth backing)
+         (setq backing (nl_alloc_vector depth))
          (while (< i depth)
-           (seq (vector-slot-set backing i (nl_vector_slot_word (nl_record_slot_word frames 0) i))
+           (seq (ptr-write-u64 (+ backing 8) (* i 8)
+                  (nl_vector_slot_word (nl_record_slot_word frames 0) i))
                 (setq i (+ i 1))))
-         (record-make (nl_record_type_word frames) 2 out)
-         (record-slot-set out 0 backing)
-         (record-slot-set out 1 (+ (* depth 4) 1))
-         (nl_root_release env mark) 0)))
+         (setq rec (nl_alloc_record (nl_record_type_word frames) 2))
+         (ptr-write-u64 (+ rec 16) 0 (+ backing 6))
+         (ptr-write-u64 (+ rec 24) 0 (+ (* depth 4) 1))
+         (+ rec 6))))
     ;; Convert the parent's active shallow bindings before publishing a child.
     ;; GNU temporarily unbinds them while switching threads (thread.c:95-98,
     ;; eval.c:4177-4191). Concurrent workers instead keep bindings in private
@@ -49083,20 +49319,22 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       ;; A GNU thread starts with an empty specpdl (thread.c:914-917). Inherit
       ;; the lexical closure cells, including local declarations, through the
       ;; same capture/install path as an ordinary closure, never dynamic cells.
-      (let* ((mark (nl_root_mark penv)) (saved (nl_root_reserve penv))
-             (backing (nl_root_reserve penv)))
+      ;; Doc 216 S6.2: the captured environment is one WORD root, the backing
+      ;; vector a native vector WORD.
+      (let* ((mark (nl_root_mark penv)) (saved (nl_root_word penv))
+             (backing (+ (nl_alloc_vector 8) 6)))
         (seq
          (nl_thread_parent_unshallow penv)
-         (nl_env_capture_lexical penv saved)
-         (vector-make 8 backing)
+         (let* ((captured (nl_env_capture_lexical_with_filter_w penv 3 0 0)))
+           (ptr-write-u64 saved 0 (if (= captured 0) 3 captured)))
          (record-make (nl_record_type_word (+ penv 32)) 3 (+ env 32))
          (record-slot-set (+ env 32) 0 backing)
          (record-slot-set (+ env 32) 1 1)
-         (nl_env_push_captured env saved)
+         (nl_env_push_captured env (wf_word_view (heap-read-u64 saved 0)))
          (nl_root_release penv mark) 0)))
-    (defun nl_frame_stack_stats_w (env _pad)
+    (defun nl_frame_stack_stats_w (_env _pad)
       (let* ((control (nl_frame_stack_control)) (state (heap-read-u64 control 0))
-             (live 0) (mark (nl_root_mark env)) (out (nl_root_reserve env)) (i 0))
+             (live 0) (box (nl_alloc_vector 6)) (i 0))
         (seq
          (if (/= (heap-read-u64 control 16) 0) 0
            (seq
@@ -49105,12 +49343,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    (setq state (heap-read-u64 state 0))))
             (ptr-write-u64 control 56 live) (ptr-write-u64 control 64 live)
             (ptr-write-u64 control 16 1)))
-         (vector-make 6 out)
          (while (< i 6)
-           (seq (vector-slot-set out i (+ (* (heap-read-u64 control (+ 24 (* i 8))) 4) 1))
+           (seq (ptr-write-u64 (+ box 8) (* i 8)
+                  (+ (* (heap-read-u64 control (+ 24 (* i 8))) 4) 1))
                 (setq i (+ i 1))))
-         (let* ((word (+ (nl_word_payload out) 6)))
-           (seq (nl_root_release env mark) word)))))
+         (+ box 6))))
     (defun nl_frame_stack_locals_start (frame end)
   (let* ((start (heap-read-u64 frame 96))
          (backing (nl_record_slot_word (+ frame 64) 0))
@@ -49134,15 +49371,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; dynamic bindings are private cells and take precedence over the mirror.
     ;; The cache's three WORDs are explicit N4 roots, separate from S6.3.
     (defun nl_frame_stack_limit_setup (env state)
-      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
-             (bytes (alloc-bytes 24 8)))
+      ;; Doc 216 S6.2: the name symbol is a fresh box that STATE keeps; no
+      ;; root is needed for the lookup.
+      (let* ((bytes (alloc-bytes 24 8)))
         (seq
          (ptr-write-u64 bytes 0 8102936067909902701)
          (ptr-write-u64 bytes 8 7306014439016654125)
          (ptr-write-u64 bytes 16 6845552)
-         (nl_alloc_symbol bytes 19 name)
-         (ptr-write-u64 state 48 (nl_word_clone name))
-         (let* ((entry (nelisp_mirror_lookup_entry env name)))
+         (ptr-write-u64 state 48 (nl_alloc_symbol_w bytes 19 0))
+         (let* ((entry (nelisp_mirror_lookup_entry env (heap-read-u64 state 48))))
            (seq
              (ptr-write-u64 state 32
                (if (= entry 0) 0 (+ (nl_word_payload entry) 6)))
@@ -49150,7 +49387,16 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (ptr-write-u64 state 56
                (if (and (/= entry 0) (> (nl_ent_n entry) 5)) 1 0))))
          (ptr-write-u64 state 40 (+ (nl_word_payload env) 6))
-         (nl_root_release env mark) 0)))
+         0)))
+    ;; GNU eval_sub and Ffuncall (eval.c:2604-2608, 3196-3200) read
+    ;; `max-lisp-eval-depth' only once the depth passes it, and count a
+    ;; limit below 100 as 100: no evaluation shallower than 100 levels reads
+    ;; the variable at all.  DEPTH is the depth the caller is about to
+    ;; check; the answer is the limit it checks against.
+    (defun nl_eval_depth_limit (env depth)
+      (if (< depth 100) 100
+        (let* ((limit (nl_frame_stack_limit env 0)))
+          (if (< limit 100) 100 limit))))
     (defun nl_frame_stack_limit (env _pad)
       ;; ENV is an aligned EvalCtx; existing compact WORD roots stay at32/40/48.
       (let* ((state (heap-read-u64 env 176)))
@@ -49317,23 +49563,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (= (logand w 1) 1) (+ frame 32) w)))
     (defun nl_n4_exit_debug_w (w env)
       ;; Debug-on-exit: call (debugger 'exit VALUE); its answer is the value.
-      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
-             (fn (nl_root_reserve env)) (args (nl_root_reserve env))
-             (value (nl_root_reserve env)) (tag (nl_root_reserve env))
+      ;; Doc 216 S6.2: the argument list (exit VALUE) is one precise WORD
+      ;; root; the symbols and the function are WORDs.
+      (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
              (buf (alloc-bytes 8 1)))
         (seq
-         (nl_abi_word_to_rc w value)
          (ptr-write-u64 buf 0 8243108387020236132) ; debugger
-         (nl_alloc_symbol buf 8 name)
-         (ptr-write-u64 buf 0 1953069157) ; exit
-         (nl_alloc_symbol buf 4 tag)
-         (wf_write_nil args)
-         (nelisp_cons_construct value args args)
-         (nelisp_cons_construct tag args args)
-         (nl_cons_root_finish env mark
-          (if (= (bf_dynamic_lookup env name fn) 0)
-              (nl_apply_function_w fn args env 0)
-            (nl_abi_fail 1 0))))))
+         (let* ((name (nl_alloc_symbol_w buf 8 0)))
+           (seq
+            (ptr-write-u64 buf 0 1953069157) ; exit
+            (ptr-write-u64 root 0
+              (nelisp_cons_construct_w (nl_alloc_symbol_w buf 4 0)
+                                       (nelisp_cons_construct_w w 3 0) 0))
+            (let* ((fw (bf_dynamic_lookup_w env name 0)))
+              (nl_cons_root_finish env mark
+               (if (or (= fw 0) (= fw 2))
+                   (nl_abi_fail 1 0)
+                 (nl_apply_function_w (wf_word_view fw) (heap-read-u64 root 0)
+                                      env 0)))))))))
     ;; Doc 215 word ABI: W is the activation's result WORD (0 = signal).
     (defun nl_n4_finish_w (w env _pad frame)
       (if (= frame 0) w
@@ -50073,13 +50320,16 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ;; builtin), the evaluated WORDs become the ordinary apply's argument
     ;; list, so no argument is evaluated twice.  `funcall' has its own
     ;; WORD path, `nl_eic_funcall_w'.
+    ;; The primitive's id is decoded once (`m5_fx_primitive_id', funcall
+    ;; included); a builtin that is no WORD primitive answers 2 before any
+    ;; argument is evaluated, and the caller's ordinary path evaluates them.
     (defun nl_eic_primitive_w (fn tail env fw call_name)
       (let* ((name (m5_fx_builtin_name fn 0))
-             (argc (if (= name 0) 0 (m5_fx_form_count tail 0))))
-        (if (< argc 1) 2
-        (if (= (sexp-name-eq name "funcall") 1)
+             (argc (if (= name 0) 0 (m5_fx_form_count tail 0)))
+             (id (if (< argc 1) 0 (m5_fx_primitive_id name argc))))
+        (if (= id 0) 2
+        (if (= id 13)
             (nl_eic_funcall_w tail env argc fn fw call_name)
-        (if (> argc 2) 2
           (let* ((base (nl_root_frame env (+ argc 1))))
             (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
               (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
@@ -50087,13 +50337,13 @@ tails run against a private box), and the (rc, OUT) adapter F."
                  ;; The activation shows the evaluated arguments, as GNU's
                  ;; set_backtrace_args (eval.c:2693).
                  (m5_fx_frame_lazy env base argc 0)
-                 (let* ((st (m5_fx_primitive_named name base argc argc
-                                                   (+ base (* argc 8)) env 0)))
+                 (let* ((st (m5_fx_primitive_run id base argc argc
+                                                 (+ base (* argc 8)) env 0)))
                    (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
                      (if (= st -3)
                          (nl_eic_after_args_w (m5_fx_slot_list base argc)
                                               env fw call_name)
-                       0))))))))))))
+                       0)))))))))))
     ;; GNU Ffuncall (eval.c:3185) and funcall_general (eval.c:3149) on the
     ;; WORDs eval_sub evaluated.  FUNCTION and its arguments go into one
     ;; WORD frame, with three more slots: the resolved definition, the
