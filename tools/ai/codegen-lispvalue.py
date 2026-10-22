@@ -231,7 +231,7 @@ def run(tag, root, binary):
 
 
 # S5.1 changes only NOPs/layout; retain exact byte identity after alignment.
-KERNEL_REFERENCE = "cdff33e46"
+KERNEL_REFERENCE = "37c6fede7"
 KERNELS = ("byte-scan", "list-walk", "fixnum-loop", "class-table", "vector-sum")
 
 

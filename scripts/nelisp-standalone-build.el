@@ -2143,6 +2143,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
                                (format "jump-tables=%s\0" nelisp-aot-compiler--x86-jump-tables-enabled)
+                               (format "call-free-regions=%s\0" nelisp-aot-compiler--x86-call-free-regions)
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)))))
 

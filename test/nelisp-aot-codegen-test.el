@@ -305,6 +305,117 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
       ;; store of imm32 7 at disp 8 -> 8 - 4 (immediate) = 4.
       (should (equal addends '(16 4))))))
 
+(ert-deftest nelisp-aot-codegen/call-free-regions-call-boundaries ()
+  "A hot branch keeps locals in registers, then flushes before a call."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let ((regions 0)
+        (original (symbol-function 'nelisp-aot-compiler--emit-promoted-loop-x86)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-promoted-loop-x86)
+               (lambda (node buf emit &optional plan)
+                 (when plan (setq regions (1+ regions)))
+                 (funcall original node buf emit plan))))
+      (dolist (input '((3 9 0) (3 9 1) (8 4 2) (8 4 19)
+                       (-7 11 6) (17 -2 3) (65530 7 12)))
+        (pcase-let ((`(,a ,b ,n) input))
+          (let ((i 0) (x a) (y b) (z 13))
+            (while (< i n)
+              (if (= (logand i 1) 0)
+                  (progn (setq x (+ x y)) (setq y (logxor y x))
+                         (setq z (+ z x)) (setq x (logand x 65535))
+                         (setq y (logand y 65535)))
+                (setq x (+ x 7)) (setq y (+ y 1)))
+              (setq i (+ i 1)))
+            (should
+             (= (nelisp-aot-codegen-test--run
+                 `(seq
+                   (defun bump (x) (+ x 7))
+                   (defun f (a b n)
+                     (let ((i 0) (x a) (y b) (z 13))
+                       (while (< i n)
+                         (if (= (logand i 1) 0)
+                             (seq (setq x (+ x y)) (setq y (logxor y x))
+                                  (setq z (+ z x)) (setq x (logand x 65535))
+                                  (setq y (logand y 65535)))
+                           (seq (setq x (bump x)) (setq y (+ y 1))))
+                         (setq i (+ i 1)))
+                       (+ x (+ (* y 3) (* z 5)))))
+                   (exit (logand (f ,a ,b ,n) 255))))
+                (logand (+ x (* y 3) (* z 5)) 255)))))))
+    (should (> regions 0))))
+
+(ert-deftest nelisp-aot-codegen/call-free-regions-preserve-result ()
+  "Save/restore and slot flushing preserve a branch's returned GP value."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (dolist (x '(-7 0 3 22))
+    (let* ((a (+ x 5)) (b (+ a x)) (c (+ b a))
+           (expected (if (> x 0) (+ a b c (* a 3) (* b 5))
+                       (+ a b c (* a 7) (* c 11)))))
+      (should
+       (= (nelisp-aot-codegen-test--run
+           `(seq
+             (defun keep (v) v)
+             (defun f (x)
+               (keep (let ((a (+ x 5)) (b 0) (c 0))
+                 (setq b (+ a x)) (setq c (+ b a))
+                 (if (> x 0) (+ a (+ b (+ c (+ (* a 3) (* b 5)))))
+                   (+ a (+ b (+ c (+ (* a 7) (* c 11)))))))))
+             (exit (logand (f ,x) 255))))
+          (logand expected 255))))))
+
+(ert-deftest nelisp-aot-codegen/call-free-regions-safety-gates ()
+  "Checked arithmetic, Lisp values, and the opt-out never invoke the plan."
+  (let ((nelisp-aot-compiler--arch 'x86_64)
+        (node (nelisp-aot-compiler--make-ir 'value-seq :forms nil)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-call-free-region-plan)
+               (lambda (_) (ert-fail "unsafe promotion planner invoked"))))
+      (dolist (mode '(checked lisp disabled leaf))
+        (let ((nelisp-aot-compiler--checked-arith (eq mode 'checked))
+              (nelisp-aot-compiler--x86-call-containing-defun-p (not (eq mode 'leaf)))
+              (nelisp-aot-compiler--runtime-entry-params (and (eq mode 'lisp) '(out)))
+              (nelisp-aot-compiler--x86-call-free-regions (not (eq mode 'disabled))))
+          (should (= 42 (nelisp-aot-compiler--emit-call-free-region
+                         node nil (lambda () 42)))))))))
+
+(ert-deftest nelisp-aot-codegen/call-free-regions-checked-arithmetic ()
+  "Checked nonoverflow results and the existing overflow exit remain intact."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let ((nelisp-aot-compiler--checked-arith t))
+    (should (= 115 (nelisp-aot-codegen-test--run
+                   '(seq (defun f (x)
+                           (let ((a (+ x 4)))
+                             (setq a (+ a x)) (setq a (* a 3))
+                             (+ a (+ x a))))
+                         (exit (f 7))))))
+    (should (= 97 (nelisp-aot-codegen-test--run
+                   '(seq (defun f (x)
+                           (let ((a (+ x 1))) (+ a (+ x a))))
+                         (exit (f 2305843009213693951))))))))
+
+(ert-deftest nelisp-aot-codegen/call-free-regions-shadow-and-callee-saved ()
+  "Nested lexical slots and restored r12-r15 retain their independent values."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (dolist (n '(-3 0 9))
+    (let* ((sum (cl-reduce (lambda (a b) (list '+ a b))
+                           '(a a a a b b b b c c c c d d d d
+                             e e e e f f f f g g g g h h h h inner)))
+           (expected (+ (* 4 (+ (* 8 n) 36)) (* 4 (+ n 12)))))
+      (should
+       (= (nelisp-aot-codegen-test--run
+           `(seq
+             (defun keep (v) v)
+             (defun q (n)
+               (keep (let ((a (+ n 1)) (b (+ n 2)) (c (+ n 3)) (d (+ n 4))
+                     (e (+ n 5)) (f (+ n 6)) (g (+ n 7)) (h (+ n 8))
+                     (inner 0))
+                 (let ((a (+ a 11))) (setq inner (+ a (+ a (+ a a)))))
+                 ,sum)))
+             (exit (logand (q ,n) 255))))
+          (logand expected 255))))))
+
 (provide 'nelisp-aot-codegen-test)
 
 ;;; nelisp-aot-codegen-test.el ends here

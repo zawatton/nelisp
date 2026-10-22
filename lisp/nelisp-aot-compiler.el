@@ -15237,7 +15237,37 @@ build never reaches here, keeping the produced `.o' bytes unchanged."
               (nelisp-aot-compiler--byte-vec->string bytes))))
       (error nil))))
 
+(defvar nelisp-aot-compiler--x86-call-free-regions t
+  "Keep profitable raw call-free regions in the CG3 register pool.
+This never retains a local across a call, allocating node, checked
+arithmetic guard or Lisp-value operation.  Nil retains the old lowering.")
+
+(defvar nelisp-aot-compiler--x86-call-containing-defun-p nil
+  "Non-nil within a defun whose emitted body contains a call.
+Leaf functions retain their existing lowering, including CG3 loops.")
+
+(defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
+  "Call EMIT, keeping profitable call-free raw NODE in registers."
+  (let ((plan (and nelisp-aot-compiler--x86-call-free-regions
+                   nelisp-aot-compiler--x86-call-containing-defun-p
+                   (eq nelisp-aot-compiler--arch 'x86_64)
+                   (not nelisp-aot-compiler--checked-arith)
+                   (not (nelisp-aot-compiler--lisp-values-p))
+                   (memq (nelisp-aot-compiler--ir-kind node)
+                         '(if cond logic value-seq let-rt let-rt-n))
+                   (nelisp-aot-compiler--x86-call-free-region-plan node))))
+    (if plan
+        (nelisp-aot-compiler--emit-promoted-loop-x86
+         node buf emit plan)
+      (funcall emit))))
+
 (defun nelisp-aot-compiler--emit-value (node buf)
+  "Emit NODE, keeping profitable call-free raw regions in registers."
+  (nelisp-aot-compiler--emit-call-free-region
+   node buf (lambda ()
+              (nelisp-aot-compiler--emit-value-unpromoted node buf))))
+
+(defun nelisp-aot-compiler--emit-value-unpromoted (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
 `while' / `cond' / `logic' / `f64-binop'.  Most variants preserve
@@ -16116,6 +16146,12 @@ that lives in memory.  The value is not left in rax."
       t))))
 
 (defun nelisp-aot-compiler--emit-effect (node buf)
+  "Emit NODE's effects, keeping profitable call-free raw regions in registers."
+  (nelisp-aot-compiler--emit-call-free-region
+   node buf (lambda ()
+              (nelisp-aot-compiler--emit-effect-unpromoted node buf))))
+
+(defun nelisp-aot-compiler--emit-effect-unpromoted (node buf)
   "Emit NODE for its effects only; its value is discarded.
 x86-64 effect context: a `setq' of a leaf or of `(OP x LEAF)' updates
 in place, `value-seq' and `if' propagate the context, and a bare
@@ -21623,13 +21659,47 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
             (push (cons (car (pop sorted)) (pop regs)) pairs))
           (cons (nreverse pairs) written))))))
 
-(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop)
+(defun nelisp-aot-compiler--x86-call-free-region-plan (node)
+  "Return a profitable CG3 promotion plan for call-free raw NODE.
+Use the same no-call proof and register set as a CG3 loop, but charge
+each region its register loads, write-backs, and callee-saved pushes.
+At least three frame accesses must be saved; a one-use temporary never
+earns a register.  Every region falls through and flushes assigned slots
+before the surrounding code can call or allocate."
+  (let ((plan (nelisp-aot-compiler--x86-promotion-plan node)))
+    (when plan
+      (let ((counts nil) (pairs nil) (gain 0))
+        (nelisp-aot-compiler--walk-ir
+         node (lambda (n)
+                (let ((kind (nelisp-aot-compiler--ir-kind n)))
+                  (when (memq kind '(ref setq-local let-rt))
+                    (let* ((slot (nelisp-aot-compiler--ir-get n :slot))
+                           (cell (assq slot counts)))
+                      (if cell (setcdr cell (1+ (cdr cell)))
+                        (push (cons slot 1) counts))))
+                  (when (eq kind 'let-rt-n)
+                    (dolist (b (nelisp-aot-compiler--ir-get n :bindings))
+                      (let ((cell (assq (nth 1 b) counts)))
+                        (if cell (setcdr cell (1+ (cdr cell)))
+                          (push (cons (nth 1 b) 1) counts))))))))
+        (dolist (p (car plan))
+          (let* ((slot (car p)) (reg (cdr p))
+                 (cost (+ 1 (if (memq slot (cdr plan)) 1 0)
+                          (if (memq reg '(r12 r13 r14 r15)) 2 0)))
+                 (saving (- (cdr (assq slot counts)) cost)))
+            (when (> saving 0)
+              (push p pairs)
+              (setq gain (+ gain saving)))))
+        (when (>= gain 3)
+          (cons (nreverse pairs) (cdr plan)))))))
+
+(defun nelisp-aot-compiler--emit-promoted-loop-x86 (node buf emit-loop &optional plan)
   "Call EMIT-LOOP for while NODE with its variables in registers when possible.
 Saves the r12-r15 registers the plan uses, loads every promoted slot,
 binds `--promoted-slots' around EMIT-LOOP, then stores the assigned
 slots back and restores the saved registers.  Every path out of a
 promotable loop falls through its exit, so the stores run once."
-  (let* ((plan (nelisp-aot-compiler--x86-promotion-plan node))
+  (let* ((plan (or plan (nelisp-aot-compiler--x86-promotion-plan node)))
          (pairs (car plan))
          (written (cdr plan))
          (saved (cl-remove-if-not (lambda (r) (memq r '(r12 r13 r14 r15)))
@@ -22050,6 +22120,13 @@ return reg, untouched by epilogue)."
          (param-class (or (nelisp-aot-compiler--ir-get defun-ir :param-class) 'gp))
          (param-classes (nelisp-aot-compiler--ir-get defun-ir :param-classes))
          (body (nelisp-aot-compiler--ir-get defun-ir :body))
+         (nelisp-aot-compiler--x86-call-containing-defun-p
+          (let ((found nil))
+            (nelisp-aot-compiler--walk-ir
+             body (lambda (n)
+                    (when (memq (nelisp-aot-compiler--ir-kind n) '(call extern-call))
+                      (setq found t))))
+            found))
          (rt-slot-count (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (param-slot-rounded (if (zerop (logand (length param-regs) 1))
                                  (length param-regs)
