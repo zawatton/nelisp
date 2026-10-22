@@ -130,3 +130,20 @@ nil
                                  (push (strings-format-result fmt (cdr entry)) results))))
                            (nreverse results))))
 nil
+(strings-case 'fmt-produced-strings
+              (lambda () (let ((arg (number-to-string 123)) (plain (number-to-string 456)))
+                           (list (strings-format-result "prefix-%s" (list arg))
+                                 (eq arg (format "%s" arg))
+                                 (eq plain (format plain))))))
+nil
+(strings-case 'fmt-character-columns
+              (lambda () (strings-format-result "[%5c][%.1c][%5c][%.1c][%5c][%.1c]" (list ?漢 ?漢 128 128 9 9))))
+(strings-case 'fmt-float-specials
+              (lambda () (strings-format-result "%016f|%016g|%#.0f|%#.0e" (list 1.0e+INF 0.0e+NaN 1.0e+INF 0.0e+NaN))))
+(strings-case 'fmt-character-symbol
+              (lambda () (strings-format-result "[%5c]" (list (make-symbol "漢字")))))
+(strings-case 'fmt-character-symbol-multi-error
+              (lambda () (format "漢%c" (make-symbol "漢"))))
+(strings-case 'fmt-character-symbol-repeat-error
+              (lambda () (format "%c:%c" (make-symbol "漢") (make-symbol "字"))))
+nil

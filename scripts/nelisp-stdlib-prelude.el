@@ -23267,7 +23267,7 @@ tells a finite rendering from one it must leave alone."
         (if (or (= c 101) (= c 69)) (setq r i) (setq i (1+ i)))))
     r))
 
-(defun nelisp--format-check-arg (conv arg)
+(defun nelisp--format-check-arg (conv arg &optional multibyte)
   "Return ARG, or signal the way Emacs does when it cannot match CONV.
 The native delegate formats whatever bits it is handed rather than
 complaining, so a wrong-typed argument came back as plausible-looking
@@ -23286,9 +23286,9 @@ NUL.  Emacs signals for every one of those."
    ;; in two places: a float is a specifier mismatch, a negative integer is
    ;; `(wrong-type-argument characterp -1)'.
    ((= conv 99)
-    ;; GNU 31.1 also renders a symbol whose canonical name is multibyte.
-    ;; An otherwise identical unibyte symbol name retains the type error.
-    (unless (and (symbolp arg) (multibyte-string-p (symbol-name arg)))
+    ;; GNU's first multibyte promotion retries with the cached Symbol name
+    ;; as a string. If output is already multibyte, %c keeps its type error.
+    (unless (and (symbolp arg) (not multibyte) (multibyte-string-p (symbol-name arg)))
       (unless (integerp arg)
         (signal 'error (list "Format specifier doesn’t match argument type")))
       (unless (and (>= arg 0) (<= arg 4194303))
@@ -23916,7 +23916,7 @@ argument end extends over right padding (textprop.c:2123)."
                     (signal 'error
                             (list (concat "Invalid format operation %"
                                           (char-to-string conv)))))
-                    (let* ((arg (nelisp--format-check-arg conv (car argp)))
+                    (let* ((arg (nelisp--format-check-arg conv (car argp) multibyte))
                            (body (if (and (numberp arg)
                                           (or (= conv 102) (= conv 70)   ; f F
                                               (= conv 101) (= conv 69)   ; e E
@@ -23943,9 +23943,15 @@ argument end extends over right padding (textprop.c:2123)."
                                      (t (nelisp--format-integer
                                          (if (floatp arg) (truncate arg) arg)
                                          conv prec)))))
-                           (source-body (and (= conv 115) body))
+                           (text-conversion (or (= conv 115) (= conv 83)
+                                                (and (= conv 99)
+                                                     (or (symbolp arg) (> arg 127)))))
+                           (source-body (and (or (= conv 115) (and (= conv 99) text-conversion)) body))
                            (leading-pad 0))
                       (setq argp (cdr argp))
+                      ;; GNU retries after a conversion first promotes output.
+                      ;; This also governs the Symbol/%c retry corner case.
+                      (when (multibyte-string-p body) (setq multibyte t))
                       ;; `#' on %g keeps the trailing zeros %g strips, and
                       ;; keeps the point even when nothing follows it
                       ;; ("%#.1g" of 1.0 is "1.").  C picks %f or %e from the
@@ -23969,12 +23975,12 @@ argument end extends over right padding (textprop.c:2123)."
                                                     (substring str epos)))))
                               (setq body str)))))
                       (when (and fhash (memq conv '(101 102)) (eq prec 0)
+                                 (string-match "[0-9]" body)
                                  (not (string-match "\\." body)))
                         (let ((epos (nelisp--fmt-epos body)))
                           (setq body (if epos (concat (substring body 0 epos) "." (substring body epos))
                                        (concat body ".")))))
-                      (let* ((text-conversion (or (= conv 115) (= conv 83)))
-                             (measure (and text-conversion (nelisp--format-string-width body prec))))
+                      (let ((measure (and text-conversion (nelisp--format-string-width body prec))))
                         (when (and measure (< (car measure) (length body)))
                           (setq body (substring body 0 (car measure)))))
                       ;; `#' is the alternate form, and it reaches only o/x/X
@@ -24005,7 +24011,7 @@ argument end extends over right padding (textprop.c:2123)."
                                  (not (and (> (length body) 0) (= (aref body 0) 45))))
                         (cond (fplus (setq body (concat "+" body)))
                               (fspace (setq body (concat " " body)))))
-                      (let ((body-width (if (or (= conv 115) (= conv 83))
+                      (let ((body-width (if text-conversion
                                             (cdr (nelisp--format-string-width body nil))
                                           (length body))))
                       (when (and width (< body-width width))

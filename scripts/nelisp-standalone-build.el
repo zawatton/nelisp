@@ -23429,6 +23429,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Keep the argument list and its cars as WORDs through both passes.
     (defun bf_fmt_arg_w (a)
       (let* ((tag (nl_val_tag a)))
+        (if (= (m5_string_tag_p tag) 1)
+            (if (= (logand a 7) 4) a (nl_string_from_view a))
         (if (or (= tag 4) (= tag 16))
             (let* ((entry (nl_symbol_name_entry_for (if (= tag 4) 1 2)
                             (if (= tag 4) (nl_word_data a) (nl_word_payload a))
@@ -23443,7 +23445,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
                               (data-addr nl_symbol_name_t))))
                 (if (= (ptr-read-u64 state 0) 14) (nl_string_from_view state) a))
-            a))))
+            a)))))
     (defun bf_fmt_simple_arg_ok (d a)
       (let* ((tag (nl_val_tag a)))
         (if (= d 115)
@@ -23525,16 +23527,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (seq (mut-str-push-byte ms c)
                  (bf_fmt_loop_w ms fmt (+ i 1) n argp))))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
-    (defun bf_format_simple_w (fmt argl _pad)
-      (if (= (m5_string_tag_p (nl_val_tag fmt)) 0) 3
-        (if (= (bf_format_plain_p fmt) 1) fmt
+    (defun bf_format_simple_w (input argl _pad)
+      (if (= (m5_string_tag_p (nl_val_tag input)) 0) 3
+        (let* ((fmt (bf_fmt_arg_w input)))
+        (if (= fmt 0) 3
+        (if (= (bf_format_plain_p fmt) 1) input
           (if (/= (ptr-read-u64 (- fmt 4) 16) 0) 3
             (let* ((single
                     (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 1) 115)
                              (= (nl_val_tag argl) 7))
                         (let* ((a (nl_cons_car_word argl)) (name (bf_fmt_arg_w a)) (tag (nl_val_tag a)))
                           (if (= name 0) 3
-                            (if (= (m5_string_tag_p (nl_val_tag name)) 1) name
+                            (if (= (m5_string_tag_p (nl_val_tag name)) 1)
+                                (if (= (m5_string_tag_p tag) 1) a name)
                               (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16)) 3 0)))) 0)))
               (if (/= single 0) single
                 (if (= (m5_raw_high_p fmt) 1) 3
@@ -23548,7 +23553,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                              (bf_fmt_loop_w builder fmt 0 n argl)
                              (m5_builder_allocate_string builder unibyte)
                              (bf_fmt_loop_w builder fmt 0 n argl)
-                             (m5_finish_string_w builder 0 (- 1 unibyte)))))))))))))
+                             (m5_finish_string_w builder 0 (- 1 unibyte)))))))))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
     ;; the name unchanged and a separate tag-16 identity. It reuses the
     ;; monotonic mutation epoch (whose reset is disabled), as the old

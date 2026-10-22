@@ -232,6 +232,9 @@ against 13079 for the base.
 
 The format front, its validation scan, sizing pass and emission pass read
 cons cars/cdrs as WORDs (GNU editfns.c:3668-3730, adapted Lisp_Object access).
+Existing String transports (including number-to-string results) recover
+their canonical WORD with nl_string_from_view without allocating another
+view. Plain-format and exact-%s shortcuts retain the original value.
 Strings retain their canonical headers; fixnums are untagged directly;
 floats use their boxed payload; nil and t use their cached canonical names
 or literal bytes. Symbols read the existing SYMBOL_NAME cache without

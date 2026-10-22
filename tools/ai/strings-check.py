@@ -341,8 +341,8 @@ def format_semantics():
         (OUT / f"format-{role}.err").write_bytes(result.stderr)
         assert result.returncode == 0 and not result.stderr, f"{role} format oracle failed"
         outputs[role] = [line for line in result.stdout.splitlines() if line.startswith(b"STRINGS-CASE ")]
-        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) == 38
-    assert len(outputs["gnu"]) == 51
+        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) == 44
+    assert len(outputs["gnu"]) == 57
     for role in ["dynamic", "static"]:
         assert outputs[role] == outputs["gnu"], f"{role} GNU oracle differs: see format-{role}.out"
     identities = {role: hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()
