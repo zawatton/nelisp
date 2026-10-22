@@ -17140,6 +17140,9 @@ V into rax; cmp a, b; cmovCC x, rax -- no branch to mispredict."
          reg '(:reg rax)))
       t)))
 
+(defvar nelisp-aot-compiler--x86-hot-latch-edge nil
+  "Exact original effect-IF and proven hot continuation label, or nil.")
+
 (defun nelisp-aot-compiler--emit-if-effect-x86 (node buf)
   "x86-64: emit `if' NODE in effect context (both arms are effects).
 An arm that is a bare leaf emits nothing, so `(if c (setq ...) 0)' is a
@@ -17156,7 +17159,10 @@ conditional jump around the update, with no join jump."
      (if else-empty end-lbl else-lbl) nil)
     (nelisp-aot-compiler--emit-effect then buf)
     (unless else-empty
-      (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+      (nelisp-asm-x86_64-jmp-rel32
+       buf (or (and (consp nelisp-aot-compiler--x86-hot-latch-edge)
+                    (eq node (car nelisp-aot-compiler--x86-hot-latch-edge))
+                    (cdr nelisp-aot-compiler--x86-hot-latch-edge)) end-lbl))
       (nelisp-asm-x86_64-define-label buf else-lbl)
       (nelisp-aot-compiler--emit-effect else buf))
     (nelisp-asm-x86_64-define-label buf end-lbl))))
@@ -25329,6 +25335,152 @@ The proven initial header and cold continuation both write FLAGS before use."
     (nelisp-aot-compiler--x86-alu
      buf '+ reg (nelisp-aot-compiler--x86-slot-mem (plist-get affine :base)))))
 
+(defvar nelisp-aot-compiler--x86-hot-latches t
+  "Thread only an accepted AE matching-hot edge past its unchanged flag test.")
+
+(defun nelisp-aot-compiler--x86-hot-latch-plan (node trace)
+  "Build a bounded private cold continuation before emitting any bytes.
+Adapt GCC14 -fthread-jumps: an incoming edge may imply a later test.
+Cold return never carries that fact.  Keep original IR, helpers and homes;
+copy only AE's closed tail, rebinding its four exact-node callbacks."
+  (when (and nelisp-aot-compiler--x86-hot-latches (plist-get trace :affine)
+             nelisp-aot-compiler--x86-deferred-loops nelisp-aot-compiler--x86-affine-loops
+             nelisp-aot-compiler--x86-guarded-body-folding
+             (eq nelisp-aot-compiler--arch 'x86_64) (eq nelisp-aot-compiler--abi 'sysv)
+             (not nelisp-aot-compiler--checked-arith) (not (nelisp-aot-compiler--lisp-values-p))
+             (zerop nelisp-aot-compiler--rsp-temp-depth)
+             (null nelisp-aot-compiler--promoted-slots)
+             (null nelisp-aot-compiler--x86-frame-read-aliases)
+             (null nelisp-aot-compiler--x86-trace-write-through)
+             (null nelisp-aot-compiler--x86-trace-loop-exits)
+             (null nelisp-aot-compiler--x86-shrink-wrap-state)
+             (null nelisp-aot-compiler--x86-leaf-entry-state)
+             (null nelisp-aot-compiler--x86-tco-entry-state)
+             (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p))
+    (catch 'hot-latch-no
+      (let* ((work 8192) (count 0) (serial 0)
+             (names (plist-get (plist-get trace :fact) :unit-names))
+             (namespace (make-hash-table :test #'equal)) (name-count 0)
+             (seen (make-hash-table :test #'eq)) (copies (make-hash-table :test #'eq))
+             (affine (plist-get trace :affine))
+             (head (plist-get trace :head))
+             (tail (nelisp-aot-compiler--ir-get head :body))
+             (test (nelisp-aot-compiler--ir-get node :test))
+             (guard (nelisp-aot-compiler--ir-get test :test))
+             (flag (nelisp-aot-compiler--ir-get (plist-get affine :mismatch) :slot)))
+        (cl-labels
+            ((no () (throw 'hot-latch-no nil))
+             (tick () (when (< (cl-decf work) 0) (no)))
+             (g (n k) (tick) (nelisp-aot-compiler--ir-get n k))
+             (k (n) (tick) (nelisp-aot-compiler--ir-kind n))
+             (imm (n v) (and (eq (k n) 'imm) (eql (g n :value) v)))
+             (ref (n slot) (and (eq (k n) 'ref) (eq (g n :class) 'gp)
+                                (not (g n :root-p)) (eql (g n :slot) slot)))
+             (check (n)
+               (tick)
+               (let* ((kind (k n))
+                      (allowed (cdr (assq kind
+                                    '((if :id :test :then :else) (cmp :op :repr :a :b)
+                                      (arith :op :repr :a :b) (imm :value)
+                                      (ref :var :reg :slot :class :repr :root-p)
+                                      (setq-local :var :slot :repr :value-ir))))) keys)
+                 (unless (and allowed (vectorp n) (<= 1 (length n) 65)
+                              (= 1 (% (length n) 2))) (no))
+                 (cl-loop for i from 1 below (length n) by 2 for key = (aref n i) do
+                          (tick) (unless (and (memq key allowed) (not (memq key keys))) (no))
+                          (push key keys))
+                 (pcase kind
+                   ('if (unless (and (symbolp (g n :id)) (g n :id)) (no)))
+                   ('imm (unless (integerp (g n :value)) (no)))
+                   ('ref (unless (and (symbolp (g n :var)) (g n :var) (null (g n :reg))
+                                      (integerp (g n :slot)) (eq (g n :class) 'gp)
+                                      (not (g n :root-p))
+                                      (memq (g n :repr) '(nil raw-i64 raw-bool unknown word raw-ptr sexp-ptr))) (no)))
+                   ((or 'cmp 'arith 'setq-local)
+                    (unless (eq (g n :repr) 'raw-i64) (no))
+                    (when (and (eq kind 'cmp)
+                               (not (assq (g n :op) nelisp-aot-compiler--cmp-true-jcc))) (no))
+                    (when (and (eq kind 'arith) (not (memq (g n :op) '(+ *)))) (no))
+                    (when (eq kind 'setq-local)
+                      (unless (and (symbolp (g n :var)) (g n :var) (integerp (g n :slot))) (no)))))))
+             (proper (xs visit)
+               (let ((cells (make-hash-table :test #'eq)))
+                 (while xs
+                   (tick)
+                   (unless (and (consp xs) (not (gethash xs cells))) (no))
+                   (puthash xs t cells) (funcall visit (car xs)) (setq xs (cdr xs)))))
+             (label (role derived)
+               (let (base candidate)
+                 (while (not candidate)
+                   (tick)
+                   (setq base (format "trace-%s-%s%d" (g node :id) role (cl-incf serial)))
+                   (unless (or (progn (tick) (gethash base namespace))
+                               (and derived
+                                    (or (progn (tick) (gethash (concat base "-else") namespace))
+                                        (progn (tick) (gethash (concat base "-end") namespace)))))
+                     ;; The old helper now needs exactly one complete MEMBER
+                     ;; scan: charge it before calling the existing API.
+                     (dotimes (_ name-count) (tick))
+                     (let* ((nelisp-aot-compiler--x86-trace-unit-names names)
+                            (id (nelisp-aot-compiler--x86-trace-label
+                                 node (format "%s%d" role serial))))
+                       (unless (equal (symbol-name id) base) (no))
+                       (setq candidate id)))) candidate))
+             (copy-node (v depth)
+               (tick) (when (> depth 40) (no))
+               (cond
+                ((vectorp v)
+                 (unless (and (nelisp-aot-compiler--ir-node-p v)
+                              (<= (cl-incf count) 512) (not (gethash v seen))
+                              (memq (k v) '(if cmp ref arith imm setq-local))) (no))
+                 (check v) (puthash v t seen)
+                 (let ((n (copy-sequence v)))
+                   (puthash v n copies)
+                   (cl-loop for i from 1 below (length n) by 2 do
+                            (tick)
+                            (aset n (1+ i)
+                                  (if (eq (aref n i) :id)
+                                      (progn (unless (symbolp (aref n (1+ i))) (no))
+                                             (label "hot-latch-cold" t))
+                                    (copy-node (aref n (1+ i)) (1+ depth))))) n))
+                ((consp v)
+                 (let (result)
+                   (proper v (lambda (x) (push (copy-node x (1+ depth)) result)))
+                   (nreverse result)))
+                (t v))))
+          (unless (and (eq (k node) 'while) (symbolp (g node :id))
+                       (eq (k tail) 'if) (eq (k test) 'if)
+                       (eq (g tail :then) (plist-get affine :update))
+                       (eq (g tail :else) (plist-get affine :mismatch))
+                       (eq (g (g tail :test) :a) (plist-get affine :lhs))
+                       (eq (g (g tail :test) :b) (plist-get affine :expression))
+                       (eq (k guard) 'cmp) (eq (g guard :op) '=)
+                       (eq (g guard :repr) 'raw-i64) (ref (g guard :a) flag)
+                       (imm (g guard :b) 1) (imm (g test :else) 0)
+                       (eq (k (g test :then)) 'cmp)
+                       (ref (g (g test :then) :a) (plist-get affine :iv))
+                       (equal (mapcar #'cdr (car (plist-get trace :plan))) '(rbx r8))) (no))
+          (unless (and (consp names) (eq (plist-get affine :reg) 'r9)) (no))
+          (dolist (n (list test guard (g guard :a) (g guard :b) (g test :else)
+                           (g test :then) (g (g test :then) :a) (g (g test :then) :b)))
+            (check n))
+          (proper names (lambda (name) (unless (stringp name) (no))
+                         (puthash name t namespace) (cl-incf name-count)))
+          (let* ((cold (copy-node tail 0))
+                 (cold-affine (copy-sequence affine))
+                 (bound (label "hot-latch-bound" nil))
+                 (cleanup (label "hot-latch-cleanup" nil)))
+            ;; AE's fixed canonical tree has exactly fourteen nodes; do not
+            ;; turn this into arbitrary suffix versioning or duplicate binders.
+            (unless (= count 14) (no))
+            (dolist (key '(:lhs :expression :update :mismatch))
+              (tick)
+              (let ((copy (gethash (plist-get affine key) copies)))
+                (unless copy (no)) (setq cold-affine (plist-put cold-affine key copy))))
+            (list :tail tail :cold-tail cold :cold-affine cold-affine
+                  :bound-test (g test :then) :hot-bound bound :cleanup cleanup
+                  :bijection copies :work-used (- 8192 work))))))))
+
 (defun nelisp-aot-compiler--emit-deferred-loop-x86 (node buf trace)
   "Emit a closed hot trace, ending its two-way home cache before calls.
 Only initialized outer lexical homes are mapped.  The loop-local result
@@ -25338,6 +25490,7 @@ emitted once; a cold return reloads fresh homes before joining it."
          (plan (plist-get trace :plan)) (pairs (car plan)) (written (cdr plan))
          (head (plist-get trace :head)) (call (plist-get trace :call))
          (affine (plist-get trace :affine))
+         (latch (nelisp-aot-compiler--x86-hot-latch-plan node trace))
          (depth nelisp-aot-compiler--rsp-temp-depth)
          (body (nelisp-aot-compiler--x86-trace-label node "deferred-body"))
          (cont (nelisp-aot-compiler--x86-trace-label node "deferred-cont"))
@@ -25364,9 +25517,18 @@ emitted once; a cold return reloads fresh homes before joining it."
         (nelisp-aot-compiler--emit-let-rt-x86
          head buf (lambda (tail)
                     (nelisp-asm-x86_64-define-label buf cont)
-                    (nelisp-aot-compiler--emit-effect tail buf)))
+                    (let ((nelisp-aot-compiler--x86-hot-latch-edge
+                           (and latch (cons tail (plist-get latch :hot-bound)))))
+                      (nelisp-aot-compiler--emit-effect tail buf))))
         (nelisp-asm-x86_64-define-label buf test)
         (nelisp-aot-compiler--emit-cond-jump (nelisp-aot-compiler--ir-get node :test) buf body t)
+        (when latch
+          ;; Full-header false alone pays this jump.  The normal matching
+          ;; bound-false exit below falls directly into the original cleanup.
+          (nelisp-asm-x86_64-jmp-rel32 buf (plist-get latch :cleanup))
+          (nelisp-asm-x86_64-define-label buf (plist-get latch :hot-bound))
+          (nelisp-aot-compiler--emit-cond-jump (plist-get latch :bound-test) buf body t)
+          (nelisp-asm-x86_64-define-label buf (plist-get latch :cleanup)))
         (cleanup))
       (nelisp-asm-x86_64-jmp-rel32 buf done)
       (nelisp-asm-x86_64-define-label buf cold)
@@ -25385,7 +25547,16 @@ emitted once; a cold return reloads fresh homes before joining it."
         (reload)
         (when affine
           (nelisp-aot-compiler--emit-affine-loop-reload affine pairs buf))
-        (nelisp-asm-x86_64-jmp-rel32 buf cont))
+        (if latch
+            (progn
+              (let ((nelisp-aot-compiler--promoted-slots pairs)
+                    (nelisp-aot-compiler--x86-affine-loop-state (plist-get latch :cold-affine))
+                    (nelisp-aot-compiler--x86-affine-result-compare nil)
+                    (nelisp-aot-compiler--x86-hot-latch-edge nil)
+                    (nelisp-aot-compiler--x86-interval-leaf-p t))
+                (nelisp-aot-compiler--emit-effect (plist-get latch :cold-tail) buf))
+              (nelisp-asm-x86_64-jmp-rel32 buf test))
+          (nelisp-asm-x86_64-jmp-rel32 buf cont)))
       (nelisp-asm-x86_64-define-label buf done))))
 
 (defun nelisp-aot-compiler--x86-trace-loop-plan (node)
