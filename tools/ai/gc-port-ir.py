@@ -9,8 +9,8 @@ alloc:   callgrind runs of N allocations in an interpreted while loop (the objec
          Ir per call of the constructor, the loop's other costs (the evaluator's call dispatch, which belongs to other
          lanes) subtracted by the baseline run:
            cons    NeLisp nelisp_cons_construct_w            GNU Fcons
-           string  NeLisp m5_make_builder + nl_u8_repeat +   GNU Fmake_string (allocate_string, allocate_string_data,
-                   nl_g4arm_finish_string_w (128 bytes)      memset)
+           string  NeLisp bf_make_string_w (128 bytes)       GNU Fmake_string (allocate_string, allocate_string_data,
+                                                             memset)
            vector  NeLisp bf_make_vector_w (16 slots)        GNU Fmake_vector (allocate_vectorlike)
          PASS when each is at most GNU's.
 collect: the steady-state instructions of one explicit collection (callgrind runs of 6 and of 3 collections of the Doc 220
@@ -34,7 +34,7 @@ spec.loader.exec_module(gp)
 
 KINDS = {'none': 'i', 'cons': '(cons i i)', 'string': '(make-string 128 120)', 'vector': '(make-vector 16 i)'}
 NELISP_ENTRIES = {'cons': ['nelisp_cons_construct_w'],
-                  'string': ['m5_make_builder', 'nl_u8_repeat', 'nl_g4arm_finish_string_w'],
+                  'string': ['bf_make_string_w'],
                   'vector': ['bf_make_vector_w']}
 GNU_ENTRIES = {'cons': ['Fcons'], 'string': ['Fmake_string'], 'vector': ['Fmake_vector']}
 

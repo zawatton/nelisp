@@ -11042,22 +11042,7 @@ argument (reachability + in-arena bounds checks).")
                                         (nl_u8_encode sb (heap-read-u64 (wf_arg_ptr args 0) 8))
                                         (mut-str-finalize sb sb) sb))
                           (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 0)) 0)))
-    ((:lit "make-string") :word .
-     (if (if (= (sexp-tag (wf_arg_ptr args 0)) 2)
-             (if (< (heap-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
-         (if (if (= (sexp-tag (wf_arg_ptr args 1)) 2)
-                 (if (< (heap-read-u64 (wf_arg_ptr args 1) 8) 0) 0 1) 0)
-             (let* ((cp (heap-read-u64 (wf_arg_ptr args 1) 8))
-                    (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
-                    (forced (if (= (sexp-tag rest) 7)
-                                (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0 1) 0))
-                    (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
-                    (sb (alloc-bytes 32 8)))
-               (seq (m5_make_builder sb 16 (- 1 multi))
-                    (nl_u8_repeat sb (heap-read-u64 (wf_arg_ptr args 0) 8) cp)
-                    (nl_g4arm_finish_string_w sb multi)))
-           (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
-       (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
+    ((:lit "make-string") :word . (bf_make_string_w args 0))
     ((:lit "concat")           :word . (let* ((why (m5_concat_first_bad_kind args)))
                                    (if (= why 0)
                                        (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
@@ -24072,6 +24057,88 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (nl_u8_encode ms cp)
             (setq remaining (- remaining 1)))
           0)))
+    ;; Fill BUF with N copies of the character CP, encoded as nl_u8_encode does; answer the byte
+    ;; width of one character.  BUF holds N times that width.
+    (defun nl_u8_fill (buf n cp)
+      (let ((w (if (>= cp 4194176) 2
+                 (if (< cp 128) 1
+                   (if (< cp 2048) 2
+                     (if (< cp 65536) 3
+                       (if (< cp 2097152) 4 5)))))))
+        (seq
+         (if (<= n 0) 0
+           (seq
+            (if (= w 1) (ptr-write-u8 buf 0 cp)
+              (if (>= cp 4194176)
+                  (seq (ptr-write-u8 buf 0 (logior 192 (logand (/ cp 64) 1)))
+                       (ptr-write-u8 buf 1 (logior 128 (logand cp 63))))
+                (if (< cp 2048)
+                    (seq (ptr-write-u8 buf 0 (logior 192 (/ cp 64)))
+                         (ptr-write-u8 buf 1 (logior 128 (logand cp 63))))
+                  (if (< cp 65536)
+                      (seq (ptr-write-u8 buf 0 (logior 224 (/ cp 4096)))
+                           (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 64) 63)))
+                           (ptr-write-u8 buf 2 (logior 128 (logand cp 63))))
+                    (if (< cp 2097152)
+                        (seq (ptr-write-u8 buf 0 (logior 240 (/ cp 262144)))
+                             (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 4096) 63)))
+                             (ptr-write-u8 buf 2 (logior 128 (logand (/ cp 64) 63)))
+                             (ptr-write-u8 buf 3 (logior 128 (logand cp 63))))
+                      (seq (ptr-write-u8 buf 0 248)
+                           (ptr-write-u8 buf 1 (logior 128 (logand (/ cp 262144) 15)))
+                           (ptr-write-u8 buf 2 (logior 128 (logand (/ cp 4096) 63)))
+                           (ptr-write-u8 buf 3 (logior 128 (logand (/ cp 64) 63)))
+                           (ptr-write-u8 buf 4 (logior 128 (logand cp 63)))))))))
+            (if (= w 1)
+                (let ((pat (* (logand cp 255) 72340172838076673)) (k 0))
+                  (seq (while (<= (+ k 8) n)
+                         (seq (ptr-write-u64 buf k pat) (setq k (+ k 8))))
+                       (while (< k n)
+                         (seq (ptr-write-u8 buf k cp) (setq k (+ k 1))))))
+              (let ((i 1) (o w) (j 0))
+                (while (< i n)
+                  (seq (setq j 0)
+                       (while (< j w)
+                         (seq (ptr-write-u8 buf (+ o j) (heap-read-u8 buf j)) (setq j (+ j 1))))
+                       (setq o (+ o w))
+                       (setq i (+ i 1))))))))
+         w)))
+    ;; (make-string LENGTH INIT &optional MULTIBYTE), GNU Fmake_string: allocate the exact size,
+    ;; then fill (memset for a single-byte character, the encoded bytes repeated otherwise).  The
+    ;; arm used to build the string through the mutable-string builder: 128 byte pushes at 66
+    ;; instructions and 16 allocations for 128 bytes.  The result is the string view the builder's
+    ;; finaliser wrote: tag 5 (14 for a unibyte string), the buffer size at +8 with bit 62 set for a
+    ;; multibyte string, the buffer, the byte length.  The character must be 0..#x3FFFFF
+    ;; (CHECK_CHARACTER).
+    (defun bf_make_string_w (args _pad)
+      (if (if (= (sexp-tag (wf_arg_ptr args 0)) 2)
+              (if (< (heap-read-u64 (wf_arg_ptr args 0) 8) 0) 0 1) 0)
+          (if (if (= (sexp-tag (wf_arg_ptr args 1)) 2)
+                  (if (< (heap-read-u64 (wf_arg_ptr args 1) 8) 0) 0
+                    (if (> (heap-read-u64 (wf_arg_ptr args 1) 8) 4194303) 0 1)) 0)
+              (let* ((cp (heap-read-u64 (wf_arg_ptr args 1) 8))
+                     (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
+                     (forced (if (= (sexp-tag rest) 7)
+                                 (if (= (sexp-tag (wf_arg_ptr args 2)) 0) 0 1) 0))
+                     (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
+                     (n (heap-read-u64 (wf_arg_ptr args 0) 8))
+                     (w (if (>= cp 4194176) 2
+                          (if (< cp 128) 1
+                            (if (< cp 2048) 2
+                              (if (< cp 65536) 3
+                                (if (< cp 2097152) 4 5))))))
+                     (total (* n w))
+                     (alloc-n (if (= total 0) 1 total))
+                     (buf (alloc-bytes alloc-n 1))
+                     (sb (alloc-bytes 32 8)))
+                (seq (nl_u8_fill buf n cp)
+                     (ptr-write-u8 sb 0 (if (= multi 1) 5 14))
+                     (ptr-write-u64 sb 8 (if (= multi 1) (logior alloc-n 4611686018427387904) alloc-n))
+                     (ptr-write-u64 sb 16 buf)
+                     (ptr-write-u64 sb 24 total)
+                     sb))
+            (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
+        (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0)))
     (defun m5_length (p)
       (let* ((tag (heap-sexp-tag-word p)))
         (if (= tag 14) (m5_strlen p)

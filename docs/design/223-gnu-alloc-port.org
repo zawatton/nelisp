@@ -480,6 +480,30 @@ Two differences from the census are accepted: a string whose buffer another stri
 different length also names counts once (the census counted it twice), and an
 uninterned symbol in the image is still counted, as the census always did.
 
+** Allocation constructors (S2.6)
+
+The loop of every churn row is mostly the evaluator's call dispatch (6,846 instructions for =(+ i 120)= against
+GNU's 362, which belongs to the call-path and eval lanes), but three constructors also did far more work than GNU's.
+=tools/ai/gc-port-ir.py alloc= measures each as the inclusive instructions of its entry point per call, loop
+overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vector= (ledger S2.6);
+=tools/ai/gc-port-alloc-golden.py= checks the results against GNU's, case by case (S2.6's companion).
+
+- =make-string= (alloc.c =Fmake_string=): the arm built the string a byte at a time through the mutable-string
+  builder.  It started at 16 bytes and grew (16 =nl_alloc_bytes= calls for 128 bytes), pushed each byte with
+  =nl_mut_str_push_byte= (66 instructions a byte), finalised into a second buffer and copied, and read its
+  arguments through =wf_arg_ptr= and =nl_cons_car_ptr=, each of which materialises a 32-byte view (about 500
+  instructions): 21,205 instructions for 128 bytes against GNU's 178.  =bf_make_string_w= is now a function of its
+  own: it computes the encoded width of the character (the rules of =nl_u8_encode=), allocates the result buffer
+  once, =nl_u8_fill= writes the first character's bytes and repeats them (eight at a time for a single-byte
+  character, 159 instructions for 128 bytes) and the string view the finaliser wrote is built in place.  It also
+  applies GNU's =CHECK_CHARACTER=: a character is 0..#x3FFFFF, and =(make-string 3 #x400000)= signals
+  =wrong-type-argument= as in GNU instead of building a string (the arm accepted any non-negative number).
+  This step still read its arguments as views: 4,947 instructions, of which the argument accessors are 3,900.
+  The arm also exists on =eval/strings-20261021=, unchanged there.
+  =test/gc-port-make-string-check.el= prints 167 cases (unibyte, multibyte and forced-multibyte ASCII, every encoded
+  width from one byte to five and the raw-byte characters, sizes 0 to 4099, mutation after creation, the error
+  cases); the output is identical on GNU 31.1 and on both NeLisp linkages.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls
