@@ -1786,3 +1786,20 @@ pinned-collision ns-collision-divergent	optimize-char-table	packages/nelisp-emac
 # locale.  The package copy is an (unless (fboundp ...)) fallback, inert
 # wherever the prelude loads first.
 pinned-collision ns-collision	text-quoting-style	packages/nelisp-emacs-foundation/src/emacs-cc-doc-1.el scripts/nelisp-stdlib-prelude.el
+# Batch F (2026-10-22): eval/gnu-semantics-20261022 ports GNU definitions into the prelude and the canonical sources,
+# and the library packages define the same names.  Seven identities are new against batch E's 1290 unpinned:
+#   backward-prefix-chars: GNU syntax.c:3091-3133, ported into the prelude (gnu-semantics S1.7).  emacs-cc-syntax-1.el defines it under (unless (fboundp ...)), so it is inert now.
+#   skip-syntax-backward: GNU syntax.c:2107-2265 skip_syntaxes, ported into the prelude (gnu-semantics S1.7).  emacs-cc-census-buffer-w204.el defines it under (unless (fboundp ...)), so it is inert now.
+#   skip-syntax-forward: The same port and the same guard as skip-syntax-backward.
+#   error: GNU subr.el:519-537 (error through format-message), ported into the canonical source and the prelude (gnu-semantics S1.2).  emacs-stub.el keeps its fallback under (unless (fboundp 'error)).
+#   macroexpand: GNU eval.c:1283-1354 macroexpand loop, the lexical reference of eager macroexpansion in load (gnu-semantics S1.5), baked into the prelude.  emacs-parity-macroexpand.el deliberately shadows the native entry points to route through the library macro table (its shim audit of 2026-09-29), so this is a live override, not a fallback.
+#   float-output-format: The prelude's printer port defines it (gnu-semantics S1.6); emacs-cc-print-1.el only defvars it, which keeps the bound value.
+#   nelisp--setf-1: The setf unknown-place boundary (GNU gv.el:108-120, gnu-semantics S1.5), held in the canonical source and in the prelude.
+# The library can defer to the runtime's native skip-syntax-forward, skip-syntax-backward and backward-prefix-chars.
+pinned-collision ns-collision-divergent	backward-prefix-chars	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	d57c77f3e497
+pinned-collision ns-collision-divergent	skip-syntax-backward	packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	247c6b07656a
+pinned-collision ns-collision-divergent	skip-syntax-forward	packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	d11f391bb8e0
+pinned-collision ns-collision-divergent	error	lisp/nelisp-stdlib-misc.el packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	0133068e26ef
+pinned-collision ns-collision-divergent	macroexpand	lisp/nelisp-load-macroexpand.el packages/nelisp-emacs-foundation/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	c8c4ddfc6e7d
+pinned-collision ns-collision	float-output-format	packages/nelisp-emacs-foundation/src/emacs-cc-print-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--setf-1	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
