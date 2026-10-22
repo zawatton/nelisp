@@ -11408,7 +11408,9 @@ by name pending that follow-up; this paragraph is the record of why."
   '("builtin" "lambda" "closure" "macro" "autoload" "symbol-value" "set"
     "funcall" "apply" "eval" "quote" "function" "throw" "signal"
     "symbol-function" "fset" "consp" "not" "null" "nth" "nthcdr" "setcar"
-    "setcdr" "string<" "<" "car" "cdr" "eq" "`" "," ",@")
+    "setcdr" "string<" "<" "car" "cdr" "eq" "make-vector" "aref" "aset"
+    "vector" "boundp" "equal" "eql" "get" "fboundp" "save-excursion"
+    "save-restriction" "save-current-buffer" "interactive" "`" "," ",@")
   "Static names beyond the builtin dispatch table (heads and name tests).
 The last three are the reader's backquote, comma and comma-at heads: GNU reads
 them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot.")
@@ -11426,6 +11428,12 @@ them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot."
     "nelisp--apply-lambda-inner" "nelisp--apply-builtin-dispatch")
   "Static names 1 to 18, in the order of `nl_apply_name_class_sid''s ranges.")
 
+(defconst nelisp-standalone--static-symbol-specials
+  '("progn" "if" "let" "let*" "setq" "while" "lambda" "function" "quote" "condition-case" "unwind-protect" "catch" "throw" "defvar" "defconst" "and" "or" "cond" "prog1" "prog2" "when" "unless" "defun" "defmacro" "defalias" "defvaralias" "dolist" "cl-defun")
+  "The names of the special forms the evaluator dispatches (`nl_apply_special''s
+chain), static ids 19 to 18+N in this order: a head is a special form when its
+static id is in that range, a range test where the chain compared names.")
+
 (defvar nelisp-standalone--static-symbol-index nil
   "Hash table NAME -> static symbol id, built once from the builtin tables.")
 
@@ -11436,6 +11444,7 @@ them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot."
     ;; generated (at load time), so every generated form sees one list.
     (dolist (name (append
                    nelisp-standalone--static-symbol-intercepts
+                   nelisp-standalone--static-symbol-specials
                    (mapcar (lambda (e) (cadr (car e))) nelisp-standalone--applyfn-dispatch-table)
                    nelisp-standalone--static-symbol-extras))
       (when (and (stringp name) (not (member name '("nil" "t")))
@@ -11452,7 +11461,17 @@ them as the interned Qbackquote, Qcomma and Qcomma_at, so they exist from boot."
                    nelisp-standalone--static-symbol-intercepts)
       (error "the intercepted names are not static ids 1 to %d"
              (length nelisp-standalone--static-symbol-intercepts)))
+    (let ((first (length nelisp-standalone--static-symbol-intercepts)))
+      (unless (equal (cl-subseq out first (+ first (length nelisp-standalone--static-symbol-specials)))
+                     nelisp-standalone--static-symbol-specials)
+        (error "the special forms are not static ids %d to %d" (1+ first)
+               (+ first (length nelisp-standalone--static-symbol-specials)))))
     out))
+
+(defun nelisp-standalone--special-index (name)
+  "NAME's position (1-based) among the special forms, or nil."
+  (let ((pos (cl-position name nelisp-standalone--static-symbol-specials :test #'equal)))
+    (and pos (1+ pos))))
 
 (defun nelisp-standalone--sid (name)
   "NAME's static symbol id, or nil."
@@ -48570,7 +48589,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (if (= entry 0) (nl_n3_special_unchecked_w name_ptr args_ptr env_ptr 0)
             (let* ((fn (nl_ent_ptr entry 1)))
               (if (= (nl_n3_special_object fn) 1)
-                  (nl_n3_special_call_w fn args_ptr env_ptr 0)
+                  (nl_sp_cell_call_w fn name_ptr args_ptr env_ptr)
                 2)))))
       (defun nl_n3_special_cell (name_ptr args_ptr env_ptr out)
         (nl_abi_word_to_rc (nl_n3_special_cell_w name_ptr args_ptr env_ptr 0) out))
@@ -48708,6 +48727,71 @@ OUT replaced by 0. Reject any remaining physical result dependency."
           (t (wrap x)))))
     (tail form)))
 
+(defconst nelisp-standalone--special-arity
+  '(("progn" 0 -1 sub) ("if" 2 -1 sub) ("let" 1 -1 sub) ("let*" 1 -1 sub) ("setq" 0 -1 sub)
+    ("while" 1 -1 sub) ("function" 1 1 sub) ("quote" 1 1 sub) ("condition-case" 2 -1 sub)
+    ("unwind-protect" 1 -1 sub) ("catch" 1 -1 sub) ("defvar" 1 3 var) ("defconst" 2 3 var)
+    ("and" 0 -1 sub) ("or" 0 -1 sub) ("cond" 0 -1 sub) ("prog1" 1 -1 sub) ("throw" 2 2 sub)
+    ("prog2" 2 2 macro) ("when" 1 1 macro) ("unless" 1 1 macro) ("defun" 2 2 macro)
+    ("defmacro" 2 2 macro))
+  "(NAME MIN MAX KIND) of the forms eval_sub counts the arguments of before it calls them.
+MAX -1 is no limit.  A `sub' is a subr: too few arguments, or more than MAX, is
+(wrong-number-of-arguments NAME N) (GNU's DEFUN min_args, and Fquote's and Ffunction's own
+test); a `var' is defvar or defconst, whose more than MAX arguments is (error \"Too many
+arguments\"); a `macro' is a macro GNU expands, whose arity error reports the byte-compiled
+macro's (MIN . MAX) with MAX the count of its non-rest parameters.  Every one first gets
+list_length, which signals wrong-type-argument listp for a dotted list.")
+
+(defun nelisp-standalone--special-check-form (spec head args)
+  "The call of the count test for SPEC (an entry of `nelisp-standalone--special-arity')."
+  (let ((min (nth 1 spec)) (max (nth 2 spec)))
+    (pcase (nth 3 spec)
+      ('macro `(nl_sp_check_macro ,args ,min ,max))
+      ('var `(nl_sp_check_var ,head ,args ,min ,max))
+      (_ `(nl_sp_check ,head ,args ,min ,max)))))
+
+(defun nelisp-standalone--special-gate (nm arm)
+  "ARM, the call of special form NM, behind eval_sub's count of its arguments."
+  (let ((spec (assoc nm nelisp-standalone--special-arity)))
+    (if (null spec) arm
+      (let ((check (nelisp-standalone--special-check-form spec 'name_ptr 'args_ptr)))
+        (if (and (eq (car-safe arm) 'if) (eq (car-safe (nth 1 arm)) '=)
+                 (eq (car-safe (nth 1 (nth 1 arm))) 'logand) (equal (nth 2 (nth 1 arm)) 0))
+            ;; A redefinable special form's mask test stays outside: a redefined one is
+            ;; an ordinary function call and gets no special-form count.
+            `(if ,(nth 1 arm) (if (= ,check 1) ,(nth 2 arm) 0) ,(nth 3 arm))
+          `(if (= ,check 1) ,arm 0))))))
+
+(defun nelisp-standalone--special-chain-name (test name)
+  "The special form a chain TEST `(= (nl_sp_eq_X NAME) 1)' asks about, as a string, else nil."
+  (and (eq (car-safe test) '=) (equal (nth 2 test) 1)
+       (consp (nth 1 test)) (equal (cdr (nth 1 test)) (list name))
+       (symbolp (car (nth 1 test)))
+       (string-prefix-p "nl_sp_eq_" (symbol-name (car (nth 1 test))))
+       (not (eq (car (nth 1 test)) 'nl_sp_eq_lit))
+       (let ((raw (substring (symbol-name (car (nth 1 test))) 9)))
+         (if (equal raw "let_star") "let*" (replace-regexp-in-string "_" "-" raw)))))
+
+(defun nelisp-standalone--special-index-tests (tree name)
+  "TREE with each chain test `(= (nl_sp_eq_X NAME) 1)' replaced by `(= sp_idx K)', K the
+position of special form X among `nelisp-standalone--static-symbol-specials' (`sp_idx' is
+the id test `nl_apply_special_w' makes once), and the arm of each behind its argument count."
+  (cond
+   ((not (consp tree)) tree)
+   ((and (eq (car tree) 'if) (nelisp-standalone--special-chain-name (nth 1 tree) name))
+    (let* ((nm (nelisp-standalone--special-chain-name (nth 1 tree) name))
+           (idx (nelisp-standalone--special-index nm)))
+      (unless idx (error "special form %S has no static id" nm))
+      `(if (= sp_idx ,idx)
+           ,(nelisp-standalone--special-gate
+             nm (nelisp-standalone--special-index-tests (nth 2 tree) name))
+         ,(nelisp-standalone--special-index-tests (nth 3 tree) name))))
+   ((nelisp-standalone--special-chain-name tree name)
+    (let ((idx (nelisp-standalone--special-index (nelisp-standalone--special-chain-name tree name))))
+      `(= sp_idx ,idx)))
+   (t (cons (nelisp-standalone--special-index-tests (car tree) name)
+            (nelisp-standalone--special-index-tests (cdr tree) name)))))
+
 (defun nelisp-standalone--special-word-abi (form)
   "Split the prefiltered `nl_apply_special' FORM into the Doc 215 word entry
 `nl_apply_special_w' (result WORD, 0 = signal stashed, 2 = not a special
@@ -48718,42 +48802,35 @@ nothing."
     (`(defun nl_apply_special (,name ,args ,env ,out)
         (if ,test (progn . ,body) 2))
      (list `(defun nl_apply_special_w (,name ,args ,env _pad)
-              (if ,test
-                  ,(nelisp-standalone--special-tail-words (cons 'progn body) out)
-                2))
+              (let* ((sp_idx (nl_sp_index ,name)))
+                (if (= sp_idx 0)
+                    2
+                  ,(nelisp-standalone--special-index-tests
+                    (nelisp-standalone--special-tail-words (cons 'progn body) out) name))))
            `(defun nl_apply_special (,name ,args ,env ,out)
               (nl_abi_word_to_rc (nl_apply_special_w ,name ,args ,env 0) ,out))))
     (_ (error "special word ABI: unexpected form %S" (car-safe form)))))
 
 (defun nelisp-standalone--special-prefilter-helper (form)
-  "`nl_sp_maybe_special': 1 when a symbol's name length and first byte
-match a special-form name tested in FORM.
-The test is a balanced decision on the length, then the first bytes of
-the names of that length: a few comparisons, where a chain over every
-name took one pair of comparisons per name for each evaluated call."
-  (let ((by-len (make-hash-table)))
-    (dolist (name (nelisp-standalone--special-prefilter-names form))
-      (cl-pushnew (aref name 0) (gethash (length name) by-len)))
-    (cl-labels
-        ((first-bytes (bytes)
-           (let ((test 0))
-             (dolist (b (sort (copy-sequence bytes) #'>))
-               (setq test `(if (= b0 ,b) 1 ,test)))
-             test))
-         (tree (lens)
-           (if (null lens) 0
-             (let* ((mid (/ (length lens) 2))
-                    (len (nth mid lens)))
-               `(if (= len ,len) ,(first-bytes (gethash len by-len))
-                  (if (< len ,len) ,(tree (cl-subseq lens 0 mid))
-                    ,(tree (cl-subseq lens (1+ mid)))))))))
-      `(defun nl_sp_maybe_special (name_ptr)
-         (if (= (sexp-tag name_ptr) 4)
-             (let* ((len (heap-sexp-length name_ptr)))
-               (if (< len 1) 0
-                 (let* ((b0 (heap-read-u8 (heap-sexp-data name_ptr) 0)))
-                   ,(tree (sort (hash-table-keys by-len) #'<)))))
-           0)))))
+  "`nl_sp_index' and `nl_sp_maybe_special': whether a symbol is a special form, by
+its static id (ids 19 to 18+N are `nelisp-standalone--static-symbol-specials').
+The chain's `nl_sp_eq_*' predicates must be exactly those names; a name outside
+the list would have no id and never be recognised."
+  (let ((chain (sort (copy-sequence (nelisp-standalone--special-prefilter-names form)) #'string<))
+        (static (sort (copy-sequence nelisp-standalone--static-symbol-specials) #'string<)))
+    (dolist (name chain)
+      (unless (member name static)
+        (error "special form %S has no static id (add it to nelisp-standalone--static-symbol-specials)" name)))
+    `(seq
+      (defun nl_sp_index (name_ptr)
+        (let* ((sid ,(nelisp-standalone--sid-read-form 'name_ptr)))
+          (if (> sid 18)
+              (if (<= sid ,(+ 18 (length nelisp-standalone--static-symbol-specials))) (- sid 18) 0)
+            0)))
+      (defun nl_sp_maybe_special (name_ptr)
+        (if (= (nl_sp_index name_ptr) 0) 0 1))
+      (defun nl_sp_is_dolist (name_ptr)
+        (if (= (nl_sp_index name_ptr) ,(nelisp-standalone--special-index "dolist")) 1 0)))))
 
 (defun nelisp-standalone--patch-n3-specials (source)
   "Honor GNU special-form function cells and reject evaluated invocation."
@@ -48803,7 +48880,8 @@ name took one pair of comparisons per name for each evaluated call."
               (dolist (def (nelisp-standalone--special-word-abi
                             (nelisp-standalone--special-prefilter walked)))
                 (push def out))
-              (push (nelisp-standalone--special-prefilter-helper walked) out)))
+              (dolist (helper (cdr (nelisp-standalone--special-prefilter-helper walked)))
+                (push helper out))))
           (dolist (helper (nelisp-standalone--n3-special-name-helper)) (push helper out)))
          ((eq name 'nl_eval_inner_cons_after_lookup)
           (push `(defun ,name ,(caddr form)
@@ -48827,12 +48905,40 @@ name took one pair of comparisons per name for each evaluated call."
 (setq nelisp-standalone--shim-source
       (append nelisp-standalone--shim-source (cdr nelisp-standalone--n3-source)))
 
-(defun nelisp-standalone--reader-extra-unit (entry)
-  "Compile a (NAME FEATURE SRC-SYM) manifest ENTRY to a cached link-unit."
+(defun nelisp-standalone--patch-setq-odd (source)
+  "SOURCE (the setq unit) with a lone last symbol signalling GNU Fsetq's arity error:
+(wrong-number-of-arguments setq N) with N the number of arguments, after the pairs
+before it were assigned.  The call's own activation record holds the argument list."
+  (cons (car source)
+        (append
+         (mapcar (lambda (form)
+                   (if (and (eq (car-safe form) 'defun) (eq (cadr form) 'nl_sf_setq_sym_w))
+                       `(defun nl_sf_setq_sym_w ,(nth 2 form)
+                          (if (= (nl_val_tag val-cdr) 0)
+                              (nl_sf_setq_odd_w env)
+                            ,@(nthcdr 3 form)))
+                     form))
+                 (cdr source))
+         `((defun nl_sf_setq_odd_w (env)
+             (let* ((state (heap-read-u64 env 176))
+                    (buf (alloc-bytes 8 1))
+                    (n (if (= state 0) 1
+                         (if (= (heap-read-u64 state 0) 0) 1
+                           (nl_sp_nargs (heap-read-u64
+                                         (nl_n4_record state (- (heap-read-u64 state 0) 1)) 8))))))
+               (seq (ptr-write-u64 buf 0 ,(logior ?s (ash ?e 8) (ash ?t 16) (ash ?q 24)))
+                    (nl_abi_fail (bf_wrong_number_of_args (nl_alloc_symbol_w buf 4 0)
+                                                          (if (< n 1) 1 n))
+                                 0))))))))
+
+(defun nelisp-standalone--reader-extra-unit (entry &optional post)
+  "Compile a (NAME FEATURE SRC-SYM) manifest ENTRY to a cached link-unit.
+POST, when given, rewrites the patched source."
   (pcase-let ((`(,name ,feat ,src) entry))
     (require feat)
     (nelisp-standalone--cached-unit
-     name (nelisp-standalone--patch-binding-kinds (symbol-value src))
+     name (let ((patched (nelisp-standalone--patch-binding-kinds (symbol-value src))))
+            (if post (funcall post patched) patched))
      (list nelisp-standalone--this-file (locate-library (symbol-name feat))))))
 
 ;; Doc 147 container slots made `nl_cons_cdr_ptr' return a materialised 32B
@@ -51720,7 +51826,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
 
     (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
       (if (= (nl_val_tag head_ptr) 4)
-          (if (= (nl_sp_eq_dolist head_ptr) 1)
+          (if (= (nl_sp_is_dolist head_ptr) 1)
               (nl_eic_dolist_w tail_ptr env form_ptr 0)
             (nl_eic_symbol_dispatch_w
              (nl_apply_special_w head_ptr tail_ptr env 0)
@@ -52062,6 +52168,294 @@ tails run against a private box), and the (rc, OUT) adapter F."
       (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
 
+(defconst nelisp-standalone--eval-prims
+  '(("car" 1 1 1) ("cdr" 2 1 1) ("null" 3 1 1) ("not" 3 1 1) ("consp" 4 1 1)
+    ("setcdr" 5 2 2) ("setcar" 6 2 2) ("eq" 7 2 2) ("<" 8 2 2) ("string<" 9 2 2)
+    ("nth" 10 2 2) ("nthcdr" 11 2 2) ("funcall" 13 1 15) ("apply" 14 2 15)
+    ("+" 15 0 2) ("-" 16 1 2) ("*" 17 2 2) ("1+" 18 1 1) ("1-" 19 1 1)
+    ("=" 20 2 2) (">" 21 2 2) ("<=" 22 2 2) (">=" 23 2 2)
+    ("cons" 24 2 2) ("list" 25 0 15) ("make-vector" 26 2 2))
+  "(NAME ID MIN MAX) of the builtins the interpreter calls on their evaluated
+argument WORDs (GNU eval_sub's argvals, eval.c:2626-2693), by primitive id: 1-13
+run in `m5_fx_primitive_run', 14 is apply, 15 and up in `nl_eic_prim2_run'.  MAX 15
+is no limit.  An argument the primitive does not take (a float, an overflow) makes
+it decline and the ordinary builtin runs on the same evaluated arguments.")
+
+(defun nelisp-standalone--le-chunks (string)
+  "The little-endian 64-bit words of STRING's bytes, 8 bytes each."
+  (let ((bytes (encode-coding-string string 'utf-8 t)) (out nil) (off 0))
+    (while (< off (length bytes))
+      (let ((chunk 0))
+        (dotimes (k (min 8 (- (length bytes) off)))
+          (setq chunk (logior chunk (ash (aref bytes (+ off k)) (* 8 k)))))
+        (push chunk out))
+      (setq off (+ off 8)))
+    (nreverse out)))
+
+(defun nelisp-standalone--subr-desc-defuns ()
+  "`nl_subr_desc': NAME's packed descriptor, 0 for a name outside the table.
+Bits 0-7 the primitive id, 8-11 and 12-15 the primitive's argument range, 16-23 and
+24-31 the subr's min_args and max_args (255: MANY), GNU's SUBR record fields."
+  (let* ((arities (nelisp-standalone--builtin-arities))
+         ;; Only names with a static id: a name without one would need the name-compare
+         ;; buckets on every call, and keeps its post-evaluation arity check.
+         (names (seq-filter #'nelisp-standalone--sid
+                            (delete-dups (append (mapcar #'car arities)
+                                                 (mapcar #'car nelisp-standalone--eval-prims)))))
+         table)
+    (dolist (name names)
+      (let* ((ar (assoc name arities)) (pr (assoc name nelisp-standalone--eval-prims))
+             (mn (cond (ar (nth 1 ar)) (pr (nth 2 pr)) (t 0)))
+             (mx (cond (ar (if (eq (nth 2 ar) 'many) 255 (nth 2 ar)))
+                       (pr (if (= (nth 3 pr) 15) 255 (nth 3 pr))) (t 255)))
+             (id (if pr (nth 1 pr) 0)) (pmin (if pr (nth 2 pr) 0)) (pmax (if pr (nth 3 pr) 0)))
+        (when (> mx 254) (setq mx 255))
+        (push (cons (list :lit name)
+                    (logior id (ash pmin 8) (ash pmax 12) (ash mn 16) (ash mx 24)))
+              table)))
+    `((defun nl_subr_desc (name_ptr)
+        ,(nelisp-standalone--applyfn-build-dispatch (nreverse table) 0))
+      ;; The primitive id for ARGC arguments, else 0.
+      (defun nl_subr_prim (desc argc)
+        (let* ((id (logand desc 255)))
+          (if (= id 0) 0
+            (if (> argc 255) 0
+              (if (< argc (logand (sar desc 8) 15)) 0
+                (let* ((pmax (logand (sar desc 12) 15)))
+                  (if (= pmax 15) id (if (<= argc pmax) id 0))))))))
+      ;; 1 when ARGC is outside the subr's min_args..max_args (eval.c:2645-2649).
+      (defun nl_subr_arity_bad (desc argc)
+        (if (= desc 0) 0
+          (if (< argc (logand (sar desc 16) 255)) 1
+            (let* ((mx (logand (sar desc 24) 255)))
+              (if (< mx 255) (if (> argc mx) 1 0) 0))))))))
+
+(defun nelisp-standalone--special-cell-gate-defun ()
+  "`nl_sp_gate_cell': the argument count of a special form reached through its function
+cell (an alias, save-excursion ...), by the name of the special-form object."
+  (let (table)
+    (dolist (spec nelisp-standalone--special-arity)
+      (unless (eq (nth 3 spec) 'macro)
+        (push (cons (list :lit (car spec)) (nelisp-standalone--special-check-form spec 'head 'args))
+              table)))
+    (dolist (nm '("save-excursion" "save-restriction" "save-current-buffer" "interactive"))
+      (push (cons (list :lit nm) '(nl_sp_check head args 0 -1)) table))
+    `(defun nl_sp_gate_cell (head args name_ptr)
+       ,(nelisp-standalone--applyfn-build-dispatch (nreverse table) '(nl_sp_check head args 0 -1)))))
+
+(defun nelisp-standalone--eval-call-defuns ()
+  "The interpreter's call of a subr on GNU eval_sub's structure (eval.c:2540-2700)."
+  (let* ((sid-builtin (nelisp-standalone--sid "builtin"))
+         (many (nelisp-standalone--le-chunks "Too many arguments")))
+    `(;; The static symbol id of a symbol WORD or view, 0 for none.
+      (defun nl_sym_sid (w) ,(nelisp-standalone--sid-read-form 'w))
+      ;; list_length of the unevaluated arguments (eval.c:2640): the number of
+      ;; conses, -1 when the list ends in anything but nil.
+      (defun nl_sp_nargs (args)
+        (let* ((n 0) (cur args))
+          (seq
+           (while (if (= (logand cur 1) 0) (= (sexp-tag cur) 7) 0)
+             (seq (setq n (+ n 1)) (setq cur (nl_cons_cdr_word cur))))
+           (if (if (= (logand cur 1) 1) (= cur 3) (= (sexp-tag cur) 0)) n -1))))
+      ;; The last tail of an improper list, as the view the error data needs.
+      (defun nl_sp_tail_view (args)
+        (let* ((cur args))
+          (seq
+           (while (if (= (logand cur 1) 0) (= (sexp-tag cur) 7) 0)
+             (setq cur (nl_cons_cdr_word cur)))
+           (wf_word_view cur))))
+      ;; GNU error ("Too many arguments").
+      (defun nl_sp_too_many ()
+        (let* ((buf (alloc-bytes 24 1)))
+          (seq (ptr-write-u64 buf 0 ,(nth 0 many))
+               (ptr-write-u64 (+ buf 8) 0 ,(nth 1 many))
+               (ptr-write-u64 (+ buf 16) 0 ,(nth 2 many))
+               (nl_signal_error_literal buf 18))))
+      ;; The count test of a special form: list_length (wrong-type-argument listp
+      ;; on the last tail of a dotted list), then MIN and MAX (-1: none).  1 when
+      ;; it passes, else the error is signalled and the answer is 0.
+      (defun nl_sp_check (name args min max)
+        (let* ((n (nl_sp_nargs args)))
+          (if (< n 0) (seq (bf_wrong_type_listp (nl_sp_tail_view args)) 0)
+            (if (< n min) (seq (bf_wrong_number_of_args name n) 0)
+              (if (if (>= max 0) (> n max) 0)
+                  (seq (bf_wrong_number_of_args name n) 0)
+                1)))))
+      ;; defvar and defconst: more than MAX is (error "Too many arguments").
+      (defun nl_sp_check_var (name args min max)
+        (let* ((n (nl_sp_nargs args)))
+          (if (< n 0) (seq (bf_wrong_type_listp (nl_sp_tail_view args)) 0)
+            (if (< n min) (seq (bf_wrong_number_of_args name n) 0)
+              (if (> n max) (seq (nl_sp_too_many) 0) 1)))))
+      ;; A macro the evaluator expands in place: GNU reports the byte-compiled
+      ;; macro's (MIN . NONREST) and the count.
+      (defun nl_sp_check_macro (args min nonrest)
+        (let* ((n (nl_sp_nargs args)))
+          (if (< n 0) (seq (bf_wrong_type_listp (nl_sp_tail_view args)) 0)
+            (if (< n min)
+                (seq (bf_wrong_number_of_args
+                      (nelisp_cons_construct_w (nl_imm_int min) (nl_imm_int nonrest) 0) n)
+                     0)
+              1))))
+      ,(nelisp-standalone--special-cell-gate-defun)
+      ;; A special form called through its function cell: its count first.
+      (defun nl_sp_cell_call_w (object head args env)
+        (if (= (nl_sp_gate_cell head args (nl_apply_list_nth object 1)) 1)
+            (nl_n3_special_call_w object args env 0)
+          0))
+      (defun nl_eic_dolist_w (tail_ptr env form_ptr _pad)
+        (if (= (nl_sp_check_macro tail_ptr 1 1) 1)
+            (nl_sf_dolist_w tail_ptr env 0 form_ptr)
+          0))
+      ;; Whether FN is (builtin NAME): NAME, else 0.  A special form's subr is the
+      ;; same list with 13108 in its view's data word (`nl_n3_special_object'): it is
+      ;; not a builtin to call on evaluated arguments.
+      (defun nl_eic_builtin_name (fn)
+        (if (= (m5_fx_word_cons_p fn 0) 0) 0
+          (if (= (heap-sexp-data fn) 13108) 0
+            (let* ((head (nl_cons_car_word fn)))
+              (if (= (logand head 1) 1) 0
+                (if (= (nl_sym_sid head) ,sid-builtin)
+                    (let* ((tail (nl_cons_cdr_word fn)))
+                      (if (= (m5_fx_word_cons_p tail 0) 0) 0 (nl_cons_car_word tail)))
+                  0))))))
+      ;; eval_sub for a subr FN = (builtin NAME): the count of the unevaluated
+      ;; arguments against min_args and max_args before anything is evaluated
+      ;; (the error names the original symbol), then the arguments into the
+      ;; rooted frame and the direct call.  2: no primitive, the ordinary apply.
+      (defun nl_eic_primitive_w (fn name tail env fw call_name)
+        (let* ((desc (nl_subr_desc name))
+               (argc (nl_sp_nargs tail)))
+          (if (< argc 0) (nl_abi_fail (bf_wrong_type_listp (nl_sp_tail_view tail)) 0)
+            (if (= (nl_subr_arity_bad desc argc) 1)
+                (nl_abi_fail (bf_wrong_number_of_args (if (= call_name 0) fn call_name) argc) 0)
+              (let* ((id (nl_subr_prim desc argc)))
+                (if (= id 0) 2
+                  (if (= id 14) (nl_eic_apply_w tail env argc fn fw call_name)
+                    (if (= id 13) (nl_eic_funcall_w tail env argc fn fw call_name)
+                      (nl_eic_prim_frame_w id tail env argc fw call_name)))))))))
+      ;; GNU eval_sub's argvals (eval.c:2626, 2685-2693): the arguments are
+      ;; evaluated into the rooted frame and the primitive runs on them; one it
+      ;; declines gets the same evaluated arguments as an ordinary apply's list.
+      (defun nl_eic_prim_frame_w (id tail env argc fw call_name)
+        (let* ((base (nl_root_frame env (+ argc 1))))
+          (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
+            (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
+              (seq
+               (m5_fx_frame_lazy env base argc 0)
+               (let* ((st (if (<= id 13)
+                              (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
+                            (nl_eic_prim2_run id base argc (+ base (* argc 8))))))
+                 (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
+                   (if (= st -3)
+                       (nl_eic_after_args_w (m5_fx_slot_list base argc) env fw call_name)
+                     0))))))))
+      ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
+      (defun nl_eic_prim2_run (id base argc resw)
+        (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
+               (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
+               (r (if (<= id 19) (nl_eic_prim_arith id a b argc)
+                    (if (<= id 23) (nl_eic_prim_compare id a b)
+                      (if (= id 24) (nelisp_cons_construct_w a b 0)
+                        (if (= id 25) (nl_eic_prim_list base argc resw)
+                          (if (= id 26) (nl_eic_prim_make_vector a b) -1)))))))
+          (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))
+      ;; The fixnum WORD of S, or -1 when S does not fit.
+      (defun nl_eic_fix_wrap (s)
+        (if (= (sar (shl s 2) 2) s) (+ (shl s 2) 1) -1))
+      (defun nl_eic_prim_arith (id a b argc)
+        (if (= argc 0) (if (= id 15) 1 -1)
+          (if (= (logand a 3) 1)
+              (let* ((x (sar a 2)))
+                (if (= argc 1)
+                    (if (= id 15) a
+                      (if (= id 16) (nl_eic_fix_wrap (- 0 x))
+                        (if (= id 18) (nl_eic_fix_wrap (+ x 1))
+                          (if (= id 19) (nl_eic_fix_wrap (- x 1)) -1))))
+                  (if (= (logand b 3) 1)
+                      (let* ((y (sar b 2)))
+                        (if (= id 15) (nl_eic_fix_wrap (+ x y))
+                          (if (= id 16) (nl_eic_fix_wrap (- x y))
+                            (if (= id 17)
+                                (if (= (sar (shl x 33) 33) x)
+                                    (if (= (sar (shl y 33) 33) y) (nl_eic_fix_wrap (* x y)) -1)
+                                  -1)
+                              -1))))
+                    -1)))
+            -1)))
+      (defun nl_eic_prim_compare (id a b)
+        (if (= (logand a 3) 1)
+            (if (= (logand b 3) 1)
+                (if (= id 20) (if (= a b) 7 3)
+                  (if (= id 21) (if (> a b) 7 3)
+                    (if (= id 22) (if (<= a b) 7 3)
+                      (if (= id 23) (if (>= a b) 7 3) -1))))
+              -1)
+          -1))
+      ;; (list ARG...): the partial list is kept in the frame's result slot, so a
+      ;; collection in the next cons finds it.
+      (defun nl_eic_prim_list (base argc resw)
+        (let* ((lst 3) (k (- argc 1)))
+          (seq
+           (while (>= k 0)
+             (seq (setq lst (nelisp_cons_construct_w (heap-read-u64 (+ base (* k 8)) 0) lst 0))
+                  (ptr-write-u64 resw 0 lst)
+                  (setq k (- k 1))))
+           lst)))
+      (defun nl_eic_prim_make_vector (a b)
+        (if (= (logand a 3) 1)
+            (let* ((n (sar a 2)))
+              (if (if (>= n 0) (< n 1048576) 0)
+                  (let* ((out (alloc-bytes 32 8)))
+                    (seq (vector-make n out) (bf_mv_fill out 0 n b) out))
+                -1))
+          -1))
+      ;; A subr D = (builtin NM): its primitive, else the ordinary apply on the
+      ;; evaluated argument list.
+      (defun nl_eic_builtin_call_w (d nm tail env fw call_name)
+        (let* ((p (nl_eic_primitive_w d nm tail env fw call_name)))
+          (if (= p 2)
+              (nl_eic_after_args_w (nl_eval_arg_list_w tail env 0) env fw call_name)
+            p)))
+      (defun nl_eic_eval_args_w (tail_ptr env fw call_name)
+        (let* ((d (heap-read-u64 fw 0))
+               (nm (nl_eic_builtin_name d)))
+          (if (/= nm 0)
+              (nl_eic_builtin_call_w d nm tail_ptr env fw call_name)
+            (let* ((w (m5_fx_interp_call_w d tail_ptr env 0)))
+              (if (= w 2)
+                  (nl_eic_after_args_w (nl_eval_arg_list_w tail_ptr env 0) env fw call_name)
+                w)))))
+      ;; GNU eval_sub reads the car's function cell (eval.c:2634, SYMBOL_FUNCTION in
+      ;; place): an interned or uninterned symbol object is its own mirror entry, so a
+      ;; subr is read from slot 1 at once.  Anything else (the unbound marker, an
+      ;; autoload cell, an alias, a macro, a closure) takes the full lookup.
+      (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark fw)
+        (let* ((w (if (= (logand head_ptr 7) 6) (nl_record_slot_word head_ptr 1) 0))
+               (nm (if (= w 0) 0 (nl_eic_builtin_name w))))
+          (if (/= nm 0)
+              (nl_cons_root_finish
+               env root_mark
+               (seq (ptr-write-u64 fw 0 w)
+                    (nl_eic_builtin_call_w w nm tail_ptr env fw head_ptr)))
+            (nl_eic_after_lookup_w
+             (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
+             form_ptr head_ptr tail_ptr env root_mark fw))))
+      ;; A head that is no special form goes straight to the function call.
+      (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
+        (if (= (nl_val_tag head_ptr) 4)
+            (let* ((sp (nl_sp_index head_ptr)))
+              (if (= sp 0)
+                  (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
+                (if (= sp ,(nelisp-standalone--special-index "dolist"))
+                    (nl_eic_dolist_w tail_ptr env form_ptr 0)
+                  (nl_eic_symbol_dispatch_w
+                   (nl_apply_special_w head_ptr tail_ptr env 0)
+                   form_ptr head_ptr tail_ptr env))))
+          (if (= (nl_val_tag head_ptr) 16)
+              (nl_eic_symbol_w form_ptr head_ptr tail_ptr env (nl_root_mark env))
+            (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env))))))))
+
 (defun nelisp-standalone--patch-combiner-cons-word (src)
   "SRC with the legacy evaluator chain replaced by its Doc 215 word forms."
   (cons (car src)
@@ -52070,7 +52464,22 @@ tails run against a private box), and the (rc, OUT) adapter F."
                    (and (eq (car-safe form) 'defun)
                         (memq (cadr form) nelisp-standalone--combiner-cons-word-drop)))
                  (cdr src))
-                nelisp-standalone--combiner-cons-word)))
+                (mapcar
+                 (lambda (form)
+                   (if (and (eq (car-safe form) 'defun) (eq (cadr form) 'nl_eic_after_lookup_w))
+                       ;; A special form reached through its function cell counts its arguments.
+                       (cl-subst '(nl_sp_cell_call_w lookup_w head_ptr tail_ptr env)
+                                 '(nl_n3_special_call_w lookup_w tail_ptr env 0)
+                                 form :test #'equal)
+                     form))
+                 (cl-remove-if
+                  (lambda (form)
+                    (and (eq (car-safe form) 'defun)
+                         (memq (cadr form) '(nl_eic_primitive_w nl_eic_eval_args_w nl_eval_inner_cons_w
+                                             nl_eic_symbol_slot_w nl_eic_dolist_w))))
+                  nelisp-standalone--combiner-cons-word))
+                (nelisp-standalone--eval-call-defuns)
+                (nelisp-standalone--subr-desc-defuns))))
 
 (defconst nelisp-standalone--eval-inner-word
   '((defun nl_eval_inner_w (form env _pad _pad1)
@@ -52288,6 +52697,9 @@ genuine general interpreter for the 11 special forms + installed builtins."
                              ("sf-env-set-value2.o"
                               (nelisp-standalone--reader-extra-unit-epoch
                                entry '(nelisp_env_set_value nelisp_env_set_value_lazy)))
+                             ("sf-setq.o"
+                              (nelisp-standalone--reader-extra-unit
+                               entry #'nelisp-standalone--patch-setq-odd))
                              (_ (nelisp-standalone--reader-extra-unit entry))))
                          nelisp-standalone--reader-real-sf-manifest)))
          ;; WAVE-2 PATCH 4: sf-condition-case with nl_sf_cc_after_match rewritten
