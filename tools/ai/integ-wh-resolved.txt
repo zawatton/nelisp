@@ -1,0 +1,4 @@
+# Elisp files whose merge conflicts were resolved by hand in the dry run of the
+# word-heap line onto batch F (tools/ai/integ-wh-progress.org).  One path per line;
+# `integ-wh-check.sh hygiene' runs check-parens on every *.el listed here.  Lines
+# starting with # are comments.  Non-Elisp files are listed for the record.

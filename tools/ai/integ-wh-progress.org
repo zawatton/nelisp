@@ -1,0 +1,66 @@
+#+TITLE: Word-heap line on batch F: dry-run integration (eval/integ-wh-20261022)
+
+# Coordinator brief 2026-10-22 (integrator: Claude Sonnet 5.5).  Dry run of merging
+# the word-heap line onto batch F (eval/integ-20261022f, e98f397f7), so the real batch
+# later is mostly clean merges onto this branch.  Conflict resolutions are recorded
+# by rerere (git -c rerere.enabled=true on merge and commit, never in the shared
+# config) and described in the NOTEs below.  Dynamic linkage only: no static and no
+# Windows build on this dry run.
+#
+# Merge order, one merge commit each:
+#   1. eval/codegen-wh-20261022 (27ed5f84a)
+#   2. the word-heap base 702ccc8d7 (batch W, eval/integ-20261021w), alone
+#   3. eval/strings-20261021 (375939a85, final)
+#   4. eval/hashtab-20261021 (76f7c484a, final)
+# The gc-port, callpath-perf and codegen tips follow when the coordinator hands them
+# over (S3).
+#
+# Files: tools/ai/integ-wh-check.sh (the checks), integ-wh-build.sh (dynamic snapshot
+# build), integ-wh-sanity.el, integ-wh-mcp-smoke.sh, and integ-wh-resolved.txt (the
+# hand-resolved Elisp files that `hygiene' parenthesis-checks).
+
+* S1 Merges
+** S1.1 eval/codegen-wh-20261022 (27ed5f84a), CG5's WORD-aware fused tag test for the 110 vectorlike and 010 direct-cons cases, is merged
+cmd: bash tools/ai/integ-wh-check.sh merged codegen-wh
+** S1.2 The word-heap base 702ccc8d7 (batch W) is merged alone, with its conflict resolutions in that commit
+cmd: bash tools/ai/integ-wh-check.sh merged base
+** S1.3 eval/strings-20261021 (375939a85, final) is merged
+cmd: bash tools/ai/integ-wh-check.sh merged strings
+** S1.4 eval/hashtab-20261021 (76f7c484a, final) is merged
+cmd: bash tools/ai/integ-wh-check.sh merged hashtab
+** S1.5 The tree has no conflict markers, the hand-resolved Elisp files pass check-parens, and the pinned conflict points hold
+#+TIMEOUT: 300
+cmd: bash tools/ai/integ-wh-check.sh hygiene
+cmd: bash tools/ai/integ-wh-check.sh invariants
+** S1.6 Host-Emacs checks on the merged tree: ns-inventory has no unpinned collision beyond 1290, and the AOT compiler and codegen ERT suites pass
+#+TIMEOUT: 300
+cmd: bash tools/ai/integ-wh-check.sh ns
+#+TIMEOUT: 600
+cmd: bash tools/ai/integ-wh-check.sh codegen-ert
+** S1.7 End to end: the dynamic binary builds from a snapshot of HEAD's tree and evaluates (+ 1 2)
+cmd: bash tools/ai/integ-wh-check.sh built
+cmd: bash tools/ai/integ-wh-check.sh boot
+
+* S2 Verify on the dynamic build
+** S2.1 target/final-verify/checks.sh: 11 groups, 0 failures (the dynamic binary fills the STATIC slot, so the four thread groups run on dynamic)
+cmd: bash tools/ai/integ-wh-check.sh log checks
+** S2.2 test/perf/standalone-checks.sh passes on the dynamic build
+cmd: bash tools/ai/integ-wh-check.sh log standalone
+** S2.3 fib, a cons-heavy loop and a string-heavy loop run without a segfault and print GNU's bytes
+cmd: bash tools/ai/integ-wh-check.sh sanity
+** S2.4 End to end: anvil-standalone on the merged binary lists 40 tools
+cmd: bash tools/ai/integ-wh-check.sh log mcp
+
+* S3 Later merges and platforms (not in this dry run)
+** S3.1 The gc-port tip is merged
+pending
+** S3.2 The callpath-perf tip is merged
+pending
+** S3.3 The codegen tip is merged
+pending
+** S3.4 The static build passes the same checks
+pending
+** S3.5 The Windows smoke passes
+pending
+** S3.6 End to end: the library census (ccore, process, display, buffer) passes on the batch's library image
+pending
