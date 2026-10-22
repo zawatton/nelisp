@@ -498,7 +498,12 @@ overhead subtracted, against GNU 31.1's =Fcons=, =Fmake_string= and =Fmake_vecto
   character, 159 instructions for 128 bytes) and the string view the finaliser wrote is built in place.  It also
   applies GNU's =CHECK_CHARACTER=: a character is 0..#x3FFFFF, and =(make-string 3 #x400000)= signals
   =wrong-type-argument= as in GNU instead of building a string (the arm accepted any non-negative number).
-  This step still read its arguments as views: 4,947 instructions, of which the argument accessors are 3,900.
+  The arguments are read as WORDs (=wf_arg_word=, =nl_word_payload=): the first version of this builtin read them
+  through =wf_arg_ptr= and =nl_cons_car_ptr=, which materialise a 32-byte view per argument at about 500 instructions
+  each, and cost 4,947 of which 3,900 were those accessors.  1,242 instructions now against GNU's 178 (x7.0): the
+  two =nl_alloc_bytes= calls (the result buffer and the 32-byte view the string still is) are 692 on a fresh heap,
+  =nl_u8_fill= 159, the argument words 112.  Other builtins that still read their arguments as views pay the same
+  per argument; that is a representation change for the whole runtime and is not made here.
   The arm also exists on =eval/strings-20261021=, unchanged there.
   =test/gc-port-make-string-check.el= prints 167 cases (unibyte, multibyte and forced-multibyte ASCII, every encoded
   width from one byte to five and the raw-byte characters, sizes 0 to 4099, mutation after creation, the error
