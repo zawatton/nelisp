@@ -195,6 +195,9 @@ written wrong, so the check must fire.  Anything else: no check."
     ;; its slot count in header>>8 and slot I at payload+16+8I, a vector
     ;; its length in header>>8 and slot I at payload+8+8I.
     (defun nl_symcell_entry (mirror-ptr name)
+      ;; An immediate where the mirror should be (gc-port's symcells root with its
+      ;; low bit set, the self-test's hidden-root control): no table to consult.
+      (if (= (logand mirror-ptr 1) 1) 1
       (let* ((buf (heap-read-u64 name 16))
              (base (heap-read-u64 268436288 0)))
         (if (and (> buf (+ base 16777224))
@@ -223,7 +226,7 @@ written wrong, so the check must fire.  Anything else: no check."
                 (if (= (logand p 7) 0)
                     (if (= (logand (heap-read-u64 p 0) 63) 4) (+ p 6) 1)
                   1)
-              1)))))
+              1))))))
 
     ;; The hashed bucket walk, kept for keys without a cell and as the
     ;; authority `nl_symcell_refresh' copies into a cell.  KEY is a valid
