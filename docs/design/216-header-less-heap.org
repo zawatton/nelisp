@@ -358,6 +358,15 @@ set-marker-insertion-type retypes the record by setting its slot 0.  A marker is
 then a record of two fields, 40 bytes retained, and the native number reader
 (wf_numeric_marker_p) accepts a record of length 2 named by either type.
 
+Scalar views as immediates (recorded 2026-10-22; gc-port ledger S1.5).  A nil, t
+or Int view stored into a container is its immediate WORD (nil 3, t 7, (n << 2) | 1
+for a fixnum-range Int) -- nl_vci_scalar in the cold clone path nl_val_clone_legacy;
+only an Int outside the fixnum range keeps an owned 32-byte box.  The cold path used
+to rebox every scalar slot (commit 692dc8a09, a micro-optimization, not a semantic
+rule), which left 71 integer, 157 nil and 431 t views in the image, almost all
+referenced by cons cells and records.  The hot accessors and nl_val_clone_into are
+untouched.
+
 100 and 110 still require a kind-word load when their subtype is needed;
 only cons and the broad pointer classes can be recognized entirely from WORD
 bits. No universal "zero type-header loads" speed claim is made.

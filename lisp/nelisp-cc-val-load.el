@@ -143,6 +143,16 @@
     ;; `nl_bind_clone_force_flag' forces the legacy path.
     (defun nl_vci_float (word dst_word_ptr)
       (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
+    ;; Doc 216 S6.1: the WORD of a nil, t or Int view is its immediate (nil 3,
+    ;; t 7, a fixnum (n << 2) | 1), so no 32-byte scalar view is retained; only
+    ;; an Int outside the fixnum range keeps an owned box.
+    (defun nl_vci_scalar (src dst_word_ptr)
+      (let ((tag (heap-read-u8 src 0)) (v (heap-read-u64 src 8)))
+        (if (= tag 0) (nl_vci_float 3 dst_word_ptr)
+          (if (= tag 1) (nl_vci_float 7 dst_word_ptr)
+            (if (if (< v -2305843009213693952) 0 (if (> v 2305843009213693951) 0 1))
+                (nl_vci_float (+ (* v 4) 1) dst_word_ptr)
+              (nl_vci_rebox (alloc-bytes 32 8) src dst_word_ptr))))))
     (defun nl_val_clone_legacy (src_slot dst_word_ptr)
       (if (= (logand src_slot 1) 1)
           (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
@@ -153,10 +163,10 @@
               ;; do not decode them into canonical immediate WORDs.
               (if (< (heap-read-u8 src_slot 0) 4)
                   ;; Doc 216 S5: a float view becomes a header-less float
-                  ;; object; the other scalar slots stay owned boxes.
+                  ;; object; a nil, t or fixnum view becomes its immediate WORD.
                   (if (= (heap-read-u8 src_slot 0) 3)
                       (nl_vci_float (nl_float_object (heap-read-u64 src_slot 8)) dst_word_ptr)
-                    (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr))
+                    (nl_vci_scalar src_slot dst_word_ptr))
               (if (= (heap-read-u8 src_slot 0) 13)
                   ;; Doc 216 S5: a Bignum view is stored as its object.
                   (nl_vci_float (nl_big_word src_slot) dst_word_ptr)
