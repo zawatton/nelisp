@@ -1,0 +1,57 @@
+#+TITLE: Hash tables: GNU 31.1 struct Lisp_Hash_Table storage in the runtime
+
+# User decision 2026-10-21: fix the representation first, imitating GNU.
+#
+# The eqhash lane (eval/eqhash-20261021, 50% of 4) made lookups flat in N:
+# a string-key miss at N=8000 went from 414 to 78 us. Wall-clock own cost
+# against GNU is still far off:
+# - gethash hit: 7.1-11.5x;
+# - gethash miss: 12.3-17.4x;
+# - puthash: 302-358x.
+# Entries are still stored in conses, and capacity is managed in Lisp.
+#
+# GNU 31.1 fns.c struct Lisp_Hash_Table:
+# - key_and_value is one vector of pairs, plus the hash, next and index
+#   vectors;
+# - maybe_resize_hash_table grows the vectors in place;
+# - hash_lookup and hash_put walk the index and next chains with no
+#   allocation per entry;
+# - sweep_weak_table handles weak tables.
+#
+# Start from eqhash's identity hashing and fixture: eval/eqhash-20261021 and
+# its target/eqhash evidence. Its weak-table semantics (S1.2) depend on
+# gc-port's conservative-root work and stay so here.
+#
+# Base: eval/integ-20261021w (eval/core 7d2d49fa3 plus the word-heap line,
+# in final checks). Merge eqhash's branch first and resolve it on the word
+# heap.
+#
+# Bar: wall-clock own cost against GNU 31.1, as paired per-round ratios on
+# CPU 15 (COMMON.md Measurement).
+
+* S0 Plan
+** S0.1 docs/design/228-gnu-hash-table-port.org maps fns.c hash table storage, lookup, insertion, removal, growth and the weak sweep to native NeLisp structures, after merging eqhash onto this base
+#+NOTE: 2026-10-21: Content-merge of eval/eqhash-20261021 at 6e4c3bc96 onto the word heap. Direct git merge is prevented by the read-only git mount; relay 001 records the resolved content. GNU fns.c:4956,5087,5132,5161,5251 and lisp.h:2562 are mapped in Doc 228. The merged dynamic binary passes all 32 ordinary GNU fixture cases; the new storage census fails on its cons entries (negative control). CPU 15, layout 0, median of 7 paired wall-clock own-cost ratios before the vector port: eq/hit 59.810x GNU (1826.6 ns); eq/miss 53.385x GNU (1216.8 ns); eq/put 1407.958x GNU (74426.0 ns); equal/hit 47.368x GNU (2044.4 ns); equal/miss 81.647x GNU (1900.1 ns); equal/put 3312.632x GNU (91308.9 ns). No threshold revision. The full four-layout measurement continues against an immutable binary.
+cmd: python3 tools/ai/hashtab-check.py plan
+
+* S1 Port and semantics
+** S1.1 Tables store entries in GNU's vectors (key_and_value, hash, next, index), with no cons per entry (census) and native growth
+#+NOTE: 2026-10-21: Ported GNU fns.c:4956/5087/5132/5161/5201 and lisp.h:2562: four native word vectors, integer bucket/free chains, allocation-free entry storage, and native ordinary-table reserve (0->6, small x4, large x2). The existing handle remains one cons; the 1024-entry storage census reports one storage cons and four vectors on both real dynamic and static builds. The merged cons representation fails this census. Reader literals now share the native constructor and insertion path. No native builtin name was added (existing tagged-object access, minimal-native clause 1); the Lisp reserve/insertion/removal references remain in the prelude for user-defined callbacks. GNU fns.c:4916 resets the copied mutation guard; fns.c:5201 leaves the free chain of an already-empty table unchanged. Both cases were red on the first vector artifact and green after the fixes, with matching GNU output and corpus forms. Persistent REPL publication of the old/new maphash preserves table value 73 and independent state 41; both reloads report status ok, phase publish, published maphash. No native direct caller was reloaded. Windows F1 text was 529902 bytes; shared GC ABI calls confined to the weak-storage adapter reduce it to 523745 bytes, 292 functions, under unchanged 524288-byte/296-function bounds. GC root policy and compiler sources are unchanged. Development tool repair: CPU15 wall probe previously rejected before executing; now exits 0 with two NeLisp and two GNU rows (4.7s/0.1s). Timing processes use a CPU15 lock; overlapping discarded runs are excluded.
+cmd: python3 tools/ai/hashtab-check.py layout
+** S1.2 eqhash's 56-case GNU fixture plus growth, maphash order, copy-hash-table, define-hash-table-test and every weakness kind matches on dynamic and static
+Weak cases that need gc-port stay failing until gc-port lands.
+#+NOTE: 2026-10-21: All 32 ordinary eqhash cases and six additional GNU records match on dynamic and true static. Full 56-case comparison remains red only on weak/root cases, as permitted by the brief: dynamic/eqhash: mismatches weak-key,weak-unrooted-key,weak-value,weak-key-or-value,weak-key-and-value,weak-string-retained,weak-string-order-reuse,weak-string-unrooted,weak-cycle-key,weak-cycle-value,weak-cycle-key-or-value,weak-cycle-key-and-value,weak-chain-reverse-unrooted,weak-mixed-forward-unrooted,weak-mixed-reverse-unrooted; static/eqhash: mismatches weak-key,weak-value,weak-key-or-value,weak-key-and-value,weak-string-retained,weak-string-order-reuse,weak-string-unrooted,weak-cycle-key,weak-cycle-value,weak-cycle-key-or-value,weak-cycle-key-and-value,weak-chain-forward-unrooted. Actual weak outcomes vary with conservative frame retention; no weak criterion was removed or weakened. Evidence: target/hashtab/semantics.json and its hashed stdout/stderr inputs.
+cmd: python3 tools/ai/hashtab-check.py semantics
+
+* S2 Speed (wall-clock against GNU, paired ratios, CPU 15)
+** S2.1 Own cost of gethash (hit and miss) and puthash on eq and equal tables <= GNU's own cost
+#+NOTE: 2026-10-21 FINAL: CPU15, N=1000, 100000 calls, four layouts with seven paired rounds each, warmed and GC included. Dynamic rounds alternate candidate/GNU/base/GNU-base; static rounds alternate candidate/GNU. Only one timing process holds the CPU15 lock. The reported aggregate is the median of the 28 within-round GNU own-cost ratios (the gate retains its seven-round check per layout). eq/hit: dynamic GNU ratio 38.012->27.837, own 1202.3->1070.6 ns; static GNU ratio 45.566, own 1275.4 ns; nonpositive-pair counts dynamic base/candidate/static=4/4/1; eq/miss: dynamic GNU ratio 50.684->37.810, own 1116.2->1046.1 ns; static GNU ratio 55.532, own 1209.2 ns; nonpositive-pair counts dynamic base/candidate/static=2/2/0; eq/put: dynamic GNU ratio 1158.831->19.097, own 119404.3->1740.3 ns; static GNU ratio 20.488, own 1516.4 ns; nonpositive-pair counts dynamic base/candidate/static=0/0/0; equal/hit: dynamic GNU ratio 116.298->27.685, own 3409.4->1201.2 ns; static GNU ratio 49.632, own 1315.7 ns; nonpositive-pair counts dynamic base/candidate/static=2/1/1; equal/miss: dynamic GNU ratio 39.384->37.079, own 1142.9->1136.0 ns; static GNU ratio 46.292, own 1237.2 ns; nonpositive-pair counts dynamic base/candidate/static=1/5/1; equal/put: dynamic GNU ratio 1549.447->22.581, own 120746.6->1927.6 ns; static GNU ratio 22.848, own 1654.2 ns; nonpositive-pair counts dynamic base/candidate/static=0/0/0. Negative get subtractions are measurement noise and are rejected by the checker, never counted as a pass. All put pairs are positive; even those valid ratios exceed the original <=1x GNU bar, which is unchanged. Full raw timing inputs/frequencies are in target/hashtab/wall-candidate-dynamic.json and wall-candidate-static.json; summary in wall-summary.json. GNU hash_find/hash_put use direct object words and array access; remaining NeLisp word-view/test-symbol and native helper/call costs persist beyond the entry-storage port. Reproduce with tools/ai/hashtab-wall.py candidate BINARY --base BASE (dynamic) and --variant static (static), sequentially.
+cmd: python3 tools/ai/hashtab-check.py speed
+
+* S3 End to end
+** S3.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks, MCP smoke with 40 tools, wine smoke
+#+NOTE: 2026-10-21 FINAL: Dynamic and real static builds completed (ELF interpreter present/absent respectively). With a short writable TMPDIR, COMMON is 11 groups/0 failures and the required separate standalone run is 94 cases/0 failures (the pre-existing maphash-sparse known-red remains). The initial default-TMPDIR run failed only on read-only temporary paths; the corrected run is stored in target/hashtab/common.log and standalone.log. Final Anvil MCP tools/list returns 40 tools, exit 0, after keeping stdin open 25 s. Native Windows cross-build and real F1 proof pass at 523745 bytes/292 functions; the unchanged caps are 524288 bytes/296 functions. Actual Wine runtime smoke is blocked before execution: wineserver cannot create /run/user/1000/wine/server-* on the sandbox read-only filesystem, including with writable WINEPREFIX/TMPDIR/XDG settings. No filesystem or memory restriction was bypassed. S3.1 stays red; hashed evidence is target/hashtab/final.json.
+cmd: python3 tools/ai/hashtab-check.py final
+** S3.2 notes-65: ccore 374/374 and the S1.3 init on a library image from this branch, not slower than the base
+#+NOTE: 2026-10-21 FINAL: A library image was built from the final dynamic artifact of this branch; c-core-parity check other passes 374/374 (target/hashtab/ccore-other-final.log). The real-init GNU prerequisite fails before init in bwrap: NETLINK_ROUTE socket Operation not permitted. The sandbox contract was not weakened; no base/candidate init wall regression ratio is claimed. S3.2 stays red with target/hashtab/notes65.json. The inherited eqhash wall CLI now defaults to its reserved CPU14, matching its corrected 8-15 validation; hashtab remains explicitly pinned to CPU15.
+cmd: python3 tools/ai/hashtab-check.py notes65

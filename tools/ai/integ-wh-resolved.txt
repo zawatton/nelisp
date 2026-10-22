@@ -20,3 +20,6 @@ lisp/nelisp-aot-compiler.el
 lisp/nelisp-cc-env-lookup-function.el
 scripts/nelisp-standalone-build.el
 test/nelisp-aot-compiler-test.el
+
+# Merge 4: eval/hashtab-20261021 76f7c484a (1 conflicted file, 3 hunks)
+scripts/nelisp-standalone-build.el

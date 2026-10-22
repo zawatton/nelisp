@@ -1,0 +1,59 @@
+#+TITLE: Hash tables: eq/eql hashing by object identity for every key type, as GNU's hashfn_eq does
+
+# notes-65 finding (2026-10-21, 9d5f4 plus the library image; script
+# wh3.el and the N sweep wh.el in its scratchpad,
+# /home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/7da3a5da-6f2a-4eaf-97dd-66ff11205bab/scratchpad/):
+#
+# A gethash miss on an eq table keyed by strings costs:
+#   N=10:   12 us  (GNU 0.2)
+#   N=1000: 43-59  (GNU 0.2)
+#   N=4000: 156    (GNU 0.4)
+#   N=8000: 376-463 (GNU 0.4)
+# puthash follows the same curve; that table has :weakness key. Misses on
+# cons, symbol and vector keys stay flat at about 10-13 us. Only string
+# keys scale, so string keys are not being hashed by identity.
+#
+# GNU 31.1 fns.c hashfn_eq hashes the object word (address and tag) for
+# every type; weak tables are swept by sweep_weak_table. The library keeps
+# string text properties in such a weak eq table, so S1.3 paid this cost
+# throughout init.
+#
+# Bar: the user's bar for primitives. A gethash or puthash's own cost (the
+# call minus a same-shape trivial subr) must be <= GNU's own cost.
+# Base: eval/core-20261017 at 9d5f4a515.
+
+* S1 Mechanism and semantics
+** S1.1 eq and eql lookups are flat in N for every key type, weak and non-weak tables, on dynamic and static
+#+NOTE: 2026-10-21: Port GNU 31.1 fns.c:4766-4798 (identity/eql hashing), lisp.h:2787-2809 (64-to-32 folding and Knuth indexing). Adapt the identity word to NeLisp's shared payload owner because 32-byte value views are copied. Interned symbols follow the runtime's name-based eq contract; replacing that requires the symbol/interner layer. Symbol flat probes use uninterned make-symbol keys. Rehash after compaction/image relocation using the existing generation/address stamps; the GC algorithm is unchanged. Legacy/content tables retain their bucket convention. Inline floats have no independent identity: equal-valued distinct floats produce (t 1 2 2) here versus GNU (nil 2 1 2), recorded under target/eqhash/diagnostic/float-*. Exact eq/weak-float object identity needs an out-of-scope representation change; required flat probes use distinct values and verify count=N and a real miss. No threshold is revised.
+#+NOTE: 2026-10-21 16:30 user metric revision, S1.1: old four-layout mean own Ir ratio <=1.5 becomes per-operation wall-clock ratio N=8000/N=10 <=1.5 for every key type and table kind. Warm up, include GC, pin idle CPUs, and take seven alternating NeLisp/GNU runs per layout. Measure base and GNU with the same harness. Ir is diagnostic only; the criterion and its multiplier remain.
+#+NOTE: 2026-10-21 wall protocol: each layout uses seven separate process pairs, alternating NeLisp then GNU on the same pinned CPU. Each case warms 100 operations, times its operation loop plus explicit final GC, and validates population/miss/final results. Setup and initial GC are outside the timer. Flatness uses total per-operation time; own-cost uses the median of paired target-minus-control times. Four layout medians are averaged. Batched conditions avoid repeated cold-image startup; no Ir result is accepted by these commands.
+#+NOTE: 2026-10-21 completed baseline wall data: all seven dynamic eq/key types at N=10/8000, four layouts and seven alternating runs. String miss total (GC included, 2000 calls) is 73.316/414.205 us per call, ratio 5.650; GNU is 3.153/3.371 us per call. This is the real failing flatness control, not a synthetic slope.
+The key types are string, cons, symbol, vector, float, bignum and marker. A miss at N=8000 costs at most 1.5x the miss at N=10, in per-operation wall-clock time (four-layout mean of seven-run medians). A control shows the base fails for strings.
+#+NOTE: 2026-10-21 comparison scope: before/after measurements cover all seven key types in dynamic eq/key tables at both N values and all four layouts. Candidate flatness additionally covers every eq/eql, weak/non-weak and dynamic/static combination. This supplies the requested baseline without extending the whole candidate matrix to the base.
+#+NOTE: 2026-10-21 final wall result: 56/56 flat conditions pass, maximum N8000/N10 ratio 1.280573 <=1.5. All seven before/after key types, both N values and four layouts are in target/eqhash/flat-before-after-wall.csv; the complete candidate matrix is target/eqhash/flat-wall.csv. Dynamic eq/key string total miss cost is 73.315770/414.204806 us before and 65.384537/78.061491 us after (N10/N8000; 2000 calls, GC included). Matched after GNU totals are 2.689362/2.902597 us, so total NeLisp/GNU is 24.312/26.894; this is not a 1x primitive result. All 294 alternating process units and 8456 rows completed without execution errors. Summary: target/eqhash/wall-summary.json sha256 5a82826ffac8113dc2ae332510627b6c7f1816b74e54dead50be6d7e53d1272c.
+cmd: python3 tools/ai/eqhash-check.py flat --metric wall
+** S1.2 Semantics match GNU 31.1 on a pinned fixture, on dynamic and static
+#+NOTE: 2026-10-21: Adapt GNU fns.c:5231/5251 and alloc.c:5670: preserve weak table storage without tracing endpoints, mark surviving entries across all weak tables to a fixed point, then unlink dead entries before sweeping/compacting. GNU entry-array order/free-slot reuse is represented by metadata slots 11-13; a scalar index cache in each entry view permits constant-time removal. Custom hash/compare callbacks follow fns.c:4805/5088/5971 in Lisp, with cached hashes and same-table mutation guards. No public native was added. The pinned 56-case fixture fails on the base (24 mismatches before the missing custom-test primitive stops it).
+#+NOTE: 2026-10-21 blocker: the default conservative stack scan pins otherwise unreachable weak endpoints (mark 4). In the isolated cyclic-key probe, both endpoint wrappers are unmarked (0), while both payload owners are conservatively pinned (4); target/eqhash/dev/weak-mark-gdb.log records the reduced verdict. With only the existing diagnostic switch 28/29 around explicit collections, the unchanged 56-case fixture matches GNU exactly (target/eqhash/dev/semantics-precise-original.out). Under default settings 10 weak cases differ (target/eqhash/dev/semantics-static.out). Ignoring pinned owners in the weak hook would discard potentially live native references. Resolving conservative root lifetime needs the GC/call layer, forbidden by the brief. The fixture and criterion remain unchanged and failing; diagnostic-only output is not acceptance evidence.
+#+NOTE: 2026-10-21 coordinator decision: conservative root retention is an external dependency on eval/gc-port-20261021, which ports GNU alloc.c mark_memory/mem_find. It no longer stops this lane. Leave S1.2 failing under the default collector and finish S1.1, S1.3 and S2.1. The standalone regression check exercises the ordinary hash cases; all weak-GC cases remain in this full semantic gate until the GC port lands.
+The fixture covers:
+- string keys with equal contents but distinct identity;
+- rehash after growth;
+- all four weakness kinds after garbage collection;
+- maphash order and counts;
+- copy-hash-table;
+- the hash-table-test variants (eq, eql, equal, define-hash-table-test).
+cmd: python3 tools/ai/eqhash-check.py semantics
+** S1.3 Own cost of gethash (hit and miss) and puthash on an eq table <= GNU's own cost
+#+NOTE: 2026-10-21 implementation follow-up: GNU fns.c:4956-4995/5130-5155 reserves raw entry arrays inside hash_put. An experimental native reservation/public-put fast path passed the 32 ordinary cases but crashed during prelude registration at automatic mid-form GC (nl_gc_mark_cons from root-stack marking; target/eqhash/next/debug-summary-3.log). Initializing scratch views and retaining the Lisp growth provider did not resolve it. That experiment was reverted; the accepted port and its verified binaries remain unchanged. The remaining put path keeps the established Lisp capacity provider and GC-traced cons storage, unlike GNU's raw key/value/hash/next arrays. S1.3 retains the original 1x command and reports any measured miss honestly.
+#+NOTE: 2026-10-21: The fixed-three-argument put control uses char-table keys and set-char-table-extra-slot (GNU chartab.c:561; existing NeLisp nl_ct_store_word performs raw stores without cloning). Both calls receive the same char-table, integer 0 and hash-table arguments; results are discarded, extra slots are cleared identically before final GC. The earlier Ir recorder rejected control trials with natural GC during reference retention; the wall probe keeps every key and the table globally rooted on both sides, so those temporary references add no retained objects and natural GC is included. This measures puthash relative to a simple tagged-slot store, not an allocation-bearing aset or numeric/variadic max floor. Get controls use eq with the same two arguments. No threshold is changed.
+#+NOTE: 2026-10-21 16:30 user metric revision, S1.3: old four-layout mean own Ir <=GNU becomes own wall-clock <=GNU 31.1 own wall-clock, preserving the 1x bar for hit, miss and put at both N values on both builds. Subtract the same-shape trivial subr in each runtime; warm up, include GC, pin idle CPUs and take seven alternating NeLisp/GNU runs per layout. Earlier Ir measurements remain diagnostic evidence only.
+#+NOTE: 2026-10-21 final own wall result: all 12 dynamic/static, N10/N8000 hit/miss/put cases fail the unchanged 1x GNU bar. NeLisp/GNU own-cost ratios are hit 7.138-11.454, miss 12.322-17.358 and put 302.556-358.062. All GNU own costs are positive. The single actual base witness has own miss 346.339941 us versus GNU total 2.946496 us, an upper bound on GNU own cost. Full 12-row measurements (50000 calls, paired seven-run medians, four layouts, GC included): target/eqhash/own-speed-wall.csv sha256 099dcd8aaebf936865c10cf7f988139a2ceba4df5d9ed703d11c75fba90b7413. The remaining GNU gap is recorded above; no threshold is raised.
+The measure is own per-operation wall-clock time (four-layout mean of seven-run medians), GC included, with GNU 31.1 measured on the same harness.
+#+NOTE: 2026-10-21 earlier diagnostic protocol (superseded as a gate by the 16:30 wall-clock rule): start Callgrind instrumentation through its standard client request after key/table preparation and its initial collection. Count the operation loop, natural GC and final explicit GC; subtract the identical-shape control. The measurement-only C helper is loaded as a GNU module or called through NeLisp's existing raw-memory API; no runtime native is added. This omits repeated cold-image/setup instruction counts while retaining operation-related GC, on base/candidate/GNU alike. Protocol eqhash-loop-plus-GC-Ir-v3 replaces incomplete v2 trials; no threshold changes.
+cmd: python3 tools/ai/eqhash-check.py speed --metric wall
+
+* S2 No regression
+** S2.1 Final verification: COMMON.md 11 groups with 0 failures, standalone-checks and the MCP smoke with 40 tools
+#+NOTE: 2026-10-21: Both final Linux builds completed. COMMON passed 11/0, the separate standalone run passed 76/0, and the actual Anvil launcher returned 40 unique tools with exit 0. Hashed logs and binary identities are in target/eqhash/final.json; the checker also rejected one synthetic failed-COMMON return code.
+cmd: python3 tools/ai/eqhash-check.py final

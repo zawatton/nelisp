@@ -1261,10 +1261,7 @@
     ;; the runtime hash-table value directly instead of returning a
     ;; constructor form.
     ;;
-    ;; The standalone reader's current hash-table representation is
-    ;; `(MARKER . ALIST)' where ALIST is `((KEY . VALUE) ...)'.
-    ;; The marker is ignored by gethash/puthash and exists only to keep
-    ;; the table distinguishable from a plain alist in diagnostics.
+    ;; Literal construction shares the native four-vector table storage.
     ;; ===========================================================
 
     (defun nelisp_reader_p_symbol_hash_table_p (sym)
@@ -1373,25 +1370,16 @@
             (nelisp_reader_p_list_nth_ptr (nl_cons_cdr_word node) (- n 1)))
         0))
 
-    (defun nelisp_reader_p_hash_fill_table
-        (data table pair-slot newhead-slot)
-      ;; Preserve the pool's WORD representation even when this depth was
-      ;; previously used by a list. A legacy constructor only writes the tag
-      ;; byte, leaving the old WORD's high tag bytes in its physical scratch.
+    (defun nelisp_reader_p_hash_fill_table (data table pair-slot newhead-slot)
+      ;; Use the runtime allocator/inserter: literals have the same four
+      ;; vectors as tables created by make-hash-table, including empty ones.
       (while (= (nl_val_tag data) 7)
-        (let* ((rest (nl_cons_cdr_word data)))
+        (let ((rest (nl_cons_cdr_word data)))
           (if (= (nl_val_tag rest) 7)
-              (seq
-               (nelisp_reader_p_word_slot_set pair-slot
-                (nelisp_cons_construct_w (nl_cons_car_word data)
-                                          (nl_cons_car_word rest) 0))
-               (nelisp_reader_p_word_slot_set newhead-slot
-                (nelisp_cons_construct_w (heap-read-u64 pair-slot 0)
-                                          (nl_cons_cdr_word table) 0))
-               (cons-set-cdr table (heap-read-u64 newhead-slot 0))
-               (setq data (nl_cons_cdr_word rest)))
-            (setq data 3))))
-      1)
+              (seq (extern-call nl_ht_put_values_w (nl_cons_car_word data)
+                                 (nl_cons_car_word rest) table 0)
+                   (setq data (nl_cons_cdr_word rest)))
+            (setq data 3)))) 1)
 
     (defun nelisp_reader_p_build_hash_table (body result-slot slot-pool depth)
       (let* ((w (nelisp_reader_p_build_hash_table_w body 0 slot-pool depth)))
@@ -1399,19 +1387,16 @@
           (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_p_build_hash_table_w (body _pad slot-pool depth)
-  (let* ((data (nelisp_reader_p_hash_plist_find_data (nl_cons_cdr_word body)))
-         (test (nelisp_reader_p_hash_plist_find_test (nl_cons_cdr_word body)))
-         (head (nl_w_vector_make 3 0)))
-    (if (= data 0) (setq data (nelisp_reader_p_list_nth_ptr body 4)) 0)
-    (vector-slot-set head 0 (nl_cons_car_word body))
-    (vector-slot-set head 1 (nl_imm_int (nelisp_reader_p_hash_pair_count data 0)))
-    (if (= test 0) 0 (vector-slot-set head 2 test))
-    (let* ((object (nelisp_cons_construct_w head 3 0)))
-      (if (= data 0) 0
-        (nelisp_reader_p_hash_fill_table data object
-          (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth))
-          (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth))))
-      object)))
+      (let* ((data (nelisp_reader_p_hash_plist_find_data (nl_cons_cdr_word body)))
+             (test (nelisp_reader_p_hash_plist_find_test (nl_cons_cdr_word body)))
+             (object (extern-call nl_ht_make_w 0)))
+        (if (= data 0) (setq data (nelisp_reader_p_list_nth_ptr body 4)) 0)
+        (if (= test 0) 0 (vector-slot-set (nl_cons_car_word object) 2 test))
+        (if (= data 0) 0
+          (nelisp_reader_p_hash_fill_table data object
+            (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth))
+            (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth))))
+        object))
 
     (defun nelisp_reader_p_record_tag_p (tag)
       (let* ((kind (nl_val_tag tag)))
