@@ -5142,11 +5142,13 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                              ;; lispsym index, which the builtin dispatch reads) and
                              ;; its intern table slot (`nl_symobj_meta').
                              (ptr-write-u64 b 40 (nl_symobj_meta_h buf h))
+                             ;; The name is the chain's key: without it (memory) the
+                             ;; object is not registered.
                              (if (= (nl_symname_make buf n name) 0) 0
-                               (ptr-write-u64 b 8 name))
-                             (nl_symobj_link mp name (+ b 6) h)
-                             (nl_symobj_cell_store mp buf n (+ b 6))
-                             (+ b 6))))))))))))))
+                               (seq (ptr-write-u64 b 8 name)
+                                    (nl_symobj_link mp name (+ b 6) h)
+                                    (nl_symobj_cell_store mp buf n (+ b 6))
+                                    (+ b 6))))))))))))))))
     ;; The reader's and `intern''s hook: W is the WORD they answer.  An
     ;; interned symbol's view gets its object here, so the symbol is complete
     ;; when it is first used; any other value passes through.
