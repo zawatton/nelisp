@@ -189,6 +189,15 @@
       ;; Keep the scalar step/step4 definitions above as the reference.
       ;; The compiler lowers this Lisp loop; one bounded raw load supplies
       ;; four bytes, avoiding four cross-unit byte-access calls per group.
+      ;; Doc 226 D9 stage 3.2: a completed interned symbol object carries its
+      ;; name's hash in the high half of its +40 word (`nl_symobj_meta'), the
+      ;; value computed below; zero means "not cached".
+      (if (/= (if (= (logand str-ptr 7) 6)
+                  (if (= (logand (heap-read-u64 (- str-ptr 6) 0) 63) 4)
+                      (logand (sar (heap-read-u64 (- str-ptr 6) 40) 32) 4294967295)
+                    0)
+                0) 0)
+          (logand (sar (heap-read-u64 (- str-ptr 6) 40) 32) 4294967295)
       (let* ((kind (sexp-tag str-ptr))
              ;; These classes have physical inline String fields. Mutable
              ;; and unsupported kinds retain the existing bytes fallback.
@@ -207,7 +216,7 @@
             (setq h (logand (* (logxor h (logand (sar quad 16) 255)) 16777619) mask))
             (setq h (logand (* (logxor h (logand (sar quad 24) 255)) 16777619) mask))
             (setq i (+ i 4))))
-         (nelisp_fnv1a_step h bytes i n mask)))))
+         (nelisp_fnv1a_step h bytes i n mask))))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.
 

@@ -4902,11 +4902,24 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; the name's bytes.  Storing the view canonicalizes it back to the
     ;; object's WORD (`nl_val_clone_into').
     (defun nl_sym_view_into (w dst)
-      (seq (ptr-write-u64 dst 0 (logand (heap-read-u64 (- w 6) 0) 63))
-           (ptr-write-u64 dst 8 (- w 6))
-           (ptr-write-u64 dst 16 (nl_word_data w))
-           (ptr-write-u64 dst 24 (nl_word_length w))
-           dst))
+      (let* ((meta (if (= (logand (heap-read-u64 (- w 6) 0) 63) 4) (heap-read-u64 (- w 6) 40) 0))
+             (n (nl_word_length w)))
+        (if (= meta 0)
+            (seq (ptr-write-u64 dst 0 (logand (heap-read-u64 (- w 6) 0) 63))
+                 (ptr-write-u64 dst 8 (- w 6))
+                 (ptr-write-u64 dst 16 (nl_word_data w))
+                 (ptr-write-u64 dst 24 n)
+                 dst)
+          ;; Doc 226 D9 stage 3.2: an interned object that has been completed
+          ;; (`nl_symobj_for_view') keeps the table slot of its name at +40, so
+          ;; its view is the canonical view of that name buffer -- what
+          ;; `nl_intern_write_sexp' makes -- and every consumer written for views
+          ;; (the name side table, the static symbol id, the cells) sees what it
+          ;; always saw.  A removed name keeps its slot, hence its own buffer.
+          (nl_intern_write_sexp
+           dst
+           (heap-read-u64 (+ (heap-read-u64 268436288 0) (+ (* (logand meta 1048575) 16) 8)) 0)
+           n))))
     ;; `eq' of two symbols when a symbol object WORD (class 110, kind 4 or 16)
     ;; is one of them and the words differ (the AOT symbol-eq calls this).
     ;; Doc 226 D9 stage 3: two distinct objects are two symbols (an interned
@@ -4982,6 +4995,21 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; when it cannot be made: no mirror yet, a name outside the intern arena,
     ;; a parallel section (the mirror is read-only there), no unbound view, no
     ;; cells vector, memory.
+    ;; The +40 word of the object of the interned name VIEW (a canonical view
+    ;; of BUF/N): bits 32-63 the name's FNV-1a hash (`nelisp_fnv1a', what the
+    ;; frames and the mirror hash by), bits 20-31 its static symbol id, bits
+    ;; 0-19 its slot in the intern table (a stable index, relocated with the
+    ;; table).  0 when the name has no live slot.
+    (defun nl_symobj_meta (view buf n)
+      (let* ((base (heap-read-u64 268436288 0))
+             (slot (if (= base 0) 0
+                     (nl_intern_probe base (logand (nl_intern_hash buf 0 n 2166136261) 1048575)
+                                      buf n 0))))
+        (if (= slot 0) 0
+          (if (/= (heap-read-u64 slot 8) buf) 0
+            (logior (shl (nelisp_fnv1a view) 32)
+                    (logior (shl (logand (sar (heap-read-u64 (- buf 8) 0) 32) 4095) 20)
+                            (sar (- slot base) 4)))))))
     (defun nl_symobj_for_view (view)
       (let* ((mp (nl_symcells_mirror)))
         (if (= mp 0) 0
@@ -5007,7 +5035,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                                            (ptr-write-u64 (- e 6) 8 name))))
                                 0)
                               (if (= (heap-read-u64 (- e 6) 40) 0)
-                                  (ptr-write-u64 (- e 6) 40 (sar (heap-read-u64 (- buf 8) 0) 32))
+                                  (ptr-write-u64 (- e 6) 40 (nl_symobj_meta view buf n))
                                 0))
                        0)
                      e)
@@ -5027,9 +5055,10 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                              (ptr-write-u64 b 0 8196)
                              (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
                              (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
-                             ;; +40: the static symbol id of the name (GNU's
-                             ;; lispsym index), which the builtin dispatch reads.
-                             (ptr-write-u64 b 40 (sar (heap-read-u64 (- buf 8) 0) 32))
+                             ;; +40: the name's hash, its static symbol id (GNU's
+                             ;; lispsym index, which the builtin dispatch reads) and
+                             ;; its intern table slot (`nl_symobj_meta').
+                             (ptr-write-u64 b 40 (nl_symobj_meta view buf n))
                              (if (= (nl_symname_make buf n name) 0) 0
                                (ptr-write-u64 b 8 name))
                              (nl_env_scratch_vec_sexp (nl_alloc_vector 1) vec)
@@ -10736,6 +10765,9 @@ by name pending that follow-up; this paragraph is the record of why."
                  (not (gethash name seen)))
         (puthash name (1+ (hash-table-count seen)) seen)
         (push name out)))
+    ;; An interned symbol object keeps its id in 12 bits of its +40 word.
+    (when (>= (length out) 4095)
+      (error "static symbol ids exceed 12 bits: %d" (length out)))
     (setq nelisp-standalone--static-symbol-index seen)
     (nreverse out)))
 
@@ -10753,7 +10785,7 @@ by name pending that follow-up; this paragraph is the record of why."
            ;; Doc 226 D9 stage 3.2: an interned symbol's object keeps the
            ;; static id of its name at +40 (an uninterned one has none).
            (if (= (logand (heap-read-u64 (- nl_sw 6) 0) 63) 4)
-               (heap-read-u64 (- nl_sw 6) 40)
+               (logand (sar (heap-read-u64 (- nl_sw 6) 40) 20) 4095)
              0)
        (if (/= (heap-read-u8 nl_sw 0) 4) 0
          (let* ((nl_sb (heap-read-u64 nl_sw 16)))
